@@ -28,6 +28,16 @@ import {
 } from "react";
 
 import { AdvancedDisclosure } from "@/components/advanced-disclosure";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -87,6 +97,7 @@ import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { fetchSystemInfo } from "@/hooks/use-system";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
+import { isChatHistoryDisabled } from "@/lib/chat-history-policy";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -309,6 +320,7 @@ export function AudioPage({
   active?: boolean;
   onInitialReady?: () => void;
 }) {
+  const historyDisabled = isChatHistoryDisabled();
   const initialReadySent = useRef(false);
   const [mode, setMode] = useState<CreateMode>("speak");
   const [selectorOpen, setSelectorOpen] = useState(false);
@@ -468,6 +480,9 @@ export function AudioPage({
   const [srcById, setSrcById] = useState<Record<string, string>>(
     galleryCache.srcById.toRecord(),
   );
+  const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
+  const [clearingGallery, setClearingGallery] = useState(false);
+  if (!active && clearConfirmOpen) setClearConfirmOpen(false);
   const clipSrcLoads = useRef<Map<string, Promise<void>>>(new Map());
   const mossFrameLimit = mossTtsMaxFrames(
     status?.audio_type,
@@ -2154,6 +2169,7 @@ export function AudioPage({
   );
 
   const handleClearGallery = useCallback(async () => {
+    setClearingGallery(true);
     try {
       await clearAudioGallery();
       galleryCache.srcById.clear();
@@ -2168,10 +2184,13 @@ export function AudioPage({
       setSrcById({});
       setSelectedId(null);
       await refreshGallery();
+      setClearConfirmOpen(false);
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : "Could not clear the gallery.",
       );
+    } finally {
+      setClearingGallery(false);
     }
   }, [refreshGallery]);
 
@@ -2335,6 +2354,38 @@ export function AudioPage({
 
   return (
     <div className="@container flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
+      <AlertDialog
+        open={active && clearConfirmOpen}
+        onOpenChange={(open) => {
+          if (!clearingGallery) setClearConfirmOpen(open);
+        }}
+      >
+        <AlertDialogContent size="sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Clear stored audio?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This permanently deletes every generated audio clip, including
+              clips hidden by the no-chat-history policy. This action cannot be
+              undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={clearingGallery}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              disabled={clearingGallery}
+              onClick={(event) => {
+                event.preventDefault();
+                void handleClearGallery();
+              }}
+            >
+              {clearingGallery ? "Clearing..." : "Clear stored audio"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       {/* Keep the tabs centered over the preview region at every width. The model rail
           holds at 408px when space permits and shrinks only to preserve the controls. */}
       <div className="pointer-events-none relative z-40 grid h-[48px] shrink-0 grid-cols-[minmax(0,408px)_minmax(13rem,1fr)]">
@@ -2820,7 +2871,7 @@ export function AudioPage({
                   </p>
                 )}
               </div>
-              {clips.length > 0 ? (
+              {clips.length > 0 || historyDisabled ? (
                 <div className="flex shrink-0 flex-col gap-2">
                   <div className="flex items-center justify-between">
                     <span className="text-ui-11p5 font-medium text-muted-foreground">
@@ -2829,11 +2880,18 @@ export function AudioPage({
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => void handleClearGallery()}
+                      disabled={clearingGallery}
+                      onClick={() => setClearConfirmOpen(true)}
                     >
-                      Clear all
+                      {historyDisabled ? "Clear stored audio" : "Clear all"}
                     </Button>
                   </div>
+                  {historyDisabled && clips.length === 0 ? (
+                    <p className="text-ui-11p5 text-muted-foreground">
+                      Audio saved before this privacy policy may remain on disk
+                      but is hidden.
+                    </p>
+                  ) : null}
                   <div
                     className="hover-scrollbar flex max-h-40 flex-col gap-1 overflow-y-auto"
                     onScroll={(event) => {

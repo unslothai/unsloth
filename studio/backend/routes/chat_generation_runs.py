@@ -21,6 +21,7 @@ from core.inference.llama_keepwarm import inference_lifecycle_gate
 from models.inference import ChatCompletionRequest
 from storage import chat_generation_runs_db as db
 from utils.api_errors import safe_validation_errors
+from utils import chat_history_policy
 
 router = APIRouter()
 _EVENT_WAIT_EXECUTOR = ThreadPoolExecutor(
@@ -241,6 +242,7 @@ async def create_chat_generation_run(
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
+    chat_history_policy.require_enabled()
     sanitized = _sanitize_request(payload)
     # Serialize the off-loop commit with model lifecycle work. If create wins,
     # the run is registered before the gate opens; if unload/swap wins, the run
@@ -279,11 +281,15 @@ async def create_chat_generation_run(
 def active_chat_generation_runs(
     thread_id: str = Query(alias = "threadId"), current_subject: str = Depends(get_current_subject)
 ):
+    if chat_history_policy.disabled():
+        return {"runs": []}
     return {"runs": db.list_active(thread_id)}
 
 
 @router.get("/{run_id}")
 def get_chat_generation_run(run_id: str, current_subject: str = Depends(get_current_subject)):
+    if chat_history_policy.disabled():
+        raise HTTPException(status_code = 404, detail = "Chat generation run not found")
     return _require_run(run_id)
 
 
@@ -300,6 +306,8 @@ def cancel_chat_generation_run(
     supervisor = getattr(request.app.state, "chat_generation_supervisor", None)
     if supervisor is not None and run["status"] in {"cancelling", "cancelled"}:
         supervisor.cancel(run_id)
+    if chat_history_policy.disabled():
+        return {"id": run_id, "status": run["status"]}
     return run
 
 
@@ -311,6 +319,8 @@ async def chat_generation_events(
     last_event_id: str | None = Header(None, alias = "Last-Event-ID"),
     current_subject: str = Depends(get_current_subject),
 ):
+    if chat_history_policy.disabled():
+        raise HTTPException(status_code = 404, detail = "Chat generation run not found")
     _require_run(run_id)
     cursor = _event_cursor(after, last_event_id)
 

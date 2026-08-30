@@ -22,6 +22,7 @@ import time
 from pathlib import Path
 
 from loggers import get_logger
+from utils import chat_history_policy
 
 logger = get_logger(__name__)
 
@@ -91,6 +92,7 @@ _INFERENCE_SUFFIXES = (
     "/responses",
     "/generate/stream",  # Unsloth's own streaming route on the same llama-server
     "/audio/generate",  # direct GGUF TTS; can outlive the idle TTL
+    "/audio/generate/gallery",  # Audio-page TTS with explicit gallery persistence
     "/audio/speech",  # /v1/audio/speech (+ /api/inference/audio/speech); same TTS core as /audio/generate
     # Image generation holds a multi-GB pipeline for the whole request; tracking it lets other_inference_request_count() see
     # an in-flight generation so an API-key training start is refused (409). endswith avoids matching *-progress / */cancel.
@@ -501,6 +503,9 @@ def inference_lifecycle_gate():
 def note_model_loaded(backend = None) -> None:
     """Stamp activity and synchronously drop any reload stash."""
     _note_activity()
+    if chat_history_policy.disabled():
+        _set_last_unloaded(None)
+        return
     resume = take_kv_resume()
     _set_last_unloaded(None)
     if resume is None:
@@ -867,7 +872,9 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                 if backend.is_loaded and _is_idle(ttl):
                     freed = _loaded_identity(backend)
                     manifest = None
-                    if await asyncio.to_thread(get_auto_unload_keep_kv):
+                    if not chat_history_policy.disabled() and await asyncio.to_thread(
+                        get_auto_unload_keep_kv
+                    ):
                         try:
                             manifest = await asyncio.to_thread(
                                 backend.save_slots_for_resume,

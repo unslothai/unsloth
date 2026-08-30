@@ -19,6 +19,8 @@ import routes.inference as inference_route
 from fastapi import HTTPException
 from models.inference import AudioSpeechRequest, ChatCompletionRequest
 from starlette.requests import Request
+from core.inference import audio_gallery
+from utils import chat_history_policy
 from utils.inference import inference_config as ic
 
 
@@ -151,6 +153,66 @@ def test_audio_generate_returns_the_exact_persisted_clip_id(monkeypatch):
     body = json.loads(response.body)
     assert body["clip_id"]
     assert len(body["clip_id"]) == 32
+
+
+def test_audio_generate_does_not_persist_when_history_is_disabled(monkeypatch):
+    backend = _FakeTransformersBackend()
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _FakeLlama())
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: backend)
+    monkeypatch.setattr(chat_history_policy, "NO_CHAT_HISTORY", True)
+    monkeypatch.setattr(
+        audio_gallery,
+        "save",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("disabled chat history must not persist generated audio")
+        ),
+    )
+
+    async def _noop_switch(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop_switch)
+    payload = ChatCompletionRequest(
+        model = "some/custom-tts",
+        messages = [{"role": "user", "content": "do not persist me"}],
+    )
+
+    response = asyncio.run(
+        inference_route.generate_audio(payload, request = None, current_subject = "t")
+    )
+    body = json.loads(response.body)
+    assert body["clip_id"] is None
+    assert body["audio"]["data"]
+
+
+def test_audio_page_generation_persists_when_history_is_disabled(monkeypatch):
+    backend = _FakeTransformersBackend()
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _FakeLlama())
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: backend)
+    monkeypatch.setattr(chat_history_policy, "NO_CHAT_HISTORY", True)
+    saved = []
+
+    def save(_wav, meta):
+        saved.append(meta)
+        return {**meta, "id": "audio-page-clip"}
+
+    monkeypatch.setattr(audio_gallery, "save", save)
+
+    async def _noop_switch(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop_switch)
+    payload = ChatCompletionRequest(
+        model = "some/custom-tts",
+        messages = [{"role": "user", "content": "save this standalone clip"}],
+    )
+
+    response = asyncio.run(
+        inference_route.generate_gallery_audio(payload, request = None, current_subject = "t")
+    )
+    body = json.loads(response.body)
+    assert body["clip_id"] == "audio-page-clip"
+    assert saved[0]["origin"] == "audio_page"
 
 
 def test_whisper_is_rejected_cleanly_by_both_tts_endpoints(monkeypatch):

@@ -18,6 +18,10 @@ const provider = readFileSync(
   new URL("../src/features/chat/runtime-provider.tsx", import.meta.url),
   "utf8",
 );
+const runtimeStore = readFileSync(
+  new URL("../src/features/chat/stores/chat-runtime-store.ts", import.meta.url),
+  "utf8",
+);
 
 /** ensureThreadRecord's body, code only. */
 function ensureThreadRecordBody(): string {
@@ -70,9 +74,40 @@ test("a saved chat still reaches the existing-row check before it can be tagged"
   const lookup = body.indexOf("await getStoredChatThread(threadId)");
   const lateTag = body.lastIndexOf("if (incognitoAtInit)");
 
-  assert.ok(shortcut > 0 && lookup > shortcut, "the row lookup must follow the shortcut");
+  assert.ok(
+    shortcut > 0 && lookup > shortcut,
+    "the row lookup must follow the shortcut",
+  );
   assert.ok(
     lateTag > lookup,
     "every path that did not take the shortcut must consult the stored row first",
+  );
+});
+
+test("host policy initializes and locks the runtime in incognito mode", () => {
+  assert.match(runtimeStore, /incognito: isChatHistoryDisabled\(\)/);
+  assert.match(
+    runtimeStore,
+    /setIncognito: \(incognito\) => \{\s*const nextIncognito = isChatHistoryDisabled\(\) \|\| incognito;/,
+  );
+  assert.match(
+    runtimeStore,
+    /key === "deepResearchEnabled"[\s\S]*?isChatHistoryDisabled\(\)/,
+    "persisted settings must not re-enable Deep Research under host policy",
+  );
+  assert.match(
+    runtimeStore,
+    /setDeepResearchEnabled:[\s\S]*?const nextDeepResearchEnabled =\s*!isChatHistoryDisabled\(\) && deepResearchEnabled;/,
+    "the runtime setter must not re-enable Deep Research under host policy",
+  );
+  assert.match(
+    runtimeStore,
+    /replayUnconfirmedThreadSettings[\s\S]*?if \(isChatHistoryDisabled\(\)\) \{\s*clearThreadSettingsReplayStorage\(\);\s*return;/,
+    "host policy must purge thread-scoped replay bodies instead of reading or sending them",
+  );
+  assert.match(
+    runtimeStore,
+    /sendThreadScopedSettingsBeacon[\s\S]*?if \(isChatHistoryDisabled\(\)\) \{\s*clearThreadSettingsReplayStorage\(\);\s*return;/,
+    "terminal events must not persist or send thread-scoped settings under host policy",
   );
 });

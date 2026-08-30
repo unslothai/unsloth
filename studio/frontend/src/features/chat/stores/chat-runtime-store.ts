@@ -58,6 +58,7 @@ import {
   loadChatSettingsWithLegacyImport,
   savePersistedChatSettingsPatch,
 } from "../utils/chat-settings-storage";
+import { isChatHistoryDisabled } from "@/lib/chat-history-policy";
 import {
   loadShadowOwnsMirroredSetting,
   MAX_RESEARCH_MODEL_TIMEOUT_SECONDS,
@@ -1193,6 +1194,15 @@ function buildThreadScopedSnapshot(
 const THREAD_SETTINGS_REPLAY_KEY = "unsloth_chat_thread_settings_replay";
 const THREAD_SETTINGS_REPLAY_TIMEOUT_MS = 10_000;
 
+function clearThreadSettingsReplayStorage(): void {
+  if (!canUseStorage()) return;
+  try {
+    localStorage.removeItem(THREAD_SETTINGS_REPLAY_KEY);
+  } catch {
+    // Storage may be unavailable; nothing can be replayed in that case either.
+  }
+}
+
 /**
  * Snapshots a terminal event sent but could not confirm, kept where the next session
  * will find them. The beacon cannot await anything: a chat whose row is still being
@@ -1203,6 +1213,10 @@ function rememberThreadSettingsForReplay(
   threadId: string,
   body: Record<string, unknown>,
 ): void {
+  if (isChatHistoryDisabled()) {
+    clearThreadSettingsReplayStorage();
+    return;
+  }
   if (!canUseStorage()) return;
   try {
     const raw = localStorage.getItem(THREAD_SETTINGS_REPLAY_KEY);
@@ -1224,6 +1238,10 @@ export function replayUnconfirmedThreadSettings(): void {
   // twice would race two writes carrying the same seq for the same row.
   if (threadSettingsReplayStarted) return;
   threadSettingsReplayStarted = true;
+  if (isChatHistoryDisabled()) {
+    clearThreadSettingsReplayStorage();
+    return;
+  }
   if (!canUseStorage()) return;
   let pending: Record<string, unknown> = {};
   try {
@@ -1314,6 +1332,10 @@ function sendThreadScopedSettingsBeacon(
   snapshot: ThreadScopedSettings | null,
   merge = false,
 ): void {
+  if (isChatHistoryDisabled()) {
+    clearThreadSettingsReplayStorage();
+    return;
+  }
   // A merge carries only what the user touched, for the chat whose own snapshot was
   // never read; sending a replacement built from the defaults on screen would erase
   // the rest of its row. Everything else replaces, as the debounced write does.
@@ -2781,7 +2803,7 @@ type ChatRuntimeStore = {
    * lives only in assistant-ui's in-memory repository and is never
    * persisted to studio.db -- so it stays out of history and vanishes on
    * reload. Deliberately ephemeral: NOT mirrored to localStorage or the
-   * backend settings, so a refresh always exits incognito.
+   * backend settings. Host policy can force it on before the store is created.
    */
   incognito: boolean;
   settingsPanelOpen: boolean;
@@ -3616,7 +3638,8 @@ function getHydratedSettingsState(
     if (
       key === "deepResearchEnabled" &&
       value === true &&
-      externalCheckpointRefusesDeepResearch(state.params.checkpoint)
+      (isChatHistoryDisabled() ||
+        externalCheckpointRefusesDeepResearch(state.params.checkpoint))
     ) {
       continue;
     }
@@ -3755,7 +3778,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   toolsEnabled: loadBool(CHAT_TOOLS_ENABLED_KEY, false),
   codeToolsEnabled: loadBool(CHAT_CODE_TOOLS_ENABLED_KEY, false),
   imageToolsEnabled: loadBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false),
-  deepResearchEnabled: loadBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false),
+  deepResearchEnabled: isChatHistoryDisabled()
+    ? false
+    : loadBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false),
   researchWebsitePolicy: loadResearchWebsitePolicy(),
   researchModelTimeoutSeconds: loadResearchModelTimeoutSeconds(),
   artifactsEnabled: loadBool(CHAT_ARTIFACTS_ENABLED_KEY, false),
@@ -3872,7 +3897,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   activeThreadEpoch: 0,
   queuedSettingsEpoch: 0,
   activeProjectId: null,
-  incognito: false,
+  incognito: isChatHistoryDisabled(),
   settingsPanelOpen: false,
   editingMessageId: null,
   pendingAudioBase64: null,
@@ -4513,11 +4538,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }),
   setActiveProjectId: (activeProjectId) => set({ activeProjectId }),
   setIncognito: (incognito) => {
-    if (incognito) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
+    const nextIncognito = isChatHistoryDisabled() || incognito;
+    if (nextIncognito) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
     set(
-      incognito
-        ? { incognito, deepResearchEnabled: false }
-        : { incognito },
+      nextIncognito
+        ? { incognito: nextIncognito, deepResearchEnabled: false }
+        : { incognito: nextIncognito },
     );
   },
   setSettingsPanelOpen: (settingsPanelOpen) => set({ settingsPanelOpen }),
@@ -4722,11 +4748,13 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }),
   setDeepResearchEnabled: (deepResearchEnabled) =>
     set((state) => {
-      saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, deepResearchEnabled);
+      const nextDeepResearchEnabled =
+        !isChatHistoryDisabled() && deepResearchEnabled;
+      saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, nextDeepResearchEnabled);
       // the level this chat carries, or the global one when it carries none.
       const permissionMode =
         threadScopedOverride("permissionMode") ?? loadPermissionMode();
-      if (deepResearchEnabled) {
+      if (nextDeepResearchEnabled) {
         saveBool(CHAT_TOOLS_ENABLED_KEY, false);
         saveBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false);
         saveBool(CHAT_CODE_TOOLS_ENABLED_KEY, false);
@@ -4734,9 +4762,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         saveBool(CHAT_MCP_ENABLED_KEY, false);
         saveBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, false);
       }
-      return deepResearchEnabled
+      return nextDeepResearchEnabled
         ? {
-            deepResearchEnabled,
+            deepResearchEnabled: nextDeepResearchEnabled,
             toolsEnabled: false,
             codeToolsEnabled: false,
             imageToolsEnabled: false,
@@ -4750,7 +4778,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
             queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
           }
         : {
-            deepResearchEnabled,
+            deepResearchEnabled: nextDeepResearchEnabled,
             queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
           };
     }),

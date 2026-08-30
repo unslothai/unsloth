@@ -48,6 +48,7 @@ import {
   getAudioSizeError,
 } from "@/lib/audio-utils";
 import { isTauri } from "@/lib/api-base";
+import { isChatHistoryDisabled } from "@/lib/chat-history-policy";
 import { isVideoFile } from "@/lib/video-utils";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { isMultimodalResponse } from "./types/api";
@@ -677,6 +678,7 @@ export function SharedComposer({
   );
   // Three most recently updated projects for the quick-access submenu
   const { projects } = useChatProjects();
+  const historyDisabled = isChatHistoryDisabled();
   const recentProjects = [...projects]
     .sort((a, b) => b.updatedAt - a.updatedAt)
     .slice(0, 3);
@@ -2166,8 +2168,11 @@ export function SharedComposer({
       </DropdownMenuSub>
     ),
   };
-  const pinnedPlusItems = PLUS_MENU_ORDER.filter((id) => plusPins[id]);
-  const overflowPlusItems = PLUS_MENU_ORDER.filter((id) => !plusPins[id]);
+  const visiblePlusItems = PLUS_MENU_ORDER.filter(
+    (id) => !historyDisabled || id !== "projects",
+  );
+  const pinnedPlusItems = visiblePlusItems.filter((id) => plusPins[id]);
+  const overflowPlusItems = visiblePlusItems.filter((id) => !plusPins[id]);
 
   return (
     <div

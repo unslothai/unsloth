@@ -9750,7 +9750,10 @@ class TestApiMonitorAudioInput:
                 _payload,
                 _request,
                 current_subject = None,
+                *,
+                origin,
             ):
+                assert origin == "chat"
                 return inf_mod.JSONResponse(
                     content = {
                         "choices": [
@@ -9771,7 +9774,7 @@ class TestApiMonitorAudioInput:
                 lambda: SimpleNamespace(is_loaded = False),
             )
             monkeypatch.setattr(inf_mod, "get_inference_backend", lambda: DummyTtsBackend())
-            monkeypatch.setattr(inf_mod, "generate_audio", fake_generate_audio)
+            monkeypatch.setattr(inf_mod, "_generate_audio_response", fake_generate_audio)
 
             payload = ChatCompletionRequest(
                 model = "default",
@@ -9817,7 +9820,10 @@ class TestApiMonitorAudioInput:
                 _payload,
                 _request,
                 current_subject = None,
+                *,
+                origin,
             ):
+                assert origin == "chat"
                 raise asyncio.CancelledError()
 
             monitor = ApiMonitor(max_entries = 3)
@@ -9828,7 +9834,7 @@ class TestApiMonitorAudioInput:
                 lambda: SimpleNamespace(is_loaded = False),
             )
             monkeypatch.setattr(inf_mod, "get_inference_backend", lambda: DummyTtsBackend())
-            monkeypatch.setattr(inf_mod, "generate_audio", fake_generate_audio)
+            monkeypatch.setattr(inf_mod, "_generate_audio_response", fake_generate_audio)
 
             payload = ChatCompletionRequest(
                 model = "default",
@@ -9862,7 +9868,10 @@ class TestApiMonitorAudioInput:
                 _payload,
                 _request,
                 current_subject = None,
+                *,
+                origin,
             ):
+                assert origin == "chat"
                 return inf_mod.JSONResponse(
                     content = {
                         "choices": [
@@ -9887,7 +9896,7 @@ class TestApiMonitorAudioInput:
                     context_length = 2048,
                 ),
             )
-            monkeypatch.setattr(inf_mod, "generate_audio", fake_generate_audio)
+            monkeypatch.setattr(inf_mod, "_generate_audio_response", fake_generate_audio)
 
             payload = ChatCompletionRequest(
                 model = "default",

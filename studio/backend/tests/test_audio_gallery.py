@@ -14,6 +14,7 @@ from pathlib import Path
 import core.inference.audio_gallery as gallery
 
 import pytest
+from fastapi import HTTPException
 
 
 @pytest.fixture(autouse = True)
@@ -143,6 +144,33 @@ def test_gallery_file_route_streams_the_owned_wav(monkeypatch):
     assert Path(response.path) == gallery.gallery_dir() / f"{record['id']}.wav"
     assert response.media_type == "audio/wav"
     assert response.headers["cache-control"] == "private, max-age=31536000, immutable"
+
+
+def test_no_history_shows_only_explicit_audio_page_clips_and_can_clear_all(monkeypatch):
+    from routes import inference
+    from utils import chat_history_policy
+
+    legacy = gallery.save(_wav(), _meta(prompt = "legacy private text"))
+    chat = gallery.save(_wav(), _meta(prompt = "private chat text", origin = "chat"))
+    audio_page = gallery.save(_wav(), _meta(prompt = "standalone audio text", origin = "audio_page"))
+    monkeypatch.setattr(chat_history_policy, "NO_CHAT_HISTORY", True)
+    listed = asyncio.run(inference.list_gallery_audio(current_subject = "tester"))
+    assert [record.id for record in listed.audio] == [audio_page["id"]]
+    assert listed.has_more is False
+
+    for hidden in (legacy, chat):
+        with pytest.raises(HTTPException) as caught:
+            asyncio.run(inference.get_gallery_audio_file(hidden["id"], current_subject = "tester"))
+        assert caught.value.status_code == 404
+
+    response = asyncio.run(
+        inference.get_gallery_audio_file(audio_page["id"], current_subject = "tester")
+    )
+    assert Path(response.path) == gallery.gallery_dir() / f"{audio_page['id']}.wav"
+
+    cleared = asyncio.run(inference.clear_gallery_audio(current_subject = "tester"))
+    assert cleared == {"removed": 3}
+    assert gallery.list_audio() == []
 
 
 def test_delete_removes_both_files():

@@ -194,6 +194,38 @@ def test_mixed_chat_and_api_usage_combines_only_activity_metrics(stats_db):
     assert stats["models"][0]["tokens"] == 175
 
 
+def test_excluding_chat_history_never_scans_or_reports_legacy_chat_rows(stats_db, monkeypatch):
+    today = datetime.now(timezone.utc).replace(hour = 12, minute = 0, second = 0, microsecond = 0)
+    conn = studio_db.get_connection()
+    try:
+        _seed_thread(conn, "private", "unsloth/private-model", [(today, _metadata(100, 25))])
+        conn.commit()
+    finally:
+        conn.close()
+    assert record_api_usage(_api_receipt("api-visible", today))
+
+    monkeypatch.setattr(
+        profile_stats_db,
+        "_fold_messages",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("chat rows must not be scanned")
+        ),
+    )
+    stats = compute_profile_stats(
+        days = 7,
+        tz_name = "UTC",
+        subject = "external-client",
+        include_chat_history = False,
+    )
+
+    assert stats["totals"]["threads"] == 0
+    assert stats["totals"]["messages"] == 0
+    assert stats["totals"]["chatTokens"] == 0
+    assert stats["totals"]["apiTokens"] == 50
+    assert stats["longestChat"] is None
+    assert {model["id"] for model in stats["models"]} == {"unsloth/api-model"}
+
+
 def test_api_usage_and_cache_are_subject_scoped_while_legacy_chat_is_shared(stats_db):
     now = datetime.now(timezone.utc).replace(microsecond = 0)
     conn = studio_db.get_connection()
@@ -1409,6 +1441,7 @@ def test_route_does_not_block_the_event_loop(stats_db, monkeypatch):
         tz_offset_minutes = 0,
         tz_name = "",
         subject = "",
+        include_chat_history = True,
     ):
         time.sleep(0.5)
         return {"totals": {"messages": 0}}

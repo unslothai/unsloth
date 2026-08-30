@@ -24,6 +24,7 @@ import {
   forgetChatSearchHasRows,
   rememberChatSearchHasRows,
 } from "../utils/chat-search-history-hint";
+import { isChatHistoryDisabled } from "@/lib/chat-history-policy";
 import {
   formatMcpToolName,
   mcpServerFromProvenance,
@@ -158,6 +159,7 @@ interface ChatSearchIndexBuild {
 // Exported for the bare-node cache harness: it needs to prove that a failed read is not
 // indistinguishable from a completed empty history.
 export async function buildChatSearchIndex(): Promise<ChatSearchIndexBuild> {
+  if (isChatHistoryDisabled()) return { items: [], complete: true };
   const active = (
     await listStoredChatThreads({ includeArchived: false })
   ).slice(0, THREAD_LIMIT);
@@ -279,6 +281,10 @@ let cachedIndexEpoch = -1;
 // Scoped to the auth session: a web logout only navigates, and a second account must never
 // open onto the previous user's chats.
 function readCachedIndex(): ChatSearchItem[] | null {
+  if (isChatHistoryDisabled()) {
+    cachedIndex = null;
+    return null;
+  }
   if (cachedIndexEpoch !== getAuthSessionEpoch()) {
     // The next account's history is unknown, so the previous one's hint cannot size it
     // either. -1 is "nothing cached yet", every page load, and leaves this account's alone.
@@ -297,6 +303,11 @@ function cachedSearchTextChars(items: ChatSearchItem[]): number {
 
 // Exported for tests, which drive the real bookkeeping rather than a stand-in.
 export function writeCachedIndex(next: ChatSearchItem[] | null): void {
+  if (isChatHistoryDisabled()) {
+    cachedIndex = null;
+    forgetChatSearchHasRows();
+    return;
+  }
   cachedIndexEpoch = getAuthSessionEpoch();
   cachedIndex =
     next !== null && cachedSearchTextChars(next) > MAX_CACHED_SEARCH_TEXT_CHARS
@@ -379,6 +390,7 @@ if (typeof window !== "undefined") {
 // opening paint. A built cache answers exactly; otherwise the last build's hint does, which
 // is all the first open of a page load has. null means genuinely unknown.
 export function chatSearchIndexHasRows(): boolean | null {
+  if (isChatHistoryDisabled()) return false;
   const cached = readCachedIndex();
   if (cached !== null) return cached.length > 0;
   return chatSearchHadRows();

@@ -314,6 +314,51 @@ def test_normal_scheduling_reclaims_an_expired_running_job(rag_home):
 
 
 @requires_sqlite_vec
+def test_kb_only_scheduler_does_not_enqueue_or_claim_project_folders(rag_home):
+    from core.rag import job_leases
+
+    _, kb_folder = _folder(rag_home)
+    with _connection() as conn:
+        store.create_kb(conn, name = "Knowledge", kb_id = "scope-1")
+    project_source = rag_home / "project-source"
+    project_source.mkdir()
+    project_folder = folder_sync.create_folder(
+        scope_type = "project",
+        scope_id = "project-1",
+        path = str(project_source),
+        name = "Project docs",
+    )
+    orphan_source = rag_home / "orphan-kb-source"
+    orphan_source.mkdir()
+    orphan_kb_folder = folder_sync.create_folder(
+        scope_type = "knowledge_base",
+        scope_id = "missing-kb",
+        path = str(orphan_source),
+        name = "Orphan KB docs",
+    )
+
+    folder_sync._enqueue_periodic(knowledge_bases_only = True)
+    with _connection() as conn:
+        scheduled_folder_ids = {
+            row["folder_id"]
+            for row in conn.execute("SELECT folder_id FROM linked_folder_sync_jobs")
+        }
+    assert scheduled_folder_ids == {kb_folder["id"]}
+
+    project_job_id = folder_sync.request_sync(project_folder["id"])
+    orphan_job_id = folder_sync.request_sync(orphan_kb_folder["id"])
+    claimed = folder_sync._next_job(knowledge_bases_only = True)
+    try:
+        assert claimed is not None
+        assert claimed[1] == kb_folder["id"]
+        assert folder_sync.get_job(project_job_id)["status"] == "pending"
+        assert folder_sync.get_job(orphan_job_id)["status"] == "pending"
+    finally:
+        if claimed is not None:
+            job_leases.release(job_leases.FOLDER_SYNC, claimed[0])
+
+
+@requires_sqlite_vec
 def test_reconcile_add_rename_delete_and_skip_unsupported_and_symlinks(rag_home, stub_embeddings):
     source, folder = _folder(rag_home)
     (source / "notes.txt").write_text("alpha original", encoding = "utf-8")

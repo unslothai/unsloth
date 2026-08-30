@@ -222,7 +222,6 @@ test("route shortcuts stay idle while Settings is open", async () => {
     "newTemporaryChat",
     "newStandaloneChat",
     "switchToChat",
-    "switchToProjects",
     "switchToHub",
     "switchToRecipes",
     "switchToImages",
@@ -231,6 +230,10 @@ test("route shortcuts stay idle while Settings is open", async () => {
   ]) {
     assert.equal(enabledById.get(id), "routeShortcutEnabled", id);
   }
+  assert.equal(
+    enabledById.get("switchToProjects"),
+    "routeShortcutEnabled && !historyDisabled",
+  );
   assert.equal(
     enabledById.get("switchToTrain"),
     "routeShortcutEnabled && !chatOnlyMeasured",

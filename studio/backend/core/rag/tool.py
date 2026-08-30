@@ -14,6 +14,7 @@ from __future__ import annotations
 from xml.sax.saxutils import quoteattr
 
 from storage import rag_db
+from utils import chat_history_policy
 
 from . import config, retrieval
 from .store import (
@@ -62,6 +63,8 @@ def _resolve_scope(
     The conversation archive is exclusive too, and takes precedence: it is a different
     corpus (this chat's evicted turns), so sharing a top-K would have old turns and
     document passages crowd each other out."""
+    if chat_history_policy.disabled():
+        return kb_scope(scope_kb_id) if scope_kb_id else None
     if scope_conversation_id:
         return conversation_archive_scope(scope_conversation_id)
     if scope_kb_id:
@@ -324,7 +327,7 @@ def whole_document_context(
     are search corpora, never whole-document, so this resolves the thread scope alone.
     ``None`` (caller falls back to retrieval) when there is no thread scope, no completed
     chunks, or the total exceeds ``max_tokens``."""
-    if not scope_thread_id:
+    if chat_history_policy.disabled() or not scope_thread_id:
         return None
     # A non-positive budget means "never inject" (disable whole-doc via
     # RAG_THREAD_WHOLE_DOC=0), not "inject the whole corpus unbounded".

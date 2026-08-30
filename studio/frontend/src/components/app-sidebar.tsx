@@ -138,6 +138,7 @@ import {
   deleteChatItem,
   listStoredChatMessages,
   listStoredChatThreads,
+  isChatHistoryDisabled,
   moveChatItemToProject,
   allRecordedSandboxSessionIds,
   notifyChatHistoryUpdated,
@@ -736,6 +737,7 @@ function MoreMenuItem({
 
 export function AppSidebar() {
   const t = useT();
+  const historyDisabled = isChatHistoryDisabled();
   const { isDark, toggleTheme, anchorRef } = useAnimatedThemeToggle();
   const sidebarMenu = useAppearanceCustomStore(
     (s) => s.customization.sidebarMenu,
@@ -2087,12 +2089,12 @@ export function AppSidebar() {
     },
   };
   const unpinnedNavIds = sidebarNav
-    .filter((item) => !item.pinned)
+    .filter((item) => !item.pinned && (!historyDisabled || item.id !== "projects"))
     .map((item) => item.id);
   // More needs two or more rows to be worth a click; with exactly one unpinned, the menu and that row are both dropped.
   const overflowNavIds = unpinnedNavIds.length > 1 ? unpinnedNavIds : [];
   const inlineNavIds = sidebarNav
-    .filter((item) => item.pinned)
+    .filter((item) => item.pinned && (!historyDisabled || item.id !== "projects"))
     .map((item) => item.id);
   // Mirrors ImagesWorkflowList's own test: it decides which row owns the highlight.
   const imagesWorkflowsListed =

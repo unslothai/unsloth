@@ -22,6 +22,7 @@ import uuid
 
 from loggers import get_logger
 from storage import rag_db
+from utils import chat_history_policy
 
 from . import config, embeddings, retrieval, store, tool
 from .chunking import chunk_pages
@@ -67,7 +68,13 @@ def retrieve_web_chunks(
     usable or RAG is unavailable, so the caller can fall back to snippet evidence. The scope
     is always deleted before returning, so nothing is left in the store."""
     query = (query or "").strip()
-    if not query or top_n <= 0 or not pages or not rag_db.RAG_AVAILABLE:
+    if (
+        chat_history_policy.disabled()
+        or not query
+        or top_n <= 0
+        or not pages
+        or not rag_db.RAG_AVAILABLE
+    ):
         return "", []
     model = model_name or config.effective_embedding_model()
     max_tokens = max_tokens or config.CHUNK_TOKENS

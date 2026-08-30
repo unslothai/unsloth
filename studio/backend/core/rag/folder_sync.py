@@ -1632,15 +1632,22 @@ def reconcile_folder(job_id: str) -> None:
             job_leases.release(job_leases.FOLDER_SYNC, job_id)
 
 
-def _enqueue_periodic() -> None:
+def _enqueue_periodic(*, knowledge_bases_only: bool = False) -> None:
     rag_db.reconcile_orphaned_ingestion_jobs()
     _reconcile_retired_folder_deletions()
     with closing(rag_db.get_connection()) as conn:
         now = _now()
         conn.execute("BEGIN IMMEDIATE")
+        scope_filter = (
+            " AND f.scope_type='knowledge_base' AND EXISTS ("
+            "SELECT 1 FROM knowledge_bases kb WHERE kb.id=f.scope_id "
+            "OR f.scope='kb_' || kb.id)"
+            if knowledge_bases_only
+            else ""
+        )
         rows = conn.execute(
-            "SELECT id FROM linked_folders WHERE auto_sync=1 AND status!='retired' "
-            "AND delete_remove_index IS NULL"
+            "SELECT f.id FROM linked_folders f WHERE f.auto_sync=1 AND f.status!='retired' "
+            f"AND f.delete_remove_index IS NULL{scope_filter}"
         ).fetchall()
         for row in rows:
             conn.execute(
@@ -1693,19 +1700,28 @@ def _claim_job(job_id: str) -> tuple[str, str] | None:
     return job_id, row["folder_id"]
 
 
-def _next_job() -> tuple[str, str] | None:
+def _next_job(*, knowledge_bases_only: bool = False) -> tuple[str, str] | None:
     with closing(rag_db.get_connection()) as conn:
         row = conn.execute(
-            "SELECT j.id FROM linked_folder_sync_jobs j WHERE j.status='pending' OR "
-            "(j.status='running' AND NOT EXISTS (SELECT 1 FROM rag_job_leases l "
-            "WHERE l.kind=? AND l.job_id=j.id AND l.expires_at>?)) "
+            "SELECT j.id FROM linked_folder_sync_jobs j "
+            "JOIN linked_folders f ON f.id=j.folder_id WHERE "
+            "(j.status='pending' OR (j.status='running' AND NOT EXISTS "
+            "(SELECT 1 FROM rag_job_leases l "
+            "WHERE l.kind=? AND l.job_id=j.id AND l.expires_at>?))) "
+            "AND (?=0 OR (f.scope_type='knowledge_base' AND EXISTS ("
+            "SELECT 1 FROM knowledge_bases kb WHERE kb.id=f.scope_id "
+            "OR f.scope='kb_' || kb.id))) "
             "ORDER BY CASE j.status WHEN 'running' THEN 0 ELSE 1 END, j.created_at LIMIT 1",
-            (job_leases.FOLDER_SYNC, _now()),
+            (job_leases.FOLDER_SYNC, _now(), int(knowledge_bases_only)),
         ).fetchone()
     return _claim_job(row["id"]) if row else None
 
 
-def _worker(stop_event: threading.Event | None = None, project_exists = None) -> None:
+def _worker(
+    stop_event: threading.Event | None = None,
+    project_exists = None,
+    knowledge_bases_only: bool = False,
+) -> None:
     global _thread, _thread_stop
     stop_event = stop_event or _stop
     try:
@@ -1716,14 +1732,21 @@ def _worker(stop_event: threading.Event | None = None, project_exists = None) ->
                     _recover_startup_state()
                     if project_exists is not None:
                         reconcile_retired_scopes(project_exists)
-                    _enqueue_periodic()
+                    if knowledge_bases_only:
+                        _enqueue_periodic(knowledge_bases_only = True)
+                    else:
+                        _enqueue_periodic()
                     break
                 except Exception:
                     logger.warning("linked-folder worker initialization failed", exc_info = True)
                     stop_event.wait(1.0)
             while not stop_event.is_set():
                 try:
-                    job = _next_job()
+                    job = (
+                        _next_job(knowledge_bases_only = True)
+                        if knowledge_bases_only
+                        else _next_job()
+                    )
                 except Exception:
                     # Writer-lock contention must not retire the only worker: the
                     # initialization and periodic paths already back off and retry.
@@ -1744,7 +1767,10 @@ def _worker(stop_event: threading.Event | None = None, project_exists = None) ->
                     try:
                         if project_exists is not None:
                             reconcile_retired_scopes(project_exists)
-                        _enqueue_periodic()
+                        if knowledge_bases_only:
+                            _enqueue_periodic(knowledge_bases_only = True)
+                        else:
+                            _enqueue_periodic()
                     except Exception:
                         logger.warning("linked-folder periodic scheduling failed", exc_info = True)
     finally:
@@ -1812,6 +1838,7 @@ def start_auto_sync(
     admission_lock = None,
     admit = None,
     project_exists = None,
+    knowledge_bases_only: bool = False,
 ) -> bool:
     global _thread, _thread_stop
     try:
@@ -1836,7 +1863,7 @@ def start_auto_sync(
             _thread_stop = stop_event
             _thread = threading.Thread(
                 target = _worker,
-                args = (stop_event, project_exists),
+                args = (stop_event, project_exists, knowledge_bases_only),
                 daemon = True,
                 name = "rag-folder-sync",
             )

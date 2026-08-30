@@ -234,6 +234,7 @@ import {
   listStoredChatMessages,
   listStoredChatThreads,
 } from "./utils/chat-history-storage";
+import { isChatHistoryDisabled } from "@/lib/chat-history-policy";
 import { attachmentsSample } from "./utils/pasted-text";
 import { requestTemporaryPromptQueueStop } from "./utils/prompt-queue-boundary";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
@@ -2213,10 +2214,14 @@ export function ChatPage({
   const setSettingsOpen = useChatRuntimeStore((s) => s.setSettingsPanelOpen);
   const incognito = useChatRuntimeStore((s) => s.incognito);
   const setIncognito = useChatRuntimeStore((s) => s.setIncognito);
-  const incognitoLabel = incognito
-    ? "Turn off temporary chat"
-    : "Turn on temporary chat";
+  const historyDisabled = isChatHistoryDisabled();
+  const incognitoLabel = historyDisabled
+    ? "Temporary chat is enforced by the server operator"
+    : incognito
+      ? "Turn off temporary chat"
+      : "Turn on temporary chat";
   const toggleIncognito = useCallback(() => {
+    if (historyDisabled) return;
     const store = useChatRuntimeStore.getState();
     const wasIncognito = store.incognito;
     store.setIncognito(!store.incognito);
@@ -2238,7 +2243,7 @@ export function ChatPage({
     store.setActiveThreadId(null);
     store.setActiveProjectId(null);
     navigate({ to: "/chat", search: { new: crypto.randomUUID() } });
-  }, [navigate, search]);
+  }, [historyDisabled, navigate, search]);
   const hydratePersistedSettings = useChatRuntimeStore(
     (s) => s.hydratePersistedSettings,
   );
@@ -2337,7 +2342,7 @@ export function ChatPage({
   const openResearchRunId = useResearchRunStore((state) => state.openRunId);
   const closeResearchPanel = useResearchRunStore((state) => state.closePanel);
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(
-    search.project ?? null,
+    historyDisabled ? null : (search.project ?? null),
   );
   const { projects, isLoading: projectsLoading } = useChatProjects();
   const currentProject = currentProjectId
@@ -2678,6 +2683,19 @@ export function ChatPage({
     let canceled = false;
 
     async function resolveProjectId(): Promise<void> {
+      if (historyDisabled) {
+        setCurrentProjectId(null);
+        useChatRuntimeStore.getState().setActiveProjectId(null);
+        if (search.thread || search.compare || search.project) {
+          useChatRuntimeStore.getState().setActiveThreadId(null);
+          await navigate({
+            to: "/chat",
+            search: { new: crypto.randomUUID() },
+            replace: true,
+          });
+        }
+        return;
+      }
       if (search.project) {
         setCurrentProjectId(search.project);
         useChatRuntimeStore.getState().setActiveProjectId(search.project);
@@ -2717,10 +2735,15 @@ export function ChatPage({
     return () => {
       canceled = true;
     };
-  }, [search.compare, search.project, search.thread]);
+  }, [historyDisabled, navigate, search.compare, search.project, search.thread]);
 
   // Derive view from URL search params
   const view = useMemo<ChatView>(() => {
+    if (historyDisabled) {
+      return search.new
+        ? { mode: "single", newThreadNonce: search.new }
+        : { mode: "single" };
+    }
     if (search.compare) {
       return {
         mode: "compare",
@@ -2757,6 +2780,7 @@ export function ChatPage({
     }
     return { mode: "single", projectId: currentProjectId };
   }, [
+    historyDisabled,
     search.thread,
     search.compare,
     search.new,
@@ -4148,8 +4172,10 @@ export function ChatPage({
                   <button
                     type="button"
                     onClick={toggleIncognito}
+                    disabled={historyDisabled}
                     className={cn(
                       "flex size-[30px] cursor-pointer items-center justify-center rounded-[10px] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                      historyDisabled && "cursor-not-allowed opacity-80",
                       incognito
                         ? "bg-primary/10 text-primary hover:bg-primary/15"
                         : "text-nav-fg hover:bg-nav-surface-hover hover:text-black dark:hover:text-white",

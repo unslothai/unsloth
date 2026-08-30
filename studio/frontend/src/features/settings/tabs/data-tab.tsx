@@ -36,6 +36,7 @@ import {
   downloadChatExport,
   exportFineTuneJsonl,
   importConversationsFromSource,
+  isChatHistoryDisabled,
   nativeImportSource,
   fileImportSource,
   type ImportSource,
@@ -95,6 +96,7 @@ const SUBPAGE_FOR_SHELF = {
 export function DataTab() {
   const t = useT();
   const navigate = useNavigate();
+  const historyDisabled = isChatHistoryDisabled();
   const archivedRequested = useSettingsDialogStore((s) => s.archivedRequested);
   const consumeArchivedChatsRequest = useSettingsDialogStore(
     (s) => s.consumeArchivedChatsRequest,
@@ -107,8 +109,14 @@ export function DataTab() {
   // Subpages swap the Data tab body instead of opening nested dialogs.
   const [subpage, setSubpage] = useState<
     "main" | "manage" | "archived" | "archived-images" | "archived-videos" | "files"
-  >(archivedRequested ? SUBPAGE_FOR_SHELF[archivedRequested] : "main");
-  const [count, setCount] = useState<number | null>(null);
+  >(
+    !historyDisabled && archivedRequested
+      ? SUBPAGE_FOR_SHELF[archivedRequested]
+      : "main",
+  );
+  const [count, setCount] = useState<number | null>(
+    historyDisabled ? 0 : null,
+  );
   const [exporting, setExporting] = useState(false);
   const [archivedExporting, setArchivedExporting] = useState(false);
   // Gates the archived subpage Export button.
@@ -143,7 +151,7 @@ export function DataTab() {
   // Requests can arrive after Data is already mounted (for example from the
   // archive-all toast), so always switch before consuming the flag.
   useEffect(() => {
-    if (!archivedRequested) return;
+    if (!archivedRequested || historyDisabled) return;
     let cancelled = false;
     queueMicrotask(() => {
       if (cancelled) return;
@@ -153,7 +161,7 @@ export function DataTab() {
     return () => {
       cancelled = true;
     };
-  }, [archivedRequested, consumeArchivedChatsRequest]);
+  }, [archivedRequested, consumeArchivedChatsRequest, historyDisabled]);
 
   useEffect(() => {
     if (!ragAvailabilityUnknown) return;
@@ -205,8 +213,9 @@ export function DataTab() {
   });
 
   useEffect(() => {
+    if (historyDisabled) return;
     void countAllChats().then(setCount);
-  }, []);
+  }, [historyDisabled]);
 
   const handleExport = async () => {
     setExporting(true);
@@ -640,6 +649,16 @@ export function DataTab() {
       </header>
 
       <div className="flex flex-col divide-y divide-border/60">
+        {historyDisabled ? (
+          <SettingsRow
+            label="Chat history"
+            description="Temporary chats are enforced and conversation content is not stored by this Studio host."
+          >
+            <span className="text-xs font-medium text-muted-foreground">
+              Disabled by operator
+            </span>
+          </SettingsRow>
+        ) : null}
         <SettingsRow
           alignTop={true}
           label={t("settings.data.fineTuneExport")}
@@ -710,6 +729,7 @@ export function DataTab() {
             variant="outline"
             size="sm"
             onClick={() => setSubpage("manage")}
+            disabled={historyDisabled}
           >
             {t("settings.data.manageAction")}
           </Button>
@@ -723,6 +743,7 @@ export function DataTab() {
             variant="outline"
             size="sm"
             onClick={() => setSubpage("archived")}
+            disabled={historyDisabled}
           >
             {t("settings.data.manageAction")}
           </Button>
@@ -762,6 +783,7 @@ export function DataTab() {
             variant="outline"
             size="sm"
             onClick={() => setArchiveConfirmOpen(true)}
+            disabled={historyDisabled}
           >
             <HugeiconsIcon icon={Archive02Icon} className="size-3.5 mr-1.5" />
             {t("settings.data.archiveAllAction")}
@@ -775,6 +797,7 @@ export function DataTab() {
           <Switch
             checked={confirmDeleteChats}
             onCheckedChange={setConfirmDeleteChats}
+            disabled={historyDisabled}
           />
         </SettingsRow>
 
@@ -785,6 +808,7 @@ export function DataTab() {
           <Switch
             checked={alwaysDeleteChatFiles}
             onCheckedChange={setAlwaysDeleteChatFiles}
+            disabled={historyDisabled}
           />
         </SettingsRow>
 
@@ -869,13 +893,15 @@ export function DataTab() {
           className="border-t-0 mt-0 pt-3"
           label={t("settings.chat.clearAllChats")}
           description={
-            count === null
-              ? t("settings.chat.clearAllChatsDescription")
-              : count === 0
-                ? t("settings.chat.noChatsToClear")
-                : count === 1
-                  ? t("settings.chat.clearOneChatDescription")
-                  : t("settings.chat.clearChatCountDescription", { count })
+            historyDisabled
+              ? "Permanently remove any conversation history stored before this policy was enabled."
+              : count === null
+                ? t("settings.chat.clearAllChatsDescription")
+                : count === 0
+                  ? t("settings.chat.noChatsToClear")
+                  : count === 1
+                    ? t("settings.chat.clearOneChatDescription")
+                    : t("settings.chat.clearChatCountDescription", { count })
           }
         >
           <Button
@@ -885,7 +911,7 @@ export function DataTab() {
               setDeleteFilesOnClear(alwaysDeleteChatFiles);
               setConfirmOpen(true);
             }}
-            disabled={count === 0}
+            disabled={!historyDisabled && count === 0}
             className="text-destructive hover:text-destructive hover:border-destructive/60"
           >
             <HugeiconsIcon icon={Delete02Icon} className="size-3.5 mr-1.5" />
@@ -903,7 +929,7 @@ export function DataTab() {
             onClick={() => void handleImportClick()}
             // A second pick mid-import would interleave two streams into one
             // history, and on desktop it retires the running import's handle.
-            disabled={importing}
+            disabled={historyDisabled || importing}
           >
             {importing ? (
               <Spinner className="size-3.5 mr-1.5" />
@@ -976,12 +1002,16 @@ export function DataTab() {
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>
-              {count === 1
-                ? t("settings.chat.clearOneChatTitle")
-                : t("settings.chat.clearChatsTitle", { count: count ?? 0 })}
+              {historyDisabled
+                ? "Clear stored chat data?"
+                : count === 1
+                  ? t("settings.chat.clearOneChatTitle")
+                  : t("settings.chat.clearChatsTitle", { count: count ?? 0 })}
             </DialogTitle>
             <DialogDescription>
-              {t("settings.chat.clearChatsConfirmDescription")}
+              {historyDisabled
+                ? "This removes conversation history created before the operator disabled chat history. This action cannot be undone."
+                : t("settings.chat.clearChatsConfirmDescription")}
             </DialogDescription>
           </DialogHeader>
           <DeleteChatFilesSwitch
@@ -1002,11 +1032,13 @@ export function DataTab() {
             >
               {clearing
                 ? t("settings.chat.clearingAction")
-                : count === 1
-                  ? t("settings.chat.clearOneChatAction")
-                  : t("settings.chat.clearChatCountAction", {
-                      count: count ?? 0,
-                    })}
+                : historyDisabled
+                  ? "Clear stored chat data"
+                  : count === 1
+                    ? t("settings.chat.clearOneChatAction")
+                    : t("settings.chat.clearChatCountAction", {
+                        count: count ?? 0,
+                      })}
             </Button>
           </DialogFooter>
         </DialogContent>

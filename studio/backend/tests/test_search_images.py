@@ -25,6 +25,7 @@ from core.inference import search_images, tools
 from core.inference.tool_loop_controller import strip_result_for_model
 from core.inference.tool_stream_exec import accepts_kwarg, search_images_kwargs
 from routes.inference import studio_router
+from utils import chat_history_policy
 
 RAW_IMAGES = [
     {
@@ -79,6 +80,30 @@ def test_register_images_keeps_urls_server_side_and_filters_unsafe_results():
     assert "bing" not in json.dumps(entry)
     stored = search_images.lookup_image(entry["id"])
     assert stored["thumbnail"] == "https://tse1.mm.bing.net/th?id=golden"
+
+
+def test_no_history_policy_keeps_search_images_memory_only(monkeypatch, tmp_path):
+    monkeypatch.setattr(chat_history_policy, "NO_CHAT_HISTORY", True)
+    monkeypatch.setattr(search_images, "_fetch_thumbnail_bytes", lambda *_args, **_kwargs: b"jpg")
+
+    entry = search_images.register_images(RAW_IMAGES)[0]
+    assert search_images.lookup_image(entry["id"]) is not None
+    assert list(tmp_path.iterdir()) == []
+    assert search_images.thumbnail_bytes(entry["id"]) == b"jpg"
+    assert list(tmp_path.iterdir()) == []
+
+    search_images._registry.clear()
+    (tmp_path / f"{entry['id']}.jpg").write_bytes(b"legacy-jpg")
+    (tmp_path / f"{entry['id']}.json").write_text(
+        json.dumps(
+            {
+                "thumbnail": RAW_IMAGES[0]["thumbnail"],
+                "source": RAW_IMAGES[0]["url"],
+            }
+        ),
+        encoding = "utf-8",
+    )
+    assert search_images.thumbnail_bytes(entry["id"]) is None
 
 
 def test_register_images_honours_the_website_policy():
@@ -856,6 +881,19 @@ def test_route_serves_registered_thumbnails_only(client, monkeypatch):
     assert client.get("/api/inference/search-images/0123456789ab").status_code == 404
     assert client.get("/api/inference/search-images/..%2F..%2Fetc").status_code == 404
     assert client.get("/api/inference/search-images/not-hex-at-all").status_code == 404
+
+
+def test_no_history_thumbnails_are_not_browser_cacheable(client, monkeypatch):
+    from utils import chat_history_policy
+
+    monkeypatch.setattr(chat_history_policy, "NO_CHAT_HISTORY", True)
+    entry = search_images.register_images(RAW_IMAGES)[0]
+    _serve_bytes(monkeypatch, _png_bytes())
+
+    response = client.get(f"/api/inference/search-images/{entry['id']}")
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "private, no-store"
 
 
 def test_lookup_route_returns_subject_images_only_when_enabled(client, monkeypatch):

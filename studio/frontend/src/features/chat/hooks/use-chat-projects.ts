@@ -4,6 +4,7 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { CHAT_PROJECTS_UPDATED_EVENT } from "../api/chat-api";
 import type { ProjectRecord } from "../types";
+import { isChatHistoryDisabled } from "@/lib/chat-history-policy";
 import {
   createStoredChatProject,
   deleteStoredChatProject,
@@ -15,7 +16,8 @@ import {
 import { offerToDeleteKeptSandboxes } from "../utils/offer-kept-sandbox-files";
 import type { SidebarItem } from "./use-chat-sidebar-items";
 
-let cachedProjects: ProjectRecord[] = [];
+const EMPTY_PROJECTS: ProjectRecord[] = [];
+let cachedProjects: ProjectRecord[] = EMPTY_PROJECTS;
 let projectsLoaded = false;
 let projectsRequest: Promise<ProjectRecord[]> | null = null;
 let projectsRefreshPending = false;
@@ -28,7 +30,7 @@ function subscribeToProjects(onStoreChange: () => void): () => void {
 }
 
 function getProjectsSnapshot(): ProjectRecord[] {
-  return cachedProjects;
+  return isChatHistoryDisabled() ? EMPTY_PROJECTS : cachedProjects;
 }
 
 function publishProjects(projects: ProjectRecord[]): void {
@@ -41,6 +43,10 @@ function loadProjects(
   force = false,
   followUpIfPending = false,
 ): Promise<ProjectRecord[]> {
+  if (isChatHistoryDisabled()) {
+    publishProjects(EMPTY_PROJECTS);
+    return Promise.resolve(EMPTY_PROJECTS);
+  }
   if (projectsRequest) {
     if (followUpIfPending) projectsRefreshPending = true;
     return projectsRequest;

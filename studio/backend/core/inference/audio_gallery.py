@@ -200,13 +200,16 @@ def _read_meta(sidecar: Path) -> Optional[dict[str, Any]]:
     return meta
 
 
-def owned_audio_path(audio_id: str) -> Optional[Path]:
+def owned_audio_path(
+    audio_id: str, *, valid: Optional[Callable[[dict[str, Any]], bool]] = None
+) -> Optional[Path]:
     """Resolve an id to its WAV only for an Unsloth-owned clip (readable sidecar).
 
     The serve route uses this rather than audio_path() so a guessed stem for a
     hand-dropped or orphan WAV cannot be streamed out."""
     path = audio_path(audio_id)
-    if path is None or _read_meta(_sidecar_path(audio_id)) is None:
+    meta = _read_meta(_sidecar_path(audio_id))
+    if path is None or meta is None or (valid is not None and not valid(meta)):
         return None
     return path
 

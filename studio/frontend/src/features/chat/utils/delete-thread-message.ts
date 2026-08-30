@@ -22,6 +22,7 @@ import { listChatMessages } from "../api/chat-api";
 import type { MessageRecord } from "../types";
 import {
   ensureStoredChatThread,
+  isThreadIncognito,
   syncStoredChatMessages,
 } from "./chat-history-storage";
 import {
@@ -114,6 +115,7 @@ export async function syncExportedRepositoryToBackend(
   exp: ExportedMessageRepository,
   options: { pruneMissing?: boolean; deletedMessageIds?: string[] } = {},
 ): Promise<void> {
+  if (isThreadIncognito(remoteId)) return;
   // No ensureStoredChatThread here: syncStoredChatMessages ensures the row itself, and
   // this used to make every save pay for the same GET /threads/{id} twice.
   const records = exp.messages.map(({ message, parentId }) =>

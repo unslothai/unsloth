@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from loggers import get_logger
+from utils import chat_history_policy
 
 logger = get_logger(__name__)
 
@@ -126,6 +127,7 @@ def register_images(
     # Public entries only; the URLs stay in this process.
     from .web_access_policy import check_url_access
 
+    memory_only = chat_history_policy.disabled()
     public: list[dict[str, str]] = []
     persist: list[tuple[str, dict[str, Any], int]] = []
     now = time.monotonic()
@@ -167,7 +169,8 @@ def register_images(
             if subject:
                 entry["subject"] = _clean_text(subject, 80)
             public.append(entry)
-            persist.append((image_id, _registry[image_id], generation))
+            if not memory_only:
+                persist.append((image_id, _registry[image_id], generation))
     for image_id, stored, registered_generation in persist:
         _persist_entry(image_id, stored, registered_generation)
     if persist:
@@ -279,6 +282,8 @@ def _persist_entry(image_id: str, entry: dict[str, Any], generation: int) -> Non
     process. Reopening that chat used to 404 forever. This is the same information the
     cached JPEG already reveals, and `clear_cache` removes both together.
     """
+    if chat_history_policy.disabled():
+        return
     try:
         payload = json.dumps(
             {
@@ -304,6 +309,8 @@ def _persist_entry(image_id: str, entry: dict[str, Any], generation: int) -> Non
 
 
 def _load_persisted_entry(image_id: str) -> dict[str, Any] | None:
+    if chat_history_policy.disabled():
+        return None
     try:
         raw = json.loads(_meta_path(image_id).read_text(encoding = "utf-8"))
     except (OSError, ValueError):
@@ -418,18 +425,21 @@ def _drop_if_cleared(image_id: str) -> bool:
 
 
 def thumbnail_bytes(image_id: str) -> bytes | None:
-    # Cache first: it survives the restart the in-memory registry does not.
     if not IMAGE_ID_RE.fullmatch(image_id or ""):
         return None
-    # Ahead of that read and of the sidecar below, which both go around the registry.
-    if not _drop_if_cleared(image_id):
-        return None
-    path = _cache_path(image_id)
-    try:
-        if path.is_file():
-            return path.read_bytes()
-    except OSError:
-        pass
+    memory_only = chat_history_policy.disabled()
+    path = None
+    if not memory_only:
+        # Cache first: it survives the restart the in-memory registry does not.
+        # Ahead of that read and of the sidecar below, which both go around the registry.
+        if not _drop_if_cleared(image_id):
+            return None
+        path = _cache_path(image_id)
+        try:
+            if path.is_file():
+                return path.read_bytes()
+        except OSError:
+            pass
     # Generation and entry in ONE acquisition, generation first. Taking them
     # separately let a clear land in the gap: this call would then read the POST-clear
     # generation, the check before the write would match, and the thumbnail the clear
@@ -439,6 +449,8 @@ def thumbnail_bytes(image_id: str) -> bytes | None:
         generation = _cache_generation
         entry = _lookup_locked(image_id)
     if entry is None:
+        if memory_only:
+            return None
         # Not in memory: the process may have restarted since the search. The metadata
         # on disk outlives it, the same way the cached bytes do.
         entry = _load_persisted_entry(image_id)
@@ -449,11 +461,12 @@ def thumbnail_bytes(image_id: str) -> bytes | None:
         gate = _inflight.setdefault(image_id, threading.Lock())
     try:
         with gate:
-            try:
-                if path.is_file():
-                    return path.read_bytes()
-            except OSError:
-                pass
+            if path is not None:
+                try:
+                    if path.is_file():
+                        return path.read_bytes()
+                except OSError:
+                    pass
             with _fetch_slots:
                 data = _fetch_thumbnail_bytes(entry["thumbnail"], entry.get("policy"))
             if data is None:
@@ -469,19 +482,21 @@ def thumbnail_bytes(image_id: str) -> bytes | None:
                     # that too, and aborting on it took down fetches for the images the
                     # clear had gone out of its way to spare.
                     return None
-                try:
-                    # Writer-unique: racing writers must not publish a torn JPEG.
-                    tmp = path.with_suffix(f".{secrets.token_hex(4)}.tmp")
-                    tmp.write_bytes(data)
-                    tmp.replace(path)
-                except OSError as exc:
-                    logger.debug("search thumbnail cache write failed: %s", exc)
+                if path is not None:
                     try:
-                        tmp.unlink(missing_ok = True)
-                    except OSError:
-                        pass
+                        # Writer-unique: racing writers must not publish a torn JPEG.
+                        tmp = path.with_suffix(f".{secrets.token_hex(4)}.tmp")
+                        tmp.write_bytes(data)
+                        tmp.replace(path)
+                    except OSError as exc:
+                        logger.debug("search thumbnail cache write failed: %s", exc)
+                        try:
+                            tmp.unlink(missing_ok = True)
+                        except OSError:
+                            pass
             # Outside the lock: a glob plus a stat per file, and nothing here needs it.
-            _evict_cache()
+            if not memory_only:
+                _evict_cache()
             return data
     finally:
         with _inflight_lock:

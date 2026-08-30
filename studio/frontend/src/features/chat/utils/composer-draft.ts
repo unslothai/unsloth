@@ -4,6 +4,8 @@
 // Per-thread composer drafts persisted in localStorage. New (unsaved) chats
 // share the NEW_CHAT_DRAFT_ID slot; callers clear it when a fresh chat starts
 // so one new chat's draft never bleeds into the next.
+import { isChatHistoryDisabled } from "../../../lib/chat-history-policy.ts";
+
 const DRAFT_PREFIX = "chat-draft:";
 const PASTE_DRAFT_PREFIX = "chat-draft-pastes:";
 const NEW_CHAT_DRAFT_ID = "__new__";
@@ -23,6 +25,7 @@ export function composerPasteDraftKey(
 // The names are not stored: a pasted file is named from its own text, so
 // recreating it reproduces the name it had.
 export function readPasteDraft(key: string): string[] {
+  if (isChatHistoryDisabled()) return [];
   let raw: string | null = null;
   try {
     raw = window.localStorage.getItem(key);
@@ -43,6 +46,10 @@ export function readPasteDraft(key: string): string[] {
 // draft untouched, which is why the two slots are written separately.
 export function writePasteDraft(key: string, pastes: readonly string[]): void {
   try {
+    if (isChatHistoryDisabled()) {
+      window.localStorage.removeItem(key);
+      return;
+    }
     if (pastes.length > 0) {
       window.localStorage.setItem(key, JSON.stringify(pastes));
     } else {
@@ -56,6 +63,7 @@ export function writePasteDraft(key: string, pastes: readonly string[]): void {
 // All storage access is best-effort: localStorage throws when unavailable
 // (private mode, blocked storage) or full (quota), so swallow failures.
 export function readComposerDraft(key: string): string | null {
+  if (isChatHistoryDisabled()) return null;
   try {
     return window.localStorage.getItem(key);
   } catch {
@@ -65,6 +73,10 @@ export function readComposerDraft(key: string): string | null {
 
 export function writeComposerDraft(key: string, text: string): void {
   try {
+    if (isChatHistoryDisabled()) {
+      window.localStorage.removeItem(key);
+      return;
+    }
     if (text.length > 0) window.localStorage.setItem(key, text);
     else window.localStorage.removeItem(key);
   } catch {

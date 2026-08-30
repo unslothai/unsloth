@@ -80,6 +80,7 @@ from core.inference.mcp_client import (
 from storage import mcp_servers_db
 
 from loggers import get_logger
+from utils import chat_history_policy
 
 logger = get_logger(__name__)
 
@@ -7443,7 +7444,7 @@ def record_orphaned_project(
     workspace: str,
     pending_delete: bool = False,
     root_path: "str | None" = None,
-) -> None:
+) -> bool:
     """Remember where a deleted project's kept workspace lives.
 
     Written whether or not files were to be deleted: the row that knew the path
@@ -7452,8 +7453,8 @@ def record_orphaned_project(
     reachable" from "the user asked for it, finish when nothing is using it".
     """
     if not project_id or not workspace:
-        return
-    _write_orphan_record(
+        return False
+    return _write_orphan_record(
         _ORPHAN_PROJECT,
         project_id,
         {
@@ -7466,18 +7467,56 @@ def record_orphaned_project(
     )
 
 
-def _write_orphan_record(kind: str, record_id: str, record: dict) -> None:
+def preserve_orphaned_project(
+    project_id: str,
+    workspace: "str | None",
+    root_path: "str | None" = None,
+) -> bool:
+    """Mark the current workspace kept without losing an older workspace record."""
+    if not workspace:
+        return True
+    existing = _read_orphan_record(_ORPHAN_PROJECT, project_id)
+    existing_path = os.path.join(
+        _orphan_records_dir(), _orphan_record_name(_ORPHAN_PROJECT, project_id)
+    )
+    if existing is None and os.path.lexists(existing_path):
+        return False
+    if existing and _recorded_workspace_remains(existing["path"], existing.get("rootPath") or None):
+        current_paths = {os.path.realpath(path) for path in (workspace, root_path) if path}
+        recorded_paths = {
+            os.path.realpath(path) for path in (existing["path"], existing.get("rootPath")) if path
+        }
+        if current_paths.isdisjoint(recorded_paths):
+            return False
+    return record_orphaned_project(project_id, workspace, False, root_path)
+
+
+def _write_orphan_record(kind: str, record_id: str, record: dict) -> bool:
     """One small JSON file per kept folder, under its kind and id."""
     import json as _json
 
     record = {**record, "id": record_id, "chat": kind == _ORPHAN_CHAT}
+    temporary = None
     try:
-        os.makedirs(_orphan_records_dir(), exist_ok = True)
+        directory = _orphan_records_dir()
+        os.makedirs(directory, exist_ok = True)
         name = _orphan_record_name(kind, record_id)
-        with open(os.path.join(_orphan_records_dir(), name), "w", encoding = "utf-8") as fh:
+        fd, temporary = tempfile.mkstemp(prefix = f".{name}.", dir = directory)
+        with os.fdopen(fd, "w", encoding = "utf-8") as fh:
             fh.write(_json.dumps(record))
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temporary, os.path.join(directory, name))
+        return True
     except OSError:
         logger.warning("Could not record kept folder for %s", record_id)
+        return False
+    finally:
+        if temporary:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
 
 
 def record_kept_sandbox(session_id: str) -> None:
@@ -7756,6 +7795,8 @@ def _project_workdir_for(session_id: "str | None") -> "str | None":
     character one may not: it is the project part that has to be usable, and
     the workspace path comes from the row rather than from the id.
     """
+    if chat_history_policy.disabled():
+        return None
     if not session_id:
         return None
     if not _usable_session_id(session_id) and not session_id.startswith(_PROJECT_SESSION_PREFIX):
@@ -10054,6 +10095,20 @@ EDIT_FILE_TOOL_FULL_ACCESS = {
 
 _FULL_ACCESS_TOOL_BY_NAME["edit_file"] = EDIT_FILE_TOOL_FULL_ACCESS
 
+_DURABLE_SANDBOX_TOOLS = frozenset({"python", "terminal", "edit_file"})
+
+
+def apply_chat_history_tool_policy(tools: list[dict]) -> list[dict]:
+    """Remove tools whose outputs can persist in a conversation sandbox."""
+    if not chat_history_policy.disabled():
+        return tools
+    return [
+        tool
+        for tool in tools
+        if (tool.get("function") or {}).get("name") not in _DURABLE_SANDBOX_TOOLS
+    ]
+
+
 RENDER_HTML_TOOL = {
     "type": "function",
     "function": {
@@ -10443,6 +10498,8 @@ def execute_tool(
             f"Error: {name} arguments {cause}, so nothing ran. Resend as complete JSON, "
             "split across smaller calls if the content is long."
         )
+    if chat_history_policy.disabled() and name in _DURABLE_SANDBOX_TOOLS:
+        return "Error: local file tools are unavailable while chat history is disabled."
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
     if name == "search_knowledge_base":
         return _fit_result_to_room(
@@ -15158,6 +15215,8 @@ def _spill_scope(session_id: "str | None", thread_id: "str | None") -> "str | No
     ``thread_id`` is taken and unused for that reason -- it identifies the chat, which is
     not the thing that has to be separate.
     """
+    if chat_history_policy.disabled():
+        return None
     if not session_id or session_id.startswith(_PROJECT_SESSION_PREFIX):
         return None
     return ""

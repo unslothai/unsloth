@@ -573,6 +573,22 @@ def test_openai_compat_routes_bound_to_handlers_with_auth():
         assert "get_current_subject" in deps, f"{key} lost its auth dependency"
 
 
+def test_audio_page_gallery_generation_is_studio_only_and_authenticated():
+    routes = {
+        (method, route.path): route
+        for route in inference_route.studio_router.routes
+        for method in (getattr(route, "methods", None) or ())
+    }
+    key = ("POST", "/audio/generate/gallery")
+    assert key in routes
+    route = routes[key]
+    assert route.endpoint.__name__ == "generate_gallery_audio"
+    assert "get_current_subject" in [
+        dependency.call.__name__ for dependency in route.dependant.dependencies
+    ]
+    assert all(getattr(route, "path", None) != key[1] for route in inference_route.router.routes)
+
+
 # ── resolver ────────────────────────────────────────────────────────
 
 
@@ -1000,6 +1016,7 @@ def test_audio_generate_is_tracked_as_inference_path():
     from core.inference.llama_keepwarm import _is_inference_path
 
     assert _is_inference_path("/api/inference/audio/generate") is True
+    assert _is_inference_path("/api/inference/audio/generate/gallery") is True
     assert _is_inference_path("/v1/chat/completions") is True
     assert _is_inference_path("/api/inference/models/list") is False
 
@@ -1825,6 +1842,7 @@ def test_generate_stream_is_tracked_as_inference_path():
 
     assert _is_inference_path("/api/inference/generate/stream") is True
     assert _is_inference_path("/api/inference/audio/generate") is True
+    assert _is_inference_path("/api/inference/audio/generate/gallery") is True
     assert _is_inference_path("/v1/responses") is True
 
 
@@ -5718,6 +5736,38 @@ def test_keep_kv_setting_off_skips_save(monkeypatch):
         backend.is_loaded = False
 
     backend.save_slots_for_resume = lambda *a, **k: saves.append(1)
+    backend.unload_model = _unload
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+
+    _drive_idle_loop(kw, until = lambda: unloads)
+    assert saves == []
+    assert unloads == [1]
+    assert kw.take_kv_resume() is None
+
+
+def test_no_history_idle_unload_skips_slot_save(monkeypatch):
+    import time
+    from core.inference import llama_keepwarm as kw
+    from utils import chat_history_policy
+
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.005)
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: True)
+    monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: True)
+    monkeypatch.setattr(chat_history_policy, "NO_CHAT_HISTORY", True)
+    kw._inflight = 0
+    kw._pending = 0
+    kw._last_active = time.monotonic() - 3600
+    kw._last_unloaded_model = None
+    kw._kv_resume = None
+
+    saves, unloads = [], []
+    backend = _FakeBackend("unsloth/Idle-GGUF")
+    backend.save_slots_for_resume = lambda *_a, **_k: saves.append(1)
+
+    def _unload():
+        unloads.append(1)
+        backend.is_loaded = False
+
     backend.unload_model = _unload
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
 

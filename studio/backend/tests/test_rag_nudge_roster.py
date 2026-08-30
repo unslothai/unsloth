@@ -18,6 +18,16 @@ def _nudge(rag_scope, base = ""):
     return asyncio.run(inference._apply_rag_nudge(base, TOOLS, rag_scope = rag_scope))
 
 
+def test_no_history_policy_hides_conversation_roster_scopes(monkeypatch):
+    from routes import inference
+    from utils import chat_history_policy
+
+    monkeypatch.setattr(chat_history_policy, "NO_CHAT_HISTORY", True)
+    assert inference._roster_scopes({"thread_id": "thread-1"}) == []
+    assert inference._roster_scopes({"project_id": "project-1"}) == []
+    assert inference._roster_scopes({"kb_id": "kb-1", "project_id": "project-1"}) == ["kb_kb-1"]
+
+
 def _doc(
     conn,
     scope,

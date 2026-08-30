@@ -56,10 +56,10 @@ def test_production_lifespan_installs_and_removes_the_usage_sink():
 
 
 def test_profile_endpoint_forwards_each_authenticated_subject(monkeypatch):
-    seen: list[str] = []
+    seen: list[tuple[str, bool]] = []
 
     def fake_stats(**kwargs):
-        seen.append(kwargs["subject"])
+        seen.append((kwargs["subject"], kwargs["include_chat_history"]))
         return {"subject": kwargs["subject"]}
 
     monkeypatch.setattr(profile_stats_route, "compute_profile_stats", fake_stats)
@@ -74,4 +74,22 @@ def test_profile_endpoint_forwards_each_authenticated_subject(monkeypatch):
     assert client.get("/api/profile/stats").json() == {"subject": "alice"}
     active["subject"] = "bob"
     assert client.get("/api/profile/stats").json() == {"subject": "bob"}
-    assert seen == ["alice", "bob"]
+    assert seen == [("alice", True), ("bob", True)]
+
+
+def test_profile_endpoint_excludes_legacy_chat_stats_under_host_policy(monkeypatch):
+    seen = {}
+
+    def fake_stats(**kwargs):
+        seen.update(kwargs)
+        return {"totals": {"messages": 0}}
+
+    monkeypatch.setattr(profile_stats_route, "compute_profile_stats", fake_stats)
+    monkeypatch.setattr(profile_stats_route.chat_history_policy, "NO_CHAT_HISTORY", True)
+    app = FastAPI()
+    app.include_router(profile_stats_route.router, prefix = "/api/profile")
+    app.dependency_overrides = {get_current_subject: lambda: "alice"}
+
+    assert TestClient(app).get("/api/profile/stats").json() == {"totals": {"messages": 0}}
+    assert seen["subject"] == "alice"
+    assert seen["include_chat_history"] is False

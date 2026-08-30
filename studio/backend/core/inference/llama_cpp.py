@@ -863,7 +863,9 @@ def _keeps_compaction_boundary(thread_id: Optional[str]) -> bool:
     messages (incognito, or an API caller that persists nothing) never gets one back. The
     fit uses this to decide whether cutting deeper than needed buys anything.
     """
-    if not thread_id:
+    from utils import chat_history_policy
+
+    if not thread_id or chat_history_policy.disabled():
         return False
     try:
         from storage import studio_db
@@ -1079,7 +1081,9 @@ def _sticky_compaction_state(
     the UI, so nothing new is stored and it survives a restart. Never raises: no history,
     a non-persisting API client, or a storage error all mean "no boundary".
     """
-    if not thread_id:
+    from utils import chat_history_policy
+
+    if not thread_id or chat_history_policy.disabled():
         return 0, False
     requested_ratio = _effective_headroom_ratio(compaction_headroom_ratio)
     try:
@@ -25875,8 +25879,11 @@ class LlamaCppBackend:
     def save_slots_for_resume(
         self, should_abort: Optional[Callable[[], bool]] = None
     ) -> Optional[dict]:
+        from utils import chat_history_policy
+
         if (
-            not self.is_loaded
+            chat_history_policy.disabled()
+            or not self.is_loaded
             or not self._slot_save_dir
             or not self._gguf_path
             or self._prompt_cache_off()
@@ -26015,7 +26022,8 @@ class LlamaCppBackend:
         }
 
     def restore_slots_for_resume(self, manifest: dict) -> None:
-        if not self.is_loaded or not self._slot_save_dir:
+        from utils import chat_history_policy
+        if chat_history_policy.disabled() or not self.is_loaded or not self._slot_save_dir:
             return
         for entry in manifest.get("slots") or []:
             try:

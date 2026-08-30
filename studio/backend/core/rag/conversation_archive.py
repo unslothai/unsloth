@@ -26,6 +26,7 @@ import re
 from typing import Optional
 
 from storage import rag_db
+from utils import chat_history_policy
 
 from . import config, embeddings, retrieval, store, tool
 from .chunking import chunk_pages
@@ -286,7 +287,11 @@ def enabled() -> bool:
     all: the fit still reserves room, then write and recall both fail, so the user pays
     extra eviction for content that never arrives.
     """
-    return bool(config.CONVERSATION_ARCHIVE) and bool(rag_db.rag_available())
+    return (
+        not chat_history_policy.disabled()
+        and bool(config.CONVERSATION_ARCHIVE)
+        and bool(rag_db.rag_available())
+    )
 
 
 def can_archive(thread_id: Optional[str]) -> bool:

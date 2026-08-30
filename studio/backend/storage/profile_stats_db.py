@@ -618,10 +618,12 @@ def _training_stats(conn) -> dict[str, Any]:
     }
 
 
-def _fingerprint(conn, subject: str) -> tuple:
-    message_row = conn.execute(
-        "SELECT COUNT(*), COALESCE(MAX(created_at), 0) FROM chat_messages"
-    ).fetchone()
+def _fingerprint(conn, subject: str, include_chat_history: bool) -> tuple:
+    message_row = (
+        conn.execute("SELECT COUNT(*), COALESCE(MAX(created_at), 0) FROM chat_messages").fetchone()
+        if include_chat_history
+        else (0, 0)
+    )
     run_row = conn.execute(
         "SELECT COUNT(*), COALESCE(MAX(started_at), '') FROM training_runs"
     ).fetchone()
@@ -634,6 +636,7 @@ def _fingerprint(conn, subject: str) -> tuple:
         (subject,),
     ).fetchone()
     return (
+        include_chat_history,
         message_row[0],
         message_row[1],
         run_row[0],
@@ -650,12 +653,14 @@ def compute_profile_stats(
     tz_name: str = "",
     *,
     subject: str = "",
+    include_chat_history: bool = True,
 ) -> dict[str, Any]:
-    """Aggregate profile statistics, subject-scoping only external API usage.
+    """Aggregate profile statistics, optionally excluding all chat-derived data.
 
     Legacy Unsloth chat and training history is install-wide because those rows
     have no authenticated owner. An empty subject intentionally sees no API
-    receipts, keeping non-route callers fail-closed.
+    receipts, keeping non-route callers fail-closed. ``include_chat_history`` is
+    false under the host no-history policy so legacy chat rows are not read.
     """
     days = max(1, min(int(days), MAX_DAILY_DAYS))
     tz_offset_minutes = max(
@@ -665,7 +670,12 @@ def compute_profile_stats(
     subject = canonical_api_subject(subject)
     conn = get_connection()
     try:
-        fingerprint = (_fingerprint(conn, subject), days, tz_offset_minutes, tz_name)
+        fingerprint = (
+            _fingerprint(conn, subject, include_chat_history),
+            days,
+            tz_offset_minutes,
+            tz_name,
+        )
         now = time.monotonic()
         with _cache_lock:
             if (
@@ -676,7 +686,7 @@ def compute_profile_stats(
                 return _cache["payload"]
 
         started = time.perf_counter()
-        fold = _fold_messages(conn, zone)
+        fold = _fold_messages(conn, zone) if include_chat_history else _MessageFold()
         api_fold = _fold_api_usage(conn, zone, subject)
         _merge_api_activity(fold, api_fold)
         training = _training_stats(conn)

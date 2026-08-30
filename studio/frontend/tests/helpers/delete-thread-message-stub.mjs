@@ -16,4 +16,5 @@ const unexpected = (name) => () => {
 
 export const listChatMessages = unexpected("listChatMessages");
 export const ensureStoredChatThread = unexpected("ensureStoredChatThread");
+export const isThreadIncognito = () => false;
 export const syncStoredChatMessages = unexpected("syncStoredChatMessages");

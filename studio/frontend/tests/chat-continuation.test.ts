@@ -768,6 +768,52 @@ test("a tab with no storage keeps the claim it always had", async () => {
   assert.equal(only.claimed("m1"), true);
 });
 
+test("operator policy purges leases and keeps continuation claims in memory", async () => {
+  const { store, storage } = storageFake();
+  store.set(AUTO_CONTINUE_LEASE_KEY, JSON.stringify({ stale: true }));
+  let reads = 0;
+  let writes = 0;
+  const browserStorage = {
+    get length() {
+      return store.size;
+    },
+    key(index: number) {
+      return [...store.keys()][index] ?? null;
+    },
+    getItem(key: string) {
+      reads += 1;
+      return storage.getItem(key);
+    },
+    setItem(key: string, value: string) {
+      writes += 1;
+      storage.setItem(key, value);
+    },
+    removeItem: storage.removeItem,
+  };
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: {
+      __UNSLOTH_NO_CHAT_HISTORY__: true,
+      localStorage: browserStorage,
+    },
+  });
+  try {
+    const tab = createAutoContinueTab();
+    assert.equal(await tab.claim("policy-message"), "started");
+    assert.equal(await tab.claim("policy-message"), "skipped");
+    assert.equal(store.has(AUTO_CONTINUE_LEASE_KEY), false);
+    assert.equal(reads, 0);
+    assert.equal(writes, 0);
+  } finally {
+    if (previousWindow) {
+      Object.defineProperty(globalThis, "window", previousWindow);
+    } else {
+      Reflect.deleteProperty(globalThis, "window");
+    }
+  }
+});
+
 test("storage that throws is no worse than no storage", async () => {
   // A quota-exceeded write, or a getItem that throws before it returns anything.
   const angry = {

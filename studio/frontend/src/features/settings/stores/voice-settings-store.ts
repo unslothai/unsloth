@@ -2,6 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { isTauri } from "@/lib/api-base";
+import {
+  isChatHistoryDisabled,
+  stripPersistedDictationHistory,
+} from "@/lib/chat-history-policy";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import {
@@ -166,9 +170,22 @@ export interface VoiceSettingsState {
  * quota is hit, then drops the oldest entries instead of losing the whole save.
  */
 const quotaSafeLocalStorage = {
-  getItem: (key: string) => localStorage.getItem(key),
+  getItem: (key: string) => {
+    const value = localStorage.getItem(key);
+    if (value === null) return null;
+    const safe = stripPersistedDictationHistory(value);
+    if (safe !== value) {
+      try {
+        localStorage.setItem(key, safe);
+      } catch {
+        // Hydration still consumes the scrubbed value when storage is full.
+      }
+    }
+    return safe;
+  },
   removeItem: (key: string) => localStorage.removeItem(key),
   setItem: (key: string, value: string) => {
+    value = stripPersistedDictationHistory(value);
     try {
       localStorage.setItem(key, value);
       return;
@@ -285,6 +302,7 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
       recentDictations: [],
       addRecentDictation: (text, chatId) =>
         set((state) => {
+          if (isChatHistoryDisabled()) return state;
           const trimmed = text.trim().slice(0, MAX_RECENT_DICTATION_LENGTH);
           if (!trimmed) {
             return state;
@@ -371,7 +389,9 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
                 .map((v) => v.trim().slice(0, MAX_DICTIONARY_ENTRY_LENGTH))
                 .slice(0, MAX_DICTIONARY_ENTRIES)
             : [],
-          recentDictations: normalizeRecentDictations(saved?.recentDictations),
+          recentDictations: isChatHistoryDisabled()
+            ? []
+            : normalizeRecentDictations(saved?.recentDictations),
           ttsEnabled:
             typeof saved?.ttsEnabled === "boolean" ? saved.ttsEnabled : true,
           ttsEngine:

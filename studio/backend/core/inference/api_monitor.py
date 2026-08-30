@@ -24,6 +24,7 @@ from storage.api_usage_db import (
     canonical_api_model,
     canonical_api_subject,
 )
+from utils import chat_history_policy
 
 
 logger = logging.getLogger(__name__)
@@ -302,6 +303,7 @@ class ApiMonitor:
         max_entries: int = _MAX_ENTRIES,
         *,
         enabled: bool = True,
+        capture_content: bool = True,
         terminal_callback: Optional[TerminalCallback] = None,
     ):
         self._entries: deque[ApiMonitorEntry] = deque()
@@ -311,6 +313,7 @@ class ApiMonitor:
         self._lock = threading.Lock()
         self._callback_condition = threading.Condition(self._lock)
         self._enabled = enabled
+        self._capture_content = capture_content
         self._terminal_callback = terminal_callback
         self._terminal_callback_leases: dict[str, TerminalCallback] = {}
         self._terminal_callbacks_inflight: dict[Optional[str], int] = {}
@@ -373,7 +376,7 @@ class ApiMonitor:
             method = method,
             # str(): a raw JSON body can carry any type, and a non-string breaks the UI.
             model = str(model) if model else "default",
-            prompt = _trim(prompt, _MAX_PROMPT_CHARS),
+            prompt = _trim(prompt, _MAX_PROMPT_CHARS) if self._capture_content else "",
             status = "running",
             started_at = now,
             updated_at = now,
@@ -482,6 +485,15 @@ class ApiMonitor:
             entry = self._find_locked(entry_id)
             if entry is None or entry.finished_at is not None:
                 return
+            if not self._capture_content:
+                if stamp_first_token:
+                    now = time.monotonic()
+                    if entry.first_token_monotonic is None:
+                        entry.first_token_monotonic = now
+                    if entry.first_decode_monotonic is None:
+                        entry.first_decode_monotonic = now
+                entry.updated_at = time.time()
+                return
             if separate_from_openai_tool and entry.openai_stream_last_segment_was_tool:
                 if entry.reply and not entry.reply.endswith("\n"):
                     text = "\n" + text
@@ -523,6 +535,14 @@ class ApiMonitor:
         with self._lock:
             entry = self._find_locked(entry_id)
             if entry is None or entry.finished_at is not None:
+                return
+            if not self._capture_content:
+                now = time.monotonic()
+                if entry.first_token_monotonic is None:
+                    entry.first_token_monotonic = now
+                if entry.first_decode_monotonic is None:
+                    entry.first_decode_monotonic = now
+                entry.updated_at = time.time()
                 return
             same_choice = [
                 state
@@ -676,7 +696,7 @@ class ApiMonitor:
             entry = self._find_locked(entry_id)
             if entry is None:
                 return
-            entry.reply = _trim(text, _MAX_REPLY_CHARS)
+            entry.reply = _trim(text, _MAX_REPLY_CHARS) if self._capture_content else ""
             entry.updated_at = time.time()
 
     def set_perf(
@@ -842,7 +862,7 @@ class ApiMonitor:
             if entry.finished_at is not None:
                 # Already terminal; refresh error text only.
                 if error:
-                    entry.error = _trim(error, 1000)
+                    entry.error = _trim(error, 1000) if self._capture_content else "Request failed"
                 return
             self._fail_locked(entry, error)
             notification = self._terminal_notification_locked(entry)
@@ -856,7 +876,9 @@ class ApiMonitor:
         self._settle_stop_reason_locked(entry, False)
         now = time.time()
         entry.status = "error"
-        entry.error = _trim(error, 1000)
+        entry.error = (
+            _trim(error, 1000) if self._capture_content else "Request failed" if error else ""
+        )
         entry.updated_at = now
         entry.finished_at = now
         entry.finished_monotonic = time.monotonic()
@@ -1031,4 +1053,7 @@ class ApiMonitor:
                 del self._hidden_shared[subject]
 
 
-api_monitor = ApiMonitor(enabled = not _api_monitor_disabled())
+api_monitor = ApiMonitor(
+    enabled = not _api_monitor_disabled(),
+    capture_content = not chat_history_policy.disabled(),
+)

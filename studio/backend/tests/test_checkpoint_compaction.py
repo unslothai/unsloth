@@ -1608,6 +1608,23 @@ def test_the_boundary_reader_reports_which_fitter_recorded_it(monkeypatch):
     assert llama_cpp._sticky_compaction_state(None) == (0, False)
 
 
+def test_no_history_policy_ignores_persisted_compaction_state(monkeypatch):
+    from core.inference import llama_cpp
+    from storage import studio_db
+    from utils import chat_history_policy
+
+    monkeypatch.setattr(chat_history_policy, "NO_CHAT_HISTORY", True)
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("persisted chat state must not be read")
+
+    monkeypatch.setattr(studio_db, "chat_thread_has_messages", unexpected)
+    monkeypatch.setattr(studio_db, "list_chat_messages", unexpected)
+
+    assert llama_cpp._keeps_compaction_boundary("legacy-thread") is False
+    assert llama_cpp._sticky_compaction_state("legacy-thread") == (0, False)
+
+
 def test_changing_the_extra_trim_discards_the_old_boundary(monkeypatch):
     """The "When context fills" ratio has to do something on an already-compacted chat.
 

@@ -58,6 +58,24 @@ def test_save_returns_none_when_slot_save_disabled(monkeypatch, tmp_path):
     assert backend.save_slots_for_resume() is None
 
 
+def test_no_history_disables_slot_save_and_restore(monkeypatch, tmp_path):
+    from utils import chat_history_policy
+
+    backend = _resume_backend(tmp_path)
+    monkeypatch.setattr(chat_history_policy, "NO_CHAT_HISTORY", True)
+    monkeypatch.setattr(
+        llama_cpp.httpx,
+        "post",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("no-history KV must not reach llama-server")
+        ),
+        raising = False,
+    )
+
+    assert backend.save_slots_for_resume() is None
+    backend.restore_slots_for_resume({"slots": [{"id": 0, "filename": "resume-private-slot0.bin"}]})
+
+
 def test_save_skipped_when_prompt_cache_disabled(monkeypatch, tmp_path):
     backend = _resume_backend(tmp_path)
     backend._prompt_cache_disabled = True
