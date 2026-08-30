@@ -1781,3 +1781,77 @@ def test_the_health_path_never_retries_a_failed_torch_import(monkeypatch):
     monkeypatch.setattr(hw, "TORCH_IMPORT_ERROR", None)
     monkeypatch.setattr(hw, "_torch_version_label", lambda: "2.11.0+cpu")
     assert hw._reported_torch_label() == "2.11.0+cpu"
+
+
+# ========== Round twelve ==========
+
+
+def test_an_amd_card_the_installers_decline_is_not_a_broken_install(monkeypatch):
+    """setup.sh ships a ROCm wheel only for RDNA 2 and newer.
+
+    A Polaris or RDNA 1 card is left on CPU torch on purpose, and the DRM sysfs walk
+    reports it as vendor amd like any other, so it was being counted as evidence of a
+    broken install and offered a repair that cannot make that GPU usable.
+    """
+    monkeypatch.setattr(hw, "_expected_rocm_flavor_was_chosen", lambda: False)
+    monkeypatch.setattr(hw, "_torch_reports_a_hip_runtime", lambda: False)
+
+    polaris = [{"vendor": "amd", "gfx_candidates": ["gfx803"]}]
+    assert hw._devices_that_can_establish_a_mismatch(polaris) == []
+
+    supported = [{"vendor": "amd", "gfx_candidates": ["gfx1100"]}]
+    assert hw._devices_that_can_establish_a_mismatch(supported) == supported
+
+    # A host with no ROCm userspace names no arch, and a card with no arch is kept:
+    # the reported failure was an RX 7900 XT, which this stack does support.
+    unnamed = [{"vendor": "amd"}]
+    assert hw._devices_that_can_establish_a_mismatch(unnamed) == unnamed
+
+    # Windows answers by name, through the arch the driver wrote into AdapterFamily.
+    assert hw._devices_that_can_establish_a_mismatch([{"vendor": "amd", "gfx": "gfx1201"}])
+    assert hw._devices_that_can_establish_a_mismatch([{"vendor": "amd", "gfx": "gfx900"}]) == []
+
+
+def test_a_rocm_expectation_outranks_the_arch_table(monkeypatch):
+    """If this install asked for a ROCm wheel, its absence is a fault either way."""
+    monkeypatch.setattr(hw, "_torch_reports_a_hip_runtime", lambda: False)
+    monkeypatch.setattr(hw, "_expected_rocm_flavor_was_chosen", lambda: True)
+    old = [{"vendor": "amd", "gfx_candidates": ["gfx803"]}]
+    assert hw._devices_that_can_establish_a_mismatch(old) == old
+
+    monkeypatch.setattr(hw, "_expected_rocm_flavor_was_chosen", lambda: False)
+    monkeypatch.setattr(hw, "_torch_reports_a_hip_runtime", lambda: True)
+    assert hw._devices_that_can_establish_a_mismatch(old) == old
+
+
+def test_the_supported_arch_set_matches_the_installer(monkeypatch):
+    """One table in two places drifts. setup.sh is the one that decides."""
+    import pathlib
+    import re
+
+    setup = (
+        pathlib.Path(hw.__file__).parents[3] / "setup.sh"
+    ).read_text(encoding = "utf-8")
+    block = setup[setup.index("_setup_supported_gfx_from_name()"):]
+    block = block[: block.index("esac")]
+    shipped = set(re.findall(r'_sup_gfx_out="(gfx[0-9a-f]+)"', block))
+    assert shipped, "the installer's arch table moved"
+    assert shipped == set(hw._ROCM_SUPPORTED_GFX), (
+        "the backend must decline exactly the cards the installer declines"
+    )
+
+
+def test_the_gfx_probe_answers_nothing_without_a_rocm_userspace(monkeypatch):
+    """No rocminfo and no amd-smi is the common case on the host in question."""
+
+    def _missing(*_a, **_k):
+        raise FileNotFoundError("rocminfo")
+
+    monkeypatch.setattr(hw.subprocess, "run", _missing)
+    assert hw._linux_amd_gfx_candidates() == []
+
+    class _Result:
+        stdout = "  Name:                    gfx1030\n  Name:                    gfx1030\n"
+
+    monkeypatch.setattr(hw.subprocess, "run", lambda *_a, **_k: _Result())
+    assert hw._linux_amd_gfx_candidates() == ["gfx1030"]

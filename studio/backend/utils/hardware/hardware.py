@@ -463,6 +463,9 @@ def _probe_physical_gpu_inventory() -> Dict[str, Any]:
                         # Absent when the driver wrote neither dedicated-memory value.
                         # None, not 0: an unknown capacity is not an empty card.
                         "memory_total_gb": (round(dedicated / 1024**3, 2) if dedicated else None),
+                        # The AMD driver writes AdapterFamily as AMD_NAVI44:gfx1200, so
+                        # Windows can answer the supported-family question by name.
+                        **({"gfx": record["gfx"]} if record.get("gfx") else {}),
                         "source": "directx-registry",
                     }
                 )
@@ -483,6 +486,18 @@ def _probe_physical_gpu_inventory() -> Dict[str, Any]:
             sysfs_devices = []
             unknown = True
         if sysfs_devices:
+            if any(device.get("vendor") == "amd" for device in sysfs_devices):
+                # The kernel publishes no arch, and the installers only ship a ROCm
+                # wheel for the families in _ROCM_SUPPORTED_GFX, so an older card left
+                # on CPU torch on purpose would otherwise read as a broken install.
+                # Attached to every AMD record rather than matched one-to-one: setup.sh
+                # says in as many words that the orderings of these lists are not
+                # guaranteed to agree, and a guessed pairing would label the wrong card.
+                _gfx = _linux_amd_gfx_candidates()
+                if _gfx:
+                    for device in sysfs_devices:
+                        if device.get("vendor") == "amd":
+                            device["gfx_candidates"] = _gfx
             devices.extend(sysfs_devices)
             sources.append("sysfs-drm")
 
@@ -494,6 +509,40 @@ def _probe_physical_gpu_inventory() -> Dict[str, Any]:
         # Devices found is an answer, whatever some other vendor's probe did.
         "unknown": bool(unknown and not devices),
     }
+
+
+def _linux_amd_gfx_candidates() -> list[str]:
+    """gfx targets the ROCm userspace reports for this host, sorted, or [].
+
+    rocminfo is what studio/setup.sh itself reads to pick an arch, and amd-smi is its
+    fallback there too. Neither is required to exist: a host with no ROCm userspace at
+    all reports nothing here, and the caller then keeps the card rather than guessing
+    an arch for it. Bounded and never raises; this runs inside the inventory probe,
+    which is cached and refreshed off the request path.
+    """
+    for command, pattern in (
+        (["rocminfo"], r"\bgfx[0-9a-f]+\b"),
+        (["amd-smi", "static", "--asic"], r"\bgfx[0-9a-f]+\b"),
+    ):
+        try:
+            result = subprocess.run(
+                command,
+                capture_output = True,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 10,
+                check = False,
+            )
+        except FileNotFoundError:
+            continue
+        except (OSError, subprocess.TimeoutExpired) as e:
+            logger.debug("%s could not report a gfx target: %s", command[0], e)
+            continue
+        found = {match.group(0).lower() for match in re.finditer(pattern, result.stdout or "")}
+        if found:
+            return sorted(found)
+    return []
 
 
 def _windows_live_adapter_names() -> Optional[list[str]]:
@@ -1009,9 +1058,17 @@ def _devices_that_can_establish_a_mismatch(devices: list[Dict[str, Any]]) -> lis
     # cancelling the whole classification would let a CPU wheel go unreported for a
     # card the user never masked.
     masked_off = _vendors_masked_off()
+    # A ROCm expectation, or a torch that carries a HIP runtime, settles it for every
+    # AMD card on the host: this stack asked for that wheel, so its absence is a fault
+    # whatever the arch table says.
+    rocm_expected = _expected_rocm_flavor_was_chosen() or _torch_reports_a_hip_runtime()
     keep: list[Dict[str, Any]] = []
     for device in devices:
         if device.get("vendor") in masked_off:
+            continue
+        if device.get("vendor") == "amd":
+            if rocm_expected or _amd_device_can_establish_a_mismatch(device):
+                keep.append(device)
             continue
         if device.get("vendor") != "intel":
             keep.append(device)
@@ -1019,6 +1076,70 @@ def _devices_that_can_establish_a_mismatch(devices: list[Dict[str, Any]]) -> lis
         if xpu_expected or _XPU_ADAPTER_NAME_RE.search(str(device.get("name") or "")):
             keep.append(device)
     return keep
+
+
+# The gfx targets studio/setup.sh and install.ps1 will actually install a ROCm wheel
+# for: RDNA 2, 3, 3.5 and 4. Kept in sync with _setup_supported_gfx_from_name's outputs.
+# An older AMD card (Polaris gfx803, RDNA 1 gfx101x, Vega) is left on CPU torch ON
+# PURPOSE, so counting it as evidence of a broken install offers a repair that cannot
+# make that GPU usable.
+_ROCM_SUPPORTED_GFX = frozenset(
+    {
+        "gfx1030", "gfx1032", "gfx1034",
+        "gfx1100", "gfx1101", "gfx1102", "gfx1103",
+        "gfx1150", "gfx1151", "gfx1152",
+        "gfx1200", "gfx1201",
+    }
+)
+
+
+def _expected_rocm_flavor_was_chosen() -> bool:
+    """Whether this install selected a ROCm wheel, by pin or by recorded flavor."""
+    for var in ("UNSLOTH_TORCH_INDEX_FAMILY", "UNSLOTH_TORCH_INDEX_URL"):
+        leaf = _torch_index_leaf(os.environ.get(var) or "")
+        if leaf.startswith("rocm") or leaf.startswith("gfx"):
+            return True
+    try:
+        path = os.path.join(sys.prefix, "unsloth_install_manifest.json")
+        with open(path, encoding = "utf-8") as fh:
+            recorded = json.load(fh).get("expected_torch_tag")
+    except (OSError, ValueError, AttributeError):
+        return False
+    return isinstance(recorded, str) and recorded.strip().lower().startswith("rocm")
+
+
+def _torch_reports_a_hip_runtime() -> bool:
+    """Whether the installed torch is a ROCm build, however unusable it currently is."""
+    if TORCH_IMPORT_ERROR is not None:
+        return "+rocm" in _installed_torch_label_on_disk() or bool(
+            _installed_torch_markers_on_disk()["hip"]
+        )
+    try:
+        import torch
+        if "+rocm" in str(getattr(torch, "__version__", "")).lower():
+            return True
+        return getattr(getattr(torch, "version", None), "hip", None) is not None
+    except Exception:
+        return False
+
+
+def _amd_device_can_establish_a_mismatch(device: Dict[str, Any]) -> bool:
+    """Whether this AMD adapter is one the installers would have given a ROCm wheel.
+
+    A stack that deliberately declines to support a card cannot then call the CPU wheel
+    beside it a fault. The arch is consulted only when something could name it: the DRM
+    sysfs walk publishes no name, so a host with no ROCm userspace at all reports no
+    candidates and stays counted, which is the conservative direction and the shape the
+    original report had (an RX 7900 XT, which IS supported).
+    """
+    candidates = [
+        str(gfx).lower()
+        for gfx in (device.get("gfx_candidates") or ([device.get("gfx")] if device.get("gfx") else []))
+        if gfx
+    ]
+    if not candidates:
+        return True
+    return any(gfx in _ROCM_SUPPORTED_GFX for gfx in candidates)
 
 
 def _expected_xpu_flavor_was_chosen() -> bool:
