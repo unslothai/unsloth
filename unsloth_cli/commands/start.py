@@ -261,9 +261,8 @@ _TOOL_CALL_NUDGING_OPTION = typer.Option(
     None,
     "--enable-tool-call-nudging/--disable-tool-call-nudging",
     rich_help_panel = _PANEL_SERVER,
-    help = "Allow nudge retries when a tool-enabled model stops after promising to act, or a "
-    "passthrough tool signal can't be healed. On by default; when the flag is omitted an "
-    "inherited UNSLOTH_TOOL_CALL_NUDGE is kept, and an explicit request value wins.",
+    help = "Retry once with a nudge when a non-streaming passthrough tool call can't be healed. "
+    "On by default; when the flag is omitted an inherited UNSLOTH_TOOL_CALL_NUDGE is kept.",
 )
 _REASONING_OPTION = typer.Option(
     None,

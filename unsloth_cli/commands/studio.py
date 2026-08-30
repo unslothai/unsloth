@@ -2386,9 +2386,9 @@ def run(
         "--enable-tool-call-nudging/--disable-tool-call-nudging",
         rich_help_panel = _RUN_PANEL_TOOLS,
         help = (
-            "Allow nudge retries when a tool-enabled model stops after promising to act, "
-            "or when a passthrough tool signal cannot be repaired. Default: on. This sets "
-            "the process default; an explicit request value wins."
+            "On the non-streaming client-tool passthrough, retry once with a short "
+            "nudge when the model emitted a tool signal that healing could not repair. "
+            "Default: on. No effect on streaming requests or the server-side agentic loop."
         ),
     ),
     temperature: Optional[float] = typer.Option(
