@@ -7761,9 +7761,7 @@ class LlamaCppBackend:
             return True
         wanted = set(gpu_indices) if gpu_indices is not None else None
         selected = [r for r in rows if wanted is None or r["index"] in wanted]
-        return not selected or any(
-            not r.get("type_known", True) or r["is_igpu"] for r in selected
-        )
+        return not selected or any(not r.get("type_known", True) or r["is_igpu"] for r in selected)
 
     def _weights_in_host_memory(
         self,
@@ -18227,9 +18225,7 @@ class LlamaCppBackend:
                     # failed inventory or type lookup stays unknown for the later probe.
                     if is_vulkan_backend:
                         _shared_gpu_ids = (
-                            _known_vulkan_igpus.intersection(
-                                idx for idx, _free in _detected_gpus
-                            )
+                            _known_vulkan_igpus.intersection(idx for idx, _free in _detected_gpus)
                             if _known_vulkan_igpus is not None
                             else None
                         )
@@ -22569,9 +22565,7 @@ class LlamaCppBackend:
                     if _cpu_pageable_note:
                         _replay_pageable_override = _cpu_pageable_note
                     _cpu_pageable_note = _cpu_pageable_note or _replay_pageable_override
-                    _fallback_requested_load_mode = (
-                        None if _cpu_pageable_note else load_mode
-                    )
+                    _fallback_requested_load_mode = None if _cpu_pageable_note else load_mode
 
                     fallback_managed, fallback_args = apply_model_memory_policy(
                         replay[1:],

@@ -224,9 +224,7 @@ def test_discrete_gpu_free_is_untouched_and_total_passed_through(tmp_path):
 
 def test_failed_device_type_lookup_keeps_the_snapshot_unknown(tmp_path):
     binary = _make_vulkan_install(tmp_path)
-    rows = [
-        _row(0, 6 * GIB, is_igpu = 0, total_bytes = 24 * GIB, type_known = 0)
-    ]
+    rows = [_row(0, 6 * GIB, is_igpu = 0, total_bytes = 24 * GIB, type_known = 0)]
     with _mock_probe(rows):
         gpus = LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
     assert gpus == [(0, 6 * 1024, 24 * 1024)]

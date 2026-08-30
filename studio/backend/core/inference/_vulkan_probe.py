@@ -26,9 +26,7 @@ import sys
 _GGML_BACKEND_DEVICE_TYPE_IGPU = 2
 
 
-def _igpu_flags_and_names(
-    base, lib, count: int
-) -> tuple[list[bool], list[str], list[bool]]:
+def _igpu_flags_and_names(base, lib, count: int) -> tuple[list[bool], list[str], list[bool]]:
     """Per-device integrated-GPU flags and descriptions via ggml's backend registry.
 
     The Vulkan reg enumerates devices in the same order as
