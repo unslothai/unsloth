@@ -321,6 +321,48 @@ def test_lease_settings_come_from_the_environment(monkeypatch):
     assert ChatGenerationLeaseSweeper(app)._timeout == runs_mod._LEASE_TIMEOUT_SECONDS
 
 
+@pytest.mark.parametrize("raw", ["inf", "-inf", "nan", "Infinity", "NaN"])
+def test_a_non_finite_timeout_falls_back_to_the_default(monkeypatch, raw):
+    """float() accepts these, and each then breaks the sweep in its own quiet way.
+
+    inf survives every comparison and only fails at int(timeout * 1000) inside the sweep,
+    once per pass, forever. nan loses to nothing, so max(0.0, nan) returns 0.0 and the
+    sweeper reports itself disabled. Both leave stuck runs unreaped, so neither may parse.
+    """
+    monkeypatch.setenv("UNSLOTH_STUDIO_CHAT_RUN_LEASE_TIMEOUT_S", raw)
+    sweeper = ChatGenerationLeaseSweeper(SimpleNamespace(state = SimpleNamespace()))
+    assert sweeper._timeout == runs_mod._LEASE_TIMEOUT_SECONDS
+    assert sweeper.enabled is True
+
+
+@pytest.mark.asyncio
+async def test_an_infinite_timeout_still_reaps_a_stuck_run(monkeypatch, clock):
+    """The end state the parser protects: int(inf * 1000) would raise on every sweep."""
+    _running_run()
+    clock.advance_ms(600 * _MINUTE_MS)
+    monkeypatch.setenv("UNSLOTH_STUDIO_CHAT_RUN_LEASE_TIMEOUT_S", "inf")
+    sweeper = ChatGenerationLeaseSweeper(SimpleNamespace(state = SimpleNamespace()))
+    assert await sweeper.sweep_once() == ["run-1"]
+    assert runs_db.get_run("run-1", "alice")["finishReason"] == "interrupted"
+
+
+@pytest.mark.asyncio
+async def test_a_nan_timeout_does_not_silently_disable_reaping(monkeypatch, clock):
+    _running_run()
+    clock.advance_ms(600 * _MINUTE_MS)
+    monkeypatch.setenv("UNSLOTH_STUDIO_CHAT_RUN_LEASE_TIMEOUT_S", "nan")
+    sweeper = ChatGenerationLeaseSweeper(SimpleNamespace(state = SimpleNamespace()))
+    assert sweeper.enabled is True
+    assert await sweeper.sweep_once() == ["run-1"]
+
+
+def test_a_non_finite_interval_falls_back_to_the_default(monkeypatch):
+    """An inf interval would park the sweep loop until shutdown; nan sleeps forever too."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_CHAT_RUN_LEASE_SWEEP_INTERVAL_S", "inf")
+    sweeper = ChatGenerationLeaseSweeper(SimpleNamespace(state = SimpleNamespace()))
+    assert sweeper._interval == runs_mod._LEASE_SWEEP_INTERVAL_SECONDS
+
+
 # Boot reconciliation and shutdown
 
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import math
 import os
 import threading
 import time
@@ -112,10 +113,27 @@ async def _close_iterator(iterator: AsyncIterator[Any] | None) -> None:
 
 
 def _env_seconds(name: str, default: float) -> float:
+    """Seconds from the environment, falling back on anything unusable.
+
+    Non-finite values parse cleanly and then fail in two different silent ways, so they
+    are rejected here rather than downstream: `inf` reaches `int(timeout * 1000)` and
+    raises OverflowError on every sweep, and `nan` slips through `max(0.0, nan)`, which
+    returns 0.0 because the comparison is false, quietly disabling reaping altogether.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
     try:
-        return float(os.environ.get(name, str(default)))
+        value = float(raw)
     except ValueError:
         return default
+    if not math.isfinite(value):
+        logger.warning(
+            "chat_generation_lease_env_ignored", variable = name, value = raw,
+            reason = "not a finite number",
+        )
+        return default
+    return value
 
 
 class ChatGenerationLeaseSweeper:
