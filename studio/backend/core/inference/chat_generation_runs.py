@@ -245,6 +245,11 @@ def start_lease_sweeper(app: Any) -> ChatGenerationLeaseSweeper | None:
     return sweeper
 
 
+# The admission stream's own comment, matched rather than imported to keep this module
+# free of a routes import at module scope. Pinned by a test against the constant there.
+_ADMISSION_WAIT_MARKER = ": admission-wait"
+
+
 def _renew_interval_seconds() -> float:
     """How often a lease may be renewed by something other than streamed output.
 
@@ -257,7 +262,11 @@ def _renew_interval_seconds() -> float:
     lease = _env_seconds("UNSLOTH_STUDIO_CHAT_RUN_LEASE_TIMEOUT_S", _LEASE_TIMEOUT_SECONDS)
     if lease <= 0.0:  # sweeping disabled, so cadence only controls write volume
         return 30.0
-    return max(1.0, min(30.0, lease / 4.0))
+    # The floor has to stay UNDER the lease, not at a round number: a one second floor
+    # against a one second lease schedules the first renewal no earlier than expiry, and
+    # the sweeper may also be running at one second. A quarter of the lease throughout
+    # keeps three renewals inside every window however short it is configured.
+    return min(30.0, max(0.25, lease / 4.0))
 
 
 class ChatGenerationSupervisor:
@@ -575,15 +584,23 @@ class ChatGenerationSupervisor:
                     break
                 next_raw_task = asyncio.create_task(iterator.__anext__())
                 text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
-                # Bytes on the wire are progress even when they decode to no event. A run
-                # queued behind another generation waits in the admission stream, which
-                # emits `: admission-wait` comments that _SSEDecoder drops, so nothing
-                # renewed the lease and a normally functioning queue got the run reaped.
-                # Rate limited because chunk traffic already renews through append_events.
-                now_s = time.monotonic()
-                if now_s - last_keepalive >= _renew_interval_seconds():
-                    last_keepalive = now_s
-                    await self._try_touch_progress(run_id)
+                # Admission-wait comments are progress; plain keep-alives are not.
+                #
+                # A run queued behind another generation waits in the admission stream,
+                # which emits `: admission-wait` while the server is healthy and simply
+                # busy, and _SSEDecoder drops those, so nothing renewed the lease and a
+                # normally functioning queue got its own runs reaped.
+                #
+                # `: keep-alive` is the opposite signal. routes/inference.py emits it when
+                # the generator has produced NOTHING for a stall interval, which is exactly
+                # the wedge this file exists to reap. Renewing on any byte would keep a
+                # wedged run alive forever. Rate limited because chunk traffic already
+                # renews through append_events.
+                if _ADMISSION_WAIT_MARKER in text:
+                    now_s = time.monotonic()
+                    if now_s - last_keepalive >= _renew_interval_seconds():
+                        last_keepalive = now_s
+                        await self._try_touch_progress(run_id)
                 for encoded in decoder.feed(text):
                     if encoded == "[DONE]":
                         saw_done = True

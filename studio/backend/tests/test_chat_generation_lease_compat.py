@@ -535,9 +535,9 @@ def test_the_heartbeat_renews_the_lease_while_preparation_runs(clock, monkeypatc
             await task
 
     asyncio.run(_run())
-    assert (
-        runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == []
-    ), "a preparation longer than the lease must not be reaped"
+    assert runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == [], (
+        "a preparation longer than the lease must not be reaped"
+    )
 
 
 def test_the_heartbeat_is_bounded_so_a_wedged_load_still_ages_out(clock, monkeypatch):
@@ -630,9 +630,9 @@ def test_one_failed_renewal_does_not_disable_the_rest(clock, monkeypatch):
     monkeypatch.setattr(runs_mod.asyncio, "sleep", _sleep)
     asyncio.run(sup._renew_lease_while_preparing("run-1"))
     assert calls["n"] == 40, "the loop must continue past a failed renewal"
-    assert (
-        runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == []
-    ), "one lost stamp must not cost the run its lease"
+    assert runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == [], (
+        "one lost stamp must not cost the run its lease"
+    )
 
 
 def test_a_contended_keepalive_renewal_does_not_abort_the_generation(clock, monkeypatch):
@@ -689,6 +689,40 @@ def test_the_sweeper_survives_a_second_lifespan_on_a_new_event_loop(clock):
     asyncio.run(_lifespan("second"))  # a brand new loop
 
     assert alive["first"], "the first lifespan's sweeper should be waiting, not finished"
-    assert alive[
-        "second"
-    ], "the second lifespan's sweeper returned immediately, so reaping is off for it"
+    assert alive["second"], (
+        "the second lifespan's sweeper returned immediately, so reaping is off for it"
+    )
+
+
+def test_the_admission_marker_matches_the_route_that_emits_it():
+    """Matched as a literal rather than imported, so pin it against the real constant."""
+    from routes import inference as inference_route
+
+    assert inference_route._OPENAI_ADMISSION_SSE_WAIT.startswith(runs_mod._ADMISSION_WAIT_MARKER)
+    # And it must NOT match the stall keep-alive, which is the opposite signal.
+    assert not inference_route._OPENAI_PASSTHROUGH_SSE_KEEPALIVE.startswith(
+        runs_mod._ADMISSION_WAIT_MARKER
+    )
+
+
+def test_only_admission_waits_renew_the_lease_from_the_stream():
+    """routes/inference.py emits `: keep-alive` when the generator has produced NOTHING
+    for a stall interval, which is the wedge this file exists to reap. Renewing on any
+    byte would keep such a run alive forever."""
+    import inspect
+
+    source = inspect.getsource(runs_mod.ChatGenerationSupervisor._produce)
+    guard = source.index("_ADMISSION_WAIT_MARKER in text")
+    renew = source.index("_try_touch_progress", guard)
+    # The renewal must sit inside the marker guard, not beside it.
+    between = source[guard:renew]
+    assert between.count("\n") < 8, "the renewal drifted outside the admission guard"
+
+
+def test_the_renewal_interval_stays_under_even_a_one_second_lease(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_CHAT_RUN_LEASE_TIMEOUT_S", "1")
+    assert runs_mod._renew_interval_seconds() < 1.0
+    monkeypatch.setenv("UNSLOTH_STUDIO_CHAT_RUN_LEASE_TIMEOUT_S", "4")
+    assert runs_mod._renew_interval_seconds() < 4.0
+    monkeypatch.setenv("UNSLOTH_STUDIO_CHAT_RUN_LEASE_TIMEOUT_S", "1200")
+    assert runs_mod._renew_interval_seconds() == 30.0
