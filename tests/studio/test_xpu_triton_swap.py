@@ -545,7 +545,7 @@ def test_the_swap_runs_after_every_torch_migration():
         ):
             assert calls.index(migration) < calls.index("_ensure_xpu_triton"), (migration, calls)
     src = STACK.read_text(encoding = "utf-8")
-    windows = src[src.index("# 13w."): src.index("# 14.")]
+    windows = src[src.index("# 13w.") : src.index("# 14.")]
     assert windows.index("_ensure_expected_torch_flavor") < windows.index(
         "_ensure_xpu_triton"
     ), "the Windows swap must follow that platform's torch migration too"

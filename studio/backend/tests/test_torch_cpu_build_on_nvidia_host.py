@@ -1342,9 +1342,7 @@ def test_the_recovery_actually_starts_a_detection_pass(monkeypatch):
     monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CPU)
     monkeypatch.setitem(sys.modules, "torch", _fake_torch("cuda"))
     monkeypatch.setattr(hw, "invalidate_detection", lambda: calls.append("epoch") or 1)
-    monkeypatch.setattr(
-        hw, "_discard_detection_locked", lambda: calls.append("discard")
-    )
+    monkeypatch.setattr(hw, "_discard_detection_locked", lambda: calls.append("discard"))
     monkeypatch.setattr(hw, "start_background_detection", lambda: calls.append("start"))
 
     hw.current_chat_only_verdict()
@@ -1411,7 +1409,5 @@ def test_the_disk_label_reader_needs_no_interpreter(tmp_path):
     with patch.object(hw.importlib.util, "find_spec", return_value = None):
         assert hw._installed_torch_label_on_disk() == ""
 
-    with patch.object(
-        hw.importlib.util, "find_spec", side_effect = ValueError("boom")
-    ):
+    with patch.object(hw.importlib.util, "find_spec", side_effect = ValueError("boom")):
         assert hw._installed_torch_label_on_disk() == ""
