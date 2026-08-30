@@ -298,16 +298,32 @@ RE_FS_ENUM = re.compile(
     re.DOTALL,
 )
 
-# Reverse shell / bind shell patterns
+# Reverse shell / bind shell patterns. Every alternative here names two
+# co-occurring signals, or one that has no benign use at all.
 RE_REVERSE_SHELL = re.compile(
     r"\bsocket\b.*\bconnect\b.*\bsubprocess\b"
     r"|\bsocket\b.*\bconnect\b.*\b(?:sh|bash|cmd)\b"
     r"|\b/bin/(?:sh|bash)\b.*\bsocket\b"
     r"|\bpty\s*\.\s*spawn\b"
-    r"|\bos\s*\.\s*dup2\s*\("
     r"|\bwebbrowser\s*\.\s*open\b.*\bdata:\b",  # data: URI abuse
     re.DOTALL,
 )
+
+# `os.dup2(` used to sit in RE_REVERSE_SHELL as a bare alternative, the only
+# single-token one there, and it was wrong: dup2 is the ordinary way to point a
+# file descriptor at a file, so it fired on capture helpers and redirect
+# plumbing. Ten of the nineteen reverse-shell entries in the committed baseline
+# are that shape, with no socket anywhere in the file (click/testing.py,
+# numba/tests/support.py, rich/console.py, torch elastic redirects.py,
+# sentencepiece) and not one of them is a true positive. triton 3.8.0 shipped an
+# eleventh in _internal_testing.py, which reddened main.
+#
+# A reverse shell dup2s onto a SOCKET, so the socket is the half that carries
+# the meaning; requiring it puts this alternative in line with the three above
+# that already pair two signals. A real payload keeps matching: it has to name
+# socket to obtain the descriptor, and the first alternative catches it besides.
+RE_FD_DUP = re.compile(r"\bos\s*\.\s*dup2\s*\(")
+RE_SOCKET_USE = re.compile(r"\bsocket\b")
 
 # Process injection / code loading from remote
 RE_REMOTE_CODE = re.compile(
@@ -730,7 +746,9 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
     has_anti = bool(RE_ANTI_ANALYSIS.search(content))
     has_dns_exfil = bool(RE_DNS_EXFIL.search(content))
     has_fs_enum = bool(RE_FS_ENUM.search(content))
-    has_rev_shell = bool(RE_REVERSE_SHELL.search(content))
+    # dup2 counts only alongside a socket; see RE_FD_DUP.
+    has_socket_dup = bool(RE_FD_DUP.search(content)) and bool(RE_SOCKET_USE.search(content))
+    has_rev_shell = bool(RE_REVERSE_SHELL.search(content)) or has_socket_dup
     has_remote_code = bool(RE_REMOTE_CODE.search(content))
     has_crypto_theft = bool(RE_CRYPTO_THEFT.search(content))
     has_openssl_cli = bool(RE_OPENSSL_CLI.search(content))
@@ -822,13 +840,22 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
 
     # Reverse / bind shell
     if has_rev_shell:
+        # A socket-backed dup2 records both halves, so the baseline entry
+        # reopens when either the descriptor handling or the socket changes.
+        evidence = _extract_evidence(content, RE_REVERSE_SHELL)
+        if has_socket_dup:
+            dup_evidence = (
+                f"Dup: {_extract_evidence(content, RE_FD_DUP)}\n"
+                f"Socket: {_extract_evidence(content, RE_SOCKET_USE)}"
+            )
+            evidence = f"{evidence}\n{dup_evidence}" if evidence else dup_evidence
         findings.append(
             Finding(
                 CRITICAL,
                 package,
                 filename,
                 "Reverse shell / bind shell pattern",
-                _extract_evidence(content, RE_REVERSE_SHELL),
+                evidence,
             )
         )
 

