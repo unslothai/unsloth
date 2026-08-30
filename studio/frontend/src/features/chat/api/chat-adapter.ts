@@ -111,6 +111,7 @@ import {
   ToolCallArgumentBoundaries,
   bindStreamedToolCallBackendId,
   findStreamedToolCallPartIndex,
+  findUnnamedToolCallPartIndex,
   mintStreamedToolCallId,
   resolveToolCallPartId,
   toolCallArgumentSegments,
@@ -6995,11 +6996,19 @@ export function createOpenAIStreamAdapter(
                       ? toolCallArgumentSegments(scan.text(), cuts)
                       : [];
                   // A name after a finished named call opens the next call.
+                  // A name with no id belongs to the first call in this slot
+                  // still waiting for one: a split leaves several unnamed when
+                  // the arguments arrived first, and the newest is the last.
+                  const namedIndex =
+                    nameFragment && !stablePartId
+                      ? findUnnamedToolCallPartIndex(toolCallParts, idx)
+                      : -1;
                   const namedNextCall =
                     !stablePartId &&
                     !argsFragment &&
                     Boolean(nameFragment) &&
                     Boolean(matched?.toolName) &&
+                    namedIndex === -1 &&
                     // A whole name resent as it grows is the same call. A second
                     // call on that tool arrives with its own arguments and splits
                     // at their boundary.
@@ -7077,7 +7086,10 @@ export function createOpenAIStreamAdapter(
 
                   if (existing) {
                     const prevName = existing.toolName ?? "";
-                    const nextName = call.function?.name ?? prevName;
+                    const nextName =
+                      namedIndex === -1 || namedIndex === existingIndex
+                        ? (call.function?.name ?? prevName)
+                        : prevName;
                     const merged = (existing.argsText ?? "") + argsFragment;
                     let parsedArgs: ToolCallMessagePart["args"] =
                       existing.args ?? {};
@@ -7121,6 +7133,15 @@ export function createOpenAIStreamAdapter(
                       ...(idx !== undefined ? { _delta_index: idx } : {}),
                     };
                     toolCallParts[existingIndex] = updated;
+                    if (namedIndex !== -1 && namedIndex !== existingIndex) {
+                      const waiting = toolCallParts[
+                        namedIndex
+                      ] as PositionedToolCallPart;
+                      toolCallParts[namedIndex] = {
+                        ...waiting,
+                        toolName: nameFragment,
+                      };
+                    }
                     if (stablePartId && stablePartId !== existing.toolCallId) {
                       // Move the scan and the split-tail marker with the renamed
                       // part, else the cleanup below no longer finds its card.

@@ -27,6 +27,7 @@ export function bindStreamedToolCallBackendId(
 
 export interface StreamedToolCallPart {
   toolCallId: string;
+  toolName?: string;
   argsText?: string;
   _delta_index?: number;
   _has_stable_id?: boolean;
@@ -154,6 +155,22 @@ export function mintStreamedToolCallId(
   let next = 0;
   while (taken.has(`tool_call_${next}`)) next += 1;
   return `tool_call_${next}`;
+}
+
+/**
+ * First part in `deltaIndex`'s slot still waiting for a name, or -1. Arguments
+ * can arrive before their names, and a split then leaves several such calls.
+ */
+export function findUnnamedToolCallPartIndex(
+  parts: readonly StreamedToolCallPart[],
+  deltaIndex: number | undefined,
+): number {
+  if (deltaIndex === undefined) return -1;
+  for (let i = 0; i < parts.length; i += 1) {
+    const part = parts[i];
+    if (part._delta_index === deltaIndex && !part.toolName) return i;
+  }
+  return -1;
 }
 
 /**

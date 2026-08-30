@@ -10,6 +10,7 @@ import {
   ToolCallArgumentBoundaries,
   bindStreamedToolCallBackendId,
   findStreamedToolCallPartIndex,
+  findUnnamedToolCallPartIndex,
   mintStreamedToolCallId,
   resolveToolCallPartId,
   toolCallArgumentSegments,
@@ -105,11 +106,16 @@ function accumulate(
       cuts.length > 0 && !fragment.id
         ? toolCallArgumentSegments(scan.text(), cuts)
         : [];
+    const namedIndex =
+      name && !fragment.id
+        ? findUnnamedToolCallPartIndex(parts, fragment.index)
+        : -1;
     const namedNextCall =
       !fragment.id &&
       !fragment.arguments &&
       Boolean(name) &&
       Boolean(matched?.toolName) &&
+      namedIndex === -1 &&
       !name.startsWith(matched?.toolName ?? "") &&
       scan.holdsOneCompleteDocument();
 
@@ -158,9 +164,15 @@ function accumulate(
         ...(fragment.id
           ? { toolCallId: fragment.id, _has_stable_id: true }
           : {}),
-        toolName: fragment.name ?? matched.toolName,
+        toolName:
+          namedIndex === -1 || namedIndex === target
+            ? (fragment.name ?? matched.toolName)
+            : matched.toolName,
         argsText: matched.argsText + fragment.arguments,
       };
+      if (namedIndex !== -1 && namedIndex !== target) {
+        parts[namedIndex] = { ...parts[namedIndex], toolName: name };
+      }
       if (fragment.id && fragment.id !== matched.toolCallId) {
         scans.delete(matched.toolCallId);
         scans.set(fragment.id, scan);
@@ -740,5 +752,25 @@ test("a growing name after early arguments still names one call", () => {
   assert.deepEqual(
     parts.map((part) => [part.toolName, part.argsText]),
     [["web_search", '{"query":"first"}']],
+  );
+});
+
+// Both documents arrive before either name, so the split leaves two calls
+// waiting. The newest slot is the last of them, so routing the names there put
+// the first name on the second call, dropped the unnamed first, and forked an
+// empty third on the name after it.
+test("late names fill the calls a split left waiting, in order", () => {
+  const parts = accumulate([
+    { index: 0, arguments: '{"a":1}{"b":2}' },
+    { index: 0, name: "web_search", arguments: "" },
+    { index: 0, name: "web_fetch", arguments: "" },
+  ]);
+
+  assert.deepEqual(
+    parts.map((part) => [part.toolName, part.argsText]),
+    [
+      ["web_search", '{"a":1}'],
+      ["web_fetch", '{"b":2}'],
+    ],
   );
 });

@@ -631,8 +631,10 @@ class _Turn:
             elif (
                 name_fragment
                 and not (isinstance(call_id, str) and call_id)
-                # An unnamed call claims the next name itself.
+                # An unnamed call claims the next name itself, and a split can
+                # leave several waiting: the name belongs to one of those.
                 and current["function"]["name"]
+                and self._unnamed_key(index) is None
                 # A whole name resent as it grows is the same call, read exactly
                 # the way the merge below reads it. A second call on that tool
                 # arrives with its own arguments and splits at their boundary.
@@ -678,6 +680,14 @@ class _Turn:
                 # Apply per-call metadata after splitting so it follows the new call.
                 current["extra_content"] = {**current.get("extra_content", {}), **extra}
             if name_fragment:
+                # Arguments can arrive before their names, and a split then leaves
+                # several calls here unnamed. The newest slot is the last of them,
+                # so route the name to the first one still waiting instead.
+                named = current
+                if not (isinstance(call_id, str) and call_id):
+                    waiting = self._unnamed_key(index)
+                    if waiting is not None:
+                        named = self.by_index[waiting]
                 # Two provider dialects, and picking either one alone breaks the
                 # other. llama-server re-sends the whole name as it grows ("web"
                 # then "web_search"), so appending yields "webweb_search".
@@ -686,11 +696,11 @@ class _Turn:
                 # check and the call silently never runs. A fragment that already
                 # starts with what we have is the whole name resent; anything
                 # else continues it.
-                accumulated = current["function"]["name"]
+                accumulated = named["function"]["name"]
                 if name_fragment.startswith(accumulated):
-                    current["function"]["name"] = name_fragment
+                    named["function"]["name"] = name_fragment
                 else:
-                    current["function"]["name"] = accumulated + name_fragment
+                    named["function"]["name"] = accumulated + name_fragment
             if argument_fragment is not None:
                 current["function"]["arguments"] += argument_fragment
 
@@ -707,6 +717,15 @@ class _Turn:
             index = key[0] if isinstance(key, tuple) else key
             call["card_id"] = _mint_streamed_tool_call_id(streamed, index)
             streamed.add(call["card_id"])
+
+    def _unnamed_key(self, index: int) -> Any:
+        """First call at ``index`` still waiting for a name, or None."""
+        for key in self.order:
+            if (key[0] if isinstance(key, tuple) else key) != index:
+                continue
+            if not self.by_index[key]["function"]["name"]:
+                return key
+        return None
 
     def withheld(self) -> list[dict[str, Any]]:
         """Split calls whose own document never closed, so ``calls`` drops them."""

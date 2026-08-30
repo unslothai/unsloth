@@ -1399,6 +1399,29 @@ def test_a_growing_name_after_early_arguments_still_names_one_call(executed):
     ]
 
 
+def test_late_names_fill_the_calls_a_split_left_waiting(executed):
+    """Both documents arrive before either name, so both calls wait for one."""
+    transport = FakeTransport(
+        [
+            [
+                _sse({"tool_calls": [{"index": 0, "function": {"arguments": '{"a":1}{"b":2}'}}]}),
+                _sse({"tool_calls": [{"index": 0, "function": {"name": "web_search"}}]}),
+                _sse({"tool_calls": [{"index": 0, "function": {"name": "web_fetch"}}]}),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    _run(transport, tools = [WEB, FETCH])
+
+    assert [(call["name"], call["arguments"]) for call in executed] == [
+        ("web_search", {"a": 1}),
+        ("web_fetch", {"b": 2}),
+    ]
+
+
 def test_a_second_call_with_the_same_name_still_splits_on_its_arguments(executed):
     """The resend guard does not merge two real calls on one tool."""
     transport = FakeTransport(
