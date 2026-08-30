@@ -42,12 +42,14 @@ def _repair():
     return _repair_tied_module_hooks
 
 
-# `init_hook` MOVES the module's tensors to the execution device, so a test
-# naming cuda:1 needs a second card to exist. "meta" is a real device on every
-# machine and accelerate handles it explicitly, so the attach is exercised for
-# real on a CI runner with no GPU at all. The integer -> "cuda:N" mapping is
-# checked separately, without attaching.
+# `init_hook` MOVES the module's tensors to the execution device, so naming a
+# CUDA device needs that card to exist -- and the CPU runner this suite also
+# runs on has none. "meta" is a real device everywhere and accelerate handles it
+# explicitly, so the attach is exercised for real with no GPU at all; "cpu"
+# stands in for a module the repair must leave alone. The integer -> "cuda:N"
+# mapping is checked separately, without attaching anything.
 FAR = "meta"
+NEAR = "cpu"
 
 
 class _Model(torch.nn.Module):
@@ -73,7 +75,7 @@ def _hooked(model):
 
 def test_a_tied_module_the_map_placed_gets_its_hook_back():
     """The measured failure: in the map, on the far card, no hook."""
-    model = _Model({"embed_tokens": FAR, "lm_head": FAR, "layer": 0}, hooked = ["layer"])
+    model = _Model({"embed_tokens": FAR, "lm_head": FAR, "layer": NEAR})
     assert not hasattr(model.embed_tokens, "_hf_hook"), "fixture is not the broken state"
 
     repaired = _repair()(model)
@@ -121,20 +123,19 @@ def test_a_failed_attach_is_reported_not_swallowed():
     The original crash stands and its reason is hidden. `init_hook` moves the
     module's tensors, so a map naming a device this machine lacks lands here.
     """
-    model = _Model({"embed_tokens": "cuda:99", "layer": 0})
+    model = _Model({"embed_tokens": "cuda:99", "layer": NEAR})
     with pytest.warns(RuntimeWarning, match = "could not re-attach"):
         repaired = _repair()(model)
-    assert repaired == 1, "the unattachable module was still counted as repaired"
+    assert repaired == 0, "the unattachable module was still counted as repaired"
+    assert "embed_tokens" not in _hooked(model)
 
 
 def test_a_module_that_already_has_a_hook_is_left_alone():
     """Double-hooking a module moves its inputs twice per forward."""
-    model = _Model({"embed_tokens": FAR, "layer": 0}, hooked = ["embed_tokens"])
+    model = _Model({"embed_tokens": FAR, "layer": NEAR}, hooked = ["embed_tokens"])
     original = model.embed_tokens._hf_hook
 
-    # `layer` is unhooked and mapped, so it is repaired; `embed_tokens` is not
-    # touched a second time, which is the claim here.
-    assert _repair()(model) == 1
+    assert _repair()(model) == 0, "nothing else here is repairable"
     assert model.embed_tokens._hf_hook is original, (
         "an already-dispatched module was hooked again, so its inputs move "
         "twice on every forward"
@@ -143,7 +144,9 @@ def test_a_module_that_already_has_a_hook_is_left_alone():
 
 def test_a_single_device_map_is_left_completely_alone():
     """The overwhelmingly common case must cost nothing and change nothing."""
-    model = _Model({"embed_tokens": 0, "lm_head": 0, "layer": 0})
+    # Entries that WOULD attach, so dropping the early return changes the
+    # count. A map of unattachable devices passes either way and proves nothing.
+    model = _Model({"embed_tokens": FAR, "lm_head": FAR, "layer": FAR})
     assert _repair()(model) == 0
     assert _hooked(model) == set(), "hooks were attached on a single-device load"
 
@@ -157,7 +160,7 @@ def test_no_map_at_all_is_not_an_error():
 
 def test_a_cpu_or_disk_entry_is_never_hooked_here():
     """Offload is a different mechanism with hooks of its own."""
-    model = _Model({"embed_tokens": "cpu", "lm_head": "disk", "layer": 0})
+    model = _Model({"embed_tokens": "cpu", "lm_head": "disk", "layer": FAR})
     assert _repair()(model) == 1, "only `layer` is repairable here"
     assert "embed_tokens" not in _hooked(model) and "lm_head" not in _hooked(model), (
         "an offloaded module was given a dispatch hook, which fights the "
@@ -167,8 +170,8 @@ def test_a_cpu_or_disk_entry_is_never_hooked_here():
 
 def test_a_name_the_model_does_not_have_is_skipped_not_invented():
     """A map naming a module this build lacks must not raise during a load."""
-    model = _Model({"embed_tokens": FAR, "does.not.exist": FAR, "layer": 0})
-    assert _repair()(model) == 2, "the two real names were not both repaired"
+    model = _Model({"embed_tokens": FAR, "does.not.exist": FAR, "layer": NEAR})
+    assert _repair()(model) == 1, "the one real far-device name was not repaired"
     assert "embed_tokens" in _hooked(model)
 
 
