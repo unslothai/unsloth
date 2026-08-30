@@ -7444,7 +7444,7 @@ def record_orphaned_project(
     workspace: str,
     pending_delete: bool = False,
     root_path: "str | None" = None,
-) -> None:
+) -> bool:
     """Remember where a deleted project's kept workspace lives.
 
     Written whether or not files were to be deleted: the row that knew the path
@@ -7453,8 +7453,8 @@ def record_orphaned_project(
     reachable" from "the user asked for it, finish when nothing is using it".
     """
     if not project_id or not workspace:
-        return
-    _write_orphan_record(
+        return False
+    return _write_orphan_record(
         _ORPHAN_PROJECT,
         project_id,
         {
@@ -7467,18 +7467,56 @@ def record_orphaned_project(
     )
 
 
-def _write_orphan_record(kind: str, record_id: str, record: dict) -> None:
+def preserve_orphaned_project(
+    project_id: str,
+    workspace: "str | None",
+    root_path: "str | None" = None,
+) -> bool:
+    """Mark the current workspace kept without losing an older workspace record."""
+    if not workspace:
+        return True
+    existing = _read_orphan_record(_ORPHAN_PROJECT, project_id)
+    existing_path = os.path.join(
+        _orphan_records_dir(), _orphan_record_name(_ORPHAN_PROJECT, project_id)
+    )
+    if existing is None and os.path.lexists(existing_path):
+        return False
+    if existing and _recorded_workspace_remains(existing["path"], existing.get("rootPath") or None):
+        current_paths = {os.path.realpath(path) for path in (workspace, root_path) if path}
+        recorded_paths = {
+            os.path.realpath(path) for path in (existing["path"], existing.get("rootPath")) if path
+        }
+        if current_paths.isdisjoint(recorded_paths):
+            return False
+    return record_orphaned_project(project_id, workspace, False, root_path)
+
+
+def _write_orphan_record(kind: str, record_id: str, record: dict) -> bool:
     """One small JSON file per kept folder, under its kind and id."""
     import json as _json
 
     record = {**record, "id": record_id, "chat": kind == _ORPHAN_CHAT}
+    temporary = None
     try:
-        os.makedirs(_orphan_records_dir(), exist_ok = True)
+        directory = _orphan_records_dir()
+        os.makedirs(directory, exist_ok = True)
         name = _orphan_record_name(kind, record_id)
-        with open(os.path.join(_orphan_records_dir(), name), "w", encoding = "utf-8") as fh:
+        fd, temporary = tempfile.mkstemp(prefix = f".{name}.", dir = directory)
+        with os.fdopen(fd, "w", encoding = "utf-8") as fh:
             fh.write(_json.dumps(record))
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temporary, os.path.join(directory, name))
+        return True
     except OSError:
         logger.warning("Could not record kept folder for %s", record_id)
+        return False
+    finally:
+        if temporary:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
 
 
 def record_kept_sandbox(session_id: str) -> None:

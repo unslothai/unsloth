@@ -544,7 +544,8 @@ def list_kb_documents(kb_id: str, subject: str = Depends(get_current_subject)) -
     _require_rag()
     conn = _rag_connection()
     try:
-        _require_scope_owner("knowledge_base", kb_id, conn)
+        if chat_history_policy.disabled():
+            _require_scope_owner("knowledge_base", kb_id, conn)
         docs = [
             document if document.get("kb_id") else {**document, "kb_id": kb_id}
             for document in store.list_documents(conn, store.kb_scope(kb_id))

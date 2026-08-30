@@ -1556,8 +1556,39 @@ async def clear_history(
     # By id: the rows went with the threads, so nothing can look them up now.
     _cancel_research_runs(request, cleared_runs)
     _cancel_chat_generation_runs(request, cleared_chat_runs)
+    project_cleanup_incomplete = False
     if chat_history_policy.disabled():
+        from core.inference.tools import (
+            collect_orphaned_project_workspaces,
+            preserve_orphaned_project,
+        )
         from core.rag.history_cleanup import clear_non_knowledge_base_data
+
+        # Project writes are already closed by the startup policy, so this stable
+        # snapshot removes records hidden from every project route. Keep user files,
+        # matching this endpoint's default delete_files=False contract.
+        projects = await run_in_threadpool(lambda: list_chat_projects(include_archived = True))
+        # Resolve an older pending delete while live rows still protect any workspace
+        # that was recreated under the same id. Then make the current paths explicitly
+        # non-pending before their rows disappear and the later sandbox collector runs.
+        await run_in_threadpool(collect_orphaned_project_workspaces)
+        for project in projects:
+            preserved = await run_in_threadpool(
+                preserve_orphaned_project,
+                project["id"],
+                project.get("sandboxPath"),
+                project.get("rootPath"),
+            )
+            if not preserved:
+                project_cleanup_incomplete = True
+                logger.warning(
+                    "kept hidden project %s because its workspace path could not be preserved",
+                    project["id"],
+                )
+                continue
+            await run_in_threadpool(
+                lambda project_id = project["id"]: delete_chat_project(project_id, delete_files = False)
+            )
         await run_in_threadpool(clear_non_knowledge_base_data)
     # Same archive cleanup as DELETE /threads. Without it "Clear all chats" leaves every
     # conversation searchable in rag.db, and a reused thread id reads the old archive.
@@ -1592,6 +1623,11 @@ async def clear_history(
         await run_in_threadpool(clear_cache, reapable_image_ids)
         if payload is not None:
             await run_in_threadpool(mark_clear_operation_caches_cleared, payload.operationId)
+    if project_cleanup_incomplete:
+        raise HTTPException(
+            status_code = 503,
+            detail = "Chat history cleanup is incomplete. Retry the request.",
+        )
     hide_stored_ids = chat_history_policy.disabled()
     return {
         "status": "deleted",

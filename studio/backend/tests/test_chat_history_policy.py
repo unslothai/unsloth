@@ -3,6 +3,7 @@
 
 import asyncio
 import sqlite3
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +13,7 @@ from core.inference import tools
 from core.rag import conversation_archive, history_cleanup, store, tool
 from models.inference import ChatCompletionRequest
 from routes import chat_generation_runs, chat_history, inference, rag, research_runs
+from storage import studio_db
 from utils import chat_history_policy
 
 
@@ -287,8 +289,19 @@ def test_sandbox_reads_are_hidden_without_resolving_stored_paths(no_chat_history
 def test_clear_history_does_not_return_stored_thread_or_sandbox_ids(no_chat_history, monkeypatch):
     from core.inference import search_images
 
+    deleted_projects = []
     monkeypatch.setattr(chat_history, "_archive_cutoff", lambda: None)
     monkeypatch.setattr(chat_history, "list_chat_threads", lambda: [{"id": "thread-secret"}])
+    monkeypatch.setattr(
+        chat_history,
+        "list_chat_projects",
+        lambda **_kwargs: [{"id": "project-secret"}],
+    )
+    monkeypatch.setattr(
+        chat_history,
+        "delete_chat_project",
+        lambda project_id, **_kwargs: deleted_projects.append(project_id),
+    )
     monkeypatch.setattr(
         chat_history,
         "clear_chat_history",
@@ -311,13 +324,85 @@ def test_clear_history_does_not_return_stored_thread_or_sandbox_ids(no_chat_hist
     monkeypatch.setattr(chat_history, "_remove_sandboxes", remove_sandboxes)
     monkeypatch.setattr(search_images, "snapshot_and_fence_registrations", lambda: set())
     monkeypatch.setattr(search_images, "clear_cache", lambda *_args: None)
+    monkeypatch.setattr(tools, "collect_orphaned_project_workspaces", lambda: None)
+    monkeypatch.setattr(tools, "preserve_orphaned_project", lambda *_args: True)
 
     result = asyncio.run(
         chat_history.clear_history(request = SimpleNamespace(), current_subject = "alice")
     )
     assert result["deletedThreadIds"] == []
     assert result["sandboxes_kept"] == []
+    assert deleted_projects == ["project-secret"]
     assert rag_cleanups == [True]
+
+
+@pytest.mark.parametrize("same_workspace", (True, False))
+@pytest.mark.parametrize("handoff_failure", (True, False))
+def test_no_history_clear_keeps_a_recreated_project_workspace(
+    no_chat_history, monkeypatch, tmp_path, same_workspace, handoff_failure
+):
+    from core.inference import search_images
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
+    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    project = studio_db.upsert_chat_project(
+        {
+            "id": "project-recreated",
+            "name": "Recreated",
+            "instructions": "",
+            "archived": False,
+            "createdAt": 1,
+            "updatedAt": 1,
+        }
+    )
+    workspace = Path(project["rootPath"])
+    (workspace / "fresh.txt").write_text("keep", encoding = "utf-8")
+    old_workspace = workspace if same_workspace else tmp_path / "Old-project"
+    (old_workspace / "sandbox").mkdir(parents = True, exist_ok = True)
+    tools.record_orphaned_project(
+        project["id"],
+        str(old_workspace / "sandbox"),
+        True,
+        str(old_workspace),
+    )
+
+    monkeypatch.setattr(chat_history, "_archive_cutoff", lambda: None)
+    monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda *_args: None)
+    monkeypatch.setattr(chat_history, "_cancel_research_runs", lambda *_args: None)
+    monkeypatch.setattr(chat_history, "_cancel_chat_generation_runs", lambda *_args: None)
+    monkeypatch.setattr(chat_history, "_remove_conversation_archives", lambda *_a, **_k: None)
+    monkeypatch.setattr(history_cleanup, "clear_non_knowledge_base_data", lambda: 0)
+    monkeypatch.setattr(search_images, "snapshot_and_fence_registrations", lambda: set())
+    monkeypatch.setattr(search_images, "clear_cache", lambda *_args: None)
+
+    request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
+    real_write_record = tools._write_orphan_record
+    real_delete_workspace = studio_db.delete_project_workspace
+    if handoff_failure:
+        if same_workspace:
+            monkeypatch.setattr(tools, "_write_orphan_record", lambda *_args: False)
+        else:
+            monkeypatch.setattr(studio_db, "delete_project_workspace", lambda *_args: None)
+    if handoff_failure:
+        with pytest.raises(HTTPException) as incomplete:
+            asyncio.run(chat_history.clear_history(request = request, current_subject = "alice"))
+        assert incomplete.value.status_code == 503
+        assert incomplete.value.detail == "Chat history cleanup is incomplete. Retry the request."
+    else:
+        asyncio.run(chat_history.clear_history(request = request, current_subject = "alice"))
+
+    if handoff_failure:
+        assert studio_db.get_chat_project(project["id"]) is not None
+        assert [record[3] for record in tools.list_orphaned_projects()] == [True]
+        monkeypatch.setattr(tools, "_write_orphan_record", real_write_record)
+        monkeypatch.setattr(studio_db, "delete_project_workspace", real_delete_workspace)
+    asyncio.run(chat_history.clear_history(request = request, current_subject = "alice"))
+
+    assert studio_db.get_chat_project(project["id"]) is None
+    assert (workspace / "fresh.txt").read_text(encoding = "utf-8") == "keep"
+    assert [record[3] for record in tools.list_orphaned_projects()] == [False]
+    if not same_workspace:
+        assert not old_workspace.exists()
 
 
 def test_no_history_rag_cleanup_preserves_global_knowledge_bases(
@@ -502,6 +587,24 @@ def test_no_history_kb_listing_requires_an_existing_owner(no_chat_history, monke
     with pytest.raises(HTTPException) as missing:
         rag.list_kb_documents("missing", subject = "alice")
     assert missing.value.status_code == 404
+
+
+def test_policy_off_kb_listing_keeps_orphan_cleanup_contract(monkeypatch, tmp_path):
+    db_path = tmp_path / "rag-list-policy-off.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE knowledge_bases(id TEXT PRIMARY KEY)")
+
+    def connection():
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    monkeypatch.setattr(chat_history_policy, "NO_CHAT_HISTORY", False)
+    monkeypatch.setattr(rag, "_require_rag", lambda: None)
+    monkeypatch.setattr(rag, "_rag_connection", connection)
+    monkeypatch.setattr(rag.store, "list_documents", lambda _conn, _scope: [])
+
+    assert rag.list_kb_documents("deleted-kb", subject = "alice") == {"documents": []}
 
 
 def test_conversation_rag_search_is_rejected_before_storage(no_chat_history, monkeypatch):
