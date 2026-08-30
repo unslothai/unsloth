@@ -22,6 +22,31 @@ ROOT_ID = "a" * 64
 DESKTOP_SECRET = "appimage-portability-secret"
 
 
+# What the fixture reports as the managed backend's version.
+#
+# It used to report MIN_DESKTOP_BACKEND_VERSION, read out of version.rs, and that
+# is only the right answer for a build this repo made. The floor is not the only
+# gate: managed_backend_version_stale_reason() compares against
+# expected_backend_version(), which is
+#
+#     option_env!("UNSLOTH_DESKTOP_BACKEND_VERSION").unwrap_or(MIN_DESKTOP_BACKEND_VERSION)
+#
+# and the release workflow STAMPS that from the same pypi_version as the updater
+# manifest. So a PR build, which leaves it unset, accepted the floor and passed,
+# while every published AppImage rejected it: v0.1.804-beta is pinned to backend
+# 2026.8.22, judged the fixture's 2026.8.4 `desktop_backend_version_outdated`,
+# and went off to run its bundled installer instead of authenticating. That is
+# the app behaving correctly, and it is why the nightly failed on all five
+# distros while the pull_request lane on the same commit passed.
+#
+# The fixture cannot know the stamped value, so it reports one no build can
+# consider outdated. Both comparisons are one-sided -- compatible is `>= floor`
+# and outdated is `< expected` -- so nothing above rejects a version for being
+# too new. If that ever changes it is a real contract change and this should
+# fail loudly rather than quietly report the floor again.
+FIXTURE_BACKEND_VERSION = "9999.12.31"
+
+
 def _minimum_backend_version(repo_root: Path) -> str:
     source = (repo_root / "studio/src-tauri/src/preflight/version.rs").read_text(encoding = "utf-8")
     marker = 'MIN_DESKTOP_BACKEND_VERSION: &str = "'
@@ -30,6 +55,43 @@ def _minimum_backend_version(repo_root: Path) -> str:
         raise RuntimeError("Could not read the minimum desktop backend version")
     start += len(marker)
     return source[start : source.index('"', start)]
+
+
+# The dispositions that mean the app gave up on the fixture and went to repair.
+# Without this the run just times out after 45s on "never completed desktop
+# authentication", which says nothing about why; the reason is in tauri.log and
+# nobody reads it, so the nightly sat red for weeks looking like a webview fault.
+# ExternalConflict is here for the same reason though it is not a repair: another
+# backend already owns the port, so the fixture is never contacted and the wait can
+# only expire. It is what a developer box with a Studio already running produces.
+_GAVE_UP_MARKERS = (
+    "start_managed_repair command called",
+    "disposition=ManagedStale",
+    "disposition=ExternalConflict",
+)
+
+
+def _abandoned_reason(tauri_log: Path) -> str | None:
+    """The preflight verdict, when it means desktop auth will never be attempted.
+
+    Quotes the `disposition=` line, which names the outcome, plus the `Stale {...}`
+    line when there is one, since that is what carries the reason. Reporting the
+    first interesting line instead is worse than useless: on a box where preflight
+    read the install as Ready and then hit a port conflict, it quoted the Ready.
+    """
+    try:
+        text = tauri_log.read_text(encoding = "utf-8", errors = "replace")
+    except OSError:
+        return None
+    if not any(marker in text for marker in _GAVE_UP_MARKERS):
+        return None
+    lines = [line.strip() for line in text.splitlines()]
+    disposition = next(
+        (line for line in reversed(lines) if "desktop_preflight completed" in line), None
+    )
+    stale = next((line for line in reversed(lines) if "Stale {" in line), None)
+    detail = " | ".join(part for part in (disposition, stale) if part)
+    return detail or "preflight abandoned the fixture backend; see tauri.log"
 
 
 def _write_fixture(art_dir: Path, home: Path, version: str) -> Path:
@@ -198,7 +260,15 @@ def main() -> None:
     install_id = home / ".unsloth/studio/share/studio_install_id"
     install_id.parent.mkdir(parents = True)
     install_id.write_text(ROOT_ID, encoding = "utf-8")
-    request_log = _write_fixture(art_dir, home, _minimum_backend_version(repo_root))
+    # Guard that the sentinel really is above the floor it has to clear, so a floor
+    # that ever reaches 9999 fails here by name instead of as an unexplained timeout.
+    # Compared on the leading component: a string compare would read "999" as above
+    # "9999", which is the one answer this must not get wrong.
+    floor = _minimum_backend_version(repo_root)
+    assert int(floor.split(".")[0]) < int(FIXTURE_BACKEND_VERSION.split(".")[0]), (
+        f"fixture version {FIXTURE_BACKEND_VERSION} no longer clears the floor {floor}"
+    )
+    request_log = _write_fixture(art_dir, home, FIXTURE_BACKEND_VERSION)
 
     env = {
         **os.environ,
@@ -281,6 +351,12 @@ def main() -> None:
                         f"on {display_backend}"
                     )
                     return
+            reason = _abandoned_reason(home / ".unsloth/studio/tauri.log")
+            if reason is not None:
+                raise RuntimeError(
+                    "Preflight never adopted the fixture backend, so desktop auth was "
+                    f"never attempted: {reason}"
+                )
             time.sleep(0.25)
         raise RuntimeError("Packaged webview never completed desktop authentication")
     finally:
