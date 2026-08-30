@@ -6109,7 +6109,7 @@ export function createOpenAIStreamAdapter(
                   // lands, so a visibility, pageshow, online or history-load trigger during
                   // this await could otherwise start a recovery that the later claim would
                   // not stop: the scheduler only tests ownership at startup.
-                  claimLiveGenerationRun(cancelId);
+                  claimLiveGenerationRun(cancelId, resolvedThreadId!);
                   try {
                     generationRun = await createChatGenerationRunUntilAbort(
                       {
@@ -6135,7 +6135,7 @@ export function createOpenAIStreamAdapter(
                     generationRunId = generationRun.id;
                     // Normally the same id we claimed above; claimed again in case the server
                     // ever echoes a different one. Both are released in the finally below.
-                    claimLiveGenerationRun(generationRunId);
+                    claimLiveGenerationRun(generationRunId, resolvedThreadId!);
                     generationStatus = generationRun.status;
                     if (generationStopRequested) {
                       void cancelChatGenerationRun(generationRun.id).catch(

@@ -80,7 +80,7 @@ test("the adapter claims the run BEFORE admission, not after the response", () =
   // startup. The run id is the client's own (`cancelId` is passed as `runId`), so there is no
   // reason to wait for the server to hand it back.
   const adapter = read("../src/features/chat/api/chat-adapter.ts");
-  const claim = adapter.indexOf("claimLiveGenerationRun(cancelId)");
+  const claim = adapter.indexOf("claimLiveGenerationRun(cancelId, resolvedThreadId!)");
   const admission = adapter.indexOf("generationRun = await createChatGenerationRunUntilAbort(");
 
   assert.ok(claim > 0, "nothing claims the run before admission");
@@ -100,7 +100,7 @@ test("the adapter claims the run and releases it in a finally", () => {
   const adapter = read("../src/features/chat/api/chat-adapter.ts");
 
   assert.ok(
-    adapter.includes("claimLiveGenerationRun(generationRunId)"),
+    adapter.includes("claimLiveGenerationRun(generationRunId, resolvedThreadId!)"),
     "nothing claims the run, so the guard above can never fire",
   );
   // The release has to be inside a finally. Without that, an aborted or failed stream leaves

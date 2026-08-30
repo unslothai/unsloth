@@ -423,10 +423,15 @@ export function subscribeGenerationRecoveryTriggers(
  * needs to expire it.
  */
 const liveGenerationRuns = new Set<string>();
+// runId -> owning thread, for the runs this tab is streaming. The Set above answers
+// "is this run live"; the checkpoint scheduler needs the inverse, "does this thread have
+// a durable run at all", to tell a durable run from a subscriber-owned stream.
+const liveGenerationThreads = new Map<string, string>();
 
 /** Claim a run as streamed by this tab. Pair with `releaseLiveGenerationRun` in a finally. */
-export function claimLiveGenerationRun(runId: string): void {
+export function claimLiveGenerationRun(runId: string, threadId?: string): void {
   liveGenerationRuns.add(runId);
+  if (threadId) liveGenerationThreads.set(runId, threadId);
 }
 
 /**
@@ -437,11 +442,28 @@ export function claimLiveGenerationRun(runId: string): void {
  */
 export function releaseLiveGenerationRun(runId: string): void {
   liveGenerationRuns.delete(runId);
+  liveGenerationThreads.delete(runId);
 }
 
 /** Whether this tab is the one streaming `runId`. */
 export function isLiveGenerationRun(runId: string): boolean {
   return liveGenerationRuns.has(runId);
+}
+
+/**
+ * Whether `threadId` has a durable run, either streaming here or named by the server.
+ *
+ * A subscriber-owned stream (external provider, continuation, tool-enabled) has no durable
+ * run: the periodic checkpoint is its ONLY persistence, so it must never be capped.
+ */
+export function threadHasDurableGenerationRun(threadId: string): boolean {
+  for (const owner of liveGenerationThreads.values()) {
+    if (owner === threadId) return true;
+  }
+  for (const owner of serverActiveGenerationRuns.values()) {
+    if (owner === threadId) return true;
+  }
+  return false;
 }
 
 /**
@@ -472,27 +494,30 @@ export function syncServerActiveGenerationRuns(
     if (owner === threadId) serverActiveGenerationRuns.delete(runId);
   }
   for (const runId of runIds) serverActiveGenerationRuns.set(runId, threadId);
-  serverHasAnswered = true;
+  serverAnsweredThreads.add(threadId);
 }
 
 /**
- * Whether the server has successfully answered the active-run question even once.
+ * Threads the server has successfully answered the active-run question for.
  *
- * Until it has, "not in the map" means "never asked", not "not running". On a first load
- * where that read failed there is no previous answer to leave standing, so demoting on an
- * empty map would mark a live reply interrupted for anyone whose backend was briefly
- * unreachable as the page came up. Silence is not a report.
+ * Per thread, not per process. "Not in the map" means "never asked" until this thread's
+ * own read has landed, so demoting on an empty map would mark a live reply interrupted
+ * for anyone whose backend was briefly unreachable as the page came up. And a successful
+ * read for thread A says nothing about thread B: keeping one global flag let A's answer
+ * turn a FAILED read for B into an authoritative empty list.
  */
-let serverHasAnswered = false;
+const serverAnsweredThreads = new Set<string>();
 
-export function serverHasAnsweredActiveRuns(): boolean {
-  return serverHasAnswered;
+export function serverHasAnsweredActiveRuns(threadId: string): boolean {
+  return serverAnsweredThreads.has(threadId);
 }
 
-/** Test-only: forget that the server ever answered. */
+/** Test-only: forget every active-run answer. */
 export function resetServerActiveGenerationRuns(): void {
   serverActiveGenerationRuns.clear();
-  serverHasAnswered = false;
+  serverAnsweredThreads.clear();
+  liveGenerationThreads.clear();
+  liveGenerationRuns.clear();
 }
 
 /** Whether the server has named `runId` as still going in this session. */
@@ -508,12 +533,12 @@ export function isServerActiveGenerationRun(runId: string): boolean {
  */
 export function generationIsCorroboratedLive(
   metadata: Record<string, unknown>,
+  threadId?: string,
 ): boolean {
   const runId = metadata.generationRunId;
   if (typeof runId !== "string") return false;
   if (isLiveGenerationRun(runId) || isServerActiveGenerationRun(runId)) return true;
-  // No answer yet is not a "no". Stay with the persisted status until the server has
-  // actually told us what is running at least once; the recovery follower settles it
-  // from there, and every later load has an answer to work from.
-  return !serverHasAnswered;
+  // No answer for THIS thread is not a "no". Stay with the persisted status until this
+  // thread's own read has landed; the recovery follower settles it from there.
+  return threadId === undefined || !serverAnsweredThreads.has(threadId);
 }

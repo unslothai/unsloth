@@ -95,6 +95,7 @@ import {
   generationChunkCountsTowardTiming,
   generationChunkHasSubstantiveDelta,
   generationIsCorroboratedLive,
+  threadHasDurableGenerationRun,
   generationNeedsRecovery,
   isLiveGenerationRun,
   generationRawContent,
@@ -723,7 +724,7 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
   // keeps every character of it and offers the Continue bar.
   const needsGenerationRecovery =
     (generationUnfinished || generationUnsettled) &&
-    generationIsCorroboratedLive(custom);
+    generationIsCorroboratedLive(custom, m.threadId);
   const restoredCustom =
     generationUnfinished &&
     !needsGenerationRecovery &&
@@ -1777,7 +1778,35 @@ function useStudioRuntimeAdapters(
         activeGenerationRuns = activeGenerationRuns.filter(
           (run) => !isTerminalChatGenerationRun(run),
         );
+        // The runs read happens BEFORE the messages read on purpose, so a run created
+        // between the two is still discoverable from the later message metadata. Under
+        // the corroboration rule that gap would now read as interrupted and re-enable the
+        // composer for a thread the server is still generating on, so close it with one
+        // more lookup, and only when a message actually names a run the first read missed.
         if (activeGenerationRunsLoaded) {
+          const known = new Set(activeGenerationRuns.map((run) => run.id));
+          const missed = msgs.some((message) => {
+            const custom = (message.metadata ?? {}) as Record<string, unknown>;
+            const runId = custom.generationRunId;
+            const status = custom.generationStatus;
+            return (
+              typeof runId === "string" &&
+              !known.has(runId) &&
+              (status === "queued" ||
+                status === "running" ||
+                status === "cancelling")
+            );
+          });
+          if (missed) {
+            try {
+              const second = await getActiveChatGenerationRuns(remoteId);
+              activeGenerationRuns = second.filter(
+                (run) => !isTerminalChatGenerationRun(run),
+              );
+            } catch {
+              // Leave the first read standing; it is still an answer for this thread.
+            }
+          }
           syncServerActiveGenerationRuns(
             remoteId,
             activeGenerationRuns.map((run) => run.id),
@@ -3113,7 +3142,10 @@ function ThreadBackendAutosave({
   const checkpoints = useCallback((): RunCheckpointScheduler => {
     checkpointsRef.current ??= createRunCheckpointScheduler(
       (threadId) => queueSaveRef.current(threadId),
-      { isActive: (threadId) => isRunActiveRef.current(threadId) },
+      {
+        isActive: (threadId) => isRunActiveRef.current(threadId),
+        isBounded: (threadId) => threadHasDurableGenerationRun(threadId),
+      },
     );
     return checkpointsRef.current;
   }, []);

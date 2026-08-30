@@ -73,37 +73,55 @@ test("before the server has answered, a live reply is not demoted", () => {
   // leave standing, so an empty map must read as "never asked", not "nothing is
   // running". Demoting here would mark a live generation interrupted.
   resetServerActiveGenerationRuns();
-  assert.equal(serverHasAnsweredActiveRuns(), false);
+  assert.equal(serverHasAnsweredActiveRuns("thread-1"), false);
   assert.equal(
-    generationIsCorroboratedLive({
-      generationRunId: "run-unknown",
-      generationStatus: "running",
-      generationSettled: false,
-    }),
+    generationIsCorroboratedLive(
+      { generationRunId: "run-unknown", generationStatus: "running" },
+      "thread-1",
+    ),
     true,
     "silence from the server is not a report that the run is dead",
   );
-  // One successful read, and the gate becomes authoritative.
+  // One successful read, and the gate becomes authoritative for THAT thread.
   syncServerActiveGenerationRuns("thread-1", []);
-  assert.equal(serverHasAnsweredActiveRuns(), true);
+  assert.equal(serverHasAnsweredActiveRuns("thread-1"), true);
   assert.equal(
-    generationIsCorroboratedLive({
-      generationRunId: "run-unknown",
-      generationStatus: "running",
-      generationSettled: false,
-    }),
+    generationIsCorroboratedLive(
+      { generationRunId: "run-unknown", generationStatus: "running" },
+      "thread-1",
+    ),
     false,
+  );
+});
+
+test("one thread's successful read does not make another thread's failed read authoritative", () => {
+  // A answers, B's active-run request fails while its history succeeds. With a single
+  // process-wide flag, B's genuinely active reply was restored as interrupted.
+  resetServerActiveGenerationRuns();
+  syncServerActiveGenerationRuns("thread-A", []);
+  assert.equal(serverHasAnsweredActiveRuns("thread-A"), true);
+  assert.equal(serverHasAnsweredActiveRuns("thread-B"), false);
+  assert.equal(
+    generationIsCorroboratedLive(
+      { generationRunId: "run-B", generationStatus: "running" },
+      "thread-B",
+    ),
+    true,
+    "B has no answer of its own yet, so its reply must not be demoted",
   );
 });
 
 test("persisted running metadata is not on its own evidence of a live run", () => {
   syncServerActiveGenerationRuns("thread-1", []);
   assert.equal(
-    generationIsCorroboratedLive({
-      generationRunId: "run-1",
-      generationStatus: "running",
-      generationSettled: false,
-    }),
+    generationIsCorroboratedLive(
+      {
+        generationRunId: "run-1",
+        generationStatus: "running",
+        generationSettled: false,
+      },
+      "thread-1",
+    ),
     false,
     "a stuck run says 'running' in storage for good; only the server may confirm it",
   );
@@ -165,11 +183,11 @@ test("the reload path gates the running status on corroboration", () => {
   // graph, so the rule is asserted where it sits. Losing the call restores the wedge
   // while every behavioural test stays green.
   const provider = read("../src/features/chat/runtime-provider.tsx");
-  const gate = provider.indexOf("generationIsCorroboratedLive(custom)");
+  const gate = provider.indexOf("generationIsCorroboratedLive(custom, m.threadId)");
   assert.ok(gate > 0, "toThreadMessage no longer asks whether the run is live");
   assert.match(
     provider,
-    /needsGenerationRecovery\s*=\s*\(generationUnfinished \|\| generationUnsettled\) &&\s*generationIsCorroboratedLive\(custom\)/,
+    /needsGenerationRecovery\s*=\s*\(generationUnfinished \|\| generationUnsettled\) &&\s*generationIsCorroboratedLive\(custom, m\.threadId\)/,
     "the running status must require BOTH unfinished metadata and corroboration",
   );
   assert.match(
@@ -197,6 +215,65 @@ test("the interrupted restore keeps the partial body untouched", () => {
     false,
     "restoring an interrupted reply must never empty its content",
   );
+});
+
+const stalledStreamFetch = (): typeof fetch =>
+  (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes("/events")) {
+      const body = new ReadableStream({
+        start(controller) {
+          init?.signal?.addEventListener("abort", () => {
+            controller.error(new Error("aborted"));
+          });
+        },
+      });
+      return new Response(body, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    }
+    return new Response(JSON.stringify(run("running", 0)), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+
+test("the follower throws on its own deadline instead of returning silently", async () => {
+  // The live durable stream only throws for failed/cancelled. A silent return on our own
+  // deadline let a still-running run be finalized as a complete assistant reply while the
+  // backend kept generating with no follower.
+  globalThis.fetch = stalledStreamFetch();
+  await assert.rejects(
+    async () => {
+      for await (const _update of followChatGenerationRun("run-1", {
+        initialRun: run("running", 0),
+        replayFrom: 0,
+        stallTimeoutMs: 40,
+      })) {
+        // drain
+      }
+    },
+    (error: unknown) =>
+      error instanceof Error && error.name === "ChatGenerationStalledError",
+    "a deadline must surface as a stall, not as a clean end of stream",
+  );
+});
+
+test("a caller Stop still ends the follow cleanly", async () => {
+  // Only OUR deadline is a failure. The user pressing Stop stays a clean return, so a
+  // deliberate cancel is never reported to the user as an interrupted reply.
+  globalThis.fetch = stalledStreamFetch();
+  const controller = new AbortController();
+  globalThis.setTimeout(() => controller.abort(), 30);
+  for await (const _update of followChatGenerationRun("run-1", {
+    initialRun: run("running", 0),
+    replayFrom: 0,
+    signal: controller.signal,
+    stallTimeoutMs: 60_000,
+  })) {
+    // drain
+  }
 });
 
 // B. the follower's deadline
@@ -230,13 +307,15 @@ test("the follower gives up on a run that makes no progress", async () => {
 
   const updates: string[] = [];
   const started = Date.now();
-  for await (const update of followChatGenerationRun("run-1", {
-    initialRun: run("running", 0),
-    replayFrom: 0,
-    stallTimeoutMs: 40,
-  })) {
-    updates.push(update.source);
-  }
+  await assert.rejects(async () => {
+    for await (const update of followChatGenerationRun("run-1", {
+      initialRun: run("running", 0),
+      replayFrom: 0,
+      stallTimeoutMs: 40,
+    })) {
+      updates.push(update.source);
+    }
+  }, /made no progress/);
   assert.ok(
     Date.now() - started < 5_000,
     "the follow must end on its own rather than reconnect forever",

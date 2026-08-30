@@ -79,6 +79,15 @@ const TERMINAL_STATUSES = new Set<ChatGenerationStatus>([
   "failed",
 ]);
 
+/** The follower gave up on a run that stopped making progress. Distinct from the
+ * caller's Stop: the backend may still be generating, so the reply is incomplete. */
+export class ChatGenerationStalledError extends Error {
+  constructor(runId: string) {
+    super(`Chat generation run ${runId} made no progress`);
+    this.name = "ChatGenerationStalledError";
+  }
+}
+
 export class ChatGenerationApiError extends Error {
   readonly status: number;
 
@@ -404,11 +413,19 @@ export async function* followChatGenerationRun(
   }
   const signal = deadline.signal;
   let stallTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
+  // Our deadline and the caller's Stop both abort `signal`, but they must not end the
+  // same way. A caller abort is a clean stop; our deadline means we walked away from a
+  // run the backend may still be working on, so it has to reach the consumer as a
+  // failure. Returning silently let the live durable stream, which only throws for
+  // `failed` and `cancelled`, finalize a still-running run as a complete reply.
+  let stalled = false;
+  let settled = false;
   const noteProgress = (): void => {
     if (signal.aborted) return;
     if (stallTimer !== undefined) globalThis.clearTimeout(stallTimer);
     stallTimer = globalThis.setTimeout(() => {
-      deadline.abort(new Error(`Chat generation run ${id} made no progress`));
+      stalled = true;
+      deadline.abort(new ChatGenerationStalledError(id));
     }, stallTimeoutMs);
   };
 
@@ -430,7 +447,10 @@ export async function* followChatGenerationRun(
     let currentRun = run;
     let cursor = replayFrom ?? run.lastEventSeq;
     yield { run, source: "snapshot" };
-    if (isTerminalChatGenerationRun(run) && replayFrom === undefined) return;
+    if (isTerminalChatGenerationRun(run) && replayFrom === undefined) {
+      settled = true;
+      return;
+    }
 
     while (!signal.aborted) {
       try {
@@ -449,6 +469,7 @@ export async function* followChatGenerationRun(
             isTerminalChatGenerationRun(currentRun) &&
             cursor >= currentRun.lastEventSeq
           ) {
+            settled = true;
             return;
           }
         }
@@ -469,8 +490,10 @@ export async function* followChatGenerationRun(
           noteProgress();
           yield { run: fresh, source: "snapshot" };
         }
-        if (isTerminalChatGenerationRun(fresh) && cursor >= fresh.lastEventSeq)
+        if (isTerminalChatGenerationRun(fresh) && cursor >= fresh.lastEventSeq) {
+          settled = true;
           return;
+        }
       } catch (error) {
         if (signal.aborted) return;
         if (isPermanent(error)) throw error;
@@ -481,5 +504,10 @@ export async function* followChatGenerationRun(
   } finally {
     if (stallTimer !== undefined) globalThis.clearTimeout(stallTimer);
     callerSignal?.removeEventListener("abort", forwardAbort);
+    // Every exit path funnels here, including the two `while (!signal.aborted)` loop
+    // conditions, so this is the one place that catches all of them. `settled` keeps a
+    // run that reached a terminal status on the same tick as the timer from being
+    // reported as stalled.
+    if (stalled && !settled) throw new ChatGenerationStalledError(id);
   }
 }

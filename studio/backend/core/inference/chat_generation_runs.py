@@ -160,6 +160,10 @@ class ChatGenerationLeaseSweeper:
     def start(self) -> None:
         if self._task is not None or not self.enabled:
             return
+        # A second lifespan reuses the instance parked on app.state, and stop() left the
+        # event set. Without this the new task's first wait returns immediately and the
+        # sweeper is silently dead for the whole of that lifespan.
+        self._stop_event.clear()
         self._task = asyncio.create_task(self._run(), name = "chat-generation-lease-sweeper")
 
     async def _run(self) -> None:

@@ -321,3 +321,34 @@ def test_zero_timeout_disables_the_sweep(clock):
 
     sweeper = ChatGenerationLeaseSweeper(SimpleNamespace(state = SimpleNamespace()), timeout_s = 0.0)
     assert sweeper.enabled is False
+
+
+def test_a_second_lifespan_restarts_the_sweeper(clock):
+    """stop() sets the event; the instance parked on app.state is reused next lifespan.
+
+    Without clearing it, the new task's first wait returns immediately and the sweeper is
+    silently dead for that whole lifespan, taking the fix with it.
+    """
+    import asyncio
+    from types import SimpleNamespace
+
+    from core.inference.chat_generation_runs import (
+        ChatGenerationLeaseSweeper,
+        start_lease_sweeper,
+    )
+
+    app = SimpleNamespace(state = SimpleNamespace())
+
+    async def _drive():
+        first = start_lease_sweeper(app)
+        assert isinstance(first, ChatGenerationLeaseSweeper)
+        await first.stop()
+        assert first._stop_event.is_set()
+
+        second = start_lease_sweeper(app)
+        assert second is first, "the instance is reused across lifespans"
+        assert not second._stop_event.is_set(), "start() must re-arm the stop event"
+        assert second._task is not None and not second._task.done()
+        await second.stop()
+
+    asyncio.run(_drive())

@@ -77,12 +77,21 @@ export function createRunCheckpointScheduler(
      * true, so the two agree forever and the schedule never ends.
      */
     maxDurationMs?: number;
+    /**
+     * Whether `maxDurationMs` applies to this thread. Only a durable run can outlive its
+     * own terminal status, and only for durable runs is the server the other writer. A
+     * subscriber-owned stream (external provider, continuation, tool-enabled) persists
+     * ONLY through these checkpoints, so capping one would lose everything it streamed
+     * after the cap if the page went away before `runEnd`. Omit to cap every thread.
+     */
+    isBounded?: (threadId: string) => boolean;
   } = {},
 ): RunCheckpointScheduler {
   const intervalMs = options.intervalMs ?? RUN_CHECKPOINT_INTERVAL_MS;
   const timers = options.timers ?? defaultTimers;
   const isActive = options.isActive;
   const maxDurationMs = options.maxDurationMs ?? RUN_CHECKPOINT_MAX_DURATION_MS;
+  const isBounded = options.isBounded;
   const now = timers.now ?? (() => Date.now());
   const threads = new Map<string, ThreadState>();
 
@@ -92,6 +101,15 @@ export function createRunCheckpointScheduler(
       return Promise.resolve(save(threadId));
     } catch (error) {
       return Promise.reject(error);
+    }
+  };
+
+  /** Only durable runs are capped; see `isBounded`. Throwing means "not durable". */
+  const isBoundedRun = (threadId: string): boolean => {
+    try {
+      return isBounded?.(threadId) ?? true;
+    } catch {
+      return false;
     }
   };
 
@@ -118,7 +136,9 @@ export function createRunCheckpointScheduler(
       };
       // Both exits take a final save: a schedule that ends without one has lost
       // whatever the last interval produced, exactly as a missed runEnd would.
-      if (!isRunning(threadId) || now() - state.startedAt >= maxDurationMs) {
+      const capped =
+        now() - state.startedAt >= maxDurationMs && isBoundedRun(threadId);
+      if (!isRunning(threadId) || capped) {
         stop(threadId);
         void runSave(threadId).then(noop, noop);
         return;
