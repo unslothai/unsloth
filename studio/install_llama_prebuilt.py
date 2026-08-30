@@ -6467,10 +6467,7 @@ def write_prebuilt_metadata(
         # the arch, and a stale copy would outlive its GPU.
         **({"rocm_gfx": rocm_gfx} if rocm_gfx and _persisted_backend == "auto" else {}),
         "asset_sha256": choice.expected_sha256,
-        # Whether the paired Windows cudart archive (#5106) was overlaid. It is in the
-        # fingerprint already, but that is a hash: the kept-install payload check has to
-        # read the answer back, and a marker without the key is a pair-less install
-        # whose cudart trio must not be demanded.
+        # Records whether this install includes the paired Windows cudart archive.
         "runtime_asset": choice.runtime_name,
         "source": choice.source_label,
         # Binary-side repo/tag for non-fork sources (e.g. the ggml-org upstream
@@ -6806,12 +6803,7 @@ def runtime_payload_health_groups(
     source_label: str | None = None,
     runtime_name: str | None = None,
 ) -> list[list[str]]:
-    """Runtime files ``install_kind`` must still have, one group per alternative.
-
-    Takes the three fields it reads rather than an ``AssetChoice`` so the kept-install
-    check can ask by install kind alone, having no candidate bundle to compare against.
-    Both keyword arguments only ADD groups, so omitting them asks for the base payload.
-    """
+    """Return required runtime file groups for an install kind."""
     if install_kind in {"linux-cpu", "linux-arm64"}:
         return [
             ["libllama-common.so*"],
@@ -6868,14 +6860,7 @@ def runtime_payload_health_groups(
         return [["llama.dll"]]
     if install_kind == "windows-cuda":
         groups = [["llama.dll"], ["ggml-cuda.dll"]]
-        # When the cudart bundle was paired in (#5106) require all
-        # three of its DLLs alongside the main archive's payload.
-        # install_kind alone is not enough -- legacy installs without
-        # the cudart pair must still pass the health check on the
-        # no-pair fallback path, otherwise pair-less builds would loop
-        # on reinstall forever. The upstream cudart bundle ships
-        # cudart64_X.dll + cublas64_X.dll + cublasLt64_X.dll; missing
-        # any one of them still breaks GPU initialisation.
+        # Require the complete cudart trio only when it was paired with this install.
         if runtime_name:
             groups.append(["cudart64_*.dll"])
             groups.append(["cublas64_*.dll"])
@@ -6925,23 +6910,7 @@ def runtime_payload_is_healthy(install_dir: Path, host: HostInfo, choice: AssetC
 
 
 def _kept_install_payload_is_healthy(install_dir: Path, host: HostInfo) -> bool:
-    """Whether the tree still has the runtime payload its own marker implies.
-
-    ``runtime_payload_is_healthy`` needs the candidate ``AssetChoice`` and the failure
-    path has none, so ask by install kind instead: take the kinds the marker's recorded
-    backend allows on this host and require what all of them agree on. This is the only
-    payload signal Windows has -- both binary preflights are Linux/macOS-only and
-    ``os.access(X_OK)`` there is just ``exists()`` -- so without it a tree whose
-    ``llama.dll`` went missing (an antivirus quarantine, a partial delete) would be kept
-    and reported as installed even though ``llama-server.exe`` cannot start.
-
-    The paired Windows cudart trio comes from the marker's own ``runtime_asset``, so it
-    is required of installs that were built with the pair and not of pair-less ones,
-    which are healthy without it. The published Vulkan visual server stays unrequired:
-    ``ensure_diffusion_visual_server`` backfills it and already treats its own failure
-    as non-fatal, so demanding it would spend a source build on a working install. An
-    unreadable backend asks for nothing rather than guessing, for the same reason.
-    """
+    """Check the payload shared by install kinds allowed by the tree's marker."""
     marker = load_prebuilt_metadata(install_dir)
     backend = marker_backend(marker)
     platform_prefix = "windows-" if host.is_windows else "macos-" if host.is_macos else "linux-"
@@ -6949,17 +6918,11 @@ def _kept_install_payload_is_healthy(install_dir: Path, host: HostInfo) -> bool:
         kind for kind in install_kinds_for_backend(backend) if kind.startswith(platform_prefix)
     )
     if not kinds:
-        # A truncated or unrecognised marker names no backend, and returning True here
-        # was a bypass rather than a default: on Windows both preflights are no-ops and
-        # os.access is exists(), so a tree that had also lost llama.dll passed. Fall back
-        # to every kind this platform has instead. Their intersection is what any healthy
-        # install of it holds -- llama.dll on Windows -- so it cannot over-require.
+        # Unknown markers still owe the payload shared by every kind on this platform.
         kinds = sorted(kind for kind in INSTALL_KIND_BACKENDS if kind.startswith(platform_prefix))
     if not kinds:
         return True
-    # Intersection, not union: a backend maps to more than one kind (rocm to windows-hip
-    # and windows-rocm, cuda to linux-cuda and linux-arm64-cuda) and the marker does not
-    # say which, so require only what every candidate needs.
+    # A backend can map to multiple kinds, so require only their shared payload.
     runtime_asset = (marker or {}).get("runtime_asset")
     shared = set.intersection(
         *(
@@ -6974,16 +6937,7 @@ def _kept_install_payload_is_healthy(install_dir: Path, host: HostInfo) -> bool:
 
 
 def _existing_install_runs(install_dir: Path, host: HostInfo) -> bool:
-    """Whether ``install_dir`` holds a llama.cpp the setup scripts would run.
-
-    Structural completeness is not enough to keep a tree instead of source
-    building: setup.sh reports exit 0 as "prebuilt installed and validated" and
-    only its exit-2 recovery re-checks the binaries, so an ``exists()`` pass hands
-    back a tree its own ``-x`` reuse gate would have rejected. Same checks
-    ``existing_install_matches_choice`` makes before reusing a tree -- structure,
-    runtime payload, executables, platform load probe -- minus the release
-    fingerprint: what is kept here is deliberately an older build.
-    """
+    """Check whether the setup scripts could reuse and run this install."""
     if not _install_tree_is_usable(install_dir, host):
         return False
     if not _kept_install_payload_is_healthy(install_dir, host):
@@ -6994,7 +6948,7 @@ def _existing_install_runs(install_dir: Path, host: HostInfo) -> bool:
     if not all(os.access(binary, os.X_OK) for binary in binaries):
         return False
     try:
-        # Each is a no-op off its own platform, so both are called unconditionally.
+        # Each preflight is a no-op outside its platform.
         preflight_linux_installed_binaries(binaries, install_dir, host)
         preflight_macos_installed_binaries(binaries, install_dir, host)
     except Exception:
@@ -8232,14 +8186,8 @@ def install_prebuilt(
         # A stored choice that could not be served was already replaced by "auto"
         # above, so a concrete name here is one this run must not walk away from.
         preserve_backend = backend in CONCRETE_BACKENDS and host is not None and not host.is_macos
-        # ... but keeping the tree that ALREADY runs that backend honours the choice
-        # rather than substituting one, which is the only thing exit 5 exists to
-        # prevent. Restricted to an advisory stored choice: a backend named on this
-        # run (CLI or env, backend_mandatory) is a live instruction, and answering it
-        # with the install that was already there would report success for work this
-        # run did not do. preserve_backend itself is left alone, so a tree that fails
-        # _existing_install_runs still exits 5 instead of source building over the
-        # recorded backend.
+        # A stored preference may reuse a matching install. A backend requested on this
+        # run must still be satisfied by this run.
         satisfied_stored_backend = (
             preserve_backend
             and not backend_mandatory

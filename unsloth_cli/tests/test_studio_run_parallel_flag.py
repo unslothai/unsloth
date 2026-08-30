@@ -840,8 +840,7 @@ def test_in_venv_path_passes_parallel_to_run_server(
     run_server(llama_parallel_slots=N), not the old hardcoded 4."""
     studio_mod = _load_run_command()
 
-    # tmp_path, not a literal /fake: run() takes the shared launch gate before it
-    # reaches run_server, and studio_runtime_launch_guard mkdirs STUDIO_HOME (#9890).
+    # The launch gate creates STUDIO_HOME, so use a writable path.
     fake_venv = tmp_path / "studio" / "venv" / "unsloth_studio"
     monkeypatch.setattr(sys, "prefix", str(fake_venv))
     # Pin STUDIO_HOME so sys.prefix.startswith() picks the in-venv branch.

@@ -124,13 +124,8 @@ function findInlineCodeRegions(
   content: string,
   blockRegions: Array<[number, number]>,
 ): Array<[number, number]> {
-  // An inline span needs a backtick that a block region does not already own, and
-  // masking below rebuilds the whole reply to find out. That rebuild is O(n) per
-  // call and this runs once per streamed chunk, so it is quadratic over a reply:
-  // on the 45 KB fixture in streaming-latex-retro-edit.test.ts it is the whole gap
-  // between 1.2x and 3.7x the plain arm (#9796). Masking turns a backtick inside a
-  // block region into a space, so "a backtick outside blockRegions" is exactly
-  // "masked contains a backtick", and the answer without one is [].
+  // Avoid rebuilding the masked reply unless a backtick exists outside block code.
+  // This function runs for every streamed chunk, so the early exit prevents O(n^2) work.
   let probe = content.indexOf("`");
   let unowned = false;
   while (probe !== -1) {

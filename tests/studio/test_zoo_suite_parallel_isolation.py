@@ -1,64 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""
-The unsloth_zoo suite runs in parallel, minus the files that must not share a worker.
-
-Measured on a staging runner, whole suite, all three matrix cells:
-
-    cell                      serial   -n 4 --dist loadfile
-    HF=latest + TRL=latest      580s                  253s
-    HF=4.57.6 + TRL<1           517s                  229s
-    HF=default + TRL=default    568s                  246s
-
-Across two runs of all three cells, four agreed exactly -- failure sets and skip
-sets both -- and two produced 14 failures serial does not: 8 in
-test_mlx_generate.py, 6 in test_moe_bnb4bit_per_expert_conversions.py.
-
-The same 14 every time, and not the same cell: the second run moved them from
-HF=default to HF=latest. That rules out a dependency combination and leaves worker
-scheduling, with roughly one cell per run drawing the losing order. It also means a
-single green run proves nothing here, which is why the pin stays even though four
-of six observations were clean.
-
-Both files pass alone, and pass under xdist alone, so they are self-contained; what
-breaks them is another file running first in the same worker, an ordering serial
-never produces because serial is alphabetical. Both causes are now known, and they
-are different:
-
-  test_moe_bnb4bit_per_expert_conversions.py -- test_vllm_to_hf_conversion.py put a
-  bitsandbytes.functional carrying only dequantize_4bit into sys.modules and never
-  removed it, so the later `from bitsandbytes.functional import QuantState` that
-  temporary_patches/moe_utils_bnb4bit.py does at import time failed with "(unknown
-  location)". m sorts before v, so serial never saw it. Fixed upstream in
-  unsloth_zoo#1076, with a teardown hook that fails the next one.
-
-  test_mlx_generate.py -- CAUSE NOT ESTABLISHED. It installs the MLX-on-torch shim
-  at its own import time and the shim's docstring requires that to happen "BEFORE
-  any unsloth_zoo MLX module is imported", which looked like the answer: the eight
-  failures are all isinstance checks reporting
-
-      TypeError: requests[0] must be GenerationRequest.
-
-  which is what two copies of a class look like. But conftest imports unsloth_zoo
-  and pulls unsloth_zoo.mlx in before any test module loads, so that precondition
-  is violated on every run INCLUDING the ones that pass, and the file passes alone.
-  So the ordering contract is not the trigger, or not the whole one. I checked this
-  by asserting the precondition and watching it fail a green run.
-
-  The pin stands on the observation rather than the explanation: eight tests here
-  fail under xdist and pass serially, reproducibly, on the same commit. Whoever
-  picks this up next should not start from the shim docstring -- I did, and it is a
-  dead end.
-
-So each is ignored from the parallel pass and run again in a process of its own --
-its own, not one shared by all of them, since they contaminate each other too. That
-pairing is the thing this file guards, because half of it is silent: drop the serial
-pass and the ignores simply delete the tests from CI while the job stays green. That
-is strictly worse than the failures, which at least announce themselves.
-
-Same shape as test_backend_ci_parallel_isolation for studio-backend-ci, and for the
-same reason: an ignore and its serial rerun are two edits held together by nothing.
-"""
+"""Guard the parallel zoo run and the serial reruns for tests that cannot share workers."""
 
 from __future__ import annotations
 
@@ -78,16 +20,9 @@ ISOLATED = [
         "tests/test_moe_bnb4bit_per_expert_conversions.py",
         "6 failures under xdist that serial does not produce",
     ),
-    # Not ordering: wall clock. 27 sub-second sleeps against a stall detector, one of
-    # them commented "within the unmeasurable window". Under four workers it reported
-    # "no progress for 0s" -- nothing stalled, the test was descheduled.
+    # This test has sub-second wall-clock assertions that fail under CPU contention.
     ("tests/test_hf_xet_fallback.py", "sub-second wall-clock margins under CPU contention"),
-    # The MLX trio. test_mlx_generate.py's shim is the shared cause: it lands in
-    # sys.modules at import time, which un-skips the neftune file (45 skips become
-    # NotImplementedError out of the stub) and breaks the transformers patching the
-    # gemma3 file asserts on. Under xdist that shim reaches them through a worker; in a
-    # shared serial rerun it reaches them directly, which is why each gets its own
-    # process below rather than a seat in one.
+    # MLX shims alter sys.modules, so these files each need a fresh process.
     ("tests/test_mlx_neftune_quant_map.py", "the mlx shim un-skips it and the stub then raises"),
     ("tests/test_mlx_gated_delta_vjp.py", "the mlx shim changes which backend it exercises"),
     (
@@ -96,9 +31,7 @@ ISOLATED = [
     ),
 ]
 
-# The zoo suite is the only pytest run in this workflow driven out of the cloned zoo
-# checkout, and it is told apart by the deselect it carries rather than by step order,
-# so re-ordering or renaming steps does not quietly point this guard at another command.
+# Identify the cloned zoo's parallel pytest command independently of step ordering.
 ZOO_MARKER = "--dist loadfile tests/"
 
 # Deselected because it needs a GPU. It rides whichever command owns its file.
@@ -129,14 +62,14 @@ def _zoo_parallel() -> str:
 
 
 def _zoo_mlx_group() -> str:
-    """The serial run of the mlx family, found by the glob it builds its file list from."""
+    """Return the serial MLX group command."""
     hits = [c for c in _commands() if "$mlx_group" in c]
     assert len(hits) == 1, f"expected exactly one serial mlx group run, found {len(hits)}"
     return hits[0]
 
 
 def _zoo_serial(path: str) -> str:
-    """The rerun command for one isolated file. One file per command, on purpose."""
+    """Return the dedicated rerun command for one isolated file."""
     hits = [c for c in _commands() if "-n 4" not in c and path in c]
     assert len(hits) == 1, f"expected exactly one serial rerun naming {path}, found {len(hits)}"
     return hits[0]
@@ -155,8 +88,7 @@ def test_the_zoo_suite_actually_runs_in_parallel() -> None:
 @pytest.mark.parametrize("path,reason", ISOLATED, ids = lambda v: v.split("/")[-1])
 def test_an_isolated_file_is_ignored_by_the_parallel_run(path: str, reason: str) -> None:
     cmd = _zoo_parallel()
-    # The mlx three are covered by the family glob rather than by name, which is the
-    # point of the glob: a new test_mlx_*.py is excluded without anyone listing it.
+    # The family glob automatically covers newly added MLX tests.
     covered = f"--ignore={path}" in cmd or (
         path.rsplit("/", 1)[-1].startswith("test_mlx_")
         and "--ignore-glob='tests/test_mlx_*.py'" in cmd
@@ -186,13 +118,7 @@ def test_the_serial_rerun_is_not_itself_parallel(path: str, reason: str) -> None
 
 
 def test_the_serial_reruns_tolerate_an_empty_collection() -> None:
-    """One process per file turns pytest's exit 5 into a job failure unless handled.
-
-    test_moe_bnb4bit_per_expert_conversions.py skips itself at module level on
-    transformers 4.57.6: pytest prints "1 skipped" and returns 5, because nothing was
-    collected. The shared invocation this replaced never saw it -- one skip among the
-    session's other tests, exit 0 -- so the split has to keep that verdict.
-    """
+    """Treat pytest exit 5 from a module-level skip as non-fatal."""
     for path, _ in ISOLATED:
         assert "_keep" in _zoo_serial(path), (
             f"the rerun of {path} feeds its status straight into rc, so a module-level "
@@ -205,11 +131,7 @@ def test_the_serial_reruns_tolerate_an_empty_collection() -> None:
 
 @pytest.mark.parametrize("path,reason", ISOLATED, ids = lambda v: v.split("/")[-1])
 def test_an_isolated_file_does_not_share_its_rerun(path: str, reason: str) -> None:
-    """One process each, because they contaminate each other as well as the suite.
-
-    Sharing one rerun process cost 14 failures and 6 errors on the cloned zoo at
-    52aff0d, all of them gone when each file got its own process.
-    """
+    """Give every contaminating file its own process."""
     cmd = _zoo_serial(path)
     others = [other for other, _ in ISOLATED if other != path and other in cmd]
     assert not others, (
@@ -219,12 +141,7 @@ def test_an_isolated_file_does_not_share_its_rerun(path: str, reason: str) -> No
 
 
 def test_the_deselects_survive_on_the_parallel_run() -> None:
-    """
-    The deselects are the CUDA-only and known-broken cases. They lived on the single
-    command that this change split; a split that dropped one would turn a deliberate
-    'deselected' into a runtime failure on a GPU-less runner. Two ride the parallel run,
-    and the mlx one moved with its file when the family left for the serial group.
-    """
+    """Keep each deselect with the command that owns its file."""
     cmd = _zoo_parallel()
     assert (
         cmd.count("--deselect") == 2
@@ -237,13 +154,7 @@ def test_the_deselects_survive_on_the_parallel_run() -> None:
 
 
 def test_the_mlx_family_leaves_the_parallel_run_as_a_glob() -> None:
-    """Naming the victims is whack-a-mole: they move every run, so exclude the source.
-
-    Every tests/mlx_simulation stub installs itself into sys.modules, each importing file
-    installs only the subset it needs, and a partial mlx stops a later file in the same
-    worker from skipping. A glob keeps a newly added test_mlx_*.py out of the parallel
-    pass without anyone remembering to list it.
-    """
+    """Exclude all MLX tests because their partial shims contaminate workers."""
     assert "--ignore-glob='tests/test_mlx_*.py'" in _zoo_parallel(), (
         "the parallel zoo run no longer excludes the mlx family as a glob, so the next "
         "test_mlx_*.py added upstream goes back to poisoning whichever file follows it"
@@ -255,8 +166,7 @@ def test_the_mlx_group_runs_serially_and_skips_the_per_file_three() -> None:
     assert (
         "-n " not in _zoo_mlx_group()
     ), "the mlx group runs under xdist, which is the arrangement it exists to avoid"
-    # The exclusion lives on the `ls | grep -v` that builds the list, not on the pytest
-    # line, so it is read off the step text rather than the command.
+    # Per-file exclusions are applied while building the group, not on pytest itself.
     text = WORKFLOW.read_text(encoding = "utf-8")
     for path, _ in ISOLATED:
         name = path.rsplit("/", 1)[-1]

@@ -5516,11 +5516,7 @@ def test_release_listing_failure_exits_fallback_not_error(tmp_path, monkeypatch,
     assert caught.value.code == INSTALL_LLAMA_PREBUILT.EXIT_FALLBACK
 
 
-# Runtime payload each backend's kept-install check requires, per platform. Only what
-# every install kind of that backend agrees on, which is what the check asks for.
-# What _kept_install_payload_is_healthy asks of a tree, split the way it asks for it: the
-# intersection over every install kind of the platform, which is what an unreadable marker
-# owes, plus the extra a named backend adds on top.
+# Shared platform payload plus any files required by a named backend.
 _SHARED_PAYLOAD = {
     "linux": [
         "libllama-common.so",
@@ -5574,13 +5570,11 @@ def _complete_existing_llama_install(
             path.write_text(json.dumps(marker) + "\n", encoding = "utf-8")
         else:
             path.write_text("", encoding = "utf-8")
-            # setup.sh's own reuse gate is `-x`, so a tree kept instead of source
-            # built has to clear it too; parametrised to cover the tree that does not.
+            # Match setup.sh's executable reuse gate.
             os.chmod(path, 0o755 if executable else 0o644)
     platform = "windows" if windows else "linux"
     if payload:
-        # A complete install carries the platform payload whether or not its marker still
-        # says which backend built it.
+        # Complete installs always carry the shared platform payload.
         for name in _SHARED_PAYLOAD[platform]:
             (runtime_dir / name).write_text("", encoding = "utf-8")
         for name in _BACKEND_PAYLOAD.get((platform, backend), ()):
@@ -5608,12 +5602,7 @@ def test_release_listing_failure_keeps_a_complete_existing_install(tmp_path, mon
 
 
 def test_release_listing_failure_does_not_keep_a_non_executable_install(tmp_path, monkeypatch):
-    """A tree setup.sh would refuse to reuse must not be reported as installed.
-
-    Exit 2 hands the decision to setup.sh, whose reuse gate is
-    `-x build/bin/llama-server`; exit 0 is announced as "prebuilt installed and
-    validated" and re-checks nothing. So the keep path owes the same check.
-    """
+    """Do not keep a tree that fails setup.sh's executable reuse gate."""
 
     def boom(*args, **kwargs):
         raise urllib.error.URLError("connection reset")
@@ -5660,12 +5649,7 @@ def _windows_host() -> HostInfo:
 def test_release_listing_failure_does_not_keep_a_gutted_runtime(
     tmp_path, monkeypatch, windows, host, backend
 ):
-    """A tree that lost its runtime payload cannot start, so it is not kept.
-
-    Windows is the case that needs this: both binary preflights are Linux/macOS-only
-    and os.access(X_OK) there is just exists(), so the marker's own backend is the
-    only payload signal a missing llama.dll would trip.
-    """
+    """Do not keep a tree that has lost its runtime payload."""
 
     def boom(*args, **kwargs):
         raise urllib.error.URLError("connection reset")
@@ -5707,12 +5691,7 @@ def _listing_failure(monkeypatch, host):
 def test_a_paired_cuda_install_needs_its_cudart_trio(
     tmp_path, monkeypatch, runtime_asset, paired_runtime, kept
 ):
-    """The trio is demanded of the installs that were built with it, and only those.
-
-    write_prebuilt_metadata records runtime_asset for exactly that: a pair-less install
-    is healthy without the DLLs, and demanding them would source build over a working
-    tree (the reason runtime_payload_health_groups gates them on choice.runtime_name).
-    """
+    """Require the cudart trio only from installs that recorded the paired archive."""
     _listing_failure(monkeypatch, _windows_host)
     install_dir = _complete_existing_llama_install(
         tmp_path,
@@ -5739,13 +5718,7 @@ def test_a_paired_cuda_install_needs_its_cudart_trio(
 def test_a_marker_that_names_no_backend_still_owes_the_shared_payload(
     tmp_path, monkeypatch, windows, host, payload
 ):
-    """An unreadable marker asks for what EVERY kind of its platform needs, not nothing.
-
-    Returning early on an unknown backend was a bypass rather than a default: on Windows
-    both preflights are no-ops and os.access is exists(), so a tree that had also lost
-    llama.dll passed. The per-platform intersection cannot over-require -- it is what any
-    healthy install of that platform holds.
-    """
+    """Unknown markers still require the platform's shared payload."""
     _listing_failure(monkeypatch, host)
     install_dir = _complete_existing_llama_install(tmp_path, windows = windows, payload = payload)
 
@@ -5758,11 +5731,7 @@ def test_a_marker_that_names_no_backend_still_owes_the_shared_payload(
 
 
 def test_a_stored_backend_choice_the_install_already_satisfies_is_kept(tmp_path, monkeypatch):
-    """An advisory recorded backend must not turn a transient blip into exit 5.
-
-    Keeping the tree that already runs that backend honours the choice; exit 5 exists to
-    stop a concrete choice becoming a hardware-selected source build, which this is not.
-    """
+    """Keep a working install that already satisfies its recorded backend."""
     _listing_failure(monkeypatch, linux_host)
     install_dir = _complete_existing_llama_install(tmp_path, backend = "cpu", backend_request = "cpu")
 

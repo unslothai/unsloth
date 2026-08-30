@@ -223,8 +223,7 @@ def test_run_in_venv_passes_cloudflare_to_run_server(tmp_path, monkeypatch, user
 
     studio_mod = _studio()
 
-    # tmp_path, not a literal /fake: run() takes the shared launch gate before it
-    # reaches run_server, and studio_runtime_launch_guard mkdirs STUDIO_HOME (#9890).
+    # The launch gate creates STUDIO_HOME, so use a writable path.
     fake_venv = tmp_path / "studio" / "venv" / "unsloth_studio"
     monkeypatch.setattr(sys, "prefix", str(fake_venv))
     monkeypatch.setattr(studio_mod, "STUDIO_HOME", fake_venv.parent)

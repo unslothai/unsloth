@@ -161,14 +161,7 @@ def _write_backend_fixture(home: Path, request_log: Path) -> None:
                     self.wfile.write(raw)
 
                 def allowed_headers(self):
-                    # Echo what the preflight asked for instead of naming headers. A fixed
-                    # list silently kills every authenticated fetch the moment the app adds
-                    # a header: X-Unsloth-Timezone (#8879) is not in "Authorization,
-                    # Content-Type, X-HF-Token", so the preflight failed, the request never
-                    # reached this server, and the webview rendered the TypeError as
-                    # "Unsloth isn't running -- please relaunch it." on every model row.
-                    # Only health and liveness kept working, because they send neither a
-                    # token nor a custom header and so need no preflight.
+                    # Echo requested headers so this fixture follows frontend changes.
                     asked = self.headers.get("Access-Control-Request-Headers")
                     return asked or "Authorization, Content-Type, X-HF-Token"
 

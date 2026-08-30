@@ -19,9 +19,7 @@ blockA="$(awk '
     /_STUDIO_HOME_IS_CUSTOM=true/ {seen=1}
     seen && /^fi$/ {exit}
 ' "$SETUP")"
-# Block B: STAGE_ROOT / _STUDIO_HOME_IS_CUSTOM -> _NODE_PARENT -> NODE_DIR. Anchored on
-# the staging branch, which #9890 put in front of the custom-home one; anchoring on the
-# latter stopped matching and this file exited on its own extraction check.
+# Block B: STAGE_ROOT / _STUDIO_HOME_IS_CUSTOM -> _NODE_PARENT -> NODE_DIR.
 blockB="$(awk '
     /^if \[ -n "\$STAGE_ROOT" \]; then/ {grab=1}
     grab {print}
@@ -32,13 +30,11 @@ SNIP="$blockA"$'\n'"$blockB"$'\n''echo "$NODE_DIR"'
 # Self-validate the extraction so a future setup.sh refactor fails loudly here.
 case "$blockA" in *"_STUDIO_HOME_IS_CUSTOM=true"*) : ;; *) echo "FAIL: blockA extraction broke"; exit 1 ;; esac
 case "$blockB" in *'NODE_DIR="$_NODE_PARENT/node"'*) : ;; *) echo "FAIL: blockB extraction broke"; exit 1 ;; esac
-# Every branch, not just the last: an anchor that still matches while a branch moved out
-# of the snippet would leave that branch untested and this file green.
+# Ensure the extracted snippet contains both branches.
 case "$blockB" in *'_NODE_PARENT="$RUNTIME_ROOT"'*) : ;; *) echo "FAIL: blockB lost the staging branch"; exit 1 ;; esac
 case "$blockB" in *'_NODE_PARENT="$STUDIO_HOME"'*) : ;; *) echo "FAIL: blockB lost the custom-home branch"; exit 1 ;; esac
 
-# The staging root goes in as UNSLOTH_STUDIO_STAGE_ROOT, not STAGE_ROOT: block A derives
-# STAGE_ROOT and RUNTIME_ROOT from it, so a pre-set STAGE_ROOT is simply overwritten.
+# Block A derives STAGE_ROOT from UNSLOTH_STUDIO_STAGE_ROOT.
 node_dir_for() { # HOME UNSLOTH_STUDIO_HOME STUDIO_HOME [UNSLOTH_STUDIO_STAGE_ROOT]
     env -i HOME="$1" UNSLOTH_STUDIO_HOME="$2" STUDIO_HOME="$3" \
         UNSLOTH_STUDIO_STAGE_ROOT="${4:-}" PATH="$PATH" \

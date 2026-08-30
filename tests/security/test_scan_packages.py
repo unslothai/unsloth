@@ -448,12 +448,7 @@ def test_annotation_only_network_entries_are_digest_pinned():
 
 
 def test_context_dependent_unsloth_zoo_findings_are_digest_pinned():
-    """Context outside the regex evidence is part of why these findings are safe.
-
-    The URL findings depend on the destination guard, and the compiler finding
-    depends on what feeds its dynamic patch generation. Bind each approval to
-    the complete reviewed file so any contextual edit requires another review.
-    """
+    """Require a new review when context around an approved finding changes."""
     import json
     import pathlib
 

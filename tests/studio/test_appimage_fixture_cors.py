@@ -1,21 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""The packaged-webview E2E fixture must not hold a header allowlist of its own.
-
-`appimage_model_download_webdriver.py` stands up a stub backend that the real
-WebKitGTK view talks to over `tauri://localhost` -> `http://127.0.0.1`, so every
-authenticated fetch is cross-origin and preflighted. The fixture used to answer that
-preflight with a fixed `Authorization, Content-Type, X-HF-Token`, which is a copy of
-the app's header set that nothing kept in sync: #8879 added `X-Unsloth-Timezone` to
-every authenticated request, the preflight then rejected it, and the request never
-reached the server at all. The webview turned that TypeError into "Unsloth isn't
-running -- please relaunch it." on every model row, and the run failed 15 seconds
-later waiting for a quantization that could never load. Only `/api/health` and
-`/api/liveness` kept working, because they send neither a token nor a custom header
-and so are never preflighted.
-
-Echoing `Access-Control-Request-Headers` cannot drift, so that is what is pinned here.
-"""
+"""Keep the packaged-webview fixture's CORS headers aligned with each preflight."""
 
 from __future__ import annotations
 
@@ -55,7 +40,7 @@ def test_the_fixture_echoes_the_requested_headers() -> None:
 
 
 def test_the_headers_the_app_actually_sends_are_still_custom() -> None:
-    """If these ever became simple headers the echo would be unnecessary, not wrong."""
+    """Keep the guard relevant while the frontend sends custom headers."""
     api = AUTH_API.read_text(encoding = "utf-8")
     assert '"X-Unsloth-Timezone"' in api
     assert "X-Unsloth-Timezone-Offset-Minutes" in api

@@ -387,8 +387,7 @@ test("MCP configuration remains reachable when the loaded model lacks tools", ()
 
   assert.doesNotMatch(composer, /aria-disabled=\{true\}/);
   assert.match(composer, /The loaded model cannot use MCP tools/);
-  // The rows stay toggleable: a preset is persistent configuration, and
-  // tests/studio/playwright_mcp_arguments.py toggles them with no model loaded.
+  // Presets remain configurable without a loaded model.
   assert.doesNotMatch(composer, /disabled=\{[^}]*!usable/);
   assert.match(
     composer,

@@ -207,12 +207,8 @@ for check in "$@"; do
       #   triton-kernels  -- a git URL under the triton repo's python/triton_kernels
       #     subdir: 75 Python files, no setup.py, kernels compiled at runtime. Named by
       #     the installer, not chosen by resolution, and only the Linux legs reach it.
-      #   diffusers  -- this ref pins the 0.40.0 wheel, but the `overlay: false` legs
-      #     install the RELEASED wheel, whose diffusers-pin.txt is still the pre-0.40.0
-      #     GitHub archive and so still builds. Plain setuptools, no ext_modules, zero
-      #     .c/.cpp/.pyx/.rs/.cu files. REMOVE this entry once a published Unsloth
-      #     release carries the wheel pin; tests/python/test_install_python_stack.py
-      #     already holds this ref itself to the no-build contract.
+      #   diffusers  -- overlay:false releases still pin a pure-Python source archive.
+      #     Remove this once a published Unsloth release carries the wheel pin.
       # UNSLOTH_ALLOW_SDIST extends it. Lowercased and underscore-folded on both sides:
       # the distribution name and the name uv prints can differ on the separator.
       _allow="$(printf '%s' "openai-whisper argbind randomname antlr4-python3-runtime triton-kernels diffusers ${UNSLOTH_ALLOW_SDIST:-}" | tr 'A-Z_' 'a-z-')"

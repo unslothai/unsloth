@@ -241,9 +241,7 @@ export function McpComposerButton({
     }
   }
 
-  // One dropdown row. Enabled rows get a green underlay and a tick that becomes
-  // an X on hover (click removes). The hint tooltip anchor is pointer-events-none
-  // so the row stays clickable (a Radix TooltipTrigger would swallow the select).
+  // Keep the tooltip anchor pointer-events-none so it cannot swallow row clicks.
   const renderRow = (opts: {
     key: string;
     label: string;
@@ -256,8 +254,7 @@ export function McpComposerButton({
   }) => (
     <DropdownMenuItem
       key={opts.key}
-      // Not gated on `usable`: a row is server config, not a tool call, and the
-      // label above already says the loaded model cannot run them.
+      // Server configuration remains available when the loaded model lacks tools.
       disabled={!serversLoaded || pendingUrls.has(normalizeMcpUrl(opts.url))}
       onSelect={(e) => {
         e.preventDefault();
@@ -318,10 +315,7 @@ export function McpComposerButton({
                 : "MCP servers, unavailable for the loaded model"
             }
           >
-            {/* Icon doubles as an off switch: hover swaps to an X; clicking
-                  it turns MCP off without opening the menu. In compact
-                  icon-only mode the glyph is the whole button, so clicks fall
-                  through to the trigger and open the menu instead. */}
+            {/* Outside compact mode, the hover X disables MCP without opening the menu. */}
             <span
               role="button"
               aria-label="Turn off MCP"
@@ -402,28 +396,18 @@ export function McpComposerButton({
   );
 }
 
-/**
- * The dialog itself, plus the chord that opens it, mounted for the chat rather
- * than for the pill above: MCP ships off and the pill only renders once it is
- * on, so anything living there is out of the shortcut's reach.
- */
+/** Mount the dialog independently so its shortcut works while MCP is disabled. */
 export function McpServersDialogMount() {
   const open = useMcpServersDialogStore((s) => s.open);
   const setOpen = useMcpServersDialogStore((s) => s.setOpen);
-  // Not gated on tool support: this is where servers are configured, and a
-  // model that cannot use them yet is the usual reason to come here.
+  // Server configuration does not require tool support from the loaded model.
   const chatActive = useChatActive();
   useShortcut("openMcpServers", () => setOpen(true), { enabled: chatActive });
-  // Leaving the chat closes it for good rather than parking it: the flag
-  // outlives this subtree, so a dialog left open would come back on the next
-  // visit as a ghost of the last one.
+  // Clear the shared open state when leaving chat.
   useEffect(() => {
     if (!chatActive && open) setOpen(false);
   }, [chatActive, open, setOpen]);
-  // Going off-route is not the only way to leave. Logout, or a session that
-  // expires, moves the root to /login and takes this whole subtree with it, so
-  // no chatActive=false render ever happens and the flag above survives to
-  // reopen the dialog on the next visit. Close on the way out as well.
+  // Also clear it when logout or expiry unmounts this subtree directly.
   useEffect(() => {
     return () => useMcpServersDialogStore.getState().setOpen(false);
   }, []);

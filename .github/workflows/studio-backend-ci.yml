@@ -253,9 +253,7 @@ jobs:
         # isolation guard scans for the tight ones, so a new test below the threshold
         # fails that guard instead of flaking here.
         #
-        # test_media_auto_switch keeps a 0.4s end-to-end budget assertion. It passes in
-        # a quiet process, but xdist descheduling stretched it to 3.99s. Keep the budget
-        # intact and give that file the same isolated process as the tighter bounds.
+        # test_media_auto_switch has a 0.4s budget that xdist scheduling can exceed.
         #
         # --timeout: a per-test wall-clock cap, so a test that never returns fails with its
         # own name in the summary instead of taking the job's 45 minutes down with it and

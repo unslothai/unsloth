@@ -466,61 +466,10 @@ jobs:
         # here unblocks unsloth CI until the loader fixture is fixed.
         working-directory: ${{ runner.temp }}/unsloth-zoo
         run: |
-          # Two passes: everything in parallel, then files that cannot share a
-          # process with the rest of the suite.
-          #
-          # Measured on a staging runner across all three matrix cells, whole suite:
-          #
-          #     cell                      serial   -n 4 --dist loadfile
-          #     HF=latest + TRL=latest      580s                  253s
-          #     HF=4.57.6 + TRL<1           517s                  229s
-          #     HF=default + TRL=default    568s                  246s
-          #
-          # Across two runs of all three cells, four agreed exactly -- failure sets and
-          # skip sets both -- and two produced 14 failures serial does not: 8 in
-          # test_mlx_generate.py and 6 in test_moe_bnb4bit_per_expert_conversions.py.
-          #
-          # The same 14 every time, and NOT the same cell: the second run moved them from
-          # HF=default to HF=latest. So this is not a dependency combination, it is worker
-          # scheduling, and roughly one cell per run draws the losing order.
-          #
-          # Both files pass on their own, and pass under xdist on their own, so they are
-          # self-contained. What breaks them is another file running first in the same
-          # worker -- an ordering serial never produces, because serial is alphabetical.
-          # So the parallel speedup is real and the divergence is real, and the two are
-          # separable: run those two files in their own process, where they are reliable.
-          #
-          # This is a mitigation, not a cure. The suite has cross-file pollution that
-          # alphabetical ordering happens to hide, and the right fix is in unsloth_zoo,
-          # on whichever file leaks. Pinning here keeps CI honest meanwhile: what these
-          # two files prove is unchanged, because a fresh process is what they get today.
-          #
-          # test_hf_xet_fallback.py is here for a different reason, found the same way.
-          # It drives a stall detector against the real clock -- 27 sub-second sleeps,
-          # one of them commented "within the unmeasurable window" -- and under four
-          # workers on four cores it reported "Download appears stalled (xet transport)
-          # -- no progress for 0s". Nothing was stalled; the test was descheduled. No
-          # ordering fix helps a wall-clock margin, so it gets the quiet process too.
-          #
-          # It is the only file in the suite with that shape: two use sub-second sleeps
-          # and the other one (test_mlx_save_export_edge_cases.py) sleeps 0.01s to widen
-          # a race window without asserting on elapsed time.
-          #
-          # loadfile rather than the default `load`: 34 of the 236 files touch sys.modules
-          # or importlib.reload, so tests within a file must stay on one worker, in order.
-          #
-          # The mlx family leaves the suite's worst contamination behind and leaves it as a
-          # GLOB rather than a list, because naming the victims is whack-a-mole: they move
-          # every run. tests/mlx_simulation/*_stub.py each install themselves into
-          # sys.modules as mlx, mlx.nn, mlx.utils, mlx.optimizers, mlx_lm or mlx_vlm, and
-          # each of the 43 files importing them installs only the subset it needs. A file
-          # that leaves a PARTIAL mlx behind stops a later file in the same worker from
-          # skipping ("mlx is not installed" is no longer true) and it then hits the gaps.
-          # That is the whole of what Core has been failing on: "NotImplementedError:
-          # mlx-shim: 'mlx.nn.RMSNorm' ... not implemented" and "ModuleNotFoundError: No
-          # module named 'mlx_lm.models.switch_layers'". Measured on the cloned zoo at
-          # 52aff0d: with the family spread over workers the run has 26 failures, 11 of them
-          # order-dependent; with it out, every remaining failure also fails standalone.
+          # Keep tests within each file on one worker. MLX shims contaminate sys.modules,
+          # so exclude that family from xdist and run it separately below. The other
+          # ignores either leak process state or use timing assertions that need a quiet
+          # process.
           python -m pytest -q --tb=short -n 4 --dist loadfile tests/ \
             --ignore-glob='tests/test_mlx_*.py' \
             --ignore=tests/test_moe_bnb4bit_per_expert_conversions.py \
@@ -529,26 +478,8 @@ jobs:
             --deselect tests/test_unsloth_zoo_lora_merge.py::test_active_merge_device_returns_string_on_cuda_host \
             --deselect tests/test_unsloth_zoo_lora_merge.py::test_merge_lora_moves_cpu_inputs_to_active_device
 
-          # One process PER FILE, not one shared by all of them. Without the rerun the
-          # ignores above delete the affected tests from CI and the job still goes green;
-          # without the per-file split the rerun invents its own contamination. Measured
-          # on the cloned zoo at 52aff0d: the six in one process give 14 failures and 6
-          # errors, each in its own process gives none. test_mlx_generate.py installs the
-          # MLX-on-torch shim into sys.modules at import time, which then un-skips
-          # test_mlx_neftune_quant_map.py (45 skips become NotImplementedError from the
-          # stub) and breaks the transformers patching test_gemma3_forced_float32_
-          # boundary_dtype.py asserts on ("patch_Gemma3MLP did not install its forward").
-          # These files are here because they cannot share a process, and that includes
-          # each other.
-          #
-          # rc, not `set -e`: every file reports, so one failure does not hide the rest.
-          #
-          # Exit 5 is pytest's "collected nothing", which is what a module-level skip looks
-          # like: test_moe_bnb4bit_per_expert_conversions.py skips itself on transformers
-          # 4.57.6 and prints "1 skipped" while returning 5. One file per process is what
-          # exposes that -- in the shared invocation it was one skip among the session's
-          # other tests and the run still exited 0 -- so it is tolerated here and logged
-          # rather than counted, which is the behaviour the split replaced.
+          # Run contamination-sensitive files in separate processes. Keep collecting
+          # results after failures, and treat pytest exit 5 as a module-level skip.
           rc=0
           _keep() {
             if [ "$1" = 5 ]; then
@@ -564,13 +495,8 @@ jobs:
           python -m pytest -q --tb=short tests/test_mlx_gated_delta_vjp.py || _keep "$?"
           python -m pytest -q --tb=short tests/test_gemma3_forced_float32_boundary_dtype.py || _keep "$?"
 
-          # The rest of the mlx family, one serial alphabetical process. Serial is the point:
-          # the contamination is directional, and alphabetical order is the one ordering that
-          # never puts a partial shim in front of a file that still expects to skip. The
-          # three named above stay per-file because they poison each other even in this
-          # order. 936 passed / 78 skipped in 13s on the cloned zoo at 52aff0d, against 9
-          # failures for the same files spread over xdist workers, so this buys the fix for
-          # about 25 seconds and gives the parallel pass 42 fewer files to schedule.
+          # Run the remaining MLX files serially in alphabetical order. The three isolated
+          # above also contaminate this group, so exclude them from its file list.
           mlx_group=$(ls tests/test_mlx_*.py |
             grep -vE 'tests/test_mlx_(generate|neftune_quant_map|gated_delta_vjp)\.py$')
           python -m pytest -q --tb=short $mlx_group \
