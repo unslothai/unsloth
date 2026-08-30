@@ -109,10 +109,9 @@ def _resolve_prebuilt_for_host(
     arch, ...} or None. Fail-open: any error -> None so a source build never
     blocks the app.
 
-    published_repo/published_release_tag probe one exact release instead of the
-    download host's latest pointer, which sorts by commit date and can lag the
-    published_at pick (#6219). A caller about to install a pinned release must
-    pass the same pin, or it probes a different artifact than it installs."""
+    A caller installing a pinned release must pass the same pin here, or it probes
+    a different artifact than it installs: the unpinned latest pointer sorts by
+    commit date and can lag the published_at pick (#6219)."""
     extra_args = ("--backend", backend) if backend else ()
     if published_repo:
         extra_args += ("--published-repo", published_repo)
@@ -608,21 +607,14 @@ def chained_phase_plan(
 
 
 def run_chained_phase_after_llama(phase: dict, set_progress) -> dict:
-    """Confirm the new llama can actually pair, then run the whisper phase.
+    """Make the pairing check chained_phase_plan deferred, now that llama is installed.
 
-    chained_phase_plan skips its pairing gate when the llama phase will run first, on
-    the grounds that llama "supplies the repaired pairing instead". That holds only
-    while a whisper release exists for the llama build being installed, and for ten days
-    it did not: llama shipped b10639, b10672, b10679 and b10687 while the newest whisper
-    bundle stayed pinned to b10472-mix-4b653db. The phase then ran an install that could
-    not succeed, the installer exited 2, and a llama update that had already landed was
-    reported as a failed job.
+    The plan assumes the new llama supplies a workable pairing. That was false for ten
+    days (llama reached b10687, whisper stayed on b10472-mix-4b653db), so the phase ran
+    an install that could only exit 2 and failed a job llama had already won.
 
-    So make the check the plan deferred, now that the new llama is in place. A gap is the
-    same clean skip the plan itself would have produced had llama not been updating. It
-    is NOT a way to swallow a failed install: an attempt that does go ahead still
-    surfaces exit 2 as a job error, which is what makes an incompatible release
-    actionable rather than a false success.
+    An attempt that goes ahead still surfaces exit 2, which is what keeps an
+    incompatible release actionable rather than a false success.
     """
     try:
         backend = phase.get("backend")
@@ -637,18 +629,10 @@ def run_chained_phase_after_llama(phase: dict, set_progress) -> dict:
     except Exception as exc:
         logger.debug("whisper pairing pre-flight failed", error = str(exc))
         resolved = None
-    # Skip only on a POSITIVE answer that this release cannot pair, the exit-2 case.
-    # Fail towards the install for everything else: an unreachable API, an unreadable
-    # manifest and a resolver that never ran all report prebuilt_available=false too,
-    # and a pre-flight that could not answer knows nothing. Attempting there keeps the
-    # previous behaviour rather than skipping an update that would have worked.
-    #
-    # This asks about the TARGET release, so it needs no test on the installed one. Only
-    # a slim release can be reported incompatible (_slim_release_incompatibility
-    # explains nothing else), and gating on the installed marker instead would miss the
-    # upgrade that matters most: a fat install carries no install_kind at all, by
-    # design, while releases are now slim-only, so exactly the host most likely to
-    # receive its first slim bundle would have skipped the check.
+    # A POSITIVE incompatibility only: an unreachable API reports prebuilt_available
+    # false too, and a pre-flight that cannot answer must fail towards the install.
+    # Deliberately no test on the INSTALLED kind -- a fat marker carries no
+    # install_kind, so gating on it skips the host most likely to meet a pairing gap.
     if (resolved or {}).get("unavailable_reason") == "incompatible":
         return {"skipped": True, "skip_reason": "paired_llama_unavailable"}
     return run_chained_phase(phase, set_progress)

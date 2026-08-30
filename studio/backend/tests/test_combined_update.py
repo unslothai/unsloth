@@ -753,12 +753,8 @@ def _slim_phase(**over):
 
 
 def test_a_slim_pairing_gap_skips_instead_of_failing_the_job(monkeypatch):
-    """The state the pipeline was in for ten days.
-
-    chained_phase_plan waives its pairing gate when llama updates first, assuming the
-    new llama supplies a workable pairing. When no whisper release exists for it, the
-    install exits 2 and a llama update that already landed is reported as failed.
-    """
+    """The state the pipeline was in for ten days: no whisper release paired to the
+    llama being installed, so the phase exits 2 and fails a job llama already won."""
     monkeypatch.setattr(
         wupd,
         "_resolve_prebuilt_for_host",
@@ -777,10 +773,9 @@ def test_a_slim_pairing_gap_skips_instead_of_failing_the_job(monkeypatch):
 
 
 def test_the_pre_flight_probes_the_release_that_would_be_installed(monkeypatch):
-    """Not the download host's latest pointer, which sorts by commit date and can lag
-    the published_at pick the freshness check used (the #6219 class the phase pins
-    against). Probing one release and installing another can skip a valid update or
-    wave through a doomed one."""
+    """Probing one release and installing another can skip a valid update or wave
+    through a doomed one. The unpinned latest pointer sorts by commit date and can lag
+    the published_at pick the phase pins against (#6219)."""
     seen = {}
 
     def spy(**kw):
@@ -811,11 +806,9 @@ def test_a_workable_pairing_still_installs(monkeypatch):
 def test_a_legacy_fat_install_is_pre_flighted_too(monkeypatch):
     """The pre-flight asks about the TARGET release, not the installed one.
 
-    A fat marker omits install_kind by design (prebuilt_core: "fat markers keep the
-    legacy payload exactly"), and published releases are slim-only now. So gating the
-    pre-flight on the installed marker would skip it for exactly the host most likely
-    to be handed its first slim bundle, and that host would hit the doomed install this
-    change exists to prevent.
+    A fat marker omits install_kind by design ("fat markers keep the legacy payload
+    exactly"), and releases are slim-only now, so gating on the installed marker would
+    skip exactly the host about to be handed its first slim bundle.
     """
     monkeypatch.setattr(
         wupd,
@@ -836,12 +829,8 @@ def test_a_legacy_fat_install_is_pre_flighted_too(monkeypatch):
 
 
 def test_a_fat_target_release_is_never_reported_incompatible(monkeypatch):
-    """Which is why probing unconditionally costs nothing in correctness.
-
-    _slim_release_incompatibility deliberately explains only a slim pairing failure, so
-    a fat target can answer available or unresolved but never incompatible, and the
-    skip below stays unreachable for it.
-    """
+    """Why probing unconditionally costs nothing: _slim_release_incompatibility explains
+    only a slim pairing failure, so a fat target can never be reported incompatible."""
     monkeypatch.setattr(
         wupd,
         "_resolve_prebuilt_for_host",
@@ -855,9 +844,8 @@ def test_a_fat_target_release_is_never_reported_incompatible(monkeypatch):
 @pytest.mark.parametrize(
     "resolved",
     [
-        # The resolver ran and could not get an answer: --resolve-prebuilt maps an
-        # unreachable API or an unreadable manifest to exit 0 with no prebuilt, so this
-        # is what a network failure looks like, not a pairing gap.
+        # --resolve-prebuilt maps an unreachable API to exit 0 with no prebuilt, so
+        # this is what a network failure looks like, not a pairing gap.
         {"prebuilt_available": False, "unavailable_reason": "unresolved"},
         # An installer that predates unavailable_reason. Unknown, so not a gap.
         {"prebuilt_available": False},
@@ -866,13 +854,8 @@ def test_a_fat_target_release_is_never_reported_incompatible(monkeypatch):
     ],
 )
 def test_a_pre_flight_that_cannot_answer_still_attempts_the_install(monkeypatch, resolved):
-    """Fail towards the install, not the skip.
-
-    The pre-flight exists to avoid an attempt known to be doomed. One that cannot
-    answer knows nothing, so attempting keeps the previous behaviour, exit 2 included,
-    rather than silently skipping an update that would have worked and reporting a
-    pairing gap that was never established.
-    """
+    """Fail towards the install: a pre-flight that cannot answer knows nothing, and
+    skipping would report a pairing gap that was never established."""
     monkeypatch.setattr(wupd, "_resolve_prebuilt_for_host", lambda **_kw: resolved)
     monkeypatch.setattr(wupd, "run_chained_phase", lambda phase, _sp: {"to_tag": "v1"})
 
@@ -890,11 +873,8 @@ def test_a_probe_that_raises_still_attempts_the_install(monkeypatch):
 
 
 def test_an_incompatible_release_that_slips_past_the_pre_flight_still_errors(monkeypatch):
-    """The pre-flight narrows when exit 2 happens; it must not swallow it.
-
-    test_whisper_phase_exit_2_is_a_failed_phase pins that an attempted install which
-    turns out incompatible stays an actionable job error rather than a false success.
-    """
+    """The pre-flight narrows when exit 2 happens; it must not swallow it. Pinned
+    alongside test_whisper_phase_exit_2_is_a_failed_phase."""
     monkeypatch.setattr(
         wupd, "_resolve_prebuilt_for_host", lambda **_kw: {"prebuilt_available": True}
     )

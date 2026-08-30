@@ -1404,14 +1404,9 @@ def resolver_payload_extra(artifact: dict[str, Any]) -> dict[str, Any]:
 
 
 def unavailable_payload(published_repo: str, exc: BaseException) -> dict[str, Any]:
-    """The resolver's negative answer, carrying WHY it is negative.
-
-    The install path already separates these: ReleaseCompatibilityError is exit 2
-    (a valid release this runtime cannot pair) and everything else is exit 1 (an
-    operational failure). The resolver used to flatten both into a bare
-    prebuilt_available=false, so a caller could not tell a confirmed pairing gap
-    from a probe that never got an answer.
-    """
+    """The resolver's negative answer, carrying WHY: the same split the install path
+    makes (ReleaseCompatibilityError is exit 2, everything else exit 1). Flattened, a
+    caller cannot tell a confirmed pairing gap from a probe that never answered."""
     return {
         "prebuilt_available": False,
         "repo": published_repo,

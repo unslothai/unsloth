@@ -490,13 +490,8 @@ def test_resolve_mode_unexpected_error_reports_unavailable(monkeypatch, capsys):
 
 
 def test_resolve_mode_separates_incompatible_from_unresolved(monkeypatch, capsys):
-    """The probe's negative answer must say WHY it is negative.
-
-    The install path already draws this line: ReleaseCompatibilityError is exit 2 and
-    every other failure is exit 1. Flattening both into a bare prebuilt_available=false
-    left a caller unable to tell a confirmed pairing gap from an unreachable API, so
-    an update was skipped over a network blip.
-    """
+    """The probe's negative answer must say WHY, as the install path already does
+    (exit 2 against exit 1). Flattened, a network blip reads as a pairing gap."""
     monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
 
     def incompatible(repo, *, published_release_tag = None):
@@ -510,9 +505,8 @@ def test_resolve_mode_separates_incompatible_from_unresolved(monkeypatch, capsys
 
 
 def test_resolve_mode_reports_an_ordinary_fallback_as_unresolved(monkeypatch, capsys):
-    """A plain PrebuiltFallback is an unsupported platform, a malformed manifest, a
-    checksum failure. _slim_release_incompatibility deliberately excludes those, so
-    they are not a pairing gap either."""
+    """An unsupported platform, a malformed manifest, a checksum failure:
+    _slim_release_incompatibility excludes those, so they are not a pairing gap."""
     monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
 
     def fallback(repo, *, published_release_tag = None):

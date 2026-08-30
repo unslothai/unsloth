@@ -496,10 +496,8 @@ def run_chained_update(phases: list[dict], *, job: dict, job_lock: threading.Loc
         offset += weight
         with job_lock:
             if result.get("skipped"):
-                # A phase that can only tell there is nothing to do once the phases
-                # before it have run. Reported as skipped with its reason, not as a
-                # success with no message, so the breakdown reads the same whether the
-                # decision was reached at planning time or here.
+                # Skipped with a reason, not a success with no message: deciding late
+                # must not mean explaining less.
                 job["phases"][name].update(
                     state = PHASE_SKIPPED,
                     reason = result.get("skip_reason") or "up_to_date",
