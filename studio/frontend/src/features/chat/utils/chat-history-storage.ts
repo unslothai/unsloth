@@ -949,17 +949,42 @@ export async function moveStoredChatItemToProject(
   );
 }
 
-// Messages the server has told us it owns. Once it answers 409 for an id, every later
-// save of that id is rejected too, so the autosave must stop instead of retrying: the
-// per-chunk callers fire every ~300ms for the length of a generation, which turned one
-// 43s response into 54 rejected PUTs. Keyed by thread rather than by a joined string,
-// since message ids are opaque and a separator that cannot collide with one is not worth
-// guessing at.
-const serverOwnedMessageIds = new Map<string, Set<string>>();
+// Payloads the server answered 409 for. The per-chunk callers fire every ~300ms for the
+// length of a generation, so resending a payload the server just refused turned one 43s
+// response into 54 rejected PUTs.
+//
+// Keyed by the payload, not by the message id, because a 409 on this route is not proof of
+// permanent ownership. `PUT /threads/{t}/messages/{id}` answers 409 for both
+// ChatMessageProtectedError and ChatMessageConflictError, and even a protected message may
+// be refused only transiently: _safe_generation_assistant_update rejects a save whose
+// generationSeq lost a race to the producer while still permitting the later monotonic and
+// terminal writes that carry usage, timing and response details. Suppressing by id would
+// drop those permanently, so only a byte-identical resend is skipped. That is what the
+// storm was, and a payload the client has actually moved on from is always retried.
+//
+// Keyed by thread rather than by a joined string, since message ids are opaque and a
+// separator that cannot collide with one is not worth guessing at.
+const rejectedChatMessagePayloads = new Map<string, Map<string, string>>();
 
-/** Forget the server-owned markers for a thread (its ids can be reissued). */
+/** Deterministic JSON: key order must not decide whether two payloads look equal. */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value) ?? "null";
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(",")}]`;
+  }
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, entry]) => entry !== undefined)
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+  return `{${entries
+    .map(([key, entry]) => `${JSON.stringify(key)}:${stableStringify(entry)}`)
+    .join(",")}}`;
+}
+
+/** Forget the rejected-payload markers for a thread (its ids can be reissued). */
 export function clearServerOwnedChatMessages(threadId: string): void {
-  serverOwnedMessageIds.delete(threadId);
+  rejectedChatMessagePayloads.delete(threadId);
 }
 
 // Tombstoning a thread is the point its message ids stop mattering, so the two always
@@ -981,9 +1006,11 @@ export async function saveStoredChatMessage(
   if (isChatThreadDeleted(message.threadId)) {
     throw new Error(`Thread ${message.threadId} was deleted`);
   }
-  if (serverOwnedMessageIds.get(message.threadId)?.has(message.id)) {
-    // The server's copy is authoritative and already persisted; returning the caller's
-    // record keeps the optimistic UI intact without another doomed round trip.
+  const payload = stableStringify(message);
+  if (rejectedChatMessagePayloads.get(message.threadId)?.get(message.id) === payload) {
+    // This exact payload was just refused, so the server's copy is authoritative for it;
+    // returning the caller's record keeps the optimistic UI intact without another doomed
+    // round trip. Any payload the client has since moved on from falls through and is sent.
     return message;
   }
   await ensureStoredChatThread(message.threadId);
@@ -992,9 +1019,10 @@ export async function saveStoredChatMessage(
     return await saveChatMessage(message, { coalesce: true });
   } catch (error) {
     if (error instanceof ChatMessageProtectedError) {
-      const owned = serverOwnedMessageIds.get(message.threadId) ?? new Set<string>();
-      owned.add(message.id);
-      serverOwnedMessageIds.set(message.threadId, owned);
+      const rejected =
+        rejectedChatMessagePayloads.get(message.threadId) ?? new Map<string, string>();
+      rejected.set(message.id, payload);
+      rejectedChatMessagePayloads.set(message.threadId, rejected);
       return message;
     }
     throw error;

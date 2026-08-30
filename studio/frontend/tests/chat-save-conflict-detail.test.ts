@@ -21,7 +21,7 @@ type Module = {
     threadId: string,
     messageId: string,
     detail?: string,
-  ) => Error;
+  ) => Error & { threadId: string; messageId: string };
 };
 
 /** Minimal Response double: records how many times the body was consumed. */

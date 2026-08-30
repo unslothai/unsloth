@@ -3,8 +3,13 @@
 
 // The per-chunk autosave used to treat the server's 409 as an anonymous error and re-send
 // on the very next chunk. One 43s generation in a live session produced 54 rejected PUTs,
-// each logging a full traceback server-side. A 409 here is permanent -- the server owns the
-// message -- so the only correct reaction is to stop, not to back off.
+// each logging a full traceback server-side.
+//
+// The stop is scoped to the exact payload that was refused, not to the message id. A 409 on
+// this route is not proof of permanent ownership: it also covers a message id colliding with
+// another thread, and even a protected message may be refused only because its generationSeq
+// lost a race, with the later monotonic and terminal writes still permitted. So a resend of
+// the same bytes is dropped and anything the client has moved on to is sent.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -124,6 +129,63 @@ test("clearing lets a reissued id save again", async () => {
   await module.saveStoredChatMessage(message("m1"));
 
   assert.equal(attempts.length, 2);
+});
+
+test("a later monotonic update is still sent after a stale-seq rejection", async () => {
+  // _safe_generation_assistant_update refuses an autosave whose generationSeq lost the race
+  // to the producer, then permits the next one. The recovery follower keeps going and its
+  // terminal write carries contextUsage, timings and response details, so muting the id here
+  // would drop all of them on reload.
+  const { module, attempts } = harness({ rejectIds: new Set(["m1"]) });
+
+  await module.saveStoredChatMessage({ ...message("m1"), metadata: { generationSeq: 4 } });
+  await module.saveStoredChatMessage({ ...message("m1"), metadata: { generationSeq: 5 } });
+  await module.saveStoredChatMessage({
+    ...message("m1"),
+    metadata: { generationSeq: 6, generationSettled: true },
+  });
+
+  assert.deepEqual(
+    attempts,
+    ["m1", "m1", "m1"],
+    "each newer payload gets its own attempt; only a byte-identical resend is dropped",
+  );
+});
+
+test("growing streamed content is never mistaken for a resend", async () => {
+  const { module, attempts } = harness({ rejectIds: new Set(["m1"]) });
+
+  for (const text of ["He", "Hell", "Hello"]) {
+    await module.saveStoredChatMessage({
+      ...message("m1"),
+      content: [{ type: "text", text }],
+    });
+  }
+
+  assert.equal(attempts.length, 3, "the follower publishes a longer body each chunk");
+});
+
+test("key order does not decide whether two payloads are the same", async () => {
+  // Two call sites build the record with different property order. Without a stable
+  // serialization the storm would come straight back for whichever one loses the race.
+  const { module, attempts } = harness({ rejectIds: new Set(["m1"]) });
+
+  await module.saveStoredChatMessage({
+    id: "m1",
+    threadId: "t1",
+    role: "assistant",
+    content: [],
+    createdAt: 1,
+  });
+  await module.saveStoredChatMessage({
+    createdAt: 1,
+    content: [],
+    role: "assistant",
+    threadId: "t1",
+    id: "m1",
+  });
+
+  assert.deepEqual(attempts, ["m1"], "same fields, same payload");
 });
 
 test("an ordinary failure still propagates", async () => {
