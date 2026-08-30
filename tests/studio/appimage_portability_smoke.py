@@ -265,9 +265,9 @@ def main() -> None:
     # Compared on the leading component: a string compare would read "999" as above
     # "9999", which is the one answer this must not get wrong.
     floor = _minimum_backend_version(repo_root)
-    assert int(floor.split(".")[0]) < int(FIXTURE_BACKEND_VERSION.split(".")[0]), (
-        f"fixture version {FIXTURE_BACKEND_VERSION} no longer clears the floor {floor}"
-    )
+    assert int(floor.split(".")[0]) < int(
+        FIXTURE_BACKEND_VERSION.split(".")[0]
+    ), f"fixture version {FIXTURE_BACKEND_VERSION} no longer clears the floor {floor}"
     request_log = _write_fixture(art_dir, home, FIXTURE_BACKEND_VERSION)
 
     env = {
