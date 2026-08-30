@@ -6451,9 +6451,8 @@ def install_python_stack() -> int:
             # later unpinned run "repair" the mirror's wheel to a public one on the
             # strength of a flavor nobody verified.
             expected_torch_tag = _recordable_torch_flavor_tag(torch_flavor_tag),
-            expected_torch_tag_pinned = bool(
-                _recordable_torch_flavor_tag(torch_flavor_tag)
-            ) and _expected_torch_flavor_was_pinned(),
+            expected_torch_tag_pinned = bool(_recordable_torch_flavor_tag(torch_flavor_tag))
+            and _expected_torch_flavor_was_pinned(),
         )
         is None
     ):

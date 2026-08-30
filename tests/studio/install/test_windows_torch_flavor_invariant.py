@@ -405,7 +405,7 @@ class TestManifestRecordsTheFlavor:
         assert "expected_torch_tag = _recordable_torch_flavor_tag(torch_flavor_tag)," in _STACK_SRC
         helper = _STACK_SRC[_STACK_SRC.index("def _recordable_torch_flavor_tag(") :]
         helper = helper[: helper.index("\ndef ", 1)]
-        assert "return _RECORDED_TORCH_TAG or \"\"" in helper
+        assert 'return _RECORDED_TORCH_TAG or ""' in helper
 
     def test_a_mirror_pin_does_not_carry_a_stale_flavor_forward(self):
         # The wheel in the venv came from a mirror whose leaf names no family, so the
@@ -444,7 +444,7 @@ class TestTheFlavorProvenance:
         source = (PACKAGE_ROOT / "install.sh").read_text(encoding = "utf-8")
         block = source[source.index('case "$_torch_index_leaf" in') :]
         block = block[: block.index("_is_pip_rocm_family_leaf")]
-        assert "UNSLOTH_TORCH_BACKEND_SOURCE=\"resolved\"" in block, (
+        assert 'UNSLOTH_TORCH_BACKEND_SOURCE="resolved"' in block, (
             "install.sh derives the backend from the index it resolved -- cpu on any "
             "GPU-less host -- so the manifest has to be told which it was"
         )
@@ -458,11 +458,11 @@ class TestTheFlavorProvenance:
         check = source.index("_torch_backend_was_stated=true")
         overwrite = source.index('case "$_torch_index_leaf" in')
         assert check < overwrite, "the check has to run before the assignment"
-        mark = source.index("UNSLOTH_TORCH_BACKEND_SOURCE=\"resolved\"")
+        mark = source.index('UNSLOTH_TORCH_BACKEND_SOURCE="resolved"')
         line_start = source.rindex("if ", 0, mark)
-        assert "_torch_backend_was_stated" in source[line_start:mark], (
-            "a stated backend must not be marked derived"
-        )
+        assert (
+            "_torch_backend_was_stated" in source[line_start:mark]
+        ), "a stated backend must not be marked derived"
 
     def test_the_stack_reads_that_marker(self):
         pinned = _STACK_SRC[_STACK_SRC.index("def _expected_torch_flavor_was_pinned(") :]
