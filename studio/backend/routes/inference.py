@@ -23916,35 +23916,80 @@ async def _cached_local_catalog() -> list:
     return _CATALOG_CACHE["models"]
 
 
-def _servable_catalog_rows(catalog) -> list[tuple[object, bool, tuple[str, ...], bool]]:
-    """``(info, is_gguf, quants, resident)`` per catalog entry this server can serve
-    from disk. Module scope, and always called through ``asyncio.to_thread``: the file
-    checks stat many files and the residency check reads the inference singleton."""
+_SERVABLE_SCAN_CACHE: dict = {"at": None, "rows": [], "catalog": None}
+_SERVABLE_SCAN_CACHE_LOCK = threading.Lock()
+
+
+def _servable_catalog_scan(catalog, catalog_at: Optional[float]):
+    """``(info, is_gguf, quants, resident_key)`` per servable entry, rebuilt only when
+    the shared catalog scan is replaced.
+
+    ``local_servable_model`` stats many files and reads a ``config.json`` per entry, and
+    /v1/models re-ran that for the whole catalog on every request even though the catalog
+    behind it was already cached -- 316-621ms against 13-34ms for the internal list, which
+    touches no filesystem. Keyed on the catalog stamp like ``_validated_media_picks``, so
+    a rescan is what invalidates it and nothing goes stale behind a separate TTL.
+    """
     from core.inference.local_model_resolver import local_load_dir, local_servable_model
     from hub.services.models.catalog_classification import _UNSUPPORTED_DIFFUSION_TASK
 
-    rows = []
-    for info in catalog:
-        if getattr(info, "task", None) in (
-            *_MEDIA_MODEL_TASKS,
-            _STT_MODEL_TASK,
-            _TTS_MODEL_TASK,
-            _UNSUPPORTED_DIFFUSION_TASK,
-        ):
-            continue
-        servable = local_servable_model(info)
-        if servable is None:
-            continue
-        is_gguf, quants = servable
-        path = getattr(info, "path", None)
-        # the load dir, since an HF cache repo loads as a snapshot exact_only cannot match.
-        resident = _resolves_to_resident(
-            path if is_gguf else local_load_dir(path),
-            llama_only = is_gguf,
-            exact_only = not is_gguf,
+    # Identity as well as the stamp: _CATALOG_CACHE["at"] only advances inside
+    # _cached_local_catalog, so a caller that supplies a catalog from anywhere else
+    # would otherwise be served the previous scan under an unchanged stamp.
+    def _fresh() -> bool:
+        return (
+            catalog_at is not None
+            and _SERVABLE_SCAN_CACHE["at"] == catalog_at
+            and _SERVABLE_SCAN_CACHE["catalog"] is catalog
         )
-        rows.append((info, is_gguf, quants, resident))
-    return rows
+
+    if _fresh():
+        return _SERVABLE_SCAN_CACHE["rows"]
+    with _SERVABLE_SCAN_CACHE_LOCK:
+        if _fresh():
+            return _SERVABLE_SCAN_CACHE["rows"]
+        scanned = []
+        for info in catalog:
+            if getattr(info, "task", None) in (
+                *_MEDIA_MODEL_TASKS,
+                _STT_MODEL_TASK,
+                _TTS_MODEL_TASK,
+                _UNSUPPORTED_DIFFUSION_TASK,
+            ):
+                continue
+            servable = local_servable_model(info)
+            if servable is None:
+                continue
+            is_gguf, quants = servable
+            path = getattr(info, "path", None)
+            # the load dir, since an HF cache repo loads as a snapshot exact_only cannot match.
+            scanned.append((info, is_gguf, quants, path if is_gguf else local_load_dir(path)))
+        if catalog_at is not None:
+            _SERVABLE_SCAN_CACHE["rows"] = scanned
+            _SERVABLE_SCAN_CACHE["catalog"] = catalog
+            _SERVABLE_SCAN_CACHE["at"] = catalog_at
+        return scanned
+
+
+def _servable_catalog_rows(
+    catalog, catalog_at: Optional[float] = None
+) -> list[tuple[object, bool, tuple[str, ...], bool]]:
+    """``(info, is_gguf, quants, resident)`` per catalog entry this server can serve
+    from disk. Module scope, and always called through ``asyncio.to_thread``: the file
+    checks stat many files and the residency check reads the inference singleton.
+
+    Residency is read per request; only the scan is cached."""
+    return [
+        (
+            info,
+            is_gguf,
+            quants,
+            _resolves_to_resident(
+                resident_key, llama_only = is_gguf, exact_only = not is_gguf
+            ),
+        )
+        for info, is_gguf, quants, resident_key in _servable_catalog_scan(catalog, catalog_at)
+    ]
 
 
 async def _openai_catalog_objects() -> list[dict]:
@@ -23964,7 +24009,10 @@ async def _openai_catalog_objects() -> list[dict]:
 
     # Downloaded but unloaded: GGUF via llama.cpp, other weights via the orchestrator.
     catalog = await _cached_local_catalog()
-    for info, is_gguf, quants, loaded in await asyncio.to_thread(_servable_catalog_rows, catalog):
+    catalog_at = _CATALOG_CACHE["at"]
+    for info, is_gguf, quants, loaded in await asyncio.to_thread(
+        _servable_catalog_rows, catalog, catalog_at
+    ):
         cid = getattr(info, "model_id", None) or public_model_id(getattr(info, "id", None))
         if not cid or cid in by_id:
             continue
