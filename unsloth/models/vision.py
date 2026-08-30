@@ -365,8 +365,11 @@ def _lift_endpoint_hooks_onto_adapters(model):
         saved = getattr(wrapper, "modules_to_save", None)
         original = getattr(wrapper, "original_module", None)
         origin_hook = getattr(original, "_hf_hook", None) if original is not None else None
-        if saved is not None and origin_hook is not None \
-                and getattr(origin_hook, "execution_device", None) is not None:
+        if (
+            saved is not None
+            and origin_hook is not None
+            and getattr(origin_hook, "execution_device", None) is not None
+        ):
             for active in getattr(saved, "values", lambda: [])():
                 if hasattr(active, "_hf_hook"):
                     continue

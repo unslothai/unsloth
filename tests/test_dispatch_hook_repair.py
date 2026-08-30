@@ -748,8 +748,10 @@ class _SaveModel(torch.nn.Module):
 
 def _hooked_original():
     original = torch.nn.Linear(2, 4)
-    add_hook_to_module(original, AlignDevicesHook(
-        execution_device = torch.device(FAR), skip_keys = ["past_key_values"]))
+    add_hook_to_module(
+        original,
+        AlignDevicesHook(execution_device = torch.device(FAR), skip_keys = ["past_key_values"]),
+    )
     return original
 
 
