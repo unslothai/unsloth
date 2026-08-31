@@ -979,6 +979,11 @@ def _has_unclosed_markup_block(text: str) -> bool:
     return opens_svg > closes_svg
 
 
+# Only markup and whitespace between an opener and the artifact means the opener
+# encloses it; "the <html> tag." before a fence is prose about a tag.
+_MARKUP_OPEN_RE = re.compile(r"<(?:html|svg)\b", re.IGNORECASE)
+_ONLY_MARKUP_AND_SPACE = re.compile(r"(?:<[^>]*>|\s)*")
+
 # "First, I'll create an <html></html> skeleton" is a plan, not a page.
 _EMPTY_MARKUP_SKELETON = re.compile(
     r"<(html|svg)\b[^>]*>\s*</\1\s*>",
@@ -1067,7 +1072,11 @@ def _has_answer_artifact(text: str) -> bool:
     # would unbalance the count.
     head = text[: real_artifact.start()]
     head = _CLOSED_MARKUP_ARTIFACT.sub("", _CLOSED_CODE_FENCE.sub("", head))
-    return not _has_unclosed_markup_block(head)
+    if not _has_unclosed_markup_block(head):
+        return True
+    opens = _MARKUP_OPEN_RE.findall(head)
+    last = head.rfind(opens[-1]) if opens else -1
+    return last < 0 or _ONLY_MARKUP_AND_SPACE.fullmatch(head[last:]) is None
 
 
 # Default max_tokens to the effective context when known. The floor is high

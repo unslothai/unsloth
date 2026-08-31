@@ -346,6 +346,14 @@ def test_artifact_nested_in_an_unclosed_page_does_not_count():
     ):
         assert not _has_answer_artifact(text), text
         assert _would_reprompt(text), text
+    # A tag NAMED in prose before the artifact is prose, not a container: only
+    # markup and whitespace between the two means the opener encloses it.
+    for text in (
+        "First, let me demonstrate the <html> tag.\n```python\nx = 1\n```",
+        "First, let me demonstrate the <svg> tag.\n```python\nx = 1\n```",
+    ):
+        assert _has_answer_artifact(text), text
+        assert not _would_reprompt(text), text
     # Closed, it is an answer, and a bare tag AFTER one is prose either way.
     assert _has_answer_artifact(
         'First, let me build it.\n<html><body><svg width="10"><circle r="3"/></svg></body></html>'
