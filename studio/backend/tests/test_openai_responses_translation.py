@@ -62,6 +62,39 @@ def _responses_sse(events: list[dict]) -> bytes:
     return ("\n".join(chunks) + "\n").encode("utf-8")
 
 
+def _capture_responses_body(monkeypatch, model: str) -> dict:
+    """The outbound /v1/responses body for one model, with the sampling
+    defaults ChatCompletionRequest fills in when the caller sets nothing."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content = _responses_sse([{"type": "response.completed", "response": {}}]),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = _make_client()
+        async for _ in client._stream_openai_responses(
+            messages = [{"role": "user", "content": "Hi"}],
+            model = model,
+            temperature = 0.6,
+            top_p = 0.95,
+            max_tokens = 32,
+            enable_thinking = None,
+            reasoning_effort = None,
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    return captured["body"]
+
+
 def test_responses_request_body_uses_input_and_instructions(monkeypatch):
     captured: dict = {}
 
@@ -102,11 +135,8 @@ def test_responses_request_body_uses_input_and_instructions(monkeypatch):
     assert body["input"] == [{"role": "user", "content": "Hi"}]
     assert body["max_output_tokens"] == 512
     assert body["stream"] is True
-    # gpt-5.5 is reasoning-class: Responses API rejects temperature
-    # and top_p with `Unsupported parameter` 400s, so the helper must
-    # drop them. Non-reasoning models (gpt-4o*, gpt-4.1*, gpt-3.5-turbo*,
-    # and supported gpt-audio*) are covered in a sibling test that
-    # asserts the inverse forwarding.
+    # Responses API on reasoning-class models rejects these as `Unsupported
+    # parameter`. Never silently forward them.
     assert "temperature" not in body
     assert "top_p" not in body
     assert "presence_penalty" not in body
@@ -115,99 +145,53 @@ def test_responses_request_body_uses_input_and_instructions(monkeypatch):
     assert "messages" not in body
 
 
-def test_responses_forwards_sampling_for_non_reasoning_chat_families(monkeypatch):
-    # Codex P1 follow-up to the picker filter change (PR 5684): the
-    # OpenAI denylist now admits non-reasoning chat families
-    # (gpt-4o*, gpt-4.1*, gpt-3.5-turbo*, and supported gpt-audio*).
-    # The Responses API ACCEPTS temperature and top_p on those, so
-    # the helper must forward the user's slider settings instead of
-    # silently dropping them.
-    for model in (
-        "gpt-4o",
-        "gpt-4o-mini",
-        "gpt-4o-2026-01-01",
-        "gpt-4.1",
-        "gpt-4",
-        "gpt-3.5-turbo",
-        "gpt-audio",
-        "gpt-4o-audio-preview",
-    ):
-        captured: dict = {}
-
-        def handler(request: httpx.Request, _captured = captured) -> httpx.Response:
-            _captured["body"] = json.loads(request.content.decode("utf-8"))
-            return httpx.Response(
-                200,
-                content = _responses_sse([{"type": "response.completed", "response": {}}]),
-                headers = {"content-type": "text/event-stream"},
-            )
-
-        _mock_http_client(monkeypatch, handler)
-
-        async def run():
-            client = _make_client()
-            async for _ in client._stream_openai_responses(
-                messages = [{"role": "user", "content": "Hi"}],
-                model = model,
-                temperature = 0.42,
-                top_p = 0.85,
-                max_tokens = 32,
-                enable_thinking = None,
-                reasoning_effort = None,
-            ):
-                pass
-            await client.close()
-
-        _drive(run())
-        body = captured["body"]
-        assert body["temperature"] == 0.42, (model, body)
-        assert body["top_p"] == 0.85, (model, body)
-
-
-def test_responses_still_drops_sampling_for_reasoning_families(monkeypatch):
-    # Sanity: parametrise across the reasoning-class families so a
-    # future regex tweak that accidentally weakens the drop surfaces
-    # here.
+def test_responses_never_forwards_sampling_for_any_openai_family(monkeypatch):
+    # ChatCompletionRequest defaults temperature to 0.6 and top_p to 0.95, and
+    # the UI hides both sliders for OpenAI, so anything forwarded here is a
+    # value the user never chose. Reasoning families reject them outright --
+    # including ids no prefix regex catches, such as codex-mini-latest.
     for model in (
         "gpt-5.6-sol",
         "gpt-5.5",
-        "gpt-5.4",
         "gpt-5",
+        "gpt-4.5-preview",
+        "gpt-4o",
+        "gpt-4.1",
+        "gpt-3.5-turbo",
         "o1",
         "o3-mini",
         "o4-mini",
-        "gpt-4.5-preview",
+        "codex-mini-latest",
+        "chatgpt-4o-latest",
     ):
-        captured: dict = {}
-
-        def handler(request: httpx.Request, _captured = captured) -> httpx.Response:
-            _captured["body"] = json.loads(request.content.decode("utf-8"))
-            return httpx.Response(
-                200,
-                content = _responses_sse([{"type": "response.completed", "response": {}}]),
-                headers = {"content-type": "text/event-stream"},
-            )
-
-        _mock_http_client(monkeypatch, handler)
-
-        async def run():
-            client = _make_client()
-            async for _ in client._stream_openai_responses(
-                messages = [{"role": "user", "content": "Hi"}],
-                model = model,
-                temperature = 0.42,
-                top_p = 0.85,
-                max_tokens = 32,
-                enable_thinking = None,
-                reasoning_effort = None,
-            ):
-                pass
-            await client.close()
-
-        _drive(run())
-        body = captured["body"]
+        body = _capture_responses_body(monkeypatch, model)
         assert "temperature" not in body, (model, body)
         assert "top_p" not in body, (model, body)
+
+
+def test_responses_sends_extended_cache_retention_only_where_supported(monkeypatch):
+    # Extended (24h) retention is documented for the gpt-5 line and gpt-4.1;
+    # every other model 400s the whole turn with "prompt_cache_retention is
+    # not supported on this model".
+    for model in ("gpt-5", "gpt-5.1", "gpt-5.4-mini", "gpt-5.6-sol", "gpt-4.1"):
+        body = _capture_responses_body(monkeypatch, model)
+        assert body.get("prompt_cache_retention") == "24h", (model, body)
+
+    for model in (
+        "gpt-4o",
+        "gpt-4o-mini",
+        "gpt-4.1-mini",
+        "gpt-4",
+        "gpt-3.5-turbo",
+        "o1",
+        "o3",
+        "o3-mini",
+        "o4-mini",
+        "chatgpt-4o-latest",
+        "codex-mini-latest",
+    ):
+        body = _capture_responses_body(monkeypatch, model)
+        assert "prompt_cache_retention" not in body, (model, body)
 
 
 def test_responses_failed_without_details_has_actionable_fallback(monkeypatch):

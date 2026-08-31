@@ -398,19 +398,14 @@ def _split_pending_citation_tail(text: str) -> tuple[str, str]:
     return text[:last_open], text[last_open:]
 
 
-# Reasoning-class OpenAI families that reject `temperature` and `top_p`
-# with "Unsupported parameter" 400s on /v1/responses (and on
-# /v1/chat/completions for the same families). Sampling knobs MUST be
-# dropped for these. Other chat-completion families (gpt-4o*,
-# gpt-4.1*, gpt-3.5-turbo*, gpt-4*, and supported gpt-audio*)
-# accept the standard sampling shape and receive both fields.
-#
-# Source: OpenAI's reasoning guide
-# (https://developers.openai.com/api/docs/guides/reasoning) and the
-# /v1/responses reference. Covers gpt-5.x family, o1/o3/o4 family,
-# and gpt-4.5 family. The `(?:[-.]|$)` anchor keeps gpt-50 / o30
-# hypotheticals out.
-_OPENAI_REASONING_FAMILY = re.compile(r"^(?:gpt-5(?:\.\d+)?|o[134]|gpt-4\.5)(?:[-.]|$)")
+# Families that accept `prompt_cache_retention: "24h"`. Everything else 400s
+# with "prompt_cache_retention is not supported on this model"
+# (invalid_request_error / invalid_parameter), which kills the whole turn --
+# the same defect openai/codex#39397 fixed by gating the field on the model.
+# Unmatched models still get ordinary in-memory caching, so guessing narrow
+# only costs cache TTL while guessing wide costs the request.
+# https://developers.openai.com/api/docs/guides/prompt-caching
+_OPENAI_EXTENDED_CACHE_FAMILY = re.compile(r"^(?:gpt-5(?:\.\d+)?(?:[-.]|$)|gpt-4\.1$)")
 
 
 class _AnthropicThinkingSpec(NamedTuple):
@@ -5180,25 +5175,19 @@ class ExternalProviderClient:
                     break
             input_items[insert_at:insert_at] = openai_replay_items
 
-        # The picker now admits non-reasoning chat models as well as gpt-5.x,
-        # o1/o3/o4, and gpt-4.5. Forward the sampling knobs for models that
-        # accept them and omit them for reasoning families that reject them.
+        # Sampling is never forwarded on this path. The reasoning families
+        # reject temperature/top_p outright, and for the rest the UI hides both
+        # sliders (provider-capabilities.ts), so the only values reaching here
+        # are ChatCompletionRequest's 0.6/0.95 defaults -- forwarding those
+        # would silently override OpenAI's own defaults with a number the user
+        # never chose.
+        del temperature, top_p  # accepted for API symmetry, not forwarded.
+
         body: dict[str, Any] = {
             "model": model,
             "input": input_items,
             "stream": True,
         }
-        is_reasoning_family = bool(_OPENAI_REASONING_FAMILY.match(model.strip().lower()))
-        if not is_reasoning_family:
-            if temperature is not None:
-                body["temperature"] = temperature
-            if top_p is not None:
-                body["top_p"] = top_p
-        else:
-            # Reasoning-class: explicit drop. ``reasoning.effort`` is
-            # the only knob the API accepts and defaults to "medium"
-            # server-side if omitted.
-            del temperature, top_p
         if previous_response_id:
             body["previous_response_id"] = previous_response_id
         # `summary: "auto"` is what makes /v1/responses emit reasoning summary
@@ -5251,8 +5240,13 @@ class ExternalProviderClient:
 
         # Opt into 24h prompt-cache retention (free, vs the default ~5-10 min).
         # Gated on the OpenAI cloud host because ollama / llama.cpp / "custom"
-        # presets reach this path too and would 400 on the unknown field.
-        if is_openai_cloud and enable_prompt_caching is not False:
+        # presets reach this path too and would 400 on the unknown field, and
+        # on the model because most cloud families reject the value itself.
+        if (
+            is_openai_cloud
+            and enable_prompt_caching is not False
+            and _OPENAI_EXTENDED_CACHE_FAMILY.match(model.strip().lower())
+        ):
             body["prompt_cache_retention"] = "24h"
 
         # Server-side context compaction (OpenAI cloud only).
