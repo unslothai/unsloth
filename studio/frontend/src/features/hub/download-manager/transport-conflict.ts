@@ -4,7 +4,12 @@
 import { toast } from "@/lib/toast";
 import { disposableTimeoutSignal } from "../lib/abort-signals";
 import { getActiveModelDownloads } from "./api";
-import { TRANSPORT, type TransportMode } from "./constants";
+import {
+  mismatchStartAction,
+  TRANSPORT,
+  type ResolvedTransport,
+  type TransportMode,
+} from "./constants";
 import {
   apiTransportStatusWithRetry,
   effectiveTransportMode,
@@ -61,13 +66,13 @@ function hasActiveOrPendingStart(req: DownloadRequest): boolean {
   );
 }
 
-function asTransportMode(value: unknown): TransportMode | null {
+function asTransportMode(value: unknown): ResolvedTransport | null {
   return value === TRANSPORT.HTTP || value === TRANSPORT.XET ? value : null;
 }
 
 async function activeSiblingTransport(
   req: DownloadRequest,
-): Promise<TransportMode | null> {
+): Promise<ResolvedTransport | null> {
   if (req.kind !== "model" || !req.variant) return null;
   const timeout = disposableTimeoutSignal(TRANSPORT_STATUS_TIMEOUT_MS);
   const downloads = await getActiveModelDownloads(req.repoId, timeout.signal, {
@@ -155,16 +160,17 @@ export async function requestStart(
   // during; read after them it would name the page they moved to.
   const originRoute = currentRoute();
   return runWithPendingStartGuard(req, async () => {
-    let mode: TransportMode = await resolveTransportMode();
+    const preferred: TransportMode = await resolveTransportMode();
+    let mode: TransportMode = preferred;
     try {
-      mode = await effectiveTransportMode(mode);
+      mode = await effectiveTransportMode(preferred);
     } catch (err) {
       console.warn(
         "Transport capability check failed; using the selected transport.",
         err,
       );
     }
-    let siblingTransport: TransportMode | null = null;
+    let siblingTransport: ResolvedTransport | null = null;
     let siblingProbed = false;
     try {
       siblingTransport = await activeSiblingTransport(req);
@@ -183,22 +189,33 @@ export async function requestStart(
     }
     try {
       const status = await apiTransportStatusWithRetry(req);
-      if (
-        status.has_partial &&
-        status.last_transport &&
-        status.last_transport !== mode
-      ) {
-        setConflict(jobKeyOf(req.kind, req.repoId, req.variant), {
-          info: {
-            previous: status.last_transport,
-            next: mode,
-            resumable: status.resumable,
-          },
-          // Without the caller's line: resolved later from the Hub, where "it'll
-          // load automatically" is a promise chat cannot keep. The notice stands.
-          pending: { ...req, callerToast: undefined },
-        });
-        return "conflict";
+      const last = asTransportMode(status.last_transport);
+      const resolved = asTransportMode(mode);
+      if (status.has_partial && last && resolved && last !== resolved) {
+        const action = mismatchStartAction(preferred, resolved, last);
+        if (action === "conflict") {
+          setConflict(jobKeyOf(req.kind, req.repoId, req.variant), {
+            info: {
+              previous: last,
+              next: resolved,
+              resumable: status.resumable,
+            },
+            // Without the caller's line: resolved later from the Hub, where "it'll
+            // load automatically" is a promise chat cannot keep. The notice stands.
+            pending: { ...req, callerToast: undefined },
+          });
+          return "conflict";
+        }
+        if (siblingProbed && siblingTransport && siblingTransport !== action) {
+          toast.info("Another variant is already downloading", {
+            description:
+              siblingTransport === TRANSPORT.XET
+                ? "This repository is currently downloading with Xet. Switch to Xet or wait for it to finish."
+                : "This repository is currently downloading with HTTP. Switch to HTTP or wait for it to finish.",
+          });
+          return "busy";
+        }
+        mode = action;
       }
       if (status.has_partial && !status.last_transport) {
         toast.info("Restarting this download", {

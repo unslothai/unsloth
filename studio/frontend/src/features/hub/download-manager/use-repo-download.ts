@@ -119,13 +119,6 @@ export function useRepoDownload(config: RepoDownloadConfig): DownloadJob {
     (state) => state.conflicts[conflictKey]?.info ?? null,
   );
 
-  useEffect(
-    () => () => {
-      downloadManager.cancelConflict(conflictKey);
-    },
-    [conflictKey],
-  );
-
   const requestStartDownload = useCallback(
     async (variant: string | null, expectedBytes: number) => {
       // This surface renders the conflict resolver (transportConflict), so the
