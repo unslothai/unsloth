@@ -263,17 +263,37 @@ def test_fence_body_indented_four_spaces_is_not_a_closer():
     assert _has_answer_artifact("First, let me show:\n```python\nx = 1\n  ```")
 
 
-def test_fence_indentation_is_measured_from_its_opener():
-    """The 3-column allowance is relative to the container the block sits in, and
-    the opener's own offset stands in for it, so a block nested in a list closes at
-    the column its list puts it at."""
-    samples = [
+def test_fence_indentation_is_measured_from_its_container():
+    """The 3-column allowance comes from the container, so a block a list indents
+    closes at the list's column, while a block that merely indented itself does
+    not get those columns twice."""
+    nested = [
         "First, let me show it.\n  - ```python\n    x = 1\n    ```",
         "First, let me show it.\n    - ```python\n      x = 1\n      ```",
     ]
-    for text in samples:
+    for text in nested:
         assert _has_answer_artifact(text), text
         assert not _would_reprompt(text), text
+
+    # No container: the opener's own 3 columns do not buy the closer 3 more.
+    assert not _has_answer_artifact("First, let me show it.\n   ```python\n   x = 1\n      ```")
+    assert _has_answer_artifact("First, let me show it.\n   ```python\n   x = 1\n   ```")
+
+
+def test_blockquote_inside_a_list_item_is_one_container():
+    """``- > ```py`` is a quote in a list item, so the opener and the closer under it
+    have to be read at the same quote depth."""
+    text = "First, let me show it.\n- > ```python\n  > x = 1\n  > ```"
+    assert _has_answer_artifact(text)
+    assert not _would_reprompt(text)
+
+
+def test_indented_code_literal_is_not_a_fence_opener():
+    """Past 3 columns a delimiter on its own line is an indented code line, so a
+    fence shown as a literal must not reopen after a finished block."""
+    text = "First, let me show it.\n```python\nx = 1\n```\nLiteral:\n\n    ```python"
+    assert _has_answer_artifact(text)
+    assert not _would_reprompt(text)
 
 
 def test_closer_must_start_its_own_line():

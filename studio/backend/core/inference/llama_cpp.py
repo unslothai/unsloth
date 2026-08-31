@@ -877,7 +877,8 @@ _HAS_ANSWER_ARTIFACT = re.compile(
 
 _FENCE_RUN_RE = re.compile(r"(?<!`)(?P<backticks>`{3,})(?!`)|(?<!~)(?P<tildes>~{3,})(?!~)")
 # Structure, not content: stripped so a quoted fence is judged at its real column.
-_BLOCKQUOTE_PREFIX = re.compile(r"^[ \t]*(?:>[ \t]?)+")
+# One list marker may precede the quote, since "- > ```py" is a quote in a list item.
+_BLOCKQUOTE_PREFIX = re.compile(r"^[ \t]*(?:[-*+]|\d{1,9}[.)])?[ \t]*(?:>[ \t]?)+")
 # A language token, the only trailing text that makes an inline run an opener
 # rather than prose: python3, c++, c#, objective-c, ts-node, bash-session.
 _FENCE_INFO_STRING_RE = re.compile(r"[A-Za-z][\w.+#-]*")
@@ -897,7 +898,7 @@ def _has_unclosed_code_fence(text: str) -> bool:
     active_char: Optional[str] = None
     active_len = 0
     active_quote = 0
-    active_indent = 0
+    active_base = 0
     closed_any = False
     for raw_line in text.splitlines():
         quote = _BLOCKQUOTE_PREFIX.match(raw_line)
@@ -914,30 +915,33 @@ def _has_unclosed_code_fence(text: str) -> bool:
             if active_char is not None:
                 # CommonMark closes only on a delimiter that starts its own line and
                 # ends it, so "Use three backticks: ```" inside a block is body. The
-                # 3-column allowance is measured from the opener, which stands in for
-                # the list or quote the block sits in, so a closer under `  - ```py`
-                # is not read as an indented code line. Everything else here is body.
+                # 3-column allowance is measured from the container, not cumulatively
+                # with any indentation the opener chose. Everything else here is body.
                 if (
                     blank_prefix
-                    and indent <= active_indent + 3
+                    and indent <= active_base + 3
                     and ch == active_char
                     and len(fence) >= active_len
                     and quote_depth == active_quote
                     and not trailing
                 ):
-                    active_char, active_len, active_quote, active_indent = None, 0, 0, 0
+                    active_char, active_len, active_quote, active_base = None, 0, 0, 0
                     closed_any = True
                 continue
-            if blank_prefix and indent <= 3:
-                active_char, active_len = ch, len(fence)
-                active_quote, active_indent = quote_depth, indent
+            if blank_prefix:
+                # Optional indentation of its own, so the container baseline is 0 and
+                # the closer gets the plain three columns. Past three the run is an
+                # indented code line, a literal, and opens nothing.
+                if indent <= 3:
+                    active_char, active_len = ch, len(fence)
+                    active_quote, active_base = quote_depth, 0
                 continue
-            # Deeper than 3 columns is an indented code block, and a run mid-prose is
-            # not a fence at all, but models do open one there. Only the last run on
-            # the line can be that opener: an earlier one is closed by the later ("the
-            # marker is ```python```"), and only a bare info string tells an opener
-            # from prose. A bare delimiter once a block has closed is a literal ("wrap
-            # it in ```"); before any close, "here is code: ```" still opens.
+            # A run mid-prose is not a fence at all, but models do open one there.
+            # Only the last run on the line can be that opener: an earlier one is
+            # closed by the later ("the marker is ```python```"), and only a bare info
+            # string tells an opener from prose. A bare delimiter once a block has
+            # closed is a literal ("wrap it in ```"); before any close, "here is code:
+            # ```" still opens.
             if index != len(runs) - 1:
                 continue
             if trailing and not _FENCE_INFO_STRING_RE.fullmatch(trailing):
@@ -945,7 +949,9 @@ def _has_unclosed_code_fence(text: str) -> bool:
             if not trailing and closed_any:
                 continue
             active_char, active_len = ch, len(fence)
-            active_quote, active_indent = quote_depth, indent
+            # A list marker before the fence IS the container, so its width is the
+            # baseline the closer's three columns are measured from.
+            active_quote, active_base = quote_depth, indent
     return active_char is not None
 
 
