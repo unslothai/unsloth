@@ -2992,6 +2992,13 @@ def _expected_torch_flavor_tag() -> str:
         _installed = _torch_flavor_tag(_installed_torch_version_label())
         if _installed == _TORCH_BACKEND:
             return _TORCH_BACKEND
+    # An unknown-family pin (a corporate /simple mirror, /current) was applied verbatim,
+    # and nothing below it can name a family for this venv: the manifest describes the
+    # install the mirror replaced, and the CUDA probe would hand back the mirror's own
+    # leaf as if it were a flavor. The setup handover above still outranks this, because
+    # that one describes the index this run actually installed from.
+    if _explicit_unknown_family_torch_index_url() is not None:
+        return ""
     if _RECORDED_TORCH_TAG:
         return _RECORDED_TORCH_TAG
     # An absent NVIDIA GPU with no pin means no CUDA expectation exists to enforce.

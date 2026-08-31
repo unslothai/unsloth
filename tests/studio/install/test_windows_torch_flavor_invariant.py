@@ -510,3 +510,81 @@ class TestABrokenTorchForcesItsOwnReinstall:
 
     def test_the_flag_is_still_raised_where_the_import_definitively_failed(self):
         assert "$script:TorchImportDefinitivelyFailed = $true" in _SETUP_SRC
+
+
+class TestTheProvenanceMarkerSurvivesAResolution:
+    """A stated backend that the resolution overwrote is not a stated choice."""
+
+    def test_install_sh_only_keeps_a_stated_backend_that_agreed(self):
+        source = (PACKAGE_ROOT / "install.sh").read_text(encoding = "utf-8")
+        block = source[source.index("_torch_backend_was_stated=true") :]
+        block = block[: block.index("_is_pip_rocm_family_leaf")]
+        assert "_torch_backend_stated_value" in block, (
+            "the case statement overwrites UNSLOTH_TORCH_BACKEND before the marker is "
+            "decided, so the original value has to be kept to compare against"
+        )
+        gate = block[block.index('export UNSLOTH_TORCH_BACKEND_SOURCE="resolved"') - 400 :]
+        gate = gate[: gate.index("unset UNSLOTH_TORCH_BACKEND_SOURCE")]
+        assert '"$_torch_backend_stated_value" != "$UNSLOTH_TORCH_BACKEND"' in gate, (
+            "a caller who said cuda on a host with no visible GPU now carries the "
+            "resolved cpu; recording that as deliberate denies it the repair for good"
+        )
+
+
+class TestAnUnknownMirrorPinNamesNoFlavor:
+    """The wheel came from a mirror whose leaf names no family, so nothing downstream can
+    name one for this venv: not the manifest, which describes the install the mirror
+    replaced, and not the CUDA probe, which reads the mirror's own leaf back as a flavor."""
+
+    def test_the_expectation_stops_before_the_stale_manifest(self):
+        body = _STACK_SRC[_STACK_SRC.index("def _expected_torch_flavor_tag(") :]
+        body = body[: body.index("\ndef ", 1)]
+        guard = body.index("_explicit_unknown_family_torch_index_url() is not None")
+        record = body.index("if _RECORDED_TORCH_TAG:")
+        assert guard < record, (
+            "the guard has to run BEFORE the manifest fallback, or the stale tag is "
+            "returned as `resolved` and _recordable_torch_flavor_tag's own guard, which "
+            "only fires on an empty resolved, never runs"
+        )
+
+    def test_the_handover_still_outranks_it(self):
+        body = _STACK_SRC[_STACK_SRC.index("def _expected_torch_flavor_tag(") :]
+        body = body[: body.index("\ndef ", 1)]
+        assert body.index("UNSLOTH_EXPECTED_TORCH_TAG") < body.index(
+            "_explicit_unknown_family_torch_index_url() is not None"
+        ), "the setup handover describes the index this run installed from"
+
+
+class TestPinProvenanceMustBeABoolean:
+    def test_both_readers_reject_a_stringly_typed_pin(self):
+        stack = (PACKAGE_ROOT / "studio" / "install_manifest.py").read_text(encoding = "utf-8")
+        backend = (
+            PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+        ).read_text(encoding = "utf-8")
+        assert 'manifest.get("expected_torch_tag_pinned") is True' in stack
+        assert "pinned is True" in backend, (
+            'bool("false") is True, so a migrated or hand-edited manifest would read as a '
+            "deliberate pin and suppress the repair on a host that never chose one"
+        )
+
+    def test_the_manifest_reader_answers_false_for_a_string(self, tmp_path):
+        (tmp_path / install_manifest.MANIFEST_NAME).write_text(
+            json.dumps({
+                "schema": install_manifest.MANIFEST_SCHEMA,
+                "expected_torch_tag": "cpu",
+                "expected_torch_tag_pinned": "false",
+            }),
+            encoding = "utf-8",
+        )
+        assert install_manifest.recorded_torch_flavor_was_pinned(tmp_path) is False
+
+    def test_a_real_boolean_still_answers_true(self, tmp_path):
+        (tmp_path / install_manifest.MANIFEST_NAME).write_text(
+            json.dumps({
+                "schema": install_manifest.MANIFEST_SCHEMA,
+                "expected_torch_tag": "cpu",
+                "expected_torch_tag_pinned": True,
+            }),
+            encoding = "utf-8",
+        )
+        assert install_manifest.recorded_torch_flavor_was_pinned(tmp_path) is True

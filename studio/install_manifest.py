@@ -423,7 +423,11 @@ def recorded_torch_flavor_was_pinned(root: Optional[Path] = None) -> bool:
     manifest = read_manifest(root)
     if manifest is None:
         return False
-    return bool(manifest.get("expected_torch_tag_pinned"))
+    # An ACTUAL boolean. bool("false") is True, so a migrated or hand-edited manifest
+    # carrying the string would read as a deliberate pin and suppress the repair on a
+    # host that never chose one. Anything that is not a bool is unknown provenance, and
+    # the safe answer for unknown is the same False an absent key gets.
+    return manifest.get("expected_torch_tag_pinned") is True
 
 
 def _parse_requirement_line(line: str) -> Optional[Tuple[str, str, str]]:

@@ -33,6 +33,7 @@ the reports describe; the Windows adapter half is exercised through its own map.
 from __future__ import annotations
 
 import inspect
+import json
 import pathlib
 import subprocess
 import types
@@ -2661,3 +2662,31 @@ def test_the_control_that_advice_points_at_still_has_both_gates():
         / "desktop-repair-control.tsx"
     ).read_text(encoding = "utf-8")
     assert "if (!repair || repair.isExternalServer) return null;" in source
+
+
+@pytest.mark.parametrize("pinned,chosen", [
+    (True, True),
+    (False, False),
+    # bool("false") is True, so a migrated or hand-edited manifest carrying the string
+    # would read as a deliberate pin and suppress the repair on a host that never chose
+    # one. Unknown provenance gets the same answer an absent key gets.
+    ("false", False),
+    ("true", False),
+    (1, False),
+    (None, False),
+])
+def test_only_a_real_boolean_records_a_deliberate_cpu_choice(
+    monkeypatch, tmp_path, pinned, chosen
+):
+    manifest = {"schema": 1, "expected_torch_tag": "cpu"}
+    if pinned is not None:
+        manifest["expected_torch_tag_pinned"] = pinned
+    (tmp_path / "unsloth_install_manifest.json").write_text(
+        json.dumps(manifest), encoding = "utf-8"
+    )
+    monkeypatch.setattr(hw.sys, "prefix", str(tmp_path))
+    for var in ("UNSLOTH_TORCH_INDEX_URL", "UNSLOTH_TORCH_INDEX_FAMILY"):
+        monkeypatch.delenv(var, raising = False)
+
+    assert hw._recorded_install_flavor() == ("cpu", chosen)
+    assert hw._expected_cpu_flavor_was_chosen() is chosen

@@ -593,6 +593,13 @@ const VERDICT_POLL_STALL_MS = 30000;
 // torch_cpu_build. Nothing else re-reads the verdict. Matched to that TTL, because polling
 // faster than the backend can change its answer is pure request traffic.
 const INVENTORY_POLL_MS = 60000;
+// The backend's inventory and torch snapshots carry a 60 second TTL of their own, and the
+// health path reads them non-blocking: the first read past expiry SCHEDULES the refresh and
+// returns the stale entry, so the new answer only exists a moment later. Polling on the TTL
+// alone means the read that triggers the refresh is a whole interval away from the read that
+// consumes it, and an attached eGPU stays invisible for close to two minutes. One short
+// follow-up read collects it instead.
+const INVENTORY_FOLLOW_UP_MS = 4000;
 // The verdicts the inventory can still move. Everything else describes something a probe
 // cannot change (an Intel Mac stays an Intel Mac).
 const INVENTORY_SENSITIVE_REASONS = new Set([
@@ -866,6 +873,11 @@ export function AppSidebar() {
     // `finally` would clear a guard it no longer holds and let the next tick stack another
     // forced read onto the slow backend, every interval, which is the pile-up this prevents.
     let pollOwner = 0;
+    // Cleared on unmount with the interval: a follow-up outliving the effect would read
+    // against a verdict this effect no longer describes. Through `window`, like the
+    // interval beside it, and 0 for "none" because that is what window.setTimeout never
+    // returns.
+    let followUp = 0;
     const id = window.setInterval(() => {
       // A backend still importing torch answers slowly, so skip while a re-read is outstanding
       // rather than stacking them against it. Bounded, or a request that never settles would
@@ -876,14 +888,27 @@ export function AppSidebar() {
       void fetchDeviceType({ force: true })
         .catch(() => undefined)
         .finally(() => {
-          if (owned === pollOwner) pollingSince = 0;
+          if (owned !== pollOwner) return;
+          pollingSince = 0;
+          // Only where a background refresh is what we are waiting on. The unknown poll is
+          // already fast enough, and the self-heal poll is not waiting on a TTL at all.
+          if (!selfHealSettled || capabilitiesUnknown) return;
+          if (followUp) window.clearTimeout(followUp);
+          followUp = window.setTimeout(() => {
+            followUp = 0;
+            void fetchDeviceType({ force: true }).catch(() => undefined);
+          }, INVENTORY_FOLLOW_UP_MS);
         });
     }, capabilitiesUnknown
       ? VERDICT_UNKNOWN_POLL_MS
       : selfHealSettled
         ? INVENTORY_POLL_MS
         : SELF_HEAL_POLL_MS);
-    return () => window.clearInterval(id);
+    const stopPolling = () => {
+      window.clearInterval(id);
+      if (followUp) window.clearTimeout(followUp);
+    };
+    return () => stopPolling();
   }, [capabilitiesUnknown, chatOnly, chatOnlyReason, detectionDeferred]);
 
   const [shutdownOpen, setShutdownOpen] = useState(false);

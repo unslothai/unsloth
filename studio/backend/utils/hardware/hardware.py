@@ -1003,7 +1003,10 @@ def _recorded_install_flavor() -> "tuple[str, bool]":
         return "", False
     if not isinstance(recorded, str):
         return "", False
-    return recorded.strip().lower(), bool(pinned)
+    # `is True`, not bool(): bool("false") is True, and a migrated or hand-edited manifest
+    # carrying the string would read as a deliberate pin. install_manifest's own reader
+    # applies the same rule; unknown provenance is not a choice.
+    return recorded.strip().lower(), pinned is True
 
 
 def _expected_cpu_flavor_was_chosen() -> bool:

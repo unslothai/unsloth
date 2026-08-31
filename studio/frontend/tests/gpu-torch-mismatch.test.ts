@@ -423,3 +423,29 @@ test("only a host the inventory can still reclassify keeps polling", () => {
   assert.ok(polls(true, "mlx_unavailable", false), "the MLX self-heal poll");
   assert.ok(polls(false, null, true, true), "the unknown-verdict poll");
 });
+
+test("a settled inventory poll collects the refresh it triggered", () => {
+  // The backend's caches carry their own 60 second TTL and the health path reads them
+  // non-blocking, so the read that finds them expired only SCHEDULES the refresh and
+  // returns the stale entry. Polling on the TTL alone puts the read that collects the
+  // new answer a whole interval later, leaving an attached eGPU invisible for close to
+  // two minutes.
+  assert.match(sidebarSrc, /const INVENTORY_FOLLOW_UP_MS = (\d+);/);
+  const followUp = Number(
+    /const INVENTORY_FOLLOW_UP_MS = (\d+);/.exec(sidebarSrc)![1],
+  );
+  const interval = Number(/const INVENTORY_POLL_MS = (\d+);/.exec(sidebarSrc)![1]);
+  assert.ok(
+    followUp > 0 && followUp < interval,
+    `the follow-up (${followUp}ms) has to land inside the interval (${interval}ms)`,
+  );
+
+  // Scoped to the settled inventory case: the unknown poll is already fast, and the
+  // self-heal poll is not waiting on a TTL.
+  assert.match(sidebarSrc, /if \(!selfHealSettled \|\| capabilitiesUnknown\) return;/);
+  // And torn down with the interval, or it would outlive the verdict it was scheduled for.
+  assert.match(
+    sidebarSrc,
+    /window\.clearInterval\(id\);\s*\n\s*if \(followUp\) window\.clearTimeout\(followUp\);/,
+  );
+});

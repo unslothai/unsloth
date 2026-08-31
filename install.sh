@@ -4565,8 +4565,10 @@ _torch_index_leaf=$(printf '%s' "$_torch_index_leaf" | tr '[:upper:]' '[:lower:]
 # tell a stated choice from the automatic answer.
 if [ -n "${UNSLOTH_TORCH_BACKEND:-}" ]; then
     _torch_backend_was_stated=true
+    _torch_backend_stated_value=$(printf '%s' "$UNSLOTH_TORCH_BACKEND" | tr '[:upper:]' '[:lower:]')
 else
     _torch_backend_was_stated=false
+    _torch_backend_stated_value=""
 fi
 case "$_torch_index_leaf" in
     rocm*|gfx*) export UNSLOTH_TORCH_BACKEND="rocm" ;;
@@ -4580,7 +4582,14 @@ esac
 # Derived from the index this script RESOLVED, which on a GPU-less machine is "cpu" whether
 # or not anyone asked. Without the marker every ordinary Linux CPU install is recorded as a
 # deliberate choice, and a machine that later gains a GPU is never offered the repair.
-if [ -n "${UNSLOTH_TORCH_BACKEND:-}" ] && [ "$_torch_backend_was_stated" != true ]; then
+# Only when the stated family SURVIVED the resolution. The case above has already
+# overwritten the variable, so a caller who said "cuda" on a machine with no visible GPU
+# now carries the resolved "cpu" -- and treating that as stated records a deliberate CPU
+# flavor for a host that asked for CUDA and did not get it. It would then be denied the
+# repair for good if the GPU ever became visible.
+if [ -n "${UNSLOTH_TORCH_BACKEND:-}" ] &&
+   { [ "$_torch_backend_was_stated" != true ] ||
+     [ "$_torch_backend_stated_value" != "$UNSLOTH_TORCH_BACKEND" ]; }; then
     export UNSLOTH_TORCH_BACKEND_SOURCE="resolved"
 else
     unset UNSLOTH_TORCH_BACKEND_SOURCE
