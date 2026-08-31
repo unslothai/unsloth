@@ -16,6 +16,7 @@ Pattern follows core/training/training.py.
 
 import atexit
 import base64
+import contextlib
 import os
 import signal
 from loggers import get_logger
@@ -277,11 +278,12 @@ class InferenceOrchestrator:
         # Set during a switch so a generation winning the _gen_lock handoff bails instead of starting on the outgoing
         # model
         self._unload_pending = False
-        # Blocking TTS has no token response that can safely establish worker ownership while it is queued behind
-        # compare-mode work. Reserve the dispatcher admission lane for the whole TTS request so its shared cancel event
-        # cannot hit a sibling. Mutated under _dispatcher_lifecycle_lock while holding _gen_lock.
-        self._exclusive_tts_pending = False
-        self._exclusive_vram_probe_pending = False
+        # What to answer a request with while one caller has the worker to itself, or
+        # None. Set before waiting for the work already in flight, so nothing new joins
+        # while that wait runs, and read by everything that would otherwise send in behind
+        # it. A reason rather than a flag: the request refused is told which of the
+        # exclusive callers holds the worker, and only one holds it at a time.
+        self._worker_reserved_for: Optional[str] = None
 
         # Dispatcher state for compare mode: bypass _gen_lock
         # Dispatcher state for compare mode (adapter-controlled requests): bypass _gen_lock, send commands directly,
@@ -538,12 +540,12 @@ class InferenceOrchestrator:
             return None
 
         with self._dispatcher_lifecycle_lock:
-            if self._exclusive_tts_pending or getattr(self, "_exclusive_vram_probe_pending", False):
+            if self._worker_reserved_for is not None:
                 return None
-            self._exclusive_vram_probe_pending = True
+            self._worker_reserved_for = "model switch is checking GPU memory"
         acquired = False
         try:
-            if not self._wait_dispatcher_idle():
+            if not self._wait_worker_idle():
                 return None
             acquired = self._gen_lock.acquire(timeout = 5.0)
             if not acquired:
@@ -595,7 +597,7 @@ class InferenceOrchestrator:
             if acquired:
                 self._gen_lock.release()
             with self._dispatcher_lifecycle_lock:
-                self._exclusive_vram_probe_pending = False
+                self._worker_reserved_for = None
 
     def _shutdown_subprocess(self, timeout: float = 10.0) -> bool:
         with self._subprocess_shutdown_lock:
@@ -1230,16 +1232,14 @@ class InferenceOrchestrator:
         that actually started a new thread; False if one was already alive.
         """
         with self._dispatcher_lifecycle_lock:
-            # Refuse to start while an unload is in progress. unload_model sets _unload_pending under this same lock
-            # before it stops the idle dispatcher, so a start queued behind that stop observes the unload here and
-            # bails. Without this a fresh dispatcher would be spawned after the stop, become the resp_queue reader, and
-            # consume the worker's "unloaded" reply (unroutable, so dropped) before unload_model's _wait_response sees
-            # it -- hanging the unload 300s.
-            if (
-                self._unload_pending
-                or self._exclusive_tts_pending
-                or getattr(self, "_exclusive_vram_probe_pending", False)
-            ):
+            # Refuse to start while an unload is in progress. unload_model sets
+            # _unload_pending under this same lock before it stops the idle
+            # dispatcher, so a start queued behind that stop observes the unload
+            # here and bails. Without this a fresh dispatcher would be spawned
+            # after the stop, become the resp_queue reader, and consume the
+            # worker's "unloaded" reply (unroutable, so dropped) before
+            # unload_model's _wait_response sees it -- hanging the unload 300s.
+            if self._unload_pending or self._worker_reserved_for:
                 return False
             if self._dispatcher_thread is not None and self._dispatcher_thread.is_alive():
                 return False
@@ -1366,8 +1366,9 @@ class InferenceOrchestrator:
         if self._unload_pending:
             yield GenStreamError("Error: model is being unloaded", public = True)
             return
-        if self._exclusive_tts_pending:
-            yield GenStreamError("Error: audio generation is in progress", public = True)
+        reserved_for = self._worker_reserved_for
+        if reserved_for:
+            yield GenStreamError(f"Error: {reserved_for}", public = True)
             return
 
         # _start_dispatcher serializes concurrent starters and returns True only for the caller that spawned the thread.
@@ -1409,23 +1410,19 @@ class InferenceOrchestrator:
             seed = seed,
         )
 
+        # Create the mailbox BEFORE sending, rechecking _unload_pending under
+        # _mailbox_lock: an unload sets _unload_pending before _wait_worker_idle
+        # reads _mailboxes under the same lock, so either the idle check sees this
+        # mailbox (and tears the dispatcher down) or we see the unload and bail.
+        # Registering after would orphan the mailbox and hang the compare stream forever.
         mailbox: queue.Queue = queue.Queue()
         with self._mailbox_lock:
-            # _unload_pending alone is not enough: an unload that ran fully since _start_dispatcher clears it in its
-            # finally and stops the dispatcher, so it reads False here though the dispatcher is gone and the model
-            # swapped. Also bail when the active model changed or the dispatcher died: a mailbox with no dispatcher to
-            # route gen_done/gen_error hangs the compare stream.
             dispatcher_alive = (
                 self._dispatcher_thread is not None and self._dispatcher_thread.is_alive()
             )
-            unloading = (
-                self._unload_pending
-                or self.active_model_name != expected_model
-                or not dispatcher_alive
-            )
-            tts_reserved = self._exclusive_tts_pending
-            probe_reserved = getattr(self, "_exclusive_vram_probe_pending", False)
-            blocked = unloading or tts_reserved or probe_reserved
+            unloading = self._unload_pending or self.active_model_name != expected_model
+            reserved_for = self._worker_reserved_for
+            blocked = unloading or bool(reserved_for) or not dispatcher_alive
             if not blocked:
                 self._mailboxes[request_id] = mailbox
                 if cancel_event is not None:
@@ -1434,20 +1431,20 @@ class InferenceOrchestrator:
             # dispatcher; if none and this call started it, stop it below.
             orphaned_dispatcher = blocked and not dispatcher_preexisting and not self._mailboxes
         if blocked:
-            # A racing unload can pass its _wait_dispatcher_idle() while the dispatcher was stopped, then set
-            # _unload_pending. The one we just started would otherwise linger with no mailboxes, race unload_model's
-            # _wait_response for the "unloaded" reply off resp_queue, and drop it as unroutable -- hanging the unload
-            # 300s. Stop it here so the unload stays the sole resp_queue reader. Outside _mailbox_lock: _stop_dispatcher
-            # joins the dispatcher, which itself takes that lock.
+            # A racing unload can pass its _wait_worker_idle() while the dispatcher was
+            # stopped, then set _unload_pending. The one we just started would otherwise
+            # linger with no mailboxes, race unload_model's _wait_response for the "unloaded"
+            # reply off resp_queue, and drop it as unroutable -- hanging the unload 300s. Stop
+            # it here so the unload stays the sole resp_queue reader. Outside _mailbox_lock:
+            # _stop_dispatcher joins the dispatcher, which itself takes that lock.
             if orphaned_dispatcher:
                 self._stop_dispatcher()
-            detail = (
-                "Error: audio generation is in progress"
-                if tts_reserved
-                else "Error: model switch is checking GPU memory"
-                if probe_reserved
-                else "Error: model is being unloaded"
-            )
+            if reserved_for:
+                detail = f"Error: {reserved_for}"
+            elif unloading:
+                detail = "Error: model is being unloaded"
+            else:
+                detail = "Error: nothing is routing replies right now; try again"
             yield GenStreamError(detail, public = True)
             return
 
@@ -1511,40 +1508,50 @@ class InferenceOrchestrator:
                 return
         logger.warning("Timed out draining mailbox after cancel")
 
-    def _wait_dispatcher_idle(self, cancel_event = None) -> bool:
-        """Wait for all dispatched requests to complete, then stop dispatcher.
+    @contextlib.contextmanager
+    def _reserve_worker(self, reason: str):
+        """Hold the worker for one caller, answering everything else with ``reason``."""
+        with self._dispatcher_lifecycle_lock:
+            if self._worker_reserved_for is not None:
+                raise RuntimeError(f"The worker is already held: {self._worker_reserved_for}")
+            self._worker_reserved_for = reason
+        try:
+            yield
+        finally:
+            with self._dispatcher_lifecycle_lock:
+                self._worker_reserved_for = None
 
-        Returns True if the dispatcher was stopped (all mailboxes drained, or no
-        dispatcher was running), and False if it was left running because compare
-        requests were still active after _DISPATCH_IDLE_TIMEOUT.
+    def _replies_in_flight(self) -> int:
+        """How many replies are on the worker, or on their way to it."""
+        with self._mailbox_lock:
+            return len(self._mailboxes) + len(self._direct_mailboxes)
 
-        Callers must reserve admission before using this as an exclusive handoff;
-        TTS does so under _gen_lock, while older direct paths call it before the lock.
+    def _wait_worker_idle(self, cancel_event = None) -> bool:
+        """Wait for the replies in flight to end, then stop the dispatcher.
+
+        True once nothing is in flight; False if something still is after
+        _DISPATCH_IDLE_TIMEOUT, or if this caller was cancelled while waiting.
+
+        Reserve the worker before calling this, or the wait need never end: a reply that
+        arrives while it runs is one more thing to wait for.
         """
-        if self._dispatcher_thread is None or not self._dispatcher_thread.is_alive():
-            return True
-
-        # Wait for all mailboxes to be emptied (dispatched requests complete)
         deadline = time.monotonic() + _DISPATCH_IDLE_TIMEOUT
         while time.monotonic() < deadline:
             if cancel_event is not None and cancel_event.is_set():
                 return False
-            with self._mailbox_lock:
-                if not self._mailboxes:
-                    break
+            if not self._replies_in_flight():
+                break
             time.sleep(0.1)
 
         if cancel_event is not None and cancel_event.is_set():
             return False
 
-        # Only stop the dispatcher if all mailboxes drained
-        with self._mailbox_lock:
-            still_active = bool(self._mailboxes)
-        if still_active:
+        remaining = self._replies_in_flight()
+        if remaining:
             logger.warning(
-                "Dispatcher still has %d active mailbox(es); "
-                "leaving dispatcher running for compare requests",
-                len(self._mailboxes),
+                "%d repl(ies) still in flight after the idle wait; leaving the dispatcher "
+                "running for them",
+                remaining,
             )
             return False
         self._stop_dispatcher()
@@ -1559,49 +1566,48 @@ class InferenceOrchestrator:
         if not self._ensure_subprocess_alive():
             raise RuntimeError("Inference subprocess is not running")
 
-        self._wait_dispatcher_idle()
-        with self._mailbox_lock:
-            if self._mailboxes:
-                raise RuntimeError(
-                    "Cannot share distributed objects while compare requests are active"
-                )
-        request_id = str(uuid.uuid4())
-        cmd = {
-            "type": "share_object",
-            "request_id": request_id,
-            "object": obj,
-        }
-
         with self._gen_lock:
-            self._send_cmd(cmd)
-            deadline = None if timeout is None else time.monotonic() + timeout
-            while deadline is None or time.monotonic() < deadline:
-                remaining = 1.0 if deadline is None else max(0.1, deadline - time.monotonic())
-                resp = self._read_resp(timeout = min(remaining, 1.0))
-                if resp is None:
-                    if not self._ensure_subprocess_alive():
-                        raise RuntimeError(self._subprocess_crash_message("sharing chat turn"))
-                    continue
-
-                rtype = resp.get("type", "")
-                rid = resp.get("request_id")
-                if rid and rid != request_id:
-                    logger.debug(
-                        "Skipping response for request_id=%s while sharing request_id=%s",
-                        rid,
-                        request_id,
+            with self._reserve_worker("a distributed share is in progress"):
+                if not self._wait_worker_idle():
+                    raise RuntimeError(
+                        "Cannot share distributed objects while a reply is still generating"
                     )
-                    continue
-                if rtype == "shared":
-                    return resp.get("object")
-                if rtype == "share_error":
-                    raise RuntimeError(resp.get("error", "Failed to share object"))
-                if rtype == "error":
-                    raise RuntimeError(resp.get("error", "Subprocess error"))
-                if rtype == "status":
-                    continue
+                request_id = str(uuid.uuid4())
+                cmd = {
+                    "type": "share_object",
+                    "request_id": request_id,
+                    "object": obj,
+                }
 
-            raise RuntimeError("Timeout waiting for distributed object share")
+                self._send_cmd(cmd)
+                deadline = None if timeout is None else time.monotonic() + timeout
+                while deadline is None or time.monotonic() < deadline:
+                    remaining = 1.0 if deadline is None else max(0.1, deadline - time.monotonic())
+                    resp = self._read_resp(timeout = min(remaining, 1.0))
+                    if resp is None:
+                        if not self._ensure_subprocess_alive():
+                            raise RuntimeError(self._subprocess_crash_message("sharing chat turn"))
+                        continue
+
+                    rtype = resp.get("type", "")
+                    rid = resp.get("request_id")
+                    if rid and rid != request_id:
+                        logger.debug(
+                            "Skipping response for request_id=%s while sharing request_id=%s",
+                            rid,
+                            request_id,
+                        )
+                        continue
+                    if rtype == "shared":
+                        return resp.get("object")
+                    if rtype == "share_error":
+                        raise RuntimeError(resp.get("error", "Failed to share object"))
+                    if rtype == "error":
+                        raise RuntimeError(resp.get("error", "Subprocess error"))
+                    if rtype == "status":
+                        continue
+
+                raise RuntimeError("Timeout waiting for distributed object share")
 
     # Monotonic count of PUBLISHED loads, so the install route can detect a load (including a same-model reload) that
     # completed
@@ -2015,13 +2021,16 @@ class InferenceOrchestrator:
             self.models.pop(model_name, None)
             return True
 
-        # The subprocess runs commands sequentially, so a bare unload queues behind a running generate (a 2-3 min hang).
-        # Cancel first (via the mp.Event the worker polls each token), then take _gen_lock as sole resp_queue reader
-        # (like GGUF). Set _unload_pending under _dispatcher_lifecycle_lock so it is ordered ahead of the dispatcher
-        # stop that _wait_dispatcher_idle runs under the same lock: a compare request's _start_dispatcher queued behind
-        # that stop then observes the unload and refuses to spawn a fresh dispatcher that would eat the "unloaded" reply
-        # off resp_queue. This is a standalone acquisition (no _gen_lock held yet), so it keeps the _gen_lock ->
-        # _dispatcher_lifecycle_lock order and can't deadlock.
+        # The subprocess runs commands sequentially, so a bare unload queues behind a
+        # running generate (a 2-3 min hang). Cancel first (via the mp.Event the worker
+        # polls each token), then take _gen_lock as sole resp_queue reader (like GGUF).
+        #
+        # Set _unload_pending under _dispatcher_lifecycle_lock so it is ordered ahead of
+        # the dispatcher stop that _wait_worker_idle runs under the same lock: a
+        # compare request's _start_dispatcher queued behind that stop then observes the
+        # unload and refuses to spawn a fresh dispatcher that would eat the "unloaded"
+        # reply off resp_queue. This is a standalone acquisition (no _gen_lock held yet),
+        # so it keeps the _gen_lock -> _dispatcher_lifecycle_lock order and can't deadlock.
         with self._dispatcher_lifecycle_lock:
             self._unload_pending = True
         # Cancelling only the running generation isn't enough: the worker clears cancel_event at each generate start, so
@@ -2045,11 +2054,12 @@ class InferenceOrchestrator:
                 return True
 
             try:
-                # Stop the compare-mode dispatcher so it can't consume the "unloaded" reply off resp_queue before we do.
-                # A dispatched generation bypasses _gen_lock, so a wedged one slips past the acquire above; if the
-                # dispatcher is still active it owns resp_queue and the queued unload hangs _wait_response behind the
-                # stuck generate.
-                if not self._wait_dispatcher_idle():
+                # Stop the compare-mode dispatcher so it can't consume the "unloaded" reply
+                # off resp_queue before we do. A dispatched generation bypasses _gen_lock, so
+                # a wedged one slips past the acquire above; if the dispatcher is still active
+                # it owns resp_queue and the queued unload hangs _wait_response behind the
+                # stuck generate. Mirror the wedged locked path: tear the subprocess down.
+                if not self._wait_worker_idle():
                     logger.warning(
                         "Unload: compare-mode dispatcher still active after idle "
                         "wait; shutting the inference subprocess down to free the model"
@@ -2512,10 +2522,9 @@ class InferenceOrchestrator:
             return
         expected_model = self.active_model_name
 
-        self._wait_dispatcher_idle()
-
-        # Serialize generation: two concurrent readers on resp_queue would consume and drop each other's token events.
-        # Hold _gen_lock across the cmd build + send + whole stream so we stay the sole resp_queue reader.
+        # Serialize generation: two concurrent readers on resp_queue would
+        # consume and drop each other's token events. Hold _gen_lock across the
+        # cmd build + send + whole stream so we stay the sole resp_queue reader.
         with self._gen_lock:
             if self._unload_pending or self.active_model_name != expected_model:
                 yield GenStreamError("Error: model is being unloaded", public = True)
@@ -2764,15 +2773,13 @@ class InferenceOrchestrator:
         # idle wait is racy: a compare request can register between the wait and this command, leaving TTS queued
         # without safe ownership of the worker's single shared cancel event.
         with self._gen_lock:
-            with self._dispatcher_lifecycle_lock:
-                self._exclusive_tts_pending = True
-            try:
-                dispatcher_idle = self._wait_dispatcher_idle(cancel_event = cancel_event)
+            with self._reserve_worker("audio generation is in progress"):
+                idle = self._wait_worker_idle(cancel_event = cancel_event)
                 if cancel_event is not None and cancel_event.is_set():
                     raise AudioGenerationCancelledError("Audio generation cancelled")
-                if not dispatcher_idle:
+                if not idle:
                     raise RuntimeError(
-                        "Cannot start audio generation while compare requests are active"
+                        "Cannot start audio generation while a reply is still generating"
                     )
 
                 # Recheck after the dispatcher wait: unload can set its flag without _gen_lock, and a switch may have
@@ -2926,9 +2933,6 @@ class InferenceOrchestrator:
                 finally:
                     self._release_worker(cancel_event)
                     release_mailbox()
-            finally:
-                with self._dispatcher_lifecycle_lock:
-                    self._exclusive_tts_pending = False
 
     def generate_whisper_response(
         self,

@@ -93,7 +93,7 @@ def _bare_orchestrator():
     orchestrator._direct_mailboxes = {}
     orchestrator._request_cancel_events = {}
     orchestrator._unload_pending = False
-    orchestrator._exclusive_tts_pending = False
+    orchestrator._worker_reserved_for = None
     orchestrator.active_model_name = "model"
     orchestrator.models = {"model": {}}
     orchestrator.loading_models = set()
@@ -273,7 +273,7 @@ def test_audio_response_cancellation_bounds_an_unresponsive_worker(monkeypatch):
     shutdown_state = []
 
     def shutdown(*, timeout):
-        shutdown_state.append((orchestrator._exclusive_tts_pending, timeout))
+        shutdown_state.append((orchestrator._worker_reserved_for, timeout))
         return True
 
     monkeypatch.setattr(orchestrator, "_shutdown_subprocess", shutdown)
@@ -284,10 +284,10 @@ def test_audio_response_cancellation_bounds_an_unresponsive_worker(monkeypatch):
 
     assert time.monotonic() - started < 0.5
     assert cancel_signals == [True]
-    assert shutdown_state == [(True, 0.03)]
+    assert shutdown_state == [("audio generation is in progress", 0.03)]
     assert orchestrator.active_model_name is None
     assert orchestrator.models == {}
-    assert orchestrator._exclusive_tts_pending is False
+    assert orchestrator._worker_reserved_for is None
 
 
 def test_audio_response_cancellation_before_worker_start_is_still_bounded(monkeypatch):
@@ -335,7 +335,7 @@ def test_audio_response_cancellation_before_worker_start_is_still_bounded(monkey
 
     assert time.monotonic() - started < 0.5
     assert shutdown_state == [0.03]
-    assert orchestrator._exclusive_tts_pending is False
+    assert orchestrator._worker_reserved_for is None
 
 
 def test_audio_generation_timeout_scales_with_requested_tokens(monkeypatch):
@@ -425,7 +425,7 @@ def test_audio_response_timeout_cancels_and_drains_before_releasing(monkeypatch)
     cancel_state = []
 
     def cancel_generation():
-        cancel_state.append(orchestrator._exclusive_tts_pending)
+        cancel_state.append(orchestrator._worker_reserved_for)
         orchestrator._cancel_event.set()
         orchestrator._resp_queue.put(
             {
@@ -440,8 +440,10 @@ def test_audio_response_timeout_cancels_and_drains_before_releasing(monkeypatch)
     with pytest.raises(RuntimeError, match = "Timeout waiting for audio generation"):
         orchestrator.generate_audio_response("hello")
 
-    assert cancel_state == [True], "timeout cancellation must occur under TTS exclusivity"
-    assert orchestrator._exclusive_tts_pending is False
+    assert cancel_state == [
+        "audio generation is in progress"
+    ], "timeout cancellation must occur under TTS exclusivity"
+    assert orchestrator._worker_reserved_for is None
     assert orchestrator._active_cancel_events == []
     assert orchestrator._executing_cancel_events == []
 
@@ -464,7 +466,7 @@ def test_audio_response_timeout_tears_down_unresponsive_worker_before_release(mo
     shutdown_state = []
 
     def shutdown(*, timeout):
-        shutdown_state.append((orchestrator._exclusive_tts_pending, timeout))
+        shutdown_state.append((orchestrator._worker_reserved_for, timeout))
         return True
 
     monkeypatch.setattr(orchestrator, "_shutdown_subprocess", shutdown)
@@ -472,8 +474,8 @@ def test_audio_response_timeout_tears_down_unresponsive_worker_before_release(mo
     with pytest.raises(RuntimeError, match = "Timeout waiting for audio generation"):
         orchestrator.generate_audio_response("hello")
 
-    assert shutdown_state == [(True, 0.03)]
-    assert orchestrator._exclusive_tts_pending is False
+    assert shutdown_state == [("audio generation is in progress", 0.03)]
+    assert orchestrator._worker_reserved_for is None
     assert orchestrator.active_model_name is None
     assert orchestrator.models == {}
 
@@ -532,12 +534,12 @@ class _AliveDispatcher:
 def test_dispatcher_refuses_during_exclusive_tts_and_resumes_after():
     orchestrator = _bare_orchestrator()
     orchestrator._resp_queue = queue.Queue()
-    orchestrator._exclusive_tts_pending = True
+    orchestrator._worker_reserved_for = "audio generation is in progress"
 
     assert orchestrator._start_dispatcher() is False
     assert orchestrator._dispatcher_thread is None
 
-    orchestrator._exclusive_tts_pending = False
+    orchestrator._worker_reserved_for = None
     try:
         assert orchestrator._start_dispatcher() is True
         assert orchestrator._dispatcher_thread is not None
@@ -586,9 +588,9 @@ def test_tts_waits_for_existing_compare_before_send(monkeypatch):
     thread.start()
 
     deadline = time.monotonic() + 2
-    while not orchestrator._exclusive_tts_pending and time.monotonic() < deadline:
+    while not orchestrator._worker_reserved_for and time.monotonic() < deadline:
         time.sleep(0.01)
-    assert orchestrator._exclusive_tts_pending is True
+    assert orchestrator._worker_reserved_for == "audio generation is in progress"
     assert sent == [], "TTS must not enqueue behind the active compare request"
 
     with orchestrator._mailbox_lock:
@@ -598,7 +600,7 @@ def test_tts_waits_for_existing_compare_before_send(monkeypatch):
     assert thread.is_alive() is False
     assert result["value"] == (b"RIFFfake", 24000)
     assert sent and sent[0]["type"] == "generate_audio"
-    assert orchestrator._exclusive_tts_pending is False
+    assert orchestrator._worker_reserved_for is None
 
 
 def test_tts_cancel_while_waiting_does_not_signal_active_compare(monkeypatch):
@@ -625,9 +627,9 @@ def test_tts_cancel_while_waiting_does_not_signal_active_compare(monkeypatch):
     thread = threading.Thread(target = run)
     thread.start()
     deadline = time.monotonic() + 2
-    while not orchestrator._exclusive_tts_pending and time.monotonic() < deadline:
+    while not orchestrator._worker_reserved_for and time.monotonic() < deadline:
         time.sleep(0.01)
-    assert orchestrator._exclusive_tts_pending is True
+    assert orchestrator._worker_reserved_for == "audio generation is in progress"
 
     caller_cancel.set()
     thread.join(timeout = 2)
@@ -636,7 +638,7 @@ def test_tts_cancel_while_waiting_does_not_signal_active_compare(monkeypatch):
     assert "cancel" in str(error["value"]).lower()
     assert cancel_calls == []
     assert set(orchestrator._mailboxes) == {"compare"}
-    assert orchestrator._exclusive_tts_pending is False
+    assert orchestrator._worker_reserved_for is None
 
 
 def test_dispatched_generation_rechecks_tts_reservation_before_registration(monkeypatch):
@@ -646,7 +648,7 @@ def test_dispatched_generation_rechecks_tts_reservation_before_registration(monk
     monkeypatch.setattr(orchestrator, "_start_dispatcher", lambda: False)
 
     def reserve_tts(*_args, **_kwargs):
-        orchestrator._exclusive_tts_pending = True
+        orchestrator._worker_reserved_for = "audio generation is in progress"
         return {"type": "generate", "request_id": "compare-1"}
 
     monkeypatch.setattr(orchestrator, "_build_generate_cmd", reserve_tts)

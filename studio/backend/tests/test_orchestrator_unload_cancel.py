@@ -6,7 +6,9 @@ hanging the UI. ``unload_model`` now cancels first (the mp.Event the worker chec
 each token) and takes ``_gen_lock`` before the unload round-trip.
 """
 
+import base64
 import multiprocessing as _mp
+import queue
 import threading
 import time
 
@@ -37,7 +39,11 @@ def _bare_orchestrator():
     o._dispatcher_stop = threading.Event()
     o._dispatcher_lifecycle_lock = threading.Lock()
     o._unload_pending = False
-    o._exclusive_tts_pending = False
+    o._worker_reserved_for = None
+    o._mailbox_lock = threading.Lock()
+    o._mailboxes = {}
+    o._direct_mailboxes = {}
+    o._request_cancel_events = {}
     o.active_model_name = "m"
     o.models = {"m": {}}
     o.loading_models = set()
@@ -459,6 +465,20 @@ def test_unload_clears_drain_event_even_on_wedged_teardown(monkeypatch):
 # ----------------------------------------------------------------------------
 
 
+def _announcing_lock(lock, reached):
+    """The held lock, saying so when someone starts waiting for it."""
+
+    class _Announcing:
+        def __enter__(self):
+            reached.set()
+            return lock.__enter__()
+
+        def __exit__(self, *exc):
+            return lock.__exit__(*exc)
+
+    return _Announcing()
+
+
 def test_generation_rechecks_model_after_lock_wait(monkeypatch):
     # A request passes the pre-lock active-model check, then blocks on _gen_lock while
     # an unload clears/swaps the model. Even if _unload_pending was already reset (the
@@ -471,13 +491,11 @@ def test_generation_rechecks_model_after_lock_wait(monkeypatch):
     )
 
     reached_lock = threading.Event()
-    # _wait_dispatcher_idle runs after the pre-lock check and before acquiring the lock;
-    # signalling here means the generator captured the model and is about to block.
-    monkeypatch.setattr(o, "_wait_dispatcher_idle", lambda: (reached_lock.set(), True)[1])
-
     o.active_model_name = "m"
     o._unload_pending = False
-    o._gen_lock.acquire()  # stand in for an in-flight unload holding the lock
+    held = o._gen_lock
+    held.acquire()  # stand in for an in-flight unload holding the lock
+    o._gen_lock = _announcing_lock(held, reached_lock)
 
     out: list = []
 
@@ -489,7 +507,7 @@ def test_generation_rechecks_model_after_lock_wait(monkeypatch):
     assert reached_lock.wait(timeout = 5)
     # Unload finished: model swapped, pending already cleared. Release the lock.
     o.active_model_name = "other"
-    o._gen_lock.release()
+    held.release()
     t.join(timeout = 5)
 
     assert out and any("unloaded" in chunk.lower() for chunk in out)
@@ -503,11 +521,11 @@ def test_generation_rechecks_model_when_unloaded_to_none(monkeypatch):
         o, "_send_cmd", lambda cmd: pytest.fail("must not generate after the model was unloaded")
     )
     reached_lock = threading.Event()
-    monkeypatch.setattr(o, "_wait_dispatcher_idle", lambda: (reached_lock.set(), True)[1])
-
     o.active_model_name = "m"
     o._unload_pending = False
-    o._gen_lock.acquire()
+    held = o._gen_lock
+    held.acquire()
+    o._gen_lock = _announcing_lock(held, reached_lock)
 
     out: list = []
     t = threading.Thread(
@@ -516,7 +534,7 @@ def test_generation_rechecks_model_when_unloaded_to_none(monkeypatch):
     t.start()
     assert reached_lock.wait(timeout = 5)
     o.active_model_name = None
-    o._gen_lock.release()
+    held.release()
     t.join(timeout = 5)
 
     assert out and any("unloaded" in chunk.lower() for chunk in out)
@@ -1189,13 +1207,13 @@ def test_stale_unload_does_not_hide_an_update_refusal():
 
 # ----------------------------------------------------------------------------
 # A dispatched (compare-mode) request that races an unload must not orphan its
-# mailbox after _wait_dispatcher_idle stops the dispatcher.
+# mailbox after _wait_worker_idle stops the dispatcher.
 # ----------------------------------------------------------------------------
 
 
 def test_dispatched_bails_when_unload_flips_before_mailbox_registration(monkeypatch):
     # The request passes the pre-work _unload_pending check, then an unload sets
-    # _unload_pending and _wait_dispatcher_idle stops the dispatcher (mailboxes empty)
+    # _unload_pending and _wait_worker_idle stops the dispatcher (mailboxes empty)
     # before this request registers its mailbox. The recheck under _mailbox_lock must
     # make it bail, or the worker's skipped-generate reply has nothing to route it and
     # the compare stream hangs on an orphaned mailbox.
@@ -1208,7 +1226,7 @@ def test_dispatched_bails_when_unload_flips_before_mailbox_registration(monkeypa
     monkeypatch.setattr(o, "_start_dispatcher", lambda: None)
 
     # Flip the unload flag after the pre-work check (626) but before mailbox
-    # registration -- exactly the window _wait_dispatcher_idle exploits.
+    # registration -- exactly the window _wait_worker_idle exploits.
     def flip(*a, **k):
         o._unload_pending = True
         return {"type": "generate", "request_id": "r1"}
@@ -1270,8 +1288,11 @@ def test_dispatched_bails_when_model_swapped_before_mailbox_registration(monkeyp
 
 def test_dispatched_bails_when_dispatcher_stopped_before_mailbox_registration(monkeypatch):
     # Same window, but the unload was a same-model reload so active_model_name is
-    # unchanged; the give-away is that the dispatcher was stopped. Registering a
-    # mailbox with no dispatcher to route the reply would hang the compare stream.
+    # unchanged and _unload_pending has already been cleared; the give-away is that the
+    # dispatcher was stopped. Registering a mailbox with no dispatcher to route the reply
+    # would hang the compare stream. Nothing here can say an unload did it -- a caller
+    # that held the worker briefly leaves the same trace -- so the reply says what is
+    # actually known.
     o = _bare_orchestrator()
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {}
@@ -1292,7 +1313,7 @@ def test_dispatched_bails_when_dispatcher_stopped_before_mailbox_registration(mo
 
     out = list(o._generate_dispatched(messages = [{"role": "user", "content": "hi"}]))
 
-    assert any("unloaded" in chunk.lower() for chunk in out)
+    assert any("nothing is routing replies" in chunk.lower() for chunk in out), out
     assert o._mailboxes == {}, "must not leave an orphaned mailbox"
 
 
@@ -2292,7 +2313,7 @@ def test_queued_start_behind_unload_stop_spawns_no_dispatcher():
 
     def unload_side():
         # unload_model's sequence: set _unload_pending under the lifecycle lock, then stop
-        # the idle dispatcher (also under the lock, via _wait_dispatcher_idle).
+        # the idle dispatcher (also under the lock, via _wait_worker_idle).
         with o._dispatcher_lifecycle_lock:
             o._unload_pending = True
         o._stop_dispatcher()
@@ -2597,7 +2618,6 @@ def test_generation_stopped_while_queued_is_never_sent(monkeypatch):
     # gen_done without one) still held up its siblings.
     o = _bare_orchestrator()
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
-    monkeypatch.setattr(o, "_wait_dispatcher_idle", lambda *a, **k: None)
     monkeypatch.setattr(
         o, "_send_cmd", lambda cmd: pytest.fail("must not send a generation already stopped")
     )
