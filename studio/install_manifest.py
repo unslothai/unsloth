@@ -500,6 +500,7 @@ _INSTALLER_REWRITTEN_NAMES = frozenset(("package-lock.json",))
 # files our own setup deleted. Skipped whole: they are gone, not shorter.
 _INSTALLER_REGENERATED_TREES = (("studio", "frontend", "dist"),)
 
+
 def _within(target: Path, anchor: Path) -> bool:
     """Whether a parent-relative RECORD row still lands inside the environment.
 
@@ -613,9 +614,7 @@ def damaged_payload_files(
                     # site-packages, so `..` is ordinary. Resolved and bounded to
                     # the venv rather than skipped: a quarantined `bin/unsloth`
                     # leaves the whole tree intact and the command gone.
-                    if ".." in parts and (
-                        anchor is None or not _within(Path(target), anchor)
-                    ):
+                    if ".." in parts and (anchor is None or not _within(Path(target), anchor)):
                         continue
                     info = target.stat()
                 except FileNotFoundError:
