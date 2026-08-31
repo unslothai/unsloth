@@ -36,8 +36,8 @@ from core import tool_healing as _tool_healing
 # execution-class guard: a bare ``python``/``terminal``/``edit_file`` call is prose, never
 # promoted to a real call. Trusted wrapped/marker forms (<|tool_call>, [TOOL_CALLS],
 # <function=>) are unaffected.
-_EXECUTION_CLASS_TOOL_NAMES = _tool_healing.EXECUTION_CLASS_TOOL_NAMES
 _markerless_promotable = _tool_healing._markerless_promotable
+_markerless_blocked_execution = _tool_healing._markerless_blocked_execution
 
 
 # Flip the streaming buffer STREAMING->DRAINING so partial markup never leaks.
@@ -640,7 +640,7 @@ def _strip_gemma_wrapperless_calls(text: str, enabled_tool_names: Optional[set] 
         # A blocked execution call is markup the PARSER skipped, not a sentence: it holds its
         # position, so a promotable call after it is still anchored and still gets stripped.
         # Without that the executed call's raw text stays in the answer and in history.
-        blocked = m.group(1) in _EXECUTION_CLASS_TOOL_NAMES
+        blocked = _markerless_blocked_execution(m.group(1), enabled_tool_names)
         keep_as_prose = not _markerless_promotable(m.group(1), enabled_tool_names) or (
             not _gemma_call_is_anchored(text, m.start(), floor)
         )
@@ -2285,7 +2285,7 @@ def _parse_llama3_bare_json(
         if not isinstance(name, str) or not name:
             break
         # Markerless JSON is ambiguous: treat it as a call only when the name is promotable.
-        blocked = name in _EXECUTION_CLASS_TOOL_NAMES
+        blocked = _markerless_blocked_execution(name, enabled_tool_names)
         if not blocked and not _markerless_promotable(name, enabled_tool_names):
             # A name outside the tool list means the turn is an ordinary JSON answer rather
             # than a call chain, so stop rather than promote objects deeper in the data.
@@ -2571,10 +2571,23 @@ def _parse_gemma_tool_calls(
     # Manual cursor: resume AFTER each consumed balanced body so a nested ``call:OTHER{...}``
     # in an argument is never re-matched. A leading JSON answer's span is data -- scan after it.
     cursor = _leading_json_value_end(content) or 0
+    # A blocked rehearsal's body is argument text for the same reason. It used to own its span
+    # by being promoted; refusing to promote it must not hand its contents to this parser.
+    # Only ENABLED execution names: a disabled one never owned its body on this path either.
+    blocked_spans = []
+    for _reh in _tool_healing._REHEARSAL_RE.finditer(content):
+        if not _markerless_blocked_execution(_reh.group(1), enabled_tool_names):
+            continue
+        _reh_end = _tool_healing._balanced_json_span(content, _reh.end())
+        if _reh_end is not None:
+            blocked_spans.append((_reh.start(), _reh_end + 1))
     while True:
         m = _GEMMA_BARE_TC_RE.search(content, cursor)
         if m is None:
             break
+        if any(s <= m.start() < e for s, e in blocked_spans):
+            cursor = m.end()
+            continue
         name = m.group(1)
         body_start = m.end() - 1
         end = _gemma_body_brace_end(content, body_start)
@@ -2757,7 +2770,7 @@ def strip_leading_bare_json_call(text: str, enabled_tool_names: Optional[set] = 
         # name, so it must not gate the strip. An un-extractable name or one outside the tool
         # list means the turn is a JSON answer, so the rest is kept as written.
         name = _top_level_bare_json_name(probe)
-        blocked = name in _EXECUTION_CLASS_TOOL_NAMES
+        blocked = _markerless_blocked_execution(name, enabled_tool_names)
         if not blocked and not _markerless_promotable(name, enabled_tool_names):
             return _out(sep + probe)
         end = _balanced_brace_end(probe, 0)

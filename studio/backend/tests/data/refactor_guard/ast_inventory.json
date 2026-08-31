@@ -1244,9 +1244,6 @@
       "_EMBEDDED_MARKER_RE": {
         "kind": "assign"
       },
-      "_EXECUTION_CLASS_TOOL_NAMES": {
-        "kind": "assign"
-      },
       "_EXTENSION_SAMPLE": {
         "kind": "assign"
       },
@@ -1530,6 +1527,9 @@
         "decorators": [],
         "kind": "def",
         "signature": "content: str, enabled_tool_names: Optional[set]=None"
+      },
+      "_markerless_blocked_execution": {
+        "kind": "assign"
       },
       "_markerless_promotable": {
         "kind": "assign"
@@ -2013,6 +2013,11 @@
         "decorators": [],
         "kind": "def",
         "signature": "content: str, markers"
+      },
+      "_markerless_blocked_execution": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "name, enabled_tool_names"
       },
       "_markerless_promotable": {
         "decorators": [],

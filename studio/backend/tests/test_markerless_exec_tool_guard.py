@@ -461,3 +461,40 @@ def test_an_open_execution_name_prefix_is_still_held_unrestricted():
     assert _is_rehearsal_prefix("terminal_logs[", tools, unrestricted = True) is True
     # Once the bracket lands the name is settled, and this one is blocked.
     assert _is_rehearsal_prefix("terminal[", tools, unrestricted = True) is False
+
+
+# ------------------------- "blocked" means enabled-but-not-promotable, not merely a code name
+
+
+DISABLED_EXEC = {"web_search"}
+
+
+def test_a_disabled_execution_name_still_ends_a_bare_json_chain():
+    # With terminal off, the leading object is simply not one of our tools, so the turn is an
+    # ordinary JSON answer and nothing after it may be promoted. Only an ENABLED execution
+    # name is a call we are declining to promote.
+    chain = '{"name":"terminal","parameters":{}};{"name":"web_search","parameters":{"query":"x"}}'
+    assert parse_tool_calls_from_text(chain, enabled_tool_names = DISABLED_EXEC) == []
+    calls = parse_tool_calls_from_text(chain, enabled_tool_names = EXEC_ENABLED)
+    assert [c["function"]["name"] for c in calls] == ["web_search"]
+
+
+def test_a_disabled_execution_name_does_not_anchor_its_neighbour():
+    text = 'call:terminal{a:1} call:web_search{query:"x"}'
+    assert strip_tool_markup(text, final = True, enabled_tool_names = DISABLED_EXEC) == text
+    out = strip_tool_markup(text, final = True, enabled_tool_names = EXEC_ENABLED)
+    assert "web_search" not in out
+
+
+def test_a_blocked_rehearsal_body_is_not_scanned_for_other_calls():
+    # The outer rehearsal owned this span by being promoted; refusing to promote it must not
+    # hand its argument text to the Gemma parser as a sibling call.
+    text = 'terminal[ARGS]{"command":"call:web_search{query:x}"}'
+    assert parse_tool_calls_from_text(text, enabled_tool_names = EXEC_ENABLED) == []
+    # A benign rehearsal is unaffected, and a DISABLED name never owned its body here either.
+    benign = parse_tool_calls_from_text('web_search[ARGS]{"q":1}', enabled_tool_names = EXEC_ENABLED)
+    assert [c["function"]["name"] for c in benign] == ["web_search"]
+    disabled = parse_tool_calls_from_text(
+        'foo[ARGS]{"command":"call:web_search{query:x}"}', enabled_tool_names = EXEC_ENABLED
+    )
+    assert [c["function"]["name"] for c in disabled] == ["web_search"]

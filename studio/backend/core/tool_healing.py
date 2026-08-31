@@ -59,6 +59,20 @@ def _markerless_promotable(name, enabled_tool_names) -> bool:
     return enabled_tool_names is None or name in enabled_tool_names
 
 
+def _markerless_blocked_execution(name, enabled_tool_names) -> bool:
+    """True when ``name`` is a call the model DID write and the guard only declines to
+    promote from a bare span.
+
+    Narrower than "not promotable", and the difference decides what the surrounding scan
+    does. A name outside the tool list is not a call at all: it ends a bare-JSON chain, it
+    does not anchor the call beside it, and its body was never opaque to the other parsers.
+    An ENABLED execution name is a call, so it keeps all three of those properties and only
+    loses the promotion."""
+    return name in EXECUTION_CLASS_TOOL_NAMES and (
+        enabled_tool_names is None or name in enabled_tool_names
+    )
+
+
 # One nesting level in the strip regexes; deeper may leak markup (still parsed).
 _BRACKETED_JSON_ONE_LEVEL = r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}"
 
