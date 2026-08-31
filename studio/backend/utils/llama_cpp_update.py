@@ -724,9 +724,7 @@ def _run_llama_phase(
                     f"{new_backend or 'an unknown backend'}"
                 )
 
-        kept_existing = (
-            backend_request is None and new_tag is not None and new_tag == prior_tag
-        )
+        kept_existing = backend_request is None and new_tag is not None and new_tag == prior_tag
         logger.info(
             "llama update: success",
             to_tag = new_tag,

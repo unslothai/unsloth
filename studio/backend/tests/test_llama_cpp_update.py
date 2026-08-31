@@ -594,7 +594,7 @@ def test_start_update_reports_full_release_tag(monkeypatch, tmp_path):
 
 
 def test_an_update_that_kept_the_existing_install_does_not_claim_a_new_release(
-    monkeypatch, tmp_path,
+    monkeypatch, tmp_path
 ):
     """Exit 0 no longer implies the release changed.
 

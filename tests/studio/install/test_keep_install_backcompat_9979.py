@@ -128,7 +128,8 @@ def build_install(
     install_dir = tmp_path / "llama.cpp"
     platform = _platform_of(host)
     runtime_dir = (
-        install_dir / "build" / "bin" / "Release" if host.is_windows
+        install_dir / "build" / "bin" / "Release"
+        if host.is_windows
         else install_dir / "build" / "bin"
     )
     runtime_dir.mkdir(parents = True)
@@ -140,8 +141,10 @@ def build_install(
         runtime_dir / f"llama-server{ext}",
         runtime_dir / f"llama-quantize{ext}",
     ):
-        ok = runnable if path.parent != install_dir else (
-            runnable if runnable_root is None else runnable_root
+        ok = (
+            runnable
+            if path.parent != install_dir
+            else (runnable if runnable_root is None else runnable_root)
         )
         # A real runnable stub: the keep path execs these, and an empty file that kept
         # its mode bits is the ENOEXEC case.
@@ -180,41 +183,68 @@ def build_install(
 # ---------------------------------------------------------------------------
 
 S1 = {  # 2026-03-25 #4562: no release_tag, no backend, no asset_sha256
-    "requested_tag": "b6099", "tag": "b6099",
+    "requested_tag": "b6099",
+    "tag": "b6099",
     "asset": "llama-b6099-bin-ubuntu-x64.tar.gz",
-    "source": "upstream", "bundle_profile": "full", "runtime_line": None,
-    "coverage_class": None, "prebuilt_fallback_used": False,
+    "source": "upstream",
+    "bundle_profile": "full",
+    "runtime_line": None,
+    "coverage_class": None,
+    "prebuilt_fallback_used": False,
     "installed_at_utc": "2026-03-26T04:11:07Z",
 }
 S2 = {  # 2026-04-01 #4741: release_tag + fingerprint arrive
-    **S1, "release_tag": "b6210", "published_repo": "unslothai/llama.cpp",
-    "asset": "app-b6210-linux-x64-cuda12.tar.gz", "asset_sha256": "3f" * 32,
-    "source": "published", "runtime_line": "cuda12",
+    **S1,
+    "release_tag": "b6210",
+    "published_repo": "unslothai/llama.cpp",
+    "asset": "app-b6210-linux-x64-cuda12.tar.gz",
+    "asset_sha256": "3f" * 32,
+    "source": "published",
+    "runtime_line": "cuda12",
     "install_fingerprint": "aa" * 32,
 }
-S5 = {**S2, "force_cpu": False}                       # 2026-07-20 #7228
-S6 = {**S5, "llama_backend": "vulkan",                # 2026-07-27 #7373
-      "asset": "llama-b7001-bin-ubuntu-vulkan-x64.tar.gz", "runtime_line": None}
-S7 = {**S5, "ggml_tree": "b7440"}                     # 2026-08-04 #7817
-S8 = {**S7, "rocm_gfx": "gfx1151",                    # 2026-08-08 #8050
-      "asset": "app-b9001-linux-x64-rocm-gfx110X.tar.gz", "runtime_line": None}
-S9 = {**S7, "backend": "cuda", "backend_request": "auto"}          # 2026-08-13 #8520
-S10 = {**S9, "gfx_target": None, "mapped_targets": []}             # 2026-08-13 #7670
-S11 = {**S10, "supported_sms": ["80", "86", "89", "90"]}           # 2026-08-18 #8841 == main
-S12 = {**S11, "runtime_asset": None}                               # this PR
+S5 = {**S2, "force_cpu": False}  # 2026-07-20 #7228
+S6 = {
+    **S5,
+    "llama_backend": "vulkan",  # 2026-07-27 #7373
+    "asset": "llama-b7001-bin-ubuntu-vulkan-x64.tar.gz",
+    "runtime_line": None,
+}
+S7 = {**S5, "ggml_tree": "b7440"}  # 2026-08-04 #7817
+S8 = {
+    **S7,
+    "rocm_gfx": "gfx1151",  # 2026-08-08 #8050
+    "asset": "app-b9001-linux-x64-rocm-gfx110X.tar.gz",
+    "runtime_line": None,
+}
+S9 = {**S7, "backend": "cuda", "backend_request": "auto"}  # 2026-08-13 #8520
+S10 = {**S9, "gfx_target": None, "mapped_targets": []}  # 2026-08-13 #7670
+S11 = {**S10, "supported_sms": ["80", "86", "89", "90"]}  # 2026-08-18 #8841 == main
+S12 = {**S11, "runtime_asset": None}  # this PR
 
 # A real marker this box produced by running studio/install_llama_prebuilt.py for real.
 S12_REAL = {
-    "requested_tag": "latest", "tag": "b10698",
-    "release_tag": "b10698-mix-67dfc8b", "published_repo": "unslothai/llama.cpp",
+    "requested_tag": "latest",
+    "tag": "b10698",
+    "release_tag": "b10698-mix-67dfc8b",
+    "published_repo": "unslothai/llama.cpp",
     "asset": "app-b10698-mix-67dfc8b-linux-x64-cuda13-newer.tar.gz",
-    "force_cpu": False, "llama_backend": None,
-    "backend": "cuda", "backend_request": "auto",
-    "asset_sha256": "d4" * 32, "runtime_asset": None, "source": "published",
-    "ggml_tree": "0034c6eb", "bundle_profile": "cuda13-newer", "runtime_line": "cuda13",
-    "coverage_class": "newer", "gfx_target": None, "mapped_targets": [],
+    "force_cpu": False,
+    "llama_backend": None,
+    "backend": "cuda",
+    "backend_request": "auto",
+    "asset_sha256": "d4" * 32,
+    "runtime_asset": None,
+    "source": "published",
+    "ggml_tree": "0034c6eb",
+    "bundle_profile": "cuda13-newer",
+    "runtime_line": "cuda13",
+    "coverage_class": "newer",
+    "gfx_target": None,
+    "mapped_targets": [],
     "supported_sms": ["86", "89", "90", "100", "103", "120"],
-    "install_fingerprint": "36" * 32, "prebuilt_fallback_used": False,
+    "install_fingerprint": "36" * 32,
+    "prebuilt_fallback_used": False,
     "installed_at_utc": "2026-08-31T06:40:37Z",
 }
 
@@ -233,11 +263,8 @@ ALL_SHAPES = [
 ]
 
 
-@pytest.mark.parametrize(("name", "marker", "backend"), ALL_SHAPES,
-                         ids = [s[0] for s in ALL_SHAPES])
-def test_every_shipped_marker_shape_keeps_a_complete_linux_install(
-    tmp_path, name, marker, backend,
-):
+@pytest.mark.parametrize(("name", "marker", "backend"), ALL_SHAPES, ids = [s[0] for s in ALL_SHAPES])
+def test_every_shipped_marker_shape_keeps_a_complete_linux_install(tmp_path, name, marker, backend):
     """A complete install must be kept whatever release wrote its marker.
 
     S1-S8 carry no ``backend`` key at all, so the backend has to come back out of the
@@ -248,10 +275,9 @@ def test_every_shipped_marker_shape_keeps_a_complete_linux_install(
     assert ILP._existing_install_runs(install_dir, LINUX) is True
 
 
-@pytest.mark.parametrize(("name", "marker", "backend"), ALL_SHAPES,
-                         ids = [s[0] for s in ALL_SHAPES])
+@pytest.mark.parametrize(("name", "marker", "backend"), ALL_SHAPES, ids = [s[0] for s in ALL_SHAPES])
 def test_no_shipped_marker_shape_is_kept_once_its_backend_payload_is_gutted(
-    tmp_path, name, marker, backend,
+    tmp_path, name, marker, backend
 ):
     """Deleting the shared payload must be caught for every shape, old or new."""
     install_dir = build_install(tmp_path, marker = marker, payload_backend = backend)
@@ -270,7 +296,11 @@ def test_a_pre_runtime_asset_windows_cuda_install_is_not_asked_for_the_cudart_tr
     install would be rejected on every run.
     """
     install_dir = build_install(
-        tmp_path, host = WINDOWS, marker = S11, payload_backend = "cuda", cudart = False,
+        tmp_path,
+        host = WINDOWS,
+        marker = S11,
+        payload_backend = "cuda",
+        cudart = False,
     )
     assert ILP._kept_install_payload_is_healthy(install_dir, WINDOWS) is True
 
@@ -279,12 +309,18 @@ def test_a_paired_windows_cuda_install_still_owes_its_cudart_trio(tmp_path):
     """Once the marker names the pairing, the trio becomes required."""
     paired = {**S12, "runtime_asset": "cudart-llama-bin-win-cuda-13.0-x64.zip"}
     gutted = build_install(
-        tmp_path / "gutted", host = WINDOWS, marker = paired,
-        payload_backend = "cuda", cudart = False,
+        tmp_path / "gutted",
+        host = WINDOWS,
+        marker = paired,
+        payload_backend = "cuda",
+        cudart = False,
     )
     intact = build_install(
-        tmp_path / "intact", host = WINDOWS, marker = paired,
-        payload_backend = "cuda", cudart = True,
+        tmp_path / "intact",
+        host = WINDOWS,
+        marker = paired,
+        payload_backend = "cuda",
+        cudart = True,
     )
     assert ILP._kept_install_payload_is_healthy(gutted, WINDOWS) is False
     assert ILP._kept_install_payload_is_healthy(intact, WINDOWS) is True
@@ -306,10 +342,18 @@ def test_a_source_build_is_never_kept_because_it_has_no_marker(tmp_path):
 
 @pytest.mark.parametrize(
     "corrupt",
-    ["not json", "", "[]", "null", '"cuda"', "123", '{"release_tag": "b1"',
-     "﻿{}", "{}"],
-    ids = ["garbage", "empty", "list", "null", "string", "number", "truncated",
-           "bom", "empty-object"],
+    ["not json", "", "[]", "null", '"cuda"', "123", '{"release_tag": "b1"', "﻿{}", "{}"],
+    ids = [
+        "garbage",
+        "empty",
+        "list",
+        "null",
+        "string",
+        "number",
+        "truncated",
+        "bom",
+        "empty-object",
+    ],
 )
 def test_a_corrupt_marker_is_still_kept_but_owes_the_whole_platform_payload(tmp_path, corrupt):
     """An unreadable marker cannot name a backend, so it owes every kind's shared set.
@@ -383,8 +427,10 @@ def test_a_legacy_published_vulkan_install_without_the_visual_server_is_refused(
     install is pushed to a source build rather than kept.
     """
     install_dir = build_install(
-        tmp_path, marker = S6 | {"source": "published"},
-        payload_backend = "vulkan", visual_server = False,
+        tmp_path,
+        marker = S6 | {"source": "published"},
+        payload_backend = "vulkan",
+        visual_server = False,
     )
     assert ILP._kept_install_payload_is_healthy(install_dir, LINUX) is False
 
@@ -393,7 +439,8 @@ def test_a_binary_that_dies_on_sigsegv_is_not_a_working_install(tmp_path, monkey
     """A crashing image must be rejected, not treated as a successful probe."""
     install_dir = build_install(tmp_path, marker = S12, payload_backend = "cuda")
     monkeypatch.setattr(
-        ILP, "run_capture",
+        ILP,
+        "run_capture",
         lambda *a, **k: subprocess.CompletedProcess(a[0] if a else [], -signal.SIGSEGV, "", ""),
     )
     assert ILP._existing_install_runs(install_dir, LINUX) is False
@@ -417,10 +464,14 @@ def test_a_binary_that_hangs_is_treated_as_healthy(tmp_path, monkeypatch):
 def test_a_windows_loader_failure_is_rejected_even_though_it_exits_zero_ish(tmp_path, monkeypatch):
     """0xC0000135 is a positive exit code, not a signal. Simulated: no Windows here."""
     install_dir = build_install(
-        tmp_path, host = WINDOWS, marker = S12, payload_backend = "cuda",
+        tmp_path,
+        host = WINDOWS,
+        marker = S12,
+        payload_backend = "cuda",
     )
     monkeypatch.setattr(
-        ILP, "run_capture",
+        ILP,
+        "run_capture",
         lambda *a, **k: subprocess.CompletedProcess(a[0] if a else [], 0xC0000135, "", ""),
     )
     assert ILP._existing_install_runs(install_dir, WINDOWS) is False
@@ -429,7 +480,10 @@ def test_a_windows_loader_failure_is_rejected_even_though_it_exits_zero_ish(tmp_
 def test_a_non_executable_tree_fails_the_same_gate_setup_sh_uses(tmp_path):
     """setup.sh reuses on ``[ -x build/bin/llama-server ]``; the keep path must agree."""
     install_dir = build_install(
-        tmp_path, marker = S12, payload_backend = "cuda", executable = False,
+        tmp_path,
+        marker = S12,
+        payload_backend = "cuda",
+        executable = False,
     )
     assert ILP._existing_install_runs(install_dir, LINUX) is False
 
@@ -437,7 +491,10 @@ def test_a_non_executable_tree_fails_the_same_gate_setup_sh_uses(tmp_path):
 def test_a_rotten_root_entrypoint_is_caught_even_when_build_bin_is_fine(tmp_path):
     """Inference launches the root copy first, so it cannot be excused by build/bin."""
     install_dir = build_install(
-        tmp_path, marker = S12, payload_backend = "cuda", runnable_root = False,
+        tmp_path,
+        marker = S12,
+        payload_backend = "cuda",
+        runnable_root = False,
     )
     assert ILP._existing_install_runs(install_dir, LINUX) is False
 
@@ -477,76 +534,107 @@ def test_the_stored_backend_choice_reads_the_same_from_every_shape(tmp_path, mar
 
 ARM64_LINUX = _host(machine = "aarch64", is_x86_64 = False, is_arm64 = True)
 MACOS_X64 = _host(
-    system = "Darwin", machine = "x86_64",
-    is_windows = False, is_linux = False, is_macos = True,
-    is_x86_64 = True, is_arm64 = False, macos_version = (14, 6),
+    system = "Darwin",
+    machine = "x86_64",
+    is_windows = False,
+    is_linux = False,
+    is_macos = True,
+    is_x86_64 = True,
+    is_arm64 = False,
+    macos_version = (14, 6),
 )
 WINDOWS_ARM64 = _host(
-    system = "Windows", machine = "ARM64", is_windows = True, is_linux = False,
-    is_x86_64 = False, is_arm64 = True,
+    system = "Windows",
+    machine = "ARM64",
+    is_windows = True,
+    is_linux = False,
+    is_x86_64 = False,
+    is_arm64 = True,
 )
 # WSL reports itself as Linux. The ROCm flags are what a WSL2 ROCDXG host carries.
 WSL_ROCM = _host(has_rocm = True, rocm_gfx_target = "gfx1151")
 LINUX_NVIDIA = _host(
-    compute_caps = ["10.0"], has_physical_nvidia = True, has_usable_nvidia = True,
+    compute_caps = ["10.0"],
+    has_physical_nvidia = True,
+    has_usable_nvidia = True,
 )
 LINUX_ROCM = _host(has_rocm = True, rocm_gfx_target = "gfx1100")
 WINDOWS_NVIDIA = _host(
-    system = "Windows", machine = "AMD64", is_windows = True, is_linux = False,
-    compute_caps = ["8.9"], has_physical_nvidia = True, has_usable_nvidia = True,
+    system = "Windows",
+    machine = "AMD64",
+    is_windows = True,
+    is_linux = False,
+    compute_caps = ["8.9"],
+    has_physical_nvidia = True,
+    has_usable_nvidia = True,
 )
 WINDOWS_ROCM = _host(
-    system = "Windows", machine = "AMD64", is_windows = True, is_linux = False,
-    has_rocm = True, rocm_gfx_target = "gfx1151",
+    system = "Windows",
+    machine = "AMD64",
+    is_windows = True,
+    is_linux = False,
+    has_rocm = True,
+    rocm_gfx_target = "gfx1151",
 )
 
 # (id, host, marker backend, the payload the tree must carry to be kept)
 MATRIX = [
-    ("linux-nvidia",      LINUX_NVIDIA,   "cuda",   "cuda"),
-    ("linux-arm64-nvidia", ARM64_LINUX,   "cuda",   "cuda"),
-    ("linux-amd",         LINUX_ROCM,     "rocm",   "rocm"),
-    ("linux-cpu",         LINUX,          "cpu",    None),
-    ("linux-arm64-cpu",   ARM64_LINUX,    "cpu",    None),
-    ("linux-vulkan",      LINUX,          "vulkan", "vulkan"),
-    ("wsl-amd",           WSL_ROCM,       "rocm",   "rocm"),
-    ("wsl-cpu",           WSL_ROCM,       "cpu",    None),
-    ("windows-nvidia",    WINDOWS_NVIDIA, "cuda",   "cuda"),
-    ("windows-amd",       WINDOWS_ROCM,   "rocm",   "rocm"),
-    ("windows-cpu",       WINDOWS,        "cpu",    None),
-    ("windows-arm64-cpu", WINDOWS_ARM64,  "cpu",    None),
-    ("windows-vulkan",    WINDOWS,        "vulkan", "vulkan"),
-    ("macos-arm64",       MACOS,          "metal",  None),
-    ("macos-x64",         MACOS_X64,      "metal",  None),
+    ("linux-nvidia", LINUX_NVIDIA, "cuda", "cuda"),
+    ("linux-arm64-nvidia", ARM64_LINUX, "cuda", "cuda"),
+    ("linux-amd", LINUX_ROCM, "rocm", "rocm"),
+    ("linux-cpu", LINUX, "cpu", None),
+    ("linux-arm64-cpu", ARM64_LINUX, "cpu", None),
+    ("linux-vulkan", LINUX, "vulkan", "vulkan"),
+    ("wsl-amd", WSL_ROCM, "rocm", "rocm"),
+    ("wsl-cpu", WSL_ROCM, "cpu", None),
+    ("windows-nvidia", WINDOWS_NVIDIA, "cuda", "cuda"),
+    ("windows-amd", WINDOWS_ROCM, "rocm", "rocm"),
+    ("windows-cpu", WINDOWS, "cpu", None),
+    ("windows-arm64-cpu", WINDOWS_ARM64, "cpu", None),
+    ("windows-vulkan", WINDOWS, "vulkan", "vulkan"),
+    ("macos-arm64", MACOS, "metal", None),
+    ("macos-x64", MACOS_X64, "metal", None),
 ]
 
 
 @pytest.mark.parametrize(
-    ("cell", "host", "backend", "payload_backend"), MATRIX, ids = [m[0] for m in MATRIX],
+    ("cell", "host", "backend", "payload_backend"),
+    MATRIX,
+    ids = [m[0] for m in MATRIX],
 )
 def test_a_complete_install_is_kept_in_every_os_and_accelerator_cell(
-    tmp_path, cell, host, backend, payload_backend,
+    tmp_path, cell, host, backend, payload_backend
 ):
     marker = {**S12, "backend": backend, "asset": f"app-b1-{cell}.tar.gz"}
     install_dir = build_install(
-        tmp_path, host = host, marker = marker, payload_backend = payload_backend,
+        tmp_path,
+        host = host,
+        marker = marker,
+        payload_backend = payload_backend,
     )
     assert ILP._kept_install_payload_is_healthy(install_dir, host) is True, cell
     assert ILP._existing_install_runs(install_dir, host) is True, cell
 
 
 @pytest.mark.parametrize(
-    ("cell", "host", "backend", "payload_backend"), MATRIX, ids = [m[0] for m in MATRIX],
+    ("cell", "host", "backend", "payload_backend"),
+    MATRIX,
+    ids = [m[0] for m in MATRIX],
 )
 def test_a_gutted_install_is_refused_in_every_os_and_accelerator_cell(
-    tmp_path, cell, host, backend, payload_backend,
+    tmp_path, cell, host, backend, payload_backend
 ):
     """Every cell must fail closed, or the keep path hands back a broken tree."""
     marker = {**S12, "backend": backend, "asset": f"app-b1-{cell}.tar.gz"}
     install_dir = build_install(
-        tmp_path, host = host, marker = marker, payload_backend = payload_backend,
+        tmp_path,
+        host = host,
+        marker = marker,
+        payload_backend = payload_backend,
     )
     runtime_dir = (
-        install_dir / "build" / "bin" / "Release" if host.is_windows
+        install_dir / "build" / "bin" / "Release"
+        if host.is_windows
         else install_dir / "build" / "bin"
     )
     (runtime_dir / _SHARED_PAYLOAD[_platform_of(host)][0]).unlink()
@@ -559,7 +647,7 @@ def test_a_gutted_install_is_refused_in_every_os_and_accelerator_cell(
     ids = [m[0] for m in MATRIX if m[3] is not None],
 )
 def test_an_accelerator_install_missing_its_own_backend_library_is_refused(
-    tmp_path, cell, host, backend,
+    tmp_path, cell, host, backend
 ):
     """The shared payload alone must not be enough for a CUDA/ROCm/Vulkan tree.
 
@@ -569,7 +657,10 @@ def test_an_accelerator_install_missing_its_own_backend_library_is_refused(
     """
     marker = {**S12, "backend": backend, "asset": f"app-b1-{cell}.tar.gz"}
     install_dir = build_install(
-        tmp_path, host = host, marker = marker, payload_backend = None,
+        tmp_path,
+        host = host,
+        marker = marker,
+        payload_backend = None,
     )
     assert ILP._kept_install_payload_is_healthy(install_dir, host) is False, cell
 
@@ -585,12 +676,16 @@ def test_wsl_is_treated_exactly_like_linux_by_the_keep_path(tmp_path):
     marker = {**S12, "backend": "rocm", "asset": "app-b1-linux-x64-rocm-gfx1151.tar.gz"}
     for host in (LINUX_ROCM, WSL_ROCM):
         ok = build_install(
-            tmp_path / f"ok-{host.rocm_gfx_target}", host = host,
-            marker = marker, payload_backend = "rocm",
+            tmp_path / f"ok-{host.rocm_gfx_target}",
+            host = host,
+            marker = marker,
+            payload_backend = "rocm",
         )
         gutted = build_install(
-            tmp_path / f"gutted-{host.rocm_gfx_target}", host = host,
-            marker = marker, payload_backend = None,
+            tmp_path / f"gutted-{host.rocm_gfx_target}",
+            host = host,
+            marker = marker,
+            payload_backend = None,
         )
         assert ILP._kept_install_payload_is_healthy(ok, host) is True
         assert ILP._kept_install_payload_is_healthy(gutted, host) is False
@@ -635,6 +730,7 @@ def test_an_install_whose_keys_were_backfilled_onto_an_old_marker_is_kept(tmp_pa
 # setup scripts actually branch on is the thing under test.
 # ---------------------------------------------------------------------------
 
+
 def _transient_listing_failure(monkeypatch, host = LINUX):
     """Make the release listing fail the way a flaky network does."""
     import urllib.error
@@ -669,23 +765,21 @@ def test_a_marker_from_a_newer_unsloth_refuses_rather_than_keeping(tmp_path, mon
     assert (install_dir / "llama-server").exists()
 
 
-def test_a_transient_failure_keeps_each_shipped_shape_and_returns_exit_zero(
-    tmp_path, monkeypatch,
-):
+def test_a_transient_failure_keeps_each_shipped_shape_and_returns_exit_zero(tmp_path, monkeypatch):
     """End to end: the exit code setup.sh and setup.ps1 branch on, per shape."""
     _transient_listing_failure(monkeypatch)
     for name, marker, backend in ALL_SHAPES:
         install_dir = build_install(
-            tmp_path / name, marker = marker, payload_backend = backend,
+            tmp_path / name,
+            marker = marker,
+            payload_backend = backend,
         )
         # Returns rather than raising SystemExit: main() turns that into exit 0.
         ILP.install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
         assert (install_dir / "llama-server").exists(), name
 
 
-def test_a_transient_failure_still_falls_back_when_the_tree_is_not_runnable(
-    tmp_path, monkeypatch,
-):
+def test_a_transient_failure_still_falls_back_when_the_tree_is_not_runnable(tmp_path, monkeypatch):
     """The other half: a broken tree must still reach the source-build fallback.
 
     Exit 2 is what tells setup.sh it may build from source. If the keep path
@@ -699,9 +793,7 @@ def test_a_transient_failure_still_falls_back_when_the_tree_is_not_runnable(
     assert caught.value.code == ILP.EXIT_FALLBACK
 
 
-def test_an_explicit_version_request_is_never_answered_with_the_old_install(
-    tmp_path, monkeypatch,
-):
+def test_an_explicit_version_request_is_never_answered_with_the_old_install(tmp_path, monkeypatch):
     """Asking for a specific release and getting the one already there is a lie."""
     _transient_listing_failure(monkeypatch)
     install_dir = build_install(tmp_path, marker = S12, payload_backend = "cuda")
