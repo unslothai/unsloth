@@ -181,8 +181,10 @@ class _FakeTrainer:
 
 def _wrapped():
     ns = _load(
-        "_ensure_warnings_issued", "_resolve_trainer_params",
-        "_route_unknown_trainer_kwargs", "_backwards_compatible_trainer",
+        "_ensure_warnings_issued",
+        "_resolve_trainer_params",
+        "_route_unknown_trainer_kwargs",
+        "_backwards_compatible_trainer",
     )
     if "trl" not in ns:
         pytest.skip("trl not installed")
@@ -403,8 +405,10 @@ def _classify_config_kwarg():
 def _wrapped_recording(trainer_base = None):
     config_class = _sft_config()
     ns = _load(
-        "_ensure_warnings_issued", "_resolve_trainer_params",
-        "_route_unknown_trainer_kwargs", "_backwards_compatible_trainer",
+        "_ensure_warnings_issued",
+        "_resolve_trainer_params",
+        "_route_unknown_trainer_kwargs",
+        "_backwards_compatible_trainer",
     )
     if "trl" not in ns:
         pytest.skip("trl not installed")
@@ -525,8 +529,14 @@ def test_a_variadic_trainer_receives_a_name_the_table_does_not_know(tmp_path):
     unrecognised one is delivered rather than dropped."""
 
     class _Variadic(_RecordingTrainer):
-        def __init__(self, model = None, args = None, train_dataset = None,
-                     processing_class = None, **kwargs):
+        def __init__(
+            self,
+            model = None,
+            args = None,
+            train_dataset = None,
+            processing_class = None,
+            **kwargs,
+        ):
             super().__init__(model, args, train_dataset, processing_class)
             self.extra = dict(kwargs)
 
@@ -544,7 +554,12 @@ def test_a_trainer_whose_config_parameter_is_not_called_args_does_not_KeyError(t
     a bare KeyError before it could say anything useful."""
 
     class _OddlyNamed:
-        def __init__(self, model = None, config = None, **kwargs):
+        def __init__(
+            self,
+            model = None,
+            config = None,
+            **kwargs,
+        ):
             self.model, self.config, self.extra = model, config, dict(kwargs)
 
     Trainer, config_class = _wrapped_recording(trainer_base = _OddlyNamed)

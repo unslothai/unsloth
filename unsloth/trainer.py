@@ -711,7 +711,11 @@ def _ensure_warnings_issued(model):
         pass
 
 
-def _route_unknown_trainer_kwargs(config_class, unknown, notify = None):
+def _route_unknown_trainer_kwargs(
+    config_class,
+    unknown,
+    notify = None,
+):
     """Sort keyword names that neither the trainer nor the config declares.
 
     `models/rl_config_compat.py` already holds unsloth's policy for an argument
@@ -834,7 +838,8 @@ def _backwards_compatible_trainer(trainer_class, config_class):
             # else stays on the trainer call so the unexpected keyword is
             # reported the ordinary way instead of disappearing.
             migrated, unroutable = _route_unknown_trainer_kwargs(
-                config_class, unknown_kwargs,
+                config_class,
+                unknown_kwargs,
             )
             additional_config_kwargs.update(migrated)
             trainer_kwargs.update(unroutable)
