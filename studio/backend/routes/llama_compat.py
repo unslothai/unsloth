@@ -240,11 +240,9 @@ for _slots_form in _both_forms("/slots/{id_slot}"):
 def add_get_denials(app) -> None:
     """404 the engine paths on GET as well, for an app with no frontend mounted.
 
-    The GET denial normally comes from main.py's SPA catch-all, which is registered
-    only when setup_frontend() finds a build. In API-only mode there is none, so these
-    paths matched on method alone and answered 405, which a discovery client reads as
-    "endpoint exists, wrong method" -- the signal this module exists to remove. Called
-    after the frontend decision so a mounted build keeps serving assets by these names.
+    The GET denial normally comes from main.py's SPA catch-all, registered only when
+    setup_frontend() finds a build. In API-only mode there is none, so these paths
+    matched on method alone and answered 405, which a client reads as "endpoint exists".
     """
     for path in sorted(_ENGINE_PROBE_PATHS) + sorted(_UNSERVED_V1_PROBE_PATHS):
         for form in _both_forms(f"/{path}"):

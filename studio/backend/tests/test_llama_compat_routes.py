@@ -713,12 +713,8 @@ def test_the_slash_and_bare_forms_agree():
 
 
 def _lifespan_app(mod, *, frontend_mounted = False):
-    """An app wired the way main.py wires one: the denial is installed at startup.
-
-    Startup rather than beside the router include, because it has to run after the
-    frontend decision and `uvicorn main:app` never makes that decision at all -- it
-    bypasses run.py, so nothing there could have covered it.
-    """
+    """An app wired the way main.py wires one: installed at startup, because that is
+    the point both launch paths reach after the frontend decision."""
     from contextlib import asynccontextmanager
 
     @asynccontextmanager
@@ -750,8 +746,8 @@ def _directly_added_get_paths(app):
 
 
 def test_the_denials_are_installed_only_when_no_frontend_is_mounted():
-    """Keyed on the flag setup_frontend sets, so an app already serving a catch-all does
-    not carry a second, dead copy of every engine path."""
+    """So an app already serving a catch-all does not carry a second, dead copy of
+    every engine path. Ordering, not this flag, is what keeps assets reachable."""
     mod = _load()
     with TestClient(_lifespan_app(mod, frontend_mounted = False)):
         pass

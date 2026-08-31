@@ -642,11 +642,9 @@ async def lifespan(app: FastAPI):
     _lifespan_log = _structlog.get_logger(__name__)
     clear_compiled_cache_unless_shared(app)
 
-    # Here rather than beside the router include, because it has to run after the
-    # frontend decision and both launch paths reach this point: run.py calls
-    # setup_frontend() before serving, and `uvicorn main:app` never calls it at all.
-    # Without a catch-all nothing 404s a GET probe, so the engine paths would match on
-    # method alone and answer 405, which a client reads as "endpoint exists".
+    # Here because both launch paths reach it after the frontend decision: run.py calls
+    # setup_frontend(), and `uvicorn main:app` bypasses run.py entirely. With no
+    # catch-all the engine paths match on method alone and answer 405, read as "exists".
     if not getattr(app.state, "frontend_mounted", False):
         try:
             from routes.llama_compat import add_get_denials
