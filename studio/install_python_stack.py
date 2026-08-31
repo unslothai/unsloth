@@ -4367,12 +4367,10 @@ def _core_package_names(package_name: str) -> "tuple[str, ...]":
     """The distributions a run is responsible for.
 
     unsloth-zoo only for the default install: `--package X` installs X alone, so
-    demanding the companion there would force-reinstall an unrelated
-    distribution, and fail the update outright on an unreachable zoo index.
-
-    Compared canonically, since `--package Unsloth` is the default install and
-    verify_install already reads it that way. Disagreeing meant the deep check
-    scanned zoo, forced a pass, and then neither repair gate would touch it.
+    demanding the companion would force-reinstall an unrelated distribution and
+    fail the update on an unreachable zoo index. Canonically, because
+    verify_install reads `--package Unsloth` that way and the two disagreeing
+    had the deep check scan zoo and force a pass no repair gate would act on.
     """
     default = re.sub(r"[-_.]+", "-", package_name).lower() == "unsloth"
     return (package_name, "unsloth-zoo") if default else (package_name,)
@@ -4391,17 +4389,16 @@ def _repair_damaged_core_payload(
     the payload leaves intact, so it has to be named for reinstall. Skipped for
     a local checkout, whose core packages are an editable overlay.
 
-    False when the files are still missing afterwards, and the caller aborts:
-    the pass that follows would audit the intact metadata as satisfied and
-    write_manifest would record a success nothing rechecks. Judged on the tree
-    rather than pip's exit code, so a reinstall that restored the files while
-    exiting non-zero is not held against it.
+    False when the files are still missing afterwards and the caller aborts, or
+    the pass that follows audits the intact metadata as satisfied and
+    write_manifest records a success nothing rechecks. Judged on the tree, not
+    pip's exit code, so a reinstall that restored the files while exiting
+    non-zero still counts.
 
-    `require_present` also refuses a distribution that is not installed at all,
-    which has no RECORD to walk and so reads as undamaged here. Off before the
-    core phase, where nothing has been installed yet on a fresh run, and on
-    after it, where a core package still absent means the phase was skipped
-    (the install.sh handoff sets SKIP_STUDIO_BASE=1) or silently did nothing.
+    `require_present` also refuses a distribution not installed at all, which
+    has no RECORD and so reads as undamaged. Off before the core phase, where a
+    fresh run has nothing yet; on after it, where absence means the phase was
+    skipped (SKIP_STUDIO_BASE=1) or silently did nothing.
     """
     if local_repo:
         return True
@@ -4447,11 +4444,10 @@ def _repair_damaged_core_payload(
             name,
         )
         importlib.invalidate_caches()
-        # Presence first: --force-reinstall uninstalls before it installs, so a
-        # failure in between leaves no distribution, and a distribution that is
-        # not there has no RECORD for the scan below to call damaged. Checked
-        # unconditionally, unlike require_present: we only reinstall what the
-        # scan already found, so it was installed a moment ago.
+        # Presence first: --force-reinstall uninstalls before it installs, and
+        # what it leaves behind has no RECORD for the scan below to call
+        # damaged. Unconditional, unlike require_present: we only reinstall what
+        # the scan already found, so it was installed a moment ago.
         try:
             remaining = (
                 []
@@ -5847,10 +5843,9 @@ def install_python_stack() -> int:
     ):
         return 1
 
-    # 14c. Same reasoning one step further: write_manifest reads the installed
-    # version, so a core package that is absent or quarantined now is recorded
-    # as a finished install. The skip_base handoff never reaches the core phase,
-    # so this is the only place that sees it.
+    # 14c. write_manifest reads the installed version, so a core package absent
+    # or quarantined now is recorded as a finished install. The skip_base
+    # handoff never reaches the core phase, so nothing else would see it.
     if not _repair_damaged_core_payload(
         _core_package_names(package_name),
         local_repo = local_repo,

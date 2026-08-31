@@ -4815,11 +4815,10 @@ sys.path.insert(0, sys.argv[1])
 try:
     import install_manifest
 except Exception:
-    # A copy that is present but will not import is damage, not an old release,
-    # and it is the one file that would otherwise silence every check below.
-    # Absent stays the old escape: this script is resolved out of the installed
-    # studio package, so absence should be impossible, but proving that here
-    # needs a RECORD walk and the CLI reports studio_install_manifest_missing.
+    # Present but unimportable is damage, not an old release, and this is the
+    # one file whose damage silences every check below. Absent keeps the old
+    # escape: separating it from an old tree needs a RECORD walk here, and the
+    # CLI already reports studio_install_manifest_missing.
     sys.exit(1 if os.path.isfile(os.path.join(sys.argv[1], 'install_manifest.py')) else 0)
 try:
     ok = install_manifest.verify_install(deep = True)['ok']

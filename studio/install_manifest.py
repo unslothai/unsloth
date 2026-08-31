@@ -493,12 +493,9 @@ _SHARED_NON_RUNTIME_ROOTS = frozenset(
     )
 )
 
-# The one file the Windows launcher transaction moves aside while an update
-# runs. `_move_launcher_aside` renames Scripts/unsloth.exe to .update-stale
-# before setup, so the deep check inside setup.ps1 sees the recorded launcher
-# missing on every healthy update. Nothing else is staged, so nothing else is
-# excused: an exemption that applied to any recorded file would let a stray
-# sibling hide a quarantine anywhere in the tree.
+# `_move_launcher_aside` renames this before setup, so setup.ps1's deep check
+# sees it missing on every healthy Windows update. Nothing else is staged, so
+# nothing else is excused, or a stray sibling could hide any quarantine.
 _STAGED_LAUNCHER_NAME = "unsloth.exe"
 _STAGED_LAUNCHER_SUFFIXES = (".update-stale", ".update-backup", ".deleteme")
 
@@ -513,10 +510,8 @@ _INSTALLER_REGENERATED_TREES = (("studio", "frontend", "dist"),)
 def _staged_beside(target) -> bool:
     """Whether an absent launcher is one an update moved aside a moment ago.
 
-    The staged copy has to be usable, not merely present: the transaction
-    recovers through `_is_valid_pe`, so an orphaned or truncated sibling is one
-    it would reject too, and treating that as an excuse would leave the launcher
-    missing with the fast path intact. Same two-byte test, deliberately.
+    Usable, not merely present: `_recover_missing_launcher` reads these through
+    `_is_valid_pe`, so a copy it would reject is no excuse. Same two-byte test.
     """
     try:
         path = Path(target)
@@ -538,10 +533,9 @@ def _staged_beside(target) -> bool:
 
 
 def _within(target: Path, anchor: Path) -> bool:
-    """Whether a parent-relative RECORD row still lands inside the environment.
+    """Whether a parent-relative row lands inside the environment.
 
-    An absent file outside it belongs to something else, or to no package at all,
-    and a reinstall of ours would not put it back.
+    One outside it belongs to something else, which reinstalling ours cannot fix.
     """
     try:
         resolved = target.resolve()
@@ -555,12 +549,7 @@ def _within(target: Path, anchor: Path) -> bool:
 
 
 def _venv_anchor(site_packages: Path) -> Optional[Path]:
-    """The venv a site-packages belongs to, for bounding parent-relative rows.
-
-    RECORD records a console script as `../../../bin/unsloth`, so those rows are
-    only usable once there is something to say they stay inside the environment.
-    None when no venv is found, and the caller then skips them as before.
-    """
+    """The venv a site-packages belongs to, or None and the caller skips them."""
     try:
         current = site_packages.resolve()
     except OSError:
@@ -596,13 +585,12 @@ def damaged_payload_files(
     finish reading is reported undamaged, since guessing the other way would
     repair a healthy venv on every run.
 
-    The deadline inside the walk bounds many slow stats, but nothing inside a
-    process can bound one that never returns, and a wedged mount or a filesystem
-    filter can hang a single `stat` outright. Neither installer wraps its call in
-    a timeout, so that is run on a daemon thread and abandoned: the interpreter
-    does not wait for one at exit, measured at 1.04s to exit with a thread parked
-    forever in a syscall. `budget_seconds = 0` means no bound at all, for the
-    installer, which has already committed to a full pass.
+    The walk's own deadline bounds many slow stats but not one that never
+    returns, which a wedged mount produces and no installer wraps in a timeout.
+    So it runs on a daemon thread and is abandoned; the interpreter does not
+    wait for one at exit (1.04s measured, thread parked in a syscall).
+    `budget_seconds = 0` is unbounded, for the installer already committed to a
+    full pass.
     """
     if budget_seconds <= 0:
         return _scan_payload_files(package_name, limit, 0.0, companion_names, scan_paths)
@@ -618,9 +606,8 @@ def damaged_payload_files(
 
     worker = threading.Thread(target = scan, daemon = True)
     worker.start()
-    # The deadline in the walk is the ordinary way out, and it reports what it
-    # found; this margin only decides how long to wait for a call that is never
-    # coming back, and past it the answer is undamaged.
+    # The walk's deadline is the ordinary way out and reports what it found;
+    # this margin only bounds the wait for a call that is not coming back.
     worker.join(budget_seconds + 1.0)
     return done[0] if done else []
 
@@ -683,10 +670,9 @@ def _scan_payload_files(
                     continue
                 try:
                     target = dist.locate_file(rel)
-                    # Console scripts and data files are recorded relative to
-                    # site-packages, so `..` is ordinary. Resolved and bounded to
-                    # the venv rather than skipped: a quarantined `bin/unsloth`
-                    # leaves the whole tree intact and the command gone.
+                    # `..` is ordinary for console scripts and data files.
+                    # Bounded rather than skipped: a quarantined `bin/unsloth`
+                    # leaves the tree intact and the command gone.
                     if ".." in parts and (anchor is None or not _within(Path(target), anchor)):
                         continue
                     info = target.stat()
@@ -771,10 +757,8 @@ def verify_install(
         )
         recorded = manifest.get("package_version")
         # Every check below compares against `current`, which an absent
-        # distribution passes. An empty `recorded` is the same hole one step
-        # earlier: write_manifest stores whatever version it could read, so a
-        # package already gone when it ran is recorded as a finished install
-        # with no version at all.
+        # distribution passes -- as does a manifest written with no version at
+        # all, which is what write_manifest records for one already gone.
         vanished = not current
         if core_conflict or local_conflict:
             reason = "studio_install_metadata_conflict"
@@ -796,11 +780,10 @@ def verify_install(
         # disagree with the checks that already passed.
         scan_package = (manifest or {}).get("package") or package_name
         # unsloth-zoo only for the default install: `--package X` installs X
-        # alone, so scanning the companion there would report damage in an
-        # unrelated distribution and repair that environment on every run.
+        # alone, so its neighbours are not ours to repair.
         companions = ("unsloth-zoo",) if _canonical(scan_package) == "unsloth" else ()
-        # A companion with no dist-info leaves the scan below nothing to walk,
-        # and nothing above ever looked at its version.
+        # No dist-info leaves the scan nothing to walk, and no check above ever
+        # looked at the companion's version.
         if not vanished:
             for companion in companions:
                 present = (

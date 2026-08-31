@@ -119,12 +119,8 @@ def test_the_findings_respect_the_limit(site_packages):
 
 
 def test_a_regenerated_frontend_dist_is_not_damage(site_packages):
-    """setup.sh runs `npm run build` in the installed tree.
-
-    vite empties dist/ and rewrites every asset under a fresh content hash, so
-    the recorded bundle names are gone by the installer's own doing. The wheel
-    ships that bundle, so those rows are in RECORD.
-    """
+    """The wheel ships the bundle, so its files are in RECORD, and setup's own
+    `npm run build` rehashes every one of them."""
     dist_info, rows = _healthy(site_packages)
     old = _write(site_packages / "studio/frontend/dist/assets/index-OLDHASH1.js", "x\n")
     index = _write(site_packages / "studio/frontend/dist/index.html", "<html>old</html>\n")
@@ -450,11 +446,8 @@ def test_the_cli_hands_over_the_managed_venvs_own_paths():
 
 
 def test_a_quarantined_console_script_is_damage(tmp_path, site_packages):
-    """RECORD names a launcher `../../../bin/x`, and the tree is left intact.
-
-    Skipping every parent-relative row meant the standard `unsloth` command
-    could be gone while the deep check called the install healthy.
-    """
+    """Skipping every parent-relative row meant the `unsloth` command could be
+    gone, tree intact, while the deep check called the install healthy."""
     venv = site_packages.parent
     (venv / "pyvenv.cfg").write_text("home = /usr\n", encoding = "utf-8")
     dist_info = _dist(site_packages)
@@ -510,8 +503,7 @@ def test_a_vanished_companion_is_damage(tmp_path, monkeypatch, site_packages):
 
 
 def test_a_custom_package_does_not_have_to_ship_unsloth_zoo(tmp_path, monkeypatch, site_packages):
-    """`--package X` installs X alone, so a damaged or absent unsloth-zoo beside
-    it belongs to something else and repairing it would mutate that."""
+    """`--package X` installs X alone, so its neighbours are not ours to fix."""
     dist_info, rows = _healthy(site_packages)
     _record(dist_info, rows)
     req_root = _complete_install(tmp_path, monkeypatch, site_packages)
@@ -538,12 +530,9 @@ def test_a_custom_package_installs_no_companion(monkeypatch):
 
 
 def test_a_manifest_with_no_recorded_version_is_damage(tmp_path, monkeypatch, site_packages):
-    """write_manifest stores whatever version it could read, so a package
-    already gone when it ran is recorded as a finished install with none.
-
-    An empty version is only ever absence here: two records or an unreadable
-    one set `local_conflict`, which reports its own reason before this runs.
-    """
+    """write_manifest stores whatever version it could read, so a package gone
+    when it ran is recorded as a finished install with none. Absence is the only
+    way to get here empty: ambiguity sets `local_conflict` first."""
     dist_info, rows = _healthy(site_packages)
     _record(dist_info, rows)
     req_root = _complete_install(tmp_path, monkeypatch, site_packages)
@@ -558,8 +547,7 @@ def test_a_manifest_with_no_recorded_version_is_damage(tmp_path, monkeypatch, si
 
 
 def test_ambiguous_metadata_still_reports_its_own_reason(tmp_path, monkeypatch, site_packages):
-    """Two records also leave the version empty, and that is a conflict, not
-    damage: the reason strings are a contract the desktop reads."""
+    """Also empty, but a conflict: these strings are a contract the desktop reads."""
     dist_info, rows = _healthy(site_packages)
     _record(dist_info, rows)
     req_root = _complete_install(tmp_path, monkeypatch, site_packages)
@@ -569,11 +557,8 @@ def test_ambiguous_metadata_still_reports_its_own_reason(tmp_path, monkeypatch, 
 
 
 def test_a_stat_that_never_returns_does_not_wedge_setup(site_packages, monkeypatch):
-    """Nothing inside a process can bound a syscall that never comes back.
-
-    Neither installer wraps its `verify_install(deep = True)` call in a timeout,
-    so an unbounded walk would hand a wedged mount the ability to hang setup.
-    """
+    """Nothing in-process bounds a syscall that never returns, and no installer
+    wraps its `verify_install(deep = True)` call in a timeout."""
     import threading
 
     dist_info, rows = _healthy(site_packages)
@@ -590,8 +575,7 @@ def test_a_stat_that_never_returns_does_not_wedge_setup(site_packages, monkeypat
 
 
 def test_an_unbounded_scan_stays_on_this_thread(site_packages, monkeypatch):
-    """`budget_seconds = 0` is the installer, which has committed to a full pass
-    and must get the real answer however long the tree takes."""
+    """`budget_seconds = 0` is the installer: it needs the real answer."""
     dist_info, rows = _healthy(site_packages)
     _record(dist_info, rows)
     (site_packages / PKG / "__init__.py").unlink()
@@ -622,12 +606,9 @@ def _launcher_case(site_packages: Path):
 
 @pytest.mark.parametrize("suffix", [".update-stale", ".update-backup", ".deleteme"])
 def test_a_launcher_an_update_moved_aside_is_not_damage(site_packages, suffix):
-    """`_move_launcher_aside` renames Scripts/unsloth.exe before setup runs.
-
-    setup.ps1's deep check runs inside that window on every ordinary Windows
-    update, so without this a healthy no-op update loses its fast path and
-    force-reinstalls the core package over the network every time.
-    """
+    """setup.ps1's deep check runs inside the window `_move_launcher_aside`
+    opens, so without this every healthy Windows update loses its fast path and
+    force-reinstalls the core package over the network."""
     launcher = _launcher_case(site_packages)
     launcher.rename(launcher.with_name(launcher.name + suffix))
     assert install_manifest.damaged_payload_files(PKG) == []
@@ -648,8 +629,7 @@ def test_an_unrelated_sibling_does_not_excuse_a_missing_file(site_packages):
 
 
 def test_a_truncated_staged_copy_is_no_excuse(site_packages):
-    """The transaction recovers through `_is_valid_pe`, so a copy it would
-    reject must not suppress detection here either."""
+    """`_recover_missing_launcher` reads these through `_is_valid_pe`."""
     launcher = _launcher_case(site_packages)
     launcher.unlink()
     (launcher.parent / "unsloth.exe.update-stale").write_text("", encoding = "utf-8")
@@ -664,8 +644,7 @@ def test_a_staged_copy_that_is_not_a_pe_is_no_excuse(site_packages):
 
 
 def test_only_the_launcher_is_ever_excused(site_packages):
-    """Nothing else is staged by the transaction, so nothing else is exempt:
-    a stray sibling must not hide a quarantine elsewhere in the tree."""
+    """Only the launcher is staged, so a stray sibling elsewhere is no excuse."""
     dist_info, rows = _healthy(site_packages)
     _record(dist_info, rows)
     module = site_packages / PKG / "__init__.py"
@@ -696,12 +675,10 @@ def _installer_helper_probe() -> str:
     ids = ["absent-keeps-the-fast-path", "truncated-forces-repair", "raises-forces-repair"],
 )
 def test_an_unimportable_helper_forces_the_dependency_pass(tmp_path, contents, expected):
-    """The helper is the one file whose damage silences every other check.
+    """The one file whose damage silences every check that follows it.
 
-    Absent stays the old escape: setup.sh is resolved out of the installed
-    studio package, so absence should be impossible, and separating it from an
-    old release here would need a RECORD walk inside the installer. The CLI
-    already reports that case as studio_install_manifest_missing.
+    Absent keeps the old escape: telling it from an old tree needs a RECORD walk
+    here, and the CLI reports it as studio_install_manifest_missing anyway.
     """
     import subprocess
 
