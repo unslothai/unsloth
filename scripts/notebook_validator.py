@@ -449,6 +449,18 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
     return commands
 
 
+def unconditional_pip_invocations(install_cell: str) -> Iterator[PipInvocation]:
+    """The commands that certainly run.
+
+    Anything asking what the cell leaves installed wants this one. `iter_pip_invocations`
+    yields the `||` fallbacks too, and only a rule that must see every path a notebook could
+    take, R-INST-001's git+ ban above all, should be reading those.
+    """
+    for inv in iter_pip_invocations(install_cell):
+        if not inv.conditional:
+            yield inv
+
+
 def iter_pip_invocations(install_cell: str) -> Iterator[PipInvocation]:
     for line_no, line in _glue_line_continuations(install_cell):
         for command, conditional in _split_chained(line):
@@ -576,9 +588,7 @@ def resolved_set(install_cell: str, colab: dict[str, str]) -> dict[str, str]:
     out = dict(colab)
     pinned: set[str] = set()
     upper_bounds: dict[str, str] = {}
-    for inv in iter_pip_invocations(install_cell):
-        if inv.conditional:
-            continue  # the fallback side of an `||` runs only when the left side failed
+    for inv in unconditional_pip_invocations(install_cell):
         for raw in inv.packages:
             sp = parse_spec(raw)
             if sp is None:
@@ -605,6 +615,8 @@ def resolved_set(install_cell: str, colab: dict[str, str]) -> dict[str, str]:
 
 def rule_inst_001_git_plus(install_cell: str, file: str, cell_idx: int) -> list[Finding]:
     findings: list[Finding] = []
+    # Every path, fallbacks included: a git+ install that runs only when something else
+    # failed is still a git+ install.
     for inv in iter_pip_invocations(install_cell):
         if any("git+" in p for p in inv.packages) or "git+" in inv.raw:
             if any(allowed in inv.raw for allowed in GIT_PLUS_ALLOWLIST):
@@ -628,9 +640,7 @@ def rule_inst_002_no_deps_transitive(
 ) -> list[Finding]:
     findings: list[Finding] = []
     res = resolved_set(install_cell, colab)
-    for inv in iter_pip_invocations(install_cell):
-        if inv.conditional:
-            continue  # resolved_set skips it too, so its pins are not in `res`
+    for inv in unconditional_pip_invocations(install_cell):
         if "--no-deps" not in inv.flags:
             continue
         for raw in inv.packages:
@@ -675,9 +685,7 @@ def _install_cell_lower_bound(install_cell: str, target: str) -> str | None:
     (treating `==V` as both bounds), or None. Used by R-INST-003 so a
     `torchao>=0.16.0` line satisfies the floor without a `==` pin."""
     best: str | None = None
-    for inv in iter_pip_invocations(install_cell):
-        if inv.conditional:
-            continue  # runs only when the command before it failed
+    for inv in unconditional_pip_invocations(install_cell):
         for raw in inv.packages:
             sp = parse_spec(raw)
             if sp is None or sp.name != target:
@@ -822,9 +830,7 @@ def _effective_version(
     """
     current = resolved
     exact_known = True
-    for inv in iter_pip_invocations(install_cell):
-        if inv.conditional:
-            continue  # runs only when the command before it failed
+    for inv in unconditional_pip_invocations(install_cell):
         # One command names a project once as far as pip is concerned: it intersects repeated
         # arguments into a single requirement, so they have to be one window here too.
         pins: list[tuple[str, str]] = []
@@ -856,7 +862,11 @@ def _effective_version(
             # where; without one there is nothing to say at all.
             if floor is not None and not exclusive_floor:
                 current, exact_known = floor, landing is not None
-        elif floor is not None and cmp_versions(floor, current) > 0:
+        elif floor is not None and (
+            cmp_versions(floor, current) > 0
+            # `>V` is not satisfied by V itself, so equality still forces a move.
+            or (exclusive_floor and cmp_versions(floor, current) == 0)
+        ):
             if landing is not None:
                 current, exact_known = landing, True  # the window pins the minor
             elif exclusive_floor:
@@ -979,7 +989,7 @@ def rule_inst_005_transformers_tokenizers(
         return findings
     # Find the transformers pin and check for --no-deps.
     transformers_line_no_deps = False
-    for inv in iter_pip_invocations(install_cell):
+    for inv in unconditional_pip_invocations(install_cell):
         for raw in inv.packages:
             sp = parse_spec(raw)
             if sp is None or sp.name != "transformers":
