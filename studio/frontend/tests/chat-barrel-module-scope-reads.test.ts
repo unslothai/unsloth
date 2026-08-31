@@ -78,6 +78,21 @@ function barrelValueNames(
   return names;
 }
 
+/**
+ * A source path as the allowlist writes it: relative to src, forward slashes.
+ *
+ * Not path.relative alone. On Windows that returns backslashes, so every entry
+ * in KNOWN_DEEP_CYCLE_READS missed and the guard failed there while passing on
+ * Linux -- caught on a Windows CI runner, not by reasoning about it.
+ */
+function toPosix(relative: string): string {
+  return relative.split("\\").join("/");
+}
+
+function relativeToSrc(file: string): string {
+  return toPosix(path.relative(SRC, file));
+}
+
 /** Local names bound by `import * as X`, whichever module they came from. */
 function namespaceImportNames(source: ts.SourceFile): Set<string> {
   const out = new Set<string>();
@@ -827,7 +842,7 @@ function eagerReads(
         });
         if (inner.length > 0) {
           const { line } = source.getLineAndCharacterOfPosition(node.getStart(source));
-          const where = path.relative(SRC, helper.file);
+          const where = relativeToSrc(helper.file);
           found.push(`${node.expression.text}() (line ${line + 1}) reaches ${where}: ${inner.join(", ")}`);
         }
       }
@@ -1611,7 +1626,7 @@ test("no module-scope read of a chat barrel value", () => {
     if (names.size > 0) importers += 1;
     if (!atRisk.has(file)) continue;
     for (const hit of eagerReads(source, names, { helpers }, namespaceImportNames(source))) {
-      const entry = `${path.relative(SRC, file)}: ${hit}`;
+      const entry = `${relativeToSrc(file)}: ${hit}`;
       // The line is dropped from the key, and only from the key: the offender
       // message below still says where to look.
       const key = entry.replace(/ \(line \d+\)/g, "");
@@ -2289,6 +2304,19 @@ test("an imported helper is entered with the caller's arguments, default import 
   const d = new Map([["read", build(dflt, "default")]]);
   assert.equal(scan(`import read from "./defaulthelper";\nconst v = read();\n`, d).length, 1,
     "a default-imported helper is followed like a named one");
+});
+
+test("allowlist keys are written the same way on every platform", () => {
+  // A Windows runner reports path.relative with backslashes, which made every
+  // entry in KNOWN_DEEP_CYCLE_READS miss and the guard fail there alone.
+  // Written against a Windows-shaped path rather than this platform's, or the
+  // assertion is an identity on Linux and proves nothing.
+  assert.equal(toPosix("components\\assistant-ui\\thread.tsx"), "components/assistant-ui/thread.tsx");
+  assert.equal(toPosix("features/chat/chat-page.tsx"), "features/chat/chat-page.tsx");
+  assert.equal(relativeToSrc(path.join(SRC, "features", "chat", "x.ts")), "features/chat/x.ts");
+  for (const entry of KNOWN_DEEP_CYCLE_READS.keys()) {
+    assert.ok(!entry.includes("\\"), `${entry} is written with a Windows separator`);
+  }
 });
 
 test("a default export is recorded under the name consumers import it by", () => {
