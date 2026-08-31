@@ -484,3 +484,17 @@ class TestABrokenTorchForcesTheDependencyPass:
 
     def test_the_flag_is_still_raised_where_the_import_definitively_failed(self):
         assert "$script:TorchImportDefinitivelyFailed = $true" in _SETUP_SRC
+
+    @pytest.mark.parametrize("force_var", ["$xpuForce", "$cpuForce"])
+    def test_every_conditional_force_gate_reads_the_flag(self, force_var):
+        # The ROCm arm forces unconditionally, so only these two have a gate to miss. An
+        # unimportable +xpu wheel still reports its on-disk tag as "xpu", so no flavour
+        # change is seen, the bounded range is satisfied, and the resolver keeps it.
+        guards = "\n".join(
+            line for line in _SETUP_SRC.splitlines()
+            if f"{force_var} = @(\"--force-reinstall\")" in line
+        )
+        assert guards, f"no {force_var} assignment found"
+        assert "$script:TorchImportDefinitivelyFailed" in guards, (
+            f"{force_var} never forces on a definitively unimportable wheel"
+        )
