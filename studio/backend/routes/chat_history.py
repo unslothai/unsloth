@@ -582,6 +582,17 @@ class ChatImportLedgerRecordResponse(BaseModel):
     inserted: int
 
 
+# Both conflicts are 409 and mean opposite things: protected means stop resending, a thread
+# collision means surface the failure. In a header, not the body, so `detail` stays a plain
+# string for existing clients; main.py must expose it for a cross-origin Studio to read it.
+CONFLICT_KIND_HEADER = "X-Unsloth-Conflict-Kind"
+
+
+def _conflict_headers(exc: Exception) -> dict:
+    kind = "protected" if isinstance(exc, ChatMessageProtectedError) else "thread-collision"
+    return {CONFLICT_KIND_HEADER: kind}
+
+
 @router.get("/threads", response_model = ChatThreadListResponse)
 def list_threads(
     model_type: Optional[str] = Query(None),
@@ -1031,6 +1042,7 @@ def delete_attachment(
             safe_curated_detail(exc),
             event = "chat_history.delete_attachment_conflict",
             log = logger,
+            headers = _conflict_headers(exc),
         ) from exc
     if not deleted:
         raise HTTPException(status_code = 404, detail = "Attachment not found")
@@ -1351,6 +1363,7 @@ def save_thread_message(
             safe_curated_detail(exc),
             event = "chat_history.save_message_conflict",
             log = logger,
+            headers = _conflict_headers(exc),
         ) from exc
 
 
@@ -1394,6 +1407,7 @@ def replace_thread_messages(
             safe_curated_detail(exc),
             event = "chat_history.replace_messages_conflict",
             log = logger,
+            headers = _conflict_headers(exc),
         ) from exc
 
 

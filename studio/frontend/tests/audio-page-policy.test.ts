@@ -330,7 +330,7 @@ test("file transcription cannot overlap a pending microphone permission", () => 
 test("gallery refresh preserves fallback selection and pagination identity", () => {
   assert.match(
     audioPageSource,
-    /const generation = \+\+galleryRefreshGeneration\.current;[\s\S]*listAudioGallery\(0, PAGE_SIZE\);[\s\S]*if \(generation !== galleryRefreshGeneration\.current\) return/,
+    /const generation = \+\+galleryRefreshGeneration\.current;[\s\S]*listAudioGallery\(\s*0,[\s\S]*if \(generation !== galleryRefreshGeneration\.current\) return/,
   );
   assert.match(
     audioPageSource,
@@ -420,7 +420,7 @@ test("a clip this client deleted leaves the merged gallery", () => {
 test("the selection only moves when its clip left the merged gallery", () => {
   assert.match(
     audioPageSource,
-    /const \{ clips: merged, stitched \} = mergeGalleryPage\([\s\S]*!merged\.some\(\(c\) => c\.id === galleryCache\.selectedId\)/,
+    /const \{ clips: merged, stitched \} =[\s\S]*mergeGalleryPage\([\s\S]*!merged\.some\(\(c\) => c\.id === galleryCache\.selectedId\)/,
   );
   // Play an older clip, delete another, and the player must not jump to the newest.
   assert.doesNotMatch(
@@ -458,6 +458,15 @@ test("a cache with nothing in common with the page is dropped, not stitched", ()
     [{ id: "c" }, { id: "b" }],
   );
   assert.deepEqual(merged, { clips: [{ id: "z" }, { id: "y" }], stitched: false });
+});
+
+test("a refresh resets when an external archive moves the page boundary", () => {
+  const cached = Array.from({ length: 50 }, (_, i) => ({ id: `c${i}` }));
+  const page = [...cached.slice(0, 5), ...cached.slice(6), { id: "c50" }];
+  assert.deepEqual(mergeGalleryPage(page, cached, undefined, true), {
+    clips: page,
+    stitched: false,
+  });
 });
 
 test("the recorder is gated on the same capability check the composer uses", () => {
@@ -507,7 +516,7 @@ test("a recording is stopped at the sidecar's duration and size limits", () => {
 test("the trained-model list applies the native-aware macOS policy", () => {
   assert.match(
     audioPageSource,
-    /!isMac \|\|\s*trainedTtsCheckpointIsRunnableOnMac\(lora\.audio_type, lora\.export_type\)/,
+    /!isMac \|\|\s*trainedTtsCheckpointIsRunnableOnMac\(\s*lora\.audio_type,\s*lora\.export_type,?\s*\)/,
   );
 });
 
@@ -607,5 +616,80 @@ test("generation is claimed before the transcribe release is awaited", () => {
   assert.match(
     audioPageSource,
     /if \(releaseInFlight && !\(await releaseInFlight\)\) \{\s*busyRef\.current = null;\s*setBusy\(null\);\s*setMode\("transcribe"\);/,
+  );
+});
+
+test("a restore refreshes the loaded window, not just the first page", () => {
+  // A restored clip re-enters History at its own age, so past the first page it lands below it.
+  // Refreshing only that page left it out of the strip AND unreachable, since the kept cursor
+  // starts below the loaded window.
+  const shelf = Array.from({ length: 120 }, (_, i) => ({ id: `c${i}` }));
+  const loaded = shelf.slice(0, 100);
+  const restored = { id: "restored" };
+  const afterRestore = [...shelf.slice(0, 70), restored, ...shelf.slice(70)];
+
+  const firstPageOnly = mergeGalleryPage(afterRestore.slice(0, 50), loaded, undefined, true);
+  assert.equal(
+    firstPageOnly.clips.some((clip) => clip.id === "restored"),
+    false,
+  );
+
+  const wholeWindow = mergeGalleryPage(
+    afterRestore.slice(0, loaded.length),
+    loaded,
+    undefined,
+    true,
+  );
+  assert.equal(
+    wholeWindow.clips.some((clip) => clip.id === "restored"),
+    true,
+  );
+  // Still contiguous: the row the longer page pushed out is stitched back on, not dropped.
+  assert.deepEqual(wholeWindow.clips, [...afterRestore.slice(0, 100), shelf[99]]);
+});
+
+test("the gallery-changed subscription asks for the window that is loaded", () => {
+  assert.match(
+    audioPageSource,
+    /subscribeGalleryChanged\("audio", \(\) => \{\s*void refreshGallery\(undefined, galleryCache\.clips\.length\);/,
+  );
+  assert.match(
+    audioPageSource,
+    /const wanted = Math\.max\(PAGE_SIZE, windowSize\);\s*const asked = Math\.min\(wanted, MAX_PAGE_SIZE\);/,
+  );
+});
+
+test("reactivating audio asks for the window that is loaded", () => {
+  assert.match(
+    audioPageSource,
+    /if \(initialReadySent\.current\) \{\s*void refreshStatus\(\);\s*void refreshSttStatus\(\);\s*void refreshGallery\(undefined, galleryCache\.clips\.length\);\s*return;\s*\}/,
+  );
+});
+
+test("returning to a visible audio tab refreshes the loaded window", () => {
+  assert.match(
+    audioPageSource,
+    /const refreshWhenVisible = \(\) => \{\s*if \(document\.hidden\) return;\s*void refreshGallery\(undefined, galleryCache\.clips\.length\);\s*\};\s*window\.addEventListener\("focus", refreshWhenVisible\);\s*document\.addEventListener\("visibilitychange", refreshWhenVisible\);/,
+  );
+  assert.match(
+    audioPageSource,
+    /window\.removeEventListener\("focus", refreshWhenVisible\);\s*document\.removeEventListener\("visibilitychange", refreshWhenVisible\);/,
+  );
+});
+
+test("a window past the route cap resets the strip instead of stranding the restore", () => {
+  // Asking for more than the route returns leaves the middle of the window unfetched, and keeping
+  // the old scrollback keeps a cursor starting BELOW that middle, so a clip restored into it is
+  // in neither the merged list nor any page still reachable.
+  assert.match(
+    audioPageSource,
+    /wanted > asked\s*\?\s*\{ clips: \[\.\.\.page\.audio\], stitched: false \}\s*:\s*mergeGalleryPage\(/,
+  );
+});
+
+test("a capped restore refresh invalidates a page fetched from the older cursor", () => {
+  assert.match(
+    audioPageSource,
+    /const cursor = galleryCache\.nextCursor;\s*try\s*{\s*const page = await listAudioGallery\(\s*0,\s*PAGE_SIZE,\s*cursor,?\s*\);\s*if \(\s*refreshGeneration !== galleryRefreshGeneration\.current \|\|\s*cursor !== galleryCache\.nextCursor\s*\)\s*return;/,
   );
 });

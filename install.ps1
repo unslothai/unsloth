@@ -1598,6 +1598,9 @@ public static class UnslothStudioFinalPathV2
 
     # Shared default cache, or the custom Unsloth home's llama.cpp tree.
     function Get-ManagedLlamaCppDir {
+        if ($StageRoot) {
+            return (Join-Path $StageRoot "llama.cpp")
+        }
         if (-not (Test-StudioHomeIsCustom)) {
             return (Join-Path $env:USERPROFILE ".unsloth\llama.cpp")
         }

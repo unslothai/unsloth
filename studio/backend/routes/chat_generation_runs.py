@@ -357,7 +357,13 @@ async def chat_generation_events(
             if await request.is_disconnected():
                 return
             if not events:
-                yield ": keep-alive\n\n"
+                # Carries the run's progress stamp, which the lease renewals move. A bare
+                # keep-alive is proof the CONNECTION is healthy and nothing more, so a
+                # follower that rearmed its no-progress deadline on one could never settle
+                # a wedged run while the socket stayed up, which is the one case that
+                # fallback exists for. Comment framing, so _SSEDecoder still drops it and
+                # no client parsing it as an event is affected.
+                yield f": keep-alive {int(snapshot['updatedAt'])}\n\n"
 
     return StreamingResponse(
         stream(),

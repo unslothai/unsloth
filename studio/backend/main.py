@@ -317,6 +317,7 @@ from routes import (
     youtube_router,
 )
 from routes.llama import router as llama_router
+from routes.llama_compat import is_engine_probe_path, router as llama_compat_router
 from routes.whisper import router as whisper_router
 from routes.preview import router as preview_router
 from hub.routes import (
@@ -641,6 +642,16 @@ async def lifespan(app: FastAPI):
     _lifespan_log = _structlog.get_logger(__name__)
     clear_compiled_cache_unless_shared(app)
 
+    # Here because both launch paths reach it after the frontend decision: run.py calls
+    # setup_frontend(), and `uvicorn main:app` bypasses run.py entirely. With no
+    # catch-all the engine paths match on method alone and answer 405, read as "exists".
+    if not getattr(app.state, "frontend_mounted", False):
+        try:
+            from routes.llama_compat import add_get_denials
+            add_get_denials(app)
+        except Exception:  # noqa: BLE001 -- never block startup over a discovery route
+            _lifespan_log.warning("could not install API-only probe denials", exc_info = True)
+
     # Move the legacy sandbox up here rather than from the first request: the
     # copy can be minutes when the studio home is on another filesystem.
     try:
@@ -681,6 +692,15 @@ async def lifespan(app: FastAPI):
             )
     except Exception as exc:
         _lifespan_log.warning("chat generation orphan reconciliation failed: %s", exc)
+
+    try:
+        # The boot pass above only settles runs orphaned by the previous process. A run
+        # that wedges while this one keeps serving needs the same reconciliation on an
+        # interval, bounded to runs whose progress lease has expired.
+        from core.inference.chat_generation_runs import start_lease_sweeper
+        start_lease_sweeper(app)
+    except Exception as exc:
+        _lifespan_log.warning("chat generation lease sweeper failed to start: %s", exc)
 
     reap_hub_orphan_workers()
     try:
@@ -1407,6 +1427,9 @@ app.add_middleware(
     allow_credentials = True,
     allow_methods = ["*"],
     allow_headers = ["*"],
+    # allow_headers is the REQUEST side; a response header is unreadable to JS unless
+    # exposed, and Studio is cross-origin from tauri://localhost and tunnels.
+    expose_headers = ["X-Unsloth-Conflict-Kind"],
     # is_allowed_origin closes the moment the tunnel URL clears, but a preflight
     # already cached by the browser does not. Measured in WebKit: with Starlette's
     # 600s default, a state-changing request still REACHED the server after remote
@@ -1448,6 +1471,11 @@ app.include_router(video_openai_router, prefix = "/v1", tags = ["openai-compat"]
 
 # OpenAI-compatible: mount the inference router at /v1 for external tools.
 app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])
+# llama-server / Ollama discovery probes. Declares its own full paths (/props,
+# /version, /api/tags, ...) so it needs no prefix, and must be registered here --
+# ahead of the SPA catch-all in serve_frontend() -- or /props and /version go on
+# resolving to index.html with a 200.
+app.include_router(llama_compat_router, tags = ["openai-compat"])
 app.include_router(preview_router, prefix = "/p", tags = ["preview"])
 app.include_router(providers_router, prefix = "/api/providers", tags = ["providers"])
 
@@ -2533,7 +2561,17 @@ def setup_frontend(
         if file_path.is_file():
             return FileResponse(file_path)
 
+        # Last, so a real asset always wins: an engine endpoint Studio does not serve
+        # must 404 rather than render the app shell, which reads as "supported" to a
+        # client that checks the status before the body. Deliberately after the file
+        # lookup -- a build that ever ships one of these names still serves it.
+        if is_engine_probe_path(full_path):
+            raise HTTPException(status_code = 404, detail = "API endpoint not found")
+
         # Serve index.html as bytes — avoids Content-Length mismatch
         return _build_index_response(request)
 
+    # The catch-all above is what 404s a GET probe. The lifespan reads this to decide
+    # whether the engine paths still need their own GET denial.
+    app.state.frontend_mounted = True
     return True

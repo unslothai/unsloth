@@ -8,6 +8,7 @@
 
 import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import {
+  Archive02Icon,
   AudioWave01Icon,
   Copy01Icon,
   Delete02Icon,
@@ -84,9 +85,11 @@ import {
 } from "@/features/settings/lib/stt-download-mirror";
 import { sttModelSize } from "@/features/settings/stores/stt-model-catalog";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
+import { useSettingsDialogStore } from "@/features/settings";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { fetchSystemInfo } from "@/hooks/use-system";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
+import { subscribeGalleryChanged } from "@/lib/gallery-flags";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -100,6 +103,7 @@ import {
   getAudioDownloadPlan,
   generateAudio,
   listAudioGallery,
+  setAudioClipFlags,
 } from "./api";
 import {
   type AudioBusy,
@@ -172,6 +176,8 @@ const HUB_TASKS_BY_MODE = {
 } as const;
 
 const PAGE_SIZE = 50;
+// The list route clamps a page to 200, so asking for more silently gets 200 back.
+const MAX_PAGE_SIZE = 200;
 // Mirrors the STT sidecar's own limits (_MAX_AUDIO_SECONDS, STT_AUDIO_B64_MAX_CHARS), so a
 // recording is stopped at the boundary rather than uploaded and refused.
 const RECORDING_MAX_SECONDS = 30 * 60;
@@ -245,12 +251,14 @@ function ClipRowMenu({
   onDownload,
   onCopyPrompt,
   onUseAsText,
+  onArchive,
   onDelete,
 }: {
   clip: AudioGalleryClip;
   onDownload: () => void;
   onCopyPrompt: () => void;
   onUseAsText: () => void;
+  onArchive: () => void;
   onDelete: () => void;
 }) {
   return (
@@ -283,6 +291,10 @@ function ClipRowMenu({
         <DropdownMenuItem onSelect={onDownload}>
           <HugeiconsIcon icon={Download01Icon} className="size-4" />
           Download WAV
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={onArchive}>
+          <HugeiconsIcon icon={Archive02Icon} className="size-4" />
+          Archive
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem variant="destructive" onSelect={onDelete}>
@@ -662,18 +674,29 @@ export function AudioPage({
   }, []);
 
   const refreshGallery = useCallback(
-    async (removedId?: string): Promise<AudioGalleryClip[]> => {
+    async (
+      removedId?: string,
+      windowSize = PAGE_SIZE,
+    ): Promise<AudioGalleryClip[]> => {
       const generation = ++galleryRefreshGeneration.current;
+      const wanted = Math.max(PAGE_SIZE, windowSize);
+      const asked = Math.min(wanted, MAX_PAGE_SIZE);
       try {
-        const page = await listAudioGallery(0, PAGE_SIZE);
+        const page = await listAudioGallery(0, asked);
         // The caller's own fetch: a generation whose clip persisted must not be told otherwise.
         if (generation !== galleryRefreshGeneration.current) return page.audio;
-        const { clips: merged, stitched } = mergeGalleryPage(
-          page.audio,
-          galleryCache.clips,
-          removedId,
-          page.has_more,
-        );
+        // A window past the route's cap cannot be covered in one page, and stitching the old
+        // scrollback back on keeps a cursor that starts BELOW it, stranding whatever was restored
+        // into the gap. Reset to what was fetched: shorter scrollback, nothing unreachable.
+        const { clips: merged, stitched } =
+          wanted > asked
+            ? { clips: [...page.audio], stitched: false }
+            : mergeGalleryPage(
+                page.audio,
+                galleryCache.clips,
+                removedId,
+                page.has_more,
+              );
         galleryCache.clips = merged;
         // A clip record carries no mtime, so kept scrollback has no cursor; keep the deeper one.
         if (!stitched) {
@@ -729,13 +752,14 @@ export function AudioPage({
     if (loadingMoreRef.current) return;
     loadingMoreRef.current = true;
     const refreshGeneration = galleryRefreshGeneration.current;
+    const cursor = galleryCache.nextCursor;
     try {
-      const page = await listAudioGallery(
-        0,
-        PAGE_SIZE,
-        galleryCache.nextCursor,
-      );
-      if (refreshGeneration !== galleryRefreshGeneration.current) return;
+      const page = await listAudioGallery(0, PAGE_SIZE, cursor);
+      if (
+        refreshGeneration !== galleryRefreshGeneration.current ||
+        cursor !== galleryCache.nextCursor
+      )
+        return;
       galleryCache.nextCursor =
         page.next_before_mtime !== null && page.next_before_id !== null
           ? { mtime: page.next_before_mtime, id: page.next_before_id }
@@ -761,7 +785,7 @@ export function AudioPage({
     if (initialReadySent.current) {
       void refreshStatus();
       void refreshSttStatus();
-      void refreshGallery();
+      void refreshGallery(undefined, galleryCache.clips.length);
       return;
     }
     let cancelled = false;
@@ -802,6 +826,20 @@ export function AudioPage({
       if (runtime === "stt") void refreshSttStatus();
     });
   }, [active, refreshStatus, refreshSttStatus]);
+
+  useEffect(() => {
+    if (!active) return;
+    const refreshWhenVisible = () => {
+      if (document.hidden) return;
+      void refreshGallery(undefined, galleryCache.clips.length);
+    };
+    window.addEventListener("focus", refreshWhenVisible);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      window.removeEventListener("focus", refreshWhenVisible);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
+  }, [active, refreshGallery]);
 
   // The selected clip needs its bytes before the player can play it.
   useEffect(() => {
@@ -2126,23 +2164,24 @@ export function AudioPage({
 
   // --- Gallery actions ----------------------------------------------------
 
+  const dropClip = useCallback((id: string) => {
+    galleryCache.srcById.delete(id);
+    setSrcById(galleryCache.srcById.toRecord());
+    // Drop the row now, as the clear-all path does: refreshGallery swallows a failed GET and
+    // returns the cache without setClips, leaving the row up against an already-revoked URL.
+    galleryCache.clips = galleryCache.clips.filter((clip) => clip.id !== id);
+    setClips(galleryCache.clips);
+    if (galleryCache.selectedId === id) {
+      galleryCache.selectedId = null;
+      setSelectedId(null);
+    }
+  }, []);
+
   const handleDeleteClip = useCallback(
     async (id: string) => {
       try {
         await deleteAudioClip(id);
-        galleryCache.srcById.delete(id);
-        setSrcById(galleryCache.srcById.toRecord());
-        // Drop the row now, as the clear-all path does: refreshGallery swallows a failed
-        // GET and returns the cache without calling setClips, which left the deleted clip
-        // on screen against an object URL that has already been revoked.
-        galleryCache.clips = galleryCache.clips.filter(
-          (clip) => clip.id !== id,
-        );
-        setClips(galleryCache.clips);
-        if (galleryCache.selectedId === id) {
-          galleryCache.selectedId = null;
-          setSelectedId(null);
-        }
+        dropClip(id);
         await refreshGallery(id);
       } catch (error) {
         toast.error(
@@ -2150,6 +2189,46 @@ export function AudioPage({
         );
       }
     },
+    [dropClip, refreshGallery],
+  );
+
+  const handleArchiveClip = useCallback(
+    async (id: string) => {
+      try {
+        await setAudioClipFlags(id, { archived: true });
+      } catch (error) {
+        toast.error(
+          error instanceof Error ? error.message : "Could not archive the clip.",
+        );
+        return;
+      }
+      dropClip(id);
+      await refreshGallery(id);
+      const toastId = toast(
+        <button
+          type="button"
+          onClick={() => {
+            toast.dismiss(toastId);
+            useSettingsDialogStore.getState().openArchivedMedia("audio");
+          }}
+          className="w-full cursor-pointer text-left"
+        >
+          You can view archived audio in Settings
+        </button>,
+        { closeButton: true },
+      );
+    },
+    [dropClip, refreshGallery],
+  );
+
+  // This page stays mounted across route changes, so a restore from the Settings archive would not
+  // reach History until a reload. Refresh the loaded window, not just the first page: a clip
+  // re-enters at its own age, and the kept cursor already starts past anything below that page.
+  useEffect(
+    () =>
+      subscribeGalleryChanged("audio", () => {
+        void refreshGallery(undefined, galleryCache.clips.length);
+      }),
     [refreshGallery],
   );
 
@@ -2883,6 +2962,7 @@ export function AudioPage({
                           onUseAsText={() => {
                             if (transitionMode("speak")) setPrompt(clip.prompt);
                           }}
+                          onArchive={() => void handleArchiveClip(clip.id)}
                           onDelete={() => void handleDeleteClip(clip.id)}
                         />
                       </div>
