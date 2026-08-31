@@ -642,6 +642,18 @@ async def lifespan(app: FastAPI):
     _lifespan_log = _structlog.get_logger(__name__)
     clear_compiled_cache_unless_shared(app)
 
+    # Here rather than beside the router include, because it has to run after the
+    # frontend decision and both launch paths reach this point: run.py calls
+    # setup_frontend() before serving, and `uvicorn main:app` never calls it at all.
+    # Without a catch-all nothing 404s a GET probe, so the engine paths would match on
+    # method alone and answer 405, which a client reads as "endpoint exists".
+    if not getattr(app.state, "frontend_mounted", False):
+        try:
+            from routes.llama_compat import add_get_denials
+            add_get_denials(app)
+        except Exception:  # noqa: BLE001 -- never block startup over a discovery route
+            _lifespan_log.warning("could not install API-only probe denials", exc_info = True)
+
     # Move the legacy sandbox up here rather than from the first request: the
     # copy can be minutes when the studio home is on another filesystem.
     try:
@@ -2561,4 +2573,7 @@ def setup_frontend(
         # Serve index.html as bytes — avoids Content-Length mismatch
         return _build_index_response(request)
 
+    # The catch-all above is what 404s a GET probe. The lifespan reads this to decide
+    # whether the engine paths still need their own GET denial.
+    app.state.frontend_mounted = True
     return True

@@ -712,13 +712,59 @@ def test_the_slash_and_bare_forms_agree():
 # ── 405 leaks the same signal a 200 did ───────────────────────────────────────
 
 
-def _api_only_client(mod):
-    """An app with no frontend build, so main.py registered no SPA catch-all."""
-    app = FastAPI()
+def _lifespan_app(mod, *, frontend_mounted = False):
+    """An app wired the way main.py wires one: the denial is installed at startup.
+
+    Startup rather than beside the router include, because it has to run after the
+    frontend decision and `uvicorn main:app` never makes that decision at all -- it
+    bypasses run.py, so nothing there could have covered it.
+    """
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def lifespan(app):
+        if not getattr(app.state, "frontend_mounted", False):
+            mod.add_get_denials(app)
+        yield
+
+    app = FastAPI(lifespan = lifespan)
     app.include_router(mod.router)
-    mod.add_get_denials(app)
+    if frontend_mounted:
+        app.state.frontend_mounted = True
     app.dependency_overrides[mod.get_current_subject] = lambda: "test"
-    return TestClient(app)
+    return app
+
+
+def _api_only_client(mod):
+    return TestClient(_lifespan_app(mod))
+
+
+def _directly_added_get_paths(app):
+    """Paths the app itself registered for GET. include_router() is lazy in this FastAPI
+    (routes stay behind an _IncludedRouter), so this sees only add_api_route() calls."""
+    return {
+        r.path
+        for r in app.routes
+        if getattr(r, "methods", None) and "GET" in r.methods and hasattr(r, "path")
+    }
+
+
+def test_the_denials_are_installed_only_when_no_frontend_is_mounted():
+    """Keyed on the flag setup_frontend sets, so an app already serving a catch-all does
+    not carry a second, dead copy of every engine path."""
+    mod = _load()
+    with TestClient(_lifespan_app(mod, frontend_mounted = False)):
+        pass
+    unmounted = _directly_added_get_paths(_started(_lifespan_app(mod, frontend_mounted = False)))
+    mounted = _directly_added_get_paths(_started(_lifespan_app(mod, frontend_mounted = True)))
+    assert "/completion" in unmounted, "API-only mode must gain the GET denial"
+    assert "/completion" not in mounted, "a mounted frontend must not gain a second copy"
+
+
+def _started(app):
+    with TestClient(app):
+        pass
+    return app
 
 
 @pytest.mark.parametrize(
