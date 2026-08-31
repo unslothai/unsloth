@@ -40,6 +40,12 @@ def watchdog_paths(handlers) -> frozenset:
     return frozenset(getattr(handlers, "_WATCHDOG_POLL_PATHS", frozenset()))
 
 
+def _normalize(handlers, path: str) -> str:
+    """The middleware's templated-path collapse, absent on older revisions."""
+    fn = getattr(handlers, "normalize_poll_path", None)
+    return fn(path) if fn else path
+
+
 def classify(handlers, path: str) -> str:
     """Which suppression rule owns ``path``. Most specific first.
 
@@ -63,7 +69,9 @@ def classify(handlers, path: str) -> str:
         return WATCHDOG
     if path in handlers._LIVENESS_POLL_PATHS:
         return LIVENESS
-    if path in handlers._QUIET_POLL_PATHS:
+    # Through the middleware's own normaliser, so a templated path is classified here the
+    # same way it is at run time rather than by a second copy of the rule that can drift.
+    if _normalize(handlers, path) in handlers._QUIET_POLL_PATHS:
         return QUIET
     return NORMAL
 
@@ -113,4 +121,6 @@ def bucket_of(handlers, path: str) -> str:
     """
     if classify(handlers, path) == LIVENESS:
         return "\x00liveness"
-    return path
+    # Templated paths share one bucket for the same reason the liveness group does: four
+    # tabs polling four threads ask one question, and the design intends one line.
+    return _normalize(handlers, path)
