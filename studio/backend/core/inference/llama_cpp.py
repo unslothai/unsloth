@@ -5508,6 +5508,21 @@ class CountAborted(Exception):
 _PROC_ROOT = "/proc"
 
 
+def _metal_capable_host() -> bool:
+    """True where an empty CUDA/HIP probe still means GPU offload, i.e. Apple Silicon.
+
+    Not ``sys.platform == "darwin"``: auto_detect_backend picks Metal only on Apple
+    Silicon and falls back to CPU otherwise, so an Intel Mac with an empty probe really
+    is CPU-only and wants the diagnostic.
+    """
+    try:
+        from utils.hardware import is_apple_silicon
+
+        return bool(is_apple_silicon())
+    except Exception:  # noqa: BLE001 -- a diagnostic must not break a load
+        return sys.platform == "darwin"
+
+
 class LlamaCppBackend:
     """Manages a llama-server subprocess for GGUF model inference.
 
@@ -20222,30 +20237,28 @@ class LlamaCppBackend:
                     if (
                         not gpus
                         and not _detected_gpus
+                        and not gpu_ids
                         and not _arch_gate_forced_cpu
-                        and sys.platform != "darwin"
+                        and not _metal_capable_host()
                     ):
-                        # Above info, because this is the whole difference between a
-                        # GPU load and a CPU one. The arch gate already warns with a
-                        # better message when it is the cause, so do not repeat it.
+                        # States what this process observed, and stops there. It does
+                        # NOT say the model will run on the CPU: llama.cpp enumerates
+                        # devices itself and still gets --fit on, so it can place on a
+                        # GPU this probe never saw. An explicit gpu_ids pick is pinned
+                        # for the child further below, which is why it is excluded too.
                         #
                         # _detected_gpus, not gpus: both Manual modes empty `gpus` on
-                        # purpose to stand the Python planner down and let --fit or an
-                        # explicit --gpu-layers place the model, and the GPU is fully
-                        # used there. Reading `gpus` alone would warn "running on the
-                        # CPU" at every Manual load, which is where this started -- the
-                        # reporting user's own log shows `GPUs free: []` directly under
-                        # "Manual mode with Auto layers hands memory management to
-                        # llama.cpp --fit", so their empty list was this, not a probe
-                        # that failed.
+                        # purpose to stand the planner down, and the GPU is fully used
+                        # there. The arch gate already warns better when it is the cause.
                         #
-                        # Never on macOS: this probe only ever sees CUDA and HIP, so it
-                        # is empty on every Mac, including an Apple Silicon one whose
-                        # model is about to run entirely on the Metal GPU. Warning
-                        # there would state the opposite of what happens.
+                        # Apple Silicon, not darwin: the probe reads CUDA and HIP, so it
+                        # is empty on every Mac, but only an Apple Silicon one is
+                        # offloading to Metal. An Intel Mac really is CPU-only and wants
+                        # this line (auto_detect_backend picks Metal on is_apple_silicon
+                        # and falls back to CPU otherwise).
                         logger.warning(
-                            "No GPU was available for this load, so llama.cpp will run "
-                            "on the CPU and the model will live in system RAM: %s",
+                            "Studio could not enumerate any GPU, so it planned this load "
+                            "blind and left placement to llama.cpp --fit: %s",
                             LlamaCppBackend._explain_empty_gpu_probe(binary),
                         )
                     # The planner ran to completion over a real device list and

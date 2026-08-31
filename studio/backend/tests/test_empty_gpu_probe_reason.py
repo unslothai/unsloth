@@ -74,7 +74,7 @@ def _load_site_guard() -> str:
 
     lines = inspect.getsource(mod.LlamaCppBackend.load_model).splitlines()
     hit = next(
-        (i for i, line in enumerate(lines) if "No GPU was available for this load" in line), None
+        (i for i, line in enumerate(lines) if "could not enumerate any GPU" in line), None
     )
     assert hit is not None, "the empty-probe warning is gone"
     start = hit
@@ -222,11 +222,14 @@ class TestMacOSIsNotACpuVerdict:
         assert "Metal" in msg
         assert "torch" not in msg, "on macOS the probe's blind spot is the answer, not torch"
 
-    def test_the_load_site_does_not_warn_on_macos(self):
+    def test_the_load_site_exempts_only_metal_capable_macs(self):
         """Source-level, because load_model cannot be driven from a unit test. The
         simulation in temp/simgpu executes this same guard across the platform matrix."""
         guard = _load_site_guard()
-        assert 'sys.platform != "darwin"' in guard, "macOS must be excluded from this warning"
+        assert "_metal_capable_host()" in guard, (
+            "the exemption must be Apple Silicon, not every Mac: an Intel Mac with an "
+            "empty probe really is CPU-only and wants this line"
+        )
         assert "not _arch_gate_forced_cpu" in guard, "the arch gate warns better; do not double up"
 
 
@@ -253,3 +256,36 @@ class TestManualModeIsNotAnAbsentGpu:
         emptied = src.find('if gpu_memory_mode == "manual" and gpu_layers < 0:')
         assert capture != -1 and emptied != -1
         assert capture < emptied, "_detected_gpus must hold the probe result, not the emptied one"
+
+
+class TestItDoesNotAssertTheLaunchOutcome:
+    """llama.cpp enumerates devices itself and still receives ``--fit on``, so it can
+    place on a GPU this probe never saw. An explicit ``gpu_ids`` pick is pinned for the
+    child further down. Claiming "will run on the CPU" from an empty probe therefore
+    states an outcome this code does not know."""
+
+    def test_the_message_reports_the_probe_not_the_placement(self):
+        # Comments stripped: the guard's own note explains why it must not claim CPU,
+        # and matching that would pass while the message said the opposite.
+        body = "\n".join(
+            line for line in _load_site_guard().splitlines() if not line.lstrip().startswith("#")
+        )
+        assert "could not enumerate any GPU" in body
+        for claim in ("will run on the CPU", "live in system RAM"):
+            assert claim not in body, f"the message must not assert {claim!r}"
+
+    def test_an_explicit_gpu_pick_is_excluded(self):
+        """gpu_ids is restored into gpu_indices after this block and pinned for the
+        child, so those loads reach the GPU the user chose."""
+        assert "not gpu_ids" in _load_site_guard()
+
+    def test_the_pick_really_is_restored_after_the_warning(self):
+        import inspect
+
+        from core.inference import llama_cpp as mod
+
+        src = inspect.getsource(mod.LlamaCppBackend.load_model)
+        warn = src.find("could not enumerate any GPU")
+        restore = src.find("gpu_indices = sorted(gpu_ids)")
+        assert warn != -1 and restore != -1
+        assert warn < restore, "if the pin moved above the warning, re-derive this guard"
