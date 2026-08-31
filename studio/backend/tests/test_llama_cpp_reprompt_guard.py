@@ -1088,13 +1088,25 @@ def test_content_channel_think_block_is_not_an_answer():
 
 
 def test_prefilled_reasoning_closes_without_an_opener():
-    """A template that sends the opening ``<think>`` itself leaves only the closer in
-    the generated text, so the answer after it still has to be found."""
-    assert not _gate_would_reprompt(
-        "First, I will search the web.</think>The answer is Paris.", "", True
-    )
-    # Nothing after the closer is still the stall.
-    assert _gate_would_reprompt("First, I will search the web.</think>", "", True)
+    """A template that sends the opening marker itself leaves only the closer in the
+    generated text, so the answer after it still has to be found. Every marker pair
+    the strip paths know is covered, not just ``</think>``."""
+    for closer in ("</think>", "[/THINK]", "</thinking>"):
+        text = f"First, I will search the web.{closer}The answer is Paris."
+        assert not _gate_would_reprompt(text, "", True), closer
+        # Nothing after the closer is still the stall.
+        assert _gate_would_reprompt(f"First, I will search the web.{closer}", "", True), closer
+
+
+def test_whitespace_only_fence_is_not_an_answer():
+    """A block holding a single space is no more an answer than an empty
+    ``<html></html>`` is a page."""
+    for body in (" ", ""):
+        text = f"First, I'll run it.\n```bash\n{body}\n```"
+        assert not _has_answer_artifact(text), body
+        assert _would_reprompt(text), body
+    # A blank first line with real code after it is still an answer.
+    assert _has_answer_artifact("First, let me show it.\n```bash\n \necho hi\n```")
 
 
 def test_reasoning_artifact_counts_only_when_the_loop_promotes_it():

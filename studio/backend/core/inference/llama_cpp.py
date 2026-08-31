@@ -999,12 +999,24 @@ def _is_empty_markup_skeleton(matched: str) -> bool:
     return _EMPTY_MARKUP_SKELETON.fullmatch(candidate) is not None
 
 
+def _is_blank_fence(matched: str) -> bool:
+    """True if ``matched`` is a fence whose body is only whitespace.
+
+    The delimiters are on the first and last lines, so what sits between them is
+    the answer, and a block holding a single space is no more one than an empty
+    `<html></html>` is a page."""
+    if not matched[:1] in ("`", "~"):
+        return False
+    lines = matched.splitlines()
+    return not any(line.strip() for line in lines[1:-1])
+
+
 def _first_real_artifact(text: str):
-    """First _HAS_ANSWER_ARTIFACT match that is not an empty markup skeleton.
+    """First _HAS_ANSWER_ARTIFACT match with something in it.
 
     Every match is inspected, so a skeleton followed by a real page counts."""
     for m in _HAS_ANSWER_ARTIFACT.finditer(text):
-        if not _is_empty_markup_skeleton(m.group(0)):
+        if not _is_empty_markup_skeleton(m.group(0)) and not _is_blank_fence(m.group(0)):
             return m
     return None
 
@@ -1041,12 +1053,16 @@ def _text_outside_think(text: str) -> str:
 
     _strip_outside_think(text, _collect)
     kept = "".join(outside)
-    if kept == text:
-        # A prefilled reasoning template emits the opening marker itself, so the
-        # generated text carries only the closer and the splitter sees no block.
-        close = text.find("</think>")
-        if close >= 0 and "<think" not in text[:close]:
-            return text[close + len("</think>") :]
+    if kept != text:
+        return kept
+    # A prefilled reasoning template emits the opening marker itself, so the
+    # generated text carries only the closer and the splitter sees no block. Same
+    # marker pairs the strip paths recognise.
+    for opener, closer in (("<think", "</think>"), ("[THINK]", "[/THINK]"),
+                           ("<thinking", "</thinking>")):
+        close = text.find(closer)
+        if close >= 0 and opener not in text[:close]:
+            return text[close + len(closer) :]
     return kept
 
 
