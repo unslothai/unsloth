@@ -385,6 +385,91 @@ test("partial saves are serialized before a waiting read", async () => {
   }
 });
 
+test("a read deferred behind one save also waits for a save queued after it", async () => {
+  const original = globalThis.fetch;
+  const server = { keepResident: false, noRamReserve: false };
+  const pendingPuts: Array<{
+    body: Record<string, boolean>;
+    resolve: (response: Response) => void;
+  }> = [];
+  const served: Array<{ keepResident: boolean; noRamReserve: boolean }> = [];
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    if ((init?.method ?? "GET") === "PUT") {
+      return new Promise<Response>((resolve) => {
+        pendingPuts.push({
+          body: JSON.parse(String(init?.body ?? "{}")) as Record<
+            string,
+            boolean
+          >,
+          resolve,
+        });
+      });
+    }
+    served.push({ ...server });
+    return new Response(
+      JSON.stringify({
+        ...API,
+        keep_resident: server.keepResident,
+        no_ram_reserve: server.noRamReserve,
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  }) as typeof fetch;
+
+  const finishNextPut = () => {
+    const pending = pendingPuts.shift();
+    assert.ok(pending, "a save must be pending");
+    if (pending.body.keep_resident !== undefined) {
+      server.keepResident = pending.body.keep_resident;
+    }
+    if (pending.body.no_ram_reserve !== undefined) {
+      server.noRamReserve = pending.body.no_ram_reserve;
+    }
+    pending.resolve(
+      new Response(
+        JSON.stringify({
+          ...API,
+          keep_resident: server.keepResident,
+          no_ram_reserve: server.noRamReserve,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+  };
+
+  try {
+    // The read lands BETWEEN the two saves, so it defers behind the first one
+    // while the second is appended afterwards. Settling the first must not let
+    // it snapshot the half-applied pair.
+    const keepSave = updateModelMemorySettings({ keepResident: true });
+    const read = loadModelMemorySettings({ force: true });
+    const reserveSave = updateModelMemorySettings({ noRamReserve: true });
+    await Promise.resolve();
+    assert.equal(pendingPuts.length, 1);
+    assert.equal(served.length, 0);
+
+    finishNextPut();
+    await keepSave;
+    await Promise.resolve();
+    assert.deepEqual(
+      served,
+      [],
+      "the deferred read must re-chain onto the newly queued save",
+    );
+
+    finishNextPut();
+    await reserveSave;
+    const settings = await read;
+    assert.deepEqual(served, [{ keepResident: true, noRamReserve: true }]);
+    assert.equal(settings.keepResident, true);
+    assert.equal(settings.noRamReserve, true);
+    // A later caller gets the same answer, not the retired deferred promise.
+    assert.deepEqual(await loadModelMemorySettings({ force: true }), settings);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 test("a committed save publishes when its queued successor fails", async () => {
   const original = globalThis.fetch;
   let finishFirst: () => void = () => {
