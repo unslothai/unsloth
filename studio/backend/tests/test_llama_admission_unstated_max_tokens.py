@@ -197,7 +197,9 @@ class TestTheAllowanceCannotExceedOneSlot:
 
     def test_a_long_prompt_shrinks_the_allowance_to_fit_its_slot(self):
         allowance = _openai_llama_admission_output_allowance(
-            self.WINDOW, budget = self.BUDGET, prompt_tokens = 3500,
+            self.WINDOW,
+            budget = self.BUDGET,
+            prompt_tokens = 3500,
             context_window = self.WINDOW,
         )
         assert allowance == self.WINDOW - 3500
@@ -206,25 +208,40 @@ class TestTheAllowanceCannotExceedOneSlot:
     def test_four_long_prompt_chats_still_fit(self):
         prompt = 3500
         allowance = _openai_llama_admission_output_allowance(
-            self.WINDOW, budget = self.BUDGET, prompt_tokens = prompt,
+            self.WINDOW,
+            budget = self.BUDGET,
+            prompt_tokens = prompt,
             context_window = self.WINDOW,
         )
         assert (prompt + allowance) * 4 <= self.BUDGET
 
     def test_a_prompt_that_fills_the_slot_gets_nothing(self):
-        assert _openai_llama_admission_output_allowance(
-            self.WINDOW, budget = self.BUDGET, prompt_tokens = self.WINDOW,
-            context_window = self.WINDOW,
-        ) == 0
+        assert (
+            _openai_llama_admission_output_allowance(
+                self.WINDOW,
+                budget = self.BUDGET,
+                prompt_tokens = self.WINDOW,
+                context_window = self.WINDOW,
+            )
+            == 0
+        )
 
     def test_a_short_prompt_still_gets_the_full_allowance(self):
-        assert _openai_llama_admission_output_allowance(
-            self.WINDOW, budget = self.BUDGET, prompt_tokens = 100,
-            context_window = self.WINDOW,
-        ) == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
+        assert (
+            _openai_llama_admission_output_allowance(
+                self.WINDOW,
+                budget = self.BUDGET,
+                prompt_tokens = 100,
+                context_window = self.WINDOW,
+            )
+            == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
+        )
 
     def test_unified_is_unchanged(self):
         """window == budget there, so this clamp is the same arithmetic it always was."""
-        assert _openai_llama_admission_output_allowance(
-            2048, budget = 2048, prompt_tokens = 1800, context_window = 2048
-        ) == 248
+        assert (
+            _openai_llama_admission_output_allowance(
+                2048, budget = 2048, prompt_tokens = 1800, context_window = 2048
+            )
+            == 248
+        )
