@@ -888,9 +888,11 @@ class TestDamagedCorePayloadRepair:
 
     def test_both_repair_sites_use_that_list(self):
         source = inspect.getsource(ips)
-        assert source.count("_repair_damaged_core_payload(\n        _core_package_names") + source.count(
-            "_repair_damaged_core_payload(_core_package_names"
-        ) == 2
+        assert (
+            source.count("_repair_damaged_core_payload(\n        _core_package_names")
+            + source.count("_repair_damaged_core_payload(_core_package_names")
+            == 2
+        )
         assert "_repair_damaged_core_payload((package_name" not in source
 
     def test_the_second_site_runs_before_the_manifest_is_written(self):
