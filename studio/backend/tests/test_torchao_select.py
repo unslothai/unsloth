@@ -18,6 +18,7 @@ import pytest
 
 # install_python_stack.py lives at repo_root/studio/install_python_stack.py
 _INSTALL_SCRIPT = Path(__file__).resolve().parents[2] / "install_python_stack.py"
+_EXTRAS_REQUIREMENTS = Path(__file__).resolve().parent.parent / "requirements" / "extras.txt"
 
 
 def _load_module(monkeypatch):
@@ -32,16 +33,23 @@ def _load_module(monkeypatch):
 @pytest.mark.parametrize(
     "torch_version, expected",
     [
-        # torch 2.10 (the reported bug: cu130 resolves 2.10.0) -> 0.16.0,
-        # independent of the local +cuXXX/+rocm/+cpu suffix or patch level.
-        ("2.10.0+cu130", "torchao==0.16.0"),
+        # torch 2.10 on CUDA <= 12 -> 0.16.0 (its cpp is built for torch 2.10.0 and
+        # loads against the CUDA-12 PyPI wheel). Independent of patch level.
+        ("2.10.0+cu128", "torchao==0.16.0"),
+        ("2.10.0+cu126", "torchao==0.16.0"),
         ("2.10.0+rocm6.4", "torchao==0.16.0"),
         ("2.10.0+cpu", "torchao==0.16.0"),
         ("2.10.1", "torchao==0.16.0"),
         ("2.10.0", "torchao==0.16.0"),
-        # Pre-release / dev / rc builds: the minor is cleaned of non-digits.
+        # torch 2.10 on CUDA >= 13 (Blackwell / cu130): 0.16.0's CUDA-12 cpp can't
+        # load against a CUDA-13 torch (libcudart.so.12 error), so use 0.17.0.
+        ("2.10.0+cu130", "torchao==0.17.0"),
+        ("2.10.0+cu140", "torchao==0.17.0"),
+        # Pre-release / dev / rc builds: the minor is cleaned of non-digits; the
+        # CUDA tag still decides 0.16.0 vs 0.17.0.
         ("2.10.0rc1", "torchao==0.16.0"),
-        ("2.10.0.dev20250804+cu130", "torchao==0.16.0"),
+        ("2.10.0.dev20250804+cu130", "torchao==0.17.0"),
+        ("2.10.0.dev20250804+cu128", "torchao==0.16.0"),
         ("2.10rc1", "torchao==0.16.0"),
         # torch 2.11 (reachable via ROCm rocm7.2) and forward -> 0.17.0.
         ("2.11.0+cu130", "torchao==0.17.0"),
@@ -70,6 +78,21 @@ def test_default_spec_matches_table(monkeypatch):
     mod = _load_module(monkeypatch)
     assert mod._TORCHAO_DEFAULT_SPEC == "torchao==0.14.0"
     assert mod._select_torchao_spec("2.9.0") == mod._TORCHAO_DEFAULT_SPEC
+
+
+def test_matching_torchao_pin_does_not_need_force_reinstall(monkeypatch):
+    mod = _load_module(monkeypatch)
+    monkeypatch.setattr(mod, "_installed_distribution_version", lambda _name: "0.17.0")
+    assert mod._exact_distribution_spec_is_installed("torchao==0.17.0")
+    assert not mod._exact_distribution_spec_is_installed("torchao==0.16.0")
+
+
+def test_windows_first_hop_uses_einx_wheel_without_shared_test_tree():
+    requirements = _EXTRAS_REQUIREMENTS.read_text(encoding = "utf-8")
+    assert 'einx<0.4.3; sys_platform == "win32"' in requirements
+    # einx dropped 3.9 in 0.4.0, so the non-Windows side is split by interpreter.
+    assert 'einx==0.4.3; sys_platform != "win32" and python_version >= "3.10"' in requirements
+    assert 'einx==0.3.0; sys_platform != "win32" and python_version < "3.10"' in requirements
 
 
 @pytest.mark.parametrize(

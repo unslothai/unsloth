@@ -27,7 +27,6 @@ from .constants import (
 )
 from .parse import apply_update, coerce_event, parse_log_message
 from .types import Job
-from .worker import run_job_process
 from loggers import get_logger
 
 logger = get_logger(__name__)
@@ -169,12 +168,18 @@ class JobManager:
                 native_path_secret_removed_for_child_start,
                 run_without_native_path_secret,
             )
+            from utils.hf_cache_settings import child_environment_for_spawn, get_hf_cache_paths
 
-            with native_path_secret_removed_for_child_start():
+            cache_env = get_hf_cache_paths().child_env({})
+
+            with (
+                child_environment_for_spawn(cache_env),
+                native_path_secret_removed_for_child_start(),
+            ):
                 mp_q = _CTX.Queue()
                 proc = _CTX.Process(
                     target = run_without_native_path_secret,
-                    args = (run_job_process,),
+                    args = ("core.data_recipe.jobs.worker", "run_job_process", cache_env),
                     kwargs = {"event_queue": mp_q, "recipe": recipe, "run": run_payload},
                     daemon = True,
                 )

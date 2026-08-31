@@ -617,7 +617,7 @@ class TestSourceCodePatterns:
 
     def test_setup_sh_no_rm_before_prereq_check(self):
         """rm -rf must appear AFTER cmake/git checks, not before."""
-        content = SETUP_SH.read_text()
+        content = SETUP_SH.read_text(encoding = "utf-8")
         # Anchor on the source-build cmake check block.
         idx_block = content.find("command -v cmake")
         assert idx_block != -1
@@ -630,7 +630,7 @@ class TestSourceCodePatterns:
 
     def test_setup_sh_clone_uses_branch_tag(self):
         """git clone in source-build should use --branch via the clone args array."""
-        content = SETUP_SH.read_text()
+        content = SETUP_SH.read_text(encoding = "utf-8")
         assert "_CLONE_ARGS=(git clone --depth 1)" in content
         assert (
             '_CLONE_ARGS+=(--branch "$_RESOLVED_SOURCE_REF")' in content
@@ -642,7 +642,7 @@ class TestSourceCodePatterns:
 
     def test_setup_sh_source_build_uses_helper_latest_tag_only(self):
         """Shell source fallback should only use helper latest-tag resolution."""
-        content = SETUP_SH.read_text()
+        content = SETUP_SH.read_text(encoding = "utf-8")
         assert "--resolve-source-build" not in content
         assert "--resolve-install-tag" not in content
         assert '--resolve-llama-tag latest --published-repo "ggml-org/llama.cpp"' in content
@@ -653,31 +653,37 @@ class TestSourceCodePatterns:
 
     def test_setup_sh_prebuilt_install_entrypoint(self):
         """Shell prebuilt path uses the helper install entrypoint, not the old releases-latest flow."""
-        content = SETUP_SH.read_text()
+        content = SETUP_SH.read_text(encoding = "utf-8")
         assert "--resolve-install-tag" not in content
         assert "_HELPER_RELEASE_REPO}/releases/latest" not in content
         assert "ggml-org/llama.cpp/releases/latest" not in content
 
-    def test_setup_sh_routes_to_fork_only_on_usable_gpu(self):
-        """Linux routing gates NVIDIA on GPU usability, not nvidia-smi presence, so
-        CPU-only/hidden-GPU hosts get the ggml CPU prebuilt. Guards the old presence-only loop."""
-        content = SETUP_SH.read_text()
+    def test_setup_sh_routes_every_host_to_fork(self):
+        """CPU-only Linux (the last ggml-org artifact consumer) now routes to the
+        fork like every other host, so the release-repo decision is unconditional.
+        Guards against a silent reintroduction of a ggml-org CPU routing branch.
+        GPU usability detection (used for PyTorch / source decisions) must stay."""
+        content = SETUP_SH.read_text(encoding = "utf-8")
+        assert '_HELPER_RELEASE_REPO="unslothai/llama.cpp"' in content
+        assert '_HELPER_RELEASE_REPO="ggml-org/llama.cpp"' not in content
+        # Usability gating (not routing) still distinguishes a hidden GPU.
         assert '[ "$_setup_nvidia_usable" = true ]' in content
         assert "CUDA_VISIBLE_DEVICES" in content
-        # nvidia-smi must NOT be back in the bare presence loop.
-        assert "for _GPU_TOOL in nvidia-smi" not in content
-        assert "for _GPU_TOOL in rocminfo amd-smi hipconfig hipinfo" in content
+        # The GPU-tooling probe (PR #4562) stays: ROCm detection goes through
+        # command -v, not a bare presence loop that mishandled a hidden nvidia-smi.
+        assert "command -v rocminfo" in content
+        assert "command -v amd-smi" in content
 
     def test_setup_sh_reports_installed_prebuilt_release(self):
         """Shell wrapper should report the installed prebuilt release from metadata."""
-        content = SETUP_SH.read_text()
+        content = SETUP_SH.read_text(encoding = "utf-8")
         assert "UNSLOTH_PREBUILT_INFO.json" in content
         assert "installed release:" in content
         assert 'print_installed_llama_prebuilt_release "$LLAMA_CPP_DIR"' in content
 
     def test_setup_sh_macos_arm64_uses_metal_flags(self):
         """Apple Silicon source builds should explicitly enable Metal like upstream."""
-        content = SETUP_SH.read_text()
+        content = SETUP_SH.read_text(encoding = "utf-8")
         assert "_IS_MACOS_ARM64=true" in content
         assert 'if [ "$_IS_MACOS_ARM64" = true ]; then' in content
         assert "-DGGML_METAL=ON" in content
@@ -689,7 +695,7 @@ class TestSourceCodePatterns:
     def test_setup_sh_macos_metal_configure_has_cpu_fallback(self):
         """GPU configure/build failure retries a CPU build. Stays label-agnostic
         (PR #5826 generalised the Metal-only wording via $_FB_LABEL)."""
-        content = SETUP_SH.read_text()
+        content = SETUP_SH.read_text(encoding = "utf-8")
         assert "_TRY_METAL_CPU_FALLBACK=true" in content
         assert 'configure failed; retrying CPU build..." "$C_WARN"' in content
         assert 'build failed; retrying CPU build..." "$C_WARN"' in content
@@ -708,7 +714,7 @@ class TestSourceCodePatterns:
         """PR #5826: a fresh CUDA toolkit's host-compiler whitelist lags distro gcc/clang
         (nvcc "#error -- unsupported GNU version"). setup.sh exports
         NVCC_PREPEND_FLAGS=-allow-unsupported-compiler via env, not CMAKE_ARGS (word-splitting safety)."""
-        content = SETUP_SH.read_text()
+        content = SETUP_SH.read_text(encoding = "utf-8")
         assert "-allow-unsupported-compiler" in content
         # Via NVCC_PREPEND_FLAGS (covers the configure-time probe too), not CMAKE_ARGS.
         assert "export NVCC_PREPEND_FLAGS=" in content
@@ -720,7 +726,7 @@ class TestSourceCodePatterns:
     def test_setup_ps1_exports_allow_unsupported_compiler(self):
         """Windows parity for PR #5826: CUDA toolkit whitelist lags MSVC. setup.ps1 sets
         NVCC_PREPEND_FLAGS=-allow-unsupported-compiler in the CUDA branch via env, out of $CmakeArgs."""
-        content = SETUP_PS1.read_text()
+        content = SETUP_PS1.read_text(encoding = "utf-8")
         assert "-allow-unsupported-compiler" in content
         # Via process env, not $CmakeArgs, so it reaches both the configure probe and `cmake --build`.
         assert "$env:NVCC_PREPEND_FLAGS" in content
@@ -757,7 +763,7 @@ class TestSourceCodePatterns:
 
     def test_setup_sh_does_not_enable_metal_for_intel_macos(self):
         """Intel macOS should stay on the existing non-Metal path in this patch."""
-        content = SETUP_SH.read_text()
+        content = SETUP_SH.read_text(encoding = "utf-8")
         assert 'if [ "$_IS_MACOS_ARM64" = true ]; then' in content
         assert (
             'Darwin" ] && { [ "$_HOST_MACHINE" = "arm64" ] || [ "$_HOST_MACHINE" = "aarch64" ]; }'
@@ -772,20 +778,20 @@ class TestSourceCodePatterns:
 
     def test_setup_ps1_uses_checkout_b(self):
         """PS1 should use checkout -B, not checkout --force FETCH_HEAD."""
-        content = SETUP_PS1.read_text()
+        content = SETUP_PS1.read_text(encoding = "utf-8")
         assert "checkout -B unsloth-llama-build" in content
         assert "checkout --force FETCH_HEAD" not in content
 
     def test_setup_ps1_clone_uses_branch_tag(self):
         """PS1 clone should use --branch with the resolved tag."""
-        content = SETUP_PS1.read_text()
+        content = SETUP_PS1.read_text(encoding = "utf-8")
         assert "--branch" in content and "$ResolvedSourceRef" in content
         # The old commented-out clone line should be gone.
         assert "# git clone --depth 1 --branch" not in content
 
     def test_setup_ps1_no_git_pull(self):
         """PS1 should use fetch, not pull (which fails in detached HEAD)."""
-        content = SETUP_PS1.read_text()
+        content = SETUP_PS1.read_text(encoding = "utf-8")
         # No "git pull" in the source-build section (only valid on a branch).
         lines = content.splitlines()
         for i, line in enumerate(lines):
@@ -794,18 +800,18 @@ class TestSourceCodePatterns:
                 # Allowed elsewhere; fail only in the llama.cpp build section.
                 context = "\n".join(lines[max(0, i - 5) : i + 5])
                 if "LlamaCppDir" in context:
-                    pytest.fail(f"Found 'git pull' in llama.cpp build section at line {i+1}")
+                    pytest.fail(f"Found 'git pull' in llama.cpp build section at line {i + 1}")
 
     def test_setup_ps1_prebuilt_install_entrypoint(self):
         """PS1 prebuilt path uses the helper install entrypoint, not the old releases-latest flow."""
-        content = SETUP_PS1.read_text()
+        content = SETUP_PS1.read_text(encoding = "utf-8")
         assert "--resolve-install-tag" not in content
         assert "$HelperReleaseRepo/releases/latest" not in content
         assert "ggml-org/llama.cpp/releases/latest" not in content
 
     def test_setup_ps1_reports_installed_prebuilt_release(self):
         """PS1 wrapper should report the installed prebuilt release from metadata."""
-        content = SETUP_PS1.read_text()
+        content = SETUP_PS1.read_text(encoding = "utf-8")
         assert "Get-InstalledLlamaPrebuiltRelease" in content
         assert "UNSLOTH_PREBUILT_INFO.json" in content
         assert "installed release:" in content
@@ -816,7 +822,7 @@ class TestSourceCodePatterns:
 
     def test_setup_ps1_source_build_uses_helper_latest_tag_only(self):
         """PS1 source fallback should only use helper latest-tag resolution."""
-        content = SETUP_PS1.read_text()
+        content = SETUP_PS1.read_text(encoding = "utf-8")
         assert "--resolve-source-build" not in content
         assert "--resolve-install-tag" not in content
         assert (
@@ -829,7 +835,7 @@ class TestSourceCodePatterns:
 
     def test_setup_ps1_prebuilt_install_disables_native_error_abort(self):
         """PS1 prebuilt install should not abort setup on helper stderr."""
-        content = SETUP_PS1.read_text()
+        content = SETUP_PS1.read_text(encoding = "utf-8")
         install_idx = content.index("& python @prebuiltArgs 2>&1")
         block = content[max(0, install_idx - 800) : install_idx + 800]
         assert "$PSNativeCommandUseErrorActionPreference = $false" in block
@@ -838,7 +844,7 @@ class TestSourceCodePatterns:
 
     def test_setup_ps1_helper_disables_error_action_abort(self):
         """Helper resolution should suppress terminating NativeCommandError on PS 5.1."""
-        content = SETUP_PS1.read_text()
+        content = SETUP_PS1.read_text(encoding = "utf-8")
         helper_idx = content.index("function Invoke-LlamaHelper")
         block = content[helper_idx : helper_idx + 2200]
         assert "$previousErrorActionPreference = $ErrorActionPreference" in block
@@ -847,19 +853,19 @@ class TestSourceCodePatterns:
 
     def test_setup_ps1_uses_local_tempfile_helper(self):
         """PS1 should not depend on New-TemporaryFile being available anywhere."""
-        content = SETUP_PS1.read_text()
+        content = SETUP_PS1.read_text(encoding = "utf-8")
         assert "function New-UnslothTemporaryFile" in content
         assert "$resolveErrorLog = New-TemporaryFile" not in content
 
     def test_setup_ps1_find_nvcc_uses_version_sort_for_latest_toolkit(self):
         """The unconstrained nvcc fallback should not sort toolkit dirs lexicographically."""
-        content = SETUP_PS1.read_text()
+        content = SETUP_PS1.read_text(encoding = "utf-8")
         assert "Sort-Object Name | Select-Object -Last 1" not in content
         assert "Sort-Object { [version]($_.Name -replace '^v','') } -Descending" in content
 
     def test_binary_env_linux_has_binary_parent(self):
         """The Linux branch of binary_env should include binary_path.parent."""
-        content = MODULE_PATH.read_text()
+        content = MODULE_PATH.read_text(encoding = "utf-8")
         in_func = False
         in_linux = False
         found = False

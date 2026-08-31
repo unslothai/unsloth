@@ -1,6 +1,28 @@
 {
   "_comment": "Per-model-family inference parameter defaults. Sources: (1) Ollama params blobs, (2) Existing Unsloth Studio YAML configs. Patterns ordered longest-match-first.",
   "families": {
+    "moss-tts-local-transformer-v1.5": {
+      "temperature": 1.7,
+      "top_p": 0.8,
+      "top_k": 25,
+      "min_p": 0.0,
+      "repetition_penalty": 1.0
+    },
+    "moss-tts-nano": {
+      "temperature": 1.7,
+      "top_p": 0.8,
+      "top_k": 25,
+      "min_p": 0.0,
+      "repetition_penalty": 1.0
+    },
+    "qwen3.8": {
+      "temperature": 0.7,
+      "top_p": 0.8,
+      "top_k": 20,
+      "min_p": 0.0,
+      "repetition_penalty": 1.0,
+      "presence_penalty": 1.5
+    },
     "qwen3.6": {
       "temperature": 0.7,
       "top_p": 0.8,
@@ -131,6 +153,13 @@
       "repetition_penalty": 1.0
     },
     "gemma-2": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 64,
+      "min_p": 0.0,
+      "repetition_penalty": 1.0
+    },
+    "muse-glimmer": {
       "temperature": 1.0,
       "top_p": 0.95,
       "top_k": 64,
@@ -319,6 +348,13 @@
       "min_p": 0.01,
       "repetition_penalty": 1.0
     },
+    "kimi-k3": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": -1,
+      "min_p": 0.0,
+      "repetition_penalty": 1.0
+    },
     "kimi-k2": {
       "temperature": 0.6,
       "top_p": 0.95,
@@ -391,12 +427,14 @@
     }
   },
   "patterns": [
-    "qwen3.6", "qwen3.5",
+    "moss-tts-local-transformer-v1.5", "moss-tts-nano",
+    "qwen3.8", "qwen3.6", "qwen3.5",
     "qwen3-coder", "qwen3-next", "qwen3-vl", "qwen3",
     "qwen2.5-coder", "qwen2.5-vl", "qwen2.5-omni", "qwen2.5-math", "qwen2.5",
     "qwen2-vl", "qwen2",
     "qwq",
     "gemma-4", "gemma-3n", "gemma-3", "medgemma", "gemma-2",
+    "muse-glimmer",
     "llama-4", "llama-3.3", "llama-3.2", "llama-3.1", "llama-3",
     "phi-4", "phi-3",
     "mistral-nemo", "mistral-small", "mistral-large", "magistral", "ministral",
@@ -406,7 +444,7 @@
     "nemotron",
     "minimax-m2.7", "minimax-m2.5", "minimax",
     "gpt-oss", "granite-4",
-    "kimi-k2", "kimi",
+    "kimi-k3", "kimi-k2", "kimi",
     "lfm2", "smollm", "olmo", "falcon", "ernie", "seed", "grok", "mimo"
   ]
 }

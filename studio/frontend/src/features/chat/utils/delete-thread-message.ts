@@ -18,28 +18,36 @@ import type {
   ExportedMessageRepository,
   ThreadMessage,
 } from "@assistant-ui/react";
+import { listChatMessages } from "../api/chat-api";
 import type { MessageRecord } from "../types";
 import {
   ensureStoredChatThread,
   syncStoredChatMessages,
 } from "./chat-history-storage";
+import {
+  hasResearchMetadata,
+  reconcileServerManagedMessages,
+} from "./research-message-sync";
 
-function cloneContent(
+// A copy of the list, not of what is in it. assistant-ui replaces parts and attachments
+// rather than mutating them, and the records built from these are serialized straight
+// into the PUT body, so a deep clone of the whole thread bought nothing and cost more
+// than the request that follows it.
+function snapshotContent(
   content: ThreadMessage["content"],
 ): ThreadMessage["content"] {
   if (typeof content === "string") {
     return content;
   }
-  return Array.isArray(content) ? JSON.parse(JSON.stringify(content)) : [];
+  return Array.isArray(content)
+    ? ([...content] as ThreadMessage["content"])
+    : [];
 }
 
-function cloneAttachments(
+function snapshotAttachments(
   attachments: readonly CompleteAttachment[] | undefined,
 ): readonly CompleteAttachment[] {
-  if (!Array.isArray(attachments)) {
-    return [];
-  }
-  return JSON.parse(JSON.stringify(attachments));
+  return Array.isArray(attachments) ? [...attachments] : [];
 }
 
 export function exportedItemToRecord(
@@ -47,9 +55,9 @@ export function exportedItemToRecord(
   parentId: string | null,
   message: ThreadMessage,
 ): MessageRecord {
-  const content = cloneContent(message.content);
+  const content = snapshotContent(message.content);
   if (message.role === "user") {
-    const attachments = cloneAttachments(message.attachments);
+    const attachments = snapshotAttachments(message.attachments);
     const custom = message.metadata?.custom;
     return {
       id: message.id,
@@ -77,21 +85,47 @@ export function exportedItemToRecord(
   };
 }
 
+async function withStoredResearchMessages(
+  remoteId: string,
+  records: MessageRecord[],
+): Promise<MessageRecord[]> {
+  if (!records.some((record) => hasResearchMetadata(record.metadata))) {
+    return records;
+  }
+  // The read below wants the row in place, which is the only reason this path ensures it.
+  await ensureStoredChatThread(remoteId);
+  // The backend copy, not the legacy-merged one: only what it stored can be echoed back to it.
+  // Swallowing a failure here would send the unreconciled payload, which the server rejects
+  // wholesale, so the read failure has to surface as itself rather than as a later 409.
+  const stored = await listChatMessages(remoteId).catch((error: unknown) => {
+    throw new Error(
+      `Could not read the stored research messages for thread ${remoteId} before syncing`,
+      { cause: error },
+    );
+  });
+  return reconcileServerManagedMessages(records, stored);
+}
+
 /**
  * Persist exported messages, pruning only for explicit delete flows.
  */
 export async function syncExportedRepositoryToBackend(
   remoteId: string,
   exp: ExportedMessageRepository,
-  options: { pruneMissing?: boolean } = {},
+  options: { pruneMissing?: boolean; deletedMessageIds?: string[] } = {},
 ): Promise<void> {
-  await ensureStoredChatThread(remoteId);
+  // No ensureStoredChatThread here: syncStoredChatMessages ensures the row itself, and
+  // this used to make every save pay for the same GET /threads/{id} twice.
+  const records = exp.messages.map(({ message, parentId }) =>
+    exportedItemToRecord(remoteId, parentId, message),
+  );
   await syncStoredChatMessages(
     remoteId,
-    exp.messages.map(({ message, parentId }) =>
-      exportedItemToRecord(remoteId, parentId, message),
-    ),
-    { pruneMissing: options.pruneMissing },
+    await withStoredResearchMessages(remoteId, records),
+    {
+      pruneMissing: options.pruneMissing,
+      deletedMessageIds: options.deletedMessageIds,
+    },
   );
 }
 
@@ -136,6 +170,7 @@ export async function deleteThreadMessage(args: {
   if (remoteId) {
     await syncExportedRepositoryToBackend(remoteId, next, {
       pruneMissing: true,
+      deletedMessageIds: [messageId, ...assistantReplyIds],
     });
   }
   thread.import(next);

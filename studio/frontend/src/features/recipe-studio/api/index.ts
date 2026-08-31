@@ -6,6 +6,7 @@ import {
   formatFastApiDetail,
   readFastApiError,
 } from "@/lib/format-fastapi-error";
+import { openStreamResponse } from "@/lib/open-stream-response";
 
 const DEFAULT_BASE = "/api/data-recipe";
 
@@ -379,13 +380,10 @@ export async function streamRecipeJobEvents(options: {
     query = `?after=${options.lastEventId}`;
   }
 
-  const response = await authFetch(
+  const response = await openStreamResponse(
+    authFetch,
     `${DATA_DESIGNER_API_BASE}/jobs/${options.jobId}/events${query}`,
-    {
-      method: "GET",
-      headers,
-      signal: options.signal,
-    },
+    { headers, signal: options.signal },
   );
   if (!response.ok) {
     throw new Error(await parseErrorResponse(response));
@@ -447,13 +445,24 @@ type UnstructuredFileUploadResponse = {
   error?: string;
 };
 
+/** A desktop drop, redeemed server-side: Tauri hands the webview a path, never
+ * a File, so the bytes never cross the bridge. */
+export interface NativeUnstructuredUpload {
+  nativePathLease: string;
+  name: string;
+  size: number;
+}
+
+export type UnstructuredUploadSource = File | NativeUnstructuredUpload;
+
 export async function uploadUnstructuredFile(
-  file: File,
+  file: UnstructuredUploadSource,
   blockId: string,
   signal?: AbortSignal,
 ): Promise<UnstructuredFileUploadResponse> {
   const formData = new FormData();
-  formData.append("file", file);
+  if (file instanceof File) formData.append("file", file);
+  else formData.append("nativePathLease", file.nativePathLease);
   formData.append("block_id", blockId);
 
   const res = await authFetch(
@@ -492,5 +501,15 @@ export async function removeUnstructuredFile(
   );
   if (!res.ok && res.status !== 404) {
     throw new Error("Failed to remove file");
+  }
+}
+
+export async function removeUnstructuredBlock(blockId: string): Promise<void> {
+  const res = await authFetch(
+    `${DATA_DESIGNER_API_BASE}/seed/unstructured-block/${encodeURIComponent(blockId)}`,
+    { method: "DELETE" },
+  );
+  if (!res.ok && res.status !== 404) {
+    throw new Error("Failed to remove uploaded files");
   }
 }

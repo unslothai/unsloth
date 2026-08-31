@@ -171,8 +171,6 @@ def _list_deepseek_r1_distill_models():
     return distill_models
 
 
-register_deepseek_models(include_original_model = True)
-
 if __name__ == "__main__":
     from unsloth.registry.registry import MODEL_REGISTRY, _check_model_info
 

@@ -56,6 +56,9 @@ def _stub_linux_path_checks(monkeypatch, module):
     monkeypatch.setattr(module.os.path, "exists", lambda _p: True)
     monkeypatch.setattr(module.os.path, "isdir", lambda _p: True)
     monkeypatch.setattr(module.os, "access", lambda _p, _mode: True)
+    # The mount does not exist on the test host, so the readability probe that
+    # opens the directory has to be part of the same pretence.
+    monkeypatch.setattr(module, "is_readable_dir", lambda _p: True)
 
 
 def _stub_hub_scan_folder_db(monkeypatch):
@@ -252,10 +255,19 @@ def test_legacy_browse_allowlist_includes_linux_run_media_mounts(monkeypatch, tm
         outputs_root = lambda: tmp_path / "missing-outputs",
         exports_root = lambda: tmp_path / "missing-exports",
     )
-    fake_external_media = SimpleNamespace(linux_run_media_mount_roots = lambda: [media_root])
+    fake_external_media = SimpleNamespace(
+        linux_run_media_mount_roots = lambda: [media_root],
+        macos_volume_roots = lambda: [],
+        windows_drive_roots = lambda: [],
+    )
+    fake_paths.external_media = fake_external_media
     fake_studio_db = SimpleNamespace(
         list_scan_folders = lambda: [],
         contains_sensitive_path_component = studio_db.contains_sensitive_path_component,
+        # The media root is a legitimate mount, not denied; the .ssh 403 below
+        # comes from the credential check. A False stub keeps this OS-independent
+        # (on macOS tmp_path lives under the denied /private/var).
+        is_denied_system_path = lambda _p: False,
     )
     monkeypatch.setitem(sys.modules, "utils.paths", fake_paths)
     monkeypatch.setitem(sys.modules, "utils.paths.external_media", fake_external_media)

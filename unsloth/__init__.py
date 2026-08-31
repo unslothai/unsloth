@@ -12,9 +12,79 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os, importlib.util, platform
+import os, importlib.util, platform, sys
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
+
+# Transformers 4.x imports TensorFlow / Flax merely because they are installed
+# (`processing_utils` -> `image_transforms`), breaking Unsloth, which uses neither.
+# It reads these variables once at its own import, so this has to land first. An
+# explicit opt-in still wins; 5.x dropped both backends and ignores all of this.
+if "transformers" not in sys.modules:
+    _TRUE = {"1", "ON", "YES", "TRUE"}  # Transformers' ENV_VARS_TRUE_VALUES
+    # Overwrite, not `setdefault`: unset means `AUTO`, i.e. "enable if installed".
+    # An imported backend is in use though, so opting it out breaks a `from_tf` load.
+    for _var, _modules, _opt_ins in (
+        ("USE_TF", ("tensorflow",), ("USE_TF", "FORCE_TF_AVAILABLE")),
+        ("USE_FLAX", ("flax", "jax"), ("USE_FLAX",)),
+    ):
+        if any(_m in sys.modules for _m in _modules):
+            continue
+        if any(os.environ.get(_v, "").upper() in _TRUE for _v in _opt_ins):
+            continue
+        os.environ[_var] = "0"
+    del _TRUE, _var, _modules, _opt_ins
+else:
+    # Transformers derives `_tf_available` / `_flax_available` from `find_spec` alone,
+    # so clearing the cached flags keeps `image_transforms` off a broken backend.
+    # `"transformers" in sys.modules` does not mean it finished importing (Python
+    # publishes the module before its body runs), so write the variables too: inert
+    # once read, decisive in that window, unconditional since waiting deadlocks.
+    _TRUE = {"1", "ON", "YES", "TRUE"}  # Transformers' ENV_VARS_TRUE_VALUES
+    _import_utils = sys.modules.get("transformers.utils.import_utils")
+    for _var, _flag, _const, _modules, _opt_ins, _cached in (
+        (
+            "USE_TF",
+            "_tf_available",
+            "USE_TF",
+            ("tensorflow",),
+            ("USE_TF", "FORCE_TF_AVAILABLE"),
+            ("USE_TF", "FORCE_TF_AVAILABLE"),
+        ),
+        (
+            "USE_FLAX",
+            "_flax_available",
+            "USE_JAX",
+            ("flax", "jax"),
+            ("USE_FLAX",),
+            ("USE_JAX",),
+        ),
+    ):
+        if any(_m in sys.modules for _m in _modules):
+            continue
+        if any(os.environ.get(_v, "").upper() in _TRUE for _v in _opt_ins):
+            continue
+        # An opt-in can be consumed and then restored, so read the snapshot
+        # Transformers used. Env `USE_FLAX` lands in the constant `USE_JAX`.
+        if any(str(getattr(_import_utils, _v, "")).upper() in _TRUE for _v in _cached):
+            continue
+        os.environ[_var] = "0"
+        try:
+            # `import_utils` copies the env into `USE_TF` / `USE_JAX` (lines 102-104)
+            # and derives the flags at 264 / 355, so mid-body only the constant works.
+            if hasattr(_import_utils, _const):
+                setattr(_import_utils, _const, "0")
+            # Absent on 5.x, and a module proxy can refuse the write.
+            if getattr(_import_utils, _flag, False):
+                setattr(_import_utils, _flag, False)
+        except (AttributeError, TypeError):
+            pass
+    del _TRUE, _import_utils, _var, _flag, _const, _modules, _opt_ins, _cached
+
+# Relax Metal's context-store timeout before MLX modules can initialize Metal.
+# Keep an explicit user value authoritative.
+if platform.system() == "Darwin" and platform.machine() == "arm64":
+    os.environ.setdefault("AGX_RELAX_CDM_CTXSTORE_TIMEOUT", "1")
 
 # ── Windows console UTF-8 safety ─────────────────────────────────────────────
 # Legacy Windows consoles (cp1252) can't encode Unsloth's emoji/box-drawing
@@ -76,6 +146,30 @@ def _is_mlx_available():
 _IS_MLX = _is_mlx_available()
 
 if _IS_MLX:
+    # _gpu_init does this on the GPU path; the MLX path never reaches it, so
+    # torchao 0.18 + torch < 2.10 dies on `ScalingType`. No-op otherwise.
+    try:
+        from .import_fixes import fix_torchao_torch_symbol_skew as _fix_torchao
+        _fix_torchao()
+        del _fix_torchao
+    except Exception:
+        pass
+    try:
+        # Same reason: MLX audio reaches xcodec2 -> torchtune -> the old
+        # torchao.dtypes.nf4tensor path.
+        from .import_fixes import fix_torchao_nf4tensor_move as _fix_nf4
+        _fix_nf4()
+        del _fix_nf4
+    except Exception:
+        pass
+    try:
+        # Same reason: this branch imports transformers itself further down, so a
+        # --no-deps floor miss surfaces here with the same wrong remedy.
+        from .import_fixes import check_transformers_dependency_versions as _check_tf_deps
+        _check_tf_deps()
+        del _check_tf_deps
+    except Exception:
+        pass
     try:
         import unsloth_zoo
     except ImportError as _e:
@@ -102,13 +196,42 @@ if _IS_MLX:
         ) from _e
 
     import dataclasses as _dataclasses
+    import inspect as _inspect
     import importlib.machinery as _machinery
     import sys as _sys
     import types as _types
     import warnings as _warnings
 
-    __version__ = unsloth_zoo.__version__
+    # unsloth_zoo is a different distribution, pinned `>=`, so borrowing its number
+    # reported neither the installed core nor the latest zoo. `_version` imports nothing,
+    # so this stays torch-free while agreeing with the GPU path and `pip show unsloth`.
+    from ._version import __version__
+
     DEVICE_TYPE = "mlx"
+    _MLX_TRAINER_ACCEPTS_VAR_KWARGS = False
+    _MLX_TRAINER_SUPPORTED_KWARGS = frozenset()
+    try:
+        _MLX_TRAINER_INIT_PARAMETERS = _inspect.signature(MLXTrainer.__init__).parameters
+        _MLX_TRAINER_ACCEPTS_VAR_KWARGS = any(
+            param.kind is _inspect.Parameter.VAR_KEYWORD
+            for param in _MLX_TRAINER_INIT_PARAMETERS.values()
+        )
+        _MLX_TRAINER_SUPPORTED_KWARGS = frozenset(
+            name
+            for name, param in _MLX_TRAINER_INIT_PARAMETERS.items()
+            if name != "self"
+            and param.kind
+            in (
+                _inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                _inspect.Parameter.KEYWORD_ONLY,
+            )
+        )
+    except (TypeError, ValueError):
+        pass
+
+    def _mlx_trainer_supports_kwarg(name):
+        """Return whether the installed zoo MLXTrainer accepts a kwarg."""
+        return _MLX_TRAINER_ACCEPTS_VAR_KWARGS or name in _MLX_TRAINER_SUPPORTED_KWARGS
 
     def _is_mlx_cuda_device_target(device):
         """Return True when a torch .to/.cuda target asks for CUDA on MLX."""
@@ -562,9 +685,7 @@ if _IS_MLX:
 
     def _assign_mlx_positional_kwarg(kwargs, name, value):
         if name in kwargs:
-            raise TypeError(
-                f"UnslothTrainer.__init__() got multiple values for argument " f"{name!r}"
-            )
+            raise TypeError(f"UnslothTrainer.__init__() got multiple values for argument {name!r}")
         kwargs[name] = value
 
     def _normalize_mlx_trainer_init_args(args, kwargs):
@@ -966,6 +1087,7 @@ if _IS_MLX:
         "args",
         "formatting_func",
         "processor",
+        "callbacks",
     )
     _TRL_SFT_TRAINER_POSITIONAL_KWARGS = (
         "model",
@@ -984,6 +1106,29 @@ if _IS_MLX:
         "formatting_func",
     )
     _MLX_TRAINER_KWARGS = frozenset(_MLX_TRAINER_POSITIONAL_KWARGS)
+
+    def _filter_supported_mlx_trainer_kwargs(trainer_kwargs):
+        """Drop inert/empty kwargs unsupported by this zoo MLXTrainer."""
+        unsupported = {
+            key: value
+            for key, value in trainer_kwargs.items()
+            if not _mlx_trainer_supports_kwarg(key)
+        }
+        names = sorted(
+            key for key, value in unsupported.items() if _is_meaningful_mlx_extra_value(value)
+        )
+        if names:
+            subject = ", ".join(names)
+            verb = "requires" if len(names) == 1 else "require"
+            raise NotImplementedError(
+                "Unsloth MLX: "
+                f"{subject} {verb} an unsloth-zoo build with "
+                "matching MLXTrainer support. Upgrade unsloth-zoo together "
+                "with unsloth."
+            )
+        for key in unsupported:
+            trainer_kwargs.pop(key, None)
+        return trainer_kwargs
 
     def _is_mlx_native_text_collator(collator):
         """HF pad/copy collators are redundant on MLX; match by class name."""
@@ -1162,6 +1307,7 @@ if _IS_MLX:
 
             trainer_kwargs, config_kwargs, ignored_kwargs = _split_mlx_trainer_kwargs(kwargs)
             _raise_unsupported_mlx_trainer_kwargs(ignored_kwargs)
+            trainer_kwargs = _filter_supported_mlx_trainer_kwargs(trainer_kwargs)
             trainer_kwargs["args"] = _coerce_mlx_training_args(
                 trainer_kwargs.get("args"),
                 config_kwargs,
@@ -1259,7 +1405,15 @@ if _IS_MLX:
 
     def train_on_responses_only(*args, **kwargs):
         """Mask non-response tokens through the shared zoo dataset helper."""
-        from unsloth_zoo.dataset_utils import train_on_responses_only as _train_on_responses_only
+        # Prefer the chat_templates export, which bounds the zoo's dataset.map()
+        # worker count (issue #2693). It is None on a torch-free host; fall back
+        # so the zoo raises its own ImportError, not "NoneType is not callable".
+        from .chat_templates import train_on_responses_only as _train_on_responses_only
+
+        if _train_on_responses_only is None:
+            from unsloth_zoo.dataset_utils import (
+                train_on_responses_only as _train_on_responses_only,
+            )
         return _train_on_responses_only(*args, **kwargs)
 
     def _safe_mlx_trl_star_exports(_trl):
@@ -1410,3 +1564,15 @@ else:
                 torch.cuda.empty_cache()
         except Exception:
             pass
+
+
+# Both paths, GPU and MLX: a `pip install --target` / PYTHONPATH layout makes
+# dill pickle whole modules by value, and every training path here builds a
+# `datasets.Dataset`, which fingerprints through dill. No-op on an ordinary
+# install. See `import_fixes.fix_dill_module_by_value_pickling`.
+try:
+    from .import_fixes import fix_dill_module_by_value_pickling as _fix_dill
+    _fix_dill()
+    del _fix_dill
+except Exception:
+    pass

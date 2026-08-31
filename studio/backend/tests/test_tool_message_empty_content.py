@@ -4,7 +4,7 @@
 """Empty ``role="tool"`` content must be accepted on the OpenAI-compat surface.
 
 Agentic clients send ``content: ""`` when a command produced no output;
-OpenAI and llama-server both accept it. Studio used to 400, which standard
+OpenAI and llama-server both accept it. Unsloth used to 400, which standard
 clients treat as non-retryable and kill the session. The validator must
 normalize empty/missing tool content to ``""`` instead of raising.
 """
@@ -51,3 +51,19 @@ def test_user_message_still_requires_content():
 def test_assistant_empty_content_still_collapses_to_none():
     msg = ChatMessage(role = "assistant", content = "")
     assert msg.content is None
+
+
+def test_assistant_reasoning_content_round_trips():
+    msg = ChatMessage(
+        role = "assistant",
+        content = "answer",
+        reasoning_content = "step-by-step trace",
+    )
+    assert msg.model_dump(exclude_none = True)["reasoning_content"] == "step-by-step trace"
+
+
+@pytest.mark.parametrize("structured", [[{"type": "reasoning", "text": "x"}], {"text": "x"}, 42])
+def test_non_string_reasoning_is_ignored_instead_of_rejected(structured):
+    msg = ChatMessage(role = "assistant", content = "answer", reasoning_content = structured)
+    assert msg.reasoning_content is None
+    assert "reasoning_content" not in msg.model_dump(exclude_none = True)

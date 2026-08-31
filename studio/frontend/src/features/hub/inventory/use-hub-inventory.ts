@@ -2,9 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
+  type ManagedDownload,
   clearCompletedInventoryHint,
   useDownloadManagerStore,
-  type ManagedDownload,
 } from "@/features/hub/download-manager";
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
 import { useCallback, useEffect, useMemo, useRef } from "react";
@@ -24,19 +24,28 @@ import {
 import {
   type PendingInventoryHints,
   nextInventoryHintExpiryDelay,
+  repoKey,
 } from "./inventory-hints";
-import type { CachedInventoryRow, LocalInventoryRow } from "./types";
+import { resolveInventorySettlement } from "./inventory-settlement";
+import type {
+  CachedInventoryRow,
+  InventoryHint,
+  LocalInventoryRow,
+} from "./types";
 import {
   type DeviceInventorySource,
-  inventoryEmptyRevalidationSignature,
   useDeviceInventorySources,
 } from "./use-device-inventory";
 import {
   buildCachedInventoryRow,
   buildLocalInventoryRows,
   defaultCapabilities,
-  normalizeTimestamp,
 } from "./view-models";
+import { normalizeTimestamp } from "./inventory-timestamps";
+import {
+  INVENTORY_FRESHNESS_WINDOW_MS,
+  isInventoryStampFresh,
+} from "./inventory-freshness";
 
 export interface HubInventory {
   cachedRows: CachedInventoryRow[];
@@ -44,9 +53,11 @@ export interface HubInventory {
   availableSet: Set<string>;
   partialSet: Set<string>;
   downloadedReady: boolean;
+  inventorySettled: boolean;
   inventoryError: boolean;
   inventoryWarning: boolean;
   refreshInventory: () => Promise<void>;
+  refreshInventoryIfOlderThan: (maxAgeMs: number) => Promise<void>;
 }
 
 export type HubInventoryKind = "models" | "datasets";
@@ -111,10 +122,43 @@ function isReadyForDisplay(source: {
   return !(source.loading && source.rows.length === 0);
 }
 
+function hasUnreadyFailure(source: {
+  error: string | null;
+  ready: boolean;
+}): boolean {
+  return source.error !== null && !source.ready;
+}
+
 function liveInventoryRank(job: ManagedDownload): number {
   if (job.state === "running" || job.state === "cancelling") return 2;
   if (job.state === "cancelled" || job.state === "error") return 1;
   return 0;
+}
+
+function inventoryHintKindForJob(job: ManagedDownload): InventoryHint["kind"] {
+  return job.kind === "dataset" ? "dataset" : job.variant ? "gguf" : "model";
+}
+
+function observedKeyProtections(
+  jobs: Record<string, ManagedDownload>,
+): Record<InventoryHint["kind"], Set<string>> {
+  const keys: Record<InventoryHint["kind"], Set<string>> = {
+    model: new Set(),
+    gguf: new Set(),
+    dataset: new Set(),
+  };
+  for (const job of Object.values(jobs)) {
+    if (
+      job.external ||
+      (job.state !== "running" &&
+        job.state !== "cancelling" &&
+        job.state !== "complete")
+    ) {
+      continue;
+    }
+    keys[inventoryHintKindForJob(job)].add(repoKey(job.repoId));
+  }
+  return keys;
 }
 
 function shouldSurfaceLiveJob(
@@ -202,8 +246,11 @@ function liveDownloadInventoryRows(
                 ? "transformers"
                 : "unknown",
           size_bytes: job.displayBytes,
+          // live jobs already use epoch milliseconds
+          last_modified: job.startedAt,
           partial: true,
           partial_transport: null,
+          optimistic: true,
         },
         modelFormat,
       ),
@@ -253,6 +300,13 @@ export function useHubInventory(
   const refreshDatasetInventory = datasetInventory.refresh;
   const refreshLocalModelInventory = localModelInventory.refresh;
   const refreshLocalDatasetInventory = localDatasetInventory.refresh;
+  const refreshModelInventoryIfOlderThan = modelInventory.refreshIfOlderThan;
+  const refreshDatasetInventoryIfOlderThan =
+    datasetInventory.refreshIfOlderThan;
+  const refreshLocalModelInventoryIfOlderThan =
+    localModelInventory.refreshIfOlderThan;
+  const refreshLocalDatasetInventoryIfOlderThan =
+    localDatasetInventory.refreshIfOlderThan;
   const pendingHints = useInventoryHintStore((state) => state.pending);
   const observedInventoryKeys = useInventoryHintStore(
     (state) => state.observedKeys,
@@ -271,7 +325,6 @@ export function useHubInventory(
     [isDatasetMode],
   );
   const liveInventoryJobs = useDownloadManagerStore(selectLiveInventoryJobs);
-  const emptyRevalidationSignatureRef = useRef<string | null>(null);
   const pendingForRenderRef = useRef<PendingInventoryHints | null>(null);
 
   const pendingForRenderNext = useMemo(
@@ -313,8 +366,14 @@ export function useHubInventory(
         kind: "gguf",
         rows: cachedGgufSource.rows,
         previouslyObserved: observedInventoryKeys.gguf,
+        refreshStartedAt: cachedGgufSource.refreshStartedAt,
       }),
-    [cachedGgufSource.rows, observedInventoryKeys.gguf, pendingForRender],
+    [
+      cachedGgufSource.rows,
+      cachedGgufSource.refreshStartedAt,
+      observedInventoryKeys.gguf,
+      pendingForRender,
+    ],
   );
   const cachedModelsReconciliation = useMemo(
     () =>
@@ -323,8 +382,14 @@ export function useHubInventory(
         kind: "model",
         rows: cachedModelsSource.rows,
         previouslyObserved: observedInventoryKeys.model,
+        refreshStartedAt: cachedModelsSource.refreshStartedAt,
       }),
-    [cachedModelsSource.rows, observedInventoryKeys.model, pendingForRender],
+    [
+      cachedModelsSource.rows,
+      cachedModelsSource.refreshStartedAt,
+      observedInventoryKeys.model,
+      pendingForRender,
+    ],
   );
   const cachedDatasetsReconciliation = useMemo(
     () =>
@@ -333,24 +398,31 @@ export function useHubInventory(
         kind: "dataset",
         rows: cachedDatasetsSource.rows,
         previouslyObserved: observedInventoryKeys.dataset,
+        refreshStartedAt: cachedDatasetsSource.refreshStartedAt,
       }),
     [
       cachedDatasetsSource.rows,
+      cachedDatasetsSource.refreshStartedAt,
       observedInventoryKeys.dataset,
       pendingForRender,
     ],
   );
 
   useEffect(() => {
+    const protectedObservedKeys = observedKeyProtections(
+      useDownloadManagerStore.getState().jobs,
+    );
     const reconciliations: PendingHintReconciliationCommit[] = [];
     if (!isDatasetMode) {
       reconciliations.push(
         {
           kind: "gguf",
+          protectedObservedKeys: protectedObservedKeys.gguf,
           reconciliation: cachedGgufReconciliation,
         },
         {
           kind: "model",
+          protectedObservedKeys: protectedObservedKeys.model,
           reconciliation: cachedModelsReconciliation,
         },
       );
@@ -358,6 +430,7 @@ export function useHubInventory(
     if (isDatasetMode) {
       reconciliations.push({
         kind: "dataset",
+        protectedObservedKeys: protectedObservedKeys.dataset,
         reconciliation: cachedDatasetsReconciliation,
       });
     }
@@ -417,8 +490,7 @@ export function useHubInventory(
       [
         ...(isDatasetMode ? liveDownloadRows : []),
         ...cachedDatasets.map((row) => buildCachedInventoryRow(row, "unknown")),
-      ]
-        .sort(compareCachedRows),
+      ].sort(compareCachedRows),
     [cachedDatasets, isDatasetMode, liveDownloadRows],
   );
 
@@ -440,6 +512,10 @@ export function useHubInventory(
           title: ds.label || ds.id,
           source: "custom" as const,
           sourceLabel: localDatasetSourceLabel(ds.source),
+          datasetSource:
+            ds.source === "recipe" || ds.source === "upload"
+              ? ds.source
+              : undefined,
           path: ds.path,
           isGguf: false,
           loadId: ds.id,
@@ -511,6 +587,12 @@ export function useHubInventory(
           cachedModelsSource.error ||
           (includeLocal && localModelsSource.error),
       );
+  const hasUnreadyInventoryFailure = isDatasetMode
+    ? hasUnreadyFailure(cachedDatasetsSource) ||
+      (includeLocal && hasUnreadyFailure(localDatasetsSource))
+    : hasUnreadyFailure(cachedGgufSource) ||
+      hasUnreadyFailure(cachedModelsSource) ||
+      (includeLocal && hasUnreadyFailure(localModelsSource));
   const inventoryWarning =
     inventoryFailed && (cachedRows.length > 0 || effectiveLocalRows.length > 0);
 
@@ -537,6 +619,33 @@ export function useHubInventory(
   const refreshInventory = useCallback(async () => {
     await refreshDeviceInventory();
   }, [refreshDeviceInventory]);
+  const refreshInventoryIfOlderThan = useCallback(
+    async (maxAgeMs: number) => {
+      if (isDatasetMode) {
+        await Promise.all([
+          refreshDatasetInventoryIfOlderThan(maxAgeMs),
+          ...(includeLocal
+            ? [refreshLocalDatasetInventoryIfOlderThan(maxAgeMs)]
+            : []),
+        ]);
+        return;
+      }
+      await Promise.all([
+        refreshModelInventoryIfOlderThan(maxAgeMs),
+        ...(includeLocal
+          ? [refreshLocalModelInventoryIfOlderThan(maxAgeMs)]
+          : []),
+      ]);
+    },
+    [
+      includeLocal,
+      isDatasetMode,
+      refreshDatasetInventoryIfOlderThan,
+      refreshLocalDatasetInventoryIfOlderThan,
+      refreshLocalModelInventoryIfOlderThan,
+      refreshModelInventoryIfOlderThan,
+    ],
+  );
   const downloadedReady = isDatasetMode ? datasetReady : modelReady;
   const hasInventoryRows =
     cachedRows.length > 0 || effectiveLocalRows.length > 0;
@@ -546,56 +655,42 @@ export function useHubInventory(
     : cachedGgufSource.loading ||
       cachedModelsSource.loading ||
       (includeLocal && localModelsSource.loading);
-  const emptyRevalidationSignature = useMemo(
-    () =>
-      isDatasetMode
-        ? inventoryEmptyRevalidationSignature([
-            cachedDatasetsSource,
-            ...(includeLocal ? [localDatasetsSource] : []),
-          ])
-        : inventoryEmptyRevalidationSignature([
-            cachedGgufSource,
-            cachedModelsSource,
-            ...(includeLocal ? [localModelsSource] : []),
-          ]),
-    [
-      cachedDatasetsSource,
-      cachedGgufSource,
-      cachedModelsSource,
-      includeLocal,
-      isDatasetMode,
-      localDatasetsSource,
-      localModelsSource,
-    ],
+  const relevantInventorySources = isDatasetMode
+    ? [cachedDatasetsSource, ...(includeLocal ? [localDatasetsSource] : [])]
+    : [
+        cachedGgufSource,
+        cachedModelsSource,
+        ...(includeLocal ? [localModelsSource] : []),
+      ];
+  const now = Date.now();
+  const emptyRevalidationFresh = relevantInventorySources.every(
+    (source) =>
+      source.error === null &&
+      isInventoryStampFresh(
+        source.revalidatedAt,
+        now,
+        INVENTORY_FRESHNESS_WINDOW_MS,
+      ),
   );
+  const { emptyRevalidationRequired, inventorySettled } =
+    resolveInventorySettlement({
+      downloadedReady,
+      emptyRevalidationFresh,
+      hasActiveEmptyRefresh,
+      hasInventoryRows,
+      hasUnreadyInventoryFailure,
+      inventoryFailed,
+    });
 
   useEffect(() => {
-    if (
-      !enabled ||
-      !downloadedReady ||
-      inventoryFailed ||
-      hasInventoryRows ||
-      hasActiveEmptyRefresh
-    ) {
-      return;
-    }
-    if (emptyRevalidationSignatureRef.current === emptyRevalidationSignature) {
+    if (!(enabled && emptyRevalidationRequired)) {
       return;
     }
     const timer = window.setTimeout(() => {
-      emptyRevalidationSignatureRef.current = emptyRevalidationSignature;
       void refreshDeviceInventory();
     }, 500);
     return () => window.clearTimeout(timer);
-  }, [
-    downloadedReady,
-    emptyRevalidationSignature,
-    enabled,
-    hasActiveEmptyRefresh,
-    hasInventoryRows,
-    inventoryFailed,
-    refreshDeviceInventory,
-  ]);
+  }, [emptyRevalidationRequired, enabled, refreshDeviceInventory]);
 
   return {
     cachedRows,
@@ -603,8 +698,10 @@ export function useHubInventory(
     availableSet,
     partialSet,
     downloadedReady,
+    inventorySettled,
     inventoryError: inventoryFailed,
     inventoryWarning,
     refreshInventory,
+    refreshInventoryIfOlderThan,
   };
 }

@@ -4,7 +4,14 @@ import os
 
 os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
 
-from transformers.utils import sentencepiece_model_pb2
+# Same accessor unsloth.tokenizer_utils uses. The legacy
+# `transformers.utils.sentencepiece_model_pb2` is generated against protobuf
+# 3.x and raises on protobuf >= 4 ("Descriptors cannot be created directly"),
+# or collides with sentencepiece's own copy ("duplicate file name
+# sentencepiece_model.proto") once that one is loaded first.
+from transformers.convert_slow_tokenizer import import_protobuf
+
+sentencepiece_model_pb2 = import_protobuf()
 
 from unsloth.tokenizer_utils import fix_sentencepiece_gguf
 
@@ -82,7 +89,7 @@ def test_entry_with_non_int_id_is_skipped(tmp_path):
 
 
 def test_save_py_except_clause_is_broad_exception():
-    with open(_SAVE_PY) as f:
+    with open(_SAVE_PY, encoding = "utf-8") as f:
         tree = ast.parse(f.read())
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == "unsloth_save_pretrained_gguf":
@@ -102,7 +109,7 @@ def test_save_py_except_clause_is_broad_exception():
 
 
 def test_tokenizer_utils_uses_import_protobuf_fallback_pattern():
-    with open(_TOK_PY) as f:
+    with open(_TOK_PY, encoding = "utf-8") as f:
         src = f.read()
     tree = ast.parse(src)
     for node in ast.walk(tree):

@@ -309,7 +309,15 @@ if [ "$_rc" = "2" ]; then echo "  PASS: tauri child exit 2 -> reroute propagates
 assert_absent   "tauri exit 2 -> not a CPU fallback"              "$_out" "__NOROUTE__"
 rm -rf "$_d"
 
-# 27) Non-tauri mode: a child exit 2 is just a failure -> CPU fallback, not propagated.
+# 27) The post-install autostart opt-out must reach the target distro, where the
+#     final launch prompt is evaluated.
+_d=$(make_fixture 1 strix 0 26.04 1)
+_out=$(run_func "$_d" _SKIP_AUTOSTART=true UNSLOTH_SKIP_AUTOSTART= \
+        UNSLOTH_WSL_REROUTE_CMD='echo skip=[$UNSLOTH_SKIP_AUTOSTART]')
+assert_contains "UNSLOTH_SKIP_AUTOSTART forwarded to reroute"    "$_out" "skip=[1]"
+rm -rf "$_d"
+
+# 28) Non-tauri mode: a child exit 2 is just a failure -> CPU fallback, not propagated.
 _d=$(make_fixture 1 strix 0 26.04 1)
 _rc=0
 _out=$(run_func "$_d" UNSLOTH_WSL_REROUTE_CMD='exit 2') || _rc=$?

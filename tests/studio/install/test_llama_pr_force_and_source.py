@@ -8,6 +8,10 @@ from pathlib import Path
 
 import pytest
 
+# Aliased: this module already has its own `run_pwsh` fragment helper, which now calls the
+# shared runner rather than subprocess.run.
+from unsloth_pwsh_runner import run_pwsh as run_pwsh_retrying
+
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 SETUP_SH = PACKAGE_ROOT / "studio" / "setup.sh"
 SETUP_PS1 = PACKAGE_ROOT / "studio" / "setup.ps1"
@@ -48,7 +52,11 @@ def run_pwsh(
     run_env["NO_COLOR"] = "1"
     if env:
         run_env.update(env)
-    return subprocess.run(
+    # The shared runner, not subprocess.run: the PR_FORCE cases below read stdout for the
+    # promoted ref and the fixed ggml-org source, and a pwsh killed at startup yields empty
+    # stdout that looks like setup.ps1 promoting nothing.
+    # See tests/_shared/unsloth_pwsh_runner.py.
+    return run_pwsh_retrying(
         [PWSH, "-NoProfile", "-Command", script],
         capture_output = True,
         text = True,
@@ -346,7 +354,7 @@ class TestSourcePatternsSh:
 
     @pytest.fixture(autouse = True)
     def _load_source(self):
-        self.content = SETUP_SH.read_text()
+        self.content = SETUP_SH.read_text(encoding = "utf-8")
 
     def test_has_default_pr_force(self):
         assert '_DEFAULT_LLAMA_PR_FORCE=""' in self.content
@@ -362,8 +370,11 @@ class TestSourcePatternsSh:
         assert '_LLAMA_SOURCE="${_DEFAULT_LLAMA_SOURCE}"' in self.content
 
     def test_release_repo_override_removed(self):
+        # No env-based release-repo override, and CPU-only hosts no longer fall
+        # back to ggml-org -- every host now routes to the fork.
         assert "UNSLOTH_LLAMA_RELEASE_REPO:-unslothai/llama.cpp" not in self.content
-        assert '_HELPER_RELEASE_REPO="ggml-org/llama.cpp"' in self.content
+        assert '_HELPER_RELEASE_REPO="unslothai/llama.cpp"' in self.content
+        assert '_HELPER_RELEASE_REPO="ggml-org/llama.cpp"' not in self.content
 
     def test_force_compile_skips_prebuilt_resolution_early(self):
         assert 'if [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then' in self.content
@@ -409,7 +420,7 @@ class TestSourcePatternsPs1:
 
     @pytest.fixture(autouse = True)
     def _load_source(self):
-        self.content = SETUP_PS1.read_text()
+        self.content = SETUP_PS1.read_text(encoding = "utf-8")
 
     def test_has_default_pr_force(self):
         assert '$DefaultLlamaPrForce = ""' in self.content
@@ -425,12 +436,11 @@ class TestSourcePatternsPs1:
         assert "$LlamaSource = $DefaultLlamaSource" in self.content
 
     def test_release_repo_override_removed(self):
-        # Repo chosen by GPU detection (GPU -> fork, CPU -> ggml-org), no env override.
+        # No env-based release-repo override; every host now routes to the fork
+        # (the CPU-only ggml-org fallback was removed), mirroring setup.sh.
         assert "$HelperReleaseRepo = if ($env:UNSLOTH_LLAMA_RELEASE_REPO)" not in self.content
-        assert (
-            "$HelperReleaseRepo = if ($HasNvidiaSmi -or $HasROCm -or $script:ROCmGfxArch) "
-            '{ "unslothai/llama.cpp" } else { "ggml-org/llama.cpp" }' in self.content
-        )
+        assert '$HelperReleaseRepo = "unslothai/llama.cpp"' in self.content
+        assert "$HelperReleaseRepo = if (" not in self.content
 
     def test_force_compile_skips_prebuilt_resolution_early(self):
         assert 'if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {' in self.content

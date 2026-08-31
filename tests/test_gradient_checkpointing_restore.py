@@ -28,8 +28,8 @@ import re
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent.parent / "unsloth" / "models"
-_RL = (_ROOT / "rl.py").read_text()
-_RL_REPLACEMENTS = (_ROOT / "rl_replacements.py").read_text()
+_RL = (_ROOT / "rl.py").read_text(encoding = "utf-8")
+_RL_REPLACEMENTS = (_ROOT / "rl_replacements.py").read_text(encoding = "utf-8")
 
 # The single-line ternary form used at the trainer call sites:
 #   <obj>._unsloth_gradient_checkpointing if hasattr(<obj>, '...') else getattr(<args>, 'gradient_checkpointing', True)
@@ -162,7 +162,7 @@ def test_recording_sites_are_real_module_code():
     # string. Assert it's present at the choke point (patch_peft_model, so loaded adapters
     # are covered) and at the pre-wrapped pass-through, both of which bypass the old
     # get_peft_model-only recording.
-    llama = (_ROOT / "llama.py").read_text()
+    llama = (_ROOT / "llama.py").read_text(encoding = "utf-8")
     tree = ast.parse(llama)
 
     def assigns_marker(node):
