@@ -2872,7 +2872,9 @@ if DEVICE_COUNT == 1 and int(os.environ.get("WORLD_SIZE", "1")) <= 1:
     # function creates a bound method, not a value, and every `!= DistributedType.NO`
     # guard flips to True on a single device — the exact case this block rules out.
     # Wrap in property() so it replaces the eager descriptor. #10028
-    accelerate.accelerator.Accelerator.distributed_type = property(lambda self, *args, **kwargs: DistributedType.NO)
+    accelerate.accelerator.Accelerator.distributed_type = property(
+        lambda self, *args, **kwargs: DistributedType.NO
+    )
 
 
 # to move multiple tensors to the same device

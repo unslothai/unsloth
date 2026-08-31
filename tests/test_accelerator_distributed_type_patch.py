@@ -34,9 +34,9 @@ def test_distributed_type_is_not_a_bound_method():
 def test_distributed_type_is_no_on_single_device():
     """On a single device with DEVICE_COUNT == 1, distributed_type must be NO."""
     acc = Accelerator()
-    assert acc.distributed_type == DistributedType.NO, (
-        f"expected DistributedType.NO, got {acc.distributed_type}"
-    )
+    assert (
+        acc.distributed_type == DistributedType.NO
+    ), f"expected DistributedType.NO, got {acc.distributed_type}"
 
 
 def test_class_attribute_is_a_property():
