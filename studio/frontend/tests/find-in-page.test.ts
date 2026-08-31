@@ -18,6 +18,7 @@ import {
   FIND_HIGHLIGHT_ACTIVE,
   MAX_PAINTED_RANGES,
   paintWindow,
+  selectRangeFallback,
 } from "../src/features/find-in-page/lib/find-dom.ts";
 import {
   BLOCK_SEPARATOR,
@@ -291,6 +292,87 @@ test("an inline SVG is skipped despite reporting a lowercase tag", () => {
   const index = buildTextIndex(el("DIV", [svg, el("P", [text("prose")])]));
   assert.equal(index.text.includes("mermaid"), false);
   assert.equal(index.text.includes("prose"), true);
+});
+
+/** Run `body` with `getComputedStyle` answering from `styles`, and `{}` for anything else. */
+function withStyles(
+  styles: Map<unknown, { display?: string; whiteSpace?: string }>,
+  body: () => void,
+): void {
+  const view = globalThis as { getComputedStyle?: unknown };
+  const saved = view.getComputedStyle;
+  view.getComputedStyle = (element: unknown) => styles.get(element) ?? {};
+  try {
+    body();
+  } finally {
+    view.getComputedStyle = saved;
+  }
+}
+
+test("two spans the CSS renders as blocks do not run together", () => {
+  // No tag name says these are blocks, and Tailwind stacks them all over the app: a source's title
+  // over its URL in the research panel is exactly this shape. Run together they invent a word that
+  // is on screen nowhere, under one highlight spanning two rows.
+  const first = el("SPAN", [text("Open")]);
+  const second = el("SPAN", [text("AI models")]);
+  withStyles(
+    new Map([
+      [first, { display: "block" }],
+      [second, { display: "block" }],
+    ]),
+    () => {
+      const index = buildTextIndex(el("DIV", [first, second]));
+      assert.equal(index.text.includes("openai"), false);
+      assert.deepEqual(findMatches(index, "openai"), []);
+      // Each row still matches on its own.
+      assert.equal(findMatches(index, "open").length, 1);
+      assert.equal(findMatches(index, "ai models").length, 1);
+    },
+  );
+  // An inline span is not a boundary, so markup inside a sentence still reads as one word.
+  const inline = el("SPAN", [text("slo")]);
+  withStyles(new Map([[inline, { display: "inline" }]]), () => {
+    const index = buildTextIndex(
+      el("P", [text("un"), inline, text("th")]),
+    );
+    assert.equal(findMatches(index, "unsloth").length, 1);
+  });
+});
+
+test("whitespace is only flexible where the page collapses it", () => {
+  // The flexible run exists for prose, where a markdown soft wrap puts a newline in the node that
+  // renders as a space. In a code fence the whitespace on screen IS the whitespace in the node, so
+  // a query typed with one space must not land on three. The platform's own find draws the same
+  // line: matching across a wrap in a paragraph, and not inside a `<pre>`.
+  const fence = el("PRE", [text("unsloth   fast")]);
+  const prose = el("P", [text("unsloth\n   fast")]);
+  withStyles(
+    new Map([
+      [fence, { whiteSpace: "pre" }],
+      [prose, { whiteSpace: "normal" }],
+    ]),
+    () => {
+      const fenced = buildTextIndex(el("DIV", [fence]));
+      const wrapped = buildTextIndex(el("DIV", [prose]));
+      assert.deepEqual(findMatches(fenced, "unsloth fast"), []);
+      assert.equal(findMatches(fenced, "unsloth   fast").length, 1);
+      // Prose is unchanged: one space still crosses the wrap.
+      assert.equal(findMatches(wrapped, "unsloth fast").length, 1);
+      // And the flag rides on the segment, not the element, so it survives the offset map.
+      assert.equal(fenced.segments[0].preserved, true);
+      assert.equal(wrapped.segments[0].preserved, false);
+    },
+  );
+});
+
+test("preserved whitespace is inherited by the nodes inside it", () => {
+  const fence = el("PRE", [el("CODE", [text("a   b")])]);
+  withStyles(new Map([[fence, { whiteSpace: "pre" }]]), () => {
+    const index = buildTextIndex(el("DIV", [fence]));
+    // `CODE` gets `{}` from the fake, so this only passes if the walk carries the mode down.
+    assert.equal(index.segments[0].preserved, true);
+    assert.deepEqual(findMatches(index, "a b"), []);
+  });
 });
 
 test("a boxless wrapper is walked through, not skipped", () => {
@@ -750,10 +832,16 @@ test("closing the bar hands focus back to where it came from", async () => {
     "utf8",
   );
   // Captured above the effect that focuses the field, or it reads the field it is about to fill.
-  const capture = bar.indexOf("const origin = document.activeElement");
+  const capture = bar.indexOf("const active = document.activeElement");
   const takeFocus = bar.indexOf("input.select();");
   assert.ok(capture > 0 && capture < takeFocus);
   assert.match(bar, /origin\.focus\(\);/);
+  // First answer only, and never the bar. StrictMode replays the effect in development, and by the
+  // second run the field has focus: read plainly, the bar would aim focus at its own input.
+  assert.match(
+    bar,
+    /originRef\.current === null &&\s*\n\s*active\?\.closest\(`\[\$\{FIND_SKIP_ATTRIBUTE\}\]`\) == null/,
+  );
   // And only when closing dropped focus: the reader having moved it is not an invitation.
   assert.match(bar, /if \(focused !== null && focused !== document\.body\) return;/);
 });
@@ -918,6 +1006,35 @@ test("Escape is left to the IME while it is composing", async () => {
     "utf8",
   );
   assert.match(shortcut, /if \(isImeComposing\(event\)\) return;\n\s*const hit = bindings\.find/);
+});
+
+test("the selection fallback only clears what it put there", () => {
+  // The engines without a highlight registry get a selection instead, and the bar paints once on
+  // opening, before any query is typed. Clearing unconditionally there throws away whatever the
+  // reader had highlighted to copy, and closing cannot give it back.
+  const ranges: unknown[] = [];
+  const selection = {
+    removeAllRanges: () => {
+      ranges.length = 0;
+    },
+    addRange: (range: unknown) => {
+      ranges.push(range);
+    },
+  };
+  const view = globalThis as { window?: unknown };
+  const saved = view.window;
+  view.window = { getSelection: () => selection };
+  try {
+    ranges.push("what the reader selected");
+    selectRangeFallback(null);
+    assert.deepEqual(ranges, ["what the reader selected"]);
+    selectRangeFallback("the active match" as unknown as Range);
+    assert.deepEqual(ranges, ["the active match"]);
+    selectRangeFallback(null);
+    assert.deepEqual(ranges, []);
+  } finally {
+    view.window = saved;
+  }
 });
 
 test("nothing of the engine is mounted while the bar is closed", async () => {

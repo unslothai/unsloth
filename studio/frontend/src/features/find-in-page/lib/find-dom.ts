@@ -169,9 +169,22 @@ export function selectRangeFallback(range: Range | null): void {
   if (typeof window === "undefined") return;
   const selection = window.getSelection();
   if (!selection) return;
+  if (range === null) {
+    // Only ever clear a selection this put there. Opening the bar paints before a query is typed,
+    // and on these engines that would otherwise throw away whatever the reader had highlighted to
+    // copy, with no way back: closing cannot restore what was already gone.
+    if (!ownsSelection) return;
+    selection.removeAllRanges();
+    ownsSelection = false;
+    return;
+  }
   selection.removeAllRanges();
-  if (range) selection.addRange(range);
+  selection.addRange(range);
+  ownsSelection = true;
 }
+
+/** Whether the selection on screen is the one above, rather than the reader's own. */
+let ownsSelection = false;
 
 /** True when this element scrolls its own overflow on the given axis. */
 function scrollsAxis(element: Element, axis: "x" | "y"): boolean {

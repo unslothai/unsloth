@@ -128,6 +128,8 @@ export interface TextSegment {
   start: number;
   /** Always the node's own `data.length`, so an offset inside the run maps straight through. */
   length: number;
+  /** True inside a `<pre>` or anything else that keeps its whitespace. See `findMatches`. */
+  preserved: boolean;
 }
 
 export interface FindTextIndex {
@@ -199,15 +201,57 @@ export function skipsSubtree(element: FindElementLike): boolean {
   // invisible, so a wrapper whose children are all on screen answers false. The shell uses one
   // (sidebar.tsx) and so does the training page (studio-page.tsx), which between them is most of
   // what there is to search. A real box is what makes an element hidden rather than absent.
-  return computedDisplay(element) !== "contents";
+  return computedStyle(element)?.display !== "contents";
 }
 
-/** `display` as resolved, or null off the DOM. Only asked on the hidden path, so it is rare. */
-function computedDisplay(element: FindElementLike): string | null {
+interface ResolvedStyle {
+  display?: string;
+  whiteSpace?: string;
+}
+
+/**
+ * `display` and `white-space` as resolved, or null off the DOM, where the tag sets stand in.
+ *
+ * One read per element, used for three things: telling a boxless wrapper from a hidden one, finding
+ * the block boundaries no tag name carries, and knowing where whitespace is preserved. Measured at
+ * 8000 elements, a thread-sized tree: 2.5ms for the visibility check alone, 4.3ms with this, against
+ * a 300ms floor between rebuilds.
+ */
+function computedStyle(element: FindElementLike): ResolvedStyle | null {
   const view = globalThis as unknown as {
-    getComputedStyle?: (element: FindElementLike) => { display?: string };
+    getComputedStyle?: (element: FindElementLike) => ResolvedStyle;
   };
-  return view.getComputedStyle?.(element).display ?? null;
+  return view.getComputedStyle?.(element) ?? null;
+}
+
+/**
+ * True when this element ends the line it sits on.
+ *
+ * `inline-block` and friends do not, and `contents` has no box of its own. Being wrong about an
+ * exotic display inserts a separator that was not needed, which can only lose a match, never invent
+ * one, so anything unrecognised counts as a boundary.
+ */
+function isBlockDisplay(display: string | undefined): boolean {
+  if (display === undefined) return false;
+  return !(
+    display.startsWith("inline") ||
+    display === "contents" ||
+    display === "none"
+  );
+}
+
+/**
+ * True where whitespace is kept rather than collapsed: `pre`, `pre-wrap`, `break-spaces`.
+ *
+ * `pre-line` is not in it. That mode still collapses runs of spaces, which is the half the query
+ * flexibility below cares about; it only keeps newlines.
+ */
+function preservesWhitespace(whiteSpace: string | undefined): boolean {
+  return (
+    whiteSpace === "pre" ||
+    whiteSpace === "pre-wrap" ||
+    whiteSpace === "break-spaces"
+  );
 }
 
 /**
@@ -224,10 +268,19 @@ export function buildTextIndex(root: FindElementLike): FindTextIndex {
   // Written lazily, so a run of empty blocks costs nothing and no separator lands at either end.
   let pendingSeparator = false;
 
-  const visit = (element: FindElementLike): void => {
+  const visit = (element: FindElementLike, inherited: boolean): void => {
     if (skipsSubtree(element)) return;
-    const block = BLOCK_TAGS.has(element.tagName);
+    const style = computedStyle(element);
+    // The tag set is the fallback and the fast answer for `<br>`, whose display is inline. Layout is
+    // the rest: Tailwind renders `span.block` all over the app, and two of those run together in the
+    // index without a boundary, so "Open" above "AI" reads as one word.
+    const block =
+      BLOCK_TAGS.has(element.tagName) || isBlockDisplay(style?.display);
     if (block) pendingSeparator = true;
+    const preserved =
+      style?.whiteSpace === undefined
+        ? inherited
+        : preservesWhitespace(style.whiteSpace);
     const children = element.childNodes;
     for (let i = 0; i < children.length; i += 1) {
       if (truncated) return;
@@ -261,18 +314,18 @@ export function buildTextIndex(root: FindElementLike): FindTextIndex {
         const raw = full.length > room ? full.slice(0, room) : full;
         if (raw.length < full.length) truncated = true;
         parts.push(foldChunk(raw));
-        segments.push({ node, start: length, length: raw.length });
+        segments.push({ node, start: length, length: raw.length, preserved });
         length += raw.length;
         if (truncated) return;
       } else if (child.nodeType === ELEMENT_NODE) {
-        visit(child as FindElementLike);
+        visit(child as FindElementLike, preserved);
         if (truncated) return;
       }
     }
     if (block) pendingSeparator = true;
   };
 
-  visit(root);
+  visit(root, false);
   return { text: parts.join(""), segments, truncated };
 }
 
@@ -332,6 +385,17 @@ export function findMatches(
       const hit = pattern.exec(index.text);
       if (hit === null) return out;
       const end = hit.index + hit[0].length;
+      // The flexible run is for prose, where the source newline of a soft wrap renders as a space.
+      // Inside a `<pre>` the whitespace on screen is the whitespace in the node, so a query for
+      // "foo bar" must not land on "foo   bar" there. Measured: the platform's own find draws the
+      // same line, matching across a wrap in a paragraph and not inside a code fence.
+      if (
+        touchesPreserved(index.segments, hit.index, end) &&
+        hit[0] !== needle
+      ) {
+        pattern.lastIndex = hit.index + 1;
+        continue;
+      }
       out.push({ start: hit.index, end });
       if (out.length >= limit) return out;
       pattern.lastIndex = end;
@@ -345,6 +409,26 @@ export function findMatches(
     if (out.length >= limit) return out;
     from = at + needle.length;
   }
+}
+
+/** True when `[start, end)` reaches into a run whose whitespace is kept rather than collapsed. */
+function touchesPreserved(
+  segments: TextSegment[],
+  start: number,
+  end: number,
+): boolean {
+  let at = segmentAt(segments, start);
+  // A match can open on a separator, which belongs to no segment; take the next one along.
+  if (at === -1) {
+    at = segments.findIndex((segment) => segment.start >= start);
+    if (at === -1) return false;
+  }
+  for (let i = at; i < segments.length; i += 1) {
+    const segment = segments[i];
+    if (segment.start >= end) return false;
+    if (segment.preserved) return true;
+  }
+  return false;
 }
 
 /** The segment holding `offset`, or -1 when it lands on a separator or past the end. */

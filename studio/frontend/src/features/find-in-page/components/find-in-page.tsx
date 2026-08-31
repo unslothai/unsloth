@@ -18,7 +18,10 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef } from "react";
 import { useFindInPage } from "../hooks/use-find-in-page.ts";
-import { FIND_SCOPE_ATTRIBUTE } from "../lib/find-text-index.ts";
+import {
+  FIND_SCOPE_ATTRIBUTE,
+  FIND_SKIP_ATTRIBUTE,
+} from "../lib/find-text-index.ts";
 import { useFindInPageStore } from "../stores/find-in-page-store.ts";
 
 /**
@@ -93,9 +96,20 @@ function FindBar() {
   // Hand focus back to whatever had it. The chord is usually pressed from the composer, and closing
   // a search should leave the reader able to keep typing. Declared above the focus effect below so
   // it reads `activeElement` before the field takes it.
+  const originRef = useRef<HTMLElement | null>(null);
   useEffect(() => {
-    const origin = document.activeElement as HTMLElement | null;
+    const active = document.activeElement as HTMLElement | null;
+    // First answer only, and never the bar itself. StrictMode replays this effect in development,
+    // and by the second run the field below has taken focus: read plainly, the bar would end up
+    // trying to hand focus back to its own input, which by then is gone.
+    if (
+      originRef.current === null &&
+      active?.closest(`[${FIND_SKIP_ATTRIBUTE}]`) == null
+    ) {
+      originRef.current = active;
+    }
     return () => {
+      const origin = originRef.current;
       if (!origin?.isConnected || typeof origin.focus !== "function") return;
       // Only when closing dropped focus on the floor. Anywhere else and the reader moved it.
       const focused = document.activeElement;

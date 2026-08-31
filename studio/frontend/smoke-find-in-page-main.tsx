@@ -18,7 +18,7 @@ import {
 import { useFindInPageStore } from "@/features/find-in-page/stores/find-in-page-store.ts";
 /* eslint-enable no-restricted-imports */
 import "@/index.css";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 
 declare global {
@@ -92,6 +92,17 @@ function Conversation({ extra, older }: { extra: string[]; older: string[] }) {
         style={{ contentVisibility: "auto", containIntrinsicSize: "auto 400px" }}
       >
         <p>unsloth inside a skipped subtree</p>
+      </div>
+      {/* A code fence, where whitespace is what it says it is rather than what HTML collapses it
+          to. A query typed with one space must not land on three. */}
+      <pre className="whitespace-pre rounded-lg bg-muted p-3 text-xs">
+        {"def train(model):\n    unsloth   fast = True\n"}
+      </pre>
+      {/* Two spans the CSS renders as blocks, which is how the research panel stacks a source's
+          title over its URL. No tag name says so, and run together they invent a word. */}
+      <div data-css-blocks="">
+        <span className="block">Open</span>
+        <span className="block">AI models</span>
       </div>
       {/* An inline SVG, as a Mermaid diagram renders. Its tag name is lowercase in an HTML
           document, which is how it slipped past a skip list spelled in HTML casing. */}
@@ -258,4 +269,10 @@ function Harness() {
   );
 }
 
-createRoot(document.getElementById("root") as HTMLElement).render(<Harness />);
+// StrictMode, as main.tsx does it: effects are set up, torn down and set up again on mount in
+// development, which is the only place the focus origin and the observers see that happen.
+createRoot(document.getElementById("root") as HTMLElement).render(
+  <StrictMode>
+    <Harness />
+  </StrictMode>,
+);
