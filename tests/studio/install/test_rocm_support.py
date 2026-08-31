@@ -5694,6 +5694,35 @@ class TestStrixRocm71Override:
         with patch.object(m, "IS_WINDOWS", True):
             assert m._amd_arch_index_url("gfx1151") == m._windows_rocm_index_url("gfx1151")
 
+    def test_a_windows_mirror_token_ending_in_a_slash_survives_the_join(self):
+        """_index_url_join trims the path head and leaves the query alone, which is the whole
+        point of it: "/" is in the base64 alphabet, so a token may legitimately end with one.
+        The Windows base trimmed the raw env value first, which ate that character before the
+        join could protect it, and the mirror answered 401 on an arch-specific install."""
+        _mirror = "https://mirror.example/whl?token=YWJj/"
+        # The Windows base is read once at import, so the env has to be set before the load.
+        with patch.dict(os.environ, {"UNSLOTH_ROCM_WINDOWS_MIRROR": _mirror}):
+            _spec = importlib.util.spec_from_file_location("stack_mirror_query", _STACK_PATH)
+            m = importlib.util.module_from_spec(_spec)
+            _spec.loader.exec_module(m)
+        with patch.object(m, "IS_WINDOWS", True):
+            assert m._windows_rocm_index_url("gfx1151") == (
+                "https://mirror.example/whl/gfx1151/?token=YWJj/"
+            )
+        # Linux reads its own var at call time and always agreed; the two must now match.
+        with (
+            patch.object(m, "IS_WINDOWS", False),
+            patch.dict(os.environ, {"UNSLOTH_AMD_ROCM_MIRROR": _mirror}),
+        ):
+            assert m._amd_arch_index_url("gfx1151") == (
+                "https://mirror.example/whl/gfx1151/?token=YWJj/"
+            )
+        # A trailing slash on a plain path is still not doubled.
+        with patch.object(stack_mod, "_ROCM_WINDOWS_INDEX_BASE", "https://mirror.example/whl/"):
+            assert stack_mod._windows_rocm_index_url("gfx1151") == (
+                "https://mirror.example/whl/gfx1151/"
+            )
+
     def test_strix_gfx_detection_in_install_sh(self):
         """install.sh must detect gfx1151 and gfx1150 for the override."""
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")

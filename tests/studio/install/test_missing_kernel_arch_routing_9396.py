@@ -1585,3 +1585,66 @@ def test_a_floor_leaf_still_repairs_a_sub_211_build_of_its_own_family():
         installed_family = "gfx1151",
         env = {"UNSLOTH_TORCH_INDEX_URL": f"https://{_AMD}/gfx1151/"},
     )
+
+
+def test_a_generic_only_target_gets_its_tag_floor_on_a_fresh_install_too():
+    """gfx950 has no AMD per-arch leaf, so the only way to give it kernels is to pick a
+    generic tag that carries it (rocm7.0+). That floor was applied solely to a host already on
+    ROCm wheels that had to be demoted; a fresh install, or a CPU/CUDA torch, walked past it
+    to the generic fallback and a stale /opt/rocm put the card on rocm6.3 all the same. Which
+    tag carries an arch is a fact about the arch, not about what happens to be installed."""
+    for _probe in (_CPU_TORCH, None):
+        calls = _run_install(
+            gfx_devices = ("gfx950",),
+            rocm_version = (6, 3),
+            torch_probe = _probe,
+            torch_owns_rocm = False,
+        )
+        assert f"{_GENERIC}7.2" in calls, calls
+    # A host version whose tag does carry the target keeps that tag, not the newest one.
+    assert f"{_GENERIC}7.0" in _run_install(
+        gfx_devices = ("gfx950",),
+        rocm_version = (7, 0),
+        torch_probe = _CPU_TORCH,
+        torch_owns_rocm = False,
+    )
+    # An arch the generic wheel serves at every tag is untouched: no floor to apply.
+    assert f"{_GENERIC}6.3" in _run_install(
+        gfx_devices = ("gfx1100",),
+        rocm_version = (6, 3),
+        torch_probe = _CPU_TORCH,
+        torch_owns_rocm = False,
+    )
+
+
+def test_matching_per_arch_wheels_clear_a_confirmed_spoof_with_nothing_to_reroute():
+    """The spoof clear lived inside the missing-kernel / below-floor branch, so a host whose
+    per-arch wheels ALREADY match its target reached no arm at all -- which is exactly when
+    the wheels are right and the spoof is the only thing left wrong. Those wheels carry the
+    physical arch alone, so a confirmed HSA_OVERRIDE_GFX_VERSION has the runtime keep asking
+    them for code they do not have (#7331)."""
+    calls = _run_install(
+        gfx_devices = ("gfx1100",),
+        rocm_version = (7, 2),
+        torch_probe = _ROCM_ARCH_TORCH,
+        installed_family = "gfx110x-all",
+        env = {"UNSLOTH_ROCM_GFX_ARCH": "gfx1100", "HSA_OVERRIDE_GFX_VERSION": "10.3.0"},
+    )
+    assert _run_install.hsa_override_after is None, _run_install.hsa_override_after
+    # Clearing it is not a licence to reinstall: the wheels were already the right ones.
+    assert "torch" not in calls, calls
+
+
+def test_a_spoof_survives_wheels_that_are_not_the_targets_family():
+    """The clear above is owned by a family read back positively from a torch that owns it.
+    Generic wheels, or another family's, are the paths where the override may be the only
+    source of usable kernels, so it must stay set there."""
+    _run_install(
+        gfx_devices = ("gfx1100",),
+        rocm_version = (7, 2),
+        torch_probe = _ROCM_GENERIC_TORCH,
+        installed_family = None,
+        torch_owns_rocm = False,
+        env = {"UNSLOTH_ROCM_GFX_ARCH": "gfx1100", "HSA_OVERRIDE_GFX_VERSION": "10.3.0"},
+    )
+    assert _run_install.hsa_override_after == "10.3.0", _run_install.hsa_override_after

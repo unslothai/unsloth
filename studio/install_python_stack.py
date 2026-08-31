@@ -534,9 +534,13 @@ def _repair_bad_anyio() -> None:
 
 # AMD Windows ROCm wheels (repo.amd.com/rocm/whl/{arch_family}/).
 # Override with UNSLOTH_ROCM_WINDOWS_MIRROR for air-gapped/mirror installs.
+# Kept verbatim: _index_url_join trims the PATH head, and only the path head. Trimming
+# the whole URL here instead eats a trailing "/" that belongs to a query token -- and "/"
+# is in the base64 alphabet, so "?token=YWJj/" is a credential, not a path separator. The
+# Linux mirror hands _index_url_join its raw env value for the same reason.
 _ROCM_WINDOWS_INDEX_BASE = (
     os.environ.get("UNSLOTH_ROCM_WINDOWS_MIRROR") or "https://repo.amd.com/rocm/whl"
-).rstrip("/")
+)
 
 # gfx arch → AMD index arch-family suffix; each family is a separate
 # pip index on repo.amd.com.
@@ -3956,6 +3960,21 @@ def _ensure_rocm_torch() -> None:
                         f"   GPU without generic-wheel kernels ({_gfx_str}) present, but the\n"
                         f"   selected runtime target is {_runtime_gfx}; keeping the generic index.\n"
                     )
+            elif (
+                _physical_gfx is not None
+                and _runtime_leaf is not None
+                and has_hip_torch
+                and _torch_requires_rocm_sdk()
+                and _installed_rocm_wheel_family() == _runtime_leaf.lower()
+            ):
+                # Nothing to reroute -- the per-arch wheels already installed are the target's
+                # own family, which is why neither condition above fires. A confirmed spoof is
+                # still exported, and these wheels carry the PHYSICAL arch alone, so the
+                # runtime keeps asking them for code they do not have (#7331). Every arm that
+                # KEEPS matching per-arch wheels clears it; this arm keeps them too, and was
+                # the one shape that reached no arm at all. Judged on a family read back
+                # positively from a torch that owns it, never on the target alone.
+                _clear_confirmed_hsa_spoof(_runtime_gfx)
 
         # A per-arch install can outlive the GPU it was made for: add a dGPU, or point
         # HIP_VISIBLE_DEVICES at one, and the runtime target moves to an arch those wheels
@@ -4011,6 +4030,19 @@ def _ensure_rocm_torch() -> None:
                     # kernel puts gfx950 on rocm6.3, which predates it. Both take the newest
                     # generic index this installer knows, which does carry the target.
                     ver = max(_ROCM_TORCH_INDEX)
+
+        # The floor above is reached only by a host already on ROCm wheels that had to be
+        # demoted. A host with no ROCm torch at all -- a fresh install, or a CPU/CUDA build --
+        # walks straight past it to the generic fallback, and a stale /opt/rocm there puts
+        # gfx950 on rocm6.3 exactly the same way, with no per-arch index to fall back to.
+        # Which tag carries an arch is a fact about the arch, not about what is installed.
+        if (
+            _arch_index_url is None
+            and not rocm_torch_ready
+            and _runtime_gfx in _GENERIC_ROCM_WHEEL_GFX
+            and _generic_tag_lacks_kernels(_runtime_gfx, ver)
+        ):
+            ver = max(_ROCM_TORCH_INDEX)
 
     # gfx906 (MI50 / Radeon VII): is this the runtime GPU target? Used below to skip
     # the generic bitsandbytes wheel (no gfx906 kernels). This must hold even under
