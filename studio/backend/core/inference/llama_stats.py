@@ -34,10 +34,15 @@ class LlamaServerStatsLogger:
         logger,
         interval_s = 10.0,
         stall_timeout_s = 600.0,
+        inflight = None,
     ):
         self._url = f"{base_url.rstrip('/')}/metrics"
         self._log = logger
         self._interval = max(1.0, float(interval_s))
+        # Optional () -> int for how many requests Studio has in flight. Injected
+        # rather than imported so this module keeps to the standard library, and
+        # optional so the counters stay the sole source of the stall decision.
+        self._inflight = inflight
         self._stop = threading.Event()
         self._thread = None
         # Stall reporting: a held slot that is not calling llama_decode() at all.
@@ -109,12 +114,18 @@ class LlamaServerStatsLogger:
         single line above info.
         """
         self._stall_reported = True
+        fields = {
+            "running": running,
+            "waiting": waiting,
+            "stalled_s": round(stalled_for, 1),
+            "n_decode_total": decode_calls,
+        }
+        held = self._studio_inflight()
+        if held is not None:
+            fields["studio_inflight"] = held
         self._log.warning(
             "engine_no_decode_progress",
-            running = running,
-            waiting = waiting,
-            stalled_s = round(stalled_for, 1),
-            n_decode_total = decode_calls,
+            **fields,
             detail = "llama-server holds a slot but has not called llama_decode(); "
             "a wedged engine looks like this, and so does a long multimodal encode",
         )
@@ -171,13 +182,30 @@ class LlamaServerStatsLogger:
                     self._report_stall(running, waiting, stalled_for, decode_calls)
             # Gate on real activity this tick so a stale gauge never logs at idle.
             if running or waiting or gen_delta or prompt_delta:
-                self._log.info(
-                    "engine_stats",
-                    gen_tok_s = round(float(gen_tps), 1),
-                    prompt_tok_s = round(float(prompt_tps), 1),
-                    running = running,
-                    waiting = waiting,
-                )
+                fields = {
+                    "gen_tok_s": round(float(gen_tps), 1),
+                    "prompt_tok_s": round(float(prompt_tps), 1),
+                    "running": running,
+                    "waiting": waiting,
+                }
+                # running=1 with both rates at 0.0 is the whole signature of a wedge,
+                # and it is also what a healthy long prefill looks like. studio_inflight
+                # separates them: 0 with a held slot means llama-server is holding one
+                # for a request we already finished. Omitted, not zeroed, when the
+                # count cannot be read, so a reader never mistakes "unknown" for "none".
+                held = self._studio_inflight()
+                if held is not None:
+                    fields["studio_inflight"] = held
+                self._log.info("engine_stats", **fields)
+
+    def _studio_inflight(self):
+        """Requests Studio has in flight, or None when that cannot be read."""
+        if self._inflight is None:
+            return None
+        try:
+            return int(self._inflight())
+        except Exception:  # noqa: BLE001 -- a stats line must never break the poller
+            return None
 
 
 # A week already means "never" for a poll interval or a stall timeout. Bounded by
@@ -238,6 +266,21 @@ def maybe_start_stats_logger(base_url, logger):
         logger,
         interval,
         stall_timeout_s = stall_timeout,
+        inflight = _api_monitor_running_count,
     )
     sl.start()
     return sl
+
+
+def _api_monitor_running_count():
+    """Requests Studio has in flight, from the API monitor.
+
+    Imported at call time, not module scope: this module is stdlib-only by design
+    and is loaded from the llama.cpp backend, which the monitor's package imports
+    back. Returns None on any failure so the stats line simply omits the field.
+    """
+    try:
+        from core.inference.api_monitor import api_monitor
+        return api_monitor.running_count()
+    except Exception:  # noqa: BLE001 -- diagnostics must never break the poller
+        return None

@@ -1012,6 +1012,18 @@ class ApiMonitor:
                 return entry
         return None
 
+    def running_count(self) -> int:
+        """How many requests this process has in flight right now.
+
+        Read by the engine stats line. llama-server's ``requests_processing`` on its
+        own cannot tell a slot held with nothing of ours running (a leaked slot) from
+        our own long generation still decoding, and every wedge report so far has been
+        ambiguous for exactly that reason: an unbroken run of ``running=1`` with both
+        rates at 0.0, and no way to know from the log whether anything was in flight.
+        """
+        with self._lock:
+            return sum(1 for entry in self._entries if entry.status == "running")
+
     def _trim_terminal_locked(self) -> None:
         terminal_seen = 0
         kept: deque[ApiMonitorEntry] = deque()

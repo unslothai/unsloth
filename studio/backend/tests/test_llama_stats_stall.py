@@ -45,6 +45,7 @@ def _drive(
     *,
     tick_s = 10.0,
     stall_timeout_s = 600.0,
+    inflight = None,
 ):
     """Run _run() synchronously over `snaps` on a fake clock, then stop.
 
@@ -55,7 +56,12 @@ def _drive(
     clock = {"t": 1000.0}
     monkeypatch.setattr(ls.time, "monotonic", lambda: clock["t"])
 
-    lg = LlamaServerStatsLogger("http://127.0.0.1:0", cap, stall_timeout_s = stall_timeout_s)
+    lg = LlamaServerStatsLogger(
+        "http://127.0.0.1:0",
+        cap,
+        stall_timeout_s = stall_timeout_s,
+        inflight = inflight,
+    )
     lg._interval = 0.001  # bypass the 1s floor for a fast, synchronous run
     state = {"i": 0}
 
@@ -255,6 +261,73 @@ def test_an_oversized_finite_interval_is_clamped(monkeypatch, raw):
     applied = ls._env_float("UNSLOTH_STUDIO_ENGINE_STATS_INTERVAL_S", 10.0, cap)
     assert applied == ls._MAX_ENV_SECONDS
     assert [ev for ev, _ in cap.events] == ["engine_stats_env_clamped"]
+
+
+def test_a_held_slot_with_nothing_of_ours_in_flight_is_visible_in_the_log(monkeypatch):
+    """The second user report, and why this field exists.
+
+    A capture showed running=1 with both rates at 0.0 for 700 seconds after the last
+    /v1/chat/completions returned 200. From those four fields alone that is
+    indistinguishable from a healthy long prefill, so the report could not be settled
+    either way. studio_inflight=0 alongside running=1 says llama-server is holding a
+    slot for work Studio has already finished; studio_inflight=1 says our own request
+    is still out there and the engine is doing what it was asked.
+    """
+    cap = _drive(_wedged(3), monkeypatch, inflight = lambda: 0)
+    stats = [kw for ev, kw in cap.events if ev == "engine_stats"]
+    assert stats and all(s["studio_inflight"] == 0 for s in stats)
+    assert all(s["running"] == 1 for s in stats)
+
+    busy = _drive(_wedged(3), monkeypatch, inflight = lambda: 2)
+    assert all(kw["studio_inflight"] == 2 for ev, kw in busy.events if ev == "engine_stats")
+
+
+def test_the_stall_report_carries_the_in_flight_count_too(monkeypatch):
+    cap = _drive(_wedged(120), monkeypatch, inflight = lambda: 0)
+    assert _stalls(cap)[0]["studio_inflight"] == 0
+
+
+def test_the_field_is_omitted_rather_than_zeroed_when_it_cannot_be_read(monkeypatch):
+    """Omitted, never 0: a reader must not mistake "unknown" for "nothing in flight",
+    which is the exact inference the field exists to support."""
+
+    def _boom():
+        raise RuntimeError("monitor unavailable")
+
+    for hook in (None, _boom, lambda: None):
+        cap = _drive(_wedged(3), monkeypatch, inflight = hook)
+        stats = [kw for ev, kw in cap.events if ev == "engine_stats"]
+        assert stats and all("studio_inflight" not in s for s in stats), hook
+
+
+def test_a_broken_in_flight_hook_never_stops_the_poller(monkeypatch):
+    def _boom():
+        raise RuntimeError("monitor unavailable")
+
+    cap = _drive(_wedged(135), monkeypatch, stall_timeout_s = 0.0, inflight = _boom)
+    assert len([kw for ev, kw in cap.events if ev == "engine_stats"]) == 135
+
+
+def test_the_real_hook_reads_the_api_monitor(monkeypatch):
+    """Wired end to end, not just shaped like it: maybe_start_stats_logger passes the
+    hook and it resolves the live monitor rather than a stub of one."""
+    from core.inference.api_monitor import api_monitor
+
+    assert ls._api_monitor_running_count() == api_monitor.running_count()
+    assert isinstance(ls._api_monitor_running_count(), int)
+
+    captured = {}
+
+    class _Stub:
+        def __init__(self, *args, **kwargs):
+            captured.update(kwargs)
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(ls, "LlamaServerStatsLogger", _Stub)
+    ls.maybe_start_stats_logger("http://127.0.0.1:0", _Capture())
+    assert captured["inflight"] is ls._api_monitor_running_count
 
 
 def test_the_clamped_interval_is_a_wait_every_platform_accepts():
