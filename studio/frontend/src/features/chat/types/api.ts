@@ -179,6 +179,7 @@ export interface GgufVariantDetail {
   display_label?: string | null;
   size_bytes: number;
   download_size_bytes?: number;
+  shard_count?: number;
   downloaded?: boolean;
   update_available?: boolean;
   /** An interrupted download: some shards are missing, so it cannot load yet. */
