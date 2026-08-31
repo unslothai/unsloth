@@ -371,13 +371,22 @@ def _split_chained(line: str) -> list[str]:
     package list. Scanned rather than split on a pattern because a PEP 508 marker puts a
     quoted `;` inside a single argument (`"torch==2.12.0; python_version >= '3.10'"`).
 
-    A `||` fallback only runs when the command before it failed, so the chain stops there
-    rather than replaying a branch the shell would have skipped.
+    A `||` fallback runs only when the command before it failed, so everything up to the end
+    of that and-or list is dropped; a `;` starts a new list and parsing resumes. An unquoted
+    `#` comments out the rest of the line, so scanning stops there.
     """
     out: list[str] = []
     buf: list[str] = []
     quote = ""
+    skipping = False  # inside the conditional tail of an and-or list
     i = 0
+
+    def flush() -> None:
+        nonlocal buf
+        if not skipping:
+            out.append("".join(buf))
+        buf = []
+
     while i < len(line):
         ch = line[i]
         if quote:
@@ -389,21 +398,25 @@ def _split_chained(line: str) -> list[str]:
             quote = ch
             buf.append(ch)
             i += 1
-        elif line.startswith("||", i):
+        elif ch == "#" and (i == 0 or line[i - 1].isspace()):
             break
+        elif line.startswith("||", i):
+            flush()
+            skipping = True
+            i += 2
         elif line.startswith("&&", i):
-            out.append("".join(buf))
-            buf = []
+            flush()
             i += 2
         elif ch == ";":
-            out.append("".join(buf))
-            buf = []
+            flush()
+            skipping = False
             i += 1
         else:
-            buf.append(ch)
+            if not skipping:
+                buf.append(ch)
             i += 1
-    out.append("".join(buf))
-    head, *rest = out
+    flush()
+    head, *rest = out or [""]
     return [head] + [f"!{part}" for part in (piece.strip() for piece in rest) if part]
 
 
@@ -656,8 +669,19 @@ def _compatible_release_ceiling(version: str) -> str | None:
     return ".".join(head)
 
 
-def _spec_window(sp: SpecParts) -> tuple[str | None, str | None, str | None, str | None]:
-    """`(exact, floor, cap, ceiling)` for one requirement.
+def _version_is_excluded(version: str, exclusion: str) -> bool:
+    """True when `!=exclusion` rules `version` out. A trailing `.*` is a prefix match."""
+    wanted = normalise_version(exclusion).split(".")
+    if wanted and wanted[-1] == "*":
+        wanted = wanted[:-1]
+        return normalise_version(version).split(".")[: len(wanted)] == wanted
+    return cmp_versions(version, exclusion) == 0
+
+
+def _spec_window(
+    sp: SpecParts,
+) -> tuple[str | None, str | None, str | None, str | None, list[str]]:
+    """`(exact, floor, cap, ceiling, exclusions)` for one requirement.
 
     `cap` is an inclusive `<=`, which names the version pip lands on; `ceiling` is an
     exclusive `<` or the one `~=` implies, which does not. `>` counts as a floor: it names a
@@ -665,9 +689,12 @@ def _spec_window(sp: SpecParts) -> tuple[str | None, str | None, str | None, str
     only shifts the minor when the window spans two of them, where the other bound decides.
     """
     exact = floor = cap = ceiling = None
+    exclusions: list[str] = []
     for op, ver in sp.pins:
         if op == "==":
             exact = ver
+        elif op == "!=":
+            exclusions.append(ver)
         elif op in (">=", ">", "~="):
             if floor is None or cmp_versions(ver, floor) > 0:
                 floor = ver
@@ -681,7 +708,7 @@ def _spec_window(sp: SpecParts) -> tuple[str | None, str | None, str | None, str
             implied = _compatible_release_ceiling(ver)
             if implied is not None and (ceiling is None or cmp_versions(implied, ceiling) < 0):
                 ceiling = implied
-    return exact, floor, cap, ceiling
+    return exact, floor, cap, ceiling, exclusions
 
 
 def _effective_version(install_cell: str, target: str, resolved: str | None) -> str | None:
@@ -696,8 +723,9 @@ def _effective_version(install_cell: str, target: str, resolved: str | None) -> 
     outside and leaves it alone when it does not, which is what pip does. Where it moves to is
     the window's floor, or an inclusive `<=` when the move is downwards: `>=0.10,<0.11` and
     `~=0.10.0` both land inside one minor, the granularity the callers compare on. A window
-    that only closes from above with a `<` cannot say where it lands, so it clears the version
-    rather than keeping a stale one, and a bound on an absent package leaves it absent.
+    that only closes from above, with a `<` or a `!=` that rules out what is installed, cannot
+    say where it lands, so it clears the version rather than keeping a stale one, and a bound
+    on an absent package leaves it absent.
     """
     current = resolved
     for inv in iter_pip_invocations(install_cell):
@@ -708,11 +736,13 @@ def _effective_version(install_cell: str, target: str, resolved: str | None) -> 
             if inv.action == "uninstall":
                 current = None  # removed; a later install can put it back
                 continue
-            exact, floor, cap, ceiling = _spec_window(sp)
+            exact, floor, cap, ceiling, exclusions = _spec_window(sp)
             if exact is not None:
                 current = exact
             elif current is None:
                 continue  # nothing to move, and a bound does not name a version
+            elif any(_version_is_excluded(current, ver) for ver in exclusions):
+                current = floor  # pip cannot keep it; only the floor names where it goes
             elif floor is not None and cmp_versions(floor, current) > 0:
                 current = floor
             elif cap is not None and cmp_versions(current, cap) > 0:

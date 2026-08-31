@@ -489,6 +489,49 @@ def test_notebook_validator_reads_compatible_release_pins():
     assert nv.rule_inst_004_torchcodec_torch(remedied, COLAB_TORCH211, "nb.ipynb", 0) == []
 
 
+def test_notebook_validator_stops_at_a_shell_comment():
+    """An unquoted `#` comments out the rest of the line, so a `;` inside it is not a
+    separator and the commented-out install must not be replayed."""
+    nv = _load_notebook_validator_module()
+
+    cell = '!pip install "torch==2.12.0" # keep codec; pip install "torchcodec==0.13.0"'
+    assert nv._split_chained(cell) == ['!pip install "torch==2.12.0" ']
+    assert len(nv.rule_inst_004_torchcodec_torch(cell, COLAB_TORCH211, "nb.ipynb", 0)) == 1
+
+
+def test_notebook_validator_resumes_after_an_or_list():
+    """`A || B; C` runs C whatever A did. Only the conditional tail is dropped, and a `;`
+    ends it."""
+    nv = _load_notebook_validator_module()
+
+    assert nv._split_chained("!pip install a && pip install b || pip install c ; pip install d") == [
+        "!pip install a ",
+        "!pip install b",
+        "!pip install d",
+    ]
+
+    cell = '!pip install "torchcodec==0.11.1" || echo failed; pip install "torch==2.12.0"'
+    assert len(nv.rule_inst_004_torchcodec_torch(cell, COLAB_TORCH211, "nb.ipynb", 0)) == 1
+
+
+def test_notebook_validator_replays_exclusions():
+    """`!=` rules out what is installed, so keeping it reports a version pip cannot leave in
+    place. Without a floor to fall back on the pairing is unknown, not stale."""
+    nv = _load_notebook_validator_module()
+
+    assert nv._version_is_excluded("0.11.0+cu128", "0.11.*")
+    assert nv._version_is_excluded("0.11.0", "0.11.0")
+    assert not nv._version_is_excluded("0.11.0", "0.9.*")
+
+    for pin in ("torchcodec!=0.11.*", "torchcodec!=0.11.0"):
+        cell = f'!pip install "torch==2.12.0" "{pin}"'
+        assert nv.rule_inst_004_torchcodec_torch(cell, COLAB_TORCH211, "nb.ipynb", 0) == [], pin
+
+    # An exclusion that does not match leaves the baseline, and the pairing, alone.
+    untouched = '!pip install "torch==2.12.0" "torchcodec!=0.9.*"'
+    assert len(nv.rule_inst_004_torchcodec_torch(untouched, COLAB_TORCH211, "nb.ipynb", 0)) == 1
+
+
 def test_notebook_validator_reads_a_range_as_one_window():
     """A `>=X,<Y` pair is the same constraint as `~=X`, and the guard's own remedy is
     spelled that way (`pip install 'torchcodec>=0.11,<0.12.0'`), so the rule has to read it
