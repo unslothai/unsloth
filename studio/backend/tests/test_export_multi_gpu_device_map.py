@@ -144,7 +144,9 @@ def _load_text_checkpoint(monkeypatch, tmp_path, device_map_kwargs):
     monkeypatch.setattr(mod, "is_vision_model", lambda *a, **k: False)
     monkeypatch.setattr(mod, "_hf_offline", lambda *a, **k: False)
     monkeypatch.setattr(mod, "_offline_window_if", lambda flag: contextlib.nullcontext())
-    monkeypatch.setattr(mod, "_multi_gpu_device_map_kwargs", lambda planner_eligible = True: device_map_kwargs)
+    monkeypatch.setattr(
+        mod, "_multi_gpu_device_map_kwargs", lambda planner_eligible = True: device_map_kwargs
+    )
 
     checkpoint = tmp_path / "checkpoint-100"
     checkpoint.mkdir()
@@ -252,7 +254,9 @@ def _run_spill_loader(monkeypatch, tmp_path, device_map_kwargs):
     monkeypatch.setattr(mod, "is_vision_model", lambda *a, **k: False)
     monkeypatch.setattr(mod, "_hf_offline", lambda *a, **k: False)
     monkeypatch.setattr(mod, "_offline_window_if", lambda flag: contextlib.nullcontext())
-    monkeypatch.setattr(mod, "_multi_gpu_device_map_kwargs", lambda planner_eligible = True: device_map_kwargs)
+    monkeypatch.setattr(
+        mod, "_multi_gpu_device_map_kwargs", lambda planner_eligible = True: device_map_kwargs
+    )
 
     checkpoint = tmp_path / "checkpoint-100"
     checkpoint.mkdir()
@@ -297,7 +301,11 @@ def test_retry_result_is_kept_even_if_it_also_offloads(monkeypatch, tmp_path):
     monkeypatch.setattr(mod, "is_vision_model", lambda *a, **k: False)
     monkeypatch.setattr(mod, "_hf_offline", lambda *a, **k: False)
     monkeypatch.setattr(mod, "_offline_window_if", lambda flag: contextlib.nullcontext())
-    monkeypatch.setattr(mod, "_multi_gpu_device_map_kwargs", lambda planner_eligible = True: {"device_map": "balanced"})
+    monkeypatch.setattr(
+        mod,
+        "_multi_gpu_device_map_kwargs",
+        lambda planner_eligible = True: {"device_map": "balanced"},
+    )
 
     checkpoint = tmp_path / "checkpoint-100"
     checkpoint.mkdir()
@@ -347,7 +355,9 @@ def test_planner_refusal_retries_on_the_single_device_loader(monkeypatch, tmp_pa
     monkeypatch.setattr(mod, "is_vision_model", lambda *a, **k: False)
     monkeypatch.setattr(mod, "_hf_offline", lambda *a, **k: False)
     monkeypatch.setattr(mod, "_offline_window_if", lambda flag: contextlib.nullcontext())
-    monkeypatch.setattr(mod, "_multi_gpu_device_map_kwargs", lambda planner_eligible = True: {"device_map": "unsloth"})
+    monkeypatch.setattr(
+        mod, "_multi_gpu_device_map_kwargs", lambda planner_eligible = True: {"device_map": "unsloth"}
+    )
 
     checkpoint = tmp_path / "checkpoint-100"
     checkpoint.mkdir()
@@ -379,7 +389,9 @@ def test_an_unrelated_error_is_still_reported_rather_than_retried(monkeypatch, t
     monkeypatch.setattr(mod, "is_vision_model", lambda *a, **k: False)
     monkeypatch.setattr(mod, "_hf_offline", lambda *a, **k: False)
     monkeypatch.setattr(mod, "_offline_window_if", lambda flag: contextlib.nullcontext())
-    monkeypatch.setattr(mod, "_multi_gpu_device_map_kwargs", lambda planner_eligible = True: {"device_map": "unsloth"})
+    monkeypatch.setattr(
+        mod, "_multi_gpu_device_map_kwargs", lambda planner_eligible = True: {"device_map": "unsloth"}
+    )
 
     checkpoint = tmp_path / "checkpoint-100"
     checkpoint.mkdir()
@@ -423,7 +435,9 @@ def test_the_retry_names_sequential_rather_than_omitting_the_device_map(monkeypa
     monkeypatch.setattr(mod, "is_vision_model", lambda *a, **k: False)
     monkeypatch.setattr(mod, "_hf_offline", lambda *a, **k: False)
     monkeypatch.setattr(mod, "_offline_window_if", lambda flag: contextlib.nullcontext())
-    monkeypatch.setattr(mod, "_multi_gpu_device_map_kwargs", lambda planner_eligible = True: {"device_map": "unsloth"})
+    monkeypatch.setattr(
+        mod, "_multi_gpu_device_map_kwargs", lambda planner_eligible = True: {"device_map": "unsloth"}
+    )
 
     checkpoint = tmp_path / "checkpoint-100"
     checkpoint.mkdir()

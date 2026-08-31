@@ -663,7 +663,9 @@ class ExportBackend:
                     or _is_cpu_spill_rejection(e)
                     or _is_device_map_infeasible(e)
                 )
-                and _multi_gpu_device_map_kwargs(planner_eligible = self._audio_type not in ("csm", "whisper"))
+                and _multi_gpu_device_map_kwargs(
+                    planner_eligible = self._audio_type not in ("csm", "whisper")
+                )
             ):
                 # Retry outside this block: the live traceback pins the half-built model's
                 # frames, so an in-block retry inherits the exhausted device.
