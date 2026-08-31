@@ -7054,9 +7054,9 @@ def test_the_synthesized_final_pass_is_recosted_before_it_is_sent(monkeypatch):
 
     assert len(payloads) == 2, "expected one tool round and one synthesized final pass"
     final_messages = payloads[-1]["messages"]
-    assert any(message.get("role") == "tool" for message in final_messages), (
-        "the final pass should carry the tool result this test is about"
-    )
+    assert any(
+        message.get("role") == "tool" for message in final_messages
+    ), "the final pass should carry the tool result this test is about"
     assert seen, "the callback never ran"
     last_seen = seen[-1]
     assert any(message.get("role") == "tool" for message in last_seen), (

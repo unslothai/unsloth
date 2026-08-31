@@ -1818,9 +1818,9 @@ class TestParserCrossFormatRouting:
         for label, text, expected_name in cases:
             result = parse_tool_calls_from_text(text)
             assert len(result) == 1, f"{label}: parser missed the call"
-            assert result[0]["function"]["name"] == expected_name, (
-                f"{label}: got {result[0]['function']['name']!r}, expected {expected_name!r}"
-            )
+            assert (
+                result[0]["function"]["name"] == expected_name
+            ), f"{label}: got {result[0]['function']['name']!r}, expected {expected_name!r}"
 
     def test_all_new_markers_in_tool_xml_signals(self):
         # The safetensors / MLX streaming buffer must wake on every supported emission marker --
