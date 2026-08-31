@@ -2313,15 +2313,13 @@ class TestEstimateFp16ModelSizeBytesPrefersLocalWeights(unittest.TestCase):
 class TestDeviceMapAcrossPlatformsAndAccelerators(_GpuCacheResetMixin, unittest.TestCase):
     """The full [Windows, Linux, WSL, Mac] x [NVIDIA, AMD, Intel, Apple, CPU] product.
 
-    Two claims, and the second is the one worth a test of its own: the answer must be
-    something the loader can read, and it must not vary by operating system. A device
-    map is decided from the accelerator alone, and an OS-dependent answer would mean a
-    user's placement changed when they moved the same box between Linux and WSL.
+    Two claims: the answer is something the loader can read, and it does not vary by
+    operating system. An OS-dependent answer would move a user's placement when they
+    moved the same box between Linux and WSL.
 
-    ROCm is the row to read carefully. Studio reports an AMD card as DeviceType.CUDA
-    (torch.version.hip is set but the torch.cuda API is the one in use), so AMD takes
-    the same branch as NVIDIA. That is intended: unsloth maps its DEVICE_TYPE "hip" to
-    DEVICE_TYPE_TORCH "cuda", so the planner runs and reads memory through the same API.
+    The AMD row is the one to read carefully. Studio reports a ROCm card as
+    DeviceType.CUDA, and unsloth maps its "hip" device type to DEVICE_TYPE_TORCH
+    "cuda", so AMD takes the NVIDIA branch and the planner runs there.
     """
 
     # sys.platform, os.name, platform.system(), platform.release()
@@ -2378,21 +2376,18 @@ class TestDeviceMapAcrossPlatformsAndAccelerators(_GpuCacheResetMixin, unittest.
 
 
 class TestPlannerIneligibleRoutesKeepBalanced(_GpuCacheResetMixin, unittest.TestCase):
-    """Routes unsloth's planner refuses to plan must keep a sharding map.
+    """Routes the planner refuses to plan must keep a sharding map.
 
-    `resolve_unsloth_device_map` turns `"unsloth"` into `"sequential"` for a full
-    finetune and for an explicit `auto_model` class with no `_model_mapping`. That
-    fallback is not a shard: `get_max_memory` gives cuda:0 its whole free budget, so
-    `infer_auto_device_map` fills it before touching cuda:1. Measured on
-    `unsloth/Qwen2.5-7B-Instruct` in bf16 across two cards, replicating the transformers
-    branch exactly:
+    `resolve_unsloth_device_map` returns `"sequential"` for a full finetune and for an
+    explicit `auto_model` with no `_model_mapping`, and that is not a shard:
+    `get_max_memory` gives cuda:0 its whole free budget, so `infer_auto_device_map`
+    fills it first. On `unsloth/Qwen2.5-7B-Instruct` in bf16 across two cards:
 
-        card 8 GiB   sequential {'0': 14, '1': 18}   balanced {'0': 13, '1': 19}
-        card 16 GiB  sequential {'0': 1}             balanced {'0': 13, '1': 19}
+        8 GiB each   sequential {'0': 14, '1': 18}   balanced {'0': 13, '1': 19}
+        16 GiB each  sequential {'0': 1}             balanced {'0': 13, '1': 19}
 
-    At 16 GiB the weights fit on one card, so sequential puts the whole model there with
-    nothing left for optimizer state, where balanced spreads it. Those routes therefore
-    keep the map they had before the planner switch.
+    At 16 GiB the weights fit on one card, so sequential puts them all there with
+    nothing left for optimizer state.
     """
 
     def test_a_full_finetune_keeps_balanced(self):
@@ -2417,11 +2412,11 @@ class TestPlannerIneligibleRoutesKeepBalanced(_GpuCacheResetMixin, unittest.Test
 
 
 class TestStudioLoadersDeclareTheirPlannerEligibility(unittest.TestCase):
-    """The two call sites must pass the flag, and no third auto_model may appear unnoticed.
+    """Every loader must pass the flag, and no new auto_model may appear unnoticed.
 
-    The eligibility rule lives in unsloth (`_planner_skip_reason` fires for an explicit
-    `auto_model` whose class has no `_model_mapping`), so a new Studio route that passes
-    one would silently lose its shard with nothing red. This pins the known set instead.
+    The rule lives in unsloth (`_planner_skip_reason` fires for an explicit `auto_model`
+    with no `_model_mapping`), so a new Studio route passing one would lose its shard
+    with nothing red. This pins the known set instead.
     """
 
     KNOWN_AUTO_MODELS = {"CsmForConditionalGeneration", "WhisperForConditionalGeneration"}
