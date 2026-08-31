@@ -134,6 +134,13 @@ def test_skips_torchao_on_windows_rocm(
     monkeypatch.setattr(
         mod, "_installed_torch_is_windows_rocm", lambda: installed_torch_is_windows_rocm
     )
+    # #10053 added a require_present gate to install_python_stack: after the core phase
+    # it refuses when a managed distribution is not installed at all, which SKIP_STUDIO_BASE
+    # guarantees here. Unstubbed, this test asks whether unsloth happens to be installed in
+    # whatever environment runs it -- it passes on a developer machine that has it and fails
+    # in CI, which is not what the test is about. Stubbed like every other installer side
+    # effect below.
+    monkeypatch.setattr(mod, "_repair_damaged_core_payload", lambda *a, **k: True)
     monkeypatch.setattr(mod, "_bootstrap_uv", lambda: False)
     monkeypatch.setattr(mod, "_repair_bad_anyio", lambda: None)
     monkeypatch.setattr(mod, "_ensure_rocm_torch", lambda: None)
