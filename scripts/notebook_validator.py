@@ -373,7 +373,7 @@ def _split_chained(line: str) -> list[str]:
 
     A `||` fallback runs only when the command before it failed, so everything up to the end
     of that and-or list is dropped; a `;` starts a new list and parsing resumes. An unquoted
-    `#` comments out the rest of the line, so scanning stops there.
+    `#` that starts a word comments out the rest of the line, so scanning stops there.
     """
     out: list[str] = []
     buf: list[str] = []
@@ -398,8 +398,8 @@ def _split_chained(line: str) -> list[str]:
             quote = ch
             buf.append(ch)
             i += 1
-        elif ch == "#" and (i == 0 or line[i - 1].isspace()):
-            break
+        elif ch == "#" and (i == 0 or line[i - 1].isspace() or line[i - 1] in ";&|"):
+            break  # a control operator ends a word, so `;#` starts a comment too
         elif line.startswith("||", i):
             flush()
             skipping = True

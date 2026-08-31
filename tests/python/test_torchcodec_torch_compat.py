@@ -498,6 +498,15 @@ def test_notebook_validator_stops_at_a_shell_comment():
     assert nv._split_chained(cell) == ['!pip install "torch==2.12.0" ']
     assert len(nv.rule_inst_004_torchcodec_torch(cell, COLAB_TORCH211, "nb.ipynb", 0)) == 1
 
+    # A control operator ends a word, so `;#` opens a comment with no space in front of it.
+    tight = '!pip install "torch==2.12.0";# keep codec; pip install "torchcodec==0.13.0"'
+    assert nv._split_chained(tight) == ['!pip install "torch==2.12.0"']
+    assert len(nv.rule_inst_004_torchcodec_torch(tight, COLAB_TORCH211, "nb.ipynb", 0)) == 1
+
+    # A `#` inside a word is not a comment: it is part of the argument.
+    fragment = '!pip install "torchcodec==0.13.0#egg=x"'
+    assert nv._split_chained(fragment) == [fragment]
+
 
 def test_notebook_validator_resumes_after_an_or_list():
     """`A || B; C` runs C whatever A did. Only the conditional tail is dropped, and a `;`
