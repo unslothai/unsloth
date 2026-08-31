@@ -671,13 +671,16 @@ def _find_run_py() -> Optional[Path]:
     return None
 
 
-def _install_state() -> dict:
+def _install_state(deep: bool = False) -> dict:
     """verify_install() result for this install root.
 
     STUDIO_HOME is an extra search root so a CLI installed outside the managed
     venv still inspects the venv the desktop app launches.
     """
-    return _studio_deps.install_state(extra_roots = (STUDIO_HOME / "unsloth_studio",))
+    return _studio_deps.install_state(
+        extra_roots = (STUDIO_HOME / "unsloth_studio",),
+        deep = deep,
+    )
 
 
 _RUN_MODULE = None
@@ -2386,9 +2389,9 @@ def run(
         "--enable-tool-call-nudging/--disable-tool-call-nudging",
         rich_help_panel = _RUN_PANEL_TOOLS,
         help = (
-            "Allow nudge retries when a tool-enabled model stops after promising to act, "
-            "or when a passthrough tool signal cannot be repaired. Default: on. This sets "
-            "the process default; an explicit request value wins."
+            "On the non-streaming client-tool passthrough, retry once with a short "
+            "nudge when the model emitted a tool signal that healing could not repair. "
+            "Default: on. No effect on streaming requests or the server-side agentic loop."
         ),
     ),
     temperature: Optional[float] = typer.Option(
@@ -4787,8 +4790,11 @@ def verify_install(
 
     Exits 0 when complete, 1 otherwise. setup.sh / setup.ps1 use the exit code
     to decide whether the "already up to date" fast path may be taken.
+
+    Scans the installed files too, unlike `desktop-capabilities`: nothing times
+    this one out.
     """
-    state = _install_state()
+    state = _install_state(deep = True)
 
     if json_output:
         typer.echo(json.dumps(state, sort_keys = True))

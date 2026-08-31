@@ -124,6 +124,27 @@ function findInlineCodeRegions(
   content: string,
   blockRegions: Array<[number, number]>,
 ): Array<[number, number]> {
+  // Every backtick inside a block region becomes a space in the mask below, so
+  // unless one sits outside a block region the mask cannot contain a backtick,
+  // `codeSpans` returns nothing and the whole rebuild is spent to learn that.
+  // Worth checking first because the streaming path calls this once per frame
+  // over a growing prefix, twice per preprocessLaTeX, so the rebuild is O(n) per
+  // frame and O(n^2) over a reply; and a reply carrying one fenced example and
+  // no inline code, where every backtick is inside the fence, is the common
+  // shape rather than a corner case.
+  let spanTickOutsideBlock = false;
+  for (
+    let index = content.indexOf("`");
+    index !== -1;
+    index = content.indexOf("`", index + 1)
+  ) {
+    if (!isInRegion(index, blockRegions)) {
+      spanTickOutsideBlock = true;
+      break;
+    }
+  }
+  if (!spanTickOutsideBlock) return [];
+
   let masked = content;
   if (blockRegions.length > 0) {
     const parts: string[] = [];

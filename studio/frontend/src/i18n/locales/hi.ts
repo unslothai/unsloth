@@ -1492,6 +1492,8 @@ export const hi = {
       archivedImagesDescription: "आपके द्वारा संग्रहित की गई छवियाँ देखें और प्रबंधित करें।",
       archivedVideos: "संग्रहित वीडियो",
       archivedVideosDescription: "आपके द्वारा संग्रहित किए गए वीडियो देखें और प्रबंधित करें।",
+      archivedAudio: "संग्रहित ऑडियो",
+      archivedAudioDescription: "आपके द्वारा संग्रहित किए गए ऑडियो क्लिप देखें और प्रबंधित करें।",
       manageAction: "प्रबंधित करें",
       manageChats: "चैट प्रबंधित करें",
       manageChatsDescription:
