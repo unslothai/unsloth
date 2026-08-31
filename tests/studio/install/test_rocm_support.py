@@ -5698,7 +5698,7 @@ class TestStrixRocm71Override:
         """_index_url_join trims the path head and leaves the query alone, which is the whole
         point of it: "/" is in the base64 alphabet, so a token may legitimately end with one.
         The Windows base trimmed the raw env value first, which ate that character before the
-        join could protect it, and the mirror answered 401 on an arch-specific install."""
+        join could protect it, so the two platforms built different URLs from one mirror."""
         _mirror = "https://mirror.example/whl?token=YWJj/"
         # The Windows base is read once at import, so the env has to be set before the load.
         with patch.dict(os.environ, {"UNSLOTH_ROCM_WINDOWS_MIRROR": _mirror}):
@@ -5722,6 +5722,32 @@ class TestStrixRocm71Override:
             assert stack_mod._windows_rocm_index_url("gfx1151") == (
                 "https://mirror.example/whl/gfx1151/"
             )
+
+    def test_a_query_authenticated_mirror_says_pip_cannot_use_it(self):
+        """Keeping the token whole is the lesser of two corruptions, not a working index: pip
+        joins the package name onto the index URL as text (posixpath.join in
+        SearchScope.get_index_urls_locations), so ".../gfx1151/?token=x" asks the index ROOT
+        for a page whose name is inside the token, and a fragment never reaches the server at
+        all. A mirror that can resolve nothing has to say why rather than 404 per package."""
+        m = stack_mod
+        for _base in ("https://mirror.example/whl?token=x", "https://mirror.example/whl#tok"):
+            m._WARNED_QUERY_INDEX_BASES.discard(_base)
+            _said = []
+            with patch.object(m, "_safe_print", side_effect = _said.append):
+                m._index_url_join(_base, "gfx110X-all")
+                # Once per mirror, however many repairs consult it.
+                m._index_url_join(_base, "gfx110X-all")
+            assert len(_said) == 1, _said
+            assert "netrc" in _said[0] and "credential" in _said[0], _said
+        # A mirror pip CAN authenticate says nothing: userinfo lives in the netloc, which
+        # the join never touches and which pip carries onto every project URL.
+        _plain = "https://user:token@mirror.example/whl"
+        _quiet = []
+        with patch.object(m, "_safe_print", side_effect = _quiet.append):
+            assert m._index_url_join(_plain, "gfx110X-all") == (
+                "https://user:token@mirror.example/whl/gfx110X-all/"
+            )
+        assert _quiet == [], _quiet
 
     def test_strix_gfx_detection_in_install_sh(self):
         """install.sh must detect gfx1151 and gfx1150 for the override."""

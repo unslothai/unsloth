@@ -1332,14 +1332,41 @@ def _infer_linux_amd_gfx_arch() -> "str | None":
     return _linux_amd_gfx_from_lspci()
 
 
+# Mirrors already named, so a repeated repair does not repeat the notice.
+_WARNED_QUERY_INDEX_BASES: "set[str]" = set()
+
+
+def _warn_query_index_unusable(base: str) -> None:
+    """Say so when a mirror carries its credential in the query or fragment.
+
+    pip builds each project URL with ``posixpath.join(index_url, name)``, a plain string
+    join: "https://m/whl/gfx1151/?token=x" becomes ".../gfx1151/?token=x/torch/", so the
+    request reaches the index ROOT with the package name buried in the token, and a
+    fragment is never sent to the server at all. No URL shape makes pip send both a path
+    leaf and a query, so this is not something the join below can repair -- but a mirror
+    that resolves nothing should say why rather than 404 on every package.
+    """
+    if ("?" not in base and "#" not in base) or base in _WARNED_QUERY_INDEX_BASES:
+        return
+    _WARNED_QUERY_INDEX_BASES.add(base)
+    _safe_print(
+        "   The ROCm mirror carries its credential in the URL query or fragment. pip\n"
+        "   appends the package name to the index URL as text, so the name lands inside\n"
+        "   the credential and no package resolves. Put the credential in the URL itself\n"
+        "   (https://user:token@host/path/), or in ~/.netrc, instead.\n"
+    )
+
+
 def _index_url_join(base: str, leaf: str) -> str:
     """Append a path segment to a wheel index URL, keeping any query / fragment.
 
     A mirror can carry its token in the query, and rstrip + concat then buries the leaf
     inside it: "https://m/whl?token=x" + "gfx110X-all" becomes "https://m/whl?token=x/
     gfx110X-all/", which asks for /whl and hides the arch in the token. Splits on the FIRST
-    of "?" or "#", so a URL carrying both keeps them in order.
+    of "?" or "#", so a URL carrying both keeps them in order. Keeping the token whole is
+    the lesser of the two, not a working index: see _warn_query_index_unusable.
     """
+    _warn_query_index_unusable(base)
     _cuts = [base.index(_c) for _c in "?#" if _c in base]
     _head, _sep, _tail = (
         (base[: min(_cuts)], base[min(_cuts)], base[min(_cuts) + 1 :]) if _cuts else (base, "", "")
