@@ -158,7 +158,7 @@ def cpu_torch_on_an_nvidia_host(monkeypatch):
 
 
 def test_a_card_whose_capacity_is_unreported_is_still_a_card(monkeypatch):
-    """"[N/A]" for memory.total is a missing metric, not a missing GPU.
+    """ "[N/A]" for memory.total is a missing metric, not a missing GPU.
 
     Dropping the row took the card out of the whole inventory, and the Linux procfs
     fallback does not cover it either: that answers for a query that FAILED, not one that

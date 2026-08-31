@@ -1984,9 +1984,7 @@ class TestAFailedGpuPinIsNotADeliberateCpuChoice:
             )
             is False
         )
-        assert (
-            self._pinned(monkeypatch, "cpu", backend = "cuda", recorded = ("cpu", True)) is False
-        )
+        assert self._pinned(monkeypatch, "cpu", backend = "cuda", recorded = ("cpu", True)) is False
 
     def test_a_derived_backend_does_not_retire_the_old_cpu_record(self, monkeypatch):
         # install.sh marks the backend it resolved, and "cpu" on a GPU-less machine is not a
