@@ -65,6 +65,7 @@ from core.inference.context_window import (
     estimate_message_tokens as _estimate_message_tokens,
     estimate_messages_tokens as _estimate_messages_tokens,
     estimate_messages_tokens_dense,
+    estimate_messages_tokens_upper_bound,
     truncate_oldest_messages as _truncate_oldest_messages,
 )
 from core.inference.memory_contract import (
@@ -1661,7 +1662,7 @@ def _openai_llama_admission_can_yield(llama_backend) -> bool:
     return bool(getattr(llama_backend, "idle_slot_clearing_active", False))
 
 
-def _openai_llama_admission_extra_prompt_tokens(payload) -> int:
+def _openai_llama_admission_extra_prompt_tokens(payload, *, strict: bool = False) -> int:
     """Prompt the request carries OUTSIDE ``messages``, in tokens.
 
     OpenAI tool definitions are rendered into the llama-server prompt, and Anthropic
@@ -1672,6 +1673,7 @@ def _openai_llama_admission_extra_prompt_tokens(payload) -> int:
     Serialised and charged at the dense rate, since a JSON schema is punctuation-heavy
     and the four-chars-per-token rule flatters it.
     """
+    estimate = estimate_messages_tokens_upper_bound if strict else estimate_messages_tokens_dense
     extra = 0
     for attribute in ("system", "tools", "tool_choice", "instructions"):
         value = getattr(payload, attribute, None)
@@ -1682,7 +1684,7 @@ def _openai_llama_admission_extra_prompt_tokens(payload) -> int:
         except Exception:
             continue
         if text:
-            extra += estimate_messages_tokens_dense([{"role": "system", "content": text}])
+            extra += estimate([{"role": "system", "content": text}])
     return extra
 
 
@@ -1845,7 +1847,7 @@ def _openai_llama_admission_media_tokens(
     return extra
 
 
-def _openai_llama_admission_injected_tool_tokens(injected_tools) -> int:
+def _openai_llama_admission_injected_tool_tokens(injected_tools, *, strict: bool = False) -> int:
     """The tool catalogue Unsloth adds itself, in tokens.
 
     ``payload.tools`` is what the CLIENT sent, and for Unsloth's own tool loop that is
@@ -1866,7 +1868,8 @@ def _openai_llama_admission_injected_tool_tokens(injected_tools) -> int:
         return 0
     if not text:
         return 0
-    return estimate_messages_tokens_dense([{"role": "system", "content": text}])
+    estimate = estimate_messages_tokens_upper_bound if strict else estimate_messages_tokens_dense
+    return estimate([{"role": "system", "content": text}])
 
 
 def _openai_llama_admission_prompt_tokens(
@@ -1874,6 +1877,7 @@ def _openai_llama_admission_prompt_tokens(
     *,
     image_tokens: int = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
     injected_tools = None,
+    strict: bool = False,
 ) -> Optional[int]:
     """KV the request already carries, in tokens, or None when it cannot be sized.
 
@@ -1885,6 +1889,14 @@ def _openai_llama_admission_prompt_tokens(
     an estimate that raised, which are the two cases callers answer with a cache share
     rather than a count.
 
+    ``strict`` charges text a token per character instead, which is a bound rather than
+    a rate (`estimate_messages_tokens_upper_bound`). The dense rate is the right price
+    for a reservation that leaves the rest of the window unspoken for, and the wrong one
+    for `_openai_llama_uncapped_max_tokens`, which hands out every token the estimate
+    says is free: a base64 or hex prompt tokenises near one character per token, so the
+    cap would hand out room the prompt is already sitting in. Media is unaffected -- an
+    image is charged a per-projector ceiling, not a text rate.
+
     Shared with `_openai_llama_uncapped_max_tokens`, and it has to stay shared: that
     helper sizes an omitted cap as `share - prompt` so the reservation this function
     then computes lands exactly on the share. Two estimators would drift and the sum
@@ -1893,13 +1905,14 @@ def _openai_llama_admission_prompt_tokens(
     messages = getattr(payload, "messages", None)
     if not (isinstance(messages, list) and messages):
         return None
+    estimate = estimate_messages_tokens_upper_bound if strict else estimate_messages_tokens_dense
     try:
         estimate_messages, message_image_parts = _openai_llama_admission_messages_for_estimate(
             messages
         )
-        prompt_tokens = estimate_messages_tokens_dense(estimate_messages)
-        prompt_tokens += _openai_llama_admission_extra_prompt_tokens(payload)
-        prompt_tokens += _openai_llama_admission_injected_tool_tokens(injected_tools)
+        prompt_tokens = estimate(estimate_messages)
+        prompt_tokens += _openai_llama_admission_extra_prompt_tokens(payload, strict = strict)
+        prompt_tokens += _openai_llama_admission_injected_tool_tokens(injected_tools, strict = strict)
         prompt_tokens += _openai_llama_admission_media_tokens(
             payload,
             message_image_parts = message_image_parts,
@@ -1918,12 +1931,19 @@ def _openai_llama_admission_tokens(
     tool_loop: bool = False,
     image_tokens: int = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
     injected_tools = None,
+    extra_prompt_tokens: int = 0,
 ) -> Optional[int]:
     """KV a request will occupy: what is sent, plus what it may generate.
 
     A shape this cannot size falls back to an equal share of the cache: charging it
     the whole budget would serialise that route, and charging it nothing would
     restore the overcommit.
+
+    ``extra_prompt_tokens`` is prompt the caller knows about and this estimate cannot
+    see: what the route injects after admission, and the difference between the rate
+    charged here and the bound `_openai_llama_uncapped_max_tokens` sized a cap against.
+    Passing it keeps the reservation at least what the request really occupies, which is
+    the whole point of reserving.
     """
     if not budget:
         return None
@@ -1934,6 +1954,7 @@ def _openai_llama_admission_tokens(
     )
     if prompt_tokens is None:
         return max(1, budget // max(1, capacity))
+    prompt_tokens += max(0, extra_prompt_tokens)
     # The same helper generation honours, not the raw field. A request that sets only
     # the supported max_completion_tokens and leaves the deprecated max_tokens unset
     # would otherwise reserve its prompt and none of its output allowance.
@@ -1996,13 +2017,20 @@ def _openai_llama_admission_tokens(
 _OPENAI_LLAMA_UNCAPPED_MIN_OUTPUT_TOKENS = 256
 
 
+class _UncappedMaxTokens(NamedTuple):
+    """The cap to send, and the prompt tokens admission has to be told about on top."""
+
+    max_tokens: int
+    extra_prompt_tokens: int
+
+
 def _openai_llama_uncapped_max_tokens(
     payload,
     *,
     request: Optional[Request],
     llama_backend,
     injected_prompt_tokens: int = 0,
-) -> Optional[int]:
+) -> Optional[_UncappedMaxTokens]:
     """The cap to give a request that names none, so it does not reserve the whole cache.
 
     A request with no ``max_tokens`` is forwarded as ``max_tokens = backend_ctx``, so
@@ -2024,11 +2052,22 @@ def _openai_llama_uncapped_max_tokens(
     of unified -- Unsloth passes ``--kv-unified`` so a NAMED cap can still use the whole
     window, and only the unnamed one is sized to a share.
 
+    Sized against a bound rather than a rate (``strict``). The dense rate charges ASCII
+    four characters per token, and hex measures 1.13, so a pasted blob would be handed
+    the room it is already sitting in -- and unlike before, N of those now decode at
+    once. Pessimism here costs a shorter answer, or the whole-window default below the
+    floor; optimism costs the cache.
+
     ``injected_prompt_tokens`` is prompt the caller adds AFTER this, and it has to be
     named here: the reservation lands exactly on a share, so anything the request grows
     by between sizing and sending is cache nobody accounted for, and N slots of it is
     the overcommit again. The standard GGUF path prefixes the current date to the system
     prompt, so it charges that here and the slot still holds one share.
+
+    Returns the cap AND what admission must add to its own estimate, because the two are
+    one decision: admission prices the unchanged payload at the dense rate, so without
+    ``extra_prompt_tokens`` it would reserve less than the request occupies and a mixed
+    queue could admit past the budget.
 
     None means "leave it unset", the behaviour every request had before this: one slot
     (whose share is the whole cache), an unreadable cache size, admission or token
@@ -2047,18 +2086,20 @@ def _openai_llama_uncapped_max_tokens(
     if not budget:
         return None
     share = budget // capacity
+    image_tokens = _openai_llama_admission_image_tokens(llama_backend)
     prompt_tokens = _openai_llama_admission_prompt_tokens(
-        payload,
-        image_tokens = _openai_llama_admission_image_tokens(llama_backend),
+        payload, image_tokens = image_tokens, strict = True
     )
     # An unsizeable prompt is charged a whole share by admission, so there is no room
     # left to hand the output and nothing here can make the two agree.
     if prompt_tokens is None:
         return None
-    output_tokens = share - prompt_tokens - max(0, injected_prompt_tokens)
+    prompt_tokens += max(0, injected_prompt_tokens)
+    output_tokens = share - prompt_tokens
     if output_tokens < _OPENAI_LLAMA_UNCAPPED_MIN_OUTPUT_TOKENS:
         return None
-    return output_tokens
+    priced = _openai_llama_admission_prompt_tokens(payload, image_tokens = image_tokens)
+    return _UncappedMaxTokens(output_tokens, prompt_tokens - (priced or 0))
 
 
 def _openai_llama_uncapped_injected_date_tokens(request: Optional[Request]) -> int:
@@ -2076,7 +2117,7 @@ def _openai_llama_uncapped_injected_date_tokens(request: Optional[Request]) -> i
     injected = _apply_current_date_prompt("", request)
     if not injected:
         return 0
-    return estimate_messages_tokens_dense([{"role": "system", "content": injected}])
+    return estimate_messages_tokens_upper_bound([{"role": "system", "content": injected}])
 
 
 def _openai_llama_admission_reserve(
@@ -2086,6 +2127,7 @@ def _openai_llama_admission_reserve(
     payload = None,
     tool_loop: bool = False,
     injected_tools = None,
+    extra_prompt_tokens: int = 0,
 ) -> tuple[LlamaAdmissionReservation, LlamaAdmissionConfig]:
     config = llama_admission_config_from_env()
     capacity = _openai_llama_admission_capacity(request, llama_backend)
@@ -2102,6 +2144,7 @@ def _openai_llama_admission_reserve(
             tool_loop = tool_loop,
             image_tokens = _openai_llama_admission_image_tokens(llama_backend),
             injected_tools = injected_tools,
+            extra_prompt_tokens = extra_prompt_tokens,
         )
         if payload is not None
         else None,
@@ -20296,6 +20339,10 @@ async def produce_openai_chat_completions(
     # multi-turn client-side tool loops.
     effective_max_tokens = _effective_openai_max_tokens(payload)
     _uncapped_max_tokens_resolved = False
+    # Prompt the reservation below has to be told about: what this path injects after
+    # admission has priced the payload, plus the gap between the rate admission charges
+    # and the bound the cap was sized against. Zero unless a cap is resolved here.
+    _uncapped_extra_prompt_tokens = 0
     if using_gguf and effective_max_tokens is None:
         # A request that names no cap is forwarded as `max_tokens = backend_ctx` and so
         # reserves the whole KV cache, which serialised every uncapped client behind one
@@ -20315,7 +20362,8 @@ async def produce_openai_chat_completions(
             injected_prompt_tokens = _openai_llama_uncapped_injected_date_tokens(request),
         )
         if _shared_max_tokens is not None:
-            payload.max_tokens = _shared_max_tokens
+            payload.max_tokens = _shared_max_tokens.max_tokens
+            _uncapped_extra_prompt_tokens = _shared_max_tokens.extra_prompt_tokens
             effective_max_tokens = _effective_openai_max_tokens(payload)
             _uncapped_max_tokens_resolved = True
 
@@ -20427,6 +20475,7 @@ async def produce_openai_chat_completions(
                 model_name,
                 completion_id,
                 monitor_id = monitor_id,
+                extra_prompt_tokens = _uncapped_extra_prompt_tokens,
             )
         _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
         _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
@@ -20439,6 +20488,7 @@ async def produce_openai_chat_completions(
                 monitor_id = monitor_id,
                 request = request,
                 cancel_event = cancel_event,
+                extra_prompt_tokens = _uncapped_extra_prompt_tokens,
             )
         finally:
             _tracker.__exit__(None, None, None)
@@ -20620,6 +20670,7 @@ async def produce_openai_chat_completions(
         if use_tools and _uncapped_max_tokens_resolved:
             payload.max_tokens = None
             effective_max_tokens = None
+            _uncapped_extra_prompt_tokens = 0
 
         if use_tools:
             # permission_mode ask/auto require the confirm gate for Unsloth's own
@@ -21528,6 +21579,9 @@ async def produce_openai_chat_completions(
                     request = request,
                     llama_backend = llama_backend,
                     payload = payload,
+                    # What this path injected after the cap was sized, plus the gap
+                    # between the rate charged above and the bound it was sized against.
+                    extra_prompt_tokens = _uncapped_extra_prompt_tokens,
                 )
             except LlamaAdmissionQueueFull as exc:
                 _tracker.__exit__(None, None, None)
@@ -21869,6 +21923,9 @@ async def produce_openai_chat_completions(
                     request = request,
                     llama_backend = llama_backend,
                     payload = payload,
+                    # What this path injected after the cap was sized, plus the gap
+                    # between the rate charged above and the bound it was sized against.
+                    extra_prompt_tokens = _uncapped_extra_prompt_tokens,
                 )
             except LlamaAdmissionQueueFull as exc:
                 _llama_admission_log(
@@ -25905,6 +25962,7 @@ async def _responses_stream(
     # here means a /v1/responses stream that names no cap would otherwise be forwarded as
     # `max_tokens = backend_ctx`, reserve the whole KV cache, and serialise every other
     # caller behind it no matter how many slots the load runs.
+    _uncapped_extra_prompt_tokens = 0
     if _effective_openai_max_tokens(chat_req) is None:
         _shared_max_tokens = _openai_llama_uncapped_max_tokens(
             chat_req,
@@ -25912,7 +25970,8 @@ async def _responses_stream(
             llama_backend = llama_backend,
         )
         if _shared_max_tokens is not None:
-            chat_req.max_tokens = _shared_max_tokens
+            chat_req.max_tokens = _shared_max_tokens.max_tokens
+            _uncapped_extra_prompt_tokens = _shared_max_tokens.extra_prompt_tokens
     body = await _build_openai_passthrough_body_async(
         chat_req, backend_ctx = llama_backend.context_length, llama_backend = llama_backend
     )
@@ -25932,6 +25991,7 @@ async def _responses_stream(
             # `max_output_tokens`, so the estimator found no `messages` and fell back to
             # one equal cache share no matter how large the request really was.
             payload = chat_req,
+            extra_prompt_tokens = _uncapped_extra_prompt_tokens,
         )
     except LlamaAdmissionQueueFull as exc:
         _llama_admission_log(
@@ -30444,6 +30504,8 @@ async def _openai_passthrough_stream(
     model_name,
     completion_id,
     monitor_id: Optional[str] = None,
+    *,
+    extra_prompt_tokens: int = 0,
 ):
     _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
     _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
@@ -30453,6 +30515,7 @@ async def _openai_passthrough_stream(
             request = request,
             llama_backend = llama_backend,
             payload = payload,
+            extra_prompt_tokens = extra_prompt_tokens,
         )
     except LlamaAdmissionQueueFull as exc:
         _tracker.__exit__(None, None, None)
@@ -31500,6 +31563,7 @@ async def _openai_passthrough_non_streaming(
     *,
     request: Optional[Request] = None,
     cancel_event = None,
+    extra_prompt_tokens: int = 0,
 ):
     """Non-streaming pass-through guarded by local llama-server admission."""
     try:
@@ -31507,6 +31571,7 @@ async def _openai_passthrough_non_streaming(
             request = request,
             llama_backend = llama_backend,
             payload = payload,
+            extra_prompt_tokens = extra_prompt_tokens,
         )
     except LlamaAdmissionQueueFull as exc:
         _llama_admission_log(

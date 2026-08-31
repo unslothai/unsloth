@@ -56,18 +56,10 @@ def _uncapped(messages = None):
     )
 
 
-def _cap(payload, backend = None):
-    return routes_inference._openai_llama_uncapped_max_tokens(
-        payload,
-        request = None,
-        llama_backend = backend if backend is not None else _backend(),
-    )
-
-
-def _cap_with_injection(
+def _resolve(
     payload,
-    injected,
     backend = None,
+    injected = 0,
 ):
     return routes_inference._openai_llama_uncapped_max_tokens(
         payload,
@@ -77,11 +69,31 @@ def _cap_with_injection(
     )
 
 
-def _cost(payload):
+def _cap(payload, backend = None):
+    resolved = _resolve(payload, backend)
+    return None if resolved is None else resolved.max_tokens
+
+
+def _cap_with_injection(
+    payload,
+    injected,
+    backend = None,
+):
+    resolved = _resolve(payload, backend, injected)
+    return None if resolved is None else resolved.max_tokens
+
+
+def _charged(payload):
+    """What the cap is sized against: a bound, not the rate admission charges."""
+    return routes_inference._openai_llama_admission_prompt_tokens(payload, strict = True)
+
+
+def _cost(payload, extra = 0):
     return routes_inference._openai_llama_admission_tokens(
         payload,
         budget = CTX,
         capacity = SLOTS,
+        extra_prompt_tokens = extra,
     )
 
 
@@ -92,8 +104,7 @@ def _run(coro):
 class TestTheResolvedCap:
     def test_an_uncapped_request_is_sized_to_its_slots_share(self):
         payload = _uncapped()
-        prompt = routes_inference._openai_llama_admission_prompt_tokens(payload)
-        assert _cap(payload) == SHARE - prompt
+        assert _cap(payload) == SHARE - _charged(payload)
 
     def test_a_single_slot_server_is_left_alone(self):
         """Its share IS the whole cache, so there is nothing to unserialise."""
@@ -117,7 +128,7 @@ class TestTheResolvedCap:
     def test_a_prompt_that_fills_the_share_is_left_alone(self):
         """Below a usable answer there is nothing to hand back, so the request keeps
         the whole-window default rather than being answered in a few tokens."""
-        payload = _uncapped([{"role": "user", "content": "x" * (SHARE * 4)}])
+        payload = _uncapped([{"role": "user", "content": "x" * SHARE}])
         assert _cap(payload) is None
 
     def test_the_floor_is_the_boundary(self):
@@ -125,8 +136,7 @@ class TestTheResolvedCap:
         minimum = routes_inference._OPENAI_LLAMA_UNCAPPED_MIN_OUTPUT_TOKENS
         for room, expected in ((minimum, minimum), (minimum - 1, None)):
             payload = _uncapped()
-            prompt = routes_inference._openai_llama_admission_prompt_tokens(payload)
-            backend = _backend(context_length = (prompt + room) * SLOTS)
+            backend = _backend(context_length = (_charged(payload) + room) * SLOTS)
             assert _cap(payload, backend) == expected
 
     def test_a_shape_with_no_messages_is_left_alone(self):
@@ -155,21 +165,26 @@ class TestPromptInjectedAfterTheSizing:
 
     def test_the_injection_comes_out_of_the_cap(self):
         payload = _uncapped()
-        prompt = routes_inference._openai_llama_admission_prompt_tokens(payload)
-        assert _cap_with_injection(payload, 40) == SHARE - prompt - 40
+        assert _cap_with_injection(payload, 40) == SHARE - _charged(payload) - 40
 
     def test_the_slot_still_holds_one_share(self):
         """What llama-server is actually asked for -- injected prompt plus the cap --
         stays inside the share, so N of them still fit the cache."""
         payload = _uncapped()
-        prompt = routes_inference._openai_llama_admission_prompt_tokens(payload)
-        assert prompt + 40 + _cap_with_injection(payload, 40) == SHARE
+        assert _charged(payload) + 40 + _cap_with_injection(payload, 40) == SHARE
+
+    def test_the_reservation_covers_the_injection_too(self):
+        """Charging the cap alone would leave admission reserving less than the request
+        occupies, and a mixed queue could then admit past the budget."""
+        payload = _uncapped()
+        resolved = _resolve(payload, injected = 40)
+        payload.max_tokens = resolved.max_tokens
+        assert _cost(payload, resolved.extra_prompt_tokens) == SHARE
 
     def test_an_injection_that_eats_the_answer_is_left_alone(self):
         """Same floor as any other prompt that fills the share."""
         payload = _uncapped()
-        prompt = routes_inference._openai_llama_admission_prompt_tokens(payload)
-        assert _cap_with_injection(payload, SHARE - prompt) is None
+        assert _cap_with_injection(payload, SHARE - _charged(payload)) is None
 
     def test_the_date_prompt_is_priced_when_it_is_on(self, monkeypatch):
         monkeypatch.setattr(
@@ -184,13 +199,42 @@ class TestPromptInjectedAfterTheSizing:
         assert routes_inference._openai_llama_uncapped_injected_date_tokens(None) == 0
 
 
+class TestDenseText:
+    """A rate is wrong on the input that does not match it, and the cap hands out every
+    token the estimate calls free. A base64 or hex prompt tokenises near one character
+    per token against the four the dense rate charges, so sizing on that rate would hand
+    a slot room its own prompt is already sitting in -- and N of them now decode at once,
+    which is the overcommit #9392 closed."""
+
+    def test_a_blob_is_charged_what_it_can_cost(self):
+        payload = _uncapped([{"role": "user", "content": "a1b2c3d4" * 256}])
+        dense = routes_inference._openai_llama_admission_prompt_tokens(payload)
+        assert _charged(payload) > dense * 2
+        assert _cap(payload) == SHARE - _charged(payload)
+
+    def test_the_reservation_still_lands_on_a_share(self):
+        """Admission prices the payload at the dense rate, so the difference has to be
+        handed to it or it reserves less than the slot holds."""
+        payload = _uncapped([{"role": "user", "content": "a1b2c3d4" * 256}])
+        resolved = _resolve(payload)
+        payload.max_tokens = resolved.max_tokens
+        assert _cost(payload, resolved.extra_prompt_tokens) == SHARE
+
+    def test_a_blob_that_fills_the_share_keeps_the_whole_window(self):
+        """Pessimism costs an answer, never the cache: past the floor the request is
+        simply left with the default it always had."""
+        payload = _uncapped([{"role": "user", "content": "a1b2c3d4" * (SHARE // 4)}])
+        assert _cap(payload) is None
+
+
 class TestTheReservationItProduces:
     """The half that matters: the cap has to make the reservation land on a share."""
 
     def test_the_reservation_is_exactly_one_share(self):
         payload = _uncapped()
-        payload.max_tokens = _cap(payload)
-        assert _cost(payload) == SHARE
+        resolved = _resolve(payload)
+        payload.max_tokens = resolved.max_tokens
+        assert _cost(payload, resolved.extra_prompt_tokens) == SHARE
 
     def test_the_unresolved_reservation_was_the_whole_cache(self):
         """The regression itself, for contrast: uncapped, one request owns everything."""
@@ -204,11 +248,12 @@ class TestTheReservationItProduces:
             leases = []
             for _ in range(SLOTS):
                 payload = _uncapped()
-                payload.max_tokens = _cap(payload)
+                resolved = _resolve(payload)
+                payload.max_tokens = resolved.max_tokens
                 reservation = queue.reserve(
                     capacity = SLOTS,
                     config = LlamaAdmissionConfig(),
-                    tokens = _cost(payload),
+                    tokens = _cost(payload, resolved.extra_prompt_tokens),
                     budget = CTX,
                 )
                 leases.append(reservation.lease_nowait())
@@ -226,11 +271,12 @@ class TestTheReservationItProduces:
             queue = LlamaAdmissionQueue("test")
             for _ in range(SLOTS + 1):
                 payload = _uncapped()
-                payload.max_tokens = _cap(payload)
+                resolved = _resolve(payload)
+                payload.max_tokens = resolved.max_tokens
                 last = queue.reserve(
                     capacity = SLOTS + 1,
                     config = LlamaAdmissionConfig(),
-                    tokens = _cost(payload),
+                    tokens = _cost(payload, resolved.extra_prompt_tokens),
                     budget = CTX,
                 )
             return last.lease_nowait()

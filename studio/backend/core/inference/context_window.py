@@ -148,6 +148,32 @@ def estimate_messages_tokens_conservative(
     return total
 
 
+def estimate_messages_tokens_upper_bound(messages: list[dict]) -> int:
+    """One token per character: what no tokenizer can exceed.
+
+    Every estimate above is a rate, and a rate is wrong on the input that does not match
+    it -- `estimate_messages_tokens_dense` charges ASCII the English four against a
+    measured 1.13 for hex, and even the conservative rate of two stays deliberately below
+    what a blob really costs. That is right for a caller pricing what a thread has already
+    spent, where over-pricing throws away room. It is wrong for one handing out room it
+    then fills exactly: there the undercount is cache nobody accounted for.
+
+    A byte-level BPE merges bytes into tokens and never splits one, so a token per
+    character is a bound rather than a rate, and it holds for text no sample here
+    predicted. It costs about 4x on English prose, so it belongs only where being wrong
+    means overflowing the cache, and where being pessimistic costs a shorter answer.
+    """
+    total = 0
+    for message in messages:
+        try:
+            text = json.dumps(message, ensure_ascii = False)
+        except Exception:
+            total += 1
+            continue
+        total += max(1, len(text))
+    return total
+
+
 def group_turns(messages: list[dict]) -> list[list[dict]]:
     """Split messages into the turn groups the rolling window evicts as single units.
 
