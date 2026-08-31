@@ -824,11 +824,10 @@ async def list_provider_models(
         models = await client.list_models()
         # Registry model-id filters describe one vendor's own catalog, so they
         # only apply on that vendor's host. A Gemini OAI-compat proxy returns
-        # prefixed ids the native allowlist would strip, and an Azure or
-        # self-hosted OpenAI base returns deployment names the operator chose,
-        # which can carry any word the denylist reads as "non-chat"
-        # (`gpt-5.5-image-analysis`). Either way the picker would come back
-        # empty for a connection that works fine.
+        # prefixed ids the allowlist strips, and an Azure or self-hosted OpenAI
+        # base returns operator-chosen deployment names that can carry any word
+        # the denylist reads as non-chat (`gpt-5.5-image-analysis`). Either way
+        # the picker empties out for a connection that works.
         _NATIVE_HOSTS = {
             "gemini": ("generativelanguage.googleapis.com",),
             "openai": ("api.openai.com",),

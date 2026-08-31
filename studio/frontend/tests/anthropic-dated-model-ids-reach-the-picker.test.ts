@@ -10,9 +10,8 @@ type Prune = (providerType: string, modelIds: string[]) => string[];
 let vite: ViteDevServer;
 let pruneProviderModelIds: Prune;
 
-// The canonical ids Anthropic returns for the pre-4.6 generation. They carry a
-// `-YYYYMMDD` suffix because that IS their name, not because they are snapshots
-// of an undated id: there is no `claude-haiku-4-5` to fall back to.
+// The pre-4.6 generation carries a `-YYYYMMDD` suffix because that IS its
+// name: there is no undated `claude-haiku-4-5` to fall back to.
 const DATED = [
   "claude-opus-4-5-20251101",
   "claude-sonnet-4-5-20250929",
@@ -34,9 +33,9 @@ after(async () => {
 });
 
 test("the frontend prune keeps every dated Anthropic id", () => {
-  // This mirrored the backend `-\d{8}$` denylist. Dropping only the backend
-  // half left the picker exactly as it was, and made it worse than before:
-  // PROVIDER_REGISTRY's Anthropic seeds are dated now, so they were pruned too.
+  // This mirrored the backend `-\d{8}$` denylist, so dropping only the backend
+  // half left the picker unchanged, and worse: the registry's Anthropic seeds
+  // are dated now, so those were pruned too.
   const live = [...UNDATED, ...DATED];
   assert.deepEqual(pruneProviderModelIds("anthropic", live), live);
 });

@@ -117,8 +117,7 @@ export function pruneProviderModelIds(
   modelIds: string[],
 ): string[] {
   // Anthropic has no entry: a `-YYYYMMDD` id is the canonical name for the
-  // whole pre-4.6 generation (Opus 4.5, Sonnet 4.5, Haiku 4.5, Opus 4.1, the
-  // 4.0 pair), not a snapshot to hide. This used to mirror the backend
+  // whole pre-4.6 generation, not a snapshot. This mirrored the backend
   // denylist and outlived it, stripping those ids from the server catalog,
   // the seeds and saved selections alike.
   if (providerType === "openai") {

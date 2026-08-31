@@ -77,9 +77,8 @@ test("the gpt-5.6 family gets the gpt-5.5 reasoning ladder", () => {
 });
 
 test("the gpt-5.1 and gpt-5.2 ladders drop minimal for none", () => {
-  // These reach the picker now. "minimal" was replaced by "none" from 5.1 on,
-  // and offering it makes the turn fail with "Unsupported value:
-  // 'reasoning_effort' does not support 'minimal' with this model".
+  // "minimal" was replaced by "none" from 5.1 on, and offering it fails the
+  // turn with "does not support 'minimal' with this model".
   const ladders: Array<[string, readonly string[]]> = [
     ["gpt-5.2", ["none", "low", "medium", "high", "xhigh"]],
     ["gpt-5.1", ["none", "low", "medium", "high"]],
@@ -90,8 +89,7 @@ test("the gpt-5.1 and gpt-5.2 ladders drop minimal for none", () => {
     assert.deepEqual([...caps.reasoningEffortLevels], levels, model);
   }
   // The Codex tunings keep reasoning mandatory: no minimal, and no none on
-  // the 5.1 line. Only codex-max has xhigh, so it must sort ahead of the
-  // plain codex prefix.
+  // the 5.1 line. Only codex-max has xhigh, so it sorts first.
   const codexLadders: Array<[string, readonly string[]]> = [
     ["gpt-5-codex", ["low", "medium", "high"]],
     ["gpt-5.1-codex", ["low", "medium", "high"]],

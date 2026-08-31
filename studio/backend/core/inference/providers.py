@@ -68,47 +68,31 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "hosted_tools": ("web_search", "code_execution", "image_generation"),
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
-        # /v1/models returns the whole account catalog: non-chat models,
-        # fine-tunes and dated snapshots. A family allowlist silently dropped
-        # every new family until someone widened it, so deny non-chat instead
-        # and let new chat families surface on their own.
-        #
+        # Deny non-chat rather than allowlist chat families: the allowlist
+        # silently dropped every new family until someone widened it.
         # The bar is not "chat model" but "servable on /v1/responses with
-        # stream: true", which is Studio's only OpenAI transport (see
-        # `_stream_openai_responses`). Families whose model page marks
-        # `v1/responses` Not supported are denied here even though they chat
-        # fine over /v1/chat/completions.
-        #
-        # Feature qualifiers match mid-id because OpenAI uses them as the
-        # primary qualifier on every variant (`tts-1`, `gpt-4o-mini-tts`) and
-        # never inside a chat id. Legacy bases and non-chat families are
-        # ^-anchored, so a future `gpt-7-davinci-edition` survives.
+        # stream: true", Studio's only OpenAI transport (`_stream_openai_
+        # responses`), so a family whose model page marks `v1/responses` Not
+        # supported is denied even though it chats fine over chat/completions.
+        # Feature words match mid-id because OpenAI qualifies every variant
+        # with them (`tts-1`, `gpt-4o-mini-tts`) and never uses them inside a
+        # chat id; bases stay ^-anchored so `gpt-7-davinci-edition` survives.
         "model_id_denylist": re.compile(
             r"(?:^|-)(?:embedding|tts|whisper|moderation|image|"
             r"transcribe|translate|instruct|sora)\b"
-            # Audio and Realtime: every id in both families is `v1/responses`
-            # Not supported, so it 404s on Studio's transport.
-            # https://developers.openai.com/api/docs/models/gpt-audio
-            # https://developers.openai.com/api/docs/models/gpt-4o-audio-preview
+            # Chat Completions only, per developers.openai.com/api/docs/models/
+            # {gpt-audio, gpt-4o-search-preview, o1-mini, o1-preview}.
+            # `-search-api` is the standalone search endpoint.
             r"|(?:^|-)(?:audio|realtime)\b"
-            # Chat-with-search: also not on /v1/responses. `-search-api` is
-            # the standalone search endpoint.
-            # https://developers.openai.com/api/docs/models/gpt-4o-search-preview
             r"|(?:^|-)search-(?:preview|api)\b"
-            # Deep research requires at least one data source (web search,
-            # remote MCP, or file search) and a default Studio turn sends no
-            # tools. https://developers.openai.com/api/docs/guides/deep-research
+            # Needs a data source and a Studio turn sends no tools.
+            # https://developers.openai.com/api/docs/guides/deep-research
             r"|(?:^|-)deep-research\b"
-            # Chat Completions only.
-            # https://developers.openai.com/api/docs/models/o1-mini
-            # https://developers.openai.com/api/docs/models/o1-preview
             r"|^o1-(?:mini|preview)\b"
             # Retired canonical id retained by /v1/models.
             r"|^gpt-5\.3$"
-            # Legacy bases and the first-generation embedding / search /
-            # similarity line (`text-search-ada-doc-001`, `code-search-ada-
-            # code-001`, `text-similarity-ada-001`). `^(?:text|code)-` needs
-            # the hyphen, so `codex-mini-latest` is untouched.
+            # Legacy bases and the first-generation embedding / search line.
+            # `^(?:text|code)-` needs the hyphen, so `codex-mini-latest` stays.
             r"|^(?:babbage|davinci|ada|curie)\b"
             r"|^(?:text|code)-(?:embedding|moderation|search|similarity"
             r"|davinci|curie|babbage|ada|cushman)\b"
@@ -116,9 +100,8 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             r"|^computer-use\b"
             # Fine-tunes carry the user's tenant in the id.
             r"|^ft:"
-            # Snapshots hide behind the canonical id, which the listing also
-            # returns: modern `-YYYY-MM-DD` and legacy `-MMDD`
-            # (`gpt-3.5-turbo-0125`, `gpt-4-1106-preview`).
+            # Snapshots hide behind the canonical id the listing also returns:
+            # modern `-YYYY-MM-DD` and legacy `-MMDD` (`gpt-4-1106-preview`).
             r"|-\d{4}-\d{2}-\d{2}$"
             r"|-\d{4}(?:-preview)?$"
         ),
@@ -138,13 +121,10 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             "claude-sonnet-4-5-20250929",
             "claude-haiku-4-5-20251001",
         ],
-        # Anthropic's /v1/models returns dated ids for every model in the
-        # pre-4.6 generation -- `claude-opus-4-5-20251101`,
-        # `claude-haiku-4-5-20251001`, `claude-sonnet-4-5-20250929`,
-        # `claude-opus-4-1-20250805`. Per the models overview, those
-        # dated ids ARE the canonical names for that generation, not
-        # snapshots to hide. Dropping the previous `-\d{8}$` denylist
-        # so every live model the API returns reaches the picker.
+        # No denylist: a `-YYYYMMDD` id IS the canonical name for the whole
+        # pre-4.6 generation, not a snapshot to hide, so the old `-\d{8}$`
+        # rule hid 6 of the 9 live models. `pruneProviderModelIds` in
+        # sync-external-providers.ts held a copy and had to go with it.
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": False,

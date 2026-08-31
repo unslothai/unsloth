@@ -146,10 +146,10 @@ def test_responses_request_body_uses_input_and_instructions(monkeypatch):
 
 
 def test_responses_never_forwards_sampling_for_any_openai_family(monkeypatch):
-    # ChatCompletionRequest defaults temperature to 0.6 and top_p to 0.95, and
-    # the UI hides both sliders for OpenAI, so anything forwarded here is a
-    # value the user never chose. Reasoning families reject them outright --
-    # including ids no prefix regex catches, such as codex-mini-latest.
+    # ChatCompletionRequest defaults these to 0.6 / 0.95 and the UI hides both
+    # sliders for OpenAI, so anything forwarded is a value the user never
+    # chose -- and reasoning ids no prefix catches, like codex-mini-latest,
+    # reject them outright.
     for model in (
         "gpt-5.6-sol",
         "gpt-5.5",
@@ -170,9 +170,8 @@ def test_responses_never_forwards_sampling_for_any_openai_family(monkeypatch):
 
 
 def test_responses_sends_extended_cache_retention_only_where_supported(monkeypatch):
-    # Extended (24h) retention is documented for the gpt-5 line and gpt-4.1;
-    # every other model 400s the whole turn with "prompt_cache_retention is
-    # not supported on this model".
+    # Documented for the gpt-5 line and gpt-4.1 only; every other model 400s
+    # the turn with "prompt_cache_retention is not supported on this model".
     for model in ("gpt-5", "gpt-5.1", "gpt-5.4-mini", "gpt-5.6-sol", "gpt-4.1"):
         body = _capture_responses_body(monkeypatch, model)
         assert body.get("prompt_cache_retention") == "24h", (model, body)

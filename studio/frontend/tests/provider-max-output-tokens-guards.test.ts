@@ -88,12 +88,10 @@ test("a documented per-model cap bounds the connection override", () => {
 });
 
 test("every OpenAI family the picker admits carries its documented cap", () => {
-  // The Responses API rejects an over-limit max_output_tokens instead of
-  // clamping, so a row that is missing (or too generous) turns a raised Max
-  // Tokens into a failed request. The 4,096 pair is under the 8,192 in
-  // DEFAULT_INFERENCE_PARAMS, so those two fail on an untouched config.
-  // The bare `gpt-5` and `gpt-4` rows are last, so this also pins the ordering:
-  // a more specific family must keep its own cap rather than fall into theirs.
+  // A missing or too-generous row turns a raised Max Tokens into a failed
+  // request; the 4,096 pair is under the 8,192 default, so those two fail on
+  // an untouched config. The bare `gpt-5` and `gpt-4` rows are last, so this
+  // also pins that a more specific family keeps its own cap.
   const caps: Array<[string, number]> = [
     ["gpt-5.6-sol", 128000],
     ["gpt-5.5", 128000],
@@ -127,9 +125,8 @@ test("every OpenAI family the picker admits carries its documented cap", () => {
 });
 
 test("the dated Anthropic ids carry their documented cap", () => {
-  // They reach the picker now that the `-YYYYMMDD` filters are gone. Opus 4.1
-  // and Opus 4 sit at 32,000, under the 32,768 fallback, so without a row a
-  // raised Max Tokens overshoots them.
+  // Opus 4.1 and Opus 4 sit at 32,000, under the 32,768 fallback, so without
+  // a row a raised Max Tokens overshoots them.
   const caps: Array<[string, number]> = [
     ["claude-opus-4-5-20251101", 64000],
     ["claude-sonnet-4-5-20250929", 64000],

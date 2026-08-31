@@ -65,9 +65,8 @@ def test_openai_keeps_every_known_chat_family():
 
 def test_openai_drops_families_that_are_not_on_the_responses_endpoint():
     # Studio serves every OpenAI turn from /v1/responses, so a model whose
-    # page marks that endpoint Not supported is unusable no matter how
-    # chat-capable it is over /v1/chat/completions. Audio, Realtime,
-    # chat-with-search and o1-mini are all in that bucket.
+    # page marks that endpoint Not supported is unusable however
+    # chat-capable it is over /v1/chat/completions.
     dropped = _apply(
         "openai",
         [
@@ -93,8 +92,8 @@ def test_openai_drops_families_that_are_not_on_the_responses_endpoint():
 
 
 def test_openai_drops_deep_research_models():
-    # Deep research rejects a request that carries no data source, and a
-    # default Studio turn sends no tools at all.
+    # Deep research rejects a request with no data source; a default Studio
+    # turn sends no tools.
     dropped = _apply(
         "openai",
         ["o3-deep-research", "o4-mini-deep-research", "gpt-6-deep-research"],

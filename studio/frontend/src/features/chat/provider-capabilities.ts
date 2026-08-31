@@ -90,14 +90,12 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
   prefixes: readonly string[];
   cap: number;
 }> = [
-  // OpenAI
-  // The picker admits every chat family OpenAI lists, so this table covers
-  // them all. The Responses API rejects an over-limit max_output_tokens rather
-  // than clamping it, which makes an overstated cap a failed request and an
-  // understated one merely a shorter answer. First match wins, so a bare
-  // family prefix (`gpt-5`, `gpt-4`) goes last or it swallows its own minors.
-  // Every `-chat-latest` alias caps at 16,384 whatever its family's ceiling
-  // is, so the aliases go ahead of the family rows.
+  // OpenAI. The Responses API rejects an over-limit max_output_tokens rather
+  // than clamping it, so an overstated cap is a failed request and an
+  // understated one only a shorter answer. First match wins: a bare family
+  // prefix (`gpt-5`, `gpt-4`) goes last or it swallows its own minors, and the
+  // `-chat-latest` aliases go first because they cap at 16,384 whatever their
+  // family does.
   {
     providerType: "openai",
     prefixes: [
@@ -120,8 +118,7 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
   { providerType: "openai", prefixes: ["gpt-4.5"], cap: 16384 },
   // `chatgpt-4o-latest` shares the gpt-4o cap but not its prefix.
   { providerType: "openai", prefixes: ["gpt-4o", "chatgpt-4o"], cap: 16384 },
-  // 4,096 is under the 8,192 in DEFAULT_INFERENCE_PARAMS, so these two fail on
-  // an untouched config rather than only on a raised slider.
+  // Under the 8,192 default, so these two fail on an untouched config.
   {
     providerType: "openai",
     prefixes: ["gpt-3.5-turbo", "gpt-4-turbo"],
@@ -149,14 +146,12 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
       "claude-opus-4-5",
       "claude-sonnet-4-5",
       "claude-haiku-4-5",
-      // Dated 4.0 id; the picker surfaces it now that the `-YYYYMMDD` filters
-      // are gone, and 4.0 has exactly one snapshot per model.
+      // Dated 4.0 id, surfaced now the `-YYYYMMDD` filters are gone.
       "claude-sonnet-4-20250514",
     ],
     cap: 64000,
   },
-  // Below the 32,768 fallback, so without this row a raised Max Tokens
-  // overshoots the model.
+  // Below the 32,768 fallback, so a raised Max Tokens would overshoot.
   {
     providerType: "anthropic",
     prefixes: ["claude-opus-4-1", "claude-opus-4-20250514"],
@@ -827,19 +822,16 @@ const OPENAI_REASONING_MODELS = [
     supportsOff: true,
     levels: ["none", "low", "medium", "high", "xhigh"],
   },
-  // 5.1 is where "none" replaced "minimal"; sending "minimal" to either of
-  // these returns "Unsupported value: 'reasoning_effort' does not support
-  // 'minimal' with this model". 5.2 adds xhigh, 5.1 does not. Both sit ahead
-  // of the bare `gpt-5` entry, which still takes the old ladder.
+  // 5.1 replaced "minimal" with "none" and 400s on the former; 5.2 adds
+  // xhigh. Both sit ahead of bare `gpt-5`, which keeps the old ladder.
   {
     prefixes: ["gpt-5.2"],
     supportsOff: true,
     levels: ["none", "low", "medium", "high", "xhigh"],
   },
-  // The 5.1 Codex tuning kept reasoning mandatory: `none` returns
-  // "'none' is not supported with the 'gpt-5.1-codex' model. Supported values
-  // are: 'low', 'medium', 'high'" (openai/codex#6647). `xhigh` arrived with
-  // codex-max. `-max` goes first or the plain codex prefix swallows it.
+  // 5.1 Codex keeps reasoning mandatory: `none` 400s (openai/codex#6647).
+  // `xhigh` arrived with codex-max, which sorts first or the plain codex
+  // prefix swallows it.
   {
     prefixes: ["gpt-5.1-codex-max"],
     supportsOff: false,
