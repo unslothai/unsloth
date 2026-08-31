@@ -4,14 +4,8 @@
 """A cap of the whole window is not a cap, and pricing it as one serialises the queue.
 
 Studio ships "Max Tokens: Max", which sends max_tokens = the context length, and a client
-that names nothing gets the same figure from `_build_passthrough_payload`. So the common
-request claims it may write the whole window, and the reservation believed it: one chat
-committed the entire cache before generating a token.
-
-Measured on a 262144 cache with --parallel 4 --kv-unified, four chats reached first token
-at 0.1 / 2.8 / 4.6 / 8.8s with llamacpp:requests_deferred flat at 0: llama-server had free
-slots and never saw requests 2 to 4. #10046 fixed the tool-loop half of this; these cover
-the other half, which is every plain chat.
+naming nothing gets the same figure from `_build_passthrough_payload`. #10046 fixed the
+tool-loop half of this; these cover the other half, which is every plain chat.
 """
 
 from routes.inference import (
@@ -114,11 +108,9 @@ class TestNothingChangesWhereThereIsNoBudget:
 
 
 class TestMaxIsPerRequestNotPerCache:
-    """Under ``--parallel N --no-kv-unified`` the budget is the aggregate of N private
-    caches while "Max" is still one slot's context_length, so the two are in different
-    units. Measuring the cap against the budget read that default as a real cap: each
-    reservation cost a slot's share plus its prompt, and four default chats no longer fit
-    in four caches (4104 each against 16384, so three).
+    """Under ``--no-kv-unified`` the budget is the aggregate of N private caches while "Max"
+    is still one slot's context_length, so measuring the cap against the budget reads that
+    default as a real cap and four default chats stop fitting in four caches.
     """
 
     WINDOW = 4096  # per slot, and what "Max" sends
@@ -183,13 +175,9 @@ class TestMaxIsPerRequestNotPerCache:
 
 
 class TestTheAllowanceCannotExceedOneSlot:
-    """A request cannot occupy more KV than its own slot holds.
-
-    The allowance is clamped against the WINDOW, not the aggregate budget. Under
-    ``--no-kv-unified`` those differ by N, and clamping against the budget charged a
-    long-prompt chat for more than a slot can physically hold: four private 4096 caches
-    with a 3500-token prompt gave a flat 1024 allowance and a 4524 charge, so three such
-    chats filled the 16384 aggregate.
+    """A request cannot occupy more KV than its own slot holds, so the allowance is clamped
+    against the WINDOW; clamping against the aggregate budget charged a long-prompt chat for
+    more than a slot can physically hold.
     """
 
     WINDOW = 4096

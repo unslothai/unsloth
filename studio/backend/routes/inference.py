@@ -1703,32 +1703,16 @@ _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS = (
     _OPENAI_LLAMA_ADMISSION_IMAGE_EMBEDDING_CAP + _OPENAI_LLAMA_ADMISSION_IMAGE_WRAPPER_TOKENS
 )
 
-# What to charge a request that names no usable output cap.
-#
-# "Max Tokens: Max" is Studio's default and means max_tokens = the whole window. Priced
-# literally, one chat reserves the entire cache before generating a token and the next is
-# refused however little either writes: measured on a 262144 cache, four chats went one at
-# a time at 0.1/2.8/4.6/8.8s to first token with llamacpp:requests_deferred flat at 0, so
-# requests 2-4 never reached llama-server at all.
-#
-# The trade: this is an ESTIMATE where the rest of the function is a bound. A run that
-# generates more is undercharged until something re-costs it, which a tool loop does every
-# round boundary and a plain chat cannot yet, so on a full cache a long uncapped generation
-# can still overrun. Raise this, or name a real Max Tokens, where that matters.
+# An ESTIMATE where the rest of the sizing is a bound: a run that generates more is
+# undercharged until something re-costs it, which a tool loop does every round boundary and
+# a plain chat cannot yet, so on a full cache a long uncapped generation can still overrun.
 _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS = (
     _positive_int_or_none(os.environ.get("UNSLOTH_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS")) or 1024
 )
 
 
 def _openai_llama_admission_context_window(llama_backend) -> Optional[int]:
-    """The window ONE request may fill, which is not always the admission budget.
-
-    ``context_length`` is per slot once the server has been read back. Under
-    ``--kv-unified`` that is also the whole cache, so window and budget agree; under
-    ``--no-kv-unified`` the budget is the aggregate of N private caches and is N times
-    larger. "Max" is a per-request figure either way, so it has to be compared against
-    this.
-    """
+    """One slot, which under ``--no-kv-unified`` is 1/N of the aggregate budget."""
     return _positive_int_or_none(getattr(llama_backend, "context_length", None))
 
 
@@ -1741,27 +1725,15 @@ def _openai_llama_admission_output_allowance(
 ) -> int:
     """KV to reserve for what a request may still generate.
 
-    A cap at or above the window is not a cap. `_build_passthrough_payload` sends
-    max_tokens = backend_ctx when the client names none, and "Max" sends the context
-    length outright, so both arrive as "the whole window" and neither says anything about
-    what this request will write. Charging the window for either serialises the queue.
-
-    Compared against the PER-REQUEST window, not the budget. Under
-    ``--parallel N --no-kv-unified`` the budget is the aggregate of N private caches while
-    "Max" is still one slot's context_length, so measuring against the budget read that
-    default as a real cap: each reservation then cost a slot's share plus its prompt, and
-    four default chats no longer fit in four caches (measured: 4104 each against 16384,
-    so three). Falls back to the budget when the window is unknown, which is the
-    unified case anyway.
+    A cap at or above the window is not a cap: `_build_passthrough_payload` sends
+    max_tokens = backend_ctx and "Max" sends the context length, so both mean unstated, and
+    charging the window for either serialises the queue. Measured against the per-request
+    window, since the budget is N times larger under --no-kv-unified.
     """
     window = context_window or budget
     if cap is not None and cap < window:
         return cap
-    # Clamped against the WINDOW, not the budget. One request cannot occupy more KV than
-    # its own slot holds, so charging it prompt + allowance past that overstates it: with
-    # four private 4096 caches and a 3500-token prompt, the flat 1024 charged 4524 for
-    # something that can only ever occupy 4096, and three such chats filled a 16384
-    # aggregate. Identical under --kv-unified, where window and budget are one number.
+    # Clamped to the WINDOW: a request cannot occupy more KV than its own slot holds.
     return min(_OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS, max(0, window - prompt_tokens))
 
 
@@ -1981,9 +1953,7 @@ def _openai_llama_admission_tokens(
             getattr(payload, "max_completion_tokens", None),
         )
     )
-    # An absent cap and a cap of the whole window are the same statement, and neither
-    # promises to fill the cache. Reserving the rest of the budget for either is what made
-    # concurrency 1 for the default Studio chat.
+    # Reserving the rest of the budget for either made concurrency 1 for the default chat.
     output_tokens = _openai_llama_admission_output_allowance(
         cap, budget = budget, prompt_tokens = prompt_tokens, context_window = context_window
     )
@@ -2111,9 +2081,8 @@ def _openai_llama_admission_recost(
             message_image_parts = message_image_parts,
             image_tokens = _openai_llama_admission_image_tokens(llama_backend),
         )
-        # Priced exactly as the opening reservation priced it. A re-cost that read "Max"
-        # literally would put the run back on the whole cache at its first round boundary,
-        # undoing at round zero what the opening estimate stopped doing.
+        # Reading "Max" literally here would put the run back on the whole cache at its
+        # first round boundary.
         output_tokens = _openai_llama_admission_output_allowance(
             output_tokens,
             budget = budget,

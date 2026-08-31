@@ -341,10 +341,9 @@ class TestTheWholeRenderedPromptIsCounted:
 
     An uncapped request reserved no output allowance even though
     `_build_passthrough_payload` then sends `max_tokens = backend_ctx`, so short
-    prompts held tiny commitments while each generation could fill the cache. That
-    is now charged as a bounded allowance rather than as the whole window: charging
-    the window fixed the undercount by making the default chat un-runnable
-    concurrently, since "Max" sends the context length and is what Studio ships. And
+    prompts held tiny commitments while each generation could fill the cache. That is
+    now a bounded allowance rather than the whole window, which fixed the undercount by
+    making Studio's default chat un-runnable concurrently. And
     the estimate covered only `messages`, while OpenAI tool definitions are
     rendered into the prompt and Anthropic keeps `system` and `tools` separate
     until they are translated.
@@ -364,10 +363,8 @@ class TestTheWholeRenderedPromptIsCounted:
         )
 
     def test_an_uncapped_request_reserves_a_bounded_allowance(self):
-        """It used to reserve the whole window because generation MAY run that long.
-        Almost none do, and charging the window made the default Studio chat (Max Tokens
-        = Max sends the context length) cost the entire cache before writing a token, so a
-        second chat could never start. Now an allowance clamped to what is left."""
+        """It reserved the whole window because generation MAY run that long, which cost
+        the default chat the entire cache before it wrote a token."""
         from types import SimpleNamespace
 
         from routes.inference import _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
@@ -384,9 +381,8 @@ class TestTheWholeRenderedPromptIsCounted:
     def test_two_uncapped_short_prompts_do_not_both_run(self):
         """The collision this closes: tiny commitments, cache-filling generations.
 
-        Still true at 2048, but now only because two allowances do not fit there; on a
-        larger cache they DO both run, which is the point. What this pins is that the
-        allowance is charged at all, since a prompt-only charge would admit any number.
+        Still true at 2048 only because two allowances do not fit there; on a larger cache
+        they DO both run. What this pins is that an allowance is charged at all.
         """
         from types import SimpleNamespace
 
