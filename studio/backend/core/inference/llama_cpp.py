@@ -22774,28 +22774,42 @@ class LlamaCppBackend:
                                         requested_load_mode = load_mode,
                                         model_memory_settings = _model_memory_settings,
                                     )
-                                    if gpu_ids is not None:
-                                        _retry_extras = self._strip_device_extra_args(_retry_extras)
-                                    _retry_policy_argv = [
-                                        *_retry_managed,
-                                        *_retry_load_mode,
-                                        *(str(arg) for arg in _retry_extras),
-                                    ]
-                                    run_cmd = _replace_subsequence(
-                                        run_cmd,
-                                        _mem_policy_argv,
-                                        _retry_policy_argv,
-                                    )
-                                    _mem_host_resident = False
-                                    # The managed flag was the policy's only mark on
-                                    # this child unless it also scrubbed or stripped,
-                                    # and a child equal to an unmanaged one must not
-                                    # be torn down when the toggles go off.
-                                    self._memory_policy_active = _mem_policy_touched_extras
-                                    logger.info(
-                                        "Model Memory: dropping the page-lock for "
-                                        "the --fit off retry; it offloads every layer."
-                                    )
+                                    # Only when the rebuilt policy really has no host copy.
+                                    # Restoring a reserving mode puts one back, and then the
+                                    # lock still has something to act on -- the promotion the
+                                    # initial build makes. Dropping it there leaves an
+                                    # unlocked full copy that can never satisfy "keep
+                                    # resident", so the reload hint and the duplicate-load
+                                    # comparator ask for a relaunch that rebuilds the very
+                                    # same child, on every load.
+                                    if not resolve_effective_memory_state(
+                                        [*_retry_load_mode, *_retry_extras],
+                                        _fit_load_mode_env_view,
+                                    )[1]:
+                                        if gpu_ids is not None:
+                                            _retry_extras = self._strip_device_extra_args(
+                                                _retry_extras
+                                            )
+                                        _retry_policy_argv = [
+                                            *_retry_managed,
+                                            *_retry_load_mode,
+                                            *(str(arg) for arg in _retry_extras),
+                                        ]
+                                        run_cmd = _replace_subsequence(
+                                            run_cmd,
+                                            _mem_policy_argv,
+                                            _retry_policy_argv,
+                                        )
+                                        _mem_host_resident = False
+                                        # The managed flag was the policy's only mark on
+                                        # this child unless it also scrubbed or stripped,
+                                        # and a child equal to an unmanaged one must not
+                                        # be torn down when the toggles go off.
+                                        self._memory_policy_active = _mem_policy_touched_extras
+                                        logger.info(
+                                            "Model Memory: dropping the page-lock for "
+                                            "the --fit off retry; it offloads every layer."
+                                        )
                                 self._memory_state = resolve_effective_memory_state(run_cmd, env)
                                 self._memory_mlock_applicable = (
                                     _mem_host_resident or self._memory_state[1]

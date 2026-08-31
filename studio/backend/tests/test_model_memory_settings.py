@@ -2759,6 +2759,70 @@ class TestFitOffRetryDropsTheLock:
         assert state == (False, True)
         assert state[1] is True
 
+    @staticmethod
+    def _rebuilt_retry_policy(mode, settings = (True, False)):
+        """The policy the arm rebuilds at weights_in_host_memory=False."""
+        retry_managed, retry_extras = apply_model_memory_policy(
+            [],
+            supports_load_mode = True,
+            weights_in_host_memory = False,
+            model_memory_settings = settings,
+        )
+        retry_mode, retry_extras = apply_load_mode_policy(
+            retry_extras,
+            supports_load_mode = True,
+            weights_in_host_memory = False,
+            requested_load_mode = mode,
+            model_memory_settings = settings,
+        )
+        return retry_managed, retry_mode, retry_extras
+
+    def test_a_restored_reserving_mode_keeps_the_lock(self, monkeypatch):
+        """Restoring "none" puts a full host copy back, so the lock still has
+        something to act on. Dropping it left an unlocked reservation that can
+        never satisfy "keep resident": the settings route reported a reload
+        forever and the duplicate-load comparator rejected the running child, so
+        every later load of that model repeated the same fit crash and retry."""
+        import utils.model_memory_settings as mm
+
+        monkeypatch.setattr(mm, "get_keep_resident", lambda: True)
+        monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
+        managed = ["--load-mode", "mmap+mlock"]
+        retry_managed, retry_mode, retry_extras = self._rebuilt_retry_policy("none")
+        assert (retry_managed, retry_mode) == ([], ["--load-mode", "none"])
+        # The question the arm asks before replacing anything.
+        assert resolve_effective_memory_state([*retry_mode, *retry_extras], {})[1] is True
+
+        dropped = resolve_effective_memory_state(
+            [*self._retry_argv([*managed, "--fit", "on"], managed, drops = True), *retry_mode], {}
+        )
+        assert dropped == (False, True)
+        assert memory_state_satisfies_settings(dropped, True, True) is False
+
+        kept = resolve_effective_memory_state(
+            self._retry_argv([*managed, "--fit", "on"], managed, drops = False), {}
+        )
+        assert kept == (True, False)
+        assert memory_state_satisfies_settings(kept, True, True) is True
+
+    def test_a_restored_non_reserving_mode_still_drops_the_lock(self, monkeypatch):
+        """The control. "dio" streams the weights, so the full offload really has
+        no host copy and the lock goes, as it did before the guard."""
+        import utils.model_memory_settings as mm
+
+        monkeypatch.setattr(mm, "get_keep_resident", lambda: True)
+        monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
+        managed = ["--load-mode", "mmap+mlock"]
+        _retry_managed, retry_mode, retry_extras = self._rebuilt_retry_policy("dio")
+        assert retry_mode == ["--load-mode", "dio"]
+        assert resolve_effective_memory_state([*retry_mode, *retry_extras], {})[1] is False
+
+        dropped = resolve_effective_memory_state(
+            [*self._retry_argv([*managed, "--fit", "on"], managed, drops = True), *retry_mode], {}
+        )
+        assert dropped == (False, False)
+        assert memory_state_satisfies_settings(dropped, True, False) is True
+
     def test_the_retry_restores_stripped_hand_typed_extras(self):
         from core.inference.llama_cpp import _replace_subsequence
 
@@ -2840,6 +2904,9 @@ class TestFitOffRetryDropsTheLock:
             "_mem_policy_argv",
             "_retry_policy_argv",
             "requested_load_mode = load_mode",
+            # The drop is gated on the rebuilt policy having no host copy of its own.
+            "[*_retry_load_mode, *_retry_extras]",
+            "_fit_load_mode_env_view",
             "_mem_host_resident = False",
             "self._memory_mlock_applicable = (",
             "_mem_host_resident or self._memory_state[1]",
