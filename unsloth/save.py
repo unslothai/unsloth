@@ -1929,7 +1929,7 @@ def _is_gguf_companion(path: Union[str, os.PathLike]) -> bool:
     name = file_path.name.casefold()
     stem = name[:-5] if name.endswith(".gguf") else name
     return (
-        "-mmproj" in stem
+        stem.endswith("-mmproj")
         or stem.startswith("mmproj-")
         or stem.startswith("mtp-")
         or stem.endswith("-mtp")

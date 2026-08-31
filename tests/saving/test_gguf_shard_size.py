@@ -107,6 +107,7 @@ def test_converter_only_shards_final_full_precision_outputs(
         ("mmproj-model.F16.gguf", True),
         ("mtp-model.Q8_0.gguf", True),
         ("model.Q8_0-MTP.gguf", True),
+        ("ordinary-mmprojector-model.gguf", False),
         ("ordinary-mtp-model.gguf", False),
         ("attempt.gguf", False),
         ("model-00001-of-00002.gguf", False),

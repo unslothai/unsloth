@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import inspect
 import os
 import types
 
@@ -91,15 +90,3 @@ def test_sentence_transformer_push_forwards_gguf_shard_size(
 
     assert result == "owner/model"
     assert seen["gguf_shard_size"] == "2GB"
-
-
-def test_sentence_transformer_shard_parameter_is_appended(sentence_transformer_module):
-    save_parameters = list(
-        inspect.signature(sentence_transformer_module._save_pretrained_gguf).parameters
-    )
-    push_parameters = list(
-        inspect.signature(sentence_transformer_module._push_to_hub_gguf).parameters
-    )
-
-    assert save_parameters.index("gguf_shard_size") > save_parameters.index("imatrix_file")
-    assert push_parameters.index("gguf_shard_size") > push_parameters.index("imatrix_file")

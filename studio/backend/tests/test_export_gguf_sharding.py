@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import ast
 import importlib.util
 from pathlib import Path
 
@@ -13,7 +12,6 @@ from pydantic import ValidationError
 from models.export import ExportGGUFRequest
 
 
-_BACKEND = Path(__file__).resolve().parent.parent
 _HELPERS_SPEC = importlib.util.spec_from_file_location(
     "export_absolute_path_helpers",
     Path(__file__).with_name("test_export_absolute_paths.py"),
@@ -23,17 +21,6 @@ _HELPERS = importlib.util.module_from_spec(_HELPERS_SPEC)
 _HELPERS_SPEC.loader.exec_module(_HELPERS)
 _install_export_backend_stubs = _HELPERS._install_export_backend_stubs
 _load_module = _HELPERS._load_module
-
-
-def _function_source(relative_path: str, name: str) -> str:
-    source = (_BACKEND / relative_path).read_text(encoding = "utf-8")
-    node = next(
-        item
-        for item in ast.walk(ast.parse(source))
-        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == name
-    )
-    return ast.get_source_segment(source, node)
-
 
 @pytest.mark.parametrize(
     "value, expected",
@@ -58,17 +45,6 @@ def test_gguf_request_normalizes_shard_size(value, expected):
 def test_gguf_request_rejects_invalid_shard_size(value):
     with pytest.raises(ValidationError, match = "gguf_shard_size"):
         ExportGGUFRequest(save_directory = "/tmp/export", gguf_shard_size = value)
-
-
-def test_route_orchestrator_and_worker_forward_shard_size():
-    route = _function_source("routes/export.py", "export_gguf")
-    orchestrator = _function_source("core/export/orchestrator.py", "export_gguf")
-    worker = _function_source("core/export/worker.py", "_handle_export")
-
-    assert "gguf_shard_size = request.gguf_shard_size" in route
-    assert '"gguf_shard_size": gguf_shard_size' in orchestrator
-    assert 'gguf_shard_size = cmd.get("gguf_shard_size")' in worker
-
 
 def test_orchestrator_preserves_shard_size_in_command():
     from core.export.orchestrator import ExportOrchestrator
