@@ -21,11 +21,6 @@ test("a truncated marker takes its payload with it", () => {
   assert.equal(scrubOpenAICitationMarkers(`a ${MARKER} b ${PARTIAL}`), "a  b ");
 });
 
-test("a truncation earlier than the payload is dropped too", () => {
-  assert.equal(scrubOpenAICitationMarkers("See \uE200ci"), "See ");
-  assert.equal(scrubOpenAICitationMarkers("See \uE200"), "See ");
-});
-
 test("orphan private-use bytes are still removed", () => {
   assert.equal(scrubOpenAICitationMarkers("a\uE201b"), "ab");
   assert.equal(scrubOpenAICitationMarkers("a\uE202b"), "ab");
@@ -34,4 +29,31 @@ test("orphan private-use bytes are still removed", () => {
 test("text without markers is returned untouched", () => {
   assert.equal(scrubOpenAICitationMarkers("plain text"), "plain text");
   assert.equal(scrubOpenAICitationMarkers(""), "");
+});
+
+test("a lone private-use glyph costs one character, not the rest of the message", () => {
+  // Nerd Font icons live in the same private-use block, so a partial rule that keys on
+  // the open byte alone would swallow everything after a prompt-icon example.
+  assert.equal(
+    scrubOpenAICitationMarkers("icon \uE200 and the rest"),
+    "icon  and the rest",
+  );
+  assert.equal(scrubOpenAICitationMarkers("trailing \uE200"), "trailing ");
+  assert.equal(
+    scrubOpenAICitationMarkers("\uE200not a marker"),
+    "not a marker",
+  );
+});
+
+test("every truncation of the marker prefix is still dropped", () => {
+  for (const partial of [
+    "\uE200c",
+    "\uE200ci",
+    "\uE200cit",
+    "\uE200cite",
+    "\uE200cite\uE202",
+    PARTIAL,
+  ]) {
+    assert.equal(scrubOpenAICitationMarkers(`See ${partial}`), "See ");
+  }
 });

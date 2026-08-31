@@ -7,7 +7,9 @@
 const CITE_MARKER_RE = /\uE200cite\uE202[^\uE201]*\uE201/g;
 // An unterminated marker keeps its payload, so stripping the delimiters alone leaves
 // "citeturn0search0". Same rule as external_provider._flush_pending_marker_tail.
-const CITE_PARTIAL_RE = /\uE200[^\uE201]*$/;
+// Only what a truncation can leave: a lone open byte elsewhere in the text is one
+// stray glyph for the sweep below, not a licence to drop the rest of the message.
+const CITE_PARTIAL_RE = /\uE200(?:c|ci|cit|cite|cite\uE202[^\uE200\uE201]*)$/;
 const PUA_ORPHAN_RE = /[\uE200\uE201\uE202]/g;
 
 export function scrubOpenAICitationMarkers(text: string): string {
