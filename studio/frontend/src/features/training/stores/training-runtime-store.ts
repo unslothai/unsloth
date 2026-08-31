@@ -61,6 +61,7 @@ const initialState: TrainingRuntimeState = {
   startError: null,
   startModelName: null,
   startDatasetName: null,
+  startHfToken: null,
   startProjectName: null,
   startFromResume: false,
   sseConnected: false,
@@ -263,10 +264,12 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
       startDatasetName,
       startFromResume = false,
       startProjectName = null,
+      startHfToken = null,
     ) =>
       set({
         startModelName,
         startDatasetName,
+        startHfToken,
         startProjectName,
         startFromResume,
       }),

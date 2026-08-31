@@ -391,11 +391,11 @@ def check_format_response(
                 try:
                     from huggingface_hub import HfApi
 
-                    api = HfApi()
+                    api = HfApi(token = hf_token)
                     repo_files = api.list_repo_files(
                         request.dataset_name,
                         repo_type = "dataset",
-                        token = hf_token or None,
+                        token = hf_token,
                     )
                     train_split = request.train_split or "train"
                     first_file = _select_tier1_repo_file(
@@ -411,9 +411,8 @@ def check_format_response(
                             "data_files": {train_split: [first_file]},
                             "split": train_split,
                             "streaming": True,
+                            "token": hf_token,
                         }
-                        if hf_token:
-                            load_kwargs["token"] = hf_token
 
                         streamed_ds = load_dataset(**load_kwargs)
                         rows = list(islice(streamed_ds, PREVIEW_SIZE))
@@ -433,11 +432,10 @@ def check_format_response(
                         "path": request.dataset_name,
                         "split": request.train_split or "train",
                         "streaming": True,
+                        "token": hf_token,
                     }
                     if request.subset:
                         load_kwargs["name"] = request.subset
-                    if hf_token:
-                        load_kwargs["token"] = hf_token
 
                     streamed_ds = load_dataset(**load_kwargs)
 

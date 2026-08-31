@@ -1127,10 +1127,17 @@ export function useChatModelRuntime() {
       loadingModelRef.current = loadInfo;
       const abortCtrl = new AbortController();
       loadAbortRef.current = abortCtrl;
+      let hfToken = useChatRuntimeStore.getState().hfToken || null;
       const postLoadRefresh = { needed: false };
       let cpuFallbackReason: CpuFallbackReason | null = null;
       let mmprojFallbackReason: MmprojFallbackReason | null = null;
       try {
+        const preparedToken = await prepareHfTokenForUse(hfToken);
+        if (!preparedToken.proceed) {
+          throw new Error("Model load cancelled.");
+        }
+        hfToken = preparedToken.token;
+
         async function performLoad(): Promise<void> {
           if (abortCtrl.signal.aborted) throw new Error("Cancelled");
           let previousWasUnloaded = false;
@@ -1171,17 +1178,11 @@ export function useChatModelRuntime() {
             // header with 401 even for a public repo, so sending the raw stored
             // token here would abort the load before the existing "continue
             // anonymously / replace token" recovery flow could run.
-            const preparedToken = await prepareHfTokenForUse(
-              useChatRuntimeStore.getState().hfToken || null,
-            );
-            if (!preparedToken.proceed) {
-              throw new Error("Model load cancelled.");
-            }
             isDiffusion = (
               await fetchGgufStagedMetadata({
                 model_path: loadPath,
                 gguf_variant: ggufVariant ?? null,
-                hf_token: preparedToken.token,
+                hf_token: hfToken,
                 nativePathToken: nativePathToken ?? null,
               })
             ).isDiffusion;
@@ -1228,7 +1229,6 @@ export function useChatModelRuntime() {
               ? (stateBeforeUnload.ggufContextLength ?? 0)
               : previousMaxSeqLength,
           );
-          const hfToken = stateBeforeUnload.hfToken || null;
           const previousModelRequiresTrustRemoteCode =
             stateBeforeUnload.modelRequiresTrustRemoteCode;
           const previousActiveNativePathExpiresAtMs =
@@ -2222,8 +2222,13 @@ export function useChatModelRuntime() {
           try {
             const prog =
               ggufVariant && expectedBytes > 0
-                ? await getGgufDownloadProgress(modelId, ggufVariant, expectedBytes)
-                : await getDownloadProgress(modelId);
+                ? await getGgufDownloadProgress(
+                    modelId,
+                    ggufVariant,
+                    expectedBytes,
+                    hfToken,
+                  )
+                : await getDownloadProgress(modelId, hfToken);
             if (!loadingModelRef.current) return;
 
             if (prog.progress > 0 && prog.progress < 1) {

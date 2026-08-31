@@ -377,7 +377,7 @@ def read_default_chat_template(
     try:
         from huggingface_hub import HfApi, hf_hub_download
 
-        _api = HfApi()
+        _api = HfApi(token = hf_token)
 
         def _remote_worth_downloading(rel: str) -> bool:
             # Reuse the size lookup to skip absent or oversized files.

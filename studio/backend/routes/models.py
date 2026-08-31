@@ -192,8 +192,9 @@ backend_path = Path(__file__).parent.parent.parent
 if str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
 
-from auth.authentication import get_current_subject
-from hub.dependencies import get_hf_token
+from auth.authentication import allow_ambient_hf_token, get_current_subject
+from hub.dependencies import get_hf_token, get_request_hf_token
+from hub.utils.hf_tokens import HfTokenArg, hf_token_arg
 
 try:
     from utils.models import (
@@ -2259,7 +2260,7 @@ def _get_max_position_embeddings(config) -> Optional[int]:
 _MODEL_WEIGHT_EXTENSIONS = (".safetensors", ".bin", ".pt", ".pth", ".gguf")
 
 
-def _get_model_size_bytes(model_name: str, hf_token: Optional[str] = None) -> Optional[int]:
+def _get_model_size_bytes(model_name: str, hf_token: HfTokenArg = None) -> Optional[int]:
     """Total size of model weight files from HF Hub."""
     try:
         from huggingface_hub import HfApi
@@ -2358,10 +2359,14 @@ async def get_model_config(
     prefer_local_cache: bool = False,
     local_path: Optional[str] = None,
     header_hf_token: Optional[str] = Depends(get_hf_token),
+    allow_ambient_token: bool = Depends(allow_ambient_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     """Get configuration for a specific model (wraps load_model_defaults)."""
-    hf_token = _normalize_hf_token(header_hf_token) or _normalize_hf_token(hf_token)
+    hf_token = hf_token_arg(
+        _normalize_hf_token(header_hf_token) or _normalize_hf_token(hf_token),
+        allow_ambient_token = allow_ambient_token,
+    )
     from core.inference.llama_cpp import _hf_offline_if_unreachable_for
 
     def _resolve(model_name: str) -> ModelDetails:
@@ -2831,7 +2836,7 @@ async def scan_loras(
     exports_dir: str = Query(
         default = str(exports_root()), description = "Directory to scan for exported models"
     ),
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     """Scan for trained LoRA adapters and exported models.
@@ -3454,6 +3459,7 @@ async def check_vision_model(
     model_name: str,
     hf_token: Optional[str] = Query(None),
     header_hf_token: Optional[str] = Depends(get_hf_token),
+    allow_ambient_token: bool = Depends(allow_ambient_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     """
@@ -3461,7 +3467,10 @@ async def check_vision_model(
 
     This endpoint wraps the backend is_vision_model function.
     """
-    hf_token = _normalize_hf_token(header_hf_token) or _normalize_hf_token(hf_token)
+    hf_token = hf_token_arg(
+        _normalize_hf_token(header_hf_token) or _normalize_hf_token(hf_token),
+        allow_ambient_token = allow_ambient_token,
+    )
     try:
         logger.info(f"Checking if vision model: {model_name}")
         # Authenticate so a gated/private VLM classifies correctly (else 404 -> non-vision). Offline
@@ -3496,6 +3505,7 @@ async def check_embedding_model(
     model_name: str,
     hf_token: Optional[str] = Query(None),
     header_hf_token: Optional[str] = Depends(get_hf_token),
+    allow_ambient_token: bool = Depends(allow_ambient_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     """
@@ -3503,7 +3513,10 @@ async def check_embedding_model(
 
     This endpoint wraps the backend is_embedding_model function.
     """
-    hf_token = _normalize_hf_token(header_hf_token) or _normalize_hf_token(hf_token)
+    hf_token = hf_token_arg(
+        _normalize_hf_token(header_hf_token) or _normalize_hf_token(hf_token),
+        allow_ambient_token = allow_ambient_token,
+    )
     try:
         logger.info(f"Checking if embedding model: {model_name}")
         # Same guard as /check-vision: is_embedding_model hits the hub with a 15s timeout.
@@ -4435,12 +4448,12 @@ async def get_gguf_variants(
     offline: bool = False,
     local_path: Optional[str] = None,
     hf_token: Optional[str] = Query(None, description = "HuggingFace token for private repos"),
-    hf_token_header: Optional[str] = Depends(get_hf_token),
+    hf_token_header: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     """List GGUF quantization variants for a HF repo or local directory."""
     try:
-        hf_token = _normalize_hf_token(hf_token_header) or _normalize_hf_token(hf_token)
+        hf_token = _normalize_hf_token(hf_token) or hf_token_header
         from hub.services.models import gguf_variants as hub_gguf_variants
 
         answer = await hub_gguf_variants.get_gguf_variants_answer(
@@ -4502,7 +4515,7 @@ async def get_gguf_download_progress(
     repo_id: str = Query(..., description = "HuggingFace repo ID"),
     variant: str = Query("", description = "Quantization variant (e.g. UD-TQ1_0)"),
     expected_bytes: int = Query(0, description = "Expected total download size in bytes"),
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     """Compatibility route backed by the shared multi-cache progress service."""
@@ -4529,7 +4542,7 @@ def _resolve_hf_cache_realpath(repo_dir: Path) -> Optional[str]:
 @router.get("/download-progress")
 async def get_download_progress(
     repo_id: str = Query(..., description = "HuggingFace repo ID"),
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     """Compatibility route backed by the shared multi-cache progress service."""
@@ -5028,7 +5041,7 @@ def _cached_repo_partial(
 @router.get("/cached-models", response_model = CachedModelsResponse)
 async def list_cached_models(
     current_subject: str = Depends(get_current_subject),
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
 ):
     """List non-GGUF model repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     try:
@@ -5318,7 +5331,7 @@ async def delete_cached_model(
     repo_id: str = Body(...),
     variant: Optional[str] = Body(None),
     cache_path: Optional[str] = Body(None),
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     """Compatibility route backed by the shared multi-cache deletion service."""
