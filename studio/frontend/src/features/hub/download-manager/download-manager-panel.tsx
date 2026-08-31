@@ -143,9 +143,14 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
   const transportConflict = useDownloadManagerStore(
     (state) => state.conflicts[jobKey]?.info ?? null,
   );
+  const mounted = useRef(true);
   useEffect(
-    () => () => {
-      downloadManager.cancelConflict(jobKey);
+    () => {
+      mounted.current = true;
+      return () => {
+        mounted.current = false;
+        downloadManager.cancelConflict(jobKey);
+      };
     },
     [jobKey],
   );
@@ -184,9 +189,15 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
               <button
                 type="button"
                 aria-label="Resume download"
-                onClick={() =>
-                  void downloadManager.requestStart(resumeRequestFromJob(job))
-                }
+                onClick={() => {
+                  void downloadManager
+                    .requestStart(resumeRequestFromJob(job))
+                    .then((outcome) => {
+                      if (outcome === "conflict" && !mounted.current) {
+                        downloadManager.cancelConflict(jobKey);
+                      }
+                    });
+                }}
                 className={cn(
                   "inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors",
                   "hover:bg-foreground/[0.06] hover:text-foreground dark:hover:bg-white/[0.06]",

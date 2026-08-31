@@ -48,7 +48,7 @@ const STATE = read(
 test("a failed or cancelled row offers Resume in Downloads", () => {
   assert.match(PANEL, /aria-label="Resume download"/);
   assert.match(PANEL, /resumeRequestFromJob/);
-  assert.match(PANEL, /downloadManager.requestStart/);
+  assert.match(PANEL, /downloadManager\s*\.requestStart/);
   // Playwright and AppImage cancel/retry smokes wait on this exact copy.
   assert.match(PANEL, /Cancelled\. Partial files kept\./);
 });
@@ -59,7 +59,8 @@ test("the global Resume path exposes transport conflict resolution", () => {
   assert.match(PANEL, /downloadManager\.resumeConflict\(jobKey\)/);
   assert.match(PANEL, /downloadManager\.restartConflict\(jobKey\)/);
   assert.match(PANEL, /downloadManager\.cancelConflict\(jobKey\)/);
-  assert.match(PANEL, /\(\) => \(\) => \{/);
+  assert.match(PANEL, /mounted\.current = false/);
+  assert.match(PANEL, /outcome === "conflict" && !mounted\.current/);
 });
 
 test("failed and cancelled jobs are persisted so a restart can resume them", () => {
