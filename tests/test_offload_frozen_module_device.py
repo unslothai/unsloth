@@ -251,9 +251,7 @@ def test_the_continued_pretraining_call_sites_pass_the_recorded_device():
     import pathlib
 
     root = pathlib.Path(__file__).resolve().parents[1]
-    tree = ast.parse(
-        (root / "unsloth" / "models" / "llama.py").read_text(encoding = "utf-8")
-    )
+    tree = ast.parse((root / "unsloth" / "models" / "llama.py").read_text(encoding = "utf-8"))
 
     checked = 0
     for node in ast.walk(tree):
