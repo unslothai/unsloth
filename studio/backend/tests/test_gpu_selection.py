@@ -2375,3 +2375,94 @@ class TestDeviceMapAcrossPlatformsAndAccelerators(_GpuCacheResetMixin, unittest.
                         f"{label} with {len(gpu_ids)} GPU(s) answered {answers} across "
                         "operating systems; the placement must not move with the OS",
                     )
+
+
+class TestPlannerIneligibleRoutesKeepBalanced(_GpuCacheResetMixin, unittest.TestCase):
+    """Routes unsloth's planner refuses to plan must keep a sharding map.
+
+    `resolve_unsloth_device_map` turns `"unsloth"` into `"sequential"` for a full
+    finetune and for an explicit `auto_model` class with no `_model_mapping`. That
+    fallback is not a shard: `get_max_memory` gives cuda:0 its whole free budget, so
+    `infer_auto_device_map` fills it before touching cuda:1. Measured on
+    `unsloth/Qwen2.5-7B-Instruct` in bf16 across two cards, replicating the transformers
+    branch exactly:
+
+        card 8 GiB   sequential {'0': 14, '1': 18}   balanced {'0': 13, '1': 19}
+        card 16 GiB  sequential {'0': 1}             balanced {'0': 13, '1': 19}
+
+    At 16 GiB the weights fit on one card, so sequential puts the whole model there with
+    nothing left for optimizer state, where balanced spreads it. Those routes therefore
+    keep the map they had before the planner switch.
+    """
+
+    def test_a_full_finetune_keeps_balanced(self):
+        with patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA):
+            self.assertEqual(get_device_map([0, 1], planner_eligible = False), "balanced")
+
+    def test_an_eligible_load_still_gets_the_planner(self):
+        with patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA):
+            self.assertEqual(get_device_map([0, 1], planner_eligible = True), "unsloth")
+            self.assertEqual(get_device_map([0, 1]), "unsloth")  # eligible by default
+
+    def test_ineligibility_does_not_invent_a_shard_on_one_gpu(self):
+        for device in (DeviceType.CUDA, DeviceType.XPU, DeviceType.CPU):
+            with patch("utils.hardware.hardware.get_device", return_value = device):
+                self.assertEqual(get_device_map([0], planner_eligible = False), "sequential")
+
+    def test_xpu_is_unaffected_by_the_flag(self):
+        # XPU already keeps "balanced"; eligibility is a CUDA-only distinction.
+        with patch("utils.hardware.hardware.get_device", return_value = DeviceType.XPU):
+            self.assertEqual(get_device_map([0, 1], planner_eligible = True), "balanced")
+            self.assertEqual(get_device_map([0, 1], planner_eligible = False), "balanced")
+
+
+class TestStudioLoadersDeclareTheirPlannerEligibility(unittest.TestCase):
+    """The two call sites must pass the flag, and no third auto_model may appear unnoticed.
+
+    The eligibility rule lives in unsloth (`_planner_skip_reason` fires for an explicit
+    `auto_model` whose class has no `_model_mapping`), so a new Studio route that passes
+    one would silently lose its shard with nothing red. This pins the known set instead.
+    """
+
+    KNOWN_AUTO_MODELS = {"CsmForConditionalGeneration", "WhisperForConditionalGeneration"}
+    LOADERS = ("core/inference/inference.py", "core/training/trainer.py")
+
+    def _source(self, relative):
+        return (Path(__file__).resolve().parent.parent / relative).read_text(encoding = "utf-8")
+
+    def test_both_loaders_pass_planner_eligible(self):
+        import ast
+
+        for relative in self.LOADERS:
+            tree = ast.parse(self._source(relative))
+            calls = [
+                node for node in ast.walk(tree)
+                if isinstance(node, ast.Call)
+                and getattr(node.func, "id", None) == "get_device_map"
+            ]
+            self.assertTrue(calls, f"{relative}: no get_device_map call found")
+            for call in calls:
+                self.assertIn(
+                    "planner_eligible", {kw.arg for kw in call.keywords},
+                    f"{relative}:{call.lineno} calls get_device_map without planner_eligible; "
+                    "a planner-ineligible route would silently fall back to sequential",
+                )
+
+    def test_the_set_of_explicit_auto_model_classes_is_the_one_the_flag_covers(self):
+        import ast
+
+        seen = set()
+        for relative in self.LOADERS:
+            tree = ast.parse(self._source(relative))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                for keyword in node.keywords:
+                    if keyword.arg == "auto_model" and isinstance(keyword.value, ast.Name):
+                        seen.add(keyword.value.id)
+        self.assertEqual(
+            seen, self.KNOWN_AUTO_MODELS,
+            "the explicit auto_model classes Studio loads changed. Each one has to be "
+            "checked for a _model_mapping: without it unsloth's planner declines and the "
+            "route needs planner_eligible = False to keep its shard.",
+        )

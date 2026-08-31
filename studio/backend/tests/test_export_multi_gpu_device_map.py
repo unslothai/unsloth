@@ -262,7 +262,9 @@ def test_successful_load_that_offloads_to_cpu_retries_single_device(monkeypatch,
     assert ok, message
     assert len(calls) == 2
     assert calls[0]["device_map"] == "balanced"
-    assert "device_map" not in calls[1]
+    # Named, not omitted: an omitted map is unsloth's marked default, which is upgraded
+    # back to the planner rather than being the single-device load this retry wants.
+    assert calls[1]["device_map"] == "sequential"
 
 
 def test_single_gpu_offload_is_left_alone(monkeypatch, tmp_path):
@@ -350,7 +352,7 @@ def test_planner_refusal_retries_on_the_single_device_loader(monkeypatch, tmp_pa
     assert ok, message
     assert len(_RefusesThenLoads.calls) == 2
     assert _RefusesThenLoads.calls[0]["device_map"] == "unsloth"
-    assert "device_map" not in _RefusesThenLoads.calls[1]
+    assert _RefusesThenLoads.calls[1]["device_map"] == "sequential"
 
 
 def test_an_unrelated_error_is_still_reported_rather_than_retried(monkeypatch, tmp_path):
@@ -382,3 +384,46 @@ def test_an_unrelated_error_is_still_reported_rather_than_retried(monkeypatch, t
     assert not ok
     assert len(_AlwaysBroken.calls) == 1
     assert "not valid JSON" in message
+
+
+def test_the_retry_names_sequential_rather_than_omitting_the_device_map(monkeypatch, tmp_path):
+    """An omitted device_map is not the loader default any more.
+
+    unsloth's signature default is `DEFAULT_DEVICE_MAP`, a marked "sequential" that
+    `requested_device_map` upgrades back to the planner unless UNSLOTH_AUTO_DEVICE_MAP=0.
+    So `_device_map_override = {}` would re-run the very placement that just failed and
+    report the same error, and the retry would look like a fallback while being none.
+    """
+    mod = _export_mod(monkeypatch)
+
+    class DeviceMapInfeasible(RuntimeError):
+        pass
+
+    class _RefusesAnyPlan:
+        calls: list[dict] = []
+
+        @classmethod
+        def from_pretrained(cls, **kwargs):
+            cls.calls.append(kwargs)
+            # Stands in for the planner: it refuses whenever it is the one asked to place.
+            if kwargs.get("device_map") in ("unsloth", None) or "device_map" not in kwargs:
+                raise DeviceMapInfeasible("needs 7.57 GiB free on cuda:0, has 4.10 GiB")
+            return types.SimpleNamespace(hf_device_map = {"model.layers.0": 0}), types.SimpleNamespace()
+
+    monkeypatch.setattr(mod, "FastLanguageModel", _RefusesAnyPlan)
+    monkeypatch.setattr(mod, "detect_audio_type", lambda *a, **k: None)
+    monkeypatch.setattr(mod, "is_vision_model", lambda *a, **k: False)
+    monkeypatch.setattr(mod, "_hf_offline", lambda *a, **k: False)
+    monkeypatch.setattr(mod, "_offline_window_if", lambda flag: contextlib.nullcontext())
+    monkeypatch.setattr(mod, "_multi_gpu_device_map_kwargs", lambda: {"device_map": "unsloth"})
+
+    checkpoint = tmp_path / "checkpoint-100"
+    checkpoint.mkdir()
+    backend = mod.ExportBackend.__new__(mod.ExportBackend)
+    backend.cleanup_memory = lambda: None
+    ok, message = backend.load_checkpoint(str(checkpoint))
+
+    assert ok, message
+    assert len(_RefusesAnyPlan.calls) == 2
+    assert _RefusesAnyPlan.calls[0]["device_map"] == "unsloth"
+    assert _RefusesAnyPlan.calls[1]["device_map"] == "sequential"

@@ -673,7 +673,7 @@ class ExportBackend:
 
         logger.warning(
             f"Multi-GPU export load unusable ({retry_reason}); retrying on "
-            f"the single-device loader default."
+            f"the sequential loader default."
         )
         self.cleanup_memory()
         return self.load_checkpoint(
@@ -682,7 +682,12 @@ class ExportBackend:
             load_in_4bit = load_in_4bit,
             trust_remote_code = trust_remote_code,
             hf_token = hf_token,
-            _device_map_override = {},
+            # Spelled out, not omitted. An omitted device_map takes unsloth's
+            # DEFAULT_DEVICE_MAP, which `requested_device_map` upgrades back to the
+            # planner unless UNSLOTH_AUTO_DEVICE_MAP=0, so the retry would re-run the
+            # placement that just failed and report the same error. An explicitly typed
+            # "sequential" is a choice the caller made and passes through untouched.
+            _device_map_override = {"device_map": "sequential"},
         )
 
     def _write_export_metadata(self, save_directory: str):

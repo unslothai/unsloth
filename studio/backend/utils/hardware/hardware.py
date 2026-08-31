@@ -4936,7 +4936,11 @@ def apply_gpu_ids(gpu_ids, backend: Optional[str] = None) -> None:
         logger.info("Applied gpu_ids: CUDA_VISIBLE_DEVICES='%s'", value)
 
 
-def get_device_map(gpu_ids: Optional[list[int]] = None) -> str:
+def get_device_map(
+    gpu_ids: Optional[list[int]] = None,
+    *,
+    planner_eligible: bool = True,
+) -> str:
     """Return the Hugging Face ``device_map`` string for model loading.
 
     Returns ``"unsloth"`` on CUDA, or ``"balanced"`` on XPU, to shard across
@@ -4959,6 +4963,17 @@ def get_device_map(gpu_ids: Optional[list[int]] = None) -> str:
     XPU keeps ``"balanced"`` deliberately: the unsloth planner has no memory
     budgets for non-CUDA backends and falls back to ``"sequential"`` there, so
     asking for it would quietly collapse XPU sharding onto one device.
+
+    ``planner_eligible = False`` is the same reservation for a CUDA load the
+    planner will refuse to plan: a full finetune, or an explicit ``auto_model``
+    class with no ``_model_mapping`` (``CsmForConditionalGeneration``,
+    ``WhisperForConditionalGeneration``), which
+    ``resolve_unsloth_device_map`` turns into ``"sequential"``. That fallback
+    fills cuda:0 to its whole free budget before touching cuda:1, so a
+    checkpoint that fits on one card lands entirely there with no headroom for
+    optimizer state -- measured on a 7B in bf16 across 2x16 GiB, ``sequential``
+    gives ``{"": 0}`` where ``balanced`` gives 13 modules to cuda:0 and 19 to
+    cuda:1. Those routes keep the map they had.
 
     Returns ``"sequential"`` (single device) otherwise, including CPU/MLX
     backends.
@@ -4993,7 +5008,9 @@ def get_device_map(gpu_ids: Optional[list[int]] = None) -> str:
                     multi_gpu = True
 
         if multi_gpu:
-            return "unsloth" if device == DeviceType.CUDA else "balanced"
+            if device == DeviceType.CUDA and planner_eligible:
+                return "unsloth"
+            return "balanced"
 
     return "sequential"
 

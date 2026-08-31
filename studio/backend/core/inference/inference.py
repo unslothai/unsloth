@@ -363,7 +363,13 @@ class InferenceBackend:
                 return False
 
             self.loading_models.add(model_name)
-            device_map = get_device_map(gpu_ids)
+            # CSM and Whisper load through an explicit auto_model with no _model_mapping,
+            # which unsloth's planner declines; its "sequential" fallback fills cuda:0
+            # before touching the other cards, so those two keep "balanced".
+            device_map = get_device_map(
+                gpu_ids,
+                planner_eligible = not (config.is_audio and config.audio_type in ("csm", "whisper")),
+            )
             logger.info(
                 f"Using device_map='{device_map}' ({get_visible_gpu_count()} GPU(s) visible)"
             )
