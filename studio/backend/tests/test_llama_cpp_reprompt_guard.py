@@ -359,9 +359,7 @@ def test_list_marker_line_opens_a_block_level_fence():
     )
     assert not _has_answer_artifact(unfinished)
     assert _would_reprompt(unfinished)
-    assert _has_answer_artifact(
-        "First, let me show it.\n- ```python linenums=1\n  x = 1\n  ```"
-    )
+    assert _has_answer_artifact("First, let me show it.\n- ```python linenums=1\n  x = 1\n  ```")
     # Prose is unchanged: a mid-sentence delimiter with words after it stays prose.
     assert _has_answer_artifact(
         "First, let me show it.\n```python\nx=1\n```\nUse ``` for markdown."
