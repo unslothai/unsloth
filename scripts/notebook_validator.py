@@ -590,10 +590,15 @@ def _install_cell_lower_bound(install_cell: str, target: str) -> str | None:
 def _effective_version(install_cell: str, target: str, resolved: str | None) -> str | None:
     """`resolved` walked forward through the cell's own bounds, in invocation order.
 
-    resolved_set() applies `==` and `<=` but drops `>=`, which does move pip when it lands
-    above the current version. Order is what decides between them: a later `==` downgrades
-    past an earlier floor, and a later floor upgrades past an earlier `==`. Without this
-    R-INST-004's own `torchcodec>=0.12.0` remedy could not clear the error it offers."""
+    resolved_set() drops `>=`, which does move pip when it lands above the current version,
+    and applies the `<=` bounds all at once at the end. Order is what decides between them:
+    a later `==` or `<=` downgrades past an earlier floor, and a later floor upgrades past
+    an earlier one. Replaying all three keeps whichever ran last. Without this R-INST-004's
+    own `torchcodec>=0.12.0` remedy could not clear the error it offers.
+
+    `<` is left out, as resolved_set leaves it out: the version pip lands on is the highest
+    release strictly below the bound, which the pin alone does not name.
+    """
     current = resolved
     for inv in iter_pip_invocations(install_cell):
         for raw in inv.packages:
@@ -604,6 +609,8 @@ def _effective_version(install_cell: str, target: str, resolved: str | None) -> 
                 if op == "==":
                     current = ver
                 elif op == ">=" and (current is None or cmp_versions(ver, current) > 0):
+                    current = ver
+                elif op == "<=" and current is not None and cmp_versions(ver, current) < 0:
                     current = ver
     return current
 

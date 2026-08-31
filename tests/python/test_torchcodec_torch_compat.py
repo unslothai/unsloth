@@ -341,6 +341,23 @@ def test_notebook_validator_reads_the_bounds_in_invocation_order():
     assert len(findings) == 1
     assert "torch==2.10.0" in findings[0].message
 
+    # `<=` closes the same gap as `==`, and only downwards.
+    capped = (
+        '!pip install "torch==2.12.0" "torchcodec>=0.12"\n'
+        '!pip install "torchcodec<=0.11"'
+    )
+    assert len(nv.rule_inst_004_torchcodec_torch(capped, COLAB_TORCH211, "nb.ipynb", 0)) == 1
+
+    lifted = (
+        '!pip install "torch==2.12.0" "torchcodec<=0.11"\n'
+        '!pip install "torchcodec>=0.12"'
+    )
+    assert nv.rule_inst_004_torchcodec_torch(lifted, COLAB_TORCH211, "nb.ipynb", 0) == []
+
+    # A one-line range is not a downgrade: the floor still decides.
+    ranged = '!pip install "torch==2.12.0" "torchcodec>=0.12,<=0.13"'
+    assert nv.rule_inst_004_torchcodec_torch(ranged, COLAB_TORCH211, "nb.ipynb", 0) == []
+
 
 def test_pyproject_declares_torch211_audio_extra_with_python_gate():
     text = PYPROJECT.read_text(encoding = "utf-8")
