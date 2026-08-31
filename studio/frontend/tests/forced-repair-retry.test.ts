@@ -44,6 +44,9 @@ function runRetry(status: string, forced: boolean): Run {
     statusRef: { current: status },
     forcedRepairRef,
     startRepair: (options?: { forceInstaller?: boolean }) => {
+      // The real one records the flag first; the fake mirrors that so the test can see
+      // whether it survived the state reset that now runs ahead of the call.
+      forcedRepairRef.current = options?.forceInstaller === true;
       repairs.push(options?.forceInstaller === true);
       return Promise.resolve();
     },
@@ -78,6 +81,9 @@ test("retry after a forced repair re-runs the forced repair", () => {
   const run = runRetry("repair-error", true);
   assert.deepEqual(run.repairs, [true], "the retry must force the installer again");
   assert.equal(run.preflights, 0, "the preflight would restart the same broken backend");
+  // The ref is read into a local and cleared with the rest of the state, so the flag
+  // reaches startRepair (which sets it again) without surviving as a latch.
+  assert.equal(run.forcedAfter, true, "startRepair re-arms it for the elevation resume");
 });
 
 test("retry after an automatic repair still runs the preflight", () => {

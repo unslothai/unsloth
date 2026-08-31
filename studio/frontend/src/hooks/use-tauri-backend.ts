@@ -482,13 +482,8 @@ export function useTauriBackend() {
     // environment it found: checkInstallAndStart() then sees a ready install and restarts the
     // same CPU-only backend the user pressed Repair about, and the button does nothing.
     // Elevation resumes already preserve this; the error path did not.
-    if (statusRef.current === "repair-error" && forcedRepairRef.current) {
-      clearAuthFailure();
-      clearServerStopIntent();
-      setError(null);
-      void startRepair({ forceInstaller: true });
-      return;
-    }
+    const resumeForcedRepair =
+      statusRef.current === "repair-error" && forcedRepairRef.current;
     forcedRepairRef.current = false;
     clearAuthFailure();
     clearServerStopIntent();
@@ -504,6 +499,10 @@ export function useTauriBackend() {
     setIsExternalServer(false);
     stopExternalServerPoll();
     seenStepsRef.current.clear();
+    if (resumeForcedRepair) {
+      void startRepair({ forceInstaller: true });
+      return;
+    }
     checkInstallAndStart();
   }, []);
 
