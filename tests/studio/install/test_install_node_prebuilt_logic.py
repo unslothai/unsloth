@@ -440,7 +440,9 @@ def test_install_prebuilt_does_not_hide_reported_acl_denial(tmp_path: Path, monk
     monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
     monkeypatch.setattr(M, "installed_node_version", lambda d, h: "24.9.0")
     monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
-    monkeypatch.setattr(M, "download_file_verified", lambda url, path, **kw: path.write_bytes(b"zip"))
+    monkeypatch.setattr(
+        M, "download_file_verified", lambda url, path, **kw: path.write_bytes(b"zip")
+    )
 
     def fake_extract(_archive, extract_dir):
         (extract_dir / "node-v24").mkdir(parents = True)

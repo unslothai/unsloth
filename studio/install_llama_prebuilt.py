@@ -4245,9 +4245,7 @@ def replace_with_busy_retry(
             if not transient or attempt == attempts - 1:
                 if transient and winerror == _ERROR_ACCESS_DENIED:
                     log(f"rename {src.name} -> {dst.name} still blocked (5) after {attempts} tries")
-                    log_lines(
-                        _access_denied_recovery_lines(access_denied_paths or ((src, True),))
-                    )
+                    log_lines(_access_denied_recovery_lines(access_denied_paths or ((src, True),)))
                     exc._unsloth_acl_recovery_reported = True
                 raise
             if winerror == _ERROR_ACCESS_DENIED:
