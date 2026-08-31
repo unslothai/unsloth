@@ -29,7 +29,19 @@ from .mapper import (
     MAP_TO_UNSLOTH_16bit,
     FLOAT_TO_FP8_BLOCK_MAPPER,
     FLOAT_TO_FP8_ROW_MAPPER,
+    build_mappers,
+    _add_with_lower,
+    _add_lower_only,
 )
+
+# The alias helpers a fetched mapper.py may call, resolved to the INSTALLED
+# implementations. `_get_new_mapper` reads such calls as data: it takes the table and
+# the two literal strings out of the AST and applies them with these, so the fetched
+# text never supplies behaviour.
+_MAPPER_HELPERS = {
+    "_add_with_lower": _add_with_lower,
+    "_add_lower_only": _add_lower_only,
+}
 
 # https://github.com/huggingface/transformers/pull/26037 allows 4 bit loading!
 from transformers import __version__ as transformers_version
@@ -107,6 +119,13 @@ def prepare_device_map():
 
 
 UNSLOTH_DEVICE_MAP = "unsloth"
+
+# Same planner, different answer when it declines. Every veto path ends in "sequential",
+# which fills the first device to its whole free budget -- right for a loader default,
+# wrong for a caller that picked several cards on their combined capacity. Naming the
+# fallback spares such a caller enumerating veto reasons that are unsloth's and can grow.
+UNSLOTH_BALANCED_DEVICE_MAP = "unsloth_balanced"
+_PLANNED_DEVICE_MAPS = {UNSLOTH_DEVICE_MAP: "sequential", UNSLOTH_BALANCED_DEVICE_MAP: "balanced"}
 
 # A string, not None, so an explicit False stays distinguishable from "unset".
 OFFLOAD_EMBEDDING_AUTO = "auto"
@@ -331,12 +350,14 @@ def resolve_unsloth_device_map(
     `skip_reason` is the caller's veto, for when only the caller can tell the planner
     would describe a different model than the load builds.
     """
-    if device_map != UNSLOTH_DEVICE_MAP:
+    # `isinstance` first: a caller's explicit dict is unhashable, so `in` alone raises.
+    if not isinstance(device_map, str) or device_map not in _PLANNED_DEVICE_MAPS:
         return device_map
+    _declined = _PLANNED_DEVICE_MAPS[device_map]
 
     def _fallback(reason):
-        print(f"Unsloth: Not planning a device map; {reason}. Using `sequential`.")
-        return "sequential"
+        print(f"Unsloth: Not planning a device map; {reason}. Using `{_declined}`.")
+        return _declined
 
     if skip_reason is not None:
         return _fallback(skip_reason)
@@ -383,7 +404,7 @@ def resolve_unsloth_device_map(
             and 0 <= device < device_count
         ]
     if len(probe) < 2:
-        return "sequential"
+        return _declined
 
     try:
         from unsloth_zoo.device_map_planner import plan_device_map_for_pretrained
@@ -422,7 +443,7 @@ def resolve_unsloth_device_map(
         return _fallback(f"planning failed ({error})")
 
     if plan is None:
-        return "sequential"
+        return _declined
     print(plan.describe())
     return plan.device_map
 
@@ -501,40 +522,547 @@ def __get_model_name(
 def _get_new_mapper():
     try:
         import requests
+        import time
 
         new_mapper = (
             "https://raw.githubusercontent.com/unslothai/unsloth/main/unsloth/models/mapper.py"
         )
-        with requests.get(new_mapper, timeout = 3) as new_mapper:
-            new_mapper = new_mapper.text
-        new_mapper = new_mapper[new_mapper.find("__INT_TO_FLOAT_MAPPER") :]
-        new_mapper = (
-            new_mapper.replace("INT_TO_FLOAT_MAPPER", "NEW_INT_TO_FLOAT_MAPPER")
-            .replace("FLOAT_TO_INT_MAPPER", "NEW_FLOAT_TO_INT_MAPPER")
-            .replace("MAP_TO_UNSLOTH_16bit", "NEW_MAP_TO_UNSLOTH_16bit")
+        # Capped WHILE reading, since `requests.get` buffers the whole body first, and
+        # the deadline is total because `timeout` is per-read.
+        byte_cap = 1_000_000
+        deadline = time.monotonic() + 10
+        chunks, total = [], 0
+        # Redirects by hand: `requests` drains each intermediate body inside `get`.
+        url = new_mapper
+        for _ in range(5):
+            response = requests.get(url, timeout = 3, stream = True, allow_redirects = False)
+            with response:
+                location = (
+                    response.headers.get("location")
+                    if (300 <= response.status_code < 400)
+                    else None
+                )
+                if location is not None:
+                    if time.monotonic() > deadline:
+                        return {}, {}, {}, {}, {}
+                else:
+                    # `read1`: the timeout is per SOCKET READ, so a trickling peer
+                    # resets it forever and the deadline is never reached.
+                    raw = response.raw
+                    # `requests` only decompresses inside `iter_content`.
+                    try:
+                        raw.decode_content = True
+                    except AttributeError:
+                        pass
+                    read_once = getattr(raw, "read1", None)
+                    while True:
+                        if time.monotonic() > deadline:
+                            return {}, {}, {}, {}, {}
+                        if read_once is not None:
+                            chunk = read_once(65_536)
+                        else:
+                            # Older urllib3 has no `read1`; one byte returns as promptly.
+                            chunk = raw.read(1)
+                        if not chunk:
+                            break
+                        chunks.append(chunk)
+                        total += len(chunk)
+                        if total > byte_cap:
+                            return {}, {}, {}, {}, {}
+                    encoding = response.encoding or "utf-8"
+            if location is None:
+                break
+            url = requests.compat.urljoin(url, location)
+        else:
+            return {}, {}, {}, {}, {}
+        new_mapper = b"".join(chunks).decode(encoding, errors = "replace")
+        # Never exec the response: that is arbitrary code execution inside every
+        # `from_pretrained` that hits an unmapped name. Only `__INT_TO_FLOAT_MAPPER` is
+        # data, and the tables are returned rather than written into this module.
+        import ast
+
+        # `ast.parse` builds the whole tree before any literal-only check runs, so this
+        # is no defence against exhaustion (python/cpython#95588); the byte cap above is.
+        tree = ast.parse(new_mapper)
+        # Every module-level literal dict, in source order; chosen below.
+        literal_bindings = []
+        for index, node in enumerate(tree.body):
+            # `AnnAssign` too, or an annotation upstream turns the probe off silently.
+            if isinstance(node, ast.AnnAssign):
+                targets = [node.target.id] if isinstance(node.target, ast.Name) else []
+                value = node.value
+            elif isinstance(node, ast.Assign):
+                targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
+                value = node.value
+            else:
+                continue
+            if value is None or not targets:
+                continue
+            try:
+                literal = ast.literal_eval(value)
+            except Exception:
+                continue
+            if not isinstance(literal, dict):
+                continue
+            for name in targets:
+                literal_bindings.append((index, name, literal))
+
+        def _binding_at(name, before):
+            """What `name` holds when the statement at index `before` runs.
+
+            The last assignment BEFORE that point: a rebind after the builder ran must
+            not be read back over what the builder actually saw.
+            """
+            found = None
+            for index, bound, literal in literal_bindings:
+                if bound == name and (before is None or index <= before):
+                    found = literal
+            return found
+
+        # Statements that really RUN at import: `ast.walk` reaches into function bodies
+        # and dead branches, which would fabricate a mapping. Local, because the tests
+        # run this body in a bare namespace.
+        def _constant_truth(test):
+            """True/False for a statically decidable condition, else None.
+
+            `not True` is a UnaryOp, so it fell through and its body was read as run.
+            """
+            if isinstance(test, ast.Constant):
+                return bool(test.value)
+            if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
+                inner = _constant_truth(test.operand)
+                return None if inner is None else not inner
+            return None
+
+        def _iterates_nothing(iterable):
+            if isinstance(iterable, (ast.Tuple, ast.List, ast.Set)):
+                return not iterable.elts
+            if isinstance(iterable, ast.Dict):
+                return not iterable.keys
+            if isinstance(iterable, ast.Constant):
+                # An empty literal iterates nothing; a nonempty one keeps its body.
+                return isinstance(iterable.value, (str, bytes)) and not iterable.value
+            return False
+
+        def _class_bound(statement):
+            # A class binding makes every LATER mutation a class attribute.
+            targets = []
+            if isinstance(statement, ast.Assign):
+                targets = statement.targets
+            elif isinstance(statement, ast.AnnAssign):
+                targets = [statement.target]
+            return {target.id for target in targets if isinstance(target, ast.Name)}
+
+        def _executed_nodes(
+            body,
+            shadowed = frozenset(),
+            class_body = False,
+        ):
+            # What ENDED the suite: `"return"` leaves the function, `True` the suite.
+            for statement in body:
+                if class_body:
+                    # Only the statements ABOVE it still see the module global.
+                    shadowed = shadowed | _class_bound(statement)
+                if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                if isinstance(statement, (ast.Break, ast.Continue, ast.Return)):
+                    return "return" if isinstance(statement, ast.Return) else True
+                if isinstance(statement, ast.ClassDef):
+                    # A class body, unlike a function body, RUNS at import.
+                    yield from _executed_nodes(statement.body, shadowed, class_body = True)
+                    continue
+                if isinstance(statement, ast.If) and _constant_truth(statement.test) is not None:
+                    # Undecidable tests keep their body.
+                    branch = statement.body if _constant_truth(statement.test) else statement.orelse
+                    ended = yield from _executed_nodes(branch, shadowed)
+                    if ended:
+                        return ended
+                    continue
+                if isinstance(statement, ast.While) and _constant_truth(statement.test) is not None:
+                    if _constant_truth(statement.test):
+                        ended = yield from _executed_nodes(statement.body, shadowed)
+                        if ended == "return":
+                            return ended
+                    else:
+                        ended = yield from _executed_nodes(statement.orelse, shadowed)
+                        if ended:
+                            return ended
+                    continue
+                if isinstance(statement, ast.For) and _iterates_nothing(statement.iter):
+                    ended = yield from _executed_nodes(statement.orelse, shadowed)
+                    if ended:
+                        return ended
+                    continue
+                for field in ("body", "orelse", "finalbody"):
+                    children = getattr(statement, field, None)
+                    if isinstance(children, list):
+                        yield from _executed_nodes(children, shadowed)
+                for handler in getattr(statement, "handlers", []) or []:
+                    yield from _executed_nodes(handler.body, shadowed)
+                # Only the non-suite parts; a `Lambda` is excluded at the seed too.
+                pending = [
+                    child
+                    for child in ast.iter_child_nodes(statement)
+                    if not isinstance(
+                        child,
+                        (
+                            ast.stmt,
+                            ast.excepthandler,
+                            ast.FunctionDef,
+                            ast.AsyncFunctionDef,
+                            ast.ClassDef,
+                            ast.Lambda,
+                        ),
+                    )
+                ]
+                yield statement, shadowed
+                while pending:
+                    current = pending.pop()
+                    yield current, shadowed
+                    for child in ast.iter_child_nodes(current):
+                        if isinstance(
+                            child,
+                            (
+                                ast.FunctionDef,
+                                ast.AsyncFunctionDef,
+                                ast.ClassDef,
+                                ast.Lambda,
+                            ),
+                        ):
+                            continue
+                        if isinstance(child, (ast.stmt, ast.excepthandler)):
+                            continue
+                        pending.append(child)
+
+        # The aliases a newer mapper.py adds live inside `build_mappers`, which the
+        # installed builder cannot know.
+        def _calls_the_builder(node):
+            """Whether this executed node IS the `build_mappers(...)` call.
+
+            The node itself, not `ast.walk` over it: walking the parent statement
+            descended back into the deferred children the yield had excluded, so
+            `unused = lambda: build_mappers(...)` counted as a call.
+            """
+            return (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "build_mappers"
+            )
+
+        builder_body = []
+        # From the EXECUTED nodes, with the statement each runs in: a source table
+        # rebound after the call is not what the module exports.
+        exported_names = (
+            "INT_TO_FLOAT_MAPPER",
+            "FLOAT_TO_INT_MAPPER",
+            "MAP_TO_UNSLOTH_16bit",
+            "FLOAT_TO_FP8_BLOCK_MAPPER",
+            "FLOAT_TO_FP8_ROW_MAPPER",
         )
 
-        # Exec into a throwaway namespace, never globals(). The slice also carries
-        # FLOAT_TO_FP8_BLOCK_MAPPER / FLOAT_TO_FP8_ROW_MAPPER, the _add_* helpers
-        # and the builder's loop variables, so exec'ing into globals() would swap
-        # the FP8 tables this module imported from the installed mapper for the
-        # ones on GitHub main. This is only a probe for "would a newer Unsloth
-        # support this name?", so it must not change what the installed version
-        # resolves; the fetched FP8 tables are returned for the probe to use
-        # instead of being written over the installed ones.
-        namespace = {}
-        exec(new_mapper, namespace)
-        return (
-            namespace["NEW_INT_TO_FLOAT_MAPPER"],
-            namespace["NEW_FLOAT_TO_INT_MAPPER"],
-            namespace["NEW_MAP_TO_UNSLOTH_16bit"],
-            # .get, not []: these two come from the fetched file under its own names (unlike
-            # the NEW_ names above, renamed here), so an older or renamed mapper.py would
-            # KeyError into the bare except and take the 4bit half of the probe down too.
-            # {} is safe: the probe runs only after the installed tables already missed.
-            namespace.get("FLOAT_TO_FP8_BLOCK_MAPPER", {}),
-            namespace.get("FLOAT_TO_FP8_ROW_MAPPER", {}),
-        )
+        def _binds_the_exports(statement):
+            """Whether this statement assigns one of the exported tables."""
+            if isinstance(statement, ast.AnnAssign):
+                targets = [statement.target]
+            elif isinstance(statement, ast.Assign):
+                targets = statement.targets
+            else:
+                return False
+            bound = set()
+            for target in targets:
+                if isinstance(target, (ast.Tuple, ast.List)):
+                    bound |= {
+                        element.id for element in target.elts if isinstance(element, ast.Name)
+                    }
+                elif isinstance(target, ast.Name):
+                    bound.add(target.id)
+            return bool(bound.intersection(exported_names))
+
+        builder_call = None
+        builder_index = None
+        first_call = None
+        # A call that ASSIGNS the exports replaces all five; the fallback binds nothing.
+        builder_rebinds = False
+        for index, statement in enumerate(tree.body):
+            calls = [
+                node for node, _shadowed in _executed_nodes([statement]) if _calls_the_builder(node)
+            ]
+            if not calls:
+                continue
+            if first_call is None:
+                first_call = (calls[0], index)
+            # The LAST call that BINDS the exports; a validation call may run first.
+            if _binds_the_exports(statement):
+                builder_call, builder_index = calls[0], index
+                builder_rebinds = True
+        if builder_call is None and first_call is not None:
+            builder_call, builder_index = first_call
+        builder_called = builder_call is not None
+        if builder_called:
+            for statement in tree.body:
+                if isinstance(statement, ast.FunctionDef) and statement.name == "build_mappers":
+                    builder_body = statement.body
+                    break
+
+        # The table the builder was HANDED, read where the call runs.
+        source_name = "__INT_TO_FLOAT_MAPPER"
+        source_table = None
+        if builder_call is not None:
+            argument = None
+            if builder_call.args:
+                argument = builder_call.args[0]
+            else:
+                for keyword in builder_call.keywords:
+                    if keyword.arg is not None:
+                        argument = keyword.value
+                        break
+            if isinstance(argument, ast.Name):
+                source_name = argument.id
+            elif argument is not None:
+                try:
+                    literal = ast.literal_eval(argument)
+                except Exception:
+                    literal = None
+                if isinstance(literal, dict):
+                    source_table = literal
+
+        def _source_before_the_builder(name):
+            """The source table as the builder receives it, mutations included.
+
+            `.update({...})` and subscript assignment are ordinary ways to extend it
+            before it is handed over; the mutation pass below reads only the EXPORTED
+            tables. In execution order, and only up to the call.
+            """
+            current = None
+            for node, _shadowed in _executed_nodes(tree.body):
+                # The SELECTED call, by identity, so two alike calls are told apart.
+                if node is builder_call or (builder_call is None and _calls_the_builder(node)):
+                    break
+                if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                    if node.value is None:
+                        continue
+                    targets = [node.target] if isinstance(node, ast.AnnAssign) else node.targets
+                    for target in targets:
+                        if isinstance(target, ast.Name) and target.id == name:
+                            try:
+                                literal = ast.literal_eval(node.value)
+                            except Exception:
+                                continue
+                            if isinstance(literal, dict):
+                                current = dict(literal)
+                        elif (
+                            isinstance(target, ast.Subscript)
+                            and isinstance(target.value, ast.Name)
+                            and target.value.id == name
+                            and current is not None
+                        ):
+                            try:
+                                current[ast.literal_eval(target.slice)] = ast.literal_eval(
+                                    node.value
+                                )
+                            except Exception:
+                                continue
+                elif isinstance(node, ast.Delete):
+                    for target in node.targets:
+                        if isinstance(target, ast.Name) and target.id == name:
+                            # Empty, not None: unbound must not fall back.
+                            current = {}
+                        elif (
+                            isinstance(target, ast.Subscript)
+                            and isinstance(target.value, ast.Name)
+                            and target.value.id == name
+                            and current is not None
+                        ):
+                            try:
+                                current.pop(ast.literal_eval(target.slice), None)
+                            except Exception:
+                                continue
+                elif (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "update"
+                    and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == name
+                    and current is not None
+                    and len(node.args) == 1
+                    and not node.keywords
+                ):
+                    try:
+                        additions = ast.literal_eval(node.args[0])
+                    except Exception:
+                        continue
+                    if isinstance(additions, dict):
+                        current.update(additions)
+            return current
+
+        if source_table is None and builder_call is not None:
+            source_table = _source_before_the_builder(source_name)
+        if source_table is None:
+            source_table = _binding_at(source_name, builder_index)
+
+        # Not the end of the probe: a row-only FP8 repo cannot be expressed through the
+        # source table at all. A body that adds nothing is reported so, at the end.
+        empty_base = not source_table
+        tables = build_mappers(source_table or {})
+        # Restored at the call below, which REPLACES all five tables.
+        built = [dict(table) for table in tables]
+
+        # Literal subscript, literal value, nothing called.
+        by_name = {
+            "INT_TO_FLOAT_MAPPER": tables[0],
+            "FLOAT_TO_INT_MAPPER": tables[1],
+            "MAP_TO_UNSLOTH_16bit": tables[2],
+            "FLOAT_TO_FP8_BLOCK_MAPPER": tables[3],
+            "FLOAT_TO_FP8_ROW_MAPPER": tables[4],
+        }
+
+        # Only the helper CALLS: the builder binds its own `INT_TO_FLOAT_MAPPER = {}`,
+        # which the whole-name rule below would read as a clear.
+        builder_additions = [
+            (node, shadowed)
+            for node, shadowed in _executed_nodes(builder_body)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in _MAPPER_HELPERS
+        ]
+        # In EXECUTION order, so a rebind after the call still empties the table.
+        # `rebuilt` stands where the build assigns the exports; matched by identity.
+        rebuilt = object()
+        ordered = []
+        for node, shadowed in _executed_nodes(tree.body):
+            ordered.append((node, shadowed))
+            # At the call that populates the EXPORTS, not at an earlier one.
+            if node is builder_call or (builder_call is None and _calls_the_builder(node)):
+                if builder_rebinds:
+                    ordered.append((rebuilt, frozenset()))
+                ordered.extend(builder_additions)
+                builder_additions = []
+        ordered.extend(builder_additions)
+        for node, shadowed in ordered:
+            if node is rebuilt:
+                for table, original in zip(tables, built):
+                    table.clear()
+                    table.update(original)
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                # An annotated subscript assigns as the plain form does; a bare one
+                # binds nothing.
+                if isinstance(node, ast.AnnAssign):
+                    if node.value is None:
+                        continue
+                    targets = [node.target]
+                else:
+                    targets = node.targets
+                for target in targets:
+                    if isinstance(target, ast.Name):
+                        # A whole-name assignment REPLACES the exported table.
+                        table = by_name.get(target.id)
+                        if table is None or target.id in shadowed:
+                            continue
+                        try:
+                            replacement = ast.literal_eval(node.value)
+                        except ValueError:
+                            continue
+                        if isinstance(replacement, dict):
+                            if not replacement and not builder_called:
+                                # An INITIALISER, not a clear: a mapper.py with no
+                                # `build_mappers` writes `X = {}` and fills all five
+                                # from a module-scope loop the installed builder
+                                # reproduces. Reading it as a clear emptied every
+                                # table and the upgrade notice stopped firing.
+                                continue
+                            table.clear()
+                            table.update(replacement)
+                        continue
+                    if not isinstance(target, ast.Subscript):
+                        continue
+                    if not isinstance(target.value, ast.Name):
+                        continue
+                    if target.value.id in shadowed:
+                        continue
+                    table = by_name.get(target.value.id)
+                    if table is None:
+                        continue
+                    try:
+                        table[ast.literal_eval(target.slice)] = ast.literal_eval(node.value)
+                    except ValueError:
+                        continue
+                pass
+            elif isinstance(node, ast.Delete):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        table = by_name.get(target.id)
+                        if table is not None and target.id not in shadowed:
+                            table.clear()
+                        continue
+                    if not isinstance(target, ast.Subscript):
+                        continue
+                    if not isinstance(target.value, ast.Name):
+                        continue
+                    if target.value.id in shadowed:
+                        continue
+                    table = by_name.get(target.value.id)
+                    if table is None:
+                        continue
+                    try:
+                        table.pop(ast.literal_eval(target.slice), None)
+                    except ValueError:
+                        continue
+            elif (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "update"
+            ):
+                # Only a named receiver and a literal mapping; the keyword form cannot
+                # express keys with a slash.
+                if not isinstance(node.func.value, ast.Name):
+                    continue
+                if node.func.value.id in shadowed:
+                    continue
+                table = by_name.get(node.func.value.id)
+                if table is None or len(node.args) != 1 or node.keywords:
+                    continue
+                try:
+                    additions = ast.literal_eval(node.args[0])
+                except ValueError:
+                    continue
+                if isinstance(additions, dict):
+                    table.update(additions)
+            elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                # An alias not derivable from the source table, applied with the
+                # INSTALLED helper from literal arguments only.
+                helper = _MAPPER_HELPERS.get(node.func.id)
+                if helper is None:
+                    continue
+                supplied = dict(zip(("mapper", "key", "value"), node.args))
+                for keyword in node.keywords:
+                    if keyword.arg not in ("mapper", "key", "value"):
+                        supplied = None
+                        break
+                    if keyword.arg in supplied:
+                        supplied = None
+                        break
+                    supplied[keyword.arg] = keyword.value
+                if supplied is None or set(supplied) != {"mapper", "key", "value"}:
+                    continue
+                destination = supplied["mapper"]
+                key, value = supplied["key"], supplied["value"]
+                if not isinstance(destination, ast.Name):
+                    continue
+                if destination.id in shadowed:
+                    continue
+                table = by_name.get(destination.id)
+                if table is None:
+                    continue
+                try:
+                    helper(table, ast.literal_eval(key), ast.literal_eval(value))
+                except ValueError:
+                    continue
+            pass
+        pass
+        if empty_base and tables == build_mappers({}):
+            # Nothing on top of the empty base, so the body carried no mapping at all.
+            return {}, {}, {}, {}, {}
+        return tables
     except:
         return {}, {}, {}, {}, {}
 
@@ -549,8 +1077,7 @@ def _resolve_with_mappers(
     fp8_block = None,
     fp8_row = None,
 ):
-    # fp8_block/fp8_row default to the installed tables; the newer-mapper probe passes the
-    # fetched ones so it can answer for new FP8 repos without rebinding the installed ones.
+    # The probe passes the FETCHED fp8 tables, without rebinding the installed ones.
     return __get_model_name(
         model_name = model_name,
         load_in_4bit = load_in_4bit,

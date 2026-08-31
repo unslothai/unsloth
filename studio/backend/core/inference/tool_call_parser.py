@@ -850,15 +850,10 @@ def strip_tool_markup(
     text: str,
     *,
     final: bool = False,
-    trim: bool = True,
     enabled_tool_names: Optional[set] = None,
 ) -> str:
     """Strip tool-call markup. ``final=False`` keeps in-progress markup buffered;
     ``final=True`` also drops trailing unclosed runs and trims.
-
-    ``trim=False`` keeps the whitespace a removed span exposed, which a caller that
-    has to reproduce the boundary the model wrote cannot recover afterwards: the
-    prose can also appear inside the markup, so searching for it is not sound.
 
     ``enabled_tool_names`` gates the name-conditioned forms so a disabled/example name in
     prose is kept (mirrors the parser gate): the bare reasoning-rehearsal ``name[ARGS]{...}``
@@ -880,7 +875,7 @@ def strip_tool_markup(
     # not executed, so it must not be stripped from display either); a literal think marker
     # inside a real call's arguments is that call's data and is stripped with the call.
     result = _tool_healing.strip_outside_think(text, _strip_segment)
-    return result.strip() if (final and trim) else result
+    return result.strip() if final else result
 
 
 # Every strip arm above is anchored on one of these literals, so text containing none of

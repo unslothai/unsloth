@@ -176,7 +176,7 @@ def test_clamp_restricts_to_inclusive_bounds():
 
 def test_export_and_checkpoint_tools_expose_forwarded_fields():
     export_props = set(_get_tool("export_gguf").parameters["properties"])
-    assert {"hf_token", "imatrix", "imatrix_path", "private"} <= export_props
+    assert {"hf_token", "imatrix", "imatrix_path", "private", "gguf_shard_size"} <= export_props
 
     checkpoint_props = set(_get_tool("load_checkpoint").parameters["properties"])
     assert {"hf_token", "approved_remote_code_fingerprint"} <= checkpoint_props
@@ -220,6 +220,7 @@ def test_export_gguf_forwards_hf_token_and_imatrix(monkeypatch):
             imatrix = True,
             imatrix_path = "/tmp/imatrix.dat",
             private = True,
+            gguf_shard_size = "2GB",
         )
     )
 
@@ -228,6 +229,7 @@ def test_export_gguf_forwards_hf_token_and_imatrix(monkeypatch):
     assert captured["imatrix_path"] == "/tmp/imatrix.dat"
     assert captured["quantization_method"] == ["Q4_K_M", "Q8_0"]
     assert captured["private"] is True
+    assert captured["gguf_shard_size"] == "2GB"
     assert result["current_subject"] == "mcp"
 
 

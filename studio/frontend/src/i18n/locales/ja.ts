@@ -1461,6 +1461,8 @@ export const ja = {
       archivedImagesDescription: "アーカイブした画像を表示・管理します。",
       archivedVideos: "アーカイブ済み動画",
       archivedVideosDescription: "アーカイブした動画を表示・管理します。",
+      archivedAudio: "アーカイブした音声",
+      archivedAudioDescription: "アーカイブした音声クリップを表示・管理します。",
       manageAction: "管理",
       manageChats: "チャットを管理",
       manageChatsDescription:
