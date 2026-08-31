@@ -1272,9 +1272,12 @@ class TestMarkerlessExecToolGuardLoop:
         events = _collect_events(loop)
         assert exec_fn.calls == []
         contents = [e["text"] for e in events if e["type"] == "content"]
-        # Streamed progressively, not emitted once at end of turn.
-        assert len(contents) > 1, contents
         assert 'terminal[ARGS]{"command":"id"}' in contents[-1]
+        # The call text reaches the user WHILE the turn is still running. Draining would
+        # hold it until EOS, so every event carrying it would also carry the closing prose.
+        assert any(
+            'terminal[ARGS]{"command":"id"}' in t and "will not run" not in t for t in contents
+        ), contents
 
     def test_benign_rehearsal_still_drains_and_executes(self):
         # Control for the test above: the benign bare form keeps its boundary detection,
@@ -1815,9 +1818,9 @@ class TestParserCrossFormatRouting:
         for label, text, expected_name in cases:
             result = parse_tool_calls_from_text(text)
             assert len(result) == 1, f"{label}: parser missed the call"
-            assert (
-                result[0]["function"]["name"] == expected_name
-            ), f"{label}: got {result[0]['function']['name']!r}, expected {expected_name!r}"
+            assert result[0]["function"]["name"] == expected_name, (
+                f"{label}: got {result[0]['function']['name']!r}, expected {expected_name!r}"
+            )
 
     def test_all_new_markers_in_tool_xml_signals(self):
         # The safetensors / MLX streaming buffer must wake on every supported emission marker --

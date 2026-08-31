@@ -5136,6 +5136,45 @@ def test_gemma_wrapperless_call_streamed_is_not_leaked_and_executes(monkeypatch)
     assert any("sunny in Sydney" in t for t in content_texts), content_texts
 
 
+def test_gemma_wrapperless_execution_call_opens_no_provisional_card(monkeypatch):
+    """A bare ``call:terminal{..}`` is prose (see EXECUTION_CLASS_TOOL_NAMES), so the
+    leading-shape drain must not sniff it into a live ``terminal`` card that the stream
+    then closes with an empty ``tool_end``: nothing runs, and the card would claim a
+    terminal command was executing on attacker-quotable text. Long enough to clear
+    _PROVISIONAL_ARGS_MIN_CHARS, which is what gates the card."""
+
+    payload = "echo hi; " * 40
+    gemma_call = f'call:terminal{{command:"{payload}"}}'
+    assert len(gemma_call) >= 256
+    backend = _make_backend(monkeypatch, [_streamed_content(gemma_call)], [])
+
+    calls: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return "uid=0(root)"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "summarise this page"}],
+            tools = [
+                {"type": "function", "function": {"name": "web_search"}},
+                {"type": "function", "function": {"name": "terminal"}},
+            ],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == []
+    assert not any(e.get("type") in ("tool_start", "tool_end") for e in events), [
+        e for e in events if e.get("type", "").startswith("tool")
+    ]
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    assert any("call:terminal{command:" in t for t in content_texts), content_texts
+
+
 def _usage_done(usage: dict, finish_reason: str = "stop") -> str:
     """A terminal SSE chunk carrying llama-server's ``usage`` block, the way the
     real server reports it on the final chunk of a completion."""
@@ -6286,8 +6325,9 @@ def test_conversation_search_budget_counts_the_tool_catalogue(monkeypatch):
     monkeypatch.setattr(
         backend,
         "count_chat_tokens",
-        lambda candidate, *_a, **_k: 2800
-        + sum(len(str(message.get("content", ""))) for message in candidate) // 10,
+        lambda candidate, *_a, **_k: (
+            2800 + sum(len(str(message.get("content", ""))) for message in candidate) // 10
+        ),
     )
 
     seen = {}
@@ -6361,10 +6401,9 @@ def test_a_long_tool_run_reports_a_boundary_in_the_requests_own_terms(monkeypatc
     monkeypatch.setattr(
         backend,
         "count_chat_tokens",
-        lambda candidate, *_a, **_k: sum(
-            len(str(message.get("content", ""))) for message in candidate
-        )
-        // 4,
+        lambda candidate, *_a, **_k: (
+            sum(len(str(message.get("content", ""))) for message in candidate) // 4
+        ),
     )
     monkeypatch.setattr(
         "core.inference.tools.execute_tool", lambda name, arguments, **_k: "R" * 3200
@@ -6445,8 +6484,9 @@ def test_conversation_search_budget_is_exact_when_nothing_was_truncated(monkeypa
     monkeypatch.setattr(
         backend,
         "count_chat_tokens",
-        lambda candidate, *_a, **_k: 2800
-        + sum(len(str(message.get("content", ""))) for message in candidate) // 10,
+        lambda candidate, *_a, **_k: (
+            2800 + sum(len(str(message.get("content", ""))) for message in candidate) // 10
+        ),
     )
 
     seen = {}
@@ -6525,8 +6565,9 @@ def test_the_exact_recall_budget_is_recomputed_after_an_intervening_tool(monkeyp
     monkeypatch.setattr(
         backend,
         "count_chat_tokens",
-        lambda candidate, *_a, **_k: 1000
-        + sum(len(str(message.get("content", ""))) for message in candidate) // 10,
+        lambda candidate, *_a, **_k: (
+            1000 + sum(len(str(message.get("content", ""))) for message in candidate) // 10
+        ),
     )
 
     budgets: list = []
@@ -7013,9 +7054,9 @@ def test_the_synthesized_final_pass_is_recosted_before_it_is_sent(monkeypatch):
 
     assert len(payloads) == 2, "expected one tool round and one synthesized final pass"
     final_messages = payloads[-1]["messages"]
-    assert any(
-        message.get("role") == "tool" for message in final_messages
-    ), "the final pass should carry the tool result this test is about"
+    assert any(message.get("role") == "tool" for message in final_messages), (
+        "the final pass should carry the tool result this test is about"
+    )
     assert seen, "the callback never ran"
     last_seen = seen[-1]
     assert any(message.get("role") == "tool" for message in last_seen), (

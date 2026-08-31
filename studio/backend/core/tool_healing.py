@@ -29,14 +29,17 @@ import bisect
 import json
 import re
 
-# Execution-class tools run code on the host (python -> _python_exec, terminal ->
-# _bash_exec). Their MARKERLESS forms (bare ``call:NAME{...}`` / ``name[ARGS]{json}``) are
+# Execution-class tools act on the host, unsandboxed under Full access: python ->
+# _python_exec, terminal -> _bash_exec, edit_file -> _edit_file, which with
+# disable_sandbox skips the workdir containment check and writes any path the process can
+# reach. These are exactly the route's ``_LOCAL_CODE_TOOLS`` (a drift test pins that).
+# Their MARKERLESS forms (bare ``call:NAME{...}`` / ``name[ARGS]{json}``) are
 # indistinguishable from prose quoting the syntax, so a model echoing attacker-controlled
-# web/RAG/user text could otherwise turn a quote into host code execution. Never promote or
-# strip a markerless execution-class call: it must carry an unambiguous wrapper
-# (``<|tool_call>``, ``[TOOL_CALLS]``, ``<function=>``) or arrive as a structured tool_call.
-# Benign tools keep the bare form.
-EXECUTION_CLASS_TOOL_NAMES = frozenset({"python", "terminal"})
+# web/RAG/user text could otherwise turn a quote into host code execution or an arbitrary
+# file write. Never promote or strip a markerless execution-class call: it must carry an
+# unambiguous wrapper (``<|tool_call>``, ``[TOOL_CALLS]``, ``<function=>``) or arrive as a
+# structured tool_call. Benign tools keep the bare form.
+EXECUTION_CLASS_TOOL_NAMES = frozenset({"python", "terminal", "edit_file"})
 
 
 def _markerless_promotable(name, enabled_tool_names) -> bool:

@@ -33,9 +33,9 @@ from typing import Any, Optional
 from core import tool_healing as _tool_healing
 
 # Shared with tool_healing so every markerless (bare, unwrapped) parse path applies the same
-# execution-class guard: a bare ``python``/``terminal`` call is prose, never promoted to a real
-# call. Trusted wrapped/marker forms (<|tool_call>, [TOOL_CALLS], <function=>) are unaffected.
-_EXECUTION_CLASS_TOOL_NAMES = _tool_healing.EXECUTION_CLASS_TOOL_NAMES
+# execution-class guard: a bare ``python``/``terminal``/``edit_file`` call is prose, never
+# promoted to a real call. Trusted wrapped/marker forms (<|tool_call>, [TOOL_CALLS],
+# <function=>) are unaffected.
 _markerless_promotable = _tool_healing._markerless_promotable
 
 
