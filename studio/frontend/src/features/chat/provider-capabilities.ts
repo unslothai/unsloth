@@ -91,23 +91,25 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
   cap: number;
 }> = [
   // OpenAI
+  // The picker admits every chat family OpenAI lists, so this table covers
+  // them all. The Responses API rejects an over-limit max_output_tokens rather
+  // than clamping it, which makes an overstated cap a failed request and an
+  // understated one merely a shorter answer. First match wins, so a bare
+  // family prefix (`gpt-5`, `gpt-4`) goes last or it swallows its own minors.
   {
     providerType: "openai",
-    prefixes: ["gpt-5.6", "gpt-5.5-pro", "gpt-5.5"],
+    prefixes: ["gpt-5.6", "gpt-5.5-pro", "gpt-5.5", "gpt-5.2", "gpt-5.1"],
     cap: 128000,
   },
   { providerType: "openai", prefixes: ["gpt-5.4-pro", "gpt-5.4"], cap: 65536 },
   { providerType: "openai", prefixes: ["gpt-5.3"], cap: 16384 },
-  // Older families the picker now surfaces. The Responses API rejects an
-  // over-limit max_output_tokens instead of clamping it, so a Max Tokens above
-  // the cap fails the request; 4,096 is under the 8,192 in
-  // DEFAULT_INFERENCE_PARAMS, so those two fail on an untouched config.
-  // Order matters here: the first matching prefix wins, so every gpt-4.x
-  // family needs its own row ahead of the bare `gpt-4` one, which would
-  // otherwise swallow all of them.
+  { providerType: "openai", prefixes: ["gpt-5-chat-latest"], cap: 16384 },
+  { providerType: "openai", prefixes: ["gpt-5"], cap: 128000 },
   { providerType: "openai", prefixes: ["gpt-4.1"], cap: 32768 },
   { providerType: "openai", prefixes: ["gpt-4.5"], cap: 16384 },
   { providerType: "openai", prefixes: ["gpt-4o"], cap: 16384 },
+  // 4,096 is under the 8,192 in DEFAULT_INFERENCE_PARAMS, so these two fail on
+  // an untouched config rather than only on a raised slider.
   {
     providerType: "openai",
     prefixes: ["gpt-3.5-turbo", "gpt-4-turbo"],
@@ -135,8 +137,18 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
       "claude-opus-4-5",
       "claude-sonnet-4-5",
       "claude-haiku-4-5",
+      // Dated 4.0 id; the picker surfaces it now that the `-YYYYMMDD` filters
+      // are gone, and 4.0 has exactly one snapshot per model.
+      "claude-sonnet-4-20250514",
     ],
     cap: 64000,
+  },
+  // Below the 32,768 fallback, so without this row a raised Max Tokens
+  // overshoots the model.
+  {
+    providerType: "anthropic",
+    prefixes: ["claude-opus-4-1", "claude-opus-4-20250514"],
+    cap: 32000,
   },
   // Gemini
   {

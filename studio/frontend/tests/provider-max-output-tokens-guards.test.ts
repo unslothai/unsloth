@@ -87,28 +87,55 @@ test("a documented per-model cap bounds the connection override", () => {
   }
 });
 
-test("older OpenAI families carry their documented output cap", () => {
+test("every OpenAI family the picker admits carries its documented cap", () => {
   // The Responses API rejects an over-limit max_output_tokens instead of
-  // clamping, so every family under the 32,768 fallback needs a row. The 4,096
-  // pair is also under the 8,192 in DEFAULT_INFERENCE_PARAMS, so those two
-  // would fail on an untouched config.
-  // The bare `gpt-4` row is last, so this also pins the ordering: every more
-  // specific gpt-4.x family must keep its own cap rather than fall into 8,192.
+  // clamping, so a row that is missing (or too generous) turns a raised Max
+  // Tokens into a failed request. The 4,096 pair is under the 8,192 in
+  // DEFAULT_INFERENCE_PARAMS, so those two fail on an untouched config.
+  // The bare `gpt-5` and `gpt-4` rows are last, so this also pins the ordering:
+  // a more specific family must keep its own cap rather than fall into theirs.
   const caps: Array<[string, number]> = [
+    ["gpt-5.6-sol", 128000],
+    ["gpt-5.5", 128000],
+    ["gpt-5.4", 65536],
+    ["gpt-5.3", 16384],
+    ["gpt-5.2", 128000],
+    ["gpt-5.1", 128000],
+    ["gpt-5-chat-latest", 16384],
+    ["gpt-5", 128000],
+    ["gpt-5-mini", 128000],
+    ["gpt-4.1", 32768],
+    ["gpt-4.1-mini", 32768],
+    ["gpt-4.5-preview", 16384],
+    ["gpt-4o", 16384],
+    ["gpt-4o-mini", 16384],
     ["gpt-3.5-turbo", 4096],
     ["gpt-3.5-turbo-16k", 4096],
     ["gpt-4-turbo", 4096],
     ["gpt-4-turbo-preview", 4096],
-    ["gpt-4o", 16384],
-    ["gpt-4o-mini", 16384],
-    ["gpt-4.5-preview", 16384],
-    ["gpt-4.1", 32768],
-    ["gpt-4.1-mini", 32768],
     ["gpt-4", 8192],
   ];
   for (const [modelId, cap] of caps) {
     assert.equal(getExternalMaxOutputTokens("openai", modelId), cap);
-    assert.equal(getExternalMaxOutputTokens("openai", modelId, 128000), cap);
+    assert.equal(getExternalMaxOutputTokens("openai", modelId, 1000000), cap);
+  }
+});
+
+test("the dated Anthropic ids carry their documented cap", () => {
+  // They reach the picker now that the `-YYYYMMDD` filters are gone. Opus 4.1
+  // and Opus 4 sit at 32,000, under the 32,768 fallback, so without a row a
+  // raised Max Tokens overshoots them.
+  const caps: Array<[string, number]> = [
+    ["claude-opus-4-5-20251101", 64000],
+    ["claude-sonnet-4-5-20250929", 64000],
+    ["claude-haiku-4-5-20251001", 64000],
+    ["claude-sonnet-4-20250514", 64000],
+    ["claude-opus-4-1-20250805", 32000],
+    ["claude-opus-4-20250514", 32000],
+  ];
+  for (const [modelId, cap] of caps) {
+    assert.equal(getExternalMaxOutputTokens("anthropic", modelId), cap);
+    assert.equal(getExternalMaxOutputTokens("anthropic", modelId, 1000000), cap);
   }
 });
 
