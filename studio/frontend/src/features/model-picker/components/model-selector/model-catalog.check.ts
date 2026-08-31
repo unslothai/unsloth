@@ -490,6 +490,18 @@ assert.equal(
   classifyGgufFit(16 * GB, { gpuGb: 24, systemRamGb: 0, budgetFraction: 0.8 }),
   "marginal",
 );
+// At the top of the slider the loader still keeps its 512 MiB floor (_VRAM_FLOOR_RESERVE_MIB), so
+// a 20 GiB quant needing 24.0 GiB is handed to --fit rather than admitted. `gpuGb * fraction` said
+// otherwise, and the whole point of this file is that the badge matches _select_gpus.
+assert.equal(
+  classifyGgufFit(20 * GB, { gpuGb: 24, systemRamGb: 0, budgetFraction: 1 }),
+  "marginal",
+);
+// The floor never exceeds the default budget's own reserve, so 0.97 is unchanged by it.
+assert.equal(
+  classifyGgufFit(19 * GB, { gpuGb: 24, systemRamGb: 0, budgetFraction: 0.97 }),
+  "fits",
+);
 
 // ── classifyMediaGgufFit ──────────────────────────────────────────────────────
 // Images / Video place a GGUF through the diffusion backend, whose budget on a 64 GiB unified host

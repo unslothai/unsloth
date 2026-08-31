@@ -44,6 +44,9 @@ export interface GgufFitInput {
  * filter). */
 export { DEFAULT_VRAM_BUDGET_FRACTION as VRAM_HEADROOM_RATIO } from "./memory/thresholds.ts";
 import { DEFAULT_VRAM_BUDGET_FRACTION } from "./memory/thresholds.ts";
+/** The loader's absolute reserve floor, `_VRAM_FLOOR_RESERVE_MIB` (512 MiB) in llama_cpp.py.
+ *  Capped there at 3% of the card, so it never rises above the default budget's own reserve. */
+const VRAM_RESERVE_FLOOR_GB = 512 / 1024;
 /** GGUF weights are file size; runtime activations add roughly this fraction. */
 const ACTIVATIONS_RATIO = 0.15;
 /** Flat KV/context allowance at a typical 4K window. */
@@ -77,7 +80,17 @@ export function classifyGgufFit(
     budgetFraction <= 1
       ? budgetFraction
       : DEFAULT_VRAM_BUDGET_FRACTION;
-  const budget = gpuGb * fraction;
+  // Not simply `gpuGb * fraction`. The loader's `_vram_usable_mib` charges
+  // `max((1 - frac) * total, floor)`, where the floor is `min(512 MiB, 3% of total)`, so the
+  // reserve never disappears at the top of the slider. Below the 0.97 default the percentage term
+  // always wins and this is identical; above it, `gpuGb * fraction` claimed capacity the backend
+  // does not offer, and a 20 GiB file on a full 24 GiB card at 1.0 read `fits` while `_select_gpus`
+  // fell back to --fit.
+  const reserveFloorGb = Math.min(
+    VRAM_RESERVE_FLOOR_GB,
+    (1 - DEFAULT_VRAM_BUDGET_FRACTION) * gpuGb,
+  );
+  const budget = gpuGb - Math.max((1 - fraction) * gpuGb, reserveFloorGb);
   if (required <= budget) return "fits";
   // Raw card, deliberately. This band means "over your budget, still card-sized",
   // which is the only thing that distinguishes it from `fits`: scoring it against
