@@ -707,6 +707,29 @@ def existing_install_usable(install_dir: Path, host: HostInfo) -> bool:
     return npm_major is not None and npm_major >= NPM_MIN_MAJOR
 
 
+# ERROR_ACCESS_DENIED. Kept in the retry set -- a scanner does raise it right after
+# extraction -- but it is also what unreadable ACLs look like, and waiting never clears
+# those (#9928). Duplicated from install_llama_prebuilt.py rather than shared: this
+# module imports nothing but the stdlib on purpose, and mirrors that one by shape.
+_ERROR_ACCESS_DENIED = 5
+
+
+def _access_denied_recovery_lines(path: Path) -> list[str]:
+    """What to print when a rename keeps failing with ``ERROR_ACCESS_DENIED``.
+
+    Mirrors the guidance ``install.ps1`` / ``studio/setup.ps1`` already emit for an
+    unreadable install tree. The two commands go on their own lines: joined, takeown
+    swallows the rest as arguments.
+    """
+    return [
+        f"if this was not a scanner, the ACLs on {path} may be unreadable -- "
+        "even icacls/Get-Acl report access denied in that state",
+        "restore access with these two commands, then run the install again:",
+        f'  takeown /F "{path}" /R /D Y',
+        f'  icacls "{path}" /reset /T /C',
+    ]
+
+
 def _replace_with_retry(
     src: Path,
     dst: Path,
@@ -720,6 +743,11 @@ def _replace_with_retry(
     a fresh install, with no existing directory to conflict with). Handles clear in a
     second or two, so a bounded backoff turns the failure into a pause; other errors
     raise immediately rather than stalling on a real problem.
+
+    WinError 5 keeps that budget but is reported differently. ``_swap_into_place`` also
+    calls this to move an EXISTING install aside, and there a 5 is equally the signature
+    of a tree whose ACLs are unreadable -- a permission fault the retries cannot clear,
+    which naming a scanner sends the user away from (#9928).
     """
     delay = 0.25
     for attempt in range(attempts):
@@ -727,13 +755,19 @@ def _replace_with_retry(
             os.replace(src, dst)
             return
         except OSError as exc:
-            transient = os.name == "nt" and getattr(exc, "winerror", None) in (5, 32, 145)
+            winerror = getattr(exc, "winerror", None)
+            transient = os.name == "nt" and winerror in (_ERROR_ACCESS_DENIED, 32, 145)
             if not transient or attempt == attempts - 1:
+                if transient and winerror == _ERROR_ACCESS_DENIED:
+                    log(f"rename still blocked (5) after {attempts} attempts")
+                    for line in _access_denied_recovery_lines(src):
+                        log(line)
                 raise
-            log(
-                f"rename blocked ({exc.winerror}), retrying in {delay:.2f}s "
-                f"-- a scanner is likely still holding the extracted files"
-            )
+            if winerror == _ERROR_ACCESS_DENIED:
+                cause = "a scanner may still hold the files, or the ACLs are unreadable"
+            else:
+                cause = "a scanner is likely still holding the extracted files"
+            log(f"rename blocked ({winerror}), retrying in {delay:.2f}s -- {cause}")
             time.sleep(delay)
             delay = min(delay * 2, 4.0)
 

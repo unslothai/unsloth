@@ -4173,6 +4173,31 @@ def unique_install_side_path(install_dir: Path, label: str) -> Path:
     return candidate
 
 
+# ERROR_ACCESS_DENIED. Retried alongside 32/145 because a scanner genuinely can
+# raise it -- ``activate_staged_dir`` documents that on Windows ARM64 -- but it is
+# also what an unreadable ACL looks like, and no amount of waiting clears that one
+# (#9928). Only the reporting distinguishes them, so name both causes.
+_ERROR_ACCESS_DENIED = 5
+
+
+def _access_denied_recovery_lines(path: Path) -> list[str]:
+    """What to print when a rename keeps failing with ``ERROR_ACCESS_DENIED``.
+
+    Mirrors the guidance ``install.ps1`` / ``studio/setup.ps1`` already emit for an
+    unreadable llama.cpp tree (their ``Access denied reading ... restore access with
+    takeown/icacls`` path). The two commands go on their own lines: they are two
+    commands, and a reader who pastes them as one gets ``takeown`` swallowing the
+    rest as arguments.
+    """
+    return [
+        f"if this was not a scanner, the ACLs on {path} may be unreadable -- "
+        "even icacls/Get-Acl report access denied in that state",
+        "restore access with these two commands, then run the update again:",
+        f'  takeown /F "{path}" /R /D Y',
+        f'  icacls "{path}" /reset /T /C',
+    ]
+
+
 def replace_with_busy_retry(
     src: Path,
     dst: Path,
@@ -4181,13 +4206,19 @@ def replace_with_busy_retry(
 ) -> None:
     """``os.replace``, retried against transient Windows sharing violations.
 
-    WinError 5/32/145 means a scanner still holds a handle inside the tree,
-    which clears in a second or two; without a backoff that turns an update
-    into a failure, and on the aside-move of the *existing* install that is the
-    failure this installer most needs to avoid. Mirrors the Node installer's
-    ``_replace_with_retry``. Other errors raise at once, and POSIX never
-    retries because EACCES/EBUSY there mean a permission or mount problem no
-    amount of waiting clears.
+    WinError 32/145 means a scanner still holds a handle inside the tree, which
+    clears in a second or two; without a backoff that turns an update into a
+    failure, and on the aside-move of the *existing* install that is the failure
+    this installer most needs to avoid. Mirrors the Node installer's
+    ``_replace_with_retry``. Other errors raise at once, and POSIX never retries
+    because EACCES/EBUSY there mean a permission or mount problem no amount of
+    waiting clears.
+
+    WinError 5 is retried on the same budget, because a scanner can raise it too,
+    but it is reported differently: it is equally the signature of a tree whose
+    ACLs are corrupt, which is a permission problem the retries cannot clear, and
+    calling it a scanner sends the user hunting the wrong thing (#9928). When the
+    budget runs out on a 5, the takeown/icacls recovery is printed before raising.
     """
     if attempts < 1:
         raise ValueError("replace_with_busy_retry needs at least one attempt")
@@ -4197,12 +4228,20 @@ def replace_with_busy_retry(
             os.replace(src, dst)
             return
         except OSError as exc:
-            transient = os.name == "nt" and getattr(exc, "winerror", None) in (5, 32, 145)
+            winerror = getattr(exc, "winerror", None)
+            transient = os.name == "nt" and winerror in (_ERROR_ACCESS_DENIED, 32, 145)
             if not transient or attempt == attempts - 1:
+                if transient and winerror == _ERROR_ACCESS_DENIED:
+                    log(f"rename {src.name} -> {dst.name} still blocked (5) after {attempts} tries")
+                    log_lines(_access_denied_recovery_lines(src))
                 raise
+            if winerror == _ERROR_ACCESS_DENIED:
+                cause = "a scanner may still hold the install open, or its ACLs are unreadable"
+            else:
+                cause = "a scanner is likely still holding the install open"
             log(
-                f"rename {src.name} -> {dst.name} blocked ({exc.winerror}), retrying in "
-                f"{delay:.2f}s -- a scanner is likely still holding the install open"
+                f"rename {src.name} -> {dst.name} blocked ({winerror}), retrying in "
+                f"{delay:.2f}s -- {cause}"
             )
             time.sleep(delay)
             delay = min(delay * 2, 4.0)
