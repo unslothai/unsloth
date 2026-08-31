@@ -1407,9 +1407,7 @@ class TestAnthropicToolNonStreaming:
 
         async def _drive():
             request = _connected_request(disconnected = True)
-            response = await helper(
-                request, _run_gen, "msg_1", "m", cancel_event = cancel_event
-            )
+            response = await helper(request, _run_gen, "msg_1", "m", cancel_event = cancel_event)
             assert await asyncio.to_thread(generator_started.wait, 1.0)
             return response
 

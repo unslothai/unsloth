@@ -28863,9 +28863,7 @@ async def _anthropic_tool_non_streaming(
             think_provenance = think_provenance,
         )
 
-    disconnect_watcher = asyncio.create_task(
-        _await_disconnect_then_cancel(request, cancel_event)
-    )
+    disconnect_watcher = asyncio.create_task(_await_disconnect_then_cancel(request, cancel_event))
     try:
         return await _run_blocking_generation(
             _drain_and_build,
@@ -28943,9 +28941,7 @@ async def _anthropic_plain_non_streaming(
             think_provenance = think_provenance,
         )
 
-    disconnect_watcher = asyncio.create_task(
-        _await_disconnect_then_cancel(request, cancel_event)
-    )
+    disconnect_watcher = asyncio.create_task(_await_disconnect_then_cancel(request, cancel_event))
     try:
         return await _run_blocking_generation(
             _drain_and_build,
