@@ -1769,3 +1769,51 @@ test("selectModel asks about a repairable drafter before adopting", () => {
   );
   assert.ok(repairCheck < confirmPrompt);
 });
+
+/**
+ * The store's mapping is what the comparator runs on both sides, so it has to agree with
+ * the backend's `_LEGACY_SPEC_MODE_MAP`. A stored per-model override reaches the config
+ * unnormalized (`model-overrides.ts` binds `speculative_type` straight through), so a
+ * spelling the backend canonicalises to "off" must not read as Auto here: the comparator
+ * would then weigh Auto against a status already reading "off" and re-send /load on every
+ * pick. The store cannot be imported in this suite, its module graph reaching the auth
+ * pages, so the function is lifted out of the source the way chat-model-residency.test.ts
+ * reads it -- but evaluated, so this asserts behavior rather than spelling.
+ */
+test("the speculative normalizer reads llama.cpp's disable spellings as off", () => {
+  const store = readFileSync(
+    new URL(
+      "../src/features/chat/stores/chat-runtime-store.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const start = store.indexOf("export function normalizeSpeculativeType");
+  assert.ok(start > 0, "normalizeSpeculativeType moved; follow it here");
+  const source = store
+    .slice(start, store.indexOf("\n}\n", start) + 2)
+    .replace("export function", "function")
+    .replace("  v: string | null | undefined,\n): string | null {", "v) {");
+  const normalize = new Function(
+    `${source}; return normalizeSpeculativeType;`,
+  )() as (v: string | null | undefined) => string | null;
+
+  for (const spelling of [
+    "off",
+    "none",
+    "None",
+    "NONE",
+    "  none  ",
+    "disable",
+    "Disabled",
+    "disabled",
+  ]) {
+    assert.equal(normalize(spelling), "off", `${spelling} must read as off`);
+  }
+  // The rest of the mapping is untouched, so an alias cannot swallow a real mode.
+  assert.equal(normalize("default"), "auto");
+  assert.equal(normalize("draft-mtp"), "mtp");
+  assert.equal(normalize("mtp+ngram"), "mtp+ngram");
+  assert.equal(normalize("bogus"), "auto");
+  assert.equal(normalize(null), null);
+});
