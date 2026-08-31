@@ -479,8 +479,19 @@ def missing_requirements(
 # files and the survivor's RECORD describes a file nothing recreates. Mirrors
 # _SHARED_NON_RUNTIME_ROOTS in unsloth_cli/_studio_deps.py.
 _SHARED_NON_RUNTIME_ROOTS = frozenset(
-    ("test", "tests", "doc", "docs", "example", "examples",
-     "benchmark", "benchmarks", "sample", "samples", "scripts")
+    (
+        "test",
+        "tests",
+        "doc",
+        "docs",
+        "example",
+        "examples",
+        "benchmark",
+        "benchmarks",
+        "sample",
+        "samples",
+        "scripts",
+    )
 )
 
 # Rewritten in place by our own setup, so the recorded size drifts. The file
@@ -547,7 +558,7 @@ def damaged_payload_files(package_name: str = "unsloth", limit: int = 3) -> List
                     continue
                 if len(parts) > 1 and parts[0] in _SHARED_NON_RUNTIME_ROOTS:
                     continue
-                if any(parts[:len(tree)] == tree for tree in _INSTALLER_REGENERATED_TREES):
+                if any(parts[: len(tree)] == tree for tree in _INSTALLER_REGENERATED_TREES):
                     continue
                 try:
                     target = dist.locate_file(rel)
@@ -560,9 +571,13 @@ def damaged_payload_files(package_name: str = "unsloth", limit: int = 3) -> List
                 else:
                     if not stat.S_ISREG(info.st_mode):
                         found.append(f"{rel} is not a regular file")
-                    elif (len(row) >= 3 and row[2] and row[2].isdigit()
-                            and parts[-1] not in _INSTALLER_REWRITTEN_NAMES
-                            and info.st_size < int(row[2])):
+                    elif (
+                        len(row) >= 3
+                        and row[2]
+                        and row[2].isdigit()
+                        and parts[-1] not in _INSTALLER_REWRITTEN_NAMES
+                        and info.st_size < int(row[2])
+                    ):
                         found.append(f"{rel} is {info.st_size} bytes, expected {row[2]}")
                 if len(found) >= limit:
                     return found
@@ -640,9 +655,7 @@ def verify_install(
     # reasons above. `installed` means we are describing someone else's venv,
     # whose tree this interpreter cannot stat.
     if manifest_ok and deps_ok and deep and installed is None:
-        damaged = damaged_payload_files(
-            (read_manifest(root) or {}).get("package") or package_name
-        )
+        damaged = damaged_payload_files((read_manifest(root) or {}).get("package") or package_name)
         if damaged:
             manifest_ok = False
             reason = "studio_install_damaged"

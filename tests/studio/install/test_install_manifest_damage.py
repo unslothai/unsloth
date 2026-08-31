@@ -38,11 +38,16 @@ def site_packages(tmp_path, monkeypatch):
     return root
 
 
-def _dist(site_packages: Path, name = PKG, version = VER) -> Path:
+def _dist(
+    site_packages: Path,
+    name = PKG,
+    version = VER,
+) -> Path:
     dist_info = site_packages / f"{name}-{version}.dist-info"
     dist_info.mkdir(parents = True, exist_ok = True)
     (dist_info / "METADATA").write_text(
-        f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n", encoding = "utf-8")
+        f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n", encoding = "utf-8"
+    )
     return dist_info
 
 
@@ -71,6 +76,7 @@ def _healthy(site_packages: Path):
 
 # ----------------------------------------------------------------- true positives
 
+
 def test_a_healthy_install_reports_nothing(site_packages):
     dist_info, rows = _healthy(site_packages)
     _record(dist_info, rows)
@@ -89,7 +95,8 @@ def test_a_truncated_file_is_damage(site_packages):
     _record(dist_info, rows)
     (site_packages / PKG / "__init__.py").write_text("", encoding = "utf-8")
     assert install_manifest.damaged_payload_files(PKG) == [
-        f"{PKG}/__init__.py is 0 bytes, expected 6"]
+        f"{PKG}/__init__.py is 0 bytes, expected 6"
+    ]
 
 
 def test_a_directory_where_a_file_was_recorded_is_damage(site_packages):
@@ -99,7 +106,8 @@ def test_a_directory_where_a_file_was_recorded_is_damage(site_packages):
     target.unlink()
     target.mkdir()
     assert install_manifest.damaged_payload_files(PKG) == [
-        f"{PKG}/__init__.py is not a regular file"]
+        f"{PKG}/__init__.py is not a regular file"
+    ]
 
 
 def test_the_findings_respect_the_limit(site_packages):
@@ -109,6 +117,7 @@ def test_the_findings_respect_the_limit(site_packages):
 
 
 # ---------------------------------------------------------------- false positives
+
 
 def test_a_regenerated_frontend_dist_is_not_damage(site_packages):
     """setup.sh runs `npm run build` in the installed tree.
@@ -120,10 +129,14 @@ def test_a_regenerated_frontend_dist_is_not_damage(site_packages):
     dist_info, rows = _healthy(site_packages)
     old = _write(site_packages / "studio/frontend/dist/assets/index-OLDHASH1.js", "x\n")
     index = _write(site_packages / "studio/frontend/dist/index.html", "<html>old</html>\n")
-    _record(dist_info, rows + [
-        ["studio/frontend/dist/assets/index-OLDHASH1.js", "sha256=x", old],
-        ["studio/frontend/dist/index.html", "sha256=x", index],
-    ])
+    _record(
+        dist_info,
+        rows
+        + [
+            ["studio/frontend/dist/assets/index-OLDHASH1.js", "sha256=x", old],
+            ["studio/frontend/dist/index.html", "sha256=x", index],
+        ],
+    )
     (site_packages / "studio/frontend/dist/assets/index-OLDHASH1.js").unlink()
     _write(site_packages / "studio/frontend/dist/assets/index-NEWHASH2.js", "y\n")
     _write(site_packages / "studio/frontend/dist/index.html", "<html>\n")
@@ -135,8 +148,7 @@ def test_damage_outside_the_regenerated_tree_still_counts(site_packages):
     """The carve-out is a subtree, not an amnesty."""
     dist_info, rows = _healthy(site_packages)
     old = _write(site_packages / "studio/frontend/dist/assets/index-OLDHASH1.js", "x\n")
-    _record(dist_info, rows + [
-        ["studio/frontend/dist/assets/index-OLDHASH1.js", "sha256=x", old]])
+    _record(dist_info, rows + [["studio/frontend/dist/assets/index-OLDHASH1.js", "sha256=x", old]])
     (site_packages / "studio/frontend/dist/assets/index-OLDHASH1.js").unlink()
     (site_packages / PKG / "__init__.py").unlink()
 
@@ -161,7 +173,8 @@ def test_a_deleted_package_lock_is_still_damage(site_packages):
     (site_packages / "studio/frontend/package-lock.json").unlink()
 
     assert install_manifest.damaged_payload_files(PKG) == [
-        "studio/frontend/package-lock.json is missing"]
+        "studio/frontend/package-lock.json is missing"
+    ]
 
 
 def test_a_shared_non_runtime_root_is_not_damage(site_packages):
@@ -203,8 +216,9 @@ def test_a_quoted_line_break_in_a_recorded_name_is_not_damage(site_packages):
     """RECORD is CSV: a quoted field may hold a newline that splitlines breaks."""
     dist_info = _dist(site_packages)
     size = _write(site_packages / PKG / "we\nird.py", "x = 1\n")
-    _record(dist_info, [[f"{PKG}/we\nird.py", "sha256=x", size],
-                        [f"{dist_info.name}/RECORD", "", ""]])
+    _record(
+        dist_info, [[f"{PKG}/we\nird.py", "sha256=x", size], [f"{dist_info.name}/RECORD", "", ""]]
+    )
     assert install_manifest.damaged_payload_files(PKG) == []
 
 
@@ -225,18 +239,19 @@ def test_an_unreadable_environment_reports_undamaged(monkeypatch):
 
 # ------------------------------------------------------------- verify_install wiring
 
+
 def _complete_install(tmp_path, monkeypatch, site_packages):
     """A manifest and requirements that make every metadata check pass."""
     req_root = tmp_path / "requirements"
     req_root.mkdir()
     (req_root / install_manifest.BOOT_REQUIREMENT_FILE).write_text("", encoding = "utf-8")
-    install_manifest.write_manifest(
-        root = tmp_path, req_root = req_root, package_name = PKG)
+    install_manifest.write_manifest(root = tmp_path, req_root = req_root, package_name = PKG)
     return req_root
 
 
 def test_a_damaged_payload_invalidates_an_otherwise_complete_install(
-        tmp_path, monkeypatch, site_packages):
+    tmp_path, monkeypatch, site_packages
+):
     dist_info, rows = _healthy(site_packages)
     _record(dist_info, rows)
     req_root = _complete_install(tmp_path, monkeypatch, site_packages)
@@ -259,26 +274,22 @@ def test_deep_false_skips_the_payload_scan(tmp_path, monkeypatch, site_packages)
     req_root = _complete_install(tmp_path, monkeypatch, site_packages)
     (site_packages / PKG / "__init__.py").unlink()
 
-    state = install_manifest.verify_install(
-        root = tmp_path, req_root = req_root, deep = False)
+    state = install_manifest.verify_install(root = tmp_path, req_root = req_root, deep = False)
     assert state["ok"] is True and state["reason"] is None
 
 
-def test_describing_a_foreign_venv_never_scans_this_one(
-        tmp_path, monkeypatch, site_packages):
+def test_describing_a_foreign_venv_never_scans_this_one(tmp_path, monkeypatch, site_packages):
     """`installed` means another venv, whose tree this interpreter cannot stat."""
     dist_info, rows = _healthy(site_packages)
     _record(dist_info, rows)
     req_root = _complete_install(tmp_path, monkeypatch, site_packages)
     (site_packages / PKG / "__init__.py").unlink()
 
-    state = install_manifest.verify_install(
-        root = tmp_path, req_root = req_root, installed = {PKG: VER})
+    state = install_manifest.verify_install(root = tmp_path, req_root = req_root, installed = {PKG: VER})
     assert state["reason"] != "studio_install_damaged"
 
 
-def test_the_scan_runs_last_and_diverts_no_existing_reason(
-        tmp_path, monkeypatch, site_packages):
+def test_the_scan_runs_last_and_diverts_no_existing_reason(tmp_path, monkeypatch, site_packages):
     """A missing manifest still reports incomplete, not damaged."""
     dist_info, rows = _healthy(site_packages)
     _record(dist_info, rows)
