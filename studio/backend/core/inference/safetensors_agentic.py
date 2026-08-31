@@ -26,6 +26,7 @@ from loggers import get_logger
 from core.inference.tool_call_parser import (
     _GEMMA_BARE_TC_PREFIX_RE,
     _balanced_brace_end,
+    blocked_bare_json_chain_may_continue,
     leading_bare_gemma_call_is_promotable,
     _strip_mistral_reasoning,
     strip_segment as _parser_strip_segment,
@@ -912,6 +913,14 @@ def run_safetensors_tool_loop(
                     enabled_tool_names = _enabled_tool_names,
                 ):
                     # Closed object that parses as a bare-JSON call -- drain silently.
+                    detect_state = _state_draining
+                    continue
+                elif blocked_bare_json_chain_may_continue(content_buffer, _enabled_tool_names):
+                    if len(stripped) < _MAX_BARE_JSON_BUFFER:
+                        continue
+                    # The potential chain exceeded the bounded private buffer.
+                    # Fail closed rather than stream content that a later peer
+                    # could make executable at end-of-turn.
                     detect_state = _state_draining
                     continue
                 # Closed non-call object (or oversized non-call) -- stream as text.

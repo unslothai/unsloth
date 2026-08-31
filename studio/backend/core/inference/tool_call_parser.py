@@ -2810,6 +2810,29 @@ def _bare_json_call_shaped(obj) -> bool:
     return False
 
 
+def blocked_bare_json_chain_may_continue(text: str, enabled_tool_names: Optional[set]) -> bool:
+    """Whether a leading guarded call still owns a possible ``; {peer}`` chain."""
+    probe = strip_llama3_leading_sentinels(text.lstrip())
+    if not probe.startswith("{"):
+        return False
+    end = _balanced_brace_end(probe, 0)
+    if end is None:
+        return False
+    try:
+        obj = json.loads(probe[: end + 1])
+    except (json.JSONDecodeError, ValueError):
+        return False
+    if not isinstance(obj, dict):
+        return False
+    name = obj.get("name") or obj.get("function") or ""
+    if not _markerless_blocked_execution(name, enabled_tool_names):
+        return False
+    if not _bare_json_call_shaped(obj):
+        return False
+    suffix = probe[end + 1 :].lstrip(" \t\n\r;")
+    return not suffix or suffix.startswith("{")
+
+
 def _gemma_balanced_brace_end(text: str, brace_pos: int, hard_stop: int) -> int | None:
     """Like ``_balanced_brace_end`` but skips ``<|"|>`` strings and matches {}/[] symmetrically."""
     if brace_pos >= len(text) or text[brace_pos] != "{":

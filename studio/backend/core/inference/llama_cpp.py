@@ -386,6 +386,7 @@ def _fit_with_instruction_pins(
 from core.inference.tool_call_parser import (
     _GEMMA_BARE_TC_PREFIX_RE,
     _balanced_brace_end,
+    blocked_bare_json_chain_may_continue,
     leading_bare_gemma_call_is_promotable,
     TOOL_XML_SIGNALS as _SHARED_TOOL_XML_SIGNALS,
     StreamingMarkupStripper as _StreamingMarkupStripper,
@@ -397,7 +398,10 @@ from core.inference.tool_call_parser import (
     strip_llama3_leading_sentinels,
     strip_tool_markup as _shared_strip_tool_markup,
 )
-from core.tool_healing import EXECUTION_CLASS_TOOL_NAMES, _markerless_promotable
+from core.tool_healing import (
+    EXECUTION_CLASS_TOOL_NAMES,
+    _markerless_promotable,
+)
 
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.child_stdio import utf8_child_env
@@ -29022,6 +29026,16 @@ class LlamaCppBackend:
                                                     enabled_tool_names = _enabled_tool_names,
                                                 ):
                                                     _drain_silently = True
+                                                elif blocked_bare_json_chain_may_continue(
+                                                    content_buffer, _enabled_tool_names
+                                                ):
+                                                    if len(stripped_buf) < _MAX_BARE_JSON_BUFFER:
+                                                        _hold_buffer = True
+                                                    else:
+                                                        # Bound private ownership and fail closed
+                                                        # instead of exposing text a later peer can
+                                                        # make executable at end-of-turn.
+                                                        _drain_silently = True
                                             elif (
                                                 "call:".startswith(stripped_buf)
                                                 or _GEMMA_BARE_TC_PREFIX_RE.match(stripped_buf)

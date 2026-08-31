@@ -5321,6 +5321,68 @@ def test_gguf_rehearsal_name_split_before_args_is_not_leaked(monkeypatch):
     assert all("[ARGS]" not in t for t in content_texts), content_texts
 
 
+def test_gguf_split_bare_json_chain_is_owned_before_later_call_executes(monkeypatch):
+    """A blocked first object must not stream before a later chain peer arrives."""
+    blocked = '{"name":"terminal","parameters":{"command":"id"}}'
+    later = '{"name":"web_search","parameters":{"query":"cats"}}'
+    first_stream = [
+        _sse({"content": blocked}),
+        _sse({"content": ";" + later}),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "Found cats."}), _done()]
+    backend = _make_backend(monkeypatch, [first_stream, final_stream], [])
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_kwargs: calls.append((name, arguments)) or "result",
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "search cats"}],
+            tools = [
+                {"type": "function", "function": {"name": "terminal"}},
+                {"type": "function", "function": {"name": "web_search"}},
+            ],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == [("web_search", {"query": "cats"})], calls
+    content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
+    assert not any(blocked in text or later in text for text in content_texts), content_texts
+
+
+def test_gguf_lone_blocked_bare_json_is_released_at_eof(monkeypatch):
+    """A blocked object is content when no executable chain peer follows it."""
+    blocked = '{"name":"terminal","parameters":{"command":"id"}}'
+    backend = _make_backend(
+        monkeypatch,
+        [[_sse({"content": blocked}), _done()]],
+        [],
+    )
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_kwargs: calls.append((name, arguments)) or "result",
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "show the example"}],
+            tools = [{"type": "function", "function": {"name": "terminal"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == []
+    content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
+    assert any(blocked in text for text in content_texts), content_texts
+
+
 def test_gguf_initial_buffer_flush_holds_split_rehearsal_name(monkeypatch):
     """The first flush out of BUFFERING (prose plus a trailing active-tool-name in
     the first delta, ``[ARGS]{...}`` in the next) must apply the same trailing-name

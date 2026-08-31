@@ -1966,6 +1966,42 @@ def test_rehearsal_call_name_split_before_args_is_not_streamed():
     assert not any("web_search" in t for t in contents), contents
 
 
+def test_split_bare_json_chain_is_owned_before_later_call_executes():
+    """A blocked first object can still own a chain with a later benign call.
+
+    The first cumulative snapshot must stay buffered: otherwise its raw JSON is
+    visible before the second snapshot makes the chain executable at end-of-turn.
+    """
+    blocked = '{"name":"terminal","parameters":{"command":"id"}}'
+    later = '{"name":"web_search","parameters":{"query":"cats"}}'
+    loop, exec_fn = _make_loop(
+        turns = [[blocked, ";" + later], ["Found cats."]],
+        exec_results = ["RESULT"],
+        max_tool_iterations = 3,
+    )
+
+    events = _collect_events(loop)
+
+    assert exec_fn.calls == [("web_search", {"query": "cats"})], exec_fn.calls
+    contents = [event.get("text", "") for event in events if event.get("type") == "content"]
+    assert not any(blocked in text or later in text for text in contents), contents
+
+
+def test_lone_blocked_bare_json_is_released_at_eof():
+    """A blocked object is content when no executable chain peer follows it."""
+    blocked = '{"name":"terminal","parameters":{"command":"id"}}'
+    loop, exec_fn = _make_loop(
+        turns = [[blocked]],
+        max_tool_iterations = 1,
+    )
+
+    events = _collect_events(loop)
+
+    assert exec_fn.calls == []
+    contents = [event.get("text", "") for event in events if event.get("type") == "content"]
+    assert any(blocked in text for text in contents), contents
+
+
 def test_plain_word_matching_no_tool_still_streams():
     # The prefix guard must not swallow prose: a non-tool bare word streams.
     loop, _exec = _make_loop(
