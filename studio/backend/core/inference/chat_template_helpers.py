@@ -46,9 +46,8 @@ _ATEM_BLOCK_ENDS = (_ATEM_CLOSE, _ATEM_END_OF_TURN)
 _ATEM_BLOCK_END_MAX_LEN = max(len(marker) for marker in _ATEM_BLOCK_ENDS)
 _ATEM_TEMPLATE_OPENER = "<|start|>assistant to=self<|message|>"
 _ATEM_HEADER_PREFIXES = ("<|start|>assistant to=", "to=")
-# Bound on a recipient, so the holdback window below can never be shorter than a header
-# the model actually wrote. Namespaced tool names run long, so this is generous rather
-# than a guess at a name cap: nothing in the grammar or in Studio caps a recipient.
+# Bound on a recipient so the holdback below can never be shorter than a real header.
+# Generous rather than a name cap: neither the grammar nor Studio caps a recipient.
 _ATEM_RECIPIENT_MAX_LEN = 256
 _ATEM_HEADER_RE = re.compile(
     r"(?:<\|start\|>assistant )?to=(?P<recipient>[^<\s]{1,%d})<\|message\|>"
@@ -1167,10 +1166,8 @@ def neutralize_control_markup_in_messages(
             new_name = neutralize_control_markup(name, markup)
             if new_name != name:
                 updates["name"] = new_name
-        # A recipient-addressed template concatenates this straight into the header
-        # ("<|start|>assistant to=" + recipient + "<|message|>"), so an assistant turn
-        # carrying one forged a whole system turn with real control tokens. FULL rewrite
-        # for the reason the reasoning fields take one: it must never hold delimiters.
+        # Concatenated into the header by a recipient-addressed template, so one
+        # carrying markup forged a whole system turn (#7066). Never holds delimiters.
         recipient = msg.get("recipient")
         if isinstance(recipient, str) and recipient:
             new_recipient = neutralize_control_markup(recipient, markup)
@@ -2091,11 +2088,9 @@ def _find_atem_block_end(text: str, start: int = 0) -> tuple[int, int]:
 
 
 def _atem_partial_framing_len(text: str) -> int:
-    """Length of the trailing fragment that can only be framing the model never finished.
-
-    Framing is a fragment opening with "<", or a bare first header that has reached its
-    "<|message|>". Prose is what stays: "...auto=true" ends in "to=true" and a turn cut
-    there keeps its text, because nothing has committed it to being a header yet."""
+    """Length of the trailing fragment that can only be framing the model never finished:
+    one opening with "<", or a bare first header that has reached its "<|message|>".
+    "...auto=true" is still prose, so it stays."""
     for size in range(min(len(text), _ATEM_HEADER_MAX_LEN), 0, -1):
         tail = text[-size:]
         if not (tail.startswith("<") or (tail.startswith("to=") and "<|" in tail)):
@@ -2125,15 +2120,10 @@ def _split_partial_atem_block_end(text: str) -> tuple[str, str]:
 
 
 def _atem_parameter_value(raw: str):
-    """JSON where it parses, otherwise the text exactly as written (the grammar's
-    ``allow_non_json``), so a multi-line string argument reaches the tool with every
-    character intact. json.loads ignores whitespace around a value by itself.
-
-    Anything that will not re-serialize as JSON stays text: NaN and the infinities are
-    not JSON (RFC 8259 s6) yet json.loads takes them, and an overflowing literal like
-    1e400 becomes inf without ever being one. Either would put a bare token in the
-    canonical call. RecursionError is deep nesting rather than a value, and the
-    grammar's fallback covers it the same way."""
+    """JSON where it parses, otherwise the text as written (the grammar's
+    ``allow_non_json``). Anything that will not re-serialize stays text: json.loads
+    accepts NaN and the infinities, which RFC 8259 s6 does not, and 1e400 becomes inf
+    without ever being one."""
     try:
         value = json.loads(raw)
         json.dumps(value, allow_nan = False)
@@ -2145,16 +2135,8 @@ def _atem_parameter_value(raw: str):
 def _atem_unfinished_tag(text: str) -> int:
     """Offset of the first ATEM tag the model had not finished writing, or -1.
 
-    Only the last tag start can be unfinished, since nothing follows a tag the stream
-    cut off; a ">" after it, or any text beyond it, proves it was never truncated
-    markup and the text stays. What did arrive must also belong to a tag this parser
-    knows: either the beginning of one, or one of the attribute-carrying openers with
-    its attributes cut off, with the tag name ending on a name boundary so
-    "<atem:invoker ..." stays the prose it is.
-
-    Deciding it this way cannot lose text the model wrote, whatever it contains, and
-    that is the trade this makes: unknown markup is shown rather than risk deleting
-    the answer, which is what this parser has always done with markup it does not own.
+    Only the last tag start can be unfinished, and it must match a tag name to a name
+    boundary, so "<atem:invoker ..." stays the prose it is.
     """
     starts = [match.start() for match in _ATEM_TAG_START_RE.finditer(text)]
     if not starts:
@@ -2188,18 +2170,9 @@ def _atem_surrounding_text(segment: str, *, complete: bool = True) -> str:
 
 def _atem_block_pieces(block: str, *, complete: bool) -> Optional[list[tuple[bool, str]]]:
     """Split a tool-addressed block into ``(is_call, text)`` pieces, or None when it
-    holds no call syntax at all.
-
-    Nothing downstream recognizes Muse's own call syntax, so a block forwarded
-    unchanged is streamed to the user as prose instead of being executed. Text the
-    model wrote around its calls is content and keeps its place among them.
-
-    Returns None when the block holds no call syntax at all, leaving the caller
-    to decide what to do with markup this parser does not own. A call that opened but
-    never closed still yields pieces: the text before it is content either way.
-
-    ``complete`` is False for a block the stream cut short, where the tail may be
-    markup the model had not finished writing.
+    holds no call syntax: nothing downstream recognizes the native form, so a block
+    passed through is shown as prose instead of executed. Text around the calls keeps
+    its place among them. ``complete`` is False for a block the stream cut short.
     """
     pieces: list[tuple[bool, str]] = []
     cursor = 0
@@ -2215,9 +2188,8 @@ def _atem_block_pieces(block: str, *, complete: bool) -> Optional[list[tuple[boo
         body = block[opening.end() : end]
         parameters = list(_ATEM_PARAMETER_RE.finditer(body))
         if len(parameters) != body.count("<atem:parameter") or "<atem:invoke" in body:
-            # A parameter that never closed, or a nested opener that makes this closer
-            # someone else's: promoting either would run a tool the model did not
-            # actually specify, so keep the call as text instead.
+            # An unclosed parameter, or a nested opener stealing this closer: either
+            # would run a tool the model did not specify, so keep it as text.
             pieces.append((False, block[opening.start() : end + len(_ATEM_INVOKE_CLOSE)]))
             cursor = end + len(_ATEM_INVOKE_CLOSE)
             continue
@@ -2443,10 +2415,8 @@ class RecipientChannelNormalizer:
             match = _ATEM_HEADER_RE.search(self._buffer)
             block_end, end_len = _find_atem_block_end(self._buffer)
             if block_end >= 0 and (match is None or block_end < match.start()):
-                # A terminator with no block open is framing. The transformers streamer
-                # keeps special tokens, so it arrives here rather than ending the stream,
-                # and continue_final_message resumes inside a block whose close is still
-                # to come, so <|eom|> lands here as well as <|eot|>.
+                # A terminator with no block open is framing: the streamer keeps special
+                # tokens, and continue_final_message resumes inside a block.
                 output.append(self._buffer[:block_end])
                 self._buffer = self._buffer[block_end + end_len :]
                 self._between_blocks = True
