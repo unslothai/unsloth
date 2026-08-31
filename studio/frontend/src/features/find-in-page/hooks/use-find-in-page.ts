@@ -26,6 +26,7 @@ import {
 import {
   EMPTY_TEXT_INDEX,
   FIND_SKIP_ATTRIBUTE,
+  MAX_MATCHES,
   type FindElementLike,
   type FindMatch,
   type FindTextIndex,
@@ -47,6 +48,8 @@ export interface FindResults {
   count: number;
   /** Zero-based position in `count`, or -1 when nothing matches. */
   active: number;
+  /** True when the cap actually cut something off, so `count` is a floor rather than the total. */
+  capped: boolean;
   /** True when the document was too large to flatten in full. */
   truncated: boolean;
   next: () => void;
@@ -104,12 +107,15 @@ export function useFindInPage(query: string): FindResults {
   const [results, setResults] = useState<{
     count: number;
     active: number;
+    capped: boolean;
     truncated: boolean;
-  }>({ count: 0, active: -1, truncated: false });
+  }>({ count: 0, active: -1, capped: false, truncated: false });
 
   const scopeRef = useRef<Element | null>(null);
   const indexRef = useRef<FindTextIndex>(EMPTY_TEXT_INDEX);
   const matchesRef = useRef<FindMatch[]>([]);
+  /** Whether the cap cut the last search short. */
+  const cappedRef = useRef(false);
   const activeRef = useRef(-1);
   const queryRef = useRef(query);
   /** The document changed since the index was built. */
@@ -146,12 +152,14 @@ export function useFindInPage(query: string): FindResults {
 
     if (reveal && activeRange) scrollRangeIntoView(activeRange);
 
+    const capped = cappedRef.current;
     setResults((previous) =>
       previous.count === count &&
       previous.active === active &&
+      previous.capped === capped &&
       previous.truncated === index.truncated
         ? previous
-        : { count, active, truncated: index.truncated },
+        : { count, active, capped, truncated: index.truncated },
     );
   }, []);
 
@@ -159,7 +167,12 @@ export function useFindInPage(query: string): FindResults {
   const search = useCallback(
     (reveal: boolean, fromViewport: boolean) => {
       const index = indexRef.current;
-      const matches = findMatches(index, queryRef.current);
+      // One past the cap. `findMatches` stops at the limit it is given, so a count that equals the
+      // cap cannot say whether it is the total or a floor, and the counter would read "5000+" for a
+      // page holding exactly 5000. The extra one is thrown away; only its existence is kept.
+      const matches = findMatches(index, queryRef.current, MAX_MATCHES + 1);
+      cappedRef.current = matches.length > MAX_MATCHES;
+      if (cappedRef.current) matches.length = MAX_MATCHES;
       matchesRef.current = matches;
       if (fromViewport) {
         activeRef.current = firstMatchFromViewport(index, matches);

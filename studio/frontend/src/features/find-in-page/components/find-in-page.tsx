@@ -18,7 +18,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef } from "react";
 import { useFindInPage } from "../hooks/use-find-in-page.ts";
-import { FIND_SCOPE_ATTRIBUTE, MAX_MATCHES } from "../lib/find-text-index.ts";
+import { FIND_SCOPE_ATTRIBUTE } from "../lib/find-text-index.ts";
 import { useFindInPageStore } from "../stores/find-in-page-store.ts";
 
 /**
@@ -86,7 +86,8 @@ function FindBar() {
   const setQuery = useFindInPageStore((state) => state.setQuery);
   const close = useFindInPageStore((state) => state.close);
   const focusToken = useFindInPageStore((state) => state.focusToken);
-  const { count, active, truncated, next, previous } = useFindInPage(query);
+  const { count, active, capped, truncated, next, previous } =
+    useFindInPage(query);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Hand focus back to whatever had it. The chord is usually pressed from the composer, and closing
@@ -115,7 +116,7 @@ function FindBar() {
   const searching = query.length > 0;
   const empty = searching && count === 0;
   const counter = searching
-    ? `${count === 0 ? 0 : active + 1}/${count}${count >= MAX_MATCHES ? "+" : ""}`
+    ? `${count === 0 ? 0 : active + 1}/${count}${capped ? "+" : ""}`
     : "";
 
   return (
@@ -130,6 +131,9 @@ function FindBar() {
       // native event from reaching the window listener the shortcuts are on.
       onKeyDown={(event) => {
         if (event.key !== "Escape") return;
+        // Escape dismisses an IME candidate, and the field is the only thing in here that can be
+        // composing. Taken, it closes the bar out from under a word still being typed.
+        if (isImeComposing(event.nativeEvent)) return;
         event.preventDefault();
         event.stopPropagation();
         close();

@@ -25,6 +25,7 @@ import {
   type FindTextNodeLike,
   FIND_SKIP_ATTRIBUTE,
   MAX_INDEX_CHARS,
+  MAX_MATCHES,
   buildTextIndex,
   endPositionAt,
   findMatches,
@@ -850,6 +851,73 @@ test("the shell unmounting is what calls it, not the bar closing", async () => {
     "utf8",
   );
   assert.match(store, /close: \(\) => set\(\{ open: false \}\),/);
+});
+
+test("the counter says '+' only when the cap actually cut something off", () => {
+  // `findMatches` stops at the limit it is given, so a count equal to the cap cannot say whether it
+  // is the total or a floor: a page holding exactly MAX_MATCHES read as "more than MAX_MATCHES".
+  // Asking for one past it is the whole difference; the extra match is thrown away.
+  const occurrences = (n: number) =>
+    findMatches(
+      buildTextIndex(el("DIV", [el("P", [text("a".repeat(n))])])),
+      "a",
+      MAX_MATCHES + 1,
+    ).length;
+  assert.equal(occurrences(MAX_MATCHES - 1) > MAX_MATCHES, false);
+  assert.equal(occurrences(MAX_MATCHES) > MAX_MATCHES, false);
+  assert.equal(occurrences(MAX_MATCHES + 1) > MAX_MATCHES, true);
+  // The count itself cannot tell the last two apart, which is why the flag exists.
+  assert.equal(
+    findMatches(buildTextIndex(el("DIV", [el("P", [text("a".repeat(MAX_MATCHES))])])), "a").length,
+    findMatches(buildTextIndex(el("DIV", [el("P", [text("a".repeat(MAX_MATCHES + 1))])])), "a").length,
+  );
+});
+
+test("the cap flag is what the bar renders, not the count", async () => {
+  const engine = await readFile(
+    new URL(
+      "../src/features/find-in-page/hooks/use-find-in-page.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(engine, /findMatches\(index, queryRef\.current, MAX_MATCHES \+ 1\)/);
+  assert.match(engine, /cappedRef\.current = matches\.length > MAX_MATCHES;/);
+  // Trimmed back to the cap, so nothing downstream sees the probe match.
+  assert.match(engine, /if \(cappedRef\.current\) matches\.length = MAX_MATCHES;/);
+  const bar = await readFile(
+    new URL(
+      "../src/features/find-in-page/components/find-in-page.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(bar, /\$\{capped \? "\+" : ""\}/);
+  assert.equal(bar.includes("count >= MAX_MATCHES"), false);
+});
+
+test("Escape is left to the IME while it is composing", async () => {
+  // Escape dismisses a candidate. Consumed here, it closes the bar out from under a word still
+  // being typed, and the candidate window never sees the key it was aimed at.
+  const bar = await readFile(
+    new URL(
+      "../src/features/find-in-page/components/find-in-page.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const landmark = bar.slice(bar.indexOf('role="search"'));
+  const escape = landmark.slice(0, landmark.indexOf("<input"));
+  const guard = escape.indexOf("isImeComposing(event.nativeEvent)");
+  const consume = escape.indexOf("event.preventDefault()");
+  assert.ok(guard > 0 && guard < consume);
+  // Safe to let through: the global listener stands aside for a composing event before it looks
+  // for a binding, so the bare-Escape decline cannot take it either.
+  const shortcut = await readFile(
+    new URL("../src/features/settings/hooks/use-shortcut.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(shortcut, /if \(isImeComposing\(event\)\) return;\n\s*const hit = bindings\.find/);
 });
 
 test("nothing of the engine is mounted while the bar is closed", async () => {
