@@ -1,24 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The reroute decision must not depend on what is installed in the interpreter running it.
+"""A test that reaches the reinstall skip without pinning the installed-wheel pair reads
+the machine running pytest, so it passes on a bare laptop and fails on any host that
+already has AMD per-arch torch. Three cases in TestEnsureRocmTorch did.
 
-_installed_rocm_wheel_family() and _torch_requires_rocm_sdk() read importlib.metadata for
-the RUNNING interpreter. At install time that is exactly right: install_python_stack.py is
-executed by the venv's own python, so the venv it reads is the venv it is repairing. Under
-pytest it is exactly wrong: the interpreter is whatever ran the suite, so a test that
-reaches those functions without pinning them asks the developer's laptop a question it
-means to ask a mock, and the answer decides whether a skip arm fires.
-
-That is not hypothetical. On the gfx1151 AMD runner, whose Studio venv holds AMD per-arch
-torch, three cases in TestEnsureRocmTorch flipped: the skip arms read a real `gfx1151`
-family and declined reinstalls those cases assert. They passed everywhere else, so nothing
-short of running the suite ON an AMD machine could show it.
-
-This file is the standing check. It fakes the metadata layer (never the functions, so the
-real lookup logic still runs) into each install state a user can actually be in, and
-asserts the routing verdicts do not move. A future helper that learns to read the venv
-fails here rather than on someone's hardware.
+_installed_rocm_wheel_family and _torch_requires_rocm_sdk go to importlib.metadata for the
+RUNNING interpreter, which is the venv being repaired at install time and the test runner
+here. This file fakes the metadata layer, never the functions, so their parsing still runs.
 """
 
 from __future__ import annotations
@@ -47,17 +36,10 @@ _STACK_SPEC.loader.exec_module(stack_mod)
 
 _MARK = stack_mod._TORCH_PROBE_MARKER
 
-# The states a venv can be in when the installer next runs, as `rocm`'s Requires-Dist,
-# torch's Requires-Dist, and the distributions on disk. Each is a real shape:
-#
-#   bare                 a laptop, and every hosted CI runner. The state that hid the bug.
-#   perarch-*            AMD per-arch torch, which is what the gfx1151 runner has.
-#   generic-with-orphan  pip drops rocm[libraries] from torch when a generic wheel is
-#                        force-reinstalled over a per-arch one, but leaves `rocm` behind
-#                        still naming the old family. _torch_requires_rocm_sdk exists for
-#                        this; the family alone would read the orphan as live.
-#   two-families         a family switch upgrades `rocm` in place and never uninstalls the
-#                        superseded runtime, so two are on disk and neither is decisive.
+# `rocm` Requires-Dist, torch Requires-Dist, distributions on disk. Two are pip behaviours,
+# not hypotheticals: installing a generic wheel over a per-arch one drops rocm[libraries]
+# from torch but leaves `rocm` naming the old family, and a family switch upgrades `rocm`
+# in place without uninstalling the superseded runtime.
 AMBIENT_STATES: "dict[str, tuple]" = {
     "bare": (None, ["filelock"], []),
     "perarch-gfx1151": (
@@ -97,12 +79,7 @@ class _Dist:
 
 @contextmanager
 def ambient(state: str):
-    """Make importlib.metadata describe ``state`` instead of this interpreter.
-
-    Patched at the metadata layer, not at the functions, so _installed_rocm_wheel_family
-    and _torch_requires_rocm_sdk still execute their own parsing -- which is half of what
-    is being protected.
-    """
+    """Make importlib.metadata describe ``state`` instead of this interpreter."""
     from importlib import metadata
 
     rocm_reqs, torch_reqs, dists = AMBIENT_STATES[state]
@@ -131,13 +108,8 @@ def _route(
     family: "str | None" = None,
     torch_owns_rocm: bool = False,
 ) -> str:
-    """Every pip argument _ensure_rocm_torch() produced for this host, as one string.
-
-    ``family`` / ``torch_owns_rocm`` pin the installed-wheel pair the way a test that
-    describes its host by mocks must. Leaving them at the "nothing ROCm installed"
-    defaults is what every case here does: the point is that the answer must then come
-    from those pins and not from the interpreter running pytest.
-    """
+    """Every pip argument _ensure_rocm_torch() produced, as one string. ``family`` /
+    ``torch_owns_rocm`` pin the installed-wheel pair; the defaults are "no ROCm installed"."""
     pip, pip_try = MagicMock(), MagicMock(return_value = True)
     probe = MagicMock(returncode = 0, stdout = _MARK + torch_line + "\n")
     buf = io.StringIO()
@@ -182,9 +154,7 @@ def _route(
     return str(pip.call_args_list) + str(pip_try.call_args_list)
 
 
-# A CPU torch on a gfx1103 host has no ROCm build to compare a family against, so every
-# state must reach the same repair; a generic ROCm torch is the interesting one, because
-# that is where the skip arms live.
+# The generic-ROCm hosts are the interesting ones: that is where the skip arms live.
 HOSTS = {
     "gfx1103-cpu-torch": ("gfx1103", "2.10.0+cpu||"),
     "gfx1103-generic-rocm": ("gfx1103", "2.10.0+rocm7.1|7.1|"),
@@ -194,14 +164,8 @@ HOSTS = {
 
 @pytest.mark.parametrize("host", sorted(HOSTS))
 def test_pinning_the_pair_makes_this_machine_irrelevant(host):
-    """With the installed-wheel pair pinned, the ambient venv must not reach the decision.
-
-    Not "routing never depends on what is installed" -- at install time it must, and that
-    is the reinstall skip this change adds. The claim is narrower and is the one that keeps
-    the suite portable: pinning those two functions is SUFFICIENT isolation. A future helper
-    that reaches importlib.metadata by some other route would satisfy neither, and fails
-    here instead of on an AMD user's machine.
-    """
+    """Pinning the pair is SUFFICIENT isolation. Not "routing ignores what is installed" --
+    at install time it must not; the claim is that these two functions are the only door."""
     gfx, torch_line = HOSTS[host]
     with ambient("bare"):
         expected = _route(gfx, torch_line)
@@ -220,26 +184,18 @@ def test_pinning_the_pair_makes_this_machine_irrelevant(host):
 @pytest.mark.parametrize(
     "family, torch_owns_rocm, expect_reinstall",
     [
-        # Nothing ROCm-owned on disk: no family to trust, so repair.
         (None, False, True),
-        # The right family, owned by torch: the skip this change adds.
         ("gfx110x-all", True, False),
-        # The orphan `rocm` pip leaves behind when a generic wheel is installed over a
-        # per-arch one. The family matches but torch does not own it, so the skip must not
-        # fire -- the running torch really is the generic build with no gfx1103 kernels.
+        # Family matches but torch does not own it: the orphan, so the running torch is the
+        # generic build with no gfx1103 kernels and the skip must not fire.
         ("gfx110x-all", False, True),
-        # A per-arch install that outlived its GPU.
         ("gfx120x-all", True, True),
     ],
     ids = ["no-family", "correct-family", "orphan-metapackage", "wrong-family"],
 )
 def test_the_installed_family_decides_the_skip(family, torch_owns_rocm, expect_reinstall):
-    """The behaviour the pin above is standing in for, asserted directly.
-
-    This is the other half: the pair is not merely isolatable, it is what the skip reads.
-    Without this, pinning both to None would satisfy the hermeticity test while the feature
-    they gate quietly stopped working.
-    """
+    """The other half: without this, pinning both to None would satisfy the test above while
+    the feature they gate quietly stopped working."""
     with ambient("bare"):
         calls = _route(
             "gfx1103", "2.10.0+rocm7.13.0|7.13|", family = family, torch_owns_rocm = torch_owns_rocm
@@ -260,10 +216,8 @@ def test_the_states_are_distinguishable():
         assert stack_mod._installed_rocm_wheel_family() is None
         assert stack_mod._torch_requires_rocm_sdk() is False
     with ambient("generic-with-orphan-rocm"):
-        # `rocm` still names the old family, but torch no longer owns it. Skips that read
-        # the family alone would preserve wheels the running torch is not using.
         assert stack_mod._installed_rocm_wheel_family() == "gfx110x-all"
         assert stack_mod._torch_requires_rocm_sdk() is False
     with ambient("two-families-after-switch"):
-        # Two runtimes and no `rocm` to arbitrate: unknowable, not a guess.
+        # Two runtimes, no `rocm` to arbitrate: unknowable, not a guess.
         assert stack_mod._installed_rocm_wheel_family() is None
