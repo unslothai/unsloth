@@ -331,8 +331,7 @@ def test_notebook_validator_reads_the_bounds_in_invocation_order():
     assert "torchcodec==0.11.1" in findings[0].message
 
     upgraded = (
-        '!pip install "torch==2.12.0" "torchcodec==0.11.1"\n'
-        '!pip install "torchcodec>=0.12"'
+        '!pip install "torch==2.12.0" "torchcodec==0.11.1"\n!pip install "torchcodec>=0.12"'
     )
     assert nv.rule_inst_004_torchcodec_torch(upgraded, COLAB_TORCH211, "nb.ipynb", 0) == []
 
