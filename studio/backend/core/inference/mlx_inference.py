@@ -1062,11 +1062,14 @@ def _kv_window_enforced(model, is_vlm, window):
         else:
             from mlx_lm.models import cache as lm_cache
             entries = lm_cache.make_prompt_cache(language_model, max_kv_size = window)
+        # Inside the guard with the build: a make_cache returning None or a bare cache,
+        # or a cap that will not compare, is a shape this cannot judge -- and load_model
+        # calls this unguarded, so raising here would fail the load instead.
+        flattened = list(_flatten_kv_entries(entries))
+        return bool(flattened) and all(_kv_entry_is_bounded(entry, window) for entry in flattened)
     except Exception as exc:
         logger.debug("MLX context limit probe failed: %s", exc)
         return None
-    flattened = list(_flatten_kv_entries(entries))
-    return bool(flattened) and all(_kv_entry_is_bounded(entry, window) for entry in flattened)
 
 
 def _kv_quant_status(

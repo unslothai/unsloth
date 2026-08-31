@@ -3470,6 +3470,7 @@ def test_the_load_policy_bounds_a_pin_only_where_the_bound_can_be_enforced(monke
 
     A pin that cannot be enforced buys nothing, so it does not spend the quantization
     either: mlx-lm ignores max_kv_size for a model that builds its own cache."""
+    pytest.importorskip("mlx_lm.models.cache")
     from core.inference import mlx_inference
     from core.inference.mlx_inference import MLXInferenceBackend
     from mlx_lm.models.cache import KVCache
@@ -3527,6 +3528,7 @@ def test_the_bound_is_checked_on_a_real_cache_at_the_size_that_was_asked_for():
     """A model with its own make_cache ignores max_kv_size, and those caches range from
     constant-state to fully unbounded, so the argument does not say whether it applied.
     A cap the architecture chose does not serve a narrower request either."""
+    pytest.importorskip("mlx_lm.models.cache")
     from core.inference.mlx_inference import _kv_window_enforced
     from mlx_lm.models.cache import ArraysCache, ChunkedKVCache, KVCache, RotatingKVCache
 
@@ -3560,6 +3562,52 @@ def test_the_bound_is_checked_on_a_real_cache_at_the_size_that_was_asked_for():
     assert _kv_window_enforced(SimpleNamespace(language_model = honours), True, 4096) is True
 
 
+
+def test_the_probe_reads_a_cache_shape_without_needing_the_mlx_wheels(monkeypatch):
+    """Same branches as the real-cache test, driven through an injected factory.
+
+    The real one importorskips, so on a host without mlx it proves nothing; this runs
+    everywhere and is what keeps the rule honest between Apple Silicon runs.
+    """
+    from core.inference.mlx_inference import _kv_window_enforced
+
+    def factory(make):
+        """Stand in for mlx_lm.models.cache, present or not, and hand back a model."""
+        cache_mod = types.ModuleType("mlx_lm.models.cache")
+        cache_mod.make_prompt_cache = make
+        models_mod = types.ModuleType("mlx_lm.models")
+        models_mod.cache = cache_mod
+        root = types.ModuleType("mlx_lm")
+        root.models = models_mod
+        for name, module in (
+            ("mlx_lm", root),
+            ("mlx_lm.models", models_mod),
+            ("mlx_lm.models.cache", cache_mod),
+        ):
+            monkeypatch.setitem(sys.modules, name, module)
+        return SimpleNamespace(layers = [object()])
+
+    def caches(*entries):
+        return factory(lambda _model, max_kv_size = None: list(entries))
+
+    bounded = SimpleNamespace(max_size = 4096, keep = 4)
+    wider = SimpleNamespace(max_size = 8192, keep = 4)
+    undeclared = SimpleNamespace()
+    unrotatable = SimpleNamespace(max_size = 4, keep = 4)
+    chunked = SimpleNamespace(chunk_size = 512)
+
+    assert _kv_window_enforced(caches(bounded, bounded), False, 4096) is True
+    assert _kv_window_enforced(caches(bounded, undeclared), False, 4096) is False
+    assert _kv_window_enforced(caches(wider), False, 4096) is False
+    assert _kv_window_enforced(caches(unrotatable), False, 4096) is False
+    assert _kv_window_enforced(caches(chunked), False, 4096) is True
+    assert _kv_window_enforced(caches(), False, 4096) is False
+    # A factory that answers with a shape this cannot walk is unknown, not a failed load.
+    for broken in (None, object(), SimpleNamespace(caches = 7)):
+        model = factory(lambda _m, max_kv_size = None, _b = broken: _b)
+        assert _kv_window_enforced(model, False, 4096) is None
+
+
 def test_the_window_reaches_the_runtime_on_every_generation_route(monkeypatch):
     """The runtimes read max_kv_size only when no prompt_cache is passed, so each route
     that builds its own cache is what carries the bound there. Asserted on the real calls:
@@ -3574,6 +3622,7 @@ def test_the_window_reaches_the_runtime_on_every_generation_route(monkeypatch):
     assert kwargs(SimpleNamespace(_kv_cache_window = 8192)) == {"max_kv_size": 8192}
 
     # The prompt-cache history builds its own cache; it has to carry the window too.
+    pytest.importorskip("mlx_lm.models.cache")
     from core.inference.mlx_inference import _MLXPromptCacheHistory
 
     model = SimpleNamespace(layers = [object(), object()])
