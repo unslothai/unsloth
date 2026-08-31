@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import time
 import types
 from pathlib import Path
 
@@ -344,3 +345,153 @@ def test_show_404s_rather_than_500s_when_nothing_is_loaded_and_no_model_is_named
     mod = _load(backend = _Backend(loaded = False))
     with _client(mod) as c:
         assert c.post("/api/show", json = {}).status_code == 404
+
+
+# ── platform and robustness, from the sandbox run ─────────────────────────────
+
+
+@pytest.mark.parametrize("osname", ["Linux", "Darwin", "Windows"])
+@pytest.mark.parametrize(
+    "created",
+    [0, 1, -1, 1_700_000_000, 2**31, 2**40, 10**18, 1.5, None, "nope", float("nan")],
+)
+def test_modified_at_is_a_four_digit_year_stamp_on_every_platform(osname, created, monkeypatch):
+    """gmtime() disagrees across the three platforms at both ends of its range: Linux
+    accepts a huge epoch and returns a five digit year no client can parse, macOS
+    rejects anything before 1970, Windows rejects both ends. Clamping first is what
+    makes one catalog row render identically everywhere."""
+    mod = _load()
+    real = time.gmtime
+
+    def platform_gmtime(value):
+        if osname == "Windows" and not (0 <= value < 32536850000):
+            raise OSError(22, "Invalid argument")
+        if osname == "Darwin" and value < 0:
+            raise OSError(22, "Invalid argument")
+        return real(value)
+
+    monkeypatch.setattr(mod.time, "gmtime", platform_gmtime)
+    out = mod._rfc3339(created)
+    time.strptime(out, "%Y-%m-%dT%H:%M:%SZ")
+    assert len(out) == 20 and out.endswith("Z"), out
+    assert 1970 <= int(out[:4]) <= 9999, out
+
+
+def test_the_timestamp_fallback_does_not_itself_call_gmtime(monkeypatch):
+    """An earlier revision fell back to gmtime(0), which raises too on a platform
+    strict enough to have rejected the first call, taking /api/tags with it."""
+    mod = _load()
+    monkeypatch.setattr(
+        mod.time, "gmtime", lambda _v: (_ for _ in ()).throw(OSError(22, "Invalid argument"))
+    )
+    assert mod._rfc3339(1_700_000_000) == "1970-01-01T00:00:00Z"
+    with _client(mod) as c:
+        assert len(c.get("/api/tags").json()["models"]) == len(CATALOG)
+
+
+@pytest.mark.parametrize(
+    "upstream",
+    [
+        None,
+        [],
+        "not a dict",
+        42,
+        {},
+        {"default_generation_settings": None},
+        {"default_generation_settings": []},
+        {"total_slots": None},
+        {"model_path": "/media/llm4/HDD/models/x.gguf"},
+    ],
+)
+def test_props_never_500s_and_never_leaks_a_path_on_a_hostile_upstream(upstream):
+    mod = _load(backend = _Backend(props = upstream))
+    with _client(mod) as c:
+        r = c.get("/props")
+    assert r.status_code == 200, r.text
+    assert "/media/" not in r.text
+    assert r.json()["model_path"] == "unsloth/Qwen3.8-27B-GGUF"
+
+
+def test_props_survives_an_engine_query_that_raises():
+    """_query_server_props is documented to return None rather than raise. A probe is
+    the wrong place to find out that slipped, and the local view is always answerable."""
+
+    class _Raises(_Backend):
+        def _query_server_props(self):
+            raise RuntimeError("engine unreachable")
+
+    mod = _load(backend = _Raises())
+    with _client(mod) as c:
+        r = c.get("/props")
+    assert r.status_code == 200
+    assert r.json()["model_path"] == "unsloth/Qwen3.8-27B-GGUF"
+
+
+def test_the_version_lookup_survives_an_import_failure(monkeypatch):
+    """The import sits inside the guard, not above it: an ImportError there would 500
+    a /props probe that has nothing to do with versions."""
+    mod = _load()
+    mod._studio_version.cache_clear()
+    monkeypatch.setitem(sys.modules, "utils.studio_version", None)
+    try:
+        assert mod._studio_version() == "dev"
+    finally:
+        mod._studio_version.cache_clear()
+
+
+def test_the_version_lookup_is_resolved_once(monkeypatch):
+    """get_studio_version() shells out to git twice on a source checkout and /version
+    is an async handler, so an uncached call would put those spawns on the event loop."""
+    mod = _load()
+    mod._studio_version.cache_clear()
+    calls = []
+    fake = types.ModuleType("utils.studio_version")
+    fake.get_studio_version = lambda repo_root = None: (calls.append(1), "v0.1.999")[1]
+    monkeypatch.setitem(sys.modules, "utils.studio_version", fake)
+    try:
+        for _ in range(25):
+            assert mod._studio_version() == "v0.1.999"
+        assert len(calls) == 1
+    finally:
+        mod._studio_version.cache_clear()
+
+
+def test_a_real_asset_wins_over_the_probe_deny_list(tmp_path):
+    """The guard runs after the static lookup, so a build that ever ships a file named
+    `metrics` still serves it rather than 404-ing with no obvious cause."""
+    mod = _load()
+    (tmp_path / "metrics").write_text("asset-body")
+    app = FastAPI()
+    app.include_router(mod.router)
+
+    @app.get("/{full_path:path}")
+    async def _spa(full_path: str):
+        candidate = tmp_path / full_path
+        if candidate.is_file():
+            return Response(content = candidate.read_bytes(), media_type = "text/plain")
+        if mod.is_engine_probe_path(full_path):
+            raise HTTPException(status_code = 404, detail = "API endpoint not found")
+        return Response(content = b"<!doctype html>", media_type = "text/html")
+
+    app.dependency_overrides[mod.get_current_subject] = lambda: "test"
+    with TestClient(app) as c:
+        assert c.get("/metrics").text == "asset-body"
+        assert c.get("/slots").status_code == 404
+
+
+def test_no_client_side_ui_route_is_shadowed_by_the_deny_list():
+    """Reads the routes the frontend actually declares, so adding a UI page named
+    /metrics or /health fails here instead of 404-ing in the browser."""
+    routes_dir = _BACKEND.parent / "frontend" / "src" / "app" / "routes"
+    if not routes_dir.is_dir():
+        pytest.skip("frontend sources not present in this checkout")
+    mod = _load()
+    declared = set()
+    for path in routes_dir.glob("*.tsx"):
+        for line in path.read_text(encoding = "utf-8").splitlines():
+            line = line.strip()
+            if line.startswith('path: "') and line.endswith('",'):
+                declared.add(line[len('path: "') : -2])
+    assert declared, "no client routes parsed; the parser needs updating"
+    shadowed = {p for p in declared if mod.is_engine_probe_path(p)}
+    assert not shadowed, f"UI route(s) shadowed by the probe deny-list: {shadowed}"

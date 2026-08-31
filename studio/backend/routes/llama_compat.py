@@ -25,6 +25,7 @@ publishes, so none of it may be looser than the endpoint it mirrors.
 from __future__ import annotations
 
 import asyncio
+import functools
 import time
 from typing import Any, Optional
 
@@ -72,13 +73,23 @@ def is_engine_probe_path(full_path: str) -> bool:
 
 # Ollama clients read modified_at as an RFC3339 stamp and reject a bare epoch.
 _EPOCH_FMT = "%Y-%m-%dT%H:%M:%SZ"
+_EPOCH_ZERO = "1970-01-01T00:00:00Z"
+# RFC3339 wants a four digit year, so the value is clamped to 1970..9999 rather than
+# passed through. That also makes the three platforms agree: gmtime() accepts a wildly
+# out of range epoch on Linux and returns a five digit year no client can parse,
+# rejects anything before 1970 on macOS, and rejects both ends on Windows. Clamping
+# first means the same catalog row renders identically everywhere.
+_EPOCH_MAX = 253402300799  # 9999-12-31T23:59:59Z
 
 
 def _rfc3339(epoch: Optional[int]) -> str:
     try:
-        return time.strftime(_EPOCH_FMT, time.gmtime(int(epoch or 0)))
+        seconds = min(max(int(epoch or 0), 0), _EPOCH_MAX)
+        return time.strftime(_EPOCH_FMT, time.gmtime(seconds))
     except (OverflowError, OSError, TypeError, ValueError):
-        return time.strftime(_EPOCH_FMT, time.gmtime(0))
+        # A literal, not another gmtime() call: on a platform strict enough to reject
+        # the value above, the fallback would raise out of the handler too.
+        return _EPOCH_ZERO
 
 
 def _inference():
@@ -94,9 +105,20 @@ def _inference():
     return inference
 
 
+@functools.lru_cache(maxsize = 1)
 def _studio_version() -> str:
-    from utils.studio_version import get_studio_version
+    """The version string, resolved once.
+
+    Cached because get_studio_version() shells out to git twice on a source checkout,
+    and these handlers are the only ones that call it per request. The answer cannot
+    change inside a process, and uncached it would put two subprocess spawns on the
+    event loop for every /version probe: cheap on Linux, not on Windows, where
+    spawning costs an order of magnitude more.
+    """
     try:
+        # Inside the guard, not above it: an ImportError here would 500 a probe that
+        # has nothing to do with versions.
+        from utils.studio_version import get_studio_version
         return get_studio_version()
     except Exception:  # noqa: BLE001 -- discovery must not 500 on a version lookup
         return "dev"
@@ -131,9 +153,14 @@ def _server_props() -> dict:
     public_id = _loaded_public_model_id()
     props: dict[str, Any] = {}
     if getattr(llama_backend, "is_loaded", False):
-        # Bounded (5s) and returns None rather than raising, so an engine that is
-        # mid-restart degrades to the local view instead of failing the probe.
-        upstream = llama_backend._query_server_props()
+        # Bounded (5s) and documented to return None rather than raise, so an engine
+        # that is mid-restart degrades to the local view instead of failing the probe.
+        # Belt and braces anyway: a probe is the wrong place to discover that the
+        # contract slipped, and the local view is always answerable.
+        try:
+            upstream = llama_backend._query_server_props()
+        except Exception:  # noqa: BLE001
+            upstream = None
         if isinstance(upstream, dict):
             props = dict(upstream)
 

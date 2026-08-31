@@ -2539,8 +2539,6 @@ def setup_frontend(
         # for /v1/* ({"detail": ...} for /api/*). The request path is "/" + full_path.
         if full_path in {"api", "v1"} or full_path.startswith(("api/", "v1/")):
             raise HTTPException(status_code = 404, detail = "API endpoint not found")
-        if is_engine_probe_path(full_path):
-            raise HTTPException(status_code = 404, detail = "API endpoint not found")
         if not _frontend_request_allowed(request):
             return Response(status_code = 404)
 
@@ -2552,6 +2550,13 @@ def setup_frontend(
 
         if file_path.is_file():
             return FileResponse(file_path)
+
+        # Last, so a real asset always wins: an engine endpoint Studio does not serve
+        # must 404 rather than render the app shell, which reads as "supported" to a
+        # client that checks the status before the body. Deliberately after the file
+        # lookup -- a build that ever ships one of these names still serves it.
+        if is_engine_probe_path(full_path):
+            raise HTTPException(status_code = 404, detail = "API endpoint not found")
 
         # Serve index.html as bytes — avoids Content-Length mismatch
         return _build_index_response(request)
