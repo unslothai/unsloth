@@ -467,8 +467,9 @@ class TestToolActionNudge:
             model_name = "Llama-3.1-70B-Instruct",
         )
 
-        assert nudge.startswith("The current date is ")
-        assert "Tools are available when they materially improve" in nudge
+        # the date rides on the system prompt now, not the nudge.
+        assert "The current date is " not in nudge
+        assert nudge.startswith("Tools are available when they materially improve")
         assert "prefer using tools rather than answering from memory" not in nudge
         assert "fetch its full content by calling web_search with the url parameter" in nudge
         assert "Use code execution for math" in nudge
@@ -1775,12 +1776,15 @@ class TestAnthropicPassthroughStreamAdapter:
                 16,
                 "msg_1",
                 "test-model",
+                seed = 3407,
             )
             return await self._collect(response)
 
         lines = asyncio.run(run())
 
         assert captured["body"]["stream_options"] == {"include_usage": True}
+        assert captured["body"]["seed"] == 3407
+        assert captured["body"]["cache_prompt"] is False
         message_delta = self._payloads(lines, "message_delta")[0]
         assert message_delta["usage"]["input_tokens"] == 2
         assert message_delta["usage"]["output_tokens"] == 4
@@ -2206,6 +2210,10 @@ def _mock_backend(monkeypatch, **overrides):
     """
     import routes.inference as inf_mod
 
+    # Pinned off by default so prompt assertions do not depend on the host's stored setting;
+    # the date's own behaviour on this route is covered in test_current_date_prompt_settings.
+    monkeypatch.setattr(inf_mod, "current_date_prompt_line", lambda **_kwargs: "")
+
     calls = []
 
     def _gen_plain(**kwargs):
@@ -2281,6 +2289,80 @@ class TestAnthropicMessagesToolRouting:
             return chunks
 
         return _drive(_consume())
+
+    def test_plain_non_streaming_states_the_current_date(self, monkeypatch):
+        # /v1/messages used to get the date from the tool nudge; it now rides the system turn,
+        # so this route needs its own coverage or the date silently disappears from it.
+        import routes.inference as inf_mod
+
+        backend = _mock_backend(monkeypatch, context_length = 2048)
+        monkeypatch.setattr(
+            inf_mod,
+            "current_date_prompt_line",
+            lambda **_kwargs: "The current date is 2026-08-15.",
+        )
+        _drive(anthropic_messages(_basic_payload(), request = self._Request(), current_subject = "t"))
+
+        [(_path, kwargs)] = backend.calls
+        assert kwargs["messages"][0] == {
+            "role": "system",
+            "content": "The current date is 2026-08-15.",
+        }
+
+    @pytest.mark.parametrize(
+        ("extra", "expected_path"),
+        [
+            ({}, "plain"),
+            ({"enable_tools": True, "permission_mode": "off"}, "tools"),
+        ],
+        ids = ["plain", "server-tools"],
+    )
+    def test_seed_reaches_internal_anthropic_generation(self, monkeypatch, extra, expected_path):
+        backend = _mock_backend(monkeypatch)
+
+        _drive(
+            anthropic_messages(
+                _basic_payload(seed = 3407, **extra),
+                request = self._Request(),
+                current_subject = "t",
+            )
+        )
+
+        [(path, kwargs)] = backend.calls
+        assert path == expected_path
+        assert kwargs["seed"] == 3407
+
+    @pytest.mark.parametrize("stream", [False, True])
+    def test_seed_reaches_anthropic_client_tool_passthrough(self, monkeypatch, stream):
+        import routes.inference as inf_mod
+        from fastapi.responses import JSONResponse
+
+        _mock_backend(monkeypatch)
+        captured = {}
+
+        async def _passthrough(*args, **kwargs):
+            captured.update(kwargs)
+            return JSONResponse({"type": "message", "content": []})
+
+        helper = (
+            "_anthropic_passthrough_stream" if stream else "_anthropic_passthrough_non_streaming"
+        )
+        monkeypatch.setattr(inf_mod, helper, _passthrough)
+        payload = _basic_payload(
+            seed = 3407,
+            stream = stream,
+            tools = [
+                {
+                    "name": "lookup",
+                    "description": "Look something up",
+                    "input_schema": {"type": "object"},
+                }
+            ],
+        )
+
+        _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
+
+        assert captured["seed"] == 3407
 
     def test_plain_non_streaming_records_api_monitor_entry(self, monkeypatch):
         import routes.inference as inf_mod
@@ -2721,6 +2803,30 @@ class TestAnthropicMessagesToolRouting:
 
         _drive(anthropic_messages(payload, request = None, current_subject = "t"))
         assert backend.calls[0][0] == "tools"
+
+    def test_api_server_tool_request_keeps_the_current_date(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        backend = _mock_backend(monkeypatch)
+        monkeypatch.setattr(
+            inf_mod,
+            "current_date_prompt_line",
+            lambda **_kwargs: "The current date is 2026-08-15.",
+        )
+        monkeypatch.setattr(inf_mod, "_request_is_internal_workflow", lambda _request: False)
+
+        class ApiRequest(self._Request):
+            headers = {"authorization": "Bearer sk-unsloth-test"}
+            state = SimpleNamespace(skip_api_monitor = True)
+
+        payload = _basic_payload(
+            tools = [{"type": "web_search_20250305", "name": "web_search"}],
+        )
+        _drive(anthropic_messages(payload, request = ApiRequest(), current_subject = "t"))
+
+        call_kind, kwargs = backend.calls[0]
+        assert call_kind == "tools"
+        assert kwargs["messages"][0]["content"].startswith("The current date is 2026-08-15.\n\n")
 
     def test_server_tool_choice_alias_uses_the_selected_studio_name(self, monkeypatch):
         backend = _mock_backend(monkeypatch)
@@ -4479,3 +4585,69 @@ class TestPreserveThinkingHonoursTheBackendDefault:
 
         asyncio.run(anthropic_count_tokens(payload, request = _Request(), current_subject = "t"))
         assert seen["count_messages"] == gen_messages
+
+
+def test_effort_resolved_from_output_config():
+    # Claude Code sends the tier as output_config.effort, never as reasoning_effort.
+    assert (
+        _basic_payload(
+            output_config = {"effort": "high"}, thinking = {"type": "adaptive"}
+        ).reasoning_effort
+        == "high"
+    )
+
+
+def test_explicit_reasoning_effort_outranks_output_config():
+    assert (
+        _basic_payload(output_config = {"effort": "low"}, reasoning_effort = "max").reasoning_effort
+        == "max"
+    )
+
+
+def test_unknown_output_config_effort_is_ignored():
+    # thinking on, so an ignored level is the level check talking, not the gate below.
+    adaptive = {"type": "adaptive"}
+    assert (
+        _basic_payload(output_config = {"effort": "turbo"}, thinking = adaptive).reasoning_effort
+        is None
+    )
+    assert (
+        _basic_payload(
+            output_config = {"format": {"type": "json"}}, thinking = adaptive
+        ).reasoning_effort
+        is None
+    )
+
+
+# Claude Code sends output_config.effort on every request, thinking on or off, so
+# adopting it unconditionally would turn `reasoning_effort` into an always-present
+# override -- and a named level means "think" from _anthropic_reasoning_args down.
+_EFFORT_THINKING_OFF_SHAPES = [
+    ({}, None),
+    ({"thinking": {"type": "disabled"}}, False),
+    ({"enable_thinking": False}, False),
+]
+
+
+@pytest.mark.parametrize("fields, expected_enable", _EFFORT_THINKING_OFF_SHAPES)
+def test_output_config_effort_never_switches_thinking_back_on(fields, expected_enable):
+    from routes.inference import _anthropic_reasoning_args
+
+    payload = _basic_payload(output_config = {"effort": "high"}, **fields)
+    # Left unset, so nothing downstream reads a level the caller never asked for.
+    assert payload.reasoning_effort is None
+    args = _anthropic_reasoning_args(payload)
+    assert args["enable_thinking"] is expected_enable
+    assert args["reasoning_effort"] is None
+
+
+def test_x_unsloth_effort_still_outranks_thinking_when_sent_explicitly():
+    # The gate applies to output_config only: an explicit reasoning_effort keeps
+    # the documented precedence covered by _THINKING_EFFORT_MATRIX.
+    from routes.inference import _anthropic_reasoning_args
+
+    args = _anthropic_reasoning_args(
+        _basic_payload(thinking = {"type": "disabled"}, reasoning_effort = "high")
+    )
+    assert args["enable_thinking"] is True
+    assert args["reasoning_effort"] == "high"

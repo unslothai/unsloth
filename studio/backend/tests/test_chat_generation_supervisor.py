@@ -4,13 +4,18 @@
 import asyncio
 import json
 import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
 from core.inference import llama_keepwarm
-from core.inference.chat_generation_runs import ChatGenerationSupervisor
+from core.inference.chat_generation_runs import (
+    _EVENT_BATCH_SECONDS,
+    _EVENT_SINGLE_FLUSH_SECONDS,
+    ChatGenerationSupervisor,
+)
 from models.inference import ChatCompletionRequest
 from routes import chat_generation_runs as run_routes
 from routes import inference
@@ -279,6 +284,20 @@ async def test_subscribers_detach_then_replay_the_same_engine_run(durable_run, m
     assert [text for text in deltas if text] == ["A", "B"]
 
 
+async def _await_chunk_payloads(run_id: str, count: int, deadline_s: float) -> list:
+    """Chunk payloads once `count` of them are durable, or whatever arrived by the deadline.
+
+    Returned rather than asserted so the caller owns the comparison and pytest still
+    shows the payload diff on failure.
+    """
+    started = time.monotonic()
+    while True:
+        stored = [e["payload"] for e in runs_db.list_events(run_id) if e["type"] == "chunk"]
+        if len(stored) >= count or time.monotonic() - started >= deadline_s:
+            return stored
+        await asyncio.sleep(0.005)
+
+
 @pytest.mark.asyncio
 async def test_event_batch_flushes_while_upstream_is_idle(durable_run, monkeypatch):
     release = asyncio.Event()
@@ -299,8 +318,14 @@ async def test_event_batch_flushes_while_upstream_is_idle(durable_run, monkeypat
     monkeypatch.setattr(inference, "produce_openai_chat_completions", fake)
     supervisor = ChatGenerationSupervisor(SimpleNamespace(state = SimpleNamespace()))
     task = asyncio.create_task(supervisor._produce("run-1"))
-    await asyncio.sleep(0.2)
-    stored = [e["payload"] for e in runs_db.list_events("run-1") if e["type"] == "chunk"]
+    # Poll rather than sleep a fixed span. The flush costs the batch timer plus a
+    # thread hop and a SQLite write, which measures ~0.11s on an idle machine, so
+    # the old bare sleep(0.2) left under 2x headroom and lost the race on a loaded
+    # runner. The budget is still bounded well below _EVENT_SINGLE_FLUSH_SECONDS,
+    # so a regression that drops these two events onto the single-event timer, or
+    # never flushes them at all, still fails here rather than passing slowly.
+    deadline = (_EVENT_BATCH_SECONDS + _EVENT_SINGLE_FLUSH_SECONDS) / 2
+    stored = await _await_chunk_payloads("run-1", len(chunks), deadline)
     assert stored == chunks
     release.set()
     await task
