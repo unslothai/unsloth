@@ -8980,6 +8980,10 @@ class LlamaCppBackend:
         """
         try:
             binary = binary or LlamaCppBackend._find_llama_server_binary()
+            if sys.platform == "darwin":
+                # Not a CPU verdict: this probe only ever sees CUDA and HIP, so it is
+                # empty on every Mac, and an Apple Silicon one still offloads to Metal.
+                return "this probe reads CUDA and HIP only; macOS offloads through Metal"
             if LlamaCppBackend._is_vulkan_backend(binary):
                 return "the Vulkan probe reported no device"
 
@@ -20215,10 +20219,15 @@ class LlamaCppBackend:
                         # --fit flag state, not "does it fit": off means this subset provably fits.
                         f"GPUs free: {gpus}, selected: {gpu_indices}, --fit: {'on' if use_fit else 'off'}"
                     )
-                    if not gpus and not _arch_gate_forced_cpu:
+                    if not gpus and not _arch_gate_forced_cpu and sys.platform != "darwin":
                         # Above info, because this is the whole difference between a
                         # GPU load and a CPU one. The arch gate already warns with a
                         # better message when it is the cause, so do not repeat it.
+                        #
+                        # Never on macOS: this probe only ever sees CUDA and HIP, so it
+                        # is empty on every Mac, including an Apple Silicon one whose
+                        # model is about to run entirely on the Metal GPU. Warning
+                        # there would state the opposite of what happens.
                         logger.warning(
                             "No GPU was available for this load, so llama.cpp will run "
                             "on the CPU and the model will live in system RAM: %s",

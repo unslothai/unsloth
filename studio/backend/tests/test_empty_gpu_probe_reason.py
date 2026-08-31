@@ -177,3 +177,37 @@ class TestItIsSafeToCallOnAnyPath:
         for torch_mod in (None, _fake_torch(available = False), _fake_torch(count = 0)):
             monkeypatch.setitem(sys.modules, "torch", torch_mod)
             assert LlamaCppBackend._explain_empty_gpu_probe().strip()
+
+
+class TestMacOSIsNotACpuVerdict:
+    """This probe reads CUDA and HIP only, so it is empty on every Mac -- including an
+    Apple Silicon one whose model is about to run entirely on the Metal GPU. There is a
+    whole "No GPU is enumerated on Metal" branch in load_model for that state. Warning
+    there would tell every Mac user the opposite of what happens."""
+
+    @pytest.mark.parametrize("torch_state", ["absent", "no_cuda", "rocm_like"])
+    def test_the_reason_names_metal_rather_than_blaming_torch(self, monkeypatch, torch_state):
+        _clear_masks(monkeypatch)
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.setitem(
+            sys.modules,
+            "torch",
+            None if torch_state == "absent" else _fake_torch(available = torch_state != "no_cuda"),
+        )
+        msg = LlamaCppBackend._explain_empty_gpu_probe()
+        assert "Metal" in msg
+        assert "torch" not in msg, "on macOS the probe's blind spot is the answer, not torch"
+
+    def test_the_load_site_does_not_warn_on_macos(self):
+        """Source-level, because load_model cannot be driven from a unit test. The
+        simulation in temp/simgpu mirrors this predicate across the platform matrix."""
+        import inspect
+
+        from core.inference import llama_cpp as mod
+
+        src = inspect.getsource(mod.LlamaCppBackend.load_model)
+        at = src.find("No GPU was available for this load")
+        assert at != -1, "the empty-probe warning is gone"
+        guard = src[max(0, at - 900) : at]
+        assert 'sys.platform != "darwin"' in guard, "macOS must be excluded from this warning"
+        assert "not _arch_gate_forced_cpu" in guard, "the arch gate warns better; do not double up"
