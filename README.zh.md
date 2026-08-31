@@ -247,3 +247,6 @@ Unsloth 采用 **Apache 2.0** 与 **AGPL-3.0** 双重许可证模式：Unsloth C
 - 感谢 PyTorch 与 [Torch AO](https://github.com/unslothai/unsloth/pull/3391) 团队的贡献
 - 感谢 NVIDIA 及其 [NeMo DataDesigner](https://github.com/NVIDIA-NeMo/DataDesigner) 库的贡献
 - 感谢每一位为 Unsloth 提交代码、建议与日常使用 Unsloth 的开发者！
+---
+
+> 💡 **文档维护说明**：本中文文档由社区志愿者（@JasonYeYuhe）翻译维护，最后同步更新于 2026年8月31日。如发现内容与官方英文原版存在差异或新特性滞后，欢迎提交 PR 共同完善！
