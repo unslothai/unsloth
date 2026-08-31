@@ -317,8 +317,9 @@ test("light mode is the chatbox's background, under a slightly heavier shadow", 
   assert.ok(background);
   assert.match(bar, new RegExp(`background-color:\\s*${background[1]};`, "i"));
 
-  // The shadow is the composer's, at the composer's darkness, spread wider: that one sits at the
-  // bottom of the page with nothing under it and this one floats over content.
+  // The shadow is the composer's, spread wider and softened: that one sits at the bottom of the
+  // page with nothing under it, this one floats over content and needs more to sit on, not more
+  // weight.
   const shape = (rule: string) => {
     const hit =
       /box-shadow:\s*0 (\d+)px (\d+)px (-?\d+)px rgba\(0, 0, 0, ([\d.]+)\);/.exec(rule);
@@ -332,10 +333,12 @@ test("light mode is the chatbox's background, under a slightly heavier shadow", 
   };
   const from = shape(composer);
   const to = shape(bar);
-  assert.equal(to.alpha, from.alpha, "the bar is darker than the chatbox, not just wider");
   assert.ok(to.blur > from.blur, `blur ${to.blur} is not wider than ${from.blur}`);
   assert.ok(to.spread > from.spread, `spread ${to.spread} is not wider than ${from.spread}`);
-  // Slightly. A shadow twice the composer's would read as a different material.
+  // Wider, never heavier: the width is what lifts it off the page, not the ink.
+  assert.ok(to.alpha < from.alpha, `alpha ${to.alpha} is not softer than ${from.alpha}`);
+  // But still a shadow, and still in the composer's family.
+  assert.ok(to.alpha >= from.alpha * 0.7, `alpha ${to.alpha} has faded to nothing`);
   assert.ok(to.blur <= from.blur * 2, `blur ${to.blur} is more than slightly wider`);
   assert.ok(to.y >= from.y);
 });
