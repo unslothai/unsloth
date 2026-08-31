@@ -89,6 +89,7 @@ import {
   FlimSlateIcon,
   Folder02Icon,
   HelpCircleIcon,
+  InformationCircleIcon,
   Image03Icon,
   PinIcon,
   RemoveCircleIcon,
@@ -631,23 +632,100 @@ function DownloadedBadge() {
   );
 }
 
-/** VRAM verdict for Hub rows: over budget, or a tight fit. */
-function VramBadge({ status }: { status?: VramFitStatus | null }) {
-  if (status === "exceeds") {
-    return (
-      <span className="whitespace-nowrap text-ui-9 font-medium !text-red-700 !bg-red-50 dark:!text-red-300 dark:!bg-red-500/15 px-1.5 py-0.5 rounded">
-        OOM
-      </span>
-    );
-  }
-  if (status === "tight") {
-    return (
-      <span className="whitespace-nowrap text-ui-9 font-medium !text-amber-400">
-        TIGHT
-      </span>
-    );
-  }
-  return null;
+/** What each fit verdict marks and says. Tight spills past VRAM into system RAM; oom clears
+ *  neither budget, so it offloads further still. Both still run, so neither reads as an error:
+ *  orange over red, and yellow one step below it. */
+const AMBER = "!text-yellow-600 dark:!text-yellow-400";
+const ORANGE = "!text-orange-600 dark:!text-orange-300";
+
+/** Two vocabularies reach this badge and they do not mean the same thing.
+ *
+ *  A VARIANT row's verdict comes from the GGUF classifier: `tight` is a spill out of VRAM into
+ *  system RAM, `exceeds` clears neither budget.
+ *
+ *  A MODEL row's comes from `checkVramFit`, where `tight` is 75-100% of VRAM, which still fits on
+ *  the card entirely. Telling that row it spills into system RAM was simply false, and it is the
+ *  common case on a normal GPU. */
+const VRAM_VERDICT = {
+  gguf: {
+    exceeds: {
+      label: "Does not fit",
+      tone: ORANGE,
+      hint: "Model may not fit but still works with offloading. Expect slower inference.",
+    },
+    tight: {
+      label: "Tight fit",
+      tone: AMBER,
+      hint: "Only fits by spilling into system RAM. Expect slower inference.",
+    },
+  },
+  device: {
+    // A model row's `exceeds` is a GGUF repo whose smallest quant is over budget (llama-server
+    // offloads it) OR a curated pipeline that cannot offload at all. One string covers both only
+    // by promising nothing about which happens; the two are separated in the follow-up.
+    exceeds: {
+      label: "Does not fit",
+      tone: ORANGE,
+      hint: "Needs more memory than this device has.",
+    },
+    tight: {
+      label: "Tight fit",
+      tone: AMBER,
+      hint: "Uses nearly all your VRAM, with little headroom for anything else.",
+    },
+  },
+} as const;
+
+/** VRAM verdict: an info mark that names itself on hover, rather than a shouted pill. */
+function VramBadge({
+  status,
+  /** Which vocabulary `status` is spoken in. See VRAM_VERDICT: the same word means different
+   *  things on a model row and on a quant row. */
+  source,
+  /** Model rows hold the mark in the layout and paint it on hover; variant rows always show it. */
+  revealOnHover = false,
+}: {
+  status?: VramFitStatus | null;
+  source: "gguf" | "device";
+  revealOnHover?: boolean;
+}) {
+  const verdict =
+    status === "exceeds" || status === "tight"
+      ? VRAM_VERDICT[source][status]
+      : null;
+  if (!verdict) return null;
+  return (
+    <Tooltip delayDuration={0}>
+      <TooltipTrigger asChild={true}>
+        {/* The mark sits inside the row/variant button, so a tap meant to read the explanation
+            would otherwise select the model or start its download. */}
+        {/* biome-ignore lint/a11y/useKeyWithClickEvents: the handler suppresses the enclosing
+            button, it does not add an interaction of its own */}
+        <span
+          aria-label={verdict.label}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+          }}
+          className={cn(
+            "flex size-[18px] shrink-0 items-center justify-center",
+            verdict.tone,
+            revealOnHover &&
+              "opacity-0 transition-opacity group-hover/row:opacity-100 group-focus-visible/row:opacity-100",
+          )}
+        >
+          <HugeiconsIcon
+            icon={InformationCircleIcon}
+            className="size-3.5"
+            strokeWidth={1.8}
+          />
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="tooltip-compact">
+        {verdict.hint}
+      </TooltipContent>
+    </Tooltip>
+  );
 }
 
 const SIZE_PARTS_RE = /^(~?)([\d.]+)\s*([A-Za-z]+)$/;
@@ -784,8 +862,8 @@ const META_COLUMN = {
   badgeDevice: "min-w-min min-[560px]:w-[26px]",
   // Hub draws the disk mark and no vision badge (18+4+14). A second glyph grows it via min-w-min.
   badgeWide: "min-w-min min-[560px]:w-[36px]",
-  // The "OOM" pill, wider than bare "TIGHT" (Hub rows).
-  vram: "min-w-min min-[560px]:w-[4em]",
+  // The fit mark (Hub rows), one 18px glyph.
+  vram: "min-w-min min-[560px]:w-[18px]",
   // Device rows hug the chip. A column sized for "235B" spends 6.1px in front of a "30B", and that
   // leftover IS the gap to the modality mark; -ml-0.5 against the cluster's gap-1 makes it 2px. In
   // exchange a wider label pulls that row's name and quant chip left. Hub keeps its "2779.5B".
@@ -936,7 +1014,7 @@ function ModelRow({
         // pl-[5.5px]: the dot is centred in a 14px hover target, so 5.5 + (14 - 5) / 2 lands it
         // on 10px, level with the section labels at px-2.5. Inside a w-full button, so the hover
         // pill itself does not move.
-        "flex w-full flex-col items-stretch py-1.5 pl-[5.5px] pr-2 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
+        "group/row flex w-full flex-col items-stretch py-1.5 pl-[5.5px] pr-2 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
         showMemoryBar ? "rounded-2xl" : "rounded-full",
         selected && "bg-[#ececec] dark:bg-[var(--sidebar-accent)]",
         className,
@@ -944,7 +1022,16 @@ function ModelRow({
     >
       {/* gap-1: the quant chip ends the name group, so what this separates is that chip from the
           first meta mark. 4px is the rhythm the meta columns already keep among themselves. */}
-      <span className="flex w-full items-center gap-1">
+      <span
+        className={cn(
+          "flex w-full items-center gap-1",
+          // Over budget reads as a dimmed row, which scans; hover restores it and shows the pill.
+          // The selected row keeps full weight, since it is the one being considered.
+          exceeds &&
+            !selected &&
+            "opacity-60 transition-opacity group-hover/row:opacity-100 group-focus-visible/row:opacity-100",
+        )}
+      >
         <span className="flex min-w-0 flex-1 items-baseline">
           {/* Fixed slot, so names start on one line with or without a dot. */}
           {aligned ? (
@@ -1042,10 +1129,10 @@ function ModelRow({
                 META_COLUMN.vram,
               )}
             >
-              <VramBadge status={vramStatus} />
+              <VramBadge status={vramStatus} source="device" revealOnHover={!selected} />
             </span>
           ) : (
-            <VramBadge status={vramStatus} />
+            <VramBadge status={vramStatus} source="device" revealOnHover={!selected} />
           )}
           {aligned ? (
             <span
@@ -1914,16 +2001,10 @@ function GgufVariantExpander({
               ) : null}
             </span>
             <span className="flex items-center gap-1.5 shrink-0">
-              {oom && (
-                <span className="text-ui-9 font-medium !text-red-700 !bg-red-50 dark:!text-red-300 dark:!bg-red-500/15 px-1.5 py-0.5 rounded">
-                  OOM
-                </span>
-              )}
-              {tight && (
-                <span className="text-ui-9 font-medium !text-amber-400">
-                  TIGHT
-                </span>
-              )}
+              <VramBadge
+                status={oom ? "exceeds" : tight ? "tight" : null}
+                source="gguf"
+              />
               <span className="font-mono text-ui-10 text-muted-foreground tabular-nums">
                 {companionBytes === null ? (
                   <SizeText value={formatBytes(v.size_bytes)} />

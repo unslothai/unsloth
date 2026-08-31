@@ -1529,6 +1529,8 @@ export const de = {
       archivedImagesDescription: "Bilder anzeigen und verwalten, die du archiviert hast.",
       archivedVideos: "Archivierte Videos",
       archivedVideosDescription: "Videos anzeigen und verwalten, die du archiviert hast.",
+      archivedAudio: "Archivierte Audioclips",
+      archivedAudioDescription: "Audioclips anzeigen und verwalten, die du archiviert hast.",
       manageAction: "Verwalten",
       manageChats: "Chats verwalten",
       manageChatsDescription:

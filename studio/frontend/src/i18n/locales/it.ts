@@ -1492,6 +1492,8 @@ export const it = {
       archivedImagesDescription: "Visualizza e gestisci le immagini che hai archiviato.",
       archivedVideos: "Video archiviati",
       archivedVideosDescription: "Visualizza e gestisci i video che hai archiviato.",
+      archivedAudio: "Audio archiviati",
+      archivedAudioDescription: "Visualizza e gestisci le clip audio che hai archiviato.",
       manageAction: "Gestisci",
       manageChats: "Gestisci chat",
       manageChatsDescription:

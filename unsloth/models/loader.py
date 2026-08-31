@@ -1075,6 +1075,21 @@ class FastLanguageModel(FastLlamaModel):
 
         if resize_model_vocab is not None:
             model.resize_token_embeddings(resize_model_vocab)
+            # `resize_token_embeddings` rebuilds the embedding, dropping `_hf_hook`;
+            # this is the last module swap of all, after every repair above.
+            try:
+                from unsloth.models.vision import _repair_dispatch_hooks
+                _repaired = _repair_dispatch_hooks(model)
+                if _repaired:
+                    logger.info(
+                        f"Unsloth: re-attached dispatch hooks to {_repaired} module(s) "
+                        "left unhooked by the vocabulary resize."
+                    )
+            except Exception as _exc:
+                logger.warning(
+                    f"Unsloth: could not check the dispatch hooks after resizing "
+                    f"the vocabulary ({type(_exc).__name__}: {_exc})."
+                )
 
         # In case the model supports tagging, add the unsloth tag.
         if hasattr(model, "add_model_tags"):
@@ -1165,6 +1180,11 @@ class FastLanguageModel(FastLlamaModel):
             )
             # Patch it as well!
             model = dispatch_model.patch_peft_model(model, use_gradient_checkpointing)
+            try:
+                from .vision import _lift_endpoint_hooks_onto_adapters
+                _lift_endpoint_hooks_onto_adapters(model)
+            except Exception:
+                pass  # never block loading on a placement nicety
             # Re-evaluate grouped MoE now the adapter is attached: an expert-LoRA block falls back
             # to the original loop, an attention-only adapter keeps the grouped path. Guarded.
             try:
@@ -2127,6 +2147,21 @@ class FastModel(FastBaseModel):
 
         if resize_model_vocab is not None:
             model.resize_token_embeddings(resize_model_vocab)
+            # `resize_token_embeddings` rebuilds the embedding, dropping `_hf_hook`;
+            # this is the last module swap of all, after every repair above.
+            try:
+                from unsloth.models.vision import _repair_dispatch_hooks
+                _repaired = _repair_dispatch_hooks(model)
+                if _repaired:
+                    logger.info(
+                        f"Unsloth: re-attached dispatch hooks to {_repaired} module(s) "
+                        "left unhooked by the vocabulary resize."
+                    )
+            except Exception as _exc:
+                logger.warning(
+                    f"Unsloth: could not check the dispatch hooks after resizing "
+                    f"the vocabulary ({type(_exc).__name__}: {_exc})."
+                )
 
         # In case the model supports tagging, add the unsloth tag.
         if hasattr(model, "add_model_tags"):
@@ -2277,6 +2312,11 @@ class FastModel(FastBaseModel):
             model = FastBaseModel.post_patch_model(
                 model, use_gradient_checkpointing, trust_remote_code = trust_remote_code
             )
+            try:
+                from .vision import _lift_endpoint_hooks_onto_adapters
+                _lift_endpoint_hooks_onto_adapters(model)
+            except Exception:
+                pass  # never block loading on a placement nicety
             # Re-evaluate grouped MoE now the adapter is attached: an expert-LoRA block falls back
             # to the original loop, an attention-only adapter keeps the grouped path. Guarded.
             try:

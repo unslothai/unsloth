@@ -96,6 +96,68 @@ def _wait_for(
     raise AssertionError(f"Timed out waiting for {description}; last result: {last!r}")
 
 
+# The quant list is fetched once per expanded row, by an effect keyed on
+# [repoId, localSource, refreshKey, hfToken]. Its .catch() calls setError and stops:
+# there is no automatic retry, by design, and the row offers a Retry button instead.
+# So one transient transport blip at the moment the row expands leaves the row showing
+# an error for the rest of the run, and waiting longer cannot help -- nothing is still
+# in flight. Observed as "Unsloth isn't running -- please relaunch it." rendered inside
+# the FLUX.2-klein-4B row while /api/health kept answering for another 49 seconds, on a
+# job that fails on roughly three runs in four across unrelated branches.
+#
+# Clicking Retry is what a user does and what the row is built for. Bounded, and the
+# listing error is reported if the retries run out, so a backend that is genuinely
+# unreachable still fails the run rather than looping.
+_VARIANT_RETRY_ATTEMPTS = 3
+_VARIANT_ERROR_TEXT = (
+    "const box=[...document.querySelectorAll('div')].find("
+    "(d)=>d.className.includes('text-destructive') && "
+    "[...d.querySelectorAll('button')].some((b)=>(b.innerText||'').trim()==='Retry'));"
+    "return box ? (box.innerText||'').trim() : '';"
+)
+_VARIANT_RETRY_CLICK = (
+    "const box=[...document.querySelectorAll('div')].find("
+    "(d)=>d.className.includes('text-destructive') && "
+    "[...d.querySelectorAll('button')].some((b)=>(b.innerText||'').trim()==='Retry'));"
+    "const b=box && [...box.querySelectorAll('button')].find("
+    "(e)=>(e.innerText||'').trim()==='Retry'); if(b)b.click(); return !!b;"
+)
+
+
+def _wait_for_quantization(
+    base: str,
+    session_id: str,
+    script: str,
+    description: str,
+    *,
+    timeout: float = 15,
+) -> Any:
+    """_wait_for, plus the row's own Retry button when the listing failed outright."""
+    last_error = ""
+    for attempt in range(1, _VARIANT_RETRY_ATTEMPTS + 1):
+        try:
+            return _wait_for(base, session_id, script, description, timeout = timeout)
+        except AssertionError:
+            error_text = _execute(base, session_id, _VARIANT_ERROR_TEXT) or ""
+            if not error_text:
+                raise  # No listing error on screen, so retrying would prove nothing.
+            last_error = error_text
+            print(
+                f"[appimage-e2e] quant listing failed (attempt {attempt}/"
+                f"{_VARIANT_RETRY_ATTEMPTS}): {error_text!r}",
+                flush = True,
+            )
+            if attempt == _VARIANT_RETRY_ATTEMPTS:
+                break
+            if not _execute(base, session_id, _VARIANT_RETRY_CLICK):
+                break  # The button went away; let the assertion below carry the text.
+            time.sleep(1.0)
+    raise AssertionError(
+        f"Timed out waiting for {description} after {_VARIANT_RETRY_ATTEMPTS} listing "
+        f"attempts. The row reported: {last_error!r}"
+    )
+
+
 def _write_backend_fixture(home: Path, request_log: Path) -> None:
     fixture_dir = ART_DIR / "fixture"
     fixture_dir.mkdir(parents = True, exist_ok = True)
@@ -156,9 +218,20 @@ def _write_backend_fixture(home: Path, request_log: Path) -> None:
                     self.wfile.write(raw)
 
                 def do_OPTIONS(self):
+                    # Recorded like GET and POST. A preflight the browser rejects means the
+                    # real request is never sent, so without this the request log shows
+                    # nothing and the failure looks like the frontend never tried.
+                    record("OPTIONS", urlparse(self.path).path)
                     self.send_response(204)
                     self.send_header("Access-Control-Allow-Origin", "tauri://localhost")
-                    self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-HF-Token")
+                    # Echo what was asked for. studio/backend/main.py runs CORSMiddleware
+                    # with allow_headers = ["*"], so a fixed list here is not the product's
+                    # behaviour but a second copy of it, and it drifted: #8879 began sending
+                    # two X-Unsloth timezone headers on every authFetch, this list still
+                    # named three headers, and every authed request in this test has failed
+                    # its preflight since. Echoing cannot drift again.
+                    requested = self.headers.get("Access-Control-Request-Headers")
+                    self.send_header("Access-Control-Allow-Headers", requested or "*")
                     self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
                     self.end_headers()
 
@@ -638,7 +711,7 @@ def main() -> None:
             session_id,
             "const b=[...document.querySelectorAll('button')].find((e)=>(e.innerText||'').trim()==='GGUF'); if(b)b.click(); return !!b;",
         )
-        _wait_for(
+        _wait_for_quantization(
             base,
             session_id,
             "return [...document.querySelectorAll('button')].some((b)=>(b.innerText||'').includes('Q4_K_M'))",

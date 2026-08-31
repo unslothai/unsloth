@@ -83,6 +83,84 @@ test("the parameter chip hugs its label so the gap to the modality mark is the r
   assert.ok(PICKERS.includes('paramWide: "min-w-min min-[560px]:w-[5.2em]"'));
 });
 
+test("an over budget row dims instead of putting a pill on every line", () => {
+  // Recommended is mostly over budget on a normal GPU, so a pill per row was a wall of colour.
+  // The row dims and the pill is painted only while that row is hovered or focused.
+  assert.ok(PICKERS.includes("group/row flex w-full flex-col items-stretch"));
+  assert.ok(
+    PICKERS.includes(
+      '"opacity-0 transition-opacity group-hover/row:opacity-100 group-focus-visible/row:opacity-100"',
+    ),
+  );
+  assert.ok(
+    PICKERS.includes(
+      '"opacity-60 transition-opacity group-hover/row:opacity-100 group-focus-visible/row:opacity-100"',
+    ),
+  );
+  // The mark is hidden, not removed, and its slot keeps a width, so revealing it cannot reflow.
+  assert.ok(PICKERS.includes('vram: "min-w-min min-[560px]:w-[18px]"'));
+});
+
+test("one fit badge, so a colour or reveal change cannot miss a list", () => {
+  // The quantization rows had their own copy and stayed red when the pill went orange.
+  assert.equal(PICKERS.split("VRAM_VERDICT = {").length - 1, 1, "one verdict table");
+  assert.ok(!PICKERS.includes("!text-red-700"), "no red fit badge left");
+  assert.ok(!PICKERS.includes(">\n        OOM\n"), "no OOM text pill left");
+  // Variant rows render the shared badge, in the GGUF vocabulary, and opt out of the hover reveal.
+  assert.match(
+    PICKERS,
+    /<VramBadge\n\s*status=\{oom \? "exceeds" : tight \? "tight" : null\}\n\s*source="gguf"\n\s*\/>/,
+  );
+  assert.equal(
+    PICKERS.split(
+      '<VramBadge status={vramStatus} source="device" revealOnHover={!selected} />',
+    ).length - 1,
+    2,
+    "both model row slots reveal on hover",
+  );
+});
+
+test("each fit verdict is an info mark that explains itself", () => {
+  // A pill shouted a three letter acronym; the mark says what it means on hover. Tight spills
+  // past VRAM into system RAM, oom clears neither budget, so the two hints differ.
+  assert.ok(PICKERS.includes("icon={InformationCircleIcon}"));
+  // A GGUF over budget still loads: llama-server hands it to --fit.
+  assert.ok(
+    PICKERS.includes(
+      "hint: \"Model may not fit but still works with offloading. Expect slower inference.\"",
+    ),
+  );
+  // A model row's `tight` comes from checkVramFit, which is 75-100% of VRAM: it fits on the card
+  // entirely, so telling that row it spills into system RAM was false. The two vocabularies now
+  // get their own copy, chosen at the call site.
+  assert.ok(
+    PICKERS.includes(
+      'hint: "Only fits by spilling into system RAM. Expect slower inference."',
+    ),
+  );
+  assert.ok(
+    PICKERS.includes(
+      'hint: "Uses nearly all your VRAM, with little headroom for anything else."',
+    ),
+  );
+  // And a model row's `exceeds` no longer promises a slow load: it can be a curated pipeline whose
+  // loader refuses CPU offload outright.
+  assert.ok(
+    PICKERS.includes('hint: "Needs more memory than this device has."'),
+  );
+  assert.ok(PICKERS.includes('source="gguf"'));
+  assert.ok(PICKERS.includes('source="device"'));
+  // A selected over-budget row is exempt from dimming, so hiding its mark left it with no verdict
+  // at all until hovered, which is nothing at rest and nothing on touch.
+  assert.match(PICKERS, /exceeds &&\n\s*!selected &&/);
+  // And the mark suppresses the button it sits inside, so reading it cannot start a download.
+  assert.match(PICKERS, /onClick=\{\(event\) => \{\n\s*event\.preventDefault\(\);/);
+  // Both marks are reachable by screen readers without the tooltip.
+  assert.ok(PICKERS.includes('label: "Does not fit"'));
+  assert.ok(PICKERS.includes('label: "Tight fit"'));
+  assert.ok(PICKERS.includes("aria-label={verdict.label}"));
+});
+
 test("aligned meta slots spend their slack on the name", () => {
   // Centring a lone glyph splits the slack either side of it, reading as a gap on both sides.
   assert.ok(

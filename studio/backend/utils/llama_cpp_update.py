@@ -1164,6 +1164,13 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
             whisper_run = (
                 (lambda set_progress: _whisper.run_repair_phase(whisper_spec, set_progress))
                 if whisper_spec.get("repair")
+                # The plan left pairing unchecked because llama runs first.
+                else (
+                    lambda set_progress: _whisper.run_chained_phase_after_llama(
+                        whisper_spec, set_progress
+                    )
+                )
+                if llama_spec is not None
                 else (lambda set_progress: _whisper.run_chained_phase(whisper_spec, set_progress))
             )
 
