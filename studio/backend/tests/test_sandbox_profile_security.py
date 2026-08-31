@@ -38,8 +38,7 @@ def test_linux_ca_mounts_exclude_private_key_directories(tmp_path, monkeypatch):
     targets = {
         argv[index + 2]
         for index, token in enumerate(argv)
-        if token in {"--ro-bind", "--ro-bind-try", "--bind", "--bind-try"}
-        and index + 2 < len(argv)
+        if token in {"--ro-bind", "--ro-bind-try", "--bind", "--bind-try"} and index + 2 < len(argv)
     }
 
     assert "/etc/ssl" not in targets
