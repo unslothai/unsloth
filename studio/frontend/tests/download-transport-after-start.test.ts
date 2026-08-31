@@ -173,9 +173,14 @@ test("a transport mismatch start uses the mismatch helper", () => {
     source,
     /mismatchStartAction\(\s*preferred,\s*resolved,\s*last,\s*status\.resumable,\s*\)/,
   );
+  assert.match(
+    source,
+    /siblingTransport !== mode &&\s*preferred !== TRANSPORT\.AUTO/,
+  );
+  assert.match(source, /mode = action;[\s\S]*?siblingTransport !== mode/);
 });
 
-test("staging preserves idle conflicts but clears them before a replacement", () => {
+test("staging owns cleanup while Hub resolves exact or scoped conflicts", () => {
   const source = readFileSync(
     new URL(
       "../src/features/hub/download-manager/use-repo-download.ts",
@@ -183,8 +188,22 @@ test("staging preserves idle conflicts but clears them before a replacement", ()
     ),
     "utf8",
   );
+  const exactIndex = source.indexOf(
+    "const exact = state.conflicts[conflictKey]",
+  );
+  const scopedIndex = source.indexOf(
+    "const scoped = Object.entries(state.conflicts)",
+  );
+  assert.ok(exactIndex >= 0 && scopedIndex > exactIndex);
   assert.match(source, /__staged_download_idle__/);
   assert.match(source, /__hub_autoload_idle__/);
   assert.match(source, /preservedConflictKeyRef\.current = conflictKey/);
   assert.match(source, /cancelConflict\(preservedConflictKeyRef\.current\)/);
+  assert.match(source, /resumeConflict\(visibleConflictKey\)/);
+  assert.match(source, /restartConflict\(visibleConflictKey\)/);
+  assert.match(source, /cancelConflict\(visibleConflictKey\)/);
+  assert.match(
+    source,
+    /downloadManager\.cancelConflict\(conflictKey\);\s*\},\s*\[conflictKey\]/,
+  );
 });

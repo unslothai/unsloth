@@ -175,7 +175,11 @@ export async function requestStart(
     try {
       siblingTransport = await activeSiblingTransport(req);
       siblingProbed = true;
-      if (siblingTransport && siblingTransport !== mode) {
+      if (
+        siblingTransport &&
+        siblingTransport !== mode &&
+        preferred !== TRANSPORT.AUTO
+      ) {
         toast.info("Another variant is already downloading", {
           description:
             siblingTransport === TRANSPORT.XET
@@ -211,15 +215,6 @@ export async function requestStart(
           });
           return "conflict";
         }
-        if (siblingProbed && siblingTransport && siblingTransport !== action) {
-          toast.info("Another variant is already downloading", {
-            description:
-              siblingTransport === TRANSPORT.XET
-                ? "This repository is currently downloading with Xet. Switch to Xet or wait for it to finish."
-                : "This repository is currently downloading with HTTP. Switch to HTTP or wait for it to finish.",
-          });
-          return "busy";
-        }
         mode = action;
       }
       if (status.has_partial && !status.last_transport) {
@@ -251,6 +246,16 @@ export async function requestStart(
           "Starting with the selected transport. If a partial from another transport exists, it may be restarted from the beginning.",
       });
     }
+    if (siblingProbed && siblingTransport && siblingTransport !== mode) {
+      toast.info("Another variant is already downloading", {
+        description:
+          siblingTransport === TRANSPORT.XET
+            ? "This repository is currently downloading with Xet. Switch to Xet or wait for it to finish."
+            : "This repository is currently downloading with HTTP. Switch to HTTP or wait for it to finish.",
+      });
+      return "busy";
+    }
+
     await startJob(req, { useXet: mode === TRANSPORT.XET, originRoute });
     return isJobActiveFor(req) ? "started" : "error";
   });
