@@ -73,9 +73,7 @@ def _load_site_guard() -> str:
     from core.inference import llama_cpp as mod
 
     lines = inspect.getsource(mod.LlamaCppBackend.load_model).splitlines()
-    hit = next(
-        (i for i, line in enumerate(lines) if "could not enumerate any GPU" in line), None
-    )
+    hit = next((i for i, line in enumerate(lines) if "could not enumerate any GPU" in line), None)
     assert hit is not None, "the empty-probe warning is gone"
     start = hit
     while start >= 0 and not lines[start].lstrip().startswith("if "):

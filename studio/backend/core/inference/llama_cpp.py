@@ -5517,7 +5517,6 @@ def _metal_capable_host() -> bool:
     """
     try:
         from utils.hardware import is_apple_silicon
-
         return bool(is_apple_silicon())
     except Exception:  # noqa: BLE001 -- a diagnostic must not break a load
         return sys.platform == "darwin"
