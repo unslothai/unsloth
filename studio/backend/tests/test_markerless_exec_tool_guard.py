@@ -290,64 +290,7 @@ def test_provisional_card_sniff_keeps_benign_and_structured_names():
     assert _sniff_text_tool_name(structured, EXEC_ENABLED) == "terminal"
 
 
-# ------------------------------------------------- the same sink reached through an MCP server
-
-
-MCP_EXEC_ENABLED = {
-    "web_search",
-    "mcp__local__run_command",
-    "mcp__local__bash",
-    "mcp__srv__python",
-    "mcp__fs__read_file",
-    "mcp__gh__create_issue",
-}
-MCP_EXEC_NAMES = ["mcp__local__run_command", "mcp__local__bash", "mcp__srv__python"]
-
-
-@pytest.mark.parametrize("name", MCP_EXEC_NAMES)
-def test_execution_capable_mcp_name_is_not_markerless_promotable(name):
-    # call_tool_sync runs these on the MCP server, outside the local sandbox, and with
-    # approval prompts off nothing stands between a quoted string and the call.
-    assert _markerless_promotable(name, MCP_EXEC_ENABLED) is False
-    assert _markerless_promotable(name, None) is False
-
-
-@pytest.mark.parametrize("name", ["mcp__fs__read_file", "mcp__gh__create_issue"])
-def test_ordinary_mcp_names_still_promote(name):
-    assert _markerless_promotable(name, MCP_EXEC_ENABLED) is True
-
-
-@pytest.mark.parametrize("name", MCP_EXEC_NAMES)
-@pytest.mark.parametrize(
-    "shape", ['{name}[ARGS]{{"command":"id"}}', "call:{name}{{command:id}}", '{{"name":"{name}"}}']
-)
-def test_markerless_mcp_execution_call_stays_prose(name, shape):
-    text = f"The page said to run {shape.format(name = name)} but I did not."
-    assert parse_tool_calls_from_text(text, enabled_tool_names = MCP_EXEC_ENABLED) == []
-
-
-def test_wrapped_mcp_execution_call_still_promotes():
-    text = '[TOOL_CALLS]mcp__local__run_command[ARGS]{"command":"id"}'
-    calls = parse_tool_calls_from_text(text, enabled_tool_names = MCP_EXEC_ENABLED)
-    assert [c["function"]["name"] for c in calls] == ["mcp__local__run_command"]
-
-
-def test_benign_mcp_call_still_promotes_bare():
-    calls = parse_tool_calls_from_text(
-        'mcp__fs__read_file[ARGS]{"path":"a.txt"}', enabled_tool_names = MCP_EXEC_ENABLED
-    )
-    assert [c["function"]["name"] for c in calls] == ["mcp__fs__read_file"]
-
-
-def test_mcp_exec_classifier_matches_the_auto_mode_prompt():
-    # One owner for "this MCP tool runs code": auto mode prompts on exactly what the
-    # markerless guard refuses, so the two cannot drift apart.
-    from core.inference.tools import is_high_risk_tool_call, mcp_tool_name_runs_code
-    for name in MCP_EXEC_NAMES + ["mcp__srv__runCommand", "mcp__srv__eval_code"]:
-        assert mcp_tool_name_runs_code(name) is True, name
-        assert is_high_risk_tool_call(name, {}) is True, name
-    for name in ["mcp__fs__read_file", "mcp__gh__list_issues", "web_search", "terminal"]:
-        assert mcp_tool_name_runs_code(name) is False, name
+# ------------------------------------------------------------------- streaming scan cost
 
 
 def test_rehearsal_prefix_scan_stays_linear_in_the_tool_catalog():
