@@ -826,6 +826,14 @@ _SERVER_BUILTIN_NAMES = frozenset({"web_search", "web_fetch", "code_execution", 
 # `SANDBOX_FILE_TOOLS`, and `tool_loop_controller._SANDBOX_TOOLS`. Only these two wrap.
 _SANDBOX_TOOL_NAMES = frozenset({"python", "terminal"})
 
+# `search-images.ts`. `re.ASCII` on the scheme because Python's IGNORECASE folds Unicode,
+# so `httpſ://` (U+017F) would match where JavaScript's `/i` does not.
+_SEARCH_IMAGE_ID = re.compile(r"[0-9a-f]{12}")
+_SEARCH_IMAGE_SOURCE = re.compile(r"https?://", re.IGNORECASE | re.ASCII)
+_SEARCH_IMAGE_TOKEN = re.compile(
+    r"\n\n[ \t]*\[\[img:[0-9a-f]{12}\]\][ \t]*(?=\n\n|\n?\Z)|\[\[img:[0-9a-f]{12}\]\]"
+)
+
 
 def _server_builtin(part: dict) -> tuple[bool, bool]:
     """Whether a persisted call is a provider-side builtin, and whether it has a native part.
@@ -845,43 +853,95 @@ def _server_builtin(part: dict) -> tuple[bool, bool]:
     return bool(args.get("_server_tool") is True or native), native
 
 
-def _unwrapped(result, tool_name: str):
-    """A sandbox or MCP-image wrapper reduced to the text the model actually saw.
-
-    `python` and `terminal` results are wrapped in `{text, images, sessionId, files}` on
-    EVERY call, and the replay adapter sends `result.text` alone rather than feeding the
-    model a session id and file metadata. Serialising the whole wrapper reconstructed a
-    tool message that can never equal the archived one.
-
-    Both gates are the frontend's: the name, because a third-party tool answering with
-    `{text, sessionId, images}` is someone else's and unwrapping it would drop every other
-    field, and the shape.
-    """
+# One predicate per frontend predicate of the same name. `sessionId` and `subject` are
+# tested for ABSENCE, not null, because the frontend tests them against `undefined`.
+def _mcp_image_result(result) -> bool:
     if not isinstance(result, dict) or not isinstance(result.get("text"), str):
-        return None
+        return False
     images = result.get("images")
-    if not isinstance(images, list):
-        return None
-    if tool_name in _SANDBOX_TOOL_NAMES and isinstance(result.get("sessionId"), str):
-        files = result.get("files")
-        if files is None or (
-            isinstance(files, list)
-            and all(isinstance(f, dict) and isinstance(f.get("name"), str) for f in files)
-        ):
-            return result["text"]
-    # The MCP image shape carries no session and always has at least one image.
-    if (
-        result.get("sessionId") is None
-        and images
+    return (
+        "sessionId" not in result
+        and isinstance(images, list)
+        and bool(images)
         and all(
             isinstance(image, dict)
             and isinstance(image.get("data"), str)
             and isinstance(image.get("mimeType"), str)
             for image in images
         )
+    )
+
+
+def _search_image_entry(entry) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    return (
+        isinstance(entry.get("id"), str)
+        and _SEARCH_IMAGE_ID.fullmatch(entry["id"]) is not None
+        and isinstance(entry.get("title"), str)
+        and isinstance(entry.get("domain"), str)
+        and isinstance(entry.get("source"), str)
+        and _SEARCH_IMAGE_SOURCE.match(entry["source"]) is not None
+        and ("subject" not in entry or isinstance(entry["subject"], str))
+    )
+
+
+def _search_images_result(result) -> bool:
+    if not isinstance(result, dict) or not isinstance(result.get("text"), str):
+        return False
+    entries = result.get("webImages")
+    return (
+        isinstance(entries, list)
+        and bool(entries)
+        and all(_search_image_entry(entry) for entry in entries)
+    )
+
+
+def _sandbox_wrapper(result, tool_name: str) -> bool:
+    # The name gates it as well as the shape: another tool answering with
+    # `{text, sessionId, images}` is someone else's, and unwrapping it drops its rest.
+    if not isinstance(result, dict) or not isinstance(result.get("text"), str):
+        return False
+    if tool_name not in _SANDBOX_TOOL_NAMES or not isinstance(result.get("sessionId"), str):
+        return False
+    if not isinstance(result.get("images"), list):
+        return False
+    files = result.get("files")
+    return files is None or (
+        isinstance(files, list)
+        and all(isinstance(f, dict) and isinstance(f.get("name"), str) for f in files)
+    )
+
+
+def _strip_search_image_tokens(text: str) -> str:
+    """`stripSearchImageTokens`. A token resolves only against the message that produced
+    it, so the frontend drops them rather than replay an unresolvable id.
+
+    Its code-block carve-out is NOT mirrored: deciding it takes the frontend's whole
+    markdown scanner, and a token only lands in code where a region is still open when the
+    tool appends them -- which reconstructs as it did before anything here stripped.
+    """
+    if "[[img:" not in text:
+        return text
+    return _SEARCH_IMAGE_TOKEN.sub("", text)
+
+
+def _unwrapped(result, tool_name: str):
+    """A wrapper this app put around a result, reduced to the text the model actually saw.
+
+    The adapter replays that text alone, so serialising the wrapper reconstructed a tool
+    message that can never equal the archived one. Being a wrapper and losing the tokens
+    are two questions, as they are in the serializer: a result carrying both `images` and
+    `webImages` is unwrapped by the first and stripped by the second.
+    """
+    if not (
+        _mcp_image_result(result)
+        or _search_images_result(result)
+        or _sandbox_wrapper(result, tool_name)
     ):
-        return result["text"]
-    return None
+        return None
+    text = result["text"]
+    return _strip_search_image_tokens(text) if _search_images_result(result) else text
 
 
 def _tool_result_content(result, tool_name: str = "") -> str:
