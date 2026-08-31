@@ -2625,7 +2625,6 @@ def run_server(
         # No SPA catch-all was registered, so nothing 404s a GET probe and the engine
         # paths answered 405 on method alone, which reads as "endpoint exists".
         from routes.llama_compat import add_get_denials
-
         add_get_denials(app)
 
     # Resolve once; shared by the log rewrite and banner.

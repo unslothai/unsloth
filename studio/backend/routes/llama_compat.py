@@ -201,6 +201,7 @@ async def _probe_not_found():
 # OPTIONS is untouched for CORS preflight.
 _PROBE_DENIED_METHODS = ["HEAD", "POST", "PUT", "PATCH", "DELETE"]
 
+
 # Both forms of every path: no redirect rescues "POST /completion/", because the
 # catch-all is GET-only, so the slash form was a method mismatch and returned the 405
 # these routes exist to prevent.

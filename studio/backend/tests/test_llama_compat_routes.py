@@ -780,9 +780,9 @@ def test_the_get_denials_are_not_added_when_a_frontend_is_mounted():
     with TestClient(app) as c:
         assert c.post("/completion").status_code == 404, "sanity: the deny route is live"
         r = c.get("/completion")
-    assert r.status_code == 200 and r.content == b"asset", (
-        "the router claimed GET, so a shipped asset by that name became unreachable"
-    )
+    assert (
+        r.status_code == 200 and r.content == b"asset"
+    ), "the router claimed GET, so a shipped asset by that name became unreachable"
 
 
 def test_the_version_lookup_leaves_the_event_loop():
