@@ -9378,7 +9378,9 @@ class LlamaCppBackend:
         """Run ``_vulkan_probe.py`` and parse its per-device lines.
 
         Returns raw (uncapped) rows sorted by index:
-        ``{"index", "free_mib", "total_mib", "is_igpu", "name"}``. The index is
+        ``{"index", "free_mib", "total_mib", "is_igpu", "name", "type_known"}``.
+        ``type_known`` is False when ggml could not read the device type, so
+        ``is_igpu`` there is a default rather than an answer. The index is
         ggml's compact Vulkan ordinal -- the one the registry names
         ``Vulkan<index>`` and load_model pins with ``--device``, NOT the raw
         ``GGML_VK_VISIBLE_DEVICES`` space. A user-set ``GGML_VK_VISIBLE_DEVICES``
@@ -9491,9 +9493,13 @@ class LlamaCppBackend:
                 "Vulkan GPU memory detected: "
                 + ", ".join(f"VK{idx}={free}MiB" for idx, free, _total in gpus)
             )
+        # Absent means a row from before the column existed, and _vulkan_targets_are_igpus
+        # already reads that as classified. Defaulting to unknown here instead only
+        # dropped the snapshot the RAM guard prices iGPUs with, and sent the lock
+        # decision back through a probe that trusts the same is_igpu anyway.
         known_vulkan_igpus = (
             {row["index"] for row in rows if row["is_igpu"]}
-            if rows and all(row.get("type_known", False) for row in rows)
+            if rows and all(row.get("type_known", True) for row in rows)
             else None
         )
         return _VulkanGpuMemoryRows(gpus, known_vulkan_igpus)

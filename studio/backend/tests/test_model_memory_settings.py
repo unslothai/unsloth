@@ -2237,7 +2237,9 @@ class TestADefaultLaunchRecordsItsApplicability:
         from core.inference.llama_cpp import LlamaCppBackend
 
         source = inspect.getsource(LlamaCppBackend.load_model)
-        start = source.index("if is_vulkan_backend:", source.index("_detected_gpus = list(gpus)"))
+        # From the inventory read to the fit, so both halves are in scope: the
+        # snapshot taken off _gpu_mem, and the shared-id set derived from it.
+        start = source.index("_gpu_mem = self._get_gpu_memory(")
         block = source[start : source.index("# The --fit fallback", start)]
         assert "if _gpu_mem" in block
         assert "else None" in block
