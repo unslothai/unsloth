@@ -362,18 +362,9 @@ def _select_torchao_spec(torch_version: str | None) -> str:
     return _TORCHAO_DEFAULT_SPEC
 
 
-# torchcodec wheels up to 0.11 are built against exactly one torch minor and
-# declare no `Requires-Dist: torch`, so pip cannot detect a mismatch and a flat
-# pin in extras-no-deps.txt cannot serve every host: install.sh resolves torch
-# 2.11.0 on the CUDA indexes but keeps a <2.11 default on other routes. These
-# specs mirror pyproject's audio-torch2xx extras and unsloth/import_fixes.py's
-# _TORCH_TORCHCODEC_MINORS (upstream's torch <-> torchcodec matrix).
-#
-# 0.12 onwards is ABI-stable against torch >=2.11 (torchcodec's CMakeLists sets
-# TORCH_TARGET_VERSION 2.11), so torch 2.12+ takes an open-ended floor instead of
-# a per-minor pin. Torch 2.11 itself keeps the 0.11 line: 0.12 dropped CUDA 12.8,
-# so the cu128 index install.sh resolves torch 2.11.0 from stops at torchcodec
-# 0.11.1, and a 0.12+ wheel off PyPI is built for CUDA 13.
+# torchcodec up to 0.11 is built against one torch minor and declares no
+# `Requires-Dist: torch`, so pip cannot catch a mismatch. 0.12+ is ABI-stable against torch
+# >=2.11, hence the open floor. Mirrors pyproject's audio-torch2xx and import_fixes.
 _TORCHCODEC_DEFAULT_SPEC = "torchcodec>=0.10.0,<0.11.0"
 _TORCHCODEC_ABI_STABLE_SPEC = "torchcodec>=0.12.0"
 _TORCHCODEC_TORCH_SPECS: dict[int, str] = {
@@ -390,27 +381,22 @@ _TORCHCODEC_MAX_KNOWN_MINOR = max(_TORCHCODEC_TORCH_SPECS)
 
 
 def _select_torchcodec_spec(torch_version: "str | None") -> str:
-    """Map an installed torch version string (e.g. '2.11.0+cu128') to the torchcodec
-    pip spec built against it. Falls back to _TORCHCODEC_DEFAULT_SPEC for torch <=2.4,
-    a non-2.x major, or an unparseable/missing version. Pure function.
-    """
+    """Map an installed torch version (e.g. '2.11.0+cu128') to the torchcodec spec built
+    against it. Falls back to _TORCHCODEC_DEFAULT_SPEC for torch <=2.4, a non-2.x major, or
+    an unparseable/missing version. Pure function."""
     if not torch_version:
         return _TORCHCODEC_DEFAULT_SPEC
     release = str(torch_version).split("+", 1)[0]  # drop +cu128/+rocm7.2/+cpu
     parts = release.split(".")
     try:
-        # Strip any pre-release/dev suffix from the minor (e.g. '11rc1' -> '11'),
-        # matching _select_torchao_spec.
+        # '11rc1' -> '11', matching _select_torchao_spec.
         minor_str = re.sub(r"[^0-9].*", "", parts[1]) if len(parts) > 1 else ""
         major, minor = int(parts[0]), int(minor_str)
     except (IndexError, ValueError):
         return _TORCHCODEC_DEFAULT_SPEC
     if major != 2:
         return _TORCHCODEC_DEFAULT_SPEC
-    # Newer torch than we have a row for lands on the ABI-stable floor, which is
-    # forward compatible by construction (0.12+ target torch >=2.11). Never clamp
-    # onto the 0.11 row: that is the one release locked to torch 2.11 exactly, and
-    # it has no wheel on the newer CUDA indexes.
+    # Clamp to the ABI-stable floor, never the 0.11 row: 0.11 is locked to torch 2.11 exactly.
     minor = min(minor, _TORCHCODEC_MAX_KNOWN_MINOR)
     return _TORCHCODEC_TORCH_SPECS.get(minor, _TORCHCODEC_DEFAULT_SPEC)
 
@@ -6615,10 +6601,8 @@ def pip_install(
         # wheel. `unsloth studio update --local` does not pass
         # --no-torch, so the NO_TORCH filter above does not fire; do
         # the targeted skip independently so the audio extras step
-        # does not take down the whole update. The primary guard now
-        # lives on the dedicated torchcodec step, which no requirements
-        # file feeds; this stays as belt and braces for any file that
-        # reintroduces a torchcodec line.
+        # does not take down the whole update. Nothing feeds torchcodec
+        # now; this stays for any file that reintroduces it.
         actual_req = _filter_requirements(actual_req, {"torchcodec"})
         temp_reqs.append(actual_req)
     req_args_pip: list[str] = []
@@ -6787,11 +6771,8 @@ def install_python_stack() -> int:
     local_repo = os.environ.get("STUDIO_LOCAL_REPO", "")
     # Clean-machine CI overlays only unsloth, not the full local source pair.
     ci_source_overlay = os.environ.get("UNSLOTH_CI_SOURCE_OVERLAY", "")
-    # Three lettered steps on top of the numbered ones: the anyio repair check (8b), the
-    # diffusers pin (11b, every platform), and torchcodec (13b, which reports progress on every
-    # branch including its skips). 11b and 13b arrived on separate branches and each bumped this
-    # by one, so the merge has to add both. Taking either side alone leaves the bar one short
-    # of the steps that actually run.
+    # Three lettered steps on top of the numbered ones: anyio repair (8b), diffusers pin
+    # (11b), torchcodec (13b, which reports progress on every branch including its skips).
     base_total = 13 if IS_WINDOWS else 14
     if IS_MACOS:
         base_total -= 1  # triton step is skipped on macOS
@@ -7239,13 +7220,9 @@ def install_python_stack() -> int:
         # because the swap keys off the installed +xpu label.
         _ensure_xpu_triton()
 
-    # 13b. torchcodec -- pinned to the line built against the venv's torch (see
-    #      _select_torchcodec_spec), so it must run *after* the repair above:
-    #      that repair can move torch onto another minor (cu128 resolves 2.11.0),
-    #      and a torchcodec picked before it would be stale again. It cannot live
-    #      in extras-no-deps.txt because pip environment markers cannot branch on
-    #      the installed torch version. Skipped on the same platforms pip_install
-    #      filtered it out for (no torch at all, or no published wheel).
+    # 13b. torchcodec, pinned to the venv's torch minor (_select_torchcodec_spec), which
+    #      extras-no-deps.txt cannot do because markers cannot see torch. Must run after the
+    #      repair above: that can move torch onto another minor, staling an earlier choice.
     if NO_TORCH:
         _progress("torchcodec (skipped, no torch)")
     elif PLATFORM_LACKS_TORCHCODEC_WHEEL:

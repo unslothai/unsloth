@@ -2520,12 +2520,8 @@ def patch_torchcodec_audio_decoder():
 
 
 # torch.minor -> compatible torchcodec.minor strings (see notebook_validator.py).
-# torchcodec ships no `Requires-Dist: torch`, so pip cannot catch a mismatch:
-# this table is the only check. It covers the lockstep releases (up to 0.11, each
-# built against one torch minor); torchcodec >= 0.12 is handled by the ABI-stable
-# rule below. The 2.11 row is 0.11 because that is the release upstream pairs
-# with torch 2.11 exactly, and the only one on the cu128 index install.sh
-# resolves torch 2.11.0 from (0.12 dropped CUDA 12.8).
+# torchcodec ships no `Requires-Dist: torch`, so pip cannot catch a mismatch and this table
+# is the only check. Lockstep releases only; 0.12+ is the ABI-stable rule below.
 _TORCH_TORCHCODEC_MINORS: dict[str, set[str]] = {
     "2.11": {"0.11"},
     "2.10": {"0.10"},
@@ -2543,11 +2539,8 @@ _TORCH_TORCHCODEC_EXTRAS: dict[str, str] = {
     "2.10": "audio-torch210",
 }
 
-# torchcodec 0.12 onwards is ABI-stable against torch >= 2.11 (its build sets
-# TORCH_TARGET_VERSION to 2.11), so that half of the matrix is open-ended and
-# cannot be written as a finite set of minors: any torchcodec >= 0.12 pairs with
-# any torch >= 2.11. Everything older is locked to a single torch minor, which is
-# what the table above encodes.
+# torchcodec 0.12+ is ABI-stable against torch >=2.11 (its build sets TORCH_TARGET_VERSION
+# to 2.11), so that half of the matrix is open-ended rather than a finite set of minors.
 _TORCHCODEC_ABI_STABLE_TORCH = (2, 11)
 _TORCHCODEC_ABI_STABLE_CODEC = (0, 12)
 
@@ -2588,11 +2581,8 @@ def _torchcodec_version_mismatch_hint() -> str | None:
     codec_minor = ".".join(str(p) for p in codec_release)
     allowed = _TORCH_TORCHCODEC_MINORS.get(torch_minor)
     if allowed is None:
-        # No lockstep row for this torch minor. Torch older than the table is
-        # out of scope, so stay silent. Torch at or past the ABI-stable floor
-        # only pairs with the open-ended line (>= 0.12), and the early return
-        # above already cleared those, so whatever reaches here is a legacy
-        # single-minor codec built for an older torch: point at the 0.12+ line.
+        # No lockstep row: below the table stays silent; at or past the ABI floor this is a
+        # pre-0.12 codec, since 0.12+ already returned above.
         if torch_release < _TORCHCODEC_ABI_STABLE_TORCH:
             return None
         abi_pin = ".".join(str(p) for p in _TORCHCODEC_ABI_STABLE_CODEC)

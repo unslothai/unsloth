@@ -100,8 +100,7 @@ COLAB_ORACLE_BASE_URL = "https://raw.githubusercontent.com/googlecolab/backend-i
 
 # torch.minor -> set of compatible torchcodec.minor strings.
 # Source: pytorch/torchcodec compatibility matrix on its README.
-# Mirrors unsloth/import_fixes.py::_TORCH_TORCHCODEC_MINORS (asserted equal by
-# tests/python/test_torchcodec_torch_compat.py).
+# Mirrors import_fixes._TORCH_TORCHCODEC_MINORS (test_torchcodec_torch_compat asserts equality).
 TORCH_TORCHCODEC: dict[str, set[str]] = {
     "2.11": {"0.11"},
     "2.10": {"0.10"},
@@ -112,9 +111,7 @@ TORCH_TORCHCODEC: dict[str, set[str]] = {
     "2.5": {"0.1", "0.2"},
 }
 
-# torchcodec 0.12+ is ABI-stable against torch >= 2.11, so that half of the
-# matrix is open-ended and cannot be written as a finite set of minors. Mirrors
-# unsloth/import_fixes.py::_TORCHCODEC_ABI_STABLE_{TORCH,CODEC}.
+# torchcodec 0.12+ is ABI-stable against torch >=2.11, so that half is open-ended.
 TORCHCODEC_ABI_STABLE_TORCH = "2.11"
 TORCHCODEC_ABI_STABLE_CODEC = "0.12"
 
@@ -591,13 +588,10 @@ def _install_cell_lower_bound(install_cell: str, target: str) -> str | None:
 
 
 def _effective_version(install_cell: str, target: str, resolved: str | None) -> str | None:
-    """`resolved` raised by any explicit lower bound the install cell places on `target`.
+    """`resolved` raised by an explicit `>=` floor above it; a lower floor moves nothing.
 
-    resolved_set() drops `>=` because a bound below the Colab version changes nothing, but
-    one above it does move pip. Raising (never lowering) keeps that the only effect: a
-    floor under the resolved version stays a no-op. Without this R-INST-004's own
-    `torchcodec>=0.12.0` remedy cannot clear the error it is offered for.
-    """
+    resolved_set() drops every `>=`, so without this R-INST-004's own `torchcodec>=0.12.0`
+    remedy could not clear the error it offers."""
     lower = _install_cell_lower_bound(install_cell, target)
     if lower is None:
         return resolved
@@ -655,9 +649,7 @@ def rule_inst_004_torchcodec_torch(
     if allowed is None:
         if cmp_versions(torch_v, TORCHCODEC_ABI_STABLE_TORCH) < 0:
             return findings  # torch older than the table — don't flag
-        # Torch at or past the ABI-stable floor with a pre-0.12 torchcodec: the
-        # ABI-stable branch above already returned for 0.12+, so this pin is a
-        # legacy build locked to an older torch minor and cannot load.
+        # Past the ABI floor with a pre-0.12 codec: locked to an older torch minor.
         findings.append(
             Finding(
                 rule = "R-INST-004",

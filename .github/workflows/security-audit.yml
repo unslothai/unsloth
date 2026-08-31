@@ -267,9 +267,7 @@ jobs:
               d = tomllib.load(f)
           core = d["project"]["dependencies"]
           extras = d["project"]["optional-dependencies"]["huggingfacenotorch"]
-          # torchcodec is no longer pinned in extras-no-deps.txt (the installer
-          # picks the line matching the venv's torch minor), so pull the newest
-          # audio extra in to keep torchcodec inside the audited set.
+          # extras-no-deps.txt no longer pins torchcodec, so the audit set would lose it.
           audio = d["project"]["optional-dependencies"]["audio-torch211"]
           print("# Auto-generated from pyproject.toml by security-audit.yml.")
           print("# core deps + huggingfacenotorch extras + audio-torch211.")
@@ -863,9 +861,7 @@ jobs:
               d = tomllib.load(f)
           core = d["project"]["dependencies"]
           extras = d["project"]["optional-dependencies"]["huggingfacenotorch"]
-          # torchcodec is no longer pinned in extras-no-deps.txt (the installer
-          # picks the line matching the venv's torch minor), so pull the newest
-          # audio extra in to keep torchcodec inside the audited set.
+          # extras-no-deps.txt no longer pins torchcodec, so the audit set would lose it.
           audio = d["project"]["optional-dependencies"]["audio-torch211"]
           print("# Auto-generated from pyproject.toml by security-audit.yml.")
           print("# core deps + huggingfacenotorch extras + audio-torch211.")

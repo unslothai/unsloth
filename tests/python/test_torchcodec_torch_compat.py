@@ -139,13 +139,6 @@ def test_import_fixes_loads_on_python39_syntax():
     assert callable(fixes._torchcodec_version_mismatch_hint)
 
 
-# ── torch 2.11 (unslothai/unsloth#7225 follow-up) ──────────────────────
-#
-# install.sh's CUDA branch resolves torch 2.11.0 (the cu12x/cu13x indexes
-# top out there), and torchcodec declares no `torch` dependency, so pip
-# cannot catch a stale 0.10 pairing. These lock the 2.11 row in.
-
-
 def _load_notebook_validator_module():
     """Load by path: `from scripts import ...` picks up whatever `scripts`
     package happens to be on sys.path first, which is not always this repo's."""
@@ -155,8 +148,7 @@ def _load_notebook_validator_module():
     )
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
-    # dataclasses resolves annotations through sys.modules, so the module has to
-    # be registered under its own name before it executes.
+    # dataclasses resolves annotations through sys.modules: register before executing.
     sys.modules[spec.name] = mod
     try:
         spec.loader.exec_module(mod)
@@ -238,12 +230,7 @@ def test_torch210_still_rejects_abi_stable_torchcodec(monkeypatch):
 
 
 def test_torch_past_last_lockstep_row_rejects_legacy_torchcodec(monkeypatch):
-    """torch newer than the last lockstep row only pairs with the 0.12+ line.
-
-    torchcodec 0.11 is pinned to torch 2.11 exactly (upstream compatibility
-    table), so torch 2.12/2.13 with a pre-0.12 codec must still be reported even
-    though the matrix has no row for those torch minors.
-    """
+    """0.11 is pinned to torch 2.11 exactly, so 2.12/2.13 with a pre-0.12 codec still warns."""
     import importlib.metadata
 
     fixes = _load_import_fixes_module()
@@ -279,7 +266,6 @@ def test_notebook_validator_rejects_legacy_codec_past_last_lockstep_row():
     assert findings[0].severity == "error"
     assert "torchcodec>=0.12.0" in findings[0].hint
 
-    # Torch older than the table is still out of scope.
     old = '!pip install --no-deps "torch==2.4.0" "torchcodec==0.0.3"'
     assert nv.rule_inst_004_torchcodec_torch(old, {}, "nb.ipynb", 0) == []
 
@@ -297,14 +283,13 @@ def test_notebook_validator_allows_abi_stable_pairing():
     assert findings[0].rule == "R-INST-004"
 
 
-# Mirrors the checked-in scripts/data/colab_pip_freeze.gpu.txt rows these cases need.
-# Inline so the daily oracle refresh cannot move the expected verdicts.
+# Inlined from scripts/data/colab_pip_freeze.gpu.txt: the daily oracle refresh must not
+# move these verdicts.
 COLAB_TORCH211 = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
 
 
 def test_notebook_validator_accepts_its_own_torchcodec_remedy():
-    """R-INST-004's hint is a `>=` pin, and resolved_set() drops `>=`, so following the
-    hint left the error firing forever. The bound has to reach the ABI check."""
+    """The hint is a `>=` pin and resolved_set() drops `>=`, so following it changed nothing."""
     nv = _load_notebook_validator_module()
 
     broken = '!pip install "torch==2.12.0"'
@@ -315,8 +300,7 @@ def test_notebook_validator_accepts_its_own_torchcodec_remedy():
 
 
 def test_notebook_validator_reads_torch_range_pins():
-    """A `torch>=` bound above Colab's torch moves pip while torchcodec stays put, so the
-    pairing the notebook actually gets is the one that must be checked."""
+    """A `torch>=` floor above Colab's torch moves pip while torchcodec stays put."""
     nv = _load_notebook_validator_module()
 
     ranged = '!pip install "torch>=2.12"'
@@ -326,8 +310,7 @@ def test_notebook_validator_reads_torch_range_pins():
 
 
 def test_notebook_validator_ignores_lower_bounds_under_the_resolved_version():
-    """Raising only: a floor below what is already installed does not change the install,
-    so it must not be mistaken for the resolved version and flagged."""
+    """A floor below the installed version changes nothing, so it must not be flagged."""
     nv = _load_notebook_validator_module()
 
     for cell in ('!pip install "torchcodec>=0.10"', '!pip install "torch>=2.9"'):
@@ -364,8 +347,7 @@ def test_select_torchcodec_spec_tracks_torch_minor():
 
 
 def test_select_torchcodec_spec_never_caps_newer_torch_to_the_011_line():
-    """0.11 is locked to torch 2.11 exactly and is absent from newer CUDA indexes,
-    so torch >2.11 must land on the open ABI-stable floor, not on <0.12.0."""
+    """0.11 is locked to torch 2.11 exactly, so torch >2.11 takes the open floor."""
     ips = _load_install_python_stack()
     for version in ("2.12.0", "2.12.1+cu132", "2.13.0+cu130", "2.99.0"):
         spec = ips._select_torchcodec_spec(version)

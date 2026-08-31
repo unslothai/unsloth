@@ -46,12 +46,8 @@ def _requirements(path: pathlib.Path) -> list[str]:
 def _code_only(source: str) -> str:
     """`source` with comment text blanked out, offsets preserved.
 
-    The ordering check below is a source scan for requirements filenames, and it has to
-    read them as *installs*. A prose mention of a requirements file in a comment is not
-    one, so counting it fires on documentation rather than on behaviour. Blanking with
-    spaces rather than deleting keeps every remaining index equal to the real offset.
-    Uses tokenize so a `#` inside a string literal is left alone.
-    """
+    The ordering check scans for requirements filenames and has to read them as installs,
+    not prose. Blanking keeps every index truthful; tokenize spares a `#` inside a string."""
     lines = source.splitlines(keepends = True)
     starts, offset = [], 0
     for line in lines:
@@ -161,13 +157,8 @@ def test_the_pin_step_runs_after_every_other_requirements_install():
 
 
 def test_the_ordering_check_reads_installs_not_prose():
-    """_code_only has to blank comments and only comments.
-
-    The torchcodec step sits after the diffusers pin and its comment explains why the
-    spec cannot live in extras-no-deps.txt. That sentence is documentation, so the
-    ordering check above must not read it as a later install -- while a real later
-    install of the same file still has to trip it.
-    """
+    """The torchcodec comment names extras-no-deps.txt after the pin, so the check must read
+    that as prose while a real later install still trips it."""
     pin = 'pip_install("diffusers pin", "-r", "diffusers-pin.txt")\n'
 
     prose = _code_only(pin + "# cannot live in extras-no-deps.txt because markers\n")
@@ -184,7 +175,6 @@ def test_the_ordering_check_reads_installs_not_prose():
     kept = _code_only('marker = "extras-no-deps.txt#egg"\n')
     assert "extras-no-deps.txt#egg" in kept
 
-    # Blanking rather than deleting keeps every surviving offset truthful.
     source = STACK.read_text(encoding = "utf-8")
     blanked = _code_only(source)
     assert len(blanked) == len(source)
