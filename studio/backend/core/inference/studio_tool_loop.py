@@ -68,6 +68,7 @@ from core.inference.tool_loop_controller import (
     ToolLoopController,
     awaiting_approval_status,
     mcp_display_parts,
+    provisional_tool_provenance,
     strip_result_for_model,
 )
 from core.inference.tool_stream_exec import (
@@ -622,6 +623,36 @@ def _unrun_call_card(
     ]
 
 
+def _mcp_provenance_by_id(
+    turn: "_Turn", declared_names: set[str], stamped: set[str]
+) -> dict[str, Any]:
+    """Provenance for MCP calls whose id and whole name have both arrived.
+
+    The provider's tool_calls delta is relayed as it came and carries none, so the
+    client labels the card it paints from that delta with the internal server id
+    until the real tool_start lands, which is only after the turn finished
+    streaming. Riding along on the same chunk relabels it immediately, and unlike
+    a second card event it cannot disturb the arguments still accumulating there.
+
+    The declared catalog is what says a streamed name is complete: ``mcp__srv__cre``
+    is well formed too, and would name the wrong server. Once per id.
+    """
+    stamps: dict[str, Any] = {}
+    for call in turn.by_index.values():
+        call_id = call.get("id")
+        if not isinstance(call_id, str) or not call_id or call_id in stamped:
+            continue
+        function = call.get("function")
+        name = function.get("name") if isinstance(function, dict) else None
+        if not isinstance(name, str) or name not in declared_names:
+            continue
+        if not mcp_display_parts(name):
+            continue
+        stamped.add(call_id)
+        stamps[call_id] = provisional_tool_provenance(name)
+    return stamps
+
+
 def _status_sse(text: str) -> str:
     """Tool badge text, in the shape the chat client already parses."""
     return _sse({"type": "tool_status", "content": text})
@@ -833,6 +864,10 @@ async def stream_with_studio_tools(
             break
         provider_turns += 1
         turn = _Turn(round = provider_turns)
+        # Per turn, not per run: providers restart tool ids every turn, and the
+        # client drops its id mapping at tool_end, so the second call_0 is a new
+        # card that still needs naming.
+        mcp_stamped_ids: set[str] = set()
         healer = StreamToolCallHealer(heal_names, tools) if heal_names else None
 
         active_tools = controller.active_tools()
@@ -927,6 +962,10 @@ async def stream_with_studio_tools(
                                 turn.text.append(value)
                                 yield _sse({"choices": [{"index": 0, "delta": {"content": value}}]})
                     turn.merge_structured(raw_calls)
+                    stamps = _mcp_provenance_by_id(turn, allowed_tool_names, mcp_stamped_ids)
+                    if stamps:
+                        payload["_mcp_provenance"] = stamps
+                        line = "data: " + json.dumps(payload, separators = (",", ":"))
 
                 if healer is None or healer.dormant or not isinstance(content, str) or not content:
                     plain = _delta_text(content)
