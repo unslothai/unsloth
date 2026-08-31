@@ -15553,7 +15553,7 @@ def _check_signal_escape_patterns(code: str):
             isinstance(node, ast.Attribute)
             and node.attr == "environ"
             and isinstance(node.value, ast.Name)
-            and node.value.id == "os"
+            and node.value.id in visitor.os_aliases
         )
 
     def _reads_env_or_secret(node: ast.AST | None) -> bool:
@@ -15574,7 +15574,7 @@ def _check_signal_escape_patterns(code: str):
                     if (
                         f.attr in {"getenv", "getenvb"}
                         and isinstance(f.value, ast.Name)
-                        and f.value.id == "os"
+                        and f.value.id in visitor.os_aliases
                     ):
                         return True
                     if (
@@ -15587,7 +15587,7 @@ def _check_signal_escape_patterns(code: str):
                             "getstatusoutput",
                         }
                         and isinstance(f.value, ast.Name)
-                        and f.value.id in {"subprocess", "commands"}
+                        and f.value.id in (visitor.subprocess_aliases | {"commands"})
                     ):
                         return True
                 if isinstance(f, ast.Name) and f.id in {"getenv", "getenvb"}:
