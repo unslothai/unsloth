@@ -651,7 +651,7 @@ const VRAM_VERDICT = {
     exceeds: {
       label: "Does not fit",
       tone: ORANGE,
-      hint: "Model doesn't fit but still works with offloading. Expect slower inference.",
+      hint: "Model may not fit but still works with offloading. Expect slower inference.",
     },
     tight: {
       label: "Tight fit",

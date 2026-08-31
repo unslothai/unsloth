@@ -127,7 +127,7 @@ test("each fit verdict is an info mark that explains itself", () => {
   // A GGUF over budget still loads: llama-server hands it to --fit.
   assert.ok(
     PICKERS.includes(
-      "hint: \"Model doesn't fit but still works with offloading. Expect slower inference.\"",
+      "hint: \"Model may not fit but still works with offloading. Expect slower inference.\"",
     ),
   );
   // A model row's `tight` comes from checkVramFit, which is 75-100% of VRAM: it fits on the card
