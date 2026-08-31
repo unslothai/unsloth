@@ -2868,12 +2868,8 @@ if DEVICE_COUNT == 1 and int(os.environ.get("WORLD_SIZE", "1")) <= 1:
     import accelerate.state
 
     accelerate.state.PartialState._prepare_backend = _prepare_backend
-    # A bare lambda assigned to a class attribute is a plain function, and functions are
-    # descriptors: attribute access on an instance (self.distributed_type) binds it as a
-    # method instead of calling it, so every read returns a bound-method object rather than
-    # DistributedType.NO. `Accelerator.distributed_type` is a `@property` upstream, so patch
-    # it with one too, or `self.distributed_type != DistributedType.NO` is always True and
-    # accelerate's distributed-mode guards fire even on a single GPU / single process.
+    # Must be a property: a bare function binds as a method, inverting every
+    # `!= DistributedType.NO` guard in accelerate (#10016).
     accelerate.accelerator.Accelerator.distributed_type = property(lambda self: DistributedType.NO)
 
 
