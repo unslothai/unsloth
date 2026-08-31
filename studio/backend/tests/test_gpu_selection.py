@@ -2308,3 +2308,69 @@ class TestEstimateFp16ModelSizeBytesPrefersLocalWeights(unittest.TestCase):
             self.assertEqual(src, "safetensors")
             mock_load.assert_not_called()
             mock_local.assert_not_called()
+
+
+class TestDeviceMapAcrossPlatformsAndAccelerators(_GpuCacheResetMixin, unittest.TestCase):
+    """The full [Windows, Linux, WSL, Mac] x [NVIDIA, AMD, Intel, Apple, CPU] product.
+
+    Two claims, and the second is the one worth a test of its own: the answer must be
+    something the loader can read, and it must not vary by operating system. A device
+    map is decided from the accelerator alone, and an OS-dependent answer would mean a
+    user's placement changed when they moved the same box between Linux and WSL.
+
+    ROCm is the row to read carefully. Studio reports an AMD card as DeviceType.CUDA
+    (torch.version.hip is set but the torch.cuda API is the one in use), so AMD takes
+    the same branch as NVIDIA. That is intended: unsloth maps its DEVICE_TYPE "hip" to
+    DEVICE_TYPE_TORCH "cuda", so the planner runs and reads memory through the same API.
+    """
+
+    # sys.platform, os.name, platform.system(), platform.release()
+    OSES = {
+        "Linux":   ("linux",  "posix", "Linux",   "6.8.0-generic"),
+        "WSL":     ("linux",  "posix", "Linux",   "5.15.0-microsoft-standard-WSL2"),
+        "Windows": ("win32",  "nt",    "Windows", "10"),
+        "Mac":     ("darwin", "posix", "Darwin",  "23.5.0"),
+    }
+    ACCELERATORS = {
+        "NVIDIA":      (DeviceType.CUDA, "unsloth"),
+        "AMD (ROCm)":  (DeviceType.CUDA, "unsloth"),
+        "Intel (XPU)": (DeviceType.XPU,  "balanced"),
+        "Apple (MLX)": (DeviceType.MLX,  "sequential"),
+        "CPU only":    (DeviceType.CPU,  "sequential"),
+    }
+    READABLE = {"sequential", "balanced", "unsloth"}
+
+    def _answer(self, os_key, device, gpu_ids):
+        platform_name, os_name, system, release = self.OSES[os_key]
+        with (
+            patch.object(sys, "platform", platform_name),
+            patch.object(os, "name", os_name),
+            patch("platform.system", return_value = system),
+            patch("platform.release", return_value = release),
+            patch("utils.hardware.hardware.get_device", return_value = device),
+        ):
+            return get_device_map(gpu_ids)
+
+    def test_every_cell_of_the_product(self):
+        for os_key in self.OSES:
+            for label, (device, multi_answer) in self.ACCELERATORS.items():
+                for gpu_ids, want in (
+                    ([0], "sequential"),
+                    ([0, 1], multi_answer),
+                    (list(range(8)), multi_answer),
+                ):
+                    with self.subTest(os = os_key, accelerator = label, gpus = len(gpu_ids)):
+                        got = self._answer(os_key, device, gpu_ids)
+                        self.assertEqual(got, want)
+                        self.assertIn(got, self.READABLE)
+
+    def test_the_answer_does_not_depend_on_the_operating_system(self):
+        for label, (device, _) in self.ACCELERATORS.items():
+            for gpu_ids in ([0], [0, 1], list(range(8))):
+                answers = {self._answer(key, device, gpu_ids) for key in self.OSES}
+                with self.subTest(accelerator = label, gpus = len(gpu_ids)):
+                    self.assertEqual(
+                        len(answers), 1,
+                        f"{label} with {len(gpu_ids)} GPU(s) answered {answers} across "
+                        "operating systems; the placement must not move with the OS",
+                    )
