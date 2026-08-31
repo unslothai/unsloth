@@ -676,6 +676,8 @@ def _install_cell_lower_bound(install_cell: str, target: str) -> str | None:
     `torchao>=0.16.0` line satisfies the floor without a `==` pin."""
     best: str | None = None
     for inv in iter_pip_invocations(install_cell):
+        if inv.conditional:
+            continue  # runs only when the command before it failed
         for raw in inv.packages:
             sp = parse_spec(raw)
             if sp is None or sp.name != target:
@@ -737,14 +739,20 @@ def _version_is_excluded(version: str, exclusion: str) -> bool:
     return left + [0] * (width - len(left)) == right + [0] * (width - len(right))
 
 
-def _window_names_one_minor(floor: str | None, ceiling: str | None) -> bool:
-    """True when `[floor, ceiling)` cannot leave the minor `floor` is in.
+def _window_names_one_minor(
+    floor: str | None, ceiling: str | None, cap: str | None = None
+) -> bool:
+    """True when the window above `floor` cannot leave the minor `floor` is in.
 
-    Moving down into a window lands on the newest release it admits, which only the window
-    itself names when there is one minor to land in. `>=0.10,<0.11` qualifies; `>=0.10,<0.12`
-    does not, and pip would pick 0.11 there rather than the floor.
+    A window lands on the newest release it admits, which only the window itself names when
+    there is one minor to land in. `>=0.10,<0.11` and `>=0.10,<=0.10.5` qualify;
+    `>=0.10,<0.12` and `>=0.10,<=0.11` do not, and pip would pick 0.11 there.
     """
-    if floor is None or ceiling is None:
+    if floor is None:
+        return False
+    if cap is not None and version_minor(cap) == version_minor(floor):
+        return True
+    if ceiling is None:
         return False
     next_minor = _compatible_release_ceiling(f"{version_minor(floor)}.0")
     return next_minor is not None and cmp_versions(ceiling, next_minor) <= 0
@@ -838,7 +846,7 @@ def _effective_version(
             continue
         exact, floor, cap, ceiling, exclusions, exclusive_floor = _spec_window(pins)
         # Where an install lands when it has to move, or None when nothing names it.
-        landing = floor if _window_names_one_minor(floor, ceiling) else None
+        landing = floor if _window_names_one_minor(floor, ceiling, cap) else None
         if exact is not None:
             current, exact_known = exact, True
         elif current is None:
@@ -846,9 +854,6 @@ def _effective_version(
             # where; without one there is nothing to say at all.
             if floor is not None and not exclusive_floor:
                 current, exact_known = floor, landing is not None
-            continue
-        elif any(_version_is_excluded(current, ver) for ver in exclusions):
-            current, exact_known = landing, True  # pip cannot keep what is installed
         elif floor is not None and cmp_versions(floor, current) > 0:
             if landing is not None:
                 current, exact_known = landing, True  # the window pins the minor
@@ -860,6 +865,15 @@ def _effective_version(
             current, exact_known = cap, True  # `<=V` allows V, so V is what pip picks
         elif ceiling is not None and cmp_versions(current, ceiling) >= 0:
             current, exact_known = landing, True
+        # Whatever the requirement leaves in place still has to satisfy its own exclusions,
+        # which covers the version that was already installed and the one just landed on.
+        if current is not None and any(_version_is_excluded(current, ver) for ver in exclusions):
+            if landing is not None and not any(
+                _version_is_excluded(landing, ver) for ver in exclusions
+            ):
+                current, exact_known = landing, True
+            else:
+                current, exact_known = None, True
     return current, exact_known if current is not None else True
 
 

@@ -788,6 +788,70 @@ def test_notebook_validator_skips_conditional_invocations_in_rule_002(monkeypatc
     assert nv.rule_inst_002_no_deps_transitive(fallback, colab, "nb.ipynb", 0) == []
 
 
+def test_notebook_validator_bounds_the_minor_with_an_inclusive_cap():
+    """`>=0.10,<=0.10.5` admits only the 0.10 line, so the window names it just as
+    `>=0.10,<0.11` does."""
+    nv = _load_notebook_validator_module()
+
+    assert nv._window_names_one_minor("0.10", None, "0.10.5")
+    assert not nv._window_names_one_minor("0.10", None, "0.11")
+
+    older = {"torch": "2.11.0+cu128", "torchcodec": "0.9.0+cu128"}
+    findings = nv.rule_inst_004_torchcodec_torch(
+        '!pip install "torchcodec>=0.10,<=0.10.5"', older, "nb.ipynb", 0
+    )
+    assert len(findings) == 1
+    assert "torchcodec==0.10" in findings[0].message
+
+    # A cap that reaches into the next minor still cannot name where it lands.
+    assert nv.rule_inst_004_torchcodec_torch(
+        '!pip install "torchcodec>=0.10,<=0.11"', older, "nb.ipynb", 0
+    ) == []
+
+
+def test_notebook_validator_applies_exclusions_to_where_it_landed():
+    """An exclusion has to hold for the version the requirement leaves in place, not only for
+    the one that was there before it ran."""
+    nv = _load_notebook_validator_module()
+
+    newer = {"torch": "2.10.0+cu128", "torchcodec": "0.15.0"}
+    # An earlier pin puts the codec above the cap, so the cap applies inside the replay
+    # rather than in resolved_set. It says 0.11, the exclusion rules the whole 0.11 line out,
+    # and pip lands below it: recording the cap reported a 0.11 codec against torch 2.10 when
+    # what actually installs there is a 0.10 release the row allows.
+    capped = '!pip install "torchcodec==0.15"\n!pip install "torchcodec<=0.11,!=0.11.*"'
+    assert nv.rule_inst_004_torchcodec_torch(capped, newer, "nb.ipynb", 0) == []
+
+    # A window that still names a minor after the exclusion keeps naming it.
+    findings = nv.rule_inst_004_torchcodec_torch(
+        '!pip install "torchcodec>=0.10,<0.11,!=0.11.*"',
+        {"torch": "2.11.0+cu128", "torchcodec": "0.15.0"},
+        "nb.ipynb",
+        0,
+    )
+    assert len(findings) == 1
+    assert "torchcodec==0.10" in findings[0].message
+
+
+def test_notebook_validator_skips_conditional_invocations_in_rule_003():
+    """The torchao floor helper reads the same cell, so a fallback that never runs must not
+    satisfy the floor R-INST-003 is checking."""
+    nv = _load_notebook_validator_module()
+
+    colab = {"peft": "0.19.1", "torchao": "0.15.0"}
+    assert nv._install_cell_lower_bound(
+        '!pip install foo || pip install "torchao>=0.16.0"', "torchao"
+    ) is None
+    assert [f.rule for f in nv.rule_inst_003_peft_torchao(
+        '!pip install foo || pip install "torchao>=0.16.0"', colab, "nb.ipynb", 0
+    )] == ["R-INST-003"]
+
+    # Run unconditionally and it does satisfy the floor.
+    assert nv.rule_inst_003_peft_torchao(
+        '!pip install "torchao>=0.16.0"', colab, "nb.ipynb", 0
+    ) == []
+
+
 def test_notebook_validator_reads_a_range_as_one_window():
     """A `>=X,<Y` pair is the same constraint as `~=X`, and the guard's own remedy is
     spelled that way (`pip install 'torchcodec>=0.11,<0.12.0'`), so the rule has to read it
