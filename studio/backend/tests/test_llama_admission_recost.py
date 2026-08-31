@@ -343,9 +343,9 @@ class TestWaitingForRoomInsteadOfRunningOverIt:
             await asyncio.sleep(0.01)
             if newcomer.lease_nowait() is not None:
                 break
-        assert newcomer.lease_nowait() is not None, (
-            "the last repark barrier came down without re-running admission"
-        )
+        assert (
+            newcomer.lease_nowait() is not None
+        ), "the last repark barrier came down without re-running admission"
         assert queue.snapshot().committed == 4000
 
 
@@ -370,9 +370,7 @@ class TestGivingUpTheWait:
         out: list = []
 
         def grow():
-            out.append(
-                loser.recost_waiting(4096, cancel_event = cancel, poll_s = 0.01)
-            )
+            out.append(loser.recost_waiting(4096, cancel_event = cancel, poll_s = 0.01))
 
         thread = threading.Thread(target = grow, daemon = True)
         thread.start()
@@ -389,21 +387,21 @@ class TestGivingUpTheWait:
         assert queue._reparking == 0
         # Both leases really hold their figures at llama-server, so the pool has to say
         # so -- over the budget, because that is what is genuinely resident.
-        assert queue.snapshot().committed == 4096 + 1024, (
-            "a restore the cache could not fit was dropped instead of recorded"
-        )
+        assert (
+            queue.snapshot().committed == 4096 + 1024
+        ), "a restore the cache could not fit was dropped instead of recorded"
 
         loser.release()
-        assert queue.snapshot().committed == 4096, (
-            "release subtracted a commitment that was never restored"
-        )
+        assert (
+            queue.snapshot().committed == 4096
+        ), "release subtracted a commitment that was never restored"
         # And the phantom room that leak created must not admit anyone.
         newcomer = queue.reserve(
             capacity = 4, config = LlamaAdmissionConfig(), tokens = 1000, budget = 4096
         )
-        assert newcomer.lease_nowait() is None, (
-            "a newcomer was admitted into room the winner is still using"
-        )
+        assert (
+            newcomer.lease_nowait() is None
+        ), "a newcomer was admitted into room the winner is still using"
         winner.release()
 
     @pytest.mark.asyncio
@@ -416,9 +414,7 @@ class TestGivingUpTheWait:
 
         cancel = threading.Event()
         thread = threading.Thread(
-            target = lambda: holder.recost_waiting(
-                4000, cancel_event = cancel, poll_s = 0.01
-            ),
+            target = lambda: holder.recost_waiting(4000, cancel_event = cancel, poll_s = 0.01),
             daemon = True,
         )
         thread.start()
@@ -470,9 +466,7 @@ class TestYieldingIsGatedOnTheServerActuallyClearing:
         _lease(queue, tokens = 2000, budget = 4096)
 
         started = time.monotonic()
-        assert holder.recost_waiting(
-            4000, allow_yield = False, timeout_s = 30.0, poll_s = 0.5
-        ) is False
+        assert holder.recost_waiting(4000, allow_yield = False, timeout_s = 30.0, poll_s = 0.5) is False
         assert time.monotonic() - started < 1.0
 
     @pytest.mark.asyncio

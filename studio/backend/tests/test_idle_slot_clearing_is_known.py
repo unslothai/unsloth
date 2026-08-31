@@ -43,23 +43,29 @@ class TestTheArgvIsWhatDecides:
         assert active(BASE + ["--cache-ram", "4096"], supports_cache_ram = True) is True
 
     def test_the_flag_can_be_turned_off_by_name(self):
-        assert active(
-            BASE + ["--cache-ram", "4096", "--no-cache-idle-slots"],
-            supports_cache_ram = True,
-        ) is False
+        assert (
+            active(
+                BASE + ["--cache-ram", "4096", "--no-cache-idle-slots"],
+                supports_cache_ram = True,
+            )
+            is False
+        )
 
     def test_it_can_be_turned_back_on_by_name(self):
-        assert active(
-            BASE + ["--cache-ram", "0", "--cache-idle-slots"], supports_cache_ram = True
-        ) is True
+        assert (
+            active(BASE + ["--cache-ram", "0", "--cache-idle-slots"], supports_cache_ram = True)
+            is True
+        )
 
     def test_last_wins_like_llama_cpp(self):
-        assert active(
-            BASE + ["--cache-ram", "4096", "--cache-ram", "0"], supports_cache_ram = True
-        ) is False
-        assert active(
-            BASE + ["--cache-ram", "0", "--cache-ram", "4096"], supports_cache_ram = True
-        ) is True
+        assert (
+            active(BASE + ["--cache-ram", "4096", "--cache-ram", "0"], supports_cache_ram = True)
+            is False
+        )
+        assert (
+            active(BASE + ["--cache-ram", "0", "--cache-ram", "4096"], supports_cache_ram = True)
+            is True
+        )
 
     @pytest.mark.parametrize("bad", ["", "abc", "-1", None])
     def test_an_unreadable_value_is_treated_as_no_clearing(self, bad):

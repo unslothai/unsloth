@@ -568,9 +568,9 @@ class TestARoundIsCostedTheSameWayTheReservationWas:
             payload, output_tokens = _effective_openai_max_tokens(payload)
         )
         assert opened == 4096, opened
-        assert committed == opened, (
-            f"round zero shrank an uncapped loop from {opened} to {committed}"
-        )
+        assert (
+            committed == opened
+        ), f"round zero shrank an uncapped loop from {opened} to {committed}"
         # And the room it would have released must not admit anyone.
         import asyncio
 
