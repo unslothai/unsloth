@@ -153,7 +153,7 @@ export function AccountsTab() {
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
                   minLength={8}
-                  pattern="[^\\s]+"
+                  pattern={"[^\\s]+"}
                   autoComplete="new-password"
                   required
                 />

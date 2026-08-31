@@ -83,16 +83,40 @@ test("owner account UX and per-account chat workspaces are isolated", async ({
 
   const aliceTemporaryPassword = "alice-temporary-password";
   const bobTemporaryPassword = "bob-temporary-password";
-  for (const [username, password] of [
-    ["alice", aliceTemporaryPassword],
-    ["bob", bobTemporaryPassword],
-  ]) {
-    const created = await request.post(`${baseURL}/api/auth/users`, {
-      headers: bearer(owner),
-      data: { username, password },
-    });
-    expect(created.status(), `create ${username}: ${await created.text()}`).toBe(201);
-  }
+  const accountCreator = await loginInBrowser(browser, "unsloth", ownerPassword);
+  await accountCreator.page.getByRole("button", { name: "Settings", exact: true }).last().click();
+  await accountCreator.page.getByTestId("settings-tab-accounts").click();
+  const accountsDialog = accountCreator.page.getByRole("dialog");
+  await accountsDialog.getByLabel("Username").fill("alice");
+  await accountsDialog.getByLabel("Temporary password").fill(aliceTemporaryPassword);
+  expect(await accountsDialog.locator("form").evaluate((form) => form.checkValidity())).toBe(true);
+  const createAliceResponse = accountCreator.page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/auth/users") && response.request().method() === "POST",
+  );
+  await accountsDialog.getByRole("button", { name: "Create account", exact: true }).click();
+  expect((await createAliceResponse).status()).toBe(201);
+  await expect(accountsDialog.getByText("alice", { exact: true })).toBeVisible();
+  await expect(accountsDialog.getByText("Password change required", { exact: true })).toBeVisible();
+  await accountCreator.context.close();
+
+  const firstLoginContext = await browser.newContext();
+  const firstLoginPage = await firstLoginContext.newPage();
+  await firstLoginPage.goto(`${baseURL}/login`);
+  await firstLoginPage.getByLabel("Username").fill("alice");
+  await firstLoginPage.getByLabel("Password", { exact: true }).fill(aliceTemporaryPassword);
+  await firstLoginPage.getByRole("button", { name: "Login", exact: true }).click();
+  await expect(firstLoginPage).toHaveURL(/\/change-password(?:\?|$)/);
+  await expect(
+    firstLoginPage.getByRole("heading", { name: "Setup your account", exact: true }),
+  ).toBeVisible();
+  await firstLoginContext.close();
+
+  const createdBob = await request.post(`${baseURL}/api/auth/users`, {
+    headers: bearer(owner),
+    data: { username: "bob", password: bobTemporaryPassword },
+  });
+  expect(createdBob.status(), `create bob: ${await createdBob.text()}`).toBe(201);
 
   const alice = await replaceTemporaryPassword(
     request,

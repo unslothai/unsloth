@@ -100,11 +100,14 @@ async function redirectToAuth(): Promise<void> {
     const res = await fetch(apiUrl("/api/auth/status"));
     if (res.ok) {
       const data = (await res.json()) as { requires_password_change: boolean };
-      // Server truth wins; keep localStorage in sync both ways.
-      if (data.requires_password_change !== mustChangePassword()) {
-        setMustChangePassword(data.requires_password_change);
+      // /status is installation-owner bootstrap state, not the current
+      // account's state. Preserve a managed account's token-derived flag.
+      if (data.requires_password_change && !mustChangePassword()) {
+        setMustChangePassword(true);
       }
-      if (data.requires_password_change) target = "/change-password";
+      if (data.requires_password_change || mustChangePassword()) {
+        target = "/change-password";
+      }
     }
   } catch {
     // Fall through to /login on error

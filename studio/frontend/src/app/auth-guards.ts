@@ -48,9 +48,11 @@ async function fetchAuthStatus(): Promise<AuthStatus> {
       }
       const status = (await res.json()) as AuthStatus;
       authStatusCheckedAt = Date.now();
-      // Server truth wins; keep localStorage in sync both ways.
-      if (status.requires_password_change !== mustChangePassword()) {
-        setMustChangePassword(status.requires_password_change);
+      // /status describes the seeded installation owner, while the local flag
+      // can describe any authenticated managed account. A false owner status
+      // must not clear another account's forced-change route.
+      if (status.requires_password_change && !mustChangePassword()) {
+        setMustChangePassword(true);
       }
       return status;
     } catch {
