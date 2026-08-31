@@ -4527,3 +4527,69 @@ class TestPreserveThinkingHonoursTheBackendDefault:
 
         asyncio.run(anthropic_count_tokens(payload, request = _Request(), current_subject = "t"))
         assert seen["count_messages"] == gen_messages
+
+
+def test_effort_resolved_from_output_config():
+    # Claude Code sends the tier as output_config.effort, never as reasoning_effort.
+    assert (
+        _basic_payload(
+            output_config = {"effort": "high"}, thinking = {"type": "adaptive"}
+        ).reasoning_effort
+        == "high"
+    )
+
+
+def test_explicit_reasoning_effort_outranks_output_config():
+    assert (
+        _basic_payload(output_config = {"effort": "low"}, reasoning_effort = "max").reasoning_effort
+        == "max"
+    )
+
+
+def test_unknown_output_config_effort_is_ignored():
+    # thinking on, so an ignored level is the level check talking, not the gate below.
+    adaptive = {"type": "adaptive"}
+    assert (
+        _basic_payload(output_config = {"effort": "turbo"}, thinking = adaptive).reasoning_effort
+        is None
+    )
+    assert (
+        _basic_payload(
+            output_config = {"format": {"type": "json"}}, thinking = adaptive
+        ).reasoning_effort
+        is None
+    )
+
+
+# Claude Code sends output_config.effort on every request, thinking on or off, so
+# adopting it unconditionally would turn `reasoning_effort` into an always-present
+# override -- and a named level means "think" from _anthropic_reasoning_args down.
+_EFFORT_THINKING_OFF_SHAPES = [
+    ({}, None),
+    ({"thinking": {"type": "disabled"}}, False),
+    ({"enable_thinking": False}, False),
+]
+
+
+@pytest.mark.parametrize("fields, expected_enable", _EFFORT_THINKING_OFF_SHAPES)
+def test_output_config_effort_never_switches_thinking_back_on(fields, expected_enable):
+    from routes.inference import _anthropic_reasoning_args
+
+    payload = _basic_payload(output_config = {"effort": "high"}, **fields)
+    # Left unset, so nothing downstream reads a level the caller never asked for.
+    assert payload.reasoning_effort is None
+    args = _anthropic_reasoning_args(payload)
+    assert args["enable_thinking"] is expected_enable
+    assert args["reasoning_effort"] is None
+
+
+def test_x_unsloth_effort_still_outranks_thinking_when_sent_explicitly():
+    # The gate applies to output_config only: an explicit reasoning_effort keeps
+    # the documented precedence covered by _THINKING_EFFORT_MATRIX.
+    from routes.inference import _anthropic_reasoning_args
+
+    args = _anthropic_reasoning_args(
+        _basic_payload(thinking = {"type": "disabled"}, reasoning_effort = "high")
+    )
+    assert args["enable_thinking"] is True
+    assert args["reasoning_effort"] == "high"

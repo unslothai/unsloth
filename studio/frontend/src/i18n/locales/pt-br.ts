@@ -1522,6 +1522,8 @@ export const ptBR = {
       archivedImagesDescription: "Veja e gerencie as imagens que você arquivou.",
       archivedVideos: "Vídeos arquivados",
       archivedVideosDescription: "Veja e gerencie os vídeos que você arquivou.",
+      archivedAudio: "Áudios arquivados",
+      archivedAudioDescription: "Veja e gerencie os clipes de áudio que você arquivou.",
       manageAction: "Gerenciar",
       manageChats: "Gerenciar chats",
       manageChatsDescription:

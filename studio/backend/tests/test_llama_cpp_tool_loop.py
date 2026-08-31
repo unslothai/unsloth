@@ -6909,3 +6909,61 @@ def test_a_second_call_in_a_compacted_turn_is_still_visible_to_the_model(monkeyp
     assert answered <= announced, f"results with no visible call: {answered - announced}"
     # And the compaction still happened: the body is not replayed.
     assert _BIG_BODY not in json.dumps(sent)
+
+
+def test_the_synthesized_final_pass_is_recosted_before_it_is_sent(monkeypatch):
+    """The last request of a tool run is the biggest, and it skips the top of the loop.
+
+    ``on_conversation_grew`` is KV admission's only view of a growing tool loop and fires
+    at the TOP of a round. The iteration cap breaks out mid-round instead, after the
+    assistant turn and its tool result are appended, and goes straight to the synthesized
+    final answer. Without a re-cost there the largest prompt of the run is the one the
+    pool never hears about, and llama.cpp answers the overcommit by killing every
+    decoding slot at once.
+    """
+    first_stream = _structured_tool_call("web_search", {"query": "kernel"}, "call_search")
+    final_stream = [_sse({"content": "6.10."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        # Long enough that skipping it is a real under-count, not a rounding error.
+        lambda name, arguments, **_kwargs: "Linux kernel 6.10. " * 400,
+    )
+
+    seen: list[list[dict]] = []
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Search for the kernel version."}],
+            tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+            # One round, so the loop breaks on the cap mid-round rather than at the top.
+            max_tool_iterations = 1,
+            permission_mode = "off",
+            on_conversation_grew = lambda conversation: seen.append(copy.deepcopy(conversation)),
+        )
+    )
+
+    assert len(payloads) == 2, "expected one tool round and one synthesized final pass"
+    final_messages = payloads[-1]["messages"]
+    assert any(
+        message.get("role") == "tool" for message in final_messages
+    ), "the final pass should carry the tool result this test is about"
+    assert seen, "the callback never ran"
+    last_seen = seen[-1]
+    assert any(message.get("role") == "tool" for message in last_seen), (
+        "the last re-cost ran before the tool result was appended, so the final pass "
+        "was sent under stale KV accounting"
+    )
+    assert len(last_seen) == len(final_messages), (
+        f"the final pass sends {len(final_messages)} messages but the pool was last told "
+        f"about {len(last_seen)}"
+    )

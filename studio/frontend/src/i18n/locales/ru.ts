@@ -1519,6 +1519,8 @@ export const ru = {
       archivedImagesDescription: "Просмотр и управление изображениями, которые вы архивировали.",
       archivedVideos: "Архивные видео",
       archivedVideosDescription: "Просмотр и управление видео, которые вы архивировали.",
+      archivedAudio: "Архивированные аудио",
+      archivedAudioDescription: "Просмотр и управление аудиоклипами, которые вы архивировали.",
       manageAction: "Управлять",
       manageChats: "Управление чатами",
       manageChatsDescription:
