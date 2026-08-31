@@ -3692,7 +3692,12 @@ class _BlockMLX:
     def __init__(self, *names):
         self.names = names
 
-    def find_spec(self, fullname, path = None, target = None):
+    def find_spec(
+        self,
+        fullname,
+        path = None,
+        target = None,
+    ):
         if fullname in self.names or fullname.startswith(tuple(f"{n}." for n in self.names)):
             raise ModuleNotFoundError(f"No module named {fullname!r}", name = fullname)
         return None
@@ -3721,18 +3726,18 @@ def test_the_mlx_module_imports_on_a_machine_with_no_mlx_wheels():
     import importlib
 
     with _without_mlx("mlx", "mlx_lm", "mlx_vlm"):
-        module = importlib.reload(
-            importlib.import_module("core.inference.mlx_inference")
+        module = importlib.reload(importlib.import_module("core.inference.mlx_inference"))
+        assert (
+            module.mlx_native_context_length(
+                SimpleNamespace(config = SimpleNamespace(max_position_embeddings = 131072))
+            )
+            == 131072
         )
-        assert module.mlx_native_context_length(
-            SimpleNamespace(config = SimpleNamespace(max_position_embeddings = 131072))
-        ) == 131072
     importlib.reload(module)
 
 
 def test_the_probe_answers_unknown_rather_than_raising_without_mlx():
     """Nothing can be built to judge, which is "unknown", not "unbounded"."""
     from core.inference.mlx_inference import _kv_window_enforced
-
     with _without_mlx("mlx", "mlx_lm", "mlx_vlm"):
         assert _kv_window_enforced(SimpleNamespace(layers = [object()]), False, 4096) is None
