@@ -128,6 +128,17 @@ test("distinguishes Klein base checkpoints from distilled checkpoints", () => {
   }
 });
 
+test("variant defaults accept the same flexible delimiters as family detection", () => {
+  assert.deepEqual(
+    defaultsFor("C:\\models\\FLUX_1_schnell.safetensors", "flux.1"),
+    { steps: 4, guidance: 0 },
+  );
+  assert.deepEqual(
+    defaultsFor("/models/FLUX.2_klein.base-4B.safetensors", "flux.2-klein"),
+    { steps: 50, guidance: 4 },
+  );
+});
+
 test("keeps the existing family defaults and fallback", () => {
   assert.deepEqual(defaultsFor("krea/Krea-2-Raw"), {
     steps: 52,

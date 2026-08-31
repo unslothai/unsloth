@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { familyTokenMatches } from "../../lib/family-token-matching.ts";
+
 // Generation defaults when the model is unrecognised. Also seeds the Create sliders.
 export const DEFAULT_GEN = { steps: 9, guidance: 0 };
 
@@ -58,11 +60,13 @@ export function defaultsFor(
   steps: number;
   guidance: number;
 } {
-  const id = repoId.toLowerCase();
-  const idMatch = MODEL_DEFAULTS.find((entry) => id.includes(entry.match));
+  const idMatch = MODEL_DEFAULTS.find((entry) =>
+    familyTokenMatches(entry.match, repoId),
+  );
   if (familyOverride && familyOverride !== "auto") {
-    const fam = familyOverride.toLowerCase();
-    const famMatch = MODEL_DEFAULTS.find((entry) => fam.includes(entry.match));
+    const famMatch = MODEL_DEFAULTS.find((entry) =>
+      familyTokenMatches(entry.match, familyOverride),
+    );
     // A variant recipe is more specific only when it belongs to the resolved family. An opaque
     // merge named after another architecture must still obey the explicit family override.
     if (idMatch && famMatch && idMatch.family === famMatch.family) {

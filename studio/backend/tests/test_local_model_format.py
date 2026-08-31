@@ -533,6 +533,17 @@ def test_local_inventories_reject_standalone_safetensors_shards(tmp_path):
     assert _scan_custom_folder(tmp_path / "custom") == []
 
 
+def test_local_inventories_reject_loose_diffusers_lora_weights(tmp_path):
+    """Diffusers' canonical adapter payload is not a standalone base checkpoint."""
+    from hub.services.models.local_inventory import _scan_custom_folder, _scan_models_dir
+
+    for root in (tmp_path / "models", tmp_path / "custom"):
+        _touch(root / "pytorch_lora_weights.safetensors")
+
+    assert _scan_models_dir(tmp_path / "models") == []
+    assert _scan_custom_folder(tmp_path / "custom") == []
+
+
 def test_custom_inventory_keeps_file_rows_in_a_multi_checkpoint_registration(tmp_path):
     """Reducing a file registration to its parent must not lose it beside another checkpoint."""
     from hub.services.models.local_inventory import _coerce_scan_folder_path, _scan_custom_folder

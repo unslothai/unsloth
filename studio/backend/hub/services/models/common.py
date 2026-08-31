@@ -588,9 +588,16 @@ def _weight_basename(name: str) -> str:
     return name.replace("\\", "/").rsplit("/", 1)[-1].lower()
 
 
+_DIFFUSERS_ADAPTER_WEIGHT_NAMES = frozenset(
+    {"pytorch_lora_weights.safetensors", "pytorch_lora_weights.bin"}
+)
+
+
 def _is_adapter_weight_name(name: str) -> bool:
     lower = _weight_basename(name)
-    return lower.startswith("adapter_model") and lower.endswith((".safetensors", ".bin"))
+    return lower in _DIFFUSERS_ADAPTER_WEIGHT_NAMES or (
+        lower.startswith("adapter_model") and lower.endswith((".safetensors", ".bin"))
+    )
 
 
 # Trainer state saved beside the weights, not the model. The .bin side is already an allow list.
