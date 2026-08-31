@@ -2625,3 +2625,34 @@ def test_a_deliberate_cpu_install_is_not_offered_a_gpu_repair(
     assert (
         "_masks_hide_every_accelerator" in source
     ), "and the mask suppression beside it: an emptied mask is a deliberate CPU pin too"
+
+
+# ============================ the recovery the message names has to exist where it is read
+
+@pytest.mark.parametrize("reason", ["torch_cpu_build", "torch_cuda_unavailable"])
+def test_the_repair_advice_names_a_route_every_deployment_has(monkeypatch, reason):
+    """Settings carries the repair row only inside the desktop app, and only for a backend
+    it manages: DesktopRepairControl returns null without a Tauri repair context and null
+    for an externally started server. A browser-hosted Studio, or a desktop attached to a
+    server started from a terminal, was told to use a control that is not on its page."""
+    monkeypatch.setattr(hw, "CHAT_ONLY_REASON", reason)
+    monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", "2.11.0+cpu")
+    message = hw._gpu_present_but_unusable_message("export", (reason, "2.11.0+cpu"))
+
+    assert message is not None
+    assert "installer" in message.lower(), (
+        "the only route a browser-hosted or externally-attached Studio has is the installer"
+    )
+    assert "desktop app" in message, (
+        "and the Settings route has to say where it lives, or it reads as universal"
+    )
+
+
+def test_the_control_that_advice_points_at_still_has_both_gates():
+    """If either gate is dropped the message could go back to naming Settings alone."""
+    source = (
+        pathlib.Path(hw.__file__).resolve().parents[3]
+        / "frontend" / "src" / "features" / "settings" / "components"
+        / "desktop-repair-control.tsx"
+    ).read_text(encoding = "utf-8")
+    assert "if (!repair || repair.isExternalServer) return null;" in source

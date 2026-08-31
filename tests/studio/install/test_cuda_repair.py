@@ -1879,6 +1879,20 @@ class TestThePostRepairCheckUsesTheSameRuleAsThePreRepairOne:
         ):
             assert stack_mod._installed_flavor_tag_now("cpu") == "xpu"
 
+    def test_the_cpu_pin_repair_agrees_with_the_check_that_triggers_it(self):
+        """_ensure_cpu_torch's own GPU-build predicate has to see the untagged XPU build
+        too. Reading only the tag and .hip/.cuda made it return without reinstalling, so
+        the post-repair check saw xpu again and failed the update instead of honouring
+        the pin: the detection improved and the repair did not follow it."""
+        source = inspect.getsource(stack_mod._ensure_cpu_torch)
+        predicate = source[source.index("_is_gpu_build = ") :]
+        predicate = predicate[: predicate.index("if not _is_gpu_build")]
+        assert "_TORCH_RUNTIME_XPU" in predicate, (
+            "an untagged XPU wheel carries its runtime only in torch.version.xpu"
+        )
+        for marker in ("_hip", "_cuda", "+xpu", "rocm"):
+            assert marker in predicate, f"{marker} must still count"
+
     def test_the_gpu_family_reading_prefers_the_explicit_runtimes(self):
         # An XPU marker beside a CUDA or HIP one names the accelerator that wheel was
         # BUILT for; xpu is the answer only when it is the sole marker.

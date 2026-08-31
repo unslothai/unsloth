@@ -2029,16 +2029,22 @@ def _gpu_present_but_unusable_message(
     if reason not in ("torch_cpu_build", "torch_cuda_unavailable"):
         return None
     installed = f" (installed {detail})" if detail else ""
+    # Both routes, always. Settings only carries the repair row inside the desktop app and
+    # only for a backend it manages: DesktopRepairControl renders nothing without a Tauri
+    # repair context, and nothing for an externally started server. A browser-hosted
+    # Studio, or a desktop attached to a server someone started from a terminal, was being
+    # sent to a control that is not on the page.
     if reason == "torch_cpu_build":
         return (
             f"This host has a GPU, but the installed PyTorch is a CPU-only build{installed}, "
-            f"so {feature} cannot use it. Repair the installation from Settings to reinstall "
-            f"the GPU build."
+            f"so {feature} cannot use it. Reinstall the GPU build: use Repair installation "
+            f"in Settings in the desktop app, or re-run the Unsloth installer."
         )
     return (
         f"This host has a GPU, but the installed PyTorch{installed} cannot initialise it, so "
-        f"{feature} cannot use it. This is usually a driver or runtime mismatch; repairing the "
-        f"installation from Settings reinstalls a matching PyTorch build."
+        f"{feature} cannot use it. This is usually a driver or runtime mismatch; reinstalling "
+        f"a matching PyTorch build fixes it. Use Repair installation in Settings in the "
+        f"desktop app, or re-run the Unsloth installer."
     )
 
 

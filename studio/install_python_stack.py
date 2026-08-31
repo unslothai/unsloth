@@ -2844,7 +2844,12 @@ def _ensure_cpu_torch() -> None:
     if _version is None:
         return  # unreadable -- the base install step handles a missing torch
     # '+xpu' too: an XPU wheel sets neither torch.version.cuda nor .hip, so without it a
-    # working Intel build reads as "cpu" and the CPU pin over it does nothing.
+    # working Intel build reads as "cpu" and the CPU pin over it does nothing. And
+    # torch.version.xpu beside it, for the build that carries no local tag at all: an
+    # untagged source, conda or private-index XPU wheel. _installed_flavor_tag_now now
+    # reads that marker, so leaving it out here made the two disagree -- the check said
+    # "still xpu" and failed the update while this predicate had already declined to
+    # reinstall anything.
     _ver = _version.lower()
     _is_gpu_build = (
         bool(_hip)
@@ -2852,6 +2857,7 @@ def _ensure_cpu_torch() -> None:
         or bool(_cuda)
         or bool(re.search(r"\+cu\d+", _ver))
         or "+xpu" in _ver
+        or bool(_TORCH_RUNTIME_XPU)
     )
     if not _is_gpu_build:
         return  # already a CPU build
