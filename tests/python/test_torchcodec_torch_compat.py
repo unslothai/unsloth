@@ -706,7 +706,6 @@ def test_notebook_validator_reads_a_range_as_one_window():
     assert len(nv.rule_inst_004_torchcodec_torch(capped, COLAB_TORCH211, "nb.ipynb", 0)) == 1
 
 
-
 def test_notebook_validator_reads_the_compatible_release_ceiling():
     """`~=` pins a window, so it moves the baseline down as well as up. PEP 440 drops the
     last component: `~=2.10.0` allows `<2.11`, `~=2.10` allows `<3`."""
