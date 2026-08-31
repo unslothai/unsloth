@@ -226,8 +226,9 @@ pub async fn desktop_preflight(
     diagnostics: tauri::State<'_, DiagnosticsState>,
 ) -> Result<crate::preflight::DesktopPreflightResult, String> {
     let started = Instant::now();
+    let policy = crate::server_port::launch_policy(&app);
     let (result, adopted_watchdog_generation) =
-        crate::preflight::desktop_preflight_result_with_state(state.inner()).await?;
+        crate::preflight::desktop_preflight_result_with_state(state.inner(), policy).await?;
     diagnostics::record_preflight(&diagnostics, &result);
 
     info!(

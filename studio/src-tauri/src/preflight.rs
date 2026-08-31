@@ -126,6 +126,24 @@ fn choose_preflight(managed: ManagedProbe, backend: BackendProbe) -> DesktopPref
     }
 }
 
+fn choose_preflight_for_policy(
+    managed: ManagedProbe,
+    backend: BackendProbe,
+    policy: crate::server_port::LaunchPolicy,
+) -> DesktopPreflightResult {
+    let backend = match backend {
+        BackendProbe::Ready { port } if policy.exact && port != policy.port => {
+            BackendProbe::Missing
+        }
+        BackendProbe::Ready { port } if policy.exact => BackendProbe::ExternalConflict {
+            port,
+            reason: "same_root_external_backend_active".to_string(),
+        },
+        backend => backend,
+    };
+    choose_preflight(managed, backend)
+}
+
 fn owned_unmanageable_reason(reason: &str) -> String {
     format!("desktop_owned_backend_unmanageable:{reason}")
 }
@@ -150,6 +168,23 @@ fn choose_owned_preflight(
             managed_bin: managed_bin_for_result(managed),
         },
     }
+}
+
+fn choose_owned_preflight_for_policy(
+    managed: &ManagedProbe,
+    owned: &VerifiedOwnedBackend,
+    policy: crate::server_port::LaunchPolicy,
+) -> DesktopPreflightResult {
+    if policy.exact && owned.port != policy.port {
+        return DesktopPreflightResult {
+            disposition: DesktopPreflightDisposition::ExternalConflict,
+            reason: Some("desktop_owned_backend_active".to_string()),
+            port: Some(owned.port),
+            can_auto_repair: false,
+            managed_bin: managed_bin_for_result(managed),
+        };
+    }
+    choose_owned_preflight(managed, owned)
 }
 
 fn choose_unmanageable_owned_preflight(
@@ -257,6 +292,7 @@ pub async fn desktop_preflight_result() -> DesktopPreflightResult {
 
 pub async fn desktop_preflight_result_with_state(
     state: &crate::process::BackendState,
+    policy: crate::server_port::LaunchPolicy,
 ) -> Result<(DesktopPreflightResult, Option<(u64, bool)>), String> {
     let (managed, backend, owned) = tokio::join!(
         probe_managed_install(),
@@ -293,7 +329,7 @@ pub async fn desktop_preflight_result_with_state(
                         verified.port,
                     );
                 }
-                let result = choose_owned_preflight(&managed, &verified);
+                let result = choose_owned_preflight_for_policy(&managed, &verified, policy);
                 let watchdog_generation = if snapshot.is_adopted
                     && result.disposition == DesktopPreflightDisposition::OwnedReady
                 {
@@ -319,7 +355,7 @@ pub async fn desktop_preflight_result_with_state(
                         snapshot.port,
                         "state owner probe no longer verifies",
                     );
-                    return Ok((choose_preflight(managed, backend), None));
+                    return Ok((choose_preflight_for_policy(managed, backend, policy), None));
                 }
                 return Ok((
                     choose_owned_transitional_preflight(&managed, snapshot.port),
@@ -336,13 +372,17 @@ pub async fn desktop_preflight_result_with_state(
                 "Desktop-owned backend probe failed; continuing without adoption: {}",
                 error
             );
-            return Ok((choose_preflight(managed, backend), None));
+            return Ok((choose_preflight_for_policy(managed, backend, policy), None));
         }
     };
 
     match owned {
         OwnedBackendProbe::Verified(verified) => {
-            let result = choose_owned_preflight(&managed, &verified);
+            let result = choose_owned_preflight_for_policy(&managed, &verified, policy);
+
+            if result.disposition == DesktopPreflightDisposition::ExternalConflict {
+                return Ok((result, None));
+            }
             let adopted = crate::process::adopt_verified_backend(state, verified)?;
             let watchdog_generation =
                 if result.disposition == DesktopPreflightDisposition::OwnedReady {
@@ -358,7 +398,9 @@ pub async fn desktop_preflight_result_with_state(
         )),
         OwnedBackendProbe::NoMetadata
         | OwnedBackendProbe::RemovedMalformed
-        | OwnedBackendProbe::NotVerified { .. } => Ok((choose_preflight(managed, backend), None)),
+        | OwnedBackendProbe::NotVerified { .. } => {
+            Ok((choose_preflight_for_policy(managed, backend, policy), None))
+        }
     }
 }
 
@@ -475,6 +517,23 @@ mod tests {
             assert_eq!(result.can_auto_repair, can_auto_repair);
             assert_eq!(result.managed_bin, managed_bin);
         }
+    }
+
+    #[test]
+    fn custom_port_preflight_does_not_attach_to_an_automatic_port_backend() {
+        let result = choose_preflight_for_policy(
+            ManagedProbe::Ready {
+                bin: PathBuf::from("/managed/unsloth"),
+            },
+            BackendProbe::Ready { port: 8888 },
+            crate::server_port::LaunchPolicy {
+                port: 43210,
+                exact: true,
+            },
+        );
+
+        assert_eq!(result.disposition, DesktopPreflightDisposition::ManagedReady);
+        assert_eq!(result.port, None);
     }
 
     #[test]

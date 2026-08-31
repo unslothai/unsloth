@@ -8,7 +8,6 @@ import {
   SETTINGS_SEARCH_KEYWORDS,
   createSettingsSearchIndex,
 } from "../src/features/settings/settings-search.ts";
-
 import { parseCustomServerPort } from "../src/features/settings/api/server-port.ts";
 import { en } from "../src/i18n/locales/en.ts";
 
@@ -58,7 +57,6 @@ test("model memory rows are reachable by the terms the feature is about", () => 
 const DESKTOP_STARTUP_ENTRIES = [
   "settings.general.startup.sectionTitle",
   "settings.general.startup.launchAtLogin",
-
   "settings.general.startup.serverPort",
 ] as const;
 const CLOSE_TO_TRAY_ENTRY = "settings.general.startup.closeToTray";
@@ -77,7 +75,6 @@ test("custom server ports accept only the native port range", () => {
     assert.equal(parseCustomServerPort(value), null);
   }
 });
-
 
 test("desktop startup entries are absent from browser search", () => {
   const desktop = createSettingsSearchIndex({ desktop: true, closeToTray: true });
