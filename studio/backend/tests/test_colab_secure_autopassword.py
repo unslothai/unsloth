@@ -181,8 +181,7 @@ def test_tunnel_race_proceeds_with_a_concurrent_user_selected_winner(monkeypatch
     monkeypatch.setattr(
         cloudflare_tunnel,
         "start_studio_tunnel",
-        lambda port, **_kwargs: started.update(called = True)
-        or "https://example.trycloudflare.com",
+        lambda port, **_kwargs: started.update(called = True) or "https://example.trycloudflare.com",
     )
 
     assert colab.start_cloudflare_tunnel(8888) == "https://example.trycloudflare.com"

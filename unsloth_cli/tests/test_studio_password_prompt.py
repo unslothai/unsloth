@@ -1403,10 +1403,13 @@ def test_stale_file_warning_failure_does_not_prevent_generated_password_delivery
     assert bootstrap_file.read_text(encoding = "utf-8") == ""
     conn = studio_mod._connect_auth_db()
     try:
-        assert conn.execute(
-            "SELECT 1 FROM app_secrets WHERE key = ?",
-            (studio_mod.CREDENTIAL_UNDELIVERED_PASSWORD_HASH_KEY,),
-        ).fetchone() is None
+        assert (
+            conn.execute(
+                "SELECT 1 FROM app_secrets WHERE key = ?",
+                (studio_mod.CREDENTIAL_UNDELIVERED_PASSWORD_HASH_KEY,),
+            ).fetchone()
+            is None
+        )
     finally:
         conn.close()
 
