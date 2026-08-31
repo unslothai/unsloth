@@ -665,6 +665,38 @@ def test_a_name_bringing_an_object_over_an_announcement_is_the_next_call():
         assert _reported(turn) == [("alpha", '{"a":1}'), ("beta", '{"b":2}')]
 
 
+def test_an_unfinished_fork_does_not_reserve_a_card_id():
+    # The client releases the card it drew for the fork this turn filters out,
+    # so the next round has to land on the number the client will mint. Holding
+    # one side's id back moves the two out of step and the tool_start draws a
+    # second card beside the one the deltas painted.
+    taken: set[str] = set()
+    cards: set[str] = set()
+    first = _Turn()
+    first.merge_structured([_delta(0, "alpha", '{"a":1}{')])
+    assert [call.get("card_id") for call in first.calls(taken, cards)] == ["tool_call_0"]
+
+    second = _Turn()
+    second.round = 1
+    second.merge_structured([_delta(0, "beta", '{"b":2}')])
+    assert [call.get("card_id") for call in second.calls(taken, cards)] == ["tool_call_1"]
+
+
+def test_a_provider_claiming_a_minted_id_displaces_the_id_less_call():
+    # Every id the provider sent is reserved before any card id is minted, so
+    # the id-less call moves to tool_call_1 and the claim keeps tool_call_0.
+    # The client reaches the same pair by displacing once the claim lands.
+    turn = _Turn()
+    turn.merge_structured([_delta(0, "alpha", '{"a":1}')])
+    turn.merge_structured([_delta(1, "beta", '{"b":2}', call_id = "tool_call_0")])
+
+    reported = [
+        (call.get("card_id") or call["id"], call["function"]["name"])
+        for call in turn.calls()
+    ]
+    assert reported == [("tool_call_1", "alpha"), ("tool_call_0", "beta")]
+
+
 def test_a_stable_id_naming_a_longer_tool_opens_its_own_call():
     # A catalog can hold both "web" and "web_search". Reading the second name as
     # a growth of the first gave the id to the completed call, and the arguments

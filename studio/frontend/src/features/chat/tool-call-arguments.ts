@@ -198,16 +198,20 @@ export function toolCallReplayArguments(
   // send a parameter no tool declares. `_raw` is not reserved, though, and an
   // MCP server's schema is its own, so a tool that really takes one keeps it.
   //
-  // A thread stored before `argsText` was kept, and one rebuilt by the importer,
-  // carry the marker with no text to compare it to. Held text that is itself a
-  // run of whole JSON objects is the concatenation this file exists to undo, and
-  // no tool declares a parameter shaped like that, so it is the marker whether
-  // or not the argument text survived alongside it.
-  if (keys.length === 1 && keys[0] === "_raw" && typeof parsed._raw === "string") {
-    const held = parsed._raw;
-    if (held === argsText || splitTopLevelJsonObjects(held).complete.length > 1) {
-      return "{}";
-    }
+  // Only when the surviving text proves it. A thread stored before `argsText`
+  // was kept carries the marker with nothing to compare it to, and guessing
+  // from the shape of the value -- a run of whole JSON objects -- would also
+  // discard the argument of a tool that really takes one, since a leading
+  // underscore is a legal property name and MCP reserves nothing. Guessing
+  // buys little either way: the wrapped form is one JSON object, so replaying
+  // it does not raise the `Extra data` this file exists to prevent.
+  if (
+    keys.length === 1 &&
+    keys[0] === "_raw" &&
+    typeof parsed._raw === "string" &&
+    parsed._raw === argsText
+  ) {
+    return "{}";
   }
   return serialized;
 }

@@ -5328,6 +5328,7 @@ export function createOpenAIStreamAdapter(
           const scanned = splitTopLevelJsonObjects(part.argsText ?? "");
           if (scanned.complete.length > 0 && !scanned.tail) continue;
           toolCallParts.splice(at, 1);
+          releaseStreamedCard(part.toolCallId);
           changed = true;
         }
         // An announcement another call took over, and a name that only ever
@@ -5357,6 +5358,7 @@ export function createOpenAIStreamAdapter(
             };
           }
           toolCallParts.splice(at, 1);
+          releaseStreamedCard(part.toolCallId);
           changed = true;
         }
         openTailIds.clear();
@@ -5386,6 +5388,40 @@ export function createOpenAIStreamAdapter(
       const paintStreamedCard = (partId: string): void => {
         reservedToolCallIds.add(partId);
         bindStreamedToolCallCard(toolPartIdByBackendId, partId);
+      };
+      // Raw tool_args accumulator per card: the backend forwards arguments while
+      // the model is still WRITING them, and the partial parse below feeds the
+      // card's args so the code renders live.
+      const liveArgsTextById = new Map<string, string>();
+      // A card that is dropped gives its id back. The backend never reserved
+      // it -- the call it stood for is filtered out of `calls` -- so holding it
+      // here makes the next round's mint skip a number the backend then reuses,
+      // and the tool_start addressed to it draws a second card beside the one
+      // the deltas already painted.
+      const releaseStreamedCard = (partId: string): void => {
+        reservedToolCallIds.delete(partId);
+        toolPartIdByBackendId.delete(partId);
+        boundaryScans.delete(partId);
+        openTailIds.delete(partId);
+        liveArgsTextById.delete(partId);
+      };
+      // A provider id can be spelled like a minted one. The backend reserves
+      // every id the provider sent before it mints any, so the id-less call
+      // moves aside; the client mints while the response is still arriving and
+      // can only move it aside once the claim lands.
+      const renameStreamedCard = (from: string, to: string): void => {
+        reservedToolCallIds.delete(from);
+        toolPartIdByBackendId.delete(from);
+        const scan = boundaryScans.get(from);
+        if (scan) boundaryScans.set(to, scan);
+        boundaryScans.delete(from);
+        if (openTailIds.delete(from)) openTailIds.add(to);
+        const live = liveArgsTextById.get(from);
+        if (live !== undefined) liveArgsTextById.set(to, live);
+        liveArgsTextById.delete(from);
+        const at = codexRoundToolCallIds.indexOf(from);
+        if (at !== -1) codexRoundToolCallIds[at] = to;
+        paintStreamedCard(to);
       };
       /**
        * Parts for the calls after the first, in a slot holding several. Nothing
@@ -5429,10 +5465,6 @@ export function createOpenAIStreamAdapter(
             ...(deltaIndex !== undefined ? { _delta_index: deltaIndex } : {}),
           };
         });
-      // Raw tool_args accumulator per card: the backend forwards arguments while
-      // the model is still WRITING them, and the partial parse below feeds the
-      // card's args so the code renders live.
-      const liveArgsTextById = new Map<string, string>();
       // Backend tool ids ("call_0", ...) restart every response, so a bare id as
       // store key lets a later turn's stream overwrite the preserved output an
       // earlier still-mounted finished card reads (the tool_start stale-clear
@@ -7135,6 +7167,24 @@ export function createOpenAIStreamAdapter(
                   // tool_start/tool_end events. Resolve the backend id now so all three
                   // event shapes update one run-unique card instead of leaving the raw
                   // provisional card beside a second execution card.
+                  // Before resolving: an id-less call drawn earlier answers to
+                  // its own minted id, so a provider claiming that spelling
+                  // would resolve onto that card and this call would be merged
+                  // into it, name and arguments both. Move the minted card to
+                  // the next free id, which is where the backend's
+                  // reserve-then-mint order puts it too.
+                  if (stableId && !toolCallParts.some((part) => part.toolCallId === stableId && part._has_stable_id)) {
+                    const clash = toolCallParts.findIndex(
+                      (part) => part.toolCallId === stableId,
+                    );
+                    if (clash !== -1) {
+                      reservedToolCallIds.add(stableId);
+                      const part = toolCallParts[clash] as PositionedToolCallPart;
+                      const renamed = mintStreamedCardId(part._delta_index);
+                      renameStreamedCard(part.toolCallId, renamed);
+                      toolCallParts[clash] = { ...part, toolCallId: renamed };
+                    }
+                  }
                   const stablePartId = stableId
                     ? resolveToolPartId(stableId)
                     : undefined;
@@ -7379,11 +7429,18 @@ export function createOpenAIStreamAdapter(
                       // Appended, not inserted beside the slot, so a call the
                       // stream opened third reads third whichever index it
                       // reused. Where the branch below puts one, too.
+                      // This delta's own metadata, not the merge: the merge
+                      // exists to keep a signature announced with the name
+                      // beside one arriving with the arguments, and both of
+                      // those belong to the call the slot was already holding.
+                      // Carried onto a born call it puts one call's signature
+                      // on another, and Gemini validates the signature against
+                      // the functionCall part it is returned on.
                       const born = bornSplitToolCalls(
                         segments.slice(1),
                         nextName,
                         idx,
-                        incomingExtra,
+                        call.extra_content,
                       );
                       // The last one is the object still being written, if one
                       // is: kept so later fragments have somewhere to go, and

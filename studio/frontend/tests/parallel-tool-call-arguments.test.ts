@@ -180,7 +180,7 @@ function liftSplitHelpers(): string {
   const lifted = liftBetween(
     "split helpers",
     "// Ids already spoken for this response",
-    "// Raw tool_args accumulator per card",
+    "// Backend tool ids (\"call_0\", ...) restart every response",
   );
   assert.ok(
     lifted.includes("bornSplitToolCalls"),
@@ -1033,6 +1033,72 @@ test("a name bringing an object over an announcement is the next call", () => {
   }
 });
 
+test("a dropped card gives its id back to the next round", () => {
+  // The backend filters the unfinished fork out of `calls` and never reserves
+  // its card id, so holding it here made the next round mint tool_call_2 while
+  // the backend addressed tool_call_1, and the tool_start drew a second card
+  // beside the one the deltas had already painted.
+  const stream = makeStream();
+  stream.feed([{ index: 0, function: { name: "alpha", arguments: '{"a":1}{' } }]);
+  stream.feed([], true);
+  stream.feed([{ index: 0, function: { name: "beta", arguments: '{"b":2}' } }]);
+
+  assert.deepEqual(
+    stream.parts.map((p) => [p.toolCallId, p.toolName]),
+    [
+      ["tool_call_0", "alpha"],
+      ["tool_call_1", "beta"],
+    ],
+  );
+});
+
+test("a provider claiming a minted id displaces the card holding it", () => {
+  // tool_call_<n> is not reserved to Unsloth. Resolving the claim through the
+  // binding the id-less call already had merged the two calls into one card,
+  // giving "alphabeta" and a glued argument string and losing a call. The
+  // backend reserves every provider id before it mints, so the id-less call
+  // moves to tool_call_1 there; do the same once the claim lands.
+  const stream = makeStream();
+  stream.feed([{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }]);
+  stream.feed([
+    { id: "tool_call_0", index: 1, function: { name: "beta", arguments: '{"b":2}' } },
+  ]);
+
+  assert.deepEqual(
+    stream.parts.map((p) => [p.toolCallId, p.toolName, p.argsText]),
+    [
+      ["tool_call_1", "alpha", '{"a":1}'],
+      ["tool_call_0", "beta", '{"b":2}'],
+    ],
+  );
+});
+
+test("a born call carries only the metadata of the delta that opened it", () => {
+  // The merge keeps a signature announced with the name beside one arriving
+  // with the arguments, and both belong to the call the slot was holding.
+  // Carried onto a call born from the same delta it puts one call's signature
+  // on another, and Gemini validates the signature against the functionCall
+  // part it was returned on.
+  const stream = makeStream();
+  stream.feed([
+    { index: 0, function: { name: "alpha" }, extra_content: { parked: 1 } },
+  ]);
+  stream.feed([
+    {
+      index: 0,
+      function: { arguments: '{"a":1}{"b":2}' },
+      extra_content: { delta: 2 },
+    },
+  ]);
+
+  assert.deepEqual(shape(stream.parts), [
+    ["alpha", '{"a":1}'],
+    ["alpha", '{"b":2}'],
+  ]);
+  assert.deepEqual(stream.parts[0].extra_content, { parked: 1 });
+  assert.deepEqual(stream.parts[1].extra_content, { delta: 2 });
+});
+
 test("a stable id naming a longer tool opens its own call", () => {
   // A catalog can hold both "web" and "web_search". Reading the second name as
   // a growth of the first gave the id to the completed card, and the arguments
@@ -1303,13 +1369,23 @@ test("several calls opened by one delta each get their own card id", () => {
 // F. Legacy threads whose marker lost its argument text
 // ---------------------------------------------------------------------------
 
-test("the marker is recognised even with no argument text beside it", () => {
-  // Threads written before argsText was kept, and threads rebuilt by the
-  // importer, carry { _raw } with nothing to compare it to. Replaying it sends
-  // a parameter no tool declares and the provider rejects the whole request.
+test("the marker is only recognised by the text that proves it", () => {
+  // Threads written before argsText was kept carry { _raw } with nothing to
+  // compare it to. Reading the value's shape instead -- a run of whole JSON
+  // objects -- would also discard the argument of a tool that really takes a
+  // _raw parameter, since a leading underscore is a legal property name and
+  // MCP reserves nothing. Nothing is lost by keeping it: the wrapped form is
+  // one JSON object, so it does not raise the Extra data this guards against.
   const glued = '{"url":"https://example.com/1"}{"query":"search"}';
-  assert.equal(toolCallReplayArguments(undefined, { _raw: glued }), "{}");
-  assert.equal(toolCallReplayArguments("", { _raw: glued }), "{}");
+  assert.equal(toolCallReplayArguments(glued, { _raw: glued }), "{}");
+  assert.equal(
+    toolCallReplayArguments(undefined, { _raw: glued }),
+    JSON.stringify({ _raw: glued }),
+  );
+  assert.equal(
+    toolCallReplayArguments("", { _raw: glued }),
+    JSON.stringify({ _raw: glued }),
+  );
 });
 
 test("a tool that really takes a _raw parameter keeps it either way", () => {
