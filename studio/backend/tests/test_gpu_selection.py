@@ -2326,17 +2326,17 @@ class TestDeviceMapAcrossPlatformsAndAccelerators(_GpuCacheResetMixin, unittest.
 
     # sys.platform, os.name, platform.system(), platform.release()
     OSES = {
-        "Linux":   ("linux",  "posix", "Linux",   "6.8.0-generic"),
-        "WSL":     ("linux",  "posix", "Linux",   "5.15.0-microsoft-standard-WSL2"),
-        "Windows": ("win32",  "nt",    "Windows", "10"),
-        "Mac":     ("darwin", "posix", "Darwin",  "23.5.0"),
+        "Linux": ("linux", "posix", "Linux", "6.8.0-generic"),
+        "WSL": ("linux", "posix", "Linux", "5.15.0-microsoft-standard-WSL2"),
+        "Windows": ("win32", "nt", "Windows", "10"),
+        "Mac": ("darwin", "posix", "Darwin", "23.5.0"),
     }
     ACCELERATORS = {
-        "NVIDIA":      (DeviceType.CUDA, "unsloth"),
-        "AMD (ROCm)":  (DeviceType.CUDA, "unsloth"),
-        "Intel (XPU)": (DeviceType.XPU,  "balanced"),
-        "Apple (MLX)": (DeviceType.MLX,  "sequential"),
-        "CPU only":    (DeviceType.CPU,  "sequential"),
+        "NVIDIA": (DeviceType.CUDA, "unsloth"),
+        "AMD (ROCm)": (DeviceType.CUDA, "unsloth"),
+        "Intel (XPU)": (DeviceType.XPU, "balanced"),
+        "Apple (MLX)": (DeviceType.MLX, "sequential"),
+        "CPU only": (DeviceType.CPU, "sequential"),
     }
     READABLE = {"sequential", "balanced", "unsloth"}
 
@@ -2370,7 +2370,8 @@ class TestDeviceMapAcrossPlatformsAndAccelerators(_GpuCacheResetMixin, unittest.
                 answers = {self._answer(key, device, gpu_ids) for key in self.OSES}
                 with self.subTest(accelerator = label, gpus = len(gpu_ids)):
                     self.assertEqual(
-                        len(answers), 1,
+                        len(answers),
+                        1,
                         f"{label} with {len(gpu_ids)} GPU(s) answered {answers} across "
                         "operating systems; the placement must not move with the OS",
                     )
