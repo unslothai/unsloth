@@ -64,8 +64,8 @@ BUSY_POLLS: dict[str, tuple[float, str]] = {
     "/api/models/download-progress": (1.0, "declared"),
     "/api/models/gguf-download-progress": (1.0, "declared"),
     "/api/datasets/download-progress": (1.0, "declared"),
-    "/api/inference/images/generate-progress": (1.0, "declared"),
-    "/api/inference/video/generate-progress": (1.0, "declared"),
+    "/api/inference/images/generate-progress": (0.3, "declared"),
+    "/api/inference/video/generate-progress": (0.3, "declared"),
     "/api/inference/images/load-progress": (1.0, "declared"),
     "/api/inference/video/load-progress": (1.0, "declared"),
     "/api/train/diffusion/status": (1.5, "declared"),
@@ -134,7 +134,8 @@ KNOWN_UNCLASSIFIED_POLLS: frozenset[str] = frozenset()
 # Re-measure and ratchet again whenever a suppression rule changes. An envelope carrying
 # the old number after a fix has stopped guarding anything.
 STEADY_IDLE_LINE_ENVELOPE = 1170
-BUSY_LINE_ENVELOPE = 260
+# Media milestones reduce this five-minute replay from 239 to 119 lines.
+BUSY_LINE_ENVELOPE = 130
 
 # One-shot requests the app makes once on startup. Present so the boot window is not
 # mistaken for steady state, and so a mutation record and a failure record exist to assert

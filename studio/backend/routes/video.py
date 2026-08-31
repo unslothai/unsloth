@@ -38,6 +38,13 @@ from auth.authentication import get_current_subject, request_admitted_without_cr
 from core.inference.model_ids import public_model_id
 from hub.dependencies import get_hf_token
 from loggers import get_logger
+from loggers.media_progress import (
+    byte_fraction,
+    log_media_generation_progress,
+    log_media_load_progress,
+    reset_media_generation_progress,
+    reset_media_load_progress,
+)
 from models.inference import (
     DiffusionDownloadPlanResponse,
     GalleryFlagsPatch,
@@ -363,6 +370,7 @@ async def load_video_model_gated(
             request.h3_task or _derived_h3_task(request.gguf_filename, kind),
             user_action = user_initiated,
         )
+        reset_media_load_progress("video")
         return VideoStatusResponse(**status_dict)
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))
@@ -374,7 +382,11 @@ async def load_video_model_gated(
 @router.get("/video/load-progress", response_model = VideoLoadProgressResponse)
 async def video_load_progress(current_subject: str = Depends(get_current_subject)):
     from core.inference.video import get_video_backend
-    return VideoLoadProgressResponse(**get_video_backend().load_progress())
+
+    progress = get_video_backend().load_progress()
+    fraction = byte_fraction(progress.get("downloaded_bytes"), progress.get("expected_bytes"))
+    log_media_load_progress("video", progress.get("phase"), fraction)
+    return VideoLoadProgressResponse(**progress)
 
 
 @router.post("/video/generate", response_model = VideoGenerateResponse)
@@ -502,13 +514,17 @@ async def generate_video(
         logger.error("video.generate_failed: %s", exc, exc_info = True)
         raise HTTPException(status_code = 500, detail = "Video generation failed.")
 
+    reset_media_generation_progress("video")
     return VideoGenerateResponse()
 
 
 @router.get("/video/generate-progress", response_model = VideoGenerateProgressResponse)
 async def video_generate_progress(current_subject: str = Depends(get_current_subject)):
     from core.inference.video import get_video_backend
-    return VideoGenerateProgressResponse(**get_video_backend().generate_progress())
+
+    progress = get_video_backend().generate_progress()
+    log_media_generation_progress("video", progress)
+    return VideoGenerateProgressResponse(**progress)
 
 
 @router.post("/video/generate/cancel")

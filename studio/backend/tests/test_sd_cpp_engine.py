@@ -627,6 +627,71 @@ def test_generate_success_returns_path_and_collects_logs(tmp_path, monkeypatch):
     assert str(Path(e.binary).resolve().parent) in _FakePopen.captured_env.get(var, "")
 
 
+def test_default_run_log_is_compact_and_omits_user_text_and_paths(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(eng, "_verbose_native_logs", lambda: False)
+    caplog.set_level("INFO", logger = eng.__name__)
+    e = _engine(tmp_path)
+    out = tmp_path / "private-output.png"
+    _patch_popen(monkeypatch, lines = ["done"], returncode = 0, out_file = out)
+    prompt = "private prompt " * 40
+    negative = "private negative prompt " * 20
+
+    e.generate(
+        SdCppModelFiles(diffusion_model = "/private/models/z.gguf"),
+        SdCppGenParams(
+            prompt = prompt,
+            negative_prompt = negative,
+            width = 768,
+            height = 512,
+            steps = 8,
+            seed = 7,
+        ),
+        output_path = str(out),
+    )
+
+    messages = [record.getMessage() for record in caplog.records if record.name == eng.__name__]
+    assert messages[0] == (
+        "sd-cli run started: mode=img_gen model=z.gguf size=768x512 steps=8 seed=7"
+    )
+    assert messages[1].startswith(
+        "sd-cli run completed: mode=img_gen model=z.gguf size=768x512 steps=8 seed=7 elapsed="
+    )
+    rendered = "\n".join(messages)
+    assert prompt not in rendered
+    assert negative not in rendered
+    assert "/private/models/z.gguf" not in rendered
+    assert str(out) not in rendered
+
+
+def test_verbose_run_log_keeps_argv_but_redacts_prompts(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(eng, "_verbose_native_logs", lambda: True)
+    caplog.set_level("INFO", logger = eng.__name__)
+    e = _engine(tmp_path)
+    out = tmp_path / "img.png"
+    _patch_popen(monkeypatch, lines = ["done"], returncode = 0, out_file = out)
+
+    e.generate(
+        SdCppModelFiles(diffusion_model = "/models/z.gguf"),
+        SdCppGenParams(prompt = "a private cat", negative_prompt = "a private dog"),
+        output_path = str(out),
+        extra_args = ["-p", "a second private cat", "-n=a second private dog"],
+    )
+
+    rendered = "\n".join(
+        record.getMessage() for record in caplog.records if record.name == eng.__name__
+    )
+    assert "/models/z.gguf" in rendered
+    assert str(out) in rendered
+    assert "--prompt <redacted>" in rendered
+    assert "--negative-prompt <redacted>" in rendered
+    assert "-p <redacted>" in rendered
+    assert "-n=<redacted>" in rendered
+    assert "a private cat" not in rendered
+    assert "a private dog" not in rendered
+    assert "a second private cat" not in rendered
+    assert "a second private dog" not in rendered
+
+
 def test_generate_raises_on_nonzero_exit(tmp_path, monkeypatch):
     e = _engine(tmp_path)
     out = tmp_path / "img.png"

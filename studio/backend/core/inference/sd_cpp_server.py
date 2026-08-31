@@ -50,6 +50,9 @@ from core.inference.sd_cpp_args import SdCppModelFiles, build_sd_cpp_server_comm
 from core.inference.sd_cpp_engine import (
     NATIVE_GENERATION_TIMEOUT_S,
     SdCppCancelled,
+    _sd_cpp_command_for_log,
+    _sd_cpp_command_summary,
+    _verbose_native_logs,
     runtime_env,
 )
 from utils.native_path_leases import child_env_without_native_path_secret
@@ -241,7 +244,13 @@ class SdCppServer:
             run_env = runtime_env(self.binary, child_env_without_native_path_secret())
             if env:
                 run_env.update(env)
-            logger.info("starting sd-server: %s", " ".join(cmd))
+            if _verbose_native_logs():
+                logger.info("starting sd-server: %s", " ".join(_sd_cpp_command_for_log(cmd)))
+            else:
+                logger.info(
+                    "starting sd-server: %s",
+                    _sd_cpp_command_summary(cmd, default_mode = "server"),
+                )
             # Clear in place; reassigning [] would drop the maxlen bound and grow unbounded.
             self._tail.clear()
             self._resident_params_vram_gb = None

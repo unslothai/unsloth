@@ -299,6 +299,11 @@ def _verbose_logging_requested() -> bool:
     )
 
 
+def verbose_logging_requested() -> bool:
+    """Return whether Studio verbose logging is enabled."""
+    return _verbose_logging_requested()
+
+
 class _NullStream:
     """Somewhere for a progress bar to write that is not the log."""
 
@@ -497,6 +502,8 @@ def quiet_third_party_progress_bars() -> None:
         except Exception:  # noqa: BLE001
             pass
     _silence_datasets_bar_output()
+    # Direct tqdm users bypass diffusers' toggle; preserve counters but discard redraws.
+    _redirect_every_bar_output()
 
 
 class LogConfig:

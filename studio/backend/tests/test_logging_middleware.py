@@ -461,46 +461,48 @@ def test_legacy_download_progress_heartbeats_not_suppressed(logs, monkeypatch):
     assert _paths_logged(logs) == ["/api/models/download-progress"]
 
 
-def test_generation_progress_polls_heartbeat(logs, monkeypatch):
-    # The 300ms poll timer always landed just outside the 300ms base dedup window.
+def test_media_progress_success_polls_are_suppressed(logs, monkeypatch):
+    # Their route handlers emit phase and 10% milestone events instead.
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
     monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
     for path in (
+        "/api/inference/images/load-progress",
+        "/api/inference/video/load-progress",
         "/api/inference/images/generate-progress",
         "/api/inference/video/generate-progress",
-        "/api/train/diffusion/status",
     ):
         mw = LoggingMiddleware(_status_app(200))
         for _ in range(5):
             _run(mw(_http_scope(path), _noop_receive, _drop))
-        assert _paths_logged(logs) == [path]
+        assert _paths_logged(logs) == []
         logs.events.clear()
 
 
-def test_generation_progress_errors_still_log(logs, monkeypatch):
-    # Heartbeat dedup is GET/2xx only, so a failing poll stays visible.
+def test_diffusion_training_progress_still_heartbeats(logs, monkeypatch):
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
     monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
-    mw = LoggingMiddleware(_status_app(500))
-    for _ in range(3):
-        _run(mw(_http_scope("/api/inference/images/generate-progress"), _noop_receive, _drop))
-    assert _paths_logged(logs) == ["/api/inference/images/generate-progress"] * 3
+    path = "/api/train/diffusion/status"
+    mw = LoggingMiddleware(_status_app(200))
+    for _ in range(5):
+        _run(mw(_http_scope(path), _noop_receive, _drop))
+    assert _paths_logged(logs) == [path]
 
 
-def test_image_video_load_progress_heartbeats(logs, monkeypatch):
-    # These handlers log nothing themselves, so keep a pulse for a multi-minute load.
+def test_media_progress_errors_still_log(logs, monkeypatch):
+    # Success suppression is GET/2xx only, so a failing poll stays visible.
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
     monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
-    for path in ("/api/inference/images/load-progress", "/api/inference/video/load-progress"):
-        mw = LoggingMiddleware(_status_app(200))
-        for _ in range(5):
+    for path in (
+        "/api/inference/images/load-progress",
+        "/api/inference/video/load-progress",
+        "/api/inference/images/generate-progress",
+        "/api/inference/video/generate-progress",
+    ):
+        mw = LoggingMiddleware(_status_app(500))
+        for _ in range(3):
             _run(mw(_http_scope(path), _noop_receive, _drop))
-        assert _paths_logged(logs) == [path]
+        assert _paths_logged(logs) == [path] * 3
         logs.events.clear()
-    mw = LoggingMiddleware(_status_app(503))
-    for _ in range(3):
-        _run(mw(_http_scope("/api/inference/images/load-progress"), _noop_receive, _drop))
-    assert _paths_logged(logs) == ["/api/inference/images/load-progress"] * 3
 
 
 def test_unrelated_image_routes_still_log(logs, monkeypatch):
@@ -672,6 +674,10 @@ def test_verbose_restores_the_dropped_success_polls(logs, monkeypatch):
     monkeypatch.setattr(hmod, "_VERBOSE_ACCESS_LOG", True)
     for path in (
         "/api/inference/load-progress",
+        "/api/inference/images/load-progress",
+        "/api/inference/video/load-progress",
+        "/api/inference/images/generate-progress",
+        "/api/inference/video/generate-progress",
         "/api/hub/download-progress",
         "/api/export/status",
         "/api/chat/threads",

@@ -20,6 +20,7 @@ import core.inference.diffusion as diffusion_module
 import core.inference.gpu_arbiter as gpu_arbiter
 import core.inference.image_gallery as gallery_module
 from auth.authentication import get_current_subject
+import routes.inference as inference_routes
 from routes.inference import studio_router
 
 
@@ -302,9 +303,6 @@ def test_gallery_serve_refuses_unowned_id(client):
 
 def test_generate_holds_progress_active_during_persist(client, monkeypatch):
     # generate-progress must stay active while a finished generation is still writing its gallery record. Probe the persist counter from inside save.
-    import core.inference.image_gallery as gallery_module
-    import routes.inference as inf
-
     client.post(
         "/api/inference/images/load",
         json = {
@@ -321,7 +319,7 @@ def test_generate_holds_progress_active_during_persist(client, monkeypatch):
     real_save = gallery_module.save
 
     def _probe_save(image, meta):
-        seen["during"] = inf._diffusion_persist_active
+        seen["during"] = inference_routes._diffusion_persist_active
         return real_save(image, meta)
 
     monkeypatch.setattr(gallery_module, "save", _probe_save)
@@ -330,8 +328,64 @@ def test_generate_holds_progress_active_during_persist(client, monkeypatch):
     assert gen.status_code == 200
     # Active while the record was being persisted, and back to idle once the route returned.
     assert seen["during"] >= 1
-    assert inf._diffusion_persist_active == 0
+    assert inference_routes._diffusion_persist_active == 0
     assert client.get("/api/inference/images/generate-progress").json()["active"] is False
+
+
+def test_generate_progress_route_logs_backend_snapshot(client, monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        inference_routes,
+        "log_media_generation_progress",
+        lambda media, progress: seen.append((media, dict(progress))),
+    )
+
+    response = client.get("/api/inference/images/generate-progress")
+
+    assert response.status_code == 200
+    assert seen == [
+        (
+            "image",
+            {
+                "active": False,
+                "step": 0,
+                "total_steps": 0,
+                "fraction": 0.0,
+                "eta_seconds": None,
+            },
+        )
+    ]
+
+
+def test_generate_resets_the_progress_stream_before_the_run(client, monkeypatch):
+    # Milestones are keyed on the previous poll, so a run starting at or above where the last
+    # one stopped logs nothing. The image routes must rearm like video, and before generate().
+    client.post(
+        "/api/inference/images/load",
+        json = {
+            "model_path": "unsloth/Z-Image-Turbo-GGUF",
+            "gguf_filename": "z-image-turbo-Q4_K_S.gguf",
+            "base_repo": "unsloth/Z-Image-base",
+        },
+    )
+    order = []
+    monkeypatch.setattr(
+        inference_routes,
+        "reset_media_generation_progress",
+        lambda media: order.append(("reset", media)),
+    )
+    real_save = gallery_module.save
+
+    def _probe_save(image, meta):
+        order.append(("generated", "image"))
+        return real_save(image, meta)
+
+    monkeypatch.setattr(gallery_module, "save", _probe_save)
+
+    gen = client.post("/api/inference/images/generate", json = {"prompt": "a sloth", "seed": 7})
+
+    assert gen.status_code == 200
+    assert order == [("reset", "image"), ("generated", "image")]
 
 
 def test_load_rejects_untrusted_base_repo(client):
@@ -919,7 +973,9 @@ def test_load_refused_during_training_does_not_evict_chat(client, monkeypatch):
     assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT
 
 
-def test_load_progress_route(client):
+def test_load_progress_route(client, monkeypatch):
+    resets = []
+    monkeypatch.setattr(inference_routes, "reset_media_load_progress", resets.append)
     # Before load: idle.
     idle = client.get("/api/inference/images/load-progress")
     assert idle.status_code == 200 and idle.json()["phase"] is None
@@ -929,6 +985,29 @@ def test_load_progress_route(client):
     )
     ready = client.get("/api/inference/images/load-progress")
     assert ready.json()["phase"] == "ready"
+    assert resets == ["image"]
+
+
+def test_load_progress_route_logs_backend_snapshot(client, monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        inference_routes,
+        "log_media_load_progress",
+        lambda media, phase, fraction: seen.append((media, phase, fraction)),
+    )
+    backend = diffusion_module.get_diffusion_backend()
+    backend.load_progress = lambda: {
+        "phase": "downloading",
+        "bytes_downloaded": 40,
+        "bytes_total": 100,
+        "fraction": 0.4,
+        "error": None,
+    }
+
+    response = client.get("/api/inference/images/load-progress")
+
+    assert response.status_code == 200
+    assert seen == [("image", "downloading", 0.4)]
 
 
 def test_routes_require_auth():

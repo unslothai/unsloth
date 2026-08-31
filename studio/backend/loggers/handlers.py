@@ -74,16 +74,8 @@ _QUIET_POLL_PATHS = {
     "/api/models/download-progress",
     "/api/models/gguf-download-progress",
     "/api/datasets/download-progress",
-    # Generation is fire-and-forget: its outcome only reaches the UI via these polls.
-    "/api/inference/images/generate-progress",
-    "/api/inference/video/generate-progress",
     # Polled every 1.5s while the train UI is open.
     "/api/train/diffusion/status",
-    # Unlike /api/inference/load-progress, these handlers log nothing and
-    # diffusion.loaded / video.loaded are terminal, so a minutes-long load would
-    # otherwise emit nothing at all.
-    "/api/inference/images/load-progress",
-    "/api/inference/video/load-progress",
 }
 # The pure-liveness subset of _QUIET_POLL_PATHS. Every one of these answers the same
 # question ("the server is up and answering"), and the SPA fires them together in one
@@ -143,6 +135,11 @@ _EXCLUDED_SUFFIXES = (
 # events; the legacy /api/models and /api/datasets ones heartbeat via _QUIET_POLL_PATHS.
 _QUIET_SUCCESS_PATHS = {
     "/api/inference/load-progress",
+    # Their route handlers publish structured phase and 10 percent milestones.
+    "/api/inference/images/load-progress",
+    "/api/inference/video/load-progress",
+    "/api/inference/images/generate-progress",
+    "/api/inference/video/generate-progress",
     "/api/llama/update-status",
     "/api/export/logs",
     "/api/export/status",
