@@ -5142,9 +5142,7 @@ def _strip_tool_xml_for_display(
 
     def _keep_inactive_rehearsal(m) -> str:
         # Only the bare-rehearsal arm captures ``reh``. A NAME[ARGS]{...} the parser will not
-        # promote is prose -- an inactive NAME, or an execution-class one, which is never
-        # promotable from a markerless span even when enabled. Deleting it would leave the
-        # turn with no call AND no text, so keep it (same predicate as the parser/strip).
+        # promote is prose; deleting it leaves the turn with no call AND no text.
         name = m.groupdict().get("reh")
         if name is not None and not _markerless_promotable(name, enabled_tool_names):
             return m.group(0)

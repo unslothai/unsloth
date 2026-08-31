@@ -131,11 +131,8 @@ def _is_rehearsal_prefix(
         # half of a real call as prose. Hold it and decide once the shape is settled.
         return not bracket or _markerless_promotable(name, None)
     for name in _active_tool_names(active_tools):
-        # Active by construction, so the only gate left is the built-in execution class,
-        # and it must stay an O(1) set test: this loop runs per streamed chunk over the whole
-        # catalog. An execution-capable MCP name is deliberately NOT tested here -- holding it
-        # one extra chunk is harmless, and the real drain decision (_rehearsal_name_start /
-        # _gguf_rehearsal_signal_pos) does ask _markerless_promotable, which does gate it.
+        # Active by construction, so only the class is left to check, and it must stay an
+        # O(1) set test: this loop runs per streamed chunk over the whole catalog.
         if name in EXECUTION_CLASS_TOOL_NAMES:
             continue
         if stripped == name or f"{name}[ARGS]".startswith(stripped):
@@ -922,8 +919,8 @@ def run_safetensors_tool_loop(
             # Gemma wrapper-less ``call:NAME{...}`` has no tool_xml_signals entry:
             # buffer it here or it streams raw until the end-of-turn safety net.
             # ``(?<!\w)`` keeps "recall:" out; the prefix regex is whitespace-tolerant.
-            # The completed shape takes the parser's gate: a name it will not promote is
-            # prose, so it falls through and streams instead of draining the whole turn.
+            # The completed shape takes the parser's gate: a name it will not promote falls
+            # through and streams instead of draining the whole turn.
             _gemma_lead = leading_bare_gemma_call_is_promotable(stripped, _enabled_tool_names)
             if (
                 not is_match

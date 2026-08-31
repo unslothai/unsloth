@@ -1603,13 +1603,11 @@ def _sniff_text_tool_name(text: str, enabled_names: set) -> str:
     enabled names so prose can never spawn a card. Used only to open the live
     argument pane early; the authoritative parse still happens at stream end.
 
-    The two anchored arms only ever match a MARKERLESS leading call (a wrapper would
-    push the shape off position 0), so they take the parser's promotable gate: a bare
-    ``call:terminal{`` is prose there, and opening an execution card for it would show
-    a running terminal call that never runs. The ``"name":`` arm searches the whole
-    prefix and so also sees a trusted ``[TOOL_CALLS][{"name":"terminal",...}]``; the
-    markerless bare-JSON form never reaches here because ``strip_leading_bare_json_call``
-    already refuses to drain it."""
+    The two anchored arms only match a MARKERLESS leading call (a wrapper pushes the shape
+    off position 0), so they take the parser's gate: a card for a bare ``call:terminal{``
+    would show a terminal call that never runs. The ``"name":`` arm searches the whole prefix
+    and also sees a trusted ``[TOOL_CALLS][{"name":"terminal",..}]``, and the markerless
+    bare-JSON form cannot reach it -- ``strip_leading_bare_json_call`` refuses to drain it."""
     m = _TEXT_TOOL_NAME_RE.search(text[:4096])
     if m and m.group(1) in enabled_names:
         return m.group(1)
@@ -1625,16 +1623,13 @@ def _sniff_text_tool_name(text: str, enabled_names: set) -> str:
 def _is_rehearsal_prefix(stripped: str, active_tools: list[dict]) -> bool:
     """True if ``stripped`` is a (possibly partial) prefix of ``NAME[ARGS]`` for a
     markerless-promotable tool -- the bare tool name arriving in its own chunk before
-    ``[ARGS]{...}``. An execution-class name is prose in this form, so it streams rather
-    than being held. Mirrors the safetensors loop so the split rehearsal is not leaked."""
+    ``[ARGS]{...}``. An execution-class name is prose here, so it streams rather than being
+    held. Mirrors the safetensors loop so the split rehearsal is not leaked."""
     if not stripped or any(ch.isspace() for ch in stripped):
         return False
     for name in _gguf_active_tool_names(active_tools):
-        # Active by construction, so the only gate left is the built-in execution class,
-        # and it must stay an O(1) set test: this loop runs per streamed chunk over the whole
-        # catalog. An execution-capable MCP name is deliberately NOT tested here -- holding it
-        # one extra chunk is harmless, and the real drain decision (_rehearsal_name_start /
-        # _gguf_rehearsal_signal_pos) does ask _markerless_promotable, which does gate it.
+        # Active by construction, so only the class is left to check, and it must stay an
+        # O(1) set test: this loop runs per streamed chunk over the whole catalog.
         if name in EXECUTION_CLASS_TOOL_NAMES:
             continue
         if stripped == name or f"{name}[ARGS]".startswith(stripped):
@@ -29033,10 +29028,8 @@ class LlamaCppBackend:
                                                 is not None
                                                 or _gemma_lead_promotable(stripped_buf)
                                             ):
-                                                # Whitespace-tolerant like the parser, and gated
-                                                # on the same promotable check: a name the parser
-                                                # rejects is prose, so it streams instead of
-                                                # draining the turn for a call that never comes.
+                                                # Whitespace-tolerant like the parser, and on
+                                                # its gate: a rejected name streams as prose.
                                                 if _gemma_lead_promotable(stripped_buf):
                                                     _drain_silently = True
                                                 elif len(stripped_buf) < _MAX_BUFFER_CHARS:

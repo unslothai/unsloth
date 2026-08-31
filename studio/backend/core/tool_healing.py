@@ -29,45 +29,31 @@ import bisect
 import json
 import re
 
-# Execution-class tools act on the host, unsandboxed under Full access: python ->
-# _python_exec, terminal -> _bash_exec, edit_file -> _edit_file, which with
-# disable_sandbox skips the workdir containment check and writes any path the process can
-# reach. These are exactly the route's ``_LOCAL_CODE_TOOLS`` (a drift test pins that).
-# Their MARKERLESS forms (bare ``call:NAME{...}`` / ``name[ARGS]{json}``) are
-# indistinguishable from prose quoting the syntax, so a model echoing attacker-controlled
-# web/RAG/user text could otherwise turn a quote into host code execution or an arbitrary
-# file write. Never promote or strip a markerless execution-class call: it must carry an
-# unambiguous wrapper (``<|tool_call>``, ``[TOOL_CALLS]``, ``<function=>``) or arrive as a
-# structured tool_call. Benign tools keep the bare form.
-# MCP names are deliberately NOT in here. An MCP tool can be as dangerous as terminal, but
-# the namespace is open and third-party, so there is no stable line between "run_command" and
-# "delete_file" and "some verb we have never seen": the only complete rule is to require a
-# wrapper for every mcp__ name, which would remove MCP from the Gemma/Mistral safetensors and
-# MLX paths, where markerless is the only form they emit. That is a product decision of its
-# own, not part of closing the built-in sink, so it belongs in its own change.
+# The route's ``_LOCAL_CODE_TOOLS`` (a drift test pins that): under Full access all three run
+# unsandboxed, edit_file included, since disable_sandbox drops its workdir containment. Their
+# MARKERLESS forms (``call:NAME{..}`` / ``name[ARGS]{json}``) are indistinguishable from prose
+# quoting the syntax, so a model echoing attacker text would turn a quote into execution;
+# require a wrapper (``<|tool_call>``, ``[TOOL_CALLS]``, ``<function=>``) or a structured call.
+# MCP names are out on purpose: over an open third-party vocabulary the only complete rule is
+# "wrapper for every mcp__ name", which removes MCP from the markerless-only backends. Own change.
 EXECUTION_CLASS_TOOL_NAMES = frozenset({"python", "terminal", "edit_file"})
 
 
 def _markerless_promotable(name, enabled_tool_names) -> bool:
-    """True when a *markerless* (bare, unwrapped) call named ``name`` may be promoted.
-
-    Execution-class names are never promotable from a markerless span -- they must carry
-    an unambiguous wrapper. Otherwise the existing enabled-name gate applies: ``None`` keeps
-    the name-agnostic behaviour, a set restricts to its members."""
+    """True when a bare, unwrapped call named ``name`` may be promoted. ``None`` is the
+    name-agnostic gate; execution-class names are refused under either."""
     if name in EXECUTION_CLASS_TOOL_NAMES:
         return False
     return enabled_tool_names is None or name in enabled_tool_names
 
 
 def _markerless_blocked_execution(name, enabled_tool_names) -> bool:
-    """True when ``name`` is a call the model DID write and the guard only declines to
-    promote from a bare span.
+    """True when ``name`` is a call the model DID write and we only decline to promote it bare.
 
-    Narrower than "not promotable", and the difference decides what the surrounding scan
-    does. A name outside the tool list is not a call at all: it ends a bare-JSON chain, it
-    does not anchor the call beside it, and its body was never opaque to the other parsers.
-    An ENABLED execution name is a call, so it keeps all three of those properties and only
-    loses the promotion."""
+    Narrower than "not promotable", and the difference is what the surrounding scan does. A
+    name outside the tool list is not a call at all: it ends a bare-JSON chain, does not anchor
+    the call beside it, and never made its body opaque. An enabled execution name keeps all
+    three and loses only the promotion."""
     return name in EXECUTION_CLASS_TOOL_NAMES and (
         enabled_tool_names is None or name in enabled_tool_names
     )
@@ -175,7 +161,6 @@ def _rehearsal_strip(m, pat, text, spans, enabled_tool_names) -> str:
     An inactive or execution-class name, or a quoted example, is kept. The tail pattern runs
     to EOF, so ANY kept match can still cover a later real call; keep the kept part and strip
     from that call on, or the truncated markup leaks into the answer."""
-    # Kept as prose: an inactive or execution-class NAME, or a quoted example in code.
     if _markerless_promotable(m.group(1), enabled_tool_names) and not _in_code(spans, m.start()):
         return ""
     pos = m.start()
@@ -196,10 +181,9 @@ def apply_tool_strip_patterns(
     enabled_tool_names = None,
 ) -> str:
     """Apply strip ``patterns`` to ``text``. A bare rehearsal ``name[ARGS]{..}`` pattern
-    strips only a markerless-promotable name outside markdown code: an enabled
-    non-execution tool (or, when ``enabled_tool_names`` is ``None``, any non-execution
-    name). An execution-class name is never promotable, so it stays visible as text in
-    parse/strip symmetry with ``_iter_bracket_spans``. Every other pattern is removed
+    strips only a markerless-promotable name outside markdown code, so an execution-class
+    one stays visible as text in parse/strip symmetry with ``_iter_bracket_spans``. Every
+    other pattern is removed
     unconditionally. A closed-pair pattern whose close token is absent is skipped so an
     unclosed-marker stream stays linear."""
     for pat in patterns:
@@ -471,11 +455,10 @@ def _iter_bracket_spans(
     [CALL_ID]/[ARGS]) or ``"rehearsal"`` (name[ARGS]{..}).
 
     ``enabled_tool_names`` (set, or None = unrestricted) gates only the ambiguous
-    bare rehearsal form: name[ARGS]{..} is a call ONLY when ``name`` is markerless-promotable
-    -- an enabled non-execution tool (or, when None, any non-execution name). A disabled
-    ``foo[ARGS]{..}`` or an execution-class ``terminal[ARGS]{..}`` (never promotable without
-    an explicit marker) is neither parsed nor stripped. Explicit [TOOL_CALLS] markers stay
-    unconditional, keeping parse/strip/detection symmetric.
+    bare rehearsal form: name[ARGS]{..} is a call ONLY when ``name`` is markerless-promotable,
+    so a disabled ``foo[ARGS]{..}`` or an execution-class ``terminal[ARGS]{..}`` is neither
+    parsed nor stripped. Explicit [TOOL_CALLS] markers stay unconditional, keeping
+    parse/strip/detection symmetric.
 
     A rehearsal inside markdown code (fenced block or inline span) is documentation
     for the same reason -- the syntax has no sentinel, so quoting it would otherwise
@@ -524,9 +507,6 @@ def _iter_bracket_spans(
             cursor = m.end()
             continue
         if kind == "rehearsal" and not _markerless_promotable(m.group(1), enabled_tool_names):
-            # A bare rehearsal is prose unless promotable: an inactive name (tool list given)
-            # or an execution-class name (never promotable from a markerless span) is skipped,
-            # advancing past its body without yielding.
             cursor = end + 1
             continue
         if kind == "rehearsal":

@@ -5203,7 +5203,7 @@ def test_gemma_wrapperless_execution_call_streams_instead_of_draining(monkeypatc
     assert calls == []
     content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
     assert gemma_call in content_texts[-1], content_texts
-    # Reached the user mid-turn: a drain would only release it once the tail had arrived.
+    # Reached the user mid-turn: a drain would only release it with the tail.
     assert any(gemma_call in t and "did not run" not in t for t in content_texts), content_texts
 
 

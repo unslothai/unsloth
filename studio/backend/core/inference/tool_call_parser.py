@@ -32,10 +32,8 @@ from typing import Any, Optional
 # Qwen/Hermes, Qwen3.5 XML and Gemma 4 live in core.tool_healing; this module adds the rest.
 from core import tool_healing as _tool_healing
 
-# Shared with tool_healing so every markerless (bare, unwrapped) parse path applies the same
-# execution-class guard: a bare ``python``/``terminal``/``edit_file`` call is prose, never
-# promoted to a real call. Trusted wrapped/marker forms (<|tool_call>, [TOOL_CALLS],
-# <function=>) are unaffected.
+# Shared with tool_healing so every markerless parse path applies the same guard. Wrapped and
+# marker forms (<|tool_call>, [TOOL_CALLS], <function=>) are unaffected.
 _markerless_promotable = _tool_healing._markerless_promotable
 _markerless_blocked_execution = _tool_healing._markerless_blocked_execution
 
@@ -475,11 +473,9 @@ _GEMMA_KEY_RE = re.compile(r"\s*([A-Za-z_][\w.\-]*)\s*:")
 
 def leading_bare_gemma_call_is_promotable(stripped: str, enabled_tool_names) -> bool:
     """True when a buffered leading ``call:NAME{`` is one ``_parse_gemma_tool_calls`` would
-    promote. The loops drain on this shape before the parser runs, so it must answer the same
-    question: a disabled/example name, or an execution-class one, is prose and has to keep
-    streaming rather than hold the whole turn to EOS for a call that never parses. The
-    ``call``/``call:partial`` PREFIX stays ungated -- the name is not complete yet, so
-    ``call:term`` may still become a promotable ``call:termdict``."""
+    promote. The loops drain on this shape before the parser runs, so it has to answer the
+    same question or the turn is held to EOS for a call that never parses. The
+    ``call``/``call:partial`` PREFIX stays ungated: ``call:term`` may yet be ``call:termdict``."""
     m = _GEMMA_BARE_TC_RE.match(stripped)
     return m is not None and _markerless_promotable(m.group(1), enabled_tool_names)
 
@@ -637,9 +633,8 @@ def _strip_gemma_wrapperless_calls(text: str, enabled_tool_names: Optional[set] 
         if not m:
             out.append(text[cursor:])
             break
-        # A blocked execution call is markup the PARSER skipped, not a sentence: it holds its
-        # position, so a promotable call after it is still anchored and still gets stripped.
-        # Without that the executed call's raw text stays in the answer and in history.
+        # A blocked call is markup the parser skipped, not a sentence, so it holds its position
+        # and the promotable call beside it stays anchored (and is still stripped).
         blocked = _markerless_blocked_execution(m.group(1), enabled_tool_names)
         keep_as_prose = not _markerless_promotable(m.group(1), enabled_tool_names) or (
             not _gemma_call_is_anchored(text, m.start(), floor)
@@ -650,12 +645,9 @@ def _strip_gemma_wrapperless_calls(text: str, enabled_tool_names: Optional[set] 
         closed = end is not None
         next_index = (end + 1) if closed else len(text)
         if not closed:
-            # Unclosed call: drop a promotable call to EOS; keep a disabled/example or
-            # execution-class or unanchored name as prose.
             out.append(text[cursor:] if keep_as_prose else text[cursor : m.start()])
             break
         if keep_as_prose:
-            # Not promotable or not anchored is prose: keep it whole.
             out.append(text[cursor:next_index])
             if blocked:
                 floor = next_index
@@ -932,10 +924,8 @@ _EXTENSION_SAMPLE = 64
 
 
 def _promotable_gemma_call_pos(text: str, start: int, enabled_tool_names) -> int:
-    """Offset of the first bare ``call:NAME{`` the strip would actually remove, or -1.
-
-    A name the parser will not promote is prose the gemma arm keeps whole, so it is not
-    markup for any of the streaming scans."""
+    """Offset of the first bare ``call:NAME{`` the strip would actually remove, or -1: a name
+    it keeps whole is prose, not markup, for any of the streaming scans."""
     for m in _GEMMA_BARE_TC_RE.finditer(text, start):
         if _markerless_promotable(m.group(1), enabled_tool_names):
             return m.start()
@@ -1632,7 +1622,6 @@ def _signal_inside_leading_wrapperless_gemma(
         if m is None or m.start() > first:
             return False
         if not _markerless_promotable(m.group(1), enabled_tool_names):
-            # Prose (disabled/example/execution-class) call: skip; the prose guard drops it.
             cursor = m.end()
             continue
         end = _gemma_body_brace_end(content, m.end() - 1)
@@ -1668,7 +1657,6 @@ def _disabled_gemma_call_end_containing_signal(
         if m is None or m.start() > first:
             return None
         if _markerless_promotable(m.group(1), enabled_tool_names):
-            # Promotable call: defers to the enabled-call guard, not dropped here.
             return None
         end = _gemma_body_brace_end(content, m.end() - 1)
         if end is None:
@@ -2284,7 +2272,6 @@ def _parse_llama3_bare_json(
         name = obj.get("name") or obj.get("function") or ""
         if not isinstance(name, str) or not name:
             break
-        # Markerless JSON is ambiguous: treat it as a call only when the name is promotable.
         blocked = _markerless_blocked_execution(name, enabled_tool_names)
         if not blocked and not _markerless_promotable(name, enabled_tool_names):
             # A name outside the tool list means the turn is an ordinary JSON answer rather
@@ -2314,11 +2301,9 @@ def _parse_llama3_bare_json(
         else:
             break
         if blocked:
-            # Call-shaped but blocked: the model DID write a call, we only refuse to promote
-            # it from a bare span. Skip the object and keep decoding the chain (as the Gemma
-            # and rehearsal scanners do) instead of dropping a benign call after it. The
-            # shape check above still runs first, so a data object like
-            # {"name":"terminal","result":".."} stops the chain like any other non-call.
+            # Call-shaped but blocked: skip it and keep decoding, or a benign call after it is
+            # dropped. The shape check above runs first, so {"name":"terminal","result":".."}
+            # still stops the chain as data.
             cursor += end_offset
             continue
         out.append(
@@ -2571,13 +2556,10 @@ def _parse_gemma_tool_calls(
     # Manual cursor: resume AFTER each consumed balanced body so a nested ``call:OTHER{...}``
     # in an argument is never re-matched. A leading JSON answer's span is data -- scan after it.
     cursor = _leading_json_value_end(content) or 0
-    # A blocked rehearsal's body is argument text for the same reason. It used to own its span
-    # by being promoted; refusing to promote it must not hand its contents to this parser.
-    # Only ENABLED execution names: a disabled one never owned its body on this path either.
-    #
-    # One forward pass, like _iter_bracket_spans: the scan stops at the last ``}`` (nothing
-    # after it can close) and resumes past each resolved body. Restarting a balanced scan at
-    # every opener is quadratic, and a stream of unclosed ``terminal[ARGS]{`` is cheap to emit.
+    # A blocked rehearsal's body is argument text too: it owned its span by being promoted, so
+    # refusing to promote it must not hand the contents here. Enabled names only, as above.
+    # One forward pass like _iter_bracket_spans (stop at the last ``}``, resume past each body):
+    # restarting per opener is quadratic, and unclosed ``terminal[ARGS]{`` is cheap to emit.
     blocked_spans = []
     _reh_cursor = 0
     _reh_last_close = content.rfind("}")
@@ -2594,9 +2576,8 @@ def _parse_gemma_tool_calls(
             break
         blocked_spans.append((_reh.start(), _reh_end + 1))
         _reh_cursor = _reh_end + 1
-    # Monotonic index into the (sorted, non-overlapping) blocked spans: the scan cursor only
-    # moves forward, so re-testing every span per match would be quadratic on a turn full of
-    # them.
+    # Monotonic index into the sorted spans; the cursor only moves forward, so re-testing
+    # every span per match would be quadratic on a turn full of them.
     blocked_i = 0
     while True:
         m = _GEMMA_BARE_TC_RE.search(content, cursor)
@@ -2615,8 +2596,6 @@ def _parse_gemma_tool_calls(
             # scanning on would promote quoted argument text.
             break
         cursor = end + 1
-        # Markerless: a disabled/example name is prose, and an execution-class name is never
-        # promotable from a bare span (``call:python{..}`` may be attacker-quoted prose).
         if not _markerless_promotable(name, enabled_tool_names):
             continue
         body = content[body_start + 1 : end]
@@ -2764,8 +2743,8 @@ def strip_leading_bare_json_call(text: str, enabled_tool_names: Optional[set] = 
     ``tool_calls``."""
     remainder = text
     stripped_any = False
-    # Blocked-but-call-shaped objects the parser skipped over: kept as prose, in order,
-    # ahead of whatever survives, so parse and strip agree on every link of the chain.
+    # Blocked-but-call-shaped objects the parser skipped, in order, so parse and strip agree
+    # on every link of the chain.
     kept: list[str] = []
 
     def _out(tail: str) -> str:
@@ -2778,24 +2757,20 @@ def strip_leading_bare_json_call(text: str, enabled_tool_names: Optional[set] = 
         # Skip the Llama-3 ``;`` inter-call separator between chained calls.
         if stripped_any or kept:
             probe = probe.lstrip(" \t\n\r;")
-        # What was consumed to reach ``probe``. It belongs to the display only when the
-        # object before it is still on screen; the separator of an executed call goes with
-        # the call. Sentinel/whitespace stripping only removes a prefix, so this is exact.
+        # The separator consumed to reach ``probe``: displayed only when the object before it
+        # still is. Sentinel/whitespace stripping only removes a prefix, so this is exact.
         sep = remainder[: len(remainder) - len(probe)] if kept else ""
         if not (probe.startswith("{") and ('"name"' in probe or '"function"' in probe)):
             return _out(sep + probe)
-        # Only suppress when the leading object's TOP-LEVEL name is markerless-promotable. A
-        # nested ``"name"`` (e.g. {"result":{"name":"web_search",...}}) is data, not the call
-        # name, so it must not gate the strip. An un-extractable name or one outside the tool
-        # list means the turn is a JSON answer, so the rest is kept as written.
+        # Gate on the TOP-LEVEL name only: a nested ``"name"`` (e.g.
+        # {"result":{"name":"web_search",..}}) is data. An un-extractable or unlisted name
+        # means the turn is a JSON answer, so the rest is kept as written.
         name = _top_level_bare_json_name(probe)
         blocked = _markerless_blocked_execution(name, enabled_tool_names)
         if not blocked and not _markerless_promotable(name, enabled_tool_names):
             return _out(sep + probe)
         end = _balanced_brace_end(probe, 0)
         if end is None:
-            # Truncated: a blocked object is prose to the end, a promotable one is an
-            # unrecoverable call fragment.
             return _out(sep + probe) if blocked else ""
         # A closed object must have the CALL SHAPE the parser accepts (dict ``parameters``,
         # or dict / JSON-string ``arguments``). An ordinary JSON answer like
@@ -2807,8 +2782,7 @@ def strip_leading_bare_json_call(text: str, enabled_tool_names: Optional[set] = 
         if not _bare_json_call_shaped(obj):
             return _out(sep + probe)
         if blocked:
-            # Mirrors the parser skipping it: visible as text, and the scan goes on.
-            kept.append(sep + probe[: end + 1])
+            kept.append(sep + probe[: end + 1])  # visible as text; the scan goes on
         else:
             stripped_any = True
         remainder = probe[end + 1 :]
