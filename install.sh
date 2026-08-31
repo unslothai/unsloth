@@ -3253,6 +3253,14 @@ TORCH_CONSTRAINT="torch>=2.4,<2.11.0"
 _PY_MINOR_FOR_TORCH=$("$VENV_DIR/bin/python" -c \
     "import sys; print(sys.version_info.minor)" 2>/dev/null || echo "99")
 case "$_PY_MINOR_FOR_TORCH" in ''|*[!0-9]*) _PY_MINOR_FOR_TORCH=99 ;; esac
+# glibc minor (the N in 2.N) for the same floors. The 2.11 cpu wheels are
+# manylinux_2_28 ONLY, while the default window reaches back to torch 2.6.0, which still
+# published manylinux_2_17 -- so a floor applied blindly does not merely pick an older
+# wheel on an older host, it leaves the resolve with no candidate at all. Unreadable or
+# musl reads as 0 so the floor is skipped: the default window is what those hosts get
+# today, and never taking it away is the safe direction here.
+_GLIBC_MINOR_FOR_TORCH=$(_uv_glibc_minor 2>/dev/null || echo "0")
+case "$_GLIBC_MINOR_FOR_TORCH" in ''|*[!0-9]*) _GLIBC_MINOR_FOR_TORCH=0 ;; esac
 if [ "$SKIP_TORCH" = false ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
     _PY_MINOR=$("$VENV_DIR/bin/python" -c \
         "import sys; print(sys.version_info.minor)" 2>/dev/null || echo "0")
@@ -4754,9 +4762,18 @@ case "$_torch_index_leaf" in
         TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<2.12.0"
         ;;
     # The cpu index ships the full 2.11 trio (torch 2.11.0+cpu, torchvision 0.26.0+cpu,
-    # torchaudio 2.11.0+cpu) for cp312/cp313, on the same manylinux_2_28 platform tag the
-    # 2.10 cpu wheels already used -- so this raises no glibc floor and cannot strand an
-    # older distro.
+    # torchaudio 2.11.0+cpu) for cp310-cp314, on the same manylinux_2_28 platform tag the
+    # 2.10 cpu wheels already used.
+    #
+    # Same tag as 2.10 is NOT the same as "no glibc floor moves", which is what this
+    # comment used to claim. The constraint being replaced is a WINDOW, >=2.4,<2.11.0,
+    # and its lower end still has pre-manylinux_2_28 wheels: on a glibc 2.17-2.27 host
+    # the window resolves torch 2.6.0+cpu today, while >=2.11.0 has no candidate at all
+    # and the install dies with "No solution found". Measured against the live index at
+    # x86_64-manylinux_2_17 for cp310 through cp313. That range is supported here --
+    # _uv_pinned_asset bootstraps uv on x86_64 from glibc 2.17 up -- so it is Amazon
+    # Linux 2 (2.26), Ubuntu 18.04 (2.27) and CentOS 7 (2.17), not a hypothetical.
+    # Hence the >= 28 gate: the floor applies only where a 2.11 wheel actually exists.
     #
     # The companions move with torch, matching how the rocm7.2 arm pins its trio. To be
     # precise about what this is NOT: the bounded companion defaults above already prevent
@@ -4777,7 +4794,8 @@ case "$_torch_index_leaf" in
     # ("No solution found") where the default window still resolves torch 2.8.0+cpu, so
     # an older interpreter keeps the default window rather than losing torch entirely.
     cpu)
-        if [ "$OS" != "macos" ] && [ "${_PY_MINOR_FOR_TORCH:-99}" -ge 10 ] 2>/dev/null; then
+        if [ "$OS" != "macos" ] && [ "${_PY_MINOR_FOR_TORCH:-99}" -ge 10 ] 2>/dev/null \
+           && [ "${_GLIBC_MINOR_FOR_TORCH:-0}" -ge 28 ] 2>/dev/null; then
             TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0"
             TORCHVISION_CONSTRAINT="torchvision>=0.26.0,<0.27.0"
             TORCHAUDIO_CONSTRAINT="torchaudio>=2.11.0,<2.12.0"
