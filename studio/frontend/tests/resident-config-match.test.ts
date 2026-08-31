@@ -1439,11 +1439,10 @@ test("unset nullable settings ask for the default, not for the resident value", 
       `${key} pinned on the resident load must not be adopted by a blank config`,
     );
   }
-  // spec_draft_n_max is the exception, and it is the backend's: _runtime_matches_intent
-  // rejects a draft-count difference only when `intent.spec_draft_n_max is not None`, so
-  // an unset limit asks for no change and /load answers already_loaded. Reloading for it
-  // could not deliver the default anyway, since that same answer leaves the count alone.
-  assert.equal(matches({ ...DEFAULTS, spec_draft_n_max: 16 }, BLANK), true);
+  // spec_draft_n_max is no exception either: _runtime_matches_intent rejects the
+  // null-against-explicit flip, so a blank pick against a resident override reloads and
+  // that reload does deliver the platform default.
+  assert.equal(matches({ ...DEFAULTS, spec_draft_n_max: 16 }, BLANK), false);
   assert.equal(
     matches(
       { ...DEFAULTS, spec_draft_n_max: 16 },
