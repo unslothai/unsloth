@@ -80,7 +80,9 @@ def _installer_actionable_detail(lines: Sequence[str]) -> str | None:
 
 
 def format_installer_failure_message(
-    returncode: int, lines: Sequence[str], actionable_lines: Sequence[str] = ()
+    returncode: int,
+    lines: Sequence[str],
+    actionable_lines: Sequence[str] = (),
 ) -> str:
     """Build an installer failure message that prefers actionable lines over tail noise.
 
