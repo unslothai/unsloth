@@ -468,19 +468,26 @@ def _capabilities_for_format(
     partial: bool = False,
     requires_variant: bool = False,
     can_chat_override: Optional[bool] = None,
+    can_train_override: Optional[bool] = None,
+    supports_lora_override: Optional[bool] = None,
 ) -> LocalModelCapabilities:
     is_complete = not partial
     can_chat = model_format in {"gguf", "safetensors", "adapter", "checkpoint"}
     if can_chat_override is not None:
         can_chat = can_chat and can_chat_override
     can_train = model_format in {"safetensors", "checkpoint"} and is_complete
+    supports_lora = model_format in {"safetensors", "checkpoint"} and is_complete
+    if can_train_override is not None:
+        can_train = can_train and can_train_override
+    if supports_lora_override is not None:
+        supports_lora = supports_lora and supports_lora_override
     return LocalModelCapabilities(
         can_train = can_train,
         can_chat = can_chat and is_complete,
         can_delete = source == "hf_cache",
         can_download = False,
         requires_variant = requires_variant,
-        supports_lora = model_format in {"safetensors", "checkpoint"} and is_complete,
+        supports_lora = supports_lora,
         supports_vision = False,
     )
 
@@ -654,9 +661,14 @@ def _classify_non_gguf_model_format(
     has_safetensors: bool,
     has_transformers_safetensors: bool,
     has_checkpoint_weights: bool,
+    is_bare_single_file_safetensors: bool = False,
     trusted_hf_cache_repo: bool = False,
 ) -> Optional[ModelFormat]:
-    if has_safetensors and (has_config or (trusted_hf_cache_repo and has_transformers_safetensors)):
+    if has_safetensors and (
+        has_config
+        or is_bare_single_file_safetensors
+        or (trusted_hf_cache_repo and has_transformers_safetensors)
+    ):
         return "safetensors"
     if has_adapter_config and has_adapter_weights:
         return "adapter"
@@ -832,6 +844,8 @@ def _local_model_info(
     training_method: Optional[str] = None,
     active_cache: Optional[bool] = None,
     can_chat_override: Optional[bool] = None,
+    can_train_override: Optional[bool] = None,
+    supports_lora_override: Optional[bool] = None,
 ) -> LocalModelInfo:
     load_id = (
         model_id
@@ -869,6 +883,8 @@ def _local_model_info(
             partial = partial,
             requires_variant = requires_variant,
             can_chat_override = can_chat_override,
+            can_train_override = can_train_override,
+            supports_lora_override = supports_lora_override,
         ),
     )
 
@@ -933,14 +949,27 @@ def _classify_local_path(
     adapter_type = _clean_optional_string(adapter_config.get("peft_type"))
     training_method = _clean_optional_string(adapter_config.get("unsloth_training_method"))
     has_adapter_weights = any(_is_adapter_weight_file(f) for f in files)
-    has_safetensors = any(
-        f.suffix.lower() == ".safetensors" and not _is_adapter_weight_file(f) for f in files
-    )
+    safetensors_files = [
+        f
+        for f in files
+        if f.suffix.lower() == ".safetensors" and not _is_adapter_weight_file(f)
+    ]
+    has_safetensors = bool(safetensors_files)
     has_transformers_safetensors = any(
         _is_transformers_safetensors_weight_file(f) and not _is_adapter_weight_file(f)
         for f in files
     )
     has_checkpoint_weights = any(_is_checkpoint_weight_file(f) for f in files)
+    # With no config there is no architecture evidence, but a single loose .safetensors payload
+    # is still an unambiguous single-file checkpoint FORMAT. Keep the exception to one weight:
+    # arbitrary configless shard/component folders remain unknown and hidden from model pickers.
+    is_bare_single_file_safetensors = (
+        not has_config
+        and not has_adapter_config
+        and not has_adapter_weights
+        and not has_checkpoint_weights
+        and len(safetensors_files) == 1
+    )
     trusted_hf_cache_repo = source == "hf_cache" and bool(model_id)
 
     model_format = _classify_non_gguf_model_format(
@@ -950,6 +979,7 @@ def _classify_local_path(
         has_safetensors = has_safetensors,
         has_transformers_safetensors = has_transformers_safetensors,
         has_checkpoint_weights = has_checkpoint_weights,
+        is_bare_single_file_safetensors = is_bare_single_file_safetensors,
         trusted_hf_cache_repo = trusted_hf_cache_repo,
     )
 
@@ -985,10 +1015,18 @@ def _classify_local_path(
                 training_method = training_method if model_format == "adapter" else None,
                 active_cache = active_cache,
                 can_chat_override = (
-                    _local_transformers_can_chat(scan_path)
-                    if model_format in {"safetensors", "checkpoint"}
-                    else None
+                    False
+                    if is_bare_single_file_safetensors
+                    else (
+                        _local_transformers_can_chat(scan_path)
+                        if model_format in {"safetensors", "checkpoint"}
+                        else None
+                    )
                 ),
+                # The explicit diffusion-family override supplies the architecture later. Until
+                # then this configless file is not a defensible chat or training checkpoint.
+                can_train_override = False if is_bare_single_file_safetensors else None,
+                supports_lora_override = False if is_bare_single_file_safetensors else None,
             )
         )
     elif not rows:

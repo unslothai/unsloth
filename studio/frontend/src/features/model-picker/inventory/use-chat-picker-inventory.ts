@@ -69,6 +69,7 @@ function toLocalModelInfo(row: LocalInventoryRow): LocalModelInfo {
     source: row.source as LocalModelInfo["source"],
     model_id: row.modelId ?? row.repoId,
     model_format: row.modelFormat,
+    capabilities: row.capabilities,
     updated_at: epochMillisecondsToSeconds(row.updatedAt),
     task: row.task ?? null,
     audio_type: row.audioType ?? null,

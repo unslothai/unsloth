@@ -3554,6 +3554,7 @@ class VideoBackend:
                 device = device,
                 hf_token = hf_token,
                 memory_mode = memory_mode,
+                family_override = family_override,
                 # RAW, not normalised. Both normalisers fold "none"/"off" into the same None an
                 # omitted request produces, and for a modular workflow those are opposite answers:
                 # unset means "pick the hosted quantized components", "none" means "keep the
@@ -4292,6 +4293,7 @@ class VideoBackend:
         device: str,
         hf_token: Optional[str],
         memory_mode: Optional[str],
+        family_override: Optional[str] = None,
         transformer_quant: Optional[str] = None,
         text_encoder_quant: Optional[str] = None,
         speed_mode: Optional[str] = None,
@@ -4920,6 +4922,13 @@ class VideoBackend:
                     text_encoder_quant_requested,
                     text_encoder_quant_engaged or "off",
                     text_encoder_quant_reason,
+                ),
+                "family_override": (
+                    family_override,
+                    fam.name,
+                    "explicit family override applied"
+                    if family_override
+                    else "auto-detected from repository name and metadata",
                 ),
             }
         )

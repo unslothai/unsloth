@@ -450,6 +450,36 @@ def test_scan_models_dir_surfaces_root_single_file_checkpoint(tmp_path):
     assert rows[0].model_format is None
 
 
+def test_custom_inventory_classifies_an_opaque_single_file_safetensors_checkpoint(tmp_path):
+    """An explicit family override can supply architecture, but only after the row is listed."""
+    from hub.services.models.local_inventory import _scan_custom_folder
+
+    root = tmp_path / "custom"
+    checkpoint = root / "opaque-model"
+    _touch(checkpoint / "portrait.safetensors")
+
+    rows = _scan_custom_folder(root)
+
+    assert [(Path(row.path), row.model_format, row.task) for row in rows] == [
+        (checkpoint, "safetensors", None)
+    ]
+    assert rows[0].capabilities.can_chat is False
+    assert rows[0].capabilities.can_train is False
+    assert rows[0].capabilities.supports_lora is False
+
+
+def test_custom_inventory_keeps_configless_safetensors_shards_unknown(tmp_path):
+    """The override fallback must not turn an arbitrary component/shard directory into a model."""
+    from hub.services.models.local_inventory import _scan_custom_folder
+
+    root = tmp_path / "custom"
+    shards = root / "opaque-shards"
+    _touch(shards / "part-00001.safetensors")
+    _touch(shards / "part-00002.safetensors")
+
+    assert _scan_custom_folder(root) == []
+
+
 def test_scan_models_dir_root_weights_do_not_hide_child_models(tmp_path):
     # A stray loose .safetensors at a models ROOT must not collapse the scan to one row: the root fallback applies only when nothing else matched.
     root = tmp_path / "models"

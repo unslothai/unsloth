@@ -56,4 +56,18 @@ test("image and video family selectors opt all local inventories into the narrow
     3,
     "LM Studio, ./models, and custom-folder rows must use the same fallback",
   );
+  assert.equal(
+    picker.split("Boolean(task) || m.capabilities?.canChat !== false").length - 1,
+    3,
+    "architecture-less rows stay out of chat while task-scoped media overrides may admit them",
+  );
+
+  const inventory = readFileSync(
+    new URL(
+      "../src/features/model-picker/inventory/use-chat-picker-inventory.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(inventory, /capabilities: row\.capabilities/);
 });

@@ -597,6 +597,7 @@ export interface LocalModelInfo {
   model_id?: string | null;
   // Backend-detected weights format ("gguf" when known), for folders whose name lacks -GGUF.
   model_format?: string | null;
+  capabilities?: { canChat?: boolean } | null;
   // Set when a cached snapshot holds an incomplete download, so consumers skip unloadable weights.
   partial?: boolean;
   updated_at?: number | null;

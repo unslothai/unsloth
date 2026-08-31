@@ -463,24 +463,31 @@ class _FakeModularPipeline:
         return _FakeModularPipeline.instance
 
 
-def _load_h3_modular(backend, *, hf_token = None):
+def _load_h3_modular(
+    backend,
+    *,
+    hf_token = None,
+    repo_id = "MiniMaxAI/MiniMax-H3",
+    family_override = None,
+):
     """Commit the H3 BF16 state exactly as load_pipeline's Modular Diffusers branch does."""
     diffusers = sys.modules["diffusers"]
     diffusers.ComponentsManager = _FakeComponentsManager
     diffusers.ModularPipeline = _FakeModularPipeline
-    fam = _detect_load_family("MiniMaxAI/MiniMax-H3", None, "minimax-h3")
+    fam = _detect_load_family(repo_id, None, family_override)
     assert fam is not None
     backend._load_h3_modular_pipeline(
         diffusers = diffusers,
         torch = sys.modules["torch"],
         fam = fam,
-        repo_id = "MiniMaxAI/MiniMax-H3",
+        repo_id = repo_id,
         base = fam.base_repo,
         kind = "pipeline",
         dtype = sys.modules["torch"].bfloat16,
         device = "cpu",
         hf_token = hf_token,
         memory_mode = None,
+        family_override = family_override,
         _load_token = None,
         _base_local_dir = None,
     )
@@ -4275,6 +4282,21 @@ def test_h3_modular_load_forwards_the_hub_token_to_the_component_loads(fake_runt
     # Without a configured token nothing extra is passed, so the hub's own resolution still applies.
     pipe = _load_h3_modular(VideoBackend())
     assert "token" not in pipe.load_kwargs
+
+
+def test_h3_modular_load_records_an_explicit_family_override(fake_runtime):
+    backend = VideoBackend()
+
+    _load_h3_modular(
+        backend,
+        repo_id = "custom/opaque-h3",
+        family_override = "minimax-h3",
+    )
+
+    resolved = backend.status()["resolved"]["family_override"]
+    assert resolved["requested"] == "minimax-h3"
+    assert resolved["value"] == "minimax-h3"
+    assert resolved["source"] == "explicit"
 
 
 def test_h3_modular_load_pins_the_component_loads_to_the_studio_cache(fake_runtime):

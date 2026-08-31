@@ -87,6 +87,22 @@ test("video defaults also prefer the explicit family over a misleading repo name
   assert.ok(override >= 0 && repoMatch > override);
 });
 
+test("the image Default preset keeps the resolved family after load completion", () => {
+  const source = readFileSync(
+    new URL("../src/features/images/images-page.tsx", import.meta.url),
+    "utf8",
+  );
+  const recipeStart = source.indexOf("const imageDefaultRecipe = useMemo");
+  const recipeEnd = source.indexOf("const applyImagePresetParams", recipeStart);
+  assert.ok(recipeStart >= 0 && recipeEnd > recipeStart);
+  const recipe = source.slice(recipeStart, recipeEnd);
+  assert.match(
+    recipe,
+    /defaultsFor\(status\?\.base_repo \?\? status\?\.repo_id \?\? "", status\?\.family\)/,
+  );
+  assert.match(recipe, /status\?\.family/);
+});
+
 test("routed image picks apply and transactionally roll back model defaults", () => {
   const source = readFileSync(
     new URL("../src/features/images/images-page.tsx", import.meta.url),

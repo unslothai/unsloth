@@ -1402,7 +1402,7 @@ export function ImagesPage({
   const imageDefaultRecipe = useMemo<ImageGenerationPresetParams>(() => {
     const recommended =
       pendingModelDefaults ??
-      defaultsFor(status?.base_repo ?? status?.repo_id ?? "");
+      defaultsFor(status?.base_repo ?? status?.repo_id ?? "", status?.family);
     return {
       negativePrompt: "",
       width: 1024,
@@ -1412,7 +1412,7 @@ export function ImagesPage({
       batchSize: 1,
       runs: 1,
     };
-  }, [pendingModelDefaults, status?.base_repo, status?.repo_id]);
+  }, [pendingModelDefaults, status?.base_repo, status?.family, status?.repo_id]);
   const applyImagePresetParams = useCallback((params: ImageGenerationPresetParams) => {
     setNegativePrompt(params.negativePrompt);
     // Same rule restoreSettings follows: a negative prompt that is in effect has to be visible, or
