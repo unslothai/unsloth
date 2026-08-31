@@ -16052,7 +16052,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             context_length_enforced = model_info.get("context_length_enforced"),
             # 0 is an answer -- the load asked the backend to size its own window --
             # while None means this backend records no request at all.
-            requested_context_length = _non_negative_int_or_none(
+            requested_context_length = _nonnegative_int_or_none(
                 model_info.get("requested_context_length")
             ),
             chat_template = chat_template,
@@ -26998,15 +26998,6 @@ def _append_to_system_message(messages: list[dict], addition: str) -> list[dict]
     return [{"role": "system", "content": addition}, *copied]
 
 
-def _non_negative_int_or_none(value: Any) -> Optional[int]:
-    """The value as a non-negative int, or None when it is not one. Keeps 0."""
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return None
-    return parsed if parsed >= 0 else None
-
-
 def _resident_context_satisfies(model_info: dict, max_seq_length: Any) -> bool:
     """Whether the resident model already serves the context this load asks for.
 
@@ -27014,7 +27005,7 @@ def _resident_context_satisfies(model_info: dict, max_seq_length: Any) -> bool:
     forces the reload. Requests are compared rather than served windows, which cannot
     distinguish asking for a length from letting the backend choose one.
     """
-    recorded = _non_negative_int_or_none(model_info.get("requested_context_length"))
+    recorded = _nonnegative_int_or_none(model_info.get("requested_context_length"))
     if recorded is None:
         return True
     return _positive_int_or_none(max_seq_length) == _positive_int_or_none(recorded)

@@ -196,14 +196,17 @@ function loadedContextFields(resp: any) {
     return {
       loadedContextLength: null, maxContextLength: null,
       nativeContextLength: null, loadedIsGguf: null,
+      loadedContextEnforced: null,
     };
   }
   const isGguf = resp.is_gguf ?? false;
   const loaded = resp.context_length ?? null;
-  if (!isGguf && resp.native_context_length == null) {
+  // !is_mlx as well: MLX sizes its own window, so it reports one without a native.
+  if (!isGguf && !resp.is_mlx && resp.native_context_length == null) {
     return {
       loadedContextLength: null, maxContextLength: null,
       nativeContextLength: null, loadedIsGguf: false,
+      loadedContextEnforced: null,
     };
   }
   return {
@@ -211,6 +214,7 @@ function loadedContextFields(resp: any) {
     maxContextLength: resp.max_context_length ?? loaded,
     nativeContextLength: resp.native_context_length ?? null,
     loadedIsGguf: isGguf,
+    loadedContextEnforced: isGguf ? true : (resp.context_length_enforced ?? null),
   };
 }
 const NO_MLX_REASONS = new Set(["mlx_unavailable", "intel_mac", "detection_failed"]);

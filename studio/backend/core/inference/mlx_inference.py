@@ -1039,9 +1039,9 @@ def _install_template_override(override, tokenizer, processor, probe):
 def _kv_entry_is_bounded(entry, window):
     """Whether this cache entry declares a cap that holds it at or below *window*.
 
-    Only a declared cap counts, and only up to the requested size: mlx-vlm's Florence2
-    hands back a class that concatenates forever and declares nothing, while Recurrent
-    Gemma declares its own attention_window_size whatever the load asked for.
+    Only a declared cap counts, and only up to the requested size. mlx-vlm's Florence2
+    hands back a class that concatenates forever and declares nothing; a model that
+    declares a cap wider than the request is bounded, but not at what was asked for.
     """
     cap = getattr(entry, "max_size", None) or getattr(entry, "chunk_size", None)
     if not cap or cap > window:
