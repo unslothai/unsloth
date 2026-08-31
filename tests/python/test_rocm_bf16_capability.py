@@ -61,7 +61,8 @@ def test_one_unreadable_device_keeps_the_others(monkeypatch):
         return _Props()
 
     monkeypatch.setattr(
-        dt, "torch",
+        dt,
+        "torch",
         types.SimpleNamespace(
             cuda = types.SimpleNamespace(device_count = lambda: 2, get_device_properties = _props)
         ),
@@ -72,7 +73,8 @@ def test_one_unreadable_device_keeps_the_others(monkeypatch):
         raise RuntimeError("no HIP runtime")
 
     monkeypatch.setattr(
-        dt, "torch",
+        dt,
+        "torch",
         types.SimpleNamespace(cuda = types.SimpleNamespace(device_count = _count_raises)),
     )
     assert dt.hip_visible_archs() == []
