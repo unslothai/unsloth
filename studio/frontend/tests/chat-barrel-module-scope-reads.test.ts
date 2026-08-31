@@ -495,6 +495,30 @@ function resolvesToTarget(identifier: ts.Identifier, target: ts.Node): boolean {
   return false;
 }
 
+/**
+ * What a constructor hands to its base, or undefined when it writes no `super`.
+ *
+ * Undefined is not "no arguments": it means the walk could not tell, and every
+ * base default stays eligible. A `super` inside a nested function belongs to
+ * that function, so it is not this constructor's call.
+ */
+function superArgumentsOf(
+  ctor: ts.ConstructorDeclaration,
+): readonly ts.Expression[] | undefined {
+  let found: readonly ts.Expression[] | undefined;
+  const visit = (node: ts.Node): void => {
+    if (found) return;
+    if (isVarScope(node)) return;
+    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.SuperKeyword) {
+      found = node.arguments;
+      return;
+    }
+    node.forEachChild(visit);
+  };
+  ctor.body?.forEachChild(visit);
+  return found;
+}
+
 /** True when this node carries the given modifier. */
 function hasModifier(node: ts.Node, kind: ts.SyntaxKind): boolean {
   const modifiers = ts.canHaveModifiers(node) ? ts.getModifiers(node) : undefined;
@@ -636,6 +660,27 @@ function eagerReads(
     const suspendsAt = firstSuspensionPos(fn.body);
     if (suspendsAt === null) visit(fn.body, false, inner);
     else visitUntil(fn.body, suspendsAt, (n, d) => visit(n, d, inner));
+  };
+
+  /**
+   * Run the getters an eager property read would invoke.
+   *
+   * `wanted` null means every getter on the object: a spread and a rest element
+   * both read every own property, so there is no single name to match.
+   */
+  const enterGetters = (
+    object: ts.ObjectLiteralExpression,
+    targets: Targets,
+    wanted: Set<string> | null,
+  ): void => {
+    for (const property of object.properties) {
+      if (!ts.isGetAccessorDeclaration(property)) continue;
+      if (!ts.isIdentifier(property.name)) continue;
+      if (wanted && !wanted.has(property.name.text)) continue;
+      if (entered.has(property)) continue;
+      entered.add(property);
+      enterCallable(property, targets);
+    }
   };
 
   const visit = (node: ts.Node, deferred: boolean, targets: Targets): void => {
@@ -787,30 +832,64 @@ function eagerReads(
         }
       }
     }
+    // `new Promise(read)` calls read before it returns, exactly as an inline
+    // executor does. The inline form goes through isImmediatelyInvoked; a named
+    // one has to be resolved here.
+    if (
+      !deferred &&
+      ts.isNewExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "Promise"
+    ) {
+      const executor = node.arguments?.[0];
+      if (executor && ts.isIdentifier(executor)) {
+        const named = targets.functions.get(executor.text);
+        if (named && !entered.has(named) && resolvesToTarget(executor, named)) {
+          entered.add(named);
+          enterCallable(named, targets);
+        }
+      }
+    }
     // `new C()` runs the constructor and every instance field initializer now,
     // for a named class exactly as for an inline function expression.
     if (!deferred && ts.isNewExpression(node) && ts.isIdentifier(node.expression)) {
       // A derived class runs its base's constructor and instance fields first,
       // even when it declares no constructor of its own, so walk the chain.
-      const chain: ts.ClassLikeDeclaration[] = [];
+      // Each level carries ITS OWN arguments: the base sees what `super(...)`
+      // passes, not what `new` did, so handing the outer arguments down the
+      // chain both misses defaults and rejects code that supplies them.
+      const chain: Array<{
+        cls: ts.ClassLikeDeclaration;
+        args: readonly ts.Expression[] | undefined;
+      }> = [];
       let current = targets.classes.get(node.expression.text);
       let anchor: ts.Identifier | undefined = node.expression;
-      while (current && anchor && resolvesToTarget(anchor, current) && !chain.includes(current)) {
-        chain.unshift(current);
+      let args: readonly ts.Expression[] | undefined = node.arguments ?? [];
+      while (current && anchor && resolvesToTarget(anchor, current)) {
+        const cls = current;
+        if (chain.some((level) => level.cls === cls)) break;
+        chain.unshift({ cls, args });
+        const ctor = cls.members.find(
+          (m): m is ts.ConstructorDeclaration =>
+            ts.isConstructorDeclaration(m) && Boolean(m.body),
+        );
+        // No constructor of its own means an implicit `super(...args)`, which
+        // forwards everything it was given.
+        args = ctor === undefined ? args : superArgumentsOf(ctor);
         anchor = undefined;
-        for (const clause of current.heritageClauses ?? []) {
+        for (const clause of cls.heritageClauses ?? []) {
           if (clause.token !== ts.SyntaxKind.ExtendsKeyword) continue;
           const base = clause.types[0]?.expression;
           if (base && ts.isIdentifier(base)) anchor = base;
         }
         current = anchor ? targets.classes.get(anchor.text) : undefined;
       }
-      for (const cls of chain) {
+      for (const { cls, args: own } of chain) {
         if (entered.has(cls)) continue;
         entered.add(cls);
         for (const member of cls.members) {
           if (ts.isConstructorDeclaration(member) && member.body) {
-            enterCallable(member, targets, node.arguments ?? []);
+            enterCallable(member, targets, own);
           } else if (
             ts.isPropertyDeclaration(member) &&
             member.initializer &&
@@ -826,20 +905,109 @@ function eagerReads(
     if (!deferred && ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression)) {
       const object = targets.objects.get(node.expression.text);
       if (object && resolvesToTarget(node.expression, object)) {
-        for (const property of object.properties) {
-          if (
-            ts.isGetAccessorDeclaration(property) &&
-            ts.isIdentifier(property.name) &&
-            property.name.text === node.name.text &&
-            !entered.has(property)
-          ) {
-            entered.add(property);
-            enterCallable(property, targets);
-          }
+        enterGetters(object, targets, new Set([node.name.text]));
+      }
+      // `C.value` runs a static getter for the same reason.
+      const cls = targets.classes.get(node.expression.text);
+      if (cls && resolvesToTarget(node.expression, cls)) {
+        for (const member of cls.members) {
+          if (!ts.isGetAccessorDeclaration(member) || !ts.isIdentifier(member.name)) continue;
+          if (member.name.text !== node.name.text) continue;
+          if (!hasModifier(member, ts.SyntaxKind.StaticKeyword)) continue;
+          if (entered.has(member)) continue;
+          entered.add(member);
+          enterCallable(member, targets);
         }
       }
     }
+    // `const { value } = obj` performs the same property read `obj.value` does,
+    // so it runs the getter too. A rest element takes every own property, which
+    // is why it asks for all of them.
+    if (
+      !deferred &&
+      ts.isVariableDeclaration(node) &&
+      node.initializer &&
+      ts.isIdentifier(node.initializer) &&
+      ts.isObjectBindingPattern(node.name)
+    ) {
+      const object = targets.objects.get(node.initializer.text);
+      if (object && resolvesToTarget(node.initializer, object)) {
+        let wanted: Set<string> | null = new Set<string>();
+        for (const element of node.name.elements) {
+          if (element.dotDotDotToken) {
+            wanted = null;
+            break;
+          }
+          const key = element.propertyName ?? element.name;
+          if (ts.isIdentifier(key)) wanted.add(key.text);
+          else if (ts.isStringLiteral(key)) wanted.add(key.text);
+          else {
+            // A computed key names a property this walk cannot predict.
+            wanted = null;
+            break;
+          }
+        }
+        enterGetters(object, targets, wanted);
+      }
+    }
+    // `{ ...obj }` copies every own enumerable property, running each getter.
+    if (!deferred && ts.isSpreadAssignment(node) && ts.isIdentifier(node.expression)) {
+      const object = targets.objects.get(node.expression.text);
+      if (object && resolvesToTarget(node.expression, object)) {
+        enterGetters(object, targets, null);
+      }
+    }
+    // `obj.value = 1` and `C.value = 1` run a setter synchronously, the write
+    // twin of the getter case above.
+    if (
+      !deferred &&
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      ts.isPropertyAccessExpression(node.left) &&
+      ts.isIdentifier(node.left.expression)
+    ) {
+      const wanted = node.left.name.text;
+      const object = targets.objects.get(node.left.expression.text);
+      if (object && resolvesToTarget(node.left.expression, object)) {
+        for (const property of object.properties) {
+          if (!ts.isSetAccessorDeclaration(property)) continue;
+          if (!ts.isIdentifier(property.name) || property.name.text !== wanted) continue;
+          if (entered.has(property)) continue;
+          entered.add(property);
+          enterCallable(property, targets, [node.right]);
+        }
+      }
+      const cls = targets.classes.get(node.left.expression.text);
+      if (cls && resolvesToTarget(node.left.expression, cls)) {
+        for (const member of cls.members) {
+          if (!ts.isSetAccessorDeclaration(member) || !ts.isIdentifier(member.name)) continue;
+          if (member.name.text !== wanted) continue;
+          if (!hasModifier(member, ts.SyntaxKind.StaticKeyword)) continue;
+          if (entered.has(member)) continue;
+          entered.add(member);
+          enterCallable(member, targets, [node.right]);
+        }
+      }
+    }
+    // `@deco class C {}` calls deco as the class is defined. The factory form
+    // `@deco()` is an ordinary call and already goes through the path above.
+    if (!deferred && ts.isDecorator(node) && ts.isIdentifier(node.expression)) {
+      const named = targets.functions.get(node.expression.text);
+      if (named && !entered.has(named) && resolvesToTarget(node.expression, named)) {
+        entered.add(named);
+        enterCallable(named, targets);
+      }
+    }
     const next = deferred || defersEvaluation(node);
+    // A block, a switch case and a module body each declare callables of their
+    // own. Without layering them here a helper declared inside `if (ready) {
+    // ... }` never resolves, so an eager call to it reads as deferred.
+    const scoped =
+      ts.isBlock(node) || ts.isModuleBlock(node)
+        ? collectTargets(node.statements, targets)
+        : ts.isCaseClause(node) || ts.isDefaultClause(node)
+          ? collectTargets(node.statements, targets)
+          : targets;
     node.forEachChild((child) => {
       // A computed name and a decorator are both evaluated where they are
       // written, as the class or object is created, even though the body or
@@ -848,7 +1016,7 @@ function eagerReads(
       const eagerName =
         (child === (node as ts.NamedDeclaration).name && ts.isComputedPropertyName(child)) ||
         ts.isDecorator(child);
-      visit(child, eagerName ? deferred : next, targets);
+      visit(child, eagerName ? deferred : next, scoped);
     });
   };
   if (options.entry) enterCallable(options.entry, moduleTargets, options.entryArgs);
@@ -1054,9 +1222,19 @@ function tdzProneExportNames(source: ts.SourceFile): Set<string> {
         lexical.add(n);
         if (exported) prone.add(n);
       }
-    } else if (ts.isClassDeclaration(statement) && statement.name) {
-      lexical.add(statement.name.text);
-      if (exported) prone.add(statement.name.text);
+    } else if (ts.isClassDeclaration(statement)) {
+      if (statement.name) lexical.add(statement.name.text);
+      if (!exported) continue;
+      // `export default class K {}` publishes "default"; K is a local name a
+      // consumer cannot import, so recording it there is what let a default
+      // import of a half-initialized class through.
+      if (hasModifier(statement, ts.SyntaxKind.DefaultKeyword)) prone.add("default");
+      else if (statement.name) prone.add(statement.name.text);
+    } else if (ts.isExportAssignment(statement) && !statement.isExportEquals) {
+      // `export default <expression>` binds where the statement runs, so it is
+      // in the dead zone until then. A default FUNCTION declaration is not an
+      // ExportAssignment and stays hoisted, as above.
+      prone.add("default");
     }
   }
   // `export { X }` publishes a lexical binding declared above.
@@ -1070,6 +1248,100 @@ function tdzProneExportNames(source: ts.SourceFile): Set<string> {
     }
   }
   return prone;
+}
+
+/** What a module publishes that can still be uninitialized when a consumer reads it. */
+interface ProneExports {
+  names: Set<string>;
+  /** True when the module may publish names this walk cannot enumerate. */
+  star: boolean;
+}
+
+/**
+ * Per module, the export names a cyclic consumer can catch in the dead zone.
+ *
+ * A re-export hands out the ORIGINAL binding, so what decides the answer is how
+ * the declaring module writes it: a hoisted `function` is initialized before any
+ * module body runs and can never be uninitialized, however many hops it travels.
+ * Folded to a fixed point rather than recursively, because the barrel's own
+ * re-export graph has cycles and a recursion would have to truncate them --
+ * quietly dropping hazards on whichever module it happened to enter first.
+ */
+function proneExportSets(
+  files: string[],
+  sources: Map<string, string>,
+  resolve: Resolver,
+): Map<string, ProneExports> {
+  interface Hop {
+    target: string | null;
+    clause: ts.NamedExports | undefined;
+  }
+  const out = new Map<string, ProneExports>();
+  const hops = new Map<string, Hop[]>();
+  for (const file of files) {
+    const source = parse(file, sources.get(file) ?? "");
+    const list: Hop[] = [];
+    let edges = 0;
+    for (const statement of source.statements) {
+      const runtimeEdge =
+        (ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement)) &&
+        statement.moduleSpecifier !== undefined &&
+        !isErasedEdge(statement);
+      if (runtimeEdge) edges += 1;
+      if (!ts.isExportDeclaration(statement) || !runtimeEdge) continue;
+      const specifier = statement.moduleSpecifier;
+      if (!specifier || !ts.isStringLiteral(specifier)) continue;
+      const clause = statement.exportClause;
+      // `export * as ns from "./x"` binds a namespace OBJECT, which exists from
+      // instantiation, so it is never in the dead zone.
+      if (clause && !ts.isNamedExports(clause)) continue;
+      list.push({ target: resolve(specifier.text, file), clause });
+    }
+    // A module with no runtime imports has nothing that can re-enter it, so its
+    // body always finishes before any importer's does and none of its bindings
+    // can be caught uninitialized. That is why prompt-queue-events.ts exists,
+    // and it holds however many re-export hops away the reader sits.
+    out.set(file, {
+      names: edges === 0 ? new Set<string>() : tdzProneExportNames(source),
+      star: false,
+    });
+    hops.set(file, list);
+  }
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const file of files) {
+      const own = out.get(file) as ProneExports;
+      for (const hop of hops.get(file) ?? []) {
+        // An unresolved hop -- a package, or a path this resolver does not
+        // model -- could publish anything, so it carries every name rather than
+        // silently dropping the hazard.
+        const inner: ProneExports | undefined =
+          hop.target === null ? { names: new Set<string>(), star: true } : out.get(hop.target);
+        if (!inner) continue;
+        if (!hop.clause) {
+          if (inner.star && !own.star) {
+            own.star = true;
+            changed = true;
+          }
+          for (const name of inner.names) {
+            if (own.names.has(name)) continue;
+            own.names.add(name);
+            changed = true;
+          }
+          continue;
+        }
+        for (const element of hop.clause.elements) {
+          if (element.isTypeOnly) continue;
+          const from = (element.propertyName ?? element.name).text;
+          if (!inner.star && !inner.names.has(from)) continue;
+          if (own.names.has(element.name.text)) continue;
+          own.names.add(element.name.text);
+          changed = true;
+        }
+      }
+    }
+  }
+  return out;
 }
 
 /** Functions a module exports by name, for resolving a cross-module call. */
@@ -1105,6 +1377,35 @@ function exportedFunctions(source: ts.SourceFile): Map<string, ts.FunctionLikeDe
       if (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer)) {
         out.set(declaration.name.text, initializer);
       }
+    }
+  }
+  // `function read() {} export { read }` publishes a local callable without any
+  // export modifier on the declaration, so the loop above never sees it and the
+  // caller got no helper to follow. `export { read as default }` lands here too.
+  const local = new Map<string, ts.FunctionLikeDeclaration>();
+  for (const statement of source.statements) {
+    if (ts.isFunctionDeclaration(statement) && statement.name && statement.body) {
+      local.set(statement.name.text, statement);
+      continue;
+    }
+    if (!ts.isVariableStatement(statement)) continue;
+    if (!(statement.declarationList.flags & ts.NodeFlags.Const)) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      const initializer = declaration.initializer;
+      if (!initializer || !ts.isIdentifier(declaration.name)) continue;
+      if (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer)) {
+        local.set(declaration.name.text, initializer);
+      }
+    }
+  }
+  for (const statement of source.statements) {
+    if (!ts.isExportDeclaration(statement) || statement.moduleSpecifier) continue;
+    const clause = statement.exportClause;
+    if (!clause || !ts.isNamedExports(clause)) continue;
+    for (const element of clause.elements) {
+      if (element.isTypeOnly) continue;
+      const fn = local.get((element.propertyName ?? element.name).text);
+      if (fn) out.set(element.name.text, fn);
     }
   }
   return out;
@@ -1175,7 +1476,6 @@ const KNOWN_DEEP_CYCLE_READS = new Set<string>([
   "components/assistant-ui/markdown-text.tsx: unslothDarkTheme (line 94)",
   "components/assistant-ui/markdown-text.tsx: unslothLightTheme (line 109)",
   "components/assistant-ui/markdown-text.tsx: unslothLightTheme (line 94)",
-  "components/assistant-ui/markdown-text.tsx: withMathBlockMarker (line 91)",
   "components/assistant-ui/thread.tsx: CodeExecutionToolUI (line 7094)",
   "components/assistant-ui/thread.tsx: ImageGenerationToolUI (line 7096)",
   "components/assistant-ui/thread.tsx: KnowledgeBaseToolUI (line 7090)",
@@ -1195,32 +1495,9 @@ const KNOWN_DEEP_CYCLE_READS = new Set<string>([
   "features/chat/attachment-content.ts: MAX_OPEN_DOCUMENT_ARCHIVE_BYTES (line 96)",
   "features/chat/chat-page.tsx: CONVERSATION_MARKDOWN_FORMAT (line 1157)",
   "features/chat/chat-page.tsx: CONVERSATION_MARKDOWN_LABEL (line 1156)",
-  "features/chat/components/deep-research-composer-button.tsx: MAX_RESEARCH_MODEL_TIMEOUT_SECONDS (line 29)",
   "features/chat/presets/preset-load-config.ts: KV_CACHE_DTYPES (line 58)",
-  "features/chat/presets/preset-load-config.ts: SPECULATIVE_TYPES (line 59)",
-  "features/chat/presets/preset-policy.ts: DEFAULT_INFERENCE_PARAMS (line 10)",
-  "features/chat/stores/chat-runtime-store.ts: PERSISTED_INFERENCE_PARAM_KEYS (line 3098)",
-  "features/chat/stores/sidebar-organization-store.ts: SIDEBAR_ORGANIZATION_STORAGE_KEY (line 142)",
-  "features/chat/utils/chat-history-storage.ts: ThreadRecordWriteCoordinator (line 83)",
-  "features/chat/utils/clipboard-files.ts: MAX_AUDIO_SIZE (line 14)",
-  "features/chat/utils/thread-scoped-settings.ts: MAX_SAMPLING_SEED (line 112)",
-  "features/hub/download-manager/download-manager-state.ts: ACTIVE_STATES (line 296)",
-  "features/hub/download-manager/download-manager-state.ts: isTauri (line 300)",
-  "features/hub/lib/hf-cache.ts: LruMap (line 43)",
-  "features/hub/stores/hf-token-store.ts: AUTH_SESSION_CLEARED_EVENT (line 321)",
-  "features/native-intents/drop-paths.ts: OPEN_DOCUMENT_ATTACHMENT_EXTENSIONS (line 57)",
-  "features/native-intents/drop-paths.ts: RAG_UPLOAD_ACCEPT (line 11)",
-  "features/native-intents/drop-paths.ts: RAG_UPLOAD_ACCEPT (line 57)",
-  "features/native-intents/drop-paths.ts: TEXT_ATTACHMENT_EXTENSIONS (line 16)",
-  "features/native-intents/native-drop-targets.ts: isTauri (line 22)",
-  "features/native-intents/native-drop-targets.ts: isTauri (line 48)",
-  "features/settings/settings-dialog.tsx: MicIcon (line 210)",
-  "features/settings/settings-dialog.tsx: isTauri (line 233)",
-  "features/settings/settings-dialog.tsx: isTauri (line 235)",
-  "features/training/stores/training-config-policy.ts: DEFAULT_HYPERPARAMS (line 103)",
   "features/training/stores/training-config-store.ts: TRAINING_CONFIG_PERSISTENCE_NAME (line 1305)",
   "features/training/stores/training-config-store.ts: TRAINING_CONFIG_PERSISTENCE_VERSION (line 1306)",
-  "i18n/messages.ts: en (line 27)",
 ]);
 
 test("no module-scope read of a chat barrel value", () => {
@@ -1245,10 +1522,25 @@ test("no module-scope read of a chat barrel value", () => {
     return out;
   };
 
+  const prone = proneExportSets(files, sources, resolve);
+  const carriesProne = (target: string, exported?: string): boolean => {
+    const set = prone.get(target);
+    if (!set) return false;
+    if (set.star) return true;
+    return exported === undefined ? set.names.size > 0 : set.names.has(exported);
+  };
+  const barrelFile = resolve(BARREL, path.join(SRC, "index.ts"));
+
   const barrelNameFilter =
     (from: string) =>
     (specifier: string, exported?: string): boolean => {
-      if (specifier === BARREL) return true;
+      // A hoisted `function` the barrel re-exports is initialized before any
+      // module body runs, so a cyclic consumer reading that name cannot crash;
+      // only `const`, `let` and `class` bindings can. Following the re-export to
+      // the declaring module is what tells the two apart.
+      if (specifier === BARREL) {
+        return barrelFile === null ? true : carriesProne(barrelFile, exported);
+      }
       const target = resolve(specifier, from);
       if (target === null) return false;
       // A deep import into the cycle is the same hazard as the barrel. The
@@ -1263,9 +1555,11 @@ test("no module-scope read of a chat barrel value", () => {
         // That is exactly why prompt-queue-events.ts exists, and reading from
         // such a leaf is safe however the barrel reaches it.
         if (runtimeEdges(target).length === 0) return false;
-        const prone = tdzProneExportNames(parse(target, sources.get(target) ?? ""));
-        return exported === undefined ? prone.size > 0 : prone.has(exported);
+        return carriesProne(target, exported);
       }
+      // A bridge that re-exports a barrel binding keeps the conservative
+      // answer: bearing knows the name travelled, not which module declared it,
+      // so an import-then-export hop stays reported rather than guessed at.
       const carried = bearing.get(target);
       if (!carried) return false;
       if (carried.has(STAR)) return true;
@@ -1329,6 +1623,16 @@ test("no module-scope read of a chat barrel value", () => {
       `which throws if the import cycle re-enters before the binding is initialized. ` +
       `Move the read inside a function, as hooks/use-model-memory.ts does with ` +
       `watchedStorageKeys().\n  ${offenders.join("\n  ")}`,
+  );
+  // The list may only shrink, and nothing enforced that: an entry that stopped
+  // matching stayed armed, ready to suppress a real regression that later
+  // reappeared at the same file, name and line.
+  const stale = [...KNOWN_DEEP_CYCLE_READS].filter((entry) => !stillPresent.has(entry)).sort();
+  assert.deepEqual(
+    stale,
+    [],
+    `these entries in KNOWN_DEEP_CYCLE_READS no longer match any read, so they ` +
+      `only mask a future regression. Delete them:\n  ${stale.join("\n  ")}`,
   );
   // Anti-vacuity: a barrel rename would otherwise make this pass by finding nothing.
   assert.ok(importers >= 5, `only ${importers} modules import values from ${BARREL}`);
@@ -1518,6 +1822,64 @@ test("the scan catches every shape the regex version missed", () => {
       "eager call two functions deep",
       `import { K } from "${BARREL}";\nfunction inner() { return K; }\nfunction outer() { return inner(); }\nconst v = outer();\n`,
     ],
+    [
+      // The block's own declarations were never collected, so the call to a
+      // helper declared beside it resolved to nothing.
+      "helper declared and called inside a nested block",
+      `import { K } from "${BARREL}";\nif (ready) { const read = () => K; read(); }\n`,
+    ],
+    [
+      "class declared and constructed inside a nested block",
+      `import { K } from "${BARREL}";\n{ class C { constructor() { consume(K); } } new C(); }\n`,
+    ],
+    [
+      "helper declared and called inside a switch case",
+      `import { K } from "${BARREL}";\nswitch (v) { case 1: { function read() { return K; } read(); } }\n`,
+    ],
+    [
+      // Destructuring performs the same property read `obj.value` does.
+      "getter run by destructuring",
+      `import { K } from "${BARREL}";\nconst obj = { get value() { return K; } };\nconst { value } = obj;\n`,
+    ],
+    [
+      "getter run by a rest element",
+      `import { K } from "${BARREL}";\nconst obj = { get value() { return K; } };\nconst { ...rest } = obj;\n`,
+    ],
+    [
+      "getter run by object spread",
+      `import { K } from "${BARREL}";\nconst obj = { get value() { return K; } };\nconst copy = { ...obj };\n`,
+    ],
+    [
+      "setter run by an assignment",
+      `import { K } from "${BARREL}";\nconst obj = { set value(v) { consume(K); } };\nobj.value = 1;\n`,
+    ],
+    [
+      "static setter run by an assignment",
+      `import { K } from "${BARREL}";\nclass C { static set value(v) { consume(K); } }\nC.value = 1;\n`,
+    ],
+    [
+      "static getter run by a property read",
+      `import { K } from "${BARREL}";\nclass C { static get value() { return K; } }\nconst v = C.value;\n`,
+    ],
+    [
+      // The Promise constructor calls it before returning, named or not.
+      "named promise executor",
+      `import { K } from "${BARREL}";\nfunction read() { return K; }\nnew Promise(read);\n`,
+    ],
+    [
+      // The base default runs because the derived constructor's `super()`
+      // supplies nothing, whatever `new` was given.
+      "base default reached through an argument-less super",
+      `import { K } from "${BARREL}";\nclass Base { constructor(v = K) {} }\nclass D extends Base { constructor(v) { super(); } }\nnew D(1);\n`,
+    ],
+    [
+      "local function applied as a class decorator",
+      `import { K } from "${BARREL}";\nfunction deco() { consume(K); }\n@deco\nclass C {}\n`,
+    ],
+    [
+      "local function applied as a method decorator",
+      `import { K } from "${BARREL}";\nfunction deco() { consume(K); }\nclass C { @deco method() {} }\n`,
+    ],
   ];
   for (const [label, code] of cases) {
     assert.equal(analyse("t.ts", code).length, 1, `${label} should be flagged`);
@@ -1687,6 +2049,34 @@ test("deferred reads and non-references are left alone", () => {
     [
       "self-recursive function is not followed forever",
       `import { K } from "${BARREL}";\nfunction loop() { return loop(); }\nconst v = loop();\n`,
+    ],
+    [
+      // The base default is skipped because `super(1)` supplies the argument,
+      // which is the inverse of the positive case above: handing `new`'s own
+      // arguments down the chain would have rejected this.
+      "base default skipped because super supplies the argument",
+      `import { K } from "${BARREL}";\nclass Base { constructor(v = K) {} }\nclass D extends Base { constructor() { super(1); } }\nnew D();\n`,
+    ],
+    [
+      "a helper declared in a block nobody calls",
+      `import { K } from "${BARREL}";\nif (ready) { const read = () => K; }\n`,
+    ],
+    [
+      "destructuring a property that has no getter",
+      `import { K } from "${BARREL}";\nconst obj = { get value() { return K; } };\nconst { other } = obj;\n`,
+    ],
+    [
+      "a setter nobody assigns to",
+      `import { K } from "${BARREL}";\nconst obj = { set value(v) { consume(K); } };\n`,
+    ],
+    [
+      // Promise runs its executor; an arbitrary constructor does not.
+      "named function handed to an unknown constructor",
+      `import { K } from "${BARREL}";\nfunction read() { return K; }\nnew Registry(read);\n`,
+    ],
+    [
+      "a decorator that is never applied",
+      `import { K } from "${BARREL}";\nfunction deco() { consume(K); }\nexport { deco };\n`,
     ],
   ];
   for (const [label, code] of cases) {
@@ -1889,4 +2279,47 @@ test("an imported helper is entered with the caller's arguments, default import 
   const d = new Map([["read", build(dflt, "default")]]);
   assert.equal(scan(`import read from "./defaulthelper";\nconst v = read();\n`, d).length, 1,
     "a default-imported helper is followed like a named one");
+});
+
+test("a default export is recorded under the name consumers import it by", () => {
+  const prone = (code: string) => [...tdzProneExportNames(parse("t.ts", code))].sort();
+  assert.deepEqual(prone(`export default class K {}\n`), ["default"],
+    "K is a local name; consumers import this as default");
+  assert.deepEqual(prone(`export default class {}\n`), ["default"]);
+  assert.deepEqual(prone(`const v = 1;\nexport default v;\n`), ["default"],
+    "an export assignment binds where it runs, so it can be read too early");
+  assert.deepEqual(prone(`export default function read() {}\n`), [],
+    "a default function declaration is hoisted, so it is never in the dead zone");
+  assert.deepEqual(prone(`export function read() {}\nexport class C {}\n`), ["C"],
+    "only the class binding can be uninitialized");
+});
+
+test("functions published through an export list are resolvable helpers", () => {
+  const names = (code: string) => [...exportedFunctions(parse("t.ts", code)).keys()].sort();
+  assert.deepEqual(names(`function read() {}\nexport { read };\n`), ["read"]);
+  assert.deepEqual(names(`const read = () => 1;\nexport { read as run };\n`), ["run"],
+    "the EXPORTED name is what the importer writes");
+  assert.deepEqual(names(`function read() {}\nexport { read as default };\n`), ["default"]);
+  assert.deepEqual(names(`function read() {}\n`), [],
+    "a local function nobody exports is not a helper");
+});
+
+test("re-exported bindings are judged where they are declared", () => {
+  const leaf = path.join(SRC, "fake", "leafconst.ts");
+  const deep = path.join(SRC, "fake", "deepconst.ts");
+  const bridge = path.join(SRC, "fake", "prone-bridge.ts");
+  const sources = new Map<string, string>([
+    // No runtime imports, so nothing can re-enter it mid-initialization.
+    [leaf, `export const SAFE = 1;\n`],
+    [deep, `import "./leafconst";\nexport const LATE = 1;\nexport function fn() {}\nexport class C {}\n`],
+    [bridge, `export { SAFE } from "./leafconst";\nexport { LATE, fn, C } from "./deepconst";\n`],
+  ]);
+  const resolve = makeResolver(sources);
+  const sets = proneExportSets([...sources.keys()], sources, resolve);
+  assert.deepEqual([...(sets.get(leaf)?.names ?? [])], [],
+    "a module with no runtime imports is always fully initialized first");
+  assert.deepEqual([...(sets.get(deep)?.names ?? [])].sort(), ["C", "LATE"],
+    "a hoisted function is not in the dead zone; a const and a class are");
+  assert.deepEqual([...(sets.get(bridge)?.names ?? [])].sort(), ["C", "LATE"],
+    "a re-export carries the declaring module's verdict, not a fresh one");
 });
