@@ -569,22 +569,26 @@ class TestPinProvenanceMustBeABoolean:
 
     def test_the_manifest_reader_answers_false_for_a_string(self, tmp_path):
         (tmp_path / install_manifest.MANIFEST_NAME).write_text(
-            json.dumps({
-                "schema": install_manifest.MANIFEST_SCHEMA,
-                "expected_torch_tag": "cpu",
-                "expected_torch_tag_pinned": "false",
-            }),
+            json.dumps(
+                {
+                    "schema": install_manifest.MANIFEST_SCHEMA,
+                    "expected_torch_tag": "cpu",
+                    "expected_torch_tag_pinned": "false",
+                }
+            ),
             encoding = "utf-8",
         )
         assert install_manifest.recorded_torch_flavor_was_pinned(tmp_path) is False
 
     def test_a_real_boolean_still_answers_true(self, tmp_path):
         (tmp_path / install_manifest.MANIFEST_NAME).write_text(
-            json.dumps({
-                "schema": install_manifest.MANIFEST_SCHEMA,
-                "expected_torch_tag": "cpu",
-                "expected_torch_tag_pinned": True,
-            }),
+            json.dumps(
+                {
+                    "schema": install_manifest.MANIFEST_SCHEMA,
+                    "expected_torch_tag": "cpu",
+                    "expected_torch_tag_pinned": True,
+                }
+            ),
             encoding = "utf-8",
         )
         assert install_manifest.recorded_torch_flavor_was_pinned(tmp_path) is True
