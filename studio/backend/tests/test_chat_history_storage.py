@@ -552,9 +552,7 @@ def test_settings_compare_and_set_fences_an_expected_absent_nested_path(tmp_path
     assert settings["inferenceParams"]["presencePenalty"] == 0.0
 
 
-def test_settings_compare_and_set_leaves_timestamps_alone_for_an_empty_patch(
-    tmp_path, monkeypatch
-):
+def test_settings_compare_and_set_leaves_timestamps_alone_for_an_empty_patch(tmp_path, monkeypatch):
     """An empty patch is not a settings change. Without the same short-circuit the
     unconditional merge has, it would rewrite updated_at on every key, which reads
     as a fresh edit to anything watching those timestamps."""
@@ -582,9 +580,7 @@ def test_settings_compare_and_set_leaves_timestamps_alone_for_an_empty_patch(
     assert settings["inferenceParams"] == {"temperature": 0.6}
 
 
-def test_settings_compare_and_set_fences_a_model_row_added_after_the_read(
-    tmp_path, monkeypatch
-):
+def test_settings_compare_and_set_fences_a_model_row_added_after_the_read(tmp_path, monkeypatch):
     """Normalizing a differently cased model key writes a whole new exact-key row.
     The subset compare only checks the spelling that was read, so the exact key
     needs its own absence fence or a newer tab's row is overwritten wholesale."""
