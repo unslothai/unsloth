@@ -2063,11 +2063,40 @@ def _extract_reasoning_effort_levels(chat_template: str) -> list:
     ]
 
 
+# Headers already described in the log, keyed on identity rather than name so a rebuilt
+# GGUF at the same path is described again. Bounded; a dropped entry only re-logs once.
+_GGUF_METADATA_LOGGED: "dict[tuple, bool]" = {}
+_GGUF_METADATA_LOGGED_MAX = 32
+_GGUF_METADATA_LOGGED_LOCK = threading.Lock()
+
+
+def _note_gguf_metadata_read(gguf_path: str) -> bool:
+    """True the first time this exact file is read, False for repeats.
+
+    Falls open when the file cannot be stat'd: an unidentifiable read is better logged
+    than silently swallowed.
+    """
+    try:
+        st = os.stat(gguf_path)
+        key = (os.path.abspath(gguf_path), st.st_size, st.st_mtime_ns)
+    except Exception:
+        return True
+    with _GGUF_METADATA_LOGGED_LOCK:
+        if key in _GGUF_METADATA_LOGGED:
+            return False
+        _GGUF_METADATA_LOGGED[key] = True
+        while len(_GGUF_METADATA_LOGGED) > _GGUF_METADATA_LOGGED_MAX:
+            # Insertion-ordered, so this drops the oldest.
+            del _GGUF_METADATA_LOGGED[next(iter(_GGUF_METADATA_LOGGED))]
+        return True
+
+
 def detect_reasoning_flags(
     chat_template: Optional[str],
     model_identifier: Optional[str] = None,
     *,
     log_source: Optional[str] = None,
+    log_level: str = "info",
 ) -> dict:
     """Classify a chat template's reasoning and tool-calling capabilities.
 
@@ -2094,6 +2123,9 @@ def detect_reasoning_flags(
         return flags
     tpl = chat_template
     prefix = f"{log_source}: " if log_source else ""
+    # The GGUF sniffer re-derives these several times per request and the lines say the
+    # same thing every time, so it asks for debug after the first read of a file.
+    _log = logger.debug if log_level == "debug" else logger.info
 
     # 'none' is this style's disable sentinel, not an effort level: the off
     # switch is enable_thinking=false, and the Think menu already hides it.
@@ -2123,14 +2155,14 @@ def detect_reasoning_flags(
         flags["supports_reasoning"] = True
         flags["reasoning_style"] = "enable_thinking_effort"
         flags["reasoning_effort_levels"] = effort_levels
-        logger.info(
+        _log(
             f"{prefix}model supports reasoning "
             f"(enable_thinking + reasoning_effort: {effort_levels})"
         )
     elif "enable_thinking" in tpl:
         flags["supports_reasoning"] = True
         flags["reasoning_style"] = "enable_thinking"
-        logger.info(f"{prefix}model supports reasoning (enable_thinking)")
+        _log(f"{prefix}model supports reasoning (enable_thinking)")
     elif "reasoning_effort" in tpl:
         # gpt-oss / Harmony use reasoning_effort
         # ("low" | "medium" | "high"), not a boolean. Inkling maps a wider
@@ -2145,7 +2177,7 @@ def detect_reasoning_flags(
         scanned = _extract_reasoning_effort_levels(tpl)
         if "low" in scanned and "high" in scanned:
             flags["reasoning_effort_levels"] = scanned
-        logger.info(
+        _log(
             f"{prefix}model supports reasoning "
             f"(reasoning_effort: {flags['reasoning_effort_levels'] or 'default levels'})"
         )
@@ -2154,7 +2186,7 @@ def detect_reasoning_flags(
         normalized_id = (model_identifier or "").lower()
         if "deepseek" in normalized_id:
             flags["supports_reasoning"] = True
-            logger.info(f"{prefix}model supports reasoning (DeepSeek thinking)")
+            _log(f"{prefix}model supports reasoning (DeepSeek thinking)")
 
     # Hardcoded <think> tags or reasoning_content in the template mean
     # thinking is always on (no toggle).
@@ -2162,7 +2194,7 @@ def detect_reasoning_flags(
         if ("<think>" in tpl and "</think>" in tpl) or "reasoning_content" in tpl:
             flags["supports_reasoning"] = True
             flags["reasoning_always_on"] = True
-            logger.info(f"{prefix}model always reasons (<think> tags in template)")
+            _log(f"{prefix}model always reasons (<think> tags in template)")
 
     # preserve_thinking: independent kwarg on some Qwen templates that
     # keeps historical <think> blocks in prior assistant turns.
@@ -2172,11 +2204,11 @@ def detect_reasoning_flags(
         # used by Qwen3.6 and Gemma 4. Keep the product override family-scoped:
         # other templates that happen to expose the same kwarg stay off.
         flags["preserve_thinking_default"] = bool(_QWEN38_MODEL_RE.search(model_identifier or ""))
-        logger.info(f"{prefix}model supports preserve_thinking")
+        _log(f"{prefix}model supports preserve_thinking")
 
     if any(marker in tpl for marker in _TOOL_TEMPLATE_MARKERS):
         flags["supports_tools"] = True
-        logger.info(f"{prefix}model supports tool calling")
+        _log(f"{prefix}model supports tool calling")
 
     return flags
 
@@ -7968,6 +8000,77 @@ class LlamaCppBackend:
             return set()
 
     @staticmethod
+    def _rocm_selected_pool_mib(gpu_indices = None) -> Optional[int]:
+        """Return selected ROCm APUs' combined carve-out in MiB.
+
+        Return ``None`` unless every requested device is present, readable, and a
+        unified-memory APU. The ggml setting is process-wide, so mixed selections
+        fail closed.
+        """
+        try:
+            import torch
+
+            if not LlamaCppBackend._torch_is_rocm(torch):
+                return None
+            if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
+                return None
+            from core.training.worker import _rocm_classify_unified_memory
+
+            wanted = None if gpu_indices is None else set(gpu_indices)
+            physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
+            total_mib = 0
+            seen: set[int] = set()
+            for ordinal in range(torch.cuda.device_count()):
+                pid = (
+                    physical_ids[ordinal]
+                    if physical_ids is not None and ordinal < len(physical_ids)
+                    else ordinal
+                )
+                if wanted is not None and pid not in wanted:
+                    continue
+                try:
+                    props = torch.cuda.get_device_properties(ordinal)
+                    _arch, is_unified = _rocm_classify_unified_memory(props)
+                except Exception:
+                    return None
+                if not is_unified:
+                    return None
+                total = int(getattr(props, "total_memory", 0) or 0)
+                if total <= 0:
+                    return None
+                total_mib += total // (1024 * 1024)
+                seen.add(pid)
+            if not seen or (wanted is not None and seen != wanted):
+                return None
+            return total_mib
+        except Exception:
+            return None
+
+    @staticmethod
+    def _unified_memory_would_help(gpu_indices = None) -> bool:
+        """Whether managed allocation is the larger pool for the selected APUs.
+
+        On HIP it draws host RAM instead of the selected APUs' carve-outs, so the
+        decision is a direct comparison of the two pools. Available host RAM against
+        the carve-out's TOTAL is deliberate: a carve-out another process is holding
+        is not credited back to the host side, because the two pools fail
+        differently. Over-asking the carve-out returns hipErrorOutOfMemory and the
+        load fails cleanly, while over-asking host RAM is the OOM kill this gate
+        exists to stop, so both halves of the asymmetry lean toward the pool a miss
+        is recoverable in. Missing data and mixed-device selections fail closed.
+        """
+        try:
+            pool_mib = LlamaCppBackend._rocm_selected_pool_mib(gpu_indices)
+            if not pool_mib:
+                return False
+            host_mib = LlamaCppBackend._available_system_memory_mib()
+            if not host_mib:
+                return False
+            return int(host_mib) > int(pool_mib)
+        except Exception:
+            return False
+
+    @staticmethod
     def _rocm_arch_by_physical_id() -> dict[int, str]:
         """Base gfx arch (lowercased, ``:xnack`` stripped) per PHYSICAL device id,
         honoring the active ROCm visibility mask (HIP, then ROCR, then CUDA).
@@ -12744,15 +12847,23 @@ class LlamaCppBackend:
             # architecture" rather than "the read stopped early" -- what the preflight needs.
             self._gguf_header_parsed = kv_complete
 
+            # Ten call sites reach this, each via its own throwaway probe, and one
+            # estimate-memory POST walks the header 3-5 times: 140 of 296 log lines
+            # over a 20s four-tab session. The facts are identical every time, so only
+            # the first read of a given file says them out loud.
+            first_read = _note_gguf_metadata_read(gguf_path)
+            level = "info" if first_read else "debug"
+            log_at = logger.info if first_read else logger.debug
             if self._context_length:
-                logger.info(f"GGUF metadata: context_length={self._context_length}")
+                log_at(f"GGUF metadata: context_length={self._context_length}")
             if self._chat_template:
-                logger.info(f"GGUF metadata: chat_template={len(self._chat_template)} chars")
+                log_at(f"GGUF metadata: chat_template={len(self._chat_template)} chars")
                 # Detect thinking/reasoning support from chat template.
                 flags = detect_reasoning_flags(
                     self._chat_template,
                     self._model_identifier,
                     log_source = "GGUF metadata",
+                    log_level = level,
                 )
                 self._supports_reasoning = flags["supports_reasoning"]
                 self._reasoning_style = flags["reasoning_style"]
@@ -21794,10 +21905,9 @@ class LlamaCppBackend:
                     if not threads_overridden:
                         env.setdefault("OMP_NUM_THREADS", "2")
 
-                # AMD unified-memory APUs (gfx1150/gfx1151): let llama.cpp use shared
-                # system RAM. Not on Vulkan (nor DC below): gpu_indices are ggml
-                # ordinals, not CUDA/ROCm ids. Ownership-tracked, so the arch-crash
-                # retry withdraws it only when THIS launch set it.
+                # Managed allocations trade ROCm APU carve-out capacity for host RAM.
+                # Vulkan indices are not ROCm ids. Track ownership so later retries
+                # preserve inherited values.
                 _unified_env_applied = False
                 _unified_opt_out = self._unified_memory_opted_out(env)
                 if _unified_opt_out:
@@ -21807,10 +21917,13 @@ class LlamaCppBackend:
                         logger.info(
                             "Unified memory opted out: unset GGML_CUDA_ENABLE_UNIFIED_MEMORY"
                         )
-                elif not is_vulkan_backend and self._amd_apu_wants_unified_memory(gpu_indices):
+                elif not is_vulkan_backend and self._unified_memory_would_help(gpu_indices):
                     _unified_env_applied = "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
                     env.setdefault("GGML_CUDA_ENABLE_UNIFIED_MEMORY", "1")
-                    logger.info("AMD unified-memory APU: set GGML_CUDA_ENABLE_UNIFIED_MEMORY=1")
+                    logger.info(
+                        "AMD unified-memory APU whose carve-out is smaller than host "
+                        "RAM: set GGML_CUDA_ENABLE_UNIFIED_MEMORY=1"
+                    )
 
                 # DC NVIDIA GPUs: FP32 accum (+ P2P / launch queues for multi-GPU).
                 # See _apply_datacenter_env; opt out with UNSLOTH_DISABLE_DC_TUNING=1.
@@ -21959,20 +22072,28 @@ class LlamaCppBackend:
                         # mode or ratio, and the mask re-indexes the survivors
                         # under both.
                         self._clear_split_placement_env(env)
-                        # GGML_CUDA_ENABLE_UNIFIED_MEMORY was decided against
-                        # gpu_indices, None here, so an uncovered APU anywhere on the
-                        # host turned it on -- and this narrowing hands the child only
-                        # discrete cards, where _amd_apu_wants_unified_memory's docstring
-                        # calls it harmful. Same withdrawal and ownership check as the
-                        # arch-crash retry: only the value THIS launch set.
-                        if _unified_env_applied and not self._amd_apu_wants_unified_memory(
-                            _survivors
-                        ):
+                        # The setting is process-wide, so recompute it after changing
+                        # the selected devices. Ownership protects inherited values.
+                        _survivors_gain_unified = self._unified_memory_would_help(_survivors)
+                        if _unified_env_applied and not _survivors_gain_unified:
                             env.pop("GGML_CUDA_ENABLE_UNIFIED_MEMORY", None)
                             _unified_env_applied = False
                             logger.info(
-                                "Arch gate narrowed the launch to discrete GPU(s); "
-                                "dropped GGML_CUDA_ENABLE_UNIFIED_MEMORY."
+                                "Arch gate narrowed the launch onto GPU(s) the "
+                                "unified-memory swap cannot help; dropped "
+                                "GGML_CUDA_ENABLE_UNIFIED_MEMORY."
+                            )
+                        elif (
+                            _survivors_gain_unified
+                            and not _unified_opt_out
+                            and "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
+                        ):
+                            env["GGML_CUDA_ENABLE_UNIFIED_MEMORY"] = "1"
+                            _unified_env_applied = True
+                            logger.info(
+                                "Arch gate narrowed the launch onto a unified-memory "
+                                "APU whose carve-out is smaller than host RAM; set "
+                                "GGML_CUDA_ENABLE_UNIFIED_MEMORY=1."
                             )
                         self._emit_child_gpu_visibility(
                             env, ",".join(str(i) for i in _survivors), prefer_rocr = True
@@ -22787,7 +22908,10 @@ class LlamaCppBackend:
                         gpu_indices, [i for i, _free in _detected_gpus]
                     )
                     if _remaining:
+                        # APU presence controls the RAM guard; relative pool sizes
+                        # determine whether managed allocations help.
                         _retry_wants_unified = self._amd_apu_wants_unified_memory(_remaining)
+                        _retry_unified_helps = self._unified_memory_would_help(_remaining)
                         # Everything recorded so far priced the CRASHED selection, and
                         # that placement is gone: the canonical #7624 shape pins the APU
                         # whose shared-pool "free memory" outranked the dGPU, warns that
@@ -22848,22 +22972,24 @@ class LlamaCppBackend:
                         # the value this launch set. Both directions: a markerless
                         # mixed host can as easily crash on the dGPU and land on the
                         # APU, which needs it.
-                        if _unified_env_applied and not _retry_wants_unified:
+                        if _unified_env_applied and not _retry_unified_helps:
                             env.pop("GGML_CUDA_ENABLE_UNIFIED_MEMORY", None)
                             _unified_env_applied = False
                             logger.info(
-                                "Arch-crash retry targets discrete GPU(s); dropped "
+                                "Arch-crash retry targets GPU(s) the unified-memory "
+                                "swap cannot help; dropped "
                                 "GGML_CUDA_ENABLE_UNIFIED_MEMORY for the respawn."
                             )
                         elif (
-                            _retry_wants_unified
+                            _retry_unified_helps
                             and not _unified_opt_out  # the opt-out outlives the respawn
                             and "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
                         ):
                             env["GGML_CUDA_ENABLE_UNIFIED_MEMORY"] = "1"
                             _unified_env_applied = True
                             logger.info(
-                                "Arch-crash retry targets a unified-memory APU; set "
+                                "Arch-crash retry targets a unified-memory APU whose "
+                                "carve-out is smaller than host RAM; set "
                                 "GGML_CUDA_ENABLE_UNIFIED_MEMORY=1 for the respawn."
                             )
                         self._emit_child_gpu_visibility(

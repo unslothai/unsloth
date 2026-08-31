@@ -22,6 +22,7 @@ import {
   applyPerModelConfigToRuntime,
   currentRuntimePerModelConfig,
   hfModelFitsDevice,
+  loadScopedGpu,
   resolveInitialConfig,
   useActiveModelConfig,
 } from "@/features/model-picker";
@@ -30,6 +31,7 @@ import { taskForMediaPick } from "@/features/model-picker/components/model-selec
 import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useGpuInfo, useInferenceGpuInfo } from "@/hooks/use-gpu-info";
+import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useNavigate, useSearch } from "@tanstack/react-router";
@@ -70,6 +72,7 @@ import { useFeedWriteBack } from "./hooks/use-feed-write-back";
 import { useHiddenEmbeddingModelIds } from "./hooks/use-hidden-embedding-models";
 import { useHubFeed } from "./hooks/use-hub-feed";
 import type {
+  HfModelResult,
   HfModelSearchChannel,
   HfSortDirection,
   HfSortKey,
@@ -373,7 +376,31 @@ function selectedRepoMatchesRuntime(
 export function ModelsPage() {
   const navigate = useNavigate();
   const gpu = useGpuInfo();
+  // The saved VRAM Budget the loader admits against. The "Fits on device" filter scored against
+  // the 0.97 default without it, so lowering the setting moved the badges and not the filter.
+  const budgetFraction = useVramBudgetFraction() ?? undefined;
   const inferenceGpu = useInferenceGpuInfo();
+  // One fit answer for every Hub row, picked the way the task pickers pick it: by the runtime that
+  // PLACES the row. An image or video repo goes to the diffusion planner, on one torch device,
+  // under the media rule, so judging it by llama.cpp's budget kept a 52 GiB media GGUF that clears
+  // 62.1 GiB on a 64 GiB Mac and blows the planner's 44.8. Everything else keeps the GGUF
+  // backend's own inventory, which is the one thing llama.cpp rows must be judged against.
+  const rowFitsDevice = useCallback(
+    (result: HfModelResult) => {
+      const mediaRow = studioPageForTask(result.pipelineTag) !== undefined;
+      const source = loadScopedGpu(
+        mediaRow || !result.isGguf ? gpu : inferenceGpu,
+        mediaRow,
+      );
+      return hfModelFitsDevice(result, source, {
+        budgetFraction,
+        gpuCount: source.deviceCount,
+        mediaLoad: mediaRow,
+        hostPooledMemory: gpu.loadDeviceSharesHostMemory,
+      });
+    },
+    [budgetFraction, gpu, inferenceGpu],
+  );
   // Browser reachability, which is what every client here asks about: the
   // selected model's metadata and the cached feed each issue their own request.
   // On the discovery phase they would stay blocked at "probing" until a
@@ -896,12 +923,10 @@ export function ModelsPage() {
         // Models already on disk stay visible regardless of device fit, matching the chat selector.
         (!fitOnDeviceOnly ||
           row.isAvailableOnDevice ||
-          hfModelFitsDevice(
-            row.result,
-            row.result.isGguf ? inferenceGpu : gpu,
-          )),
+          rowFitsDevice(row.result)),
     );
   }, [
+    rowFitsDevice,
     discoverRows,
     hiddenEmbeddingModelIds,
     isDatasetMode,
@@ -910,8 +935,6 @@ export function ModelsPage() {
     deferredCapabilityFilter,
     activeChannel,
     fitOnDeviceOnly,
-    gpu,
-    inferenceGpu,
   ]);
 
   const listRows = filteredDiscoverRows;
@@ -941,9 +964,11 @@ export function ModelsPage() {
           (row) =>
             !fitOnDeviceOnly ||
             row.isAvailableOnDevice ||
-            hfModelFitsDevice(row.result, inferenceGpu),
+            rowFitsDevice(row.result),
         ),
     [
+      budgetFraction,
+      rowFitsDevice,
       hubFeed.trending.results,
       hiddenEmbeddingModelIds,
       modelDiscoveryInventorySignature,
@@ -1661,6 +1686,7 @@ export function ModelsPage() {
       minMemory,
       vramInfo,
       gpuGb: inferenceGpu.available ? inferenceGpu.memoryTotalGb : undefined,
+      gpuCount: inferenceGpu.deviceCount,
       systemRamGb:
         inferenceGpu.systemRamAvailableGb > 0
           ? inferenceGpu.systemRamAvailableGb
@@ -1675,6 +1701,7 @@ export function ModelsPage() {
       vramInfo,
       inferenceGpu.available,
       inferenceGpu.memoryTotalGb,
+      inferenceGpu.deviceCount,
       inferenceGpu.systemRamAvailableGb,
     ],
   );
