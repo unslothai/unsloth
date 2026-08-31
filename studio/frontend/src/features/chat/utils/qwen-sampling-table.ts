@@ -11,6 +11,8 @@
  * and every consumer follows, including rows already written to disk.
  */
 
+import { parseExternalModelId } from "../external-providers";
+
 export type QwenThinkingParams = {
   temperature: number;
   topP: number;
@@ -25,12 +27,24 @@ export type QwenThinkingParams = {
 // because a family segment always ends the string or runs into -, _, / or \.
 const PRESENCE_BUMP_QWEN = /(?:^|[^a-z0-9])qwen3\.(?:5|6|8)(?:$|[-_/\\])/;
 
+/**
+ * The bare model id, with any external wrapper removed.
+ *
+ * An external checkpoint is `external::<provider>::<percent-encoded id>`, so a
+ * provider-namespaced "Qwen/Qwen3.8-27B" arrives with its slash as `%2F`. That
+ * leaves an alphanumeric `f` against the family segment, which the boundary
+ * match above would reject, dropping the presence bump for every external Qwen.
+ */
+function bareModelId(checkpoint: string): string {
+  return parseExternalModelId(checkpoint)?.modelId ?? checkpoint;
+}
+
 /** Resolve the sampling table shared by model load and the Think toggle. */
 export function resolveQwenThinkingParams(
   checkpoint: string,
   thinkingOn: boolean,
 ): QwenThinkingParams | null {
-  const normalized = checkpoint.toLowerCase();
+  const normalized = bareModelId(checkpoint).toLowerCase();
   if (!normalized.includes("qwen3")) {
     return null;
   }

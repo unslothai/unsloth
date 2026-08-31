@@ -1924,7 +1924,9 @@ export function useChatModelRuntime() {
                 ? nativePathExpiresAtMs
                 : null,
             });
-            noteLoadedModelReasoningMode(modelId, nextReasoningEnabled);
+            // fromLoad: this browser performed the load, so the mode it chose
+            // outranks a persisted toggle describing the previous model.
+            noteLoadedModelReasoningMode(modelId, nextReasoningEnabled, true);
             // Unlock attach menus for capabilities the catalog entry lacked.
             syncModelCapabilities(modelId, loadResponse);
             // Qwen3-family: apply thinking-mode-specific params after load.

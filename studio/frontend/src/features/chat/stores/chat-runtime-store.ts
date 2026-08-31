@@ -3141,16 +3141,24 @@ let loadedModelReasoningMode: {
   checkpoint: string;
   enabled: boolean;
   reasoningMutationVersion: number;
+  fromLoad: boolean;
 } | null = null;
 
 /**
  * Record the mode a load/status response actually put the active model in.
  * Persisted settings can describe the previous model and therefore cannot
  * choose the migration table after a family default changed on load.
+ *
+ * `fromLoad` separates a model this browser actually loaded from a status
+ * refresh that merely reported one. A refresh reads whatever reasoningEnabled
+ * already sits in the store, which before hydration is this browser's local
+ * default rather than the installation's, so it is not authoritative enough to
+ * outrank the persisted toggle.
  */
 export function noteLoadedModelReasoningMode(
   checkpoint: string,
   enabled: boolean,
+  fromLoad = false,
 ): void {
   const state = useChatRuntimeStore.getState();
   loadedModelReasoningMode = {
@@ -3163,6 +3171,7 @@ export function noteLoadedModelReasoningMode(
         : enabled,
     reasoningMutationVersion:
       scalarSettingMutationVersions.reasoningEnabled,
+    fromLoad,
   };
 }
 
@@ -3686,7 +3695,13 @@ function getHydratedSettingsState(
     // was in flight already chose the mode for the model now running, and it
     // advances no mutation version, so the stored toggle describes whatever was
     // loaded before. Let the load win, as the sampling table it selected does.
-    if (key === "reasoningEnabled" && loadEstablishedReasoningMode(state)) {
+    // Only an actual load, though: a status refresh reports a resident model
+    // using whatever this browser had locally, which must not outrank the
+    // installation's own persisted toggle.
+    if (
+      key === "reasoningEnabled" &&
+      loadEstablishedReasoningMode(state, true)
+    ) {
       continue;
     }
     // Only a local model or an openai_codex provider can run deep research, so a
@@ -3807,12 +3822,14 @@ function installationReasoningEnabled(state: ChatRuntimeStore): boolean {
  */
 function loadEstablishedReasoningMode(
   state: ChatRuntimeStore,
+  requireLoad = false,
 ): { enabled: boolean } | null {
   if (
     loadedModelReasoningMode?.checkpoint.toLowerCase() ===
       state.params.checkpoint.toLowerCase() &&
     loadedModelReasoningMode.reasoningMutationVersion ===
-      scalarSettingMutationVersions.reasoningEnabled
+      scalarSettingMutationVersions.reasoningEnabled &&
+    (!requireLoad || loadedModelReasoningMode.fromLoad)
   ) {
     return { enabled: loadedModelReasoningMode.enabled };
   }

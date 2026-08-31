@@ -283,7 +283,7 @@ test("the loaded model's reasoning mode survives hydration", async () => {
     reasoningEnabled: false,
     settingsHydrated: false,
   }));
-  noteLoadedModelReasoningMode(QWEN38, false);
+  noteLoadedModelReasoningMode(QWEN38, false, true);
 
   await useChatRuntimeStore.getState().hydratePersistedSettings();
 
@@ -294,4 +294,32 @@ test("the loaded model's reasoning mode survives hydration", async () => {
   assert.equal(after.params.topP, 0.8);
   assert.equal(after.params.presencePenalty, 1.5);
   assert.equal(after.params.minP, 0);
+});
+
+test("a status refresh cannot outrank the installation's persisted reasoning", async () => {
+  // Startup adoption of a resident model reports it using whatever this browser
+  // had locally, which before hydration is a local default and not the shared
+  // installation setting. Only a load this browser performed may win.
+  resetHttp({
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    reasoningEnabled: false,
+    inferenceParamsByModel: { [QWEN38]: LEGACY_SNAPSHOT },
+  });
+  useChatRuntimeStore.setState((state) => ({
+    params: { ...state.params, ...LEGACY_SNAPSHOT, checkpoint: QWEN38 },
+    paramsByModel: { [QWEN38]: LEGACY_SNAPSHOT },
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    rememberParamsPerModel: true,
+    reasoningAlwaysOn: false,
+    reasoningEnabled: true,
+    settingsHydrated: false,
+  }));
+  noteLoadedModelReasoningMode(QWEN38, true);
+
+  await useChatRuntimeStore.getState().hydratePersistedSettings();
+
+  // The server said thinking is off for this installation. It stays off.
+  assert.equal(useChatRuntimeStore.getState().reasoningEnabled, false);
 });

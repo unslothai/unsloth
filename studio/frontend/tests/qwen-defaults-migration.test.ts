@@ -234,14 +234,31 @@ test("does not migrate generic Qwen3 or a custom preset", () => {
   assert.equal(migrateLegacyQwenDefaults(custom, QWEN38, true).patch, null);
 });
 
+test("external checkpoints are decoded before the family is matched", () => {
+  // buildExternalModelId percent-encodes, so a provider-namespaced Qwen arrives
+  // as external::<provider>::Qwen%2FQwen3.8-27B. Matching that raw would put an
+  // alphanumeric "f" against the family segment and drop the presence bump.
+  const encoded = `external::openrouter::${encodeURIComponent("Qwen/Qwen3.8-27B")}`;
+  assert.equal(isPresenceBumpQwen(encoded), true);
+  assert.equal(
+    isPresenceBumpQwen(
+      `external::openrouter::${encodeURIComponent("Qwen/Qwen3-8B")}`,
+    ),
+    false,
+  );
+
+  const settings = settingsFor(encoded);
+  const migrated = migrateLegacyQwenDefaults(settings, encoded, true);
+  assert.equal(
+    migrated.patch?.inferenceParamsByModel?.[encoded]?.presencePenalty,
+    1.5,
+  );
+});
+
 test("matches presence-bump versions only at model-id boundaries", () => {
   const future = settingsFor("unsloth/Qwen3.80-27B-GGUF");
   assert.equal(
-    migrateLegacyQwenDefaults(
-      future,
-      "unsloth/Qwen3.80-27B-GGUF",
-      true,
-    ).patch,
+    migrateLegacyQwenDefaults(future, "unsloth/Qwen3.80-27B-GGUF", true).patch,
     null,
   );
 });
