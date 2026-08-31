@@ -1997,7 +1997,7 @@ _OPENAI_LLAMA_UNCAPPED_MIN_OUTPUT_TOKENS = 256
 
 
 def _openai_llama_uncapped_max_tokens(
-    payload, *, request: Optional[Request], llama_backend
+    payload, *, request: Optional[Request], llama_backend, injected_prompt_tokens: int = 0
 ) -> Optional[int]:
     """The cap to give a request that names none, so it does not reserve the whole cache.
 
@@ -2019,6 +2019,12 @@ def _openai_llama_uncapped_max_tokens(
     and it is what llama.cpp gives a slot itself when the cache is split N ways instead
     of unified -- Unsloth passes ``--kv-unified`` so a NAMED cap can still use the whole
     window, and only the unnamed one is sized to a share.
+
+    ``injected_prompt_tokens`` is prompt the caller adds AFTER this, and it has to be
+    named here: the reservation lands exactly on a share, so anything the request grows
+    by between sizing and sending is cache nobody accounted for, and N slots of it is
+    the overcommit again. The standard GGUF path prefixes the current date to the system
+    prompt, so it charges that here and the slot still holds one share.
 
     None means "leave it unset", the behaviour every request had before this: one slot
     (whose share is the whole cache), an unreadable cache size, admission or token
@@ -2045,10 +2051,28 @@ def _openai_llama_uncapped_max_tokens(
     # left to hand the output and nothing here can make the two agree.
     if prompt_tokens is None:
         return None
-    output_tokens = share - prompt_tokens
+    output_tokens = share - prompt_tokens - max(0, injected_prompt_tokens)
     if output_tokens < _OPENAI_LLAMA_UNCAPPED_MIN_OUTPUT_TOKENS:
         return None
     return output_tokens
+
+
+def _openai_llama_uncapped_injected_date_tokens(request: Optional[Request]) -> int:
+    """Tokens the current-date prompt adds to a request that is about to be sized.
+
+    Studio prefixes the date to the system prompt of a keyless chat, after admission has
+    estimated the payload, so it is prompt the estimate cannot see. It is charged as a
+    whole system message because that is what it becomes when the request carries no
+    system turn of its own, which is the common shape here; prefixed onto an existing one
+    it costs less, and over-charging by a few tokens only shortens an answer.
+
+    Empty when the setting is off or the caller is not one Studio composes for, which
+    `_apply_current_date_prompt` decides -- asking it, rather than repeating the rule.
+    """
+    injected = _apply_current_date_prompt("", request)
+    if not injected:
+        return 0
+    return estimate_messages_tokens_dense([{"role": "system", "content": injected}])
 
 
 def _openai_llama_admission_reserve(
@@ -20280,6 +20304,11 @@ async def produce_openai_chat_completions(
             payload,
             request = request,
             llama_backend = llama_backend,
+            # The standard GGUF path below prefixes the current date to the system prompt
+            # and sends that, so the share has to hold it too or six slots each overrun by
+            # the injection. Charged on the passthrough branch as well, which does not
+            # inject: a few tokens of an answer, against branching before the route is known.
+            injected_prompt_tokens = _openai_llama_uncapped_injected_date_tokens(request),
         )
         if _shared_max_tokens is not None:
             payload.max_tokens = _shared_max_tokens

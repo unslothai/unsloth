@@ -64,6 +64,15 @@ def _cap(payload, backend = None):
     )
 
 
+def _cap_with_injection(payload, injected, backend = None):
+    return routes_inference._openai_llama_uncapped_max_tokens(
+        payload,
+        request = None,
+        llama_backend = backend if backend is not None else _backend(),
+        injected_prompt_tokens = injected,
+    )
+
+
 def _cost(payload):
     return routes_inference._openai_llama_admission_tokens(
         payload,
@@ -129,6 +138,44 @@ class TestTheResolvedCap:
     def test_admission_off_is_left_alone(self, monkeypatch):
         monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_CONTROL", "0")
         assert _cap(_uncapped()) is None
+
+
+class TestPromptInjectedAfterTheSizing:
+    """The share has to hold what the route adds after the cap is chosen.
+
+    The standard GGUF path prefixes the current date to the system prompt of a keyless
+    chat and sends that, which admission's estimate of the payload cannot see. Since the
+    reservation lands exactly on a share, an uncharged injection is a slot that overruns
+    its share, and six of them are the overcommit #9392 closed.
+    """
+
+    def test_the_injection_comes_out_of_the_cap(self):
+        payload = _uncapped()
+        prompt = routes_inference._openai_llama_admission_prompt_tokens(payload)
+        assert _cap_with_injection(payload, 40) == SHARE - prompt - 40
+
+    def test_the_slot_still_holds_one_share(self):
+        """What llama-server is actually asked for -- injected prompt plus the cap --
+        stays inside the share, so N of them still fit the cache."""
+        payload = _uncapped()
+        prompt = routes_inference._openai_llama_admission_prompt_tokens(payload)
+        assert prompt + 40 + _cap_with_injection(payload, 40) == SHARE
+
+    def test_an_injection_that_eats_the_answer_is_left_alone(self):
+        """Same floor as any other prompt that fills the share."""
+        payload = _uncapped()
+        prompt = routes_inference._openai_llama_admission_prompt_tokens(payload)
+        assert _cap_with_injection(payload, SHARE - prompt) is None
+
+    def test_the_date_prompt_is_priced_when_it_is_on(self, monkeypatch):
+        monkeypatch.setattr(
+            routes_inference, "current_date_prompt_line", lambda **_: "The current date is 2026-08-31."
+        )
+        assert routes_inference._openai_llama_uncapped_injected_date_tokens(None) > 0
+
+    def test_nothing_is_charged_when_it_is_off(self, monkeypatch):
+        monkeypatch.setattr(routes_inference, "current_date_prompt_line", lambda **_: "")
+        assert routes_inference._openai_llama_uncapped_injected_date_tokens(None) == 0
 
 
 class TestTheReservationItProduces:
