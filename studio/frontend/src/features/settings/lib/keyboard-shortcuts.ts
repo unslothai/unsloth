@@ -321,6 +321,7 @@ const BROWSER_RESERVED_VALUES = new Set<string>([
   "Mod+KeyL",
   // Find in page, on every engine. Unsloth ships its own on it anyway (see the note by the
   // default); this is what warns a web user before they rebind onto it.
+  "Mod+KeyF",
   "Mod+KeyR",
   "Mod+Shift+KeyR",
   "Mod+KeyP",

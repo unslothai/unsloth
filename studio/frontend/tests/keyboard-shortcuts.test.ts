@@ -540,6 +540,15 @@ test("no default takes a chord the browser owns without a reason", () => {
       }
     }
   }
+  // Being on the list has to MEAN the chord is flagged, or dropping a value from the reserved set
+  // silently turns an exception into an unwarned default and this test keeps passing.
+  for (const value of deliberate) {
+    assert.ok(
+      isBrowserReservedBinding(value, true) ||
+        isBrowserReservedBinding(value, false),
+      `${value} is listed as a deliberate exception but nothing flags it`,
+    );
+  }
 });
 
 test("recording a chord ignores a lone modifier", () => {

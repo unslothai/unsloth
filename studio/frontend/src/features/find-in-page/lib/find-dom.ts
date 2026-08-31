@@ -203,6 +203,24 @@ function revealWithin(scroller: Element, rect: DOMRect): boolean {
 }
 
 /**
+ * The top edge of the scroll container `range` sits in, in window coordinates.
+ *
+ * Not zero: the thread viewport starts below the navbar and the chat header, so a match clipped
+ * just off the top of it still has a positive window-relative `top`. Treating that as visible sends
+ * a fresh query backwards to an occurrence the reader cannot see.
+ */
+export function scrollViewportTop(range: Range): number {
+  const start = range.startContainer;
+  let element: Element | null =
+    start.nodeType === 1 ? (start as Element) : (start.parentElement ?? null);
+  while (element) {
+    if (scrollsAxis(element, "y")) return element.getBoundingClientRect().top;
+    element = element.parentElement;
+  }
+  return 0;
+}
+
+/**
  * Bring `range` into view, innermost scroller first.
  *
  * Nested scrollers are real here (a wide code fence inside the thread viewport), and the rect has to

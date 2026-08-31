@@ -17,6 +17,7 @@ import {
   rangeForMatch,
   resolveFindScope,
   scrollRangeIntoView,
+  scrollViewportTop,
   selectRangeFallback,
   supportsHighlightApi,
 } from "../lib/find-dom.ts";
@@ -31,10 +32,13 @@ import {
 } from "../lib/find-text-index.ts";
 
 /**
- * How long the document must sit still before the index is rebuilt. Trailing edge only, so a burst
- * of streaming mutations is one rebuild after the burst rather than one per frame.
+ * Shortest gap between two rebuilds while the document is changing.
+ *
+ * A throttle rather than a debounce: a reply streams for as long as it takes to write, and a
+ * debounce would leave the count frozen and the new text unfindable for that whole time. This
+ * bounds the cost instead, at one flatten per interval however fast the tokens arrive.
  */
-export const REINDEX_DEBOUNCE_MS = 300;
+export const REINDEX_INTERVAL_MS = 300;
 
 export interface FindResults {
   /** Matches for the current query, capped at `MAX_MATCHES`. */
@@ -65,9 +69,9 @@ function firstMatchFromViewport(
   while (lo <= hi) {
     const mid = (lo + hi) >> 1;
     const range = rangeForMatch(index, matches[mid]);
-    const top = range?.getBoundingClientRect().top;
-    if (top === undefined) return 0;
-    if (top >= 0) {
+    if (!range) return 0;
+    const top = range.getBoundingClientRect().top;
+    if (top >= scrollViewportTop(range)) {
       found = mid;
       hi = mid - 1;
     } else {
@@ -199,6 +203,7 @@ export function useFindInPage(query: string): FindResults {
         staleRef.current = true;
         // Nothing to re-run against an empty query, so streaming into an unused bar only sets a flag.
         if (queryRef.current.length === 0) return;
+        // Already scheduled: the interval is the floor, so a burst costs one rebuild, not one each.
         if (timerRef.current !== null) return;
         timerRef.current = setTimeout(() => {
           timerRef.current = null;
@@ -206,7 +211,7 @@ export function useFindInPage(query: string): FindResults {
           // No reveal: a reply arrived, the reader did not ask to move. The ordinal is kept, which
           // is right for the append-only growth streaming produces.
           rebuild(false, false);
-        }, REINDEX_DEBOUNCE_MS);
+        }, REINDEX_INTERVAL_MS);
       });
       observer.observe(scope, {
         childList: true,

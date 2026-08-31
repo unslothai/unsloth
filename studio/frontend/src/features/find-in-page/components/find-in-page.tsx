@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
-import { useShortcut } from "@/features/settings";
+import { isSurfaceBackgrounded, useShortcut } from "@/features/settings";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 // The 02 arrows, not the 01 pair: 01 is a bare chevron, and these read as arrows everywhere else.
@@ -14,7 +14,10 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef } from "react";
 import { useFindInPage } from "../hooks/use-find-in-page.ts";
-import { MAX_MATCHES } from "../lib/find-text-index.ts";
+import {
+  FIND_SCOPE_ATTRIBUTE,
+  MAX_MATCHES,
+} from "../lib/find-text-index.ts";
 import { useFindInPageStore } from "../stores/find-in-page-store.ts";
 
 /**
@@ -30,7 +33,17 @@ export function FindInPage({ enabled = true }: { enabled?: boolean }) {
 
   // Not `skipInTextFields`: the chord has to work from the composer, and pressing it inside the
   // find field is how a find bar is asked to start over.
-  useShortcut("findInPage", () => requestFocus(), { enabled });
+  useShortcut(
+    "findInPage",
+    () => {
+      // Every modal, not just Settings: Radix marks the shell `aria-hidden`/`inert` for as long as
+      // one is up, so a bar opened behind it is unreachable and its scope unsearchable. Asked at
+      // press time, since `enabled` is read at render and a dialog opening need not cause one.
+      if (isSurfaceBackgrounded(`[${FIND_SCOPE_ATTRIBUTE}]`)) return;
+      requestFocus();
+    },
+    { enabled },
+  );
 
   if (!enabled || !open) return null;
   return <FindBar />;
@@ -92,7 +105,7 @@ function FindBar() {
       data-find-skip=""
       role="search"
       aria-label={t("shell.find.label")}
-      className="find-bar-surface absolute top-3 right-4 z-50 flex h-13 items-center gap-1 rounded-full pr-4 pl-5"
+      className="find-bar-surface fixed top-[calc(var(--studio-content-top-inset,0px)+3.5rem)] right-4 z-50 flex h-13 max-w-[calc(100vw-2rem)] items-center gap-1 rounded-full pr-4 pl-5"
     >
       <input
         ref={inputRef}
@@ -122,7 +135,9 @@ function FindBar() {
         autoComplete="off"
         autoCorrect="off"
         className={cn(
-          "w-64 bg-transparent text-[15px] outline-none placeholder:text-muted-foreground",
+          // Narrow by default so the whole bar clears a small window, wide once there is room.
+          // `min-w-0` lets the field, rather than the bar, give way if it still does not fit.
+          "w-40 min-w-0 bg-transparent text-[15px] outline-none placeholder:text-muted-foreground sm:w-64",
           empty && "text-destructive",
         )}
       />

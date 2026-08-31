@@ -112,6 +112,12 @@ export interface FindElementLike {
   readonly tagName: string;
   readonly childNodes: ArrayLike<FindTextNodeLike | FindElementLike>;
   getAttribute(name: string): string | null;
+  /** Optional so a test can hand this plain objects; every browser we ship on has it. */
+  checkVisibility?(options?: {
+    contentVisibilityAuto?: boolean;
+    opacityProperty?: boolean;
+    visibilityProperty?: boolean;
+  }): boolean;
 }
 
 export type FindNodeLike = FindTextNodeLike | FindElementLike;
@@ -140,16 +146,23 @@ export const EMPTY_TEXT_INDEX: FindTextIndex = {
 };
 
 /**
- * Case-fold a run, but only when folding leaves its length alone.
+ * Case-fold a run without changing its length.
  *
  * One character of `text` has to stand for one character of a text node, and Turkish dotted I
- * (U+0130) folds to two code units. A run holding one would shift every offset after it, painting
- * highlights to the left of the word, so it keeps its case instead.
+ * (U+0130) folds to two code units. The fast path is the whole run at once; when that grows, fold
+ * per code point and keep only the folds that fit, so one such character no longer makes the rest
+ * of its run case-sensitive.
  */
 export function foldChunk(raw: string): string {
   const spaced = raw.replace(HARD_SPACE_PATTERN, " ");
   const folded = spaced.toLowerCase();
-  return folded.length === spaced.length ? folded : spaced;
+  if (folded.length === spaced.length) return folded;
+  let out = "";
+  for (const point of spaced) {
+    const lower = point.toLowerCase();
+    out += lower.length === point.length ? lower : point;
+  }
+  return out;
 }
 
 /** True when the walk must not descend into this element. */
@@ -160,7 +173,17 @@ export function skipsSubtree(element: FindElementLike): boolean {
   // under `inert`; Radix marks the page `aria-hidden` behind a modal.
   if (element.getAttribute("hidden") !== null) return true;
   if (element.getAttribute("inert") !== null) return true;
-  return element.getAttribute("aria-hidden") === "true";
+  if (element.getAttribute("aria-hidden") === "true") return true;
+  // Anything the engine is not painting. Attributes alone miss the common case: a responsive
+  // `hidden lg:flex` is a CLASS, and text under it would be counted, and walked to, while nobody
+  // can see it. Opacity is left out so a message still fading in stays findable.
+  return (
+    element.checkVisibility?.({
+      contentVisibilityAuto: true,
+      opacityProperty: false,
+      visibilityProperty: true,
+    }) === false
+  );
 }
 
 /**
@@ -187,12 +210,8 @@ export function buildTextIndex(root: FindElementLike): FindTextIndex {
       const child = children[i];
       if (child.nodeType === TEXT_NODE) {
         const node = child as FindTextNodeLike;
-        const raw = node.data;
-        if (raw.length === 0) continue;
-        if (length + raw.length > MAX_INDEX_CHARS) {
-          truncated = true;
-          return;
-        }
+        const full = node.data;
+        if (full.length === 0) continue;
         if (pendingSeparator) {
           pendingSeparator = false;
           if (length > 0) {
@@ -200,9 +219,18 @@ export function buildTextIndex(root: FindElementLike): FindTextIndex {
             length += 1;
           }
         }
-        parts.push(foldChunk(raw));
-        segments.push({ node, start: length, length: raw.length });
-        length += raw.length;
+        // A single node can be bigger than the whole ceiling: one Bash step's log arrives as one
+        // text node. Take the prefix that fits rather than dropping the node, or a document made
+        // of one such node would index to nothing at all.
+        const room = MAX_INDEX_CHARS - length;
+        const raw = full.length > room ? full.slice(0, room) : full;
+        if (raw.length < full.length) truncated = true;
+        if (raw.length > 0) {
+          parts.push(foldChunk(raw));
+          segments.push({ node, start: length, length: raw.length });
+          length += raw.length;
+        }
+        if (truncated) return;
       } else if (child.nodeType === ELEMENT_NODE) {
         visit(child as FindElementLike);
         if (truncated) return;
@@ -232,6 +260,27 @@ export interface FindMatch {
   end: number;
 }
 
+/** Regex metacharacters, so a query of "a.b" does not match "axb". */
+const REGEX_META_PATTERN = /[.*+?^${}()|[\]\\]/g;
+
+/**
+ * A pattern for a query that spans whitespace, or null when a plain scan will do.
+ *
+ * HTML collapses runs of whitespace, so a markdown paragraph soft-wrapped mid-sentence renders as
+ * one line while its text node still holds the newline. Searching the phrase a reader can see would
+ * otherwise miss it. Each run of whitespace in the query matches a run in the document; the
+ * separator is not whitespace, so block boundaries stay closed.
+ *
+ * Single-word queries, which are most of them, keep the `indexOf` path.
+ */
+function whitespacePattern(needle: string): RegExp | null {
+  if (!/\s/.test(needle)) return null;
+  const escaped = needle
+    .replace(REGEX_META_PATTERN, "\\$&")
+    .replace(/\s+/g, "\\s+");
+  return new RegExp(escaped, "g");
+}
+
 /**
  * Every occurrence of `query`, left to right, capped at `limit`. Non-overlapping, like every
  * browser's own find, which is what makes the walk terminate on a self-overlapping query.
@@ -244,6 +293,17 @@ export function findMatches(
   const needle = normalizeQuery(query);
   if (needle === null) return [];
   const out: FindMatch[] = [];
+  const pattern = whitespacePattern(needle);
+  if (pattern) {
+    for (;;) {
+      const hit = pattern.exec(index.text);
+      if (hit === null) return out;
+      const end = hit.index + hit[0].length;
+      out.push({ start: hit.index, end });
+      if (out.length >= limit) return out;
+      pattern.lastIndex = end;
+    }
+  }
   let from = 0;
   for (;;) {
     const at = index.text.indexOf(needle, from);

@@ -34,6 +34,10 @@ declare global {
       stream: (text: string, msPerChar?: number) => void;
       /** Time one flatten of the harness document, in milliseconds. */
       timeIndex: () => number;
+      /** Stand in for a modal: Radix marks the shell aria-hidden for as long as one is up. */
+      setModal: (open: boolean) => void;
+      /** Swap the scroller from the scope to an outer container, as non-chat routes do. */
+      setOuterScroll: (outer: boolean) => void;
     };
   }
 }
@@ -60,6 +64,8 @@ function Conversation({ extra }: { extra: string[] }) {
             Message {i + 1}
           </p>
           <p>{PARAGRAPHS[i % PARAGRAPHS.length]}</p>
+          {/* A markdown soft wrap: one text node with a newline, rendered as one line. */}
+          {i === 0 ? <p>{"A soft wrapped\n          phrase about unsloth."}</p> : null}
         </div>
       ))}
       {extra.map((text, i) => (
@@ -78,6 +84,8 @@ function Conversation({ extra }: { extra: string[] }) {
 
 function Harness() {
   const [streamed, setStreamed] = useState<string[]>([]);
+  const [modal, setModal] = useState(false);
+  const [outerScroll, setOuterScroll] = useState(false);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const scopeRef = useRef<HTMLDivElement>(null);
 
@@ -104,6 +112,8 @@ function Harness() {
           ?.textContent ?? null,
       scrollTop: () => scrollerRef.current?.scrollTop ?? -1,
       stream,
+      setModal,
+      setOuterScroll,
       // What one flatten of a conversation costs, against the same function the bar calls.
       timeIndex: () => {
         const scope = scopeRef.current;
@@ -135,18 +145,44 @@ function Harness() {
         </button>
       </div>
       {/* The shell's content region: relative because the bar floats inside it, and the scope. */}
+      {/* `outerScroll` mirrors a non-chat route, where SidebarInset scrolls and the scope is
+          taller than the window. Chat routes are the default: the scope is the fixed-height
+          container and the thread viewport inside it scrolls. */}
       <div
-        ref={scopeRef}
-        {...{ [FIND_SCOPE_ATTRIBUTE]: "" }}
-        className="relative flex min-h-0 flex-1 flex-col overflow-hidden"
+        ref={outerScroll ? scrollerRef : undefined}
+        className={
+          outerScroll
+            ? "min-h-0 flex-1 overflow-y-auto"
+            : "flex min-h-0 flex-1 flex-col overflow-hidden"
+        }
       >
-        <FindInPage />
-        <div ref={scrollerRef} className="min-h-0 flex-1 overflow-y-auto">
-          <Conversation extra={streamed} />
-        </div>
-        {/* A workspace parked off-route, as `__root.tsx` parks one. Never counted. */}
-        <div hidden={true} inert={true}>
-          <p>unsloth unsloth unsloth from a workspace nobody is looking at</p>
+        <div
+          ref={scopeRef}
+          {...{ [FIND_SCOPE_ATTRIBUTE]: "" }}
+          aria-hidden={modal || undefined}
+          className={
+            outerScroll
+              ? "relative flex flex-col"
+              : "relative flex min-h-0 flex-1 flex-col overflow-hidden"
+          }
+        >
+          <FindInPage />
+          <div
+            ref={outerScroll ? undefined : scrollerRef}
+            className={outerScroll ? "" : "min-h-0 flex-1 overflow-y-auto"}
+          >
+            <Conversation extra={streamed} />
+          </div>
+          {/* A workspace parked off-route, as `__root.tsx` parks one. Never counted. */}
+          <div hidden={true} inert={true}>
+            <p>unsloth unsloth unsloth from a workspace nobody is looking at</p>
+          </div>
+          {/* Hidden by a CLASS, not an attribute: the case attributes alone miss. Tailwind's
+              `hidden` is `display: none`, which is what a responsive `hidden lg:flex` resolves to
+              at a breakpoint that is not active. */}
+          <div className="hidden">
+            <p>unsloth from a breakpoint that is not active</p>
+          </div>
         </div>
       </div>
     </div>

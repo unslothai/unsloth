@@ -188,6 +188,39 @@ test("a non-breaking space answers to the space key", () => {
   assert.equal(index.text.includes(nbsp), false);
 });
 
+test("an expanding fold does not make the rest of its run case-sensitive", () => {
+  // Turkish dotted I grows under toLowerCase. Giving up on the whole run for it left ordinary
+  // words in the same node unmatchable.
+  const index = buildTextIndex(el("DIV", [el("P", [text("HELLO İ")])]));
+  assert.equal(findMatches(index, "hello").length, 1);
+  // And the offsets still line up, which is what the whole-run fallback was protecting.
+  const [match] = findMatches(index, "hello");
+  assert.equal(startPositionAt(index.segments, match.start)?.offset, 0);
+});
+
+test("a text node bigger than the ceiling contributes its prefix", () => {
+  // One Bash step's log arrives as one text node. Dropping it whole indexed nothing at all.
+  const node = text(`unsloth ${"x".repeat(MAX_INDEX_CHARS + 10)}`);
+  const index = buildTextIndex(el("DIV", [el("P", [node])]));
+  assert.equal(index.truncated, true);
+  assert.equal(index.text.length, MAX_INDEX_CHARS);
+  assert.equal(findMatches(index, "unsloth").length, 1);
+  // The prefix maps back to the node it came from, so a match in it is reachable.
+  assert.equal(startPositionAt(index.segments, 0)?.node, node);
+});
+
+test("an element the engine is not painting is skipped", () => {
+  // Attributes miss the common case: a responsive `hidden lg:flex` is a class.
+  const hidden = {
+    ...el("DIV", [text("buried")]),
+    checkVisibility: () => false,
+  };
+  const shown = { ...el("DIV", [text("shown")]), checkVisibility: () => true };
+  const index = buildTextIndex(el("DIV", [hidden, shown]));
+  assert.equal(index.text.includes("buried"), false);
+  assert.equal(index.text.includes("shown"), true);
+});
+
 // --- the search --------------------------------------------------------------------------------
 
 test("matching ignores case in both directions", () => {
@@ -224,6 +257,32 @@ test("a pasted separator cannot match across a block boundary", () => {
   );
   assert.equal(normalizeQuery(`a${BLOCK_SEPARATOR}b`), null);
   assert.deepEqual(findMatches(index, `a${BLOCK_SEPARATOR}b`), []);
+});
+
+test("a query spanning whitespace matches the phrase as it renders", () => {
+  // HTML collapses runs of whitespace, so a markdown paragraph soft-wrapped mid-sentence renders
+  // as one line while its text node still holds the newline.
+  const index = buildTextIndex(
+    el("DIV", [el("P", [text("A soft wrapped\n      phrase about unsloth.")])]),
+  );
+  assert.equal(findMatches(index, "wrapped phrase").length, 1);
+  // The match is as wide as the run it covered, so the highlight lands on the whole phrase.
+  const [match] = findMatches(index, "wrapped phrase");
+  assert.equal(match.end - match.start, "wrapped\n      phrase".length);
+});
+
+test("a query spanning whitespace still cannot cross a block boundary", () => {
+  const index = buildTextIndex(
+    el("DIV", [el("P", [text("the end")]), el("P", [text("start here")])]),
+  );
+  assert.deepEqual(findMatches(index, "end start"), []);
+});
+
+test("a regex metacharacter in a query is a literal", () => {
+  const index = buildTextIndex(el("DIV", [el("P", [text("a.b and axb c")])]));
+  // Only reaches the pattern path because of the space, which is the point.
+  assert.equal(findMatches(index, "a.b and").length, 1);
+  assert.deepEqual(findMatches(index, "axb and"), []);
 });
 
 // --- the bounds --------------------------------------------------------------------------------
@@ -360,6 +419,47 @@ test("dark mode sits above the cards it floats over", async () => {
   assert.ok(bar < border, `bar ${bar} is not darker than --border ${border}`);
   // And a halo in the page background, not a dark edge around a borderless panel.
   assert.match(value(".dark .find-bar-surface", "box-shadow"), /var\(--background\)/);
+});
+
+test("the bar stays out of a backgrounded scope, and off the document origin", async () => {
+  const bar = await readFile(
+    new URL("../src/features/find-in-page/components/find-in-page.tsx", import.meta.url),
+    "utf8",
+  );
+  // Every modal, not just Settings: Radix marks the shell aria-hidden for as long as one is up,
+  // and `enabled` is read at render, which a dialog opening need not cause.
+  assert.match(bar, /isSurfaceBackgrounded\(`\[\$\{FIND_SCOPE_ATTRIBUTE\}\]`\)/);
+  // Fixed, not absolute: on a route whose outer container scrolls, an absolutely positioned bar
+  // sits at the top of a scope taller than the window and scrolls out of reach.
+  const surface = /className="(find-bar-surface[^"]*)"/.exec(bar);
+  assert.ok(surface);
+  assert.match(surface[1], /\bfixed\b/);
+  assert.equal(/\babsolute\b/.test(surface[1]), false);
+  // And capped, so a narrow window cannot push it off the left edge.
+  assert.match(surface[1], /max-w-\[calc\(100vw-2rem\)\]/);
+});
+
+test("a fresh query starts from the scroll container's top, not the window's", async () => {
+  const engine = await readFile(
+    new URL("../src/features/find-in-page/hooks/use-find-in-page.ts", import.meta.url),
+    "utf8",
+  );
+  // The thread viewport starts below the navbar and the chat header, so a match clipped just off
+  // the top of it still has a positive window-relative `top`.
+  assert.match(engine, /top >= scrollViewportTop\(range\)/);
+  assert.equal(/top >= 0/.test(engine), false);
+});
+
+test("re-indexing while the document changes is a throttle, and says so", async () => {
+  const engine = await readFile(
+    new URL("../src/features/find-in-page/hooks/use-find-in-page.ts", import.meta.url),
+    "utf8",
+  );
+  // A debounce would leave the count frozen and new text unfindable for as long as a reply takes
+  // to write. The name has to match the behaviour, which is what went wrong before.
+  assert.match(engine, /REINDEX_INTERVAL_MS/);
+  assert.equal(/REINDEX_DEBOUNCE_MS/.test(engine), false);
+  assert.match(engine, /A throttle rather than a debounce/);
 });
 
 test("the bar has no border, and its buttons have a hover that shows", async () => {
