@@ -53,11 +53,25 @@ class InstallerExit(RuntimeError):
         self.returncode = returncode
 
 
-# whisper.cpp updates run through this same helper, so match either installer's
-# log prefix rather than llama's alone.
-_PREBUILT_REASON_RE = re.compile(
-    r"^\[[\w.-]+-prebuilt\]\s+prebuilt (?:fallback reason|install failed):\s*(?P<detail>.*)$"
+# The verdict line every installer logs before it exits: "prebuilt fallback
+# reason:", "prebuilt install failed:", "prebuilt install refused:", "prebuilt
+# busy reason:". whisper.cpp updates run through this same helper, so the
+# component prefix is matched as a pattern rather than llama's alone.
+_PREBUILT_VERDICT_RE = re.compile(
+    r"^\[[\w.-]+-prebuilt\]\s+prebuilt\b[^:]*\b(?:reason|failed|refused):\s*(?P<detail>.*)$"
 )
+
+
+def _is_github_rate_limit_line(line: str) -> bool:
+    """A retry line naming a rate-limited api.github.com fetch.
+
+    Weaker evidence than a verdict line: the installer retries and can still
+    succeed, and huggingface.co has its own 429, so the line has to name GitHub.
+    """
+    lowered = line.lower()
+    if "github" not in lowered:
+        return False
+    return "github api returned 403" in lowered or "rate limit exceeded" in lowered
 
 
 def _installer_actionable_detail(lines: Sequence[str]) -> str | None:
@@ -65,16 +79,20 @@ def _installer_actionable_detail(lines: Sequence[str]) -> str | None:
 
     The installer logs the real failure before dumping a long system report
     (Windows PATH lines, nvidia-smi, ldd), so a raw tail hides rate-limit and
-    network errors behind noise (#9970).
+    network errors behind noise (#9970). The last verdict line wins: it is the
+    one the installer exited on, while an earlier rate-limit retry may have
+    succeeded on a later attempt.
     """
+    verdict: str | None = None
     for line in lines:
-        stripped = line.strip()
-        match = _PREBUILT_REASON_RE.match(stripped)
+        match = _PREBUILT_VERDICT_RE.match(line.strip())
         if match is not None:
-            return match.group("detail").strip()
+            verdict = match.group("detail").strip()
+    if verdict:
+        return verdict
     for line in lines:
         stripped = line.strip()
-        if "GitHub API returned 403" in stripped or "rate limit exceeded" in stripped.lower():
+        if _is_github_rate_limit_line(stripped):
             return stripped
     return None
 
@@ -93,7 +111,9 @@ def format_installer_failure_message(
     detail = _installer_actionable_detail(actionable_lines) or _installer_actionable_detail(lines)
     if detail:
         lowered = detail.lower()
-        if "github api returned 403" in lowered or "rate limit" in lowered:
+        # Both signals: a reason that merely mentions a rate limit somewhere must
+        # not be replaced by rate-limit advice that does not fit it.
+        if "github" in lowered and ("returned 403" in lowered or "rate limit" in lowered):
             return (
                 f"installer exited {returncode}: GitHub API rate limit exceeded while "
                 "fetching prebuilt releases. Set GH_TOKEN or GITHUB_TOKEN to avoid "
@@ -429,15 +449,23 @@ def stream_installer(
     watchdog.daemon = True
     watchdog.start()
     tail_lines: list[str] = []
-    actionable_lines: list[str] = []
+    # Two buckets, not one: a run can log a dozen rate-limit retries before the
+    # verdict line, and a single capped list would fill with retries and drop the
+    # verdict, which is the line the user needs.
+    verdict_lines: list[str] = []
+    hint_lines: list[str] = []
     try:
         assert proc.stdout is not None
         for line in proc.stdout:
             tail_lines.append(line)
             if len(tail_lines) > 80:
                 del tail_lines[0]
-            if len(actionable_lines) < 8 and _installer_actionable_detail((line,)) is not None:
-                actionable_lines.append(line)
+            if _PREBUILT_VERDICT_RE.match(line.strip()) is not None:
+                verdict_lines.append(line)
+                if len(verdict_lines) > 4:
+                    del verdict_lines[0]
+            elif len(hint_lines) < 4 and _is_github_rate_limit_line(line):
+                hint_lines.append(line)
             child = CHILD_PID_LINE_RE.match(line.strip())
             if child is not None:
                 # Recorded while it runs and dropped when the installer says it
@@ -467,7 +495,7 @@ def stream_installer(
     if returncode != 0:
         raise InstallerExit(
             returncode,
-            format_installer_failure_message(returncode, tail_lines, actionable_lines),
+            format_installer_failure_message(returncode, tail_lines, verdict_lines + hint_lines),
         )
 
 
