@@ -278,6 +278,8 @@ MODEL_NAME_MAPPING = {
     ],
     "unsloth_LFM2-1.2B.yaml": [
         "unsloth/LFM2-1.2B",
+        "LiquidAI/LFM2-1.2B",
+        "unsloth/LFM2-1.2B-unsloth-bnb-4bit",
     ],
     "unsloth_llama-3-8b-bnb-4bit.yaml": [
         "unsloth/llama-3-8b",
@@ -1172,8 +1174,7 @@ def detect_audio_type(
     """Detect if a model is an audio model and return its type.
 
     Works for any model via tokenizer_config.json special tokens.
-    Returns an audio_type string ('snac', 'csm', 'bicodec', 'dac', 'whisper',
-    'audio_vlm') or None.
+    Returns an audio_type string from ``VALID_AUDIO_TYPES`` or None.
 
     A None here is ambiguous: it covers both "not an audio model" and "the repo
     could not be read". Callers that gate a user action on the answer want
@@ -1208,6 +1209,14 @@ def detect_audio_type_checked(
     # interpolated into the Hub URL and every poll fetches /None/resolve/main/...
     if not model_name:
         return None, True
+
+    try:
+        from core.inference.native_audio import NATIVE_AUDIO_MODEL_IDS
+        curated_type = NATIVE_AUDIO_MODEL_IDS.get(str(model_name).strip().lower())
+    except Exception:
+        curated_type = None
+    if curated_type:
+        return curated_type, True
 
     # Key on effective offline (kwarg OR env) so an offline negative can't poison a later probe.
     effective_offline = bool(local_files_only or _env_offline())
@@ -1246,6 +1255,16 @@ def detect_audio_type_checked(
         # Only definitive results are cached, so a hit is definitive by construction.
         return _audio_detection_cache[cache_key], True
 
+    config_kwargs = {"local_files_only": effective_offline}
+    if revision is not None:
+        config_kwargs["revision"] = revision
+    result = _detect_audio_from_config(model_name, hf_token, **config_kwargs)
+    if result:
+        _audio_detection_cache[cache_key] = result
+        _audio_offline_miss_cache.pop(miss_key, None)
+        logger.info(f"Model {model_name} detected as audio model: audio_type={result}")
+        return result, True
+
     tokenizer_kwargs = {"local_files_only": effective_offline}
     if revision is not None:
         tokenizer_kwargs["revision"] = revision
@@ -1267,6 +1286,32 @@ def detect_audio_type_checked(
             f"tokenizer_config.json was unreadable (gated, offline or upstream error)"
         )
     return result, definitive
+
+
+def _detect_audio_from_config(
+    model_name: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
+    revision: Optional[str] = None,
+) -> Optional[str]:
+    """Detect native audio architectures whose tokenizer has no codec markers.
+
+    Curated remote IDs are handled before this helper. Here only bounded local
+    metadata is read, so capability detection never adds a Hub request or fetches
+    weights. A failed read deliberately falls through to the established tokenizer
+    detector so its definitive/transient semantics stay unchanged.
+    """
+    try:
+        del hf_token, local_files_only, revision
+        if not is_local_path(model_name):
+            return None
+        local_path = Path(normalize_path(model_name)).expanduser()
+        from core.inference.native_audio import native_audio_type_from_local_path
+
+        return native_audio_type_from_local_path(str(local_path))
+    except Exception as exc:
+        logger.debug("Could not read audio model_type for '%s': %s", model_name, exc)
+        return None
 
 
 def _detect_audio_from_tokenizer(
@@ -3598,7 +3643,7 @@ class ModelConfig:
     is_lora: bool  # LoRA adapter?
     is_gguf: bool = False  # GGUF model?
     is_audio: bool = False  # TTS audio model?
-    audio_type: Optional[str] = None  # Audio codec type: 'snac', 'csm', 'bicodec', 'dac'
+    audio_type: Optional[str] = None  # Codec or native audio generation architecture.
     has_audio_input: bool = False  # Accepts audio input (ASR/speech understanding)
     gguf_file: Optional[str] = None  # Full path to the .gguf file (local mode)
     # ``(repo, variant, path, sizes)`` for a GGUF verified during config resolution;

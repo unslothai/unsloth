@@ -700,7 +700,7 @@ export const fr = {
         sectionTitle: "Changement automatique de modèle (API OpenAI)",
         enable: "Changer de modèle par requête",
         enableDescription:
-          "Charger, avant de répondre, un GGUF téléchargé indiqué dans une requête API. Désactivé par défaut.",
+          "Charger, avant de répondre, un modèle téléchargé indiqué dans une requête API. Désactivé par défaut.",
         idleUnload: "Déchargement automatique en cas d'inactivité",
         idleUnloadDescription:
           "Libérer la VRAM après ce nombre de secondes d’inactivité. 0 maintient le modèle chargé ; le minimum est 60.",
@@ -1416,6 +1416,18 @@ export const fr = {
         collapseByDefaultDescription:
           "Garde la réflexion repliée pendant que le modèle réfléchit, au lieu de l’ouvrir automatiquement. Dépliez un bloc pour le lire.",
       },
+      currentDate: {
+        label: "Indiquer la date du jour au modèle",
+        description:
+          "Ajoute la date actuelle au prompt pour que la recherche web et Deep Research cherchent des sources récentes au lieu de se fier à la date de fin d’entraînement du modèle.",
+        loadError: "Impossible de charger les paramètres de date actuelle",
+        saveError: "Impossible de mettre à jour les paramètres de date actuelle",
+      },
+      tools: {
+        collapseByDefault: "Replier l’activité des outils par défaut",
+        collapseByDefaultDescription:
+          "Garde les entrées et sorties des outils repliées pendant leur exécution. Dépliez une ligne d’outil pour l’examiner.",
+      },
       webSearch: {
         title: "Recherche web",
         images: "Afficher les images de la recherche web",
@@ -1433,6 +1445,11 @@ export const fr = {
         blockedBanner: "{count} ressource externe bloquée depuis {hosts}.",
         blockedBannerPlural: "{count} ressources externes bloquées depuis {hosts}.",
         blockedBannerAction: "Autoriser pour ce Canvas",
+        blockedTitle: "L'accès réseau du Canvas est désactivé",
+        blockedHint:
+          "Activez « {setting} » dans Paramètres → Chat pour que les Canvas chargent des ressources externes, ou autorisez-le uniquement pour ce Canvas.",
+        blockedSettingsAction: "Ouvrir les paramètres",
+        blockedDismiss: "Ignorer",
       },
       data: "Données",
       exportHistory: "Exporter l'historique des discussions",
@@ -1510,6 +1527,8 @@ export const fr = {
       archivedImagesDescription: "Consultez et gérez les images que vous avez archivées.",
       archivedVideos: "Vidéos archivées",
       archivedVideosDescription: "Consultez et gérez les vidéos que vous avez archivées.",
+      archivedAudio: "Audio archivé",
+      archivedAudioDescription: "Consultez et gérez les clips audio que vous avez archivés.",
       manageAction: "Gérer",
       manageChats: "Gérer les discussions",
       manageChatsDescription:
@@ -1699,7 +1718,7 @@ export const fr = {
         desktopAvailable:
           "La version {version} de l’application de bureau est disponible",
         desktopAvailableDescription:
-          "Effectuez la mise à jour maintenant. L’application de bureau redémarrera une fois l’opération terminée.",
+          "Mettez à jour maintenant pour la préparer en arrière-plan. Vous continuez à travailler et redémarrez lorsqu’elle est prête.",
         desktopExternalServer:
           "Exécutez `unsloth studio update` dans le terminal depuis lequel vous avez lancé le serveur.",
         desktopManualInstall:
@@ -1710,11 +1729,20 @@ export const fr = {
         desktopCurrent: "L’application de bureau est à jour",
         desktopCurrentDescription:
           "Unsloth continuera à rechercher automatiquement les mises à jour.",
+        desktopPreparingDescription:
+          "La mise à jour est préparée en arrière-plan. Vous pouvez continuer à travailler.",
+        desktopReadyToRestartDescription:
+          "Tout est prêt. Redémarrez pour terminer l’installation de la mise à jour.",
+        desktopReadyToInstallDescription:
+          "La mise à jour de l’application a été téléchargée. Terminez la mise à jour du backend pour l’installer.",
         checkForUpdates: "Rechercher les mises à jour",
         checkAgain: "Rechercher à nouveau",
         retryCheck: "Réessayer",
         checking: "Vérification...",
+        preparing: "Préparation...",
         updateNow: "Mettre à jour maintenant",
+        restartToUpdate: "Redémarrer pour mettre à jour",
+        finishUpdate: "Terminer la mise à jour",
         openReleasePage: "Ouvrir la page des versions",
         unknownInstall:
           "Impossible de détecter le mode d'installation d'Unsloth. Pour les installations via installateur ou PyPI, utilisez les commandes ci-dessus.",

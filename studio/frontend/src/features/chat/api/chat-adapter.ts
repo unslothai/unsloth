@@ -160,7 +160,7 @@ import {
 } from "../stores/chat-runtime-store";
 import {
   resolveFitMaxSeqLength,
-  resolveManualAutoCtxPin,
+  resolveExplicitCtxPin,
 } from "../presets/preset-policy";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
@@ -240,9 +240,12 @@ import {
   resumesExactly,
 } from "../utils/continuation";
 import {
+  claimLiveGenerationRun,
+  forgetServerActiveGenerationRun,
   generationChunkCountsTowardTiming,
   generationChunkHasSubstantiveDelta,
   generationIsSettled,
+  releaseLiveGenerationRun,
 } from "../utils/chat-generation-recovery";
 import {
   generateAudio,
@@ -275,6 +278,7 @@ import {
 import { cancelResearchRun, createResearchRun } from "./research-api";
 import {
   cancelChatGenerationRun,
+  ChatGenerationStalledError,
   chatGenerationStopPlan,
   isLegacyFallbackChatGenerationAdmissionError,
   type ChatGenerationRun,
@@ -3369,15 +3373,10 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         is_gguf: loadResp.is_gguf ?? candidate.kind === "gguf",
       });
       if (candidate.kind === "gguf") {
-        // Keep an explicit Manual+Auto context pin the load just applied (so a
-        // later Apply doesn't silently revert it to auto-fit sizing), mirroring
-        // the interactive path's keepCustomCtx; other cases baseline on
-        // ggufContextLength.
-        const keepCustomCtx = resolveManualAutoCtxPin(
-          effectiveGpuMemoryMode,
-          effectiveGpuLayers,
-          config.customContextLength ?? null,
-        );
+        // The Context Length saved for this model, not fitMaxSeqLength: the wire
+        // value is Auto-resolved for a same-model reload, so pinning it would
+        // convert Auto into a number the user never set (see resolveExplicitCtxPin).
+        const keepCustomCtx = resolveExplicitCtxPin(config.customContextLength);
         // Slots this auto-load committed. Diffusion ignores --parallel, so a count
         // there would mint a phantom override a saved preset carries onto a GGUF.
         const committedSlots =
@@ -3434,9 +3433,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           defaultChatTemplate: loadResp.chat_template ?? null,
           chatTemplateOverride: effectiveChatTemplateOverride,
           loadedChatTemplateOverride: effectiveChatTemplateOverride,
-          // Retain the saved requested context so re-saving the config keeps the
-          // override; null stays null (auto/VRAM-fit).
-          customContextLength: config.customContextLength,
+          // Same value as the baseline above, so the control opens undirtied.
+          customContextLength: keepCustomCtx,
           loadedIsMultimodal: isMultimodalResponse(loadResp),
           mmprojFallbackReason: loadResp.mmproj_fallback_reason ?? null,
           loadedIsDiffusion: loadResp.is_diffusion ?? false,
@@ -5054,6 +5052,10 @@ export function createOpenAIStreamAdapter(
       let generationFirstChunkAt: number | undefined;
       let generationChunkCount = 0;
       let generationStopRequested = false;
+      // Set when the no-progress deadline fires on THIS stream rather than on a recovery
+      // follower. Both must persist the marker, or the next reload attaches another
+      // follower and blocks the composer for a further deadline.
+      let generationStalled = false;
       const generationCustom = () =>
         generationRunId
           ? {
@@ -5067,6 +5069,7 @@ export function createOpenAIStreamAdapter(
                 generationSeq,
                 generationRun?.lastEventSeq ?? Number.POSITIVE_INFINITY,
               ),
+              generationLocallyInterrupted: generationStalled,
               serverManaged: true,
             }
           : {};
@@ -6272,6 +6275,17 @@ export function createOpenAIStreamAdapter(
                   generationDecision = "legacy";
                 } else {
                   generationDecision = "durable";
+                  // Before admission, not after. The run id is ours (`cancelId` is passed as
+                  // `runId`), and the run becomes visible through /active as soon as the POST
+                  // lands, so a visibility, pageshow, online or history-load trigger during
+                  // this await could otherwise start a recovery that the later claim would
+                  // not stop: the scheduler only tests ownership at startup.
+                  // Provisional: it owns recovery without marking the thread bounded.
+                  // The await below can outlast the checkpoint cap, and a capped thread
+                  // is dropped from the schedule for good.
+                  claimLiveGenerationRun(cancelId, resolvedThreadId!, {
+                    provisional: true,
+                  });
                   try {
                     generationRun = await createChatGenerationRunUntilAbort(
                       {
@@ -6290,11 +6304,18 @@ export function createOpenAIStreamAdapter(
                     // Durable recovery does not yet replay server-side tool events.
                     // Use the subscriber-owned stream for this policy-forced case.
                     generationDecision = "legacy";
+                    // Dropped here rather than in the outer finally: this stream is about
+                    // to become subscriber-owned, and leaving the claim would let the cap
+                    // fire on a stream whose only persistence is those checkpoints.
+                    releaseLiveGenerationRun(cancelId);
                   }
                   if (!generationRun) {
                     if (generationDecision === "durable") return;
                   } else {
                     generationRunId = generationRun.id;
+                    // Normally the same id we claimed above; claimed again in case the server
+                    // ever echoes a different one. Both are released in the finally below.
+                    claimLiveGenerationRun(generationRunId, resolvedThreadId!);
                     generationStatus = generationRun.status;
                     if (generationStopRequested) {
                       void cancelChatGenerationRun(generationRun.id).catch(
@@ -6307,29 +6328,41 @@ export function createOpenAIStreamAdapter(
             }
 
             const durableStream = async function* () {
-              for await (const update of followChatGenerationRun(
-                generationRunId!,
-                {
-                  initialRun: generationRun!,
-                  replayFrom: 0,
-                  signal: runSignal,
-                },
-              )) {
-                generationRun = update.run;
-                generationStatus = update.run.status;
-                if (update.event) {
-                  generationSeq = Math.max(generationSeq, update.event.seq);
-                  if (update.event.type === "chunk") {
-                    const chunk = update.event.payload as OpenAIChatChunk;
-                    if (generationChunkCountsTowardTiming(chunk)) {
-                      generationChunkCount += 1;
-                      if (generationChunkHasSubstantiveDelta(chunk)) {
-                        generationFirstChunkAt ??= update.event.createdAt;
+              try {
+                for await (const update of followChatGenerationRun(
+                  generationRunId!,
+                  {
+                    initialRun: generationRun!,
+                    replayFrom: 0,
+                    signal: runSignal,
+                  },
+                )) {
+                  generationRun = update.run;
+                  generationStatus = update.run.status;
+                  if (update.event) {
+                    generationSeq = Math.max(generationSeq, update.event.seq);
+                    if (update.event.type === "chunk") {
+                      const chunk = update.event.payload as OpenAIChatChunk;
+                      if (generationChunkCountsTowardTiming(chunk)) {
+                        generationChunkCount += 1;
+                        if (generationChunkHasSubstantiveDelta(chunk)) {
+                          generationFirstChunkAt ??= update.event.createdAt;
+                        }
                       }
+                      yield chunk;
                     }
-                    yield chunk;
                   }
                 }
+              } catch (error) {
+                if (!(error instanceof ChatGenerationStalledError)) throw error;
+                // End the stream rather than rethrow, keeping everything replayed so
+                // far, as the recovery follower does. The checks below stay quiet
+                // because a stalled run is still non-terminal.
+                generationStalled = true;
+                // Different job from the marker: this is what makes the final yield
+                // carry `incomplete`, without which assistant-ui reads the partial reply
+                // as finished and offers no Continue until a reload rebuilds the reason.
+                incompleteReason = "interrupted";
               }
               if (generationStatus === "failed") {
                 throw new ChatGenerationTerminalError(
@@ -6345,10 +6378,38 @@ export function createOpenAIStreamAdapter(
                 );
               }
             };
+            // The window is passed so a length-stop can tell a Max Tokens the user chose
+            // from the backend's stand-in for "Max" (the whole context length). The two
+            // need opposite advice, and "Increase Max Tokens" cannot be acted on when it
+            // is already unlimited.
             const stream =
               generationDecision === "durable"
                 ? durableStream()
-                : streamChatCompletions(requestPayload, runSignal);
+                : streamChatCompletions(
+                    requestPayload,
+                    runSignal,
+                    // Only when the request targets the LOCAL model. ggufContextLength
+                    // stays populated for a resident GGUF even while an external model is
+                    // selected, so an external request with a 16K cap was being measured
+                    // against an unrelated 4096-token local window and reported as having
+                    // unlimited Max Tokens and no context left.
+                    // `maxSeqLength` last, and coerced from 0: a local safetensors or
+                    // MLX request on this path has neither GGUF field set, and reading
+                    // that as "no window" makes every context-length stop look like a
+                    // user-set Max Tokens one -- advice to raise a value already at the
+                    // model's maximum. Same order the RAG `context_length` above uses.
+                    // `loadedCustomContextLength`, not `customContextLength`: the
+                    // latter is the EDITABLE field, and the store's own definition of a
+                    // pending edit is the two differing. A model still serving at 4096
+                    // while the field reads 8192 would make its 4096 stop look
+                    // user-imposed, and the toast would advise raising Max Tokens
+                    // instead of reloading at the larger context.
+                    isExternalRequest
+                      ? null
+                      : (runtime.loadedCustomContextLength ??
+                        runtime.ggufContextLength ??
+                        (params.maxSeqLength || null)),
+                  );
             // Per run, not per module: two turns must not share a cycle.
             const canPublish = createStreamPublishGate();
 
@@ -8015,10 +8076,15 @@ export function createOpenAIStreamAdapter(
           const msg = err instanceof Error ? err.message : String(err);
           if (err instanceof GenerationLengthError) {
             toast.error("Response ran out of tokens", {
+              // The error already chose between the Max Tokens and Context Length
+              // remedies from the cap and the prompt size. Repeating the Max Tokens
+              // advice here overrode that choice in the one place the user reads,
+              // sending them to a setting that is already at its maximum.
               description:
+                msg ||
                 "The model used the full Max Tokens budget while thinking " +
-                "and did not produce a final answer. Increase Max Tokens in " +
-                "chat Settings or turn off thinking, then retry.",
+                  "and did not produce a final answer. Increase Max Tokens in " +
+                  "chat Settings or turn off thinking, then retry.",
               duration: 8000,
             });
           } else if (err instanceof ChatGenerationTerminalError) {
@@ -8143,6 +8209,21 @@ export function createOpenAIStreamAdapter(
         }
         throw err;
       } finally {
+        // Unconditional, and both ids: the pre-admission claim uses `cancelId`, and a run
+        // left claimed after its stream died is one this tab would never recover.
+        releaseLiveGenerationRun(cancelId);
+        if (generationRunId) releaseLiveGenerationRun(generationRunId);
+        // A durable run that finished here is no longer active, and only a later
+        // history load would otherwise say so. Until then the thread reads as durable
+        // and a subscriber-owned stream started on it next would be capped.
+        if (
+          generationRunId &&
+          (generationStatus === "completed" ||
+            generationStatus === "failed" ||
+            generationStatus === "cancelled")
+        ) {
+          forgetServerActiveGenerationRun(generationRunId);
+        }
         runSignal.removeEventListener("abort", onAbortCancel);
         abortSignal.removeEventListener("abort", forwardAbort);
         // Resolve once: the clears below drop the owner the lookup keys on.

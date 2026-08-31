@@ -1030,6 +1030,7 @@ def collect_local_models(
     must already be validated/trusted by the caller.
     """
     from storage.studio_db import list_scan_folders
+    from hub.utils import gguf as gguf_utils
     from utils.models.model_config import detect_gguf_model
 
     sources = sources or _compat_local_inventory_sources()
@@ -1138,6 +1139,7 @@ def collect_local_models(
                     is not None
                 ):
                     custom_models.append(model)
+            custom_models = gguf_utils.dedupe_custom_gguf_rows(custom_models)
             if len(custom_models) < _MAX_MODELS_PER_FOLDER:
                 custom_models += _scan_ollama_dir(
                     folder_path,
@@ -1156,7 +1158,19 @@ def collect_local_models(
     deduped: dict[str, LocalModelInfo] = {}
     for model in local_models:
         semantic_id = model.model_id if model.source == "hf_cache" and model.model_id else model.id
-        key = f"{semantic_id}\x00custom" if model.source == "custom" else semantic_id
+        if model.source == "custom":
+            physical_identity = gguf_utils.local_path_physical_identity(model.path)
+            if (
+                model.model_id
+                and model.model_id.startswith("ollama/")
+                and any(
+                    part in (".studio_links", "ollama_links") for part in Path(model.path).parts
+                )
+            ):
+                physical_identity = "\x00".join((model.model_id, physical_identity))
+            key = "\x00".join((physical_identity, model.model_format or "", "custom"))
+        else:
+            key = semantic_id
         existing = deduped.get(key)
         prefer_model = existing is None
         if existing is not None and model.source == existing.source == "hf_cache":
@@ -1169,8 +1183,11 @@ def collect_local_models(
         if prefer_model:
             deduped[key] = model
 
+    deduped_values = list(deduped.values())
+    custom_values = [model for model in deduped_values if model.source == "custom"]
     models = sorted(
-        deduped.values(),
+        [model for model in deduped_values if model.source != "custom"]
+        + gguf_utils.suppress_grouped_gguf_file_rows(custom_values),
         key = lambda item: item.updated_at or 0,
         reverse = True,
     )
@@ -1214,19 +1231,19 @@ async def _shared_compat_local_inventory_scan(
     requested_sources = sources
 
     def classify(models: List[LocalModelInfo]) -> List[LocalModelInfo]:
-        # Tag each model with its task so the Images picker can filter to diffusion.
+        # Tag each model with its task and native-audio type for the model pickers.
         # Inside the shared flight so overlapping callers reuse one classified result
         # instead of each repeating the GGUF header reads.
         classified = []
         for model in models:
-            task = _local_model_task(model)
+            task, audio_type = _catalog_classification._local_model_classification_for_task(
+                model, _local_model_task(model)
+            )
             classified.append(
                 model.model_copy(
                     update = {
                         "task": task,
-                        "audio_type": _catalog_classification._local_model_audio_type(model)
-                        if task == "text-to-speech"
-                        else None,
+                        "audio_type": audio_type,
                     }
                 )
             )
@@ -1275,8 +1292,8 @@ async def _shared_compat_local_inventory_scan(
             return await hf_cache_scan.shared_scan(
                 _compat_local_inventory_flights,
                 key,
-                lambda expected_epoch = epoch, folders = custom_folders, roots = scan_sources: (
-                    collect(expected_epoch, folders, roots)
+                lambda expected_epoch = epoch, folders = custom_folders, roots = scan_sources: collect(
+                    expected_epoch, folders, roots
                 ),
             )
         except _CompatLocalCacheChanged as changed:
@@ -1287,6 +1304,22 @@ async def _shared_compat_local_inventory_scan(
     # the retry path, so there is always one) instead of rescanning forever.
     logger.warning("Compat local inventory kept racing cache invalidations; serving the last scan")
     return await asyncio.to_thread(classify, superseded)
+
+
+async def _invalidate_local_scans() -> None:
+    """Retire the cached local scans after something was deleted from disk.
+
+    Every successful deletion branch has to call this. The /v1/models servability scan is
+    cached against the resolver generation, so a branch that returns without bumping it
+    keeps advertising what was just removed until the catalog TTL expires.
+
+    Off the loop, like the other async invalidation sites in this file: invalidate_index
+    takes the resolver lock, and _index() holds that across a full multi-root filesystem
+    scan, so calling it inline from an async route would stall unrelated requests and
+    in-flight inference streams behind a rebuild.
+    """
+    from core.inference.local_model_resolver import invalidate_index
+    await asyncio.to_thread(invalidate_index)
 
 
 @router.get("/local", response_model = LocalModelListResponse)
@@ -2521,7 +2554,14 @@ async def scan_model_remote_code(
         except Exception:
             _primary_preexisting = True
         requested_scan_target = scan_target
-        requested_security_targets = [requested_scan_target]
+        from core.inference.native_audio import native_audio_security_targets
+
+        try:
+            requested_security_targets = native_audio_security_targets(
+                requested_scan_target, hf_token = hf_token
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code = 400, detail = str(exc)) from exc
         try:
             from utils.models.model_config import get_base_model_from_lora_identifier
 
@@ -3321,6 +3361,7 @@ async def delete_finetuned_model(
                     _prune_empty_parents(target_path, allowed_root)
             except OSError:
                 pass
+            await _invalidate_local_scans()
             logger.info(
                 "Deleted %s GGUF file(s) for exported model at %s variant %s (%0.1f MB freed)",
                 deleted_count,
@@ -3347,6 +3388,7 @@ async def delete_finetuned_model(
 
         _prune_empty_parents(target_path, allowed_root)
 
+        await _invalidate_local_scans()
         logger.info("Deleted fine-tuned model at %s", target_path)
         return {"status": "deleted", "path": str(target_path)}
     except HTTPException:
@@ -3568,6 +3610,7 @@ def _read_native_context_length(repo_id: str, is_local: bool) -> Optional[int]:
     """
     try:
         from utils.models.gguf_metadata import read_gguf_context_length
+        from utils.paths.path_utils import file_contents_available_locally
 
         # Before cache discovery (also filesystem I/O): started after, a slow enumeration would hand the walk a fresh budget.
         deadline = time.monotonic() + _NATIVE_CONTEXT_READ_TIMEOUT_SECONDS
@@ -3587,7 +3630,9 @@ def _read_native_context_length(repo_id: str, is_local: bool) -> Optional[int]:
                 if time.monotonic() >= deadline:
                     logger.debug("native context read for '%s' out of budget", repo_id)
                     return None
-                if _is_mmproj_filename(f.name):
+                if _is_mmproj_filename(f.name) or not file_contents_available_locally(f):
+                    # Opening a cloud placeholder recalls its data. It keeps its variant row,
+                    # but has no context metadata until the file is hydrated.
                     continue
                 n = read_gguf_context_length(str(f))
                 if n:

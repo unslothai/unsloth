@@ -105,6 +105,8 @@ interface LocalOnDeviceCardProps {
   preferredFileIntent?: number;
 
   gpuGb?: number;
+  /** GPUs gpuGb sums, for the loader's per-card VRAM reserve. */
+  gpuCount?: number;
   systemRamGb?: number;
   unsupportedReason?: string | null;
   onLoad: (opts?: LocalLoadOptions) => void;
@@ -238,6 +240,7 @@ export function LocalOnDeviceCard({
   preferredFileIntent = 0,
 
   gpuGb,
+  gpuCount,
   systemRamGb,
   unsupportedReason,
   onLoad,
@@ -356,6 +359,7 @@ export function LocalOnDeviceCard({
             defaultVariant: currentVariantState.defaultVariant,
             activeGgufVariant: isActive ? activeGgufVariant : null,
             gpuGb,
+            gpuCount,
             systemRamGb,
             budgetFraction,
           })
@@ -366,6 +370,7 @@ export function LocalOnDeviceCard({
       isActive,
       activeGgufVariant,
       gpuGb,
+      gpuCount,
       systemRamGb,
       budgetFraction,
     ],

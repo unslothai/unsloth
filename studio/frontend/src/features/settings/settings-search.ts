@@ -95,6 +95,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
   ],
   chat: [
     "settings.general.chatDefaults",
+    "settings.chat.currentDate.label",
     "settings.general.autoTitleNewChats",
     "settings.chat.projectAttachments",
     "settings.chat.rememberParamsPerModel",
@@ -102,6 +103,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.compactionStyle",
     "settings.profile.greetingSloth",
     "settings.chat.thinking.collapseByDefault",
+    "settings.chat.tools.collapseByDefault",
     "settings.chat.artifacts.title",
     "settings.chat.artifacts.collapseHtmlBlocks",
     "settings.chat.artifacts.allowNetworkAccess",

@@ -7,6 +7,7 @@ import atexit
 import base64
 import contextlib
 import errno
+import hashlib
 import json
 import os
 import re
@@ -117,6 +118,7 @@ _SUBAGENT_PLAN_INSTRUCTIONS = (
     "to the parent agent. Do not modify files."
 )
 _CLAUDE_SUBAGENT_MCP_MODULE = "unsloth_cli.claude_subagent_mcp"
+_CLAUDE_SUBAGENT_SETTINGS_ENV = "UNSLOTH_CLAUDE_SUBAGENT_SETTINGS"
 _CLAUDE_SUBAGENT_TOOL = "mcp__plugin_unsloth-local-agent_unsloth__unsloth_agent"
 _CLAUDE_SUBAGENT_PLAN_TOOL = "mcp__plugin_unsloth-local-agent_unsloth__unsloth_plan_agent"
 _CODEX_SUBAGENT_MCP_MODULE = "unsloth_cli.codex_subagent_mcp"
@@ -162,7 +164,20 @@ class _PassthroughCommand(TyperCommand):
         return remaining
 
 
-_CLAUDE_ENV_UNSET = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
+# provider routing overrides ANTHROPIC_BASE_URL and would bypass the local server (#9864).
+_CLAUDE_ENV_UNSET = (
+    "ANTHROPIC_API_KEY",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_UNIX_SOCKET",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "ANTHROPIC_FOUNDRY_BASE_URL",
+    "ANTHROPIC_FOUNDRY_RESOURCE",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+    "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD",
+    "CLAUDE_CODE_USE_MANTLE",
+)
 _CODEX_ENV_UNSET = ("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN")
 
 # Shared by every agent command; only the config/env/command differ.
@@ -2431,21 +2446,30 @@ def _require_gguf_for_codex(base: str, key: str, model_id: str) -> None:
 _DYNAMIC_SECTIONS_FLAG = "--exclude-dynamic-system-prompt-sections"
 
 
-def _claude_settings_overlay(model_id: str) -> str:
-    # Session-only `claude --settings` overlay (command-line tier, no ~/.claude write):
-    # suppress the attribution header, keep every subagent on the served model (a user
-    # CLAUDE_CODE_SUBAGENT_MODEL pin would otherwise route delegated work off the local
-    # endpoint), and pin availableModels to the served model so a user allowlist can't
-    # reject it. The pin must be non-empty; [] is ignored.
+def _claude_settings_overlay(model_id: str, local_env: Optional[dict] = None) -> str:
+    # Command-tier pins beat user/project settings, which Claude applies after the process env.
+    settings_env = {name: "" for name in _CLAUDE_ENV_UNSET}
+    settings_env.update(local_env or {})
+    settings_env.update(
+        {
+            "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
+            "CLAUDE_CODE_SUBAGENT_MODEL": "inherit",
+        }
+    )
     return json.dumps(
         {
-            "env": {
-                "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
-                "CLAUDE_CODE_SUBAGENT_MODEL": "inherit",
-            },
+            "env": settings_env,
             "availableModels": [model_id],
         }
     )
+
+
+def _write_claude_settings(path: Path, model_id: str, local_env: dict) -> Path:
+    overlay = _claude_settings_overlay(model_id, local_env)
+    digest = hashlib.sha256(overlay.encode("utf-8")).hexdigest()[:16]
+    settings = path / f"settings-{digest}.json"
+    _write_private_text(settings, overlay)
+    return settings
 
 
 def _claude_version() -> Optional[tuple]:
@@ -2468,14 +2492,49 @@ def _claude_version() -> Optional[tuple]:
         return (0,)
 
 
-def _claude_flags(model_id: str) -> list:
+def _claude_flags(model_id: str, settings: Optional[str] = None) -> list:
     # KV-cache-preserving flags: move per-session context out of the system prompt and pass
-    # the session overlay. claude < 2.1.98 rejects unknown flags; no local binary means a
-    # printout for another machine, so assume a current build.
+    # the session overlay. claude < 2.1.98 rejects the dynamic-sections flag but already
+    # supports --settings; no local binary means a printout for another machine, so assume
+    # a current build.
     version = _claude_version()
+    settings_flags = ["--settings", settings or _claude_settings_overlay(model_id)]
     if version is not None and version < (2, 1, 98):
-        return []
-    return [_DYNAMIC_SECTIONS_FLAG, "--settings", _claude_settings_overlay(model_id)]
+        return settings_flags
+    return [_DYNAMIC_SECTIONS_FLAG, *settings_flags]
+
+
+def _claude_local_command(model_id: str, settings: str, yolo: bool, passthrough: list) -> list:
+    local_args = [
+        "--model",
+        model_id,
+        *_claude_flags(model_id, settings),
+        *_yolo_command_flags("claude", yolo),
+    ]
+    forwarded = list(passthrough)
+    separator = forwarded.index("--") if "--" in forwarded else len(forwarded)
+    before_separator = forwarded[:separator]
+    forwarded_settings = []
+    remaining = []
+    index = 0
+    while index < len(before_separator):
+        arg = before_separator[index]
+        if arg == "--settings" and index + 1 < len(before_separator):
+            forwarded_settings.extend(before_separator[index : index + 2])
+            index += 2
+            continue
+        if arg.startswith("--settings="):
+            forwarded_settings.append(arg)
+        else:
+            remaining.append(arg)
+        index += 1
+    return [
+        "claude",
+        *forwarded_settings,
+        *local_args,
+        *remaining,
+        *forwarded[separator:],
+    ]
 
 
 def _claude_local_env(base: str, key: str, entry: dict) -> dict:
@@ -2492,6 +2551,9 @@ def _claude_local_env(base: str, key: str, entry: dict) -> dict:
     }
     window = entry.get("context_length") or entry.get("max_context_length")
     if window:
+        # claude assumes 200k for a model id it does not recognize, and clamps
+        # AUTO_COMPACT_WINDOW to [100k, that]. MAX_CONTEXT_TOKENS sets the window itself.
+        env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(int(window))
         env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(int(window))
         env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = "90"
     return env
@@ -2525,13 +2587,10 @@ def _merge_codex_config(existing: str, base: str) -> str:
 # Apache-2.0 prompt is copied from openai/codex rust-v0.144.0 models-manager/prompt.md.
 _CODEX_FALLBACK_PROMPT = Path(__file__).parent.parent / "codex_fallback_prompt.md"
 _CODEX_MODEL_CATALOG_MIN_VERSION = (0, 110, 0)
+_CODEX_PATCH_LINE_ENDINGS_MIN_VERSION = (0, 148, 0)
 
 
-def _codex_supports_model_catalog() -> bool:
-    executable = _which_with_install_dirs("codex")
-    if executable is None:
-        # A --no-launch recipe may be copied to another machine; assume a current Codex.
-        return True
+def _codex_executable_version(executable: str) -> Optional[tuple[int, int, int]]:
     try:
         output = subprocess.check_output(
             [executable, "--version"],
@@ -2541,11 +2600,27 @@ def _codex_supports_model_catalog() -> bool:
             env = _probe_env(),
         )
     except Exception:
-        return False
+        return None
     match = re.search(r"(\d+)\.(\d+)\.(\d+)", output)
-    return bool(match) and tuple(int(part) for part in match.groups()) >= (
-        _CODEX_MODEL_CATALOG_MIN_VERSION
-    )
+    return tuple(int(part) for part in match.groups()) if match else None
+
+
+def _codex_supports_model_catalog() -> bool:
+    executable = _which_with_install_dirs("codex")
+    if executable is None:
+        # A --no-launch recipe may be copied to another machine; assume a current Codex.
+        return True
+    version = _codex_executable_version(executable)
+    return version is not None and version >= _CODEX_MODEL_CATALOG_MIN_VERSION
+
+
+def _codex_supports_patch_line_endings() -> bool:
+    executable = _which_with_install_dirs("codex")
+    if executable is None:
+        # A normal launch installs Codex after this check; no-launch may run elsewhere.
+        return True
+    version = _codex_executable_version(executable)
+    return version is not None and version >= _CODEX_PATCH_LINE_ENDINGS_MIN_VERSION
 
 
 def _codex_model_catalog(model: dict) -> dict:
@@ -2568,7 +2643,7 @@ def _codex_model_catalog(model: dict) -> dict:
         "supports_reasoning_summary_parameter": False,
         "support_verbosity": False,
         "default_verbosity": None,
-        "apply_patch_tool_type": None,
+        "apply_patch_tool_type": "freeform",
         "truncation_policy": {"mode": "bytes", "limit": 10_000},
         "supports_parallel_tool_calls": False,
         "experimental_supported_tools": [],
@@ -2596,6 +2671,11 @@ def write_codex_config(base: str, model: dict, home: Path) -> None:
         f'model_provider = "{_CODEX_PROFILE}"\n'
         f"model = {json.dumps(model['id'])}\n"
     )
+    if _codex_supports_patch_line_endings():
+        profile_text += (
+            "suppress_unstable_features_warning = true\n"
+            "features.apply_patch_preserve_line_endings = true\n"
+        )
     if _codex_supports_model_catalog() and _CODEX_FALLBACK_PROMPT.is_file():
         catalog = home / "model-catalog.json"
         catalog_text = json.dumps(_codex_model_catalog(model), indent = 2) + "\n"
@@ -2941,6 +3021,18 @@ def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
     command = sys.executable
     args = ["-m", _CLAUDE_SUBAGENT_MCP_MODULE]
     mcp_env = dict(server_env)
+    base = server_env.get("UNSLOTH_CLAUDE_SUBAGENT_BASE_URL")
+    key = server_env.get("UNSLOTH_CLAUDE_SUBAGENT_API_KEY")
+    model_id = server_env.get("UNSLOTH_CLAUDE_SUBAGENT_MODEL")
+    if base and key and model_id:
+        entry = {
+            "id": model_id,
+            "context_length": int(
+                server_env.get("UNSLOTH_CLAUDE_SUBAGENT_CONTEXT_WINDOW", "0") or 0
+            ),
+        }
+        settings = _write_claude_settings(plugin, model_id, _claude_local_env(base, key, entry))
+        mcp_env[_CLAUDE_SUBAGENT_SETTINGS_ENV] = str(settings)
     if _wsl_windows_executable(["claude"]):
         command = "wsl.exe"
         args = [
@@ -2953,7 +3045,10 @@ def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
         ]
         mcp_env["WSLENV"] = _merge_wslenv(
             os.environ.get("WSLENV", ""),
-            _wsl_bridge_names(server_env, ()),
+            (
+                *_wsl_bridge_names(server_env, ()),
+                *([_CLAUDE_SUBAGENT_SETTINGS_ENV] if base and key and model_id else []),
+            ),
         )
     _write_private_json(
         plugin / ".claude-plugin" / "plugin.json",
@@ -4477,8 +4572,9 @@ def claude(
                 "--plugin-dir",
                 _agent_config_path(plugin, ["claude"]),
                 # Before ctx.args: a forwarded `--` would turn later flags positional.
-                "--allowedTools",
-                f"{_CLAUDE_SUBAGENT_TOOL},{_CLAUDE_SUBAGENT_PLAN_TOOL}",
+                # `=` form: --allowedTools is variadic, so a detached value swallows
+                # the first forwarded positional.
+                f"--allowedTools={_CLAUDE_SUBAGENT_TOOL},{_CLAUDE_SUBAGENT_PLAN_TOOL}",
                 *_yolo_command_flags("claude", yolo),
                 *ctx.args,
             ]
@@ -4505,23 +4601,23 @@ def claude(
     # claude keeps its history in ~/.claude/projects, which --settings/env never
     # relocate, so a session already survives exit; resume it with `claude --continue`
     # or `--resume <id>` passed through.
-    command = [
-        "claude",
-        "--model",
-        model_id,
-        *_claude_flags(model_id),
-        *_yolo_command_flags("claude", yolo),
-        *ctx.args,
-    ]
-    _run(
-        base,
-        entry,
-        env,
-        command,
-        launch = launch,
-        install_hint = install_hint,
-        unset_env = _CLAUDE_ENV_UNSET,
-    )
+    with _session_config("claude", launch, persist = persist) as config:
+        settings = _write_claude_settings(config, model_id, env)
+        command = _claude_local_command(
+            model_id,
+            _agent_config_path(settings, ["claude"]),
+            yolo,
+            ctx.args,
+        )
+        _run(
+            base,
+            entry,
+            env,
+            command,
+            launch = launch,
+            install_hint = install_hint,
+            unset_env = _CLAUDE_ENV_UNSET,
+        )
 
 
 @start_app.command("codex", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
