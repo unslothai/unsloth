@@ -798,7 +798,7 @@ def test_every_production_site_builds_the_normalizer_through_the_factory():
     built_in_factory = set()
     built_anywhere = {}
     for name in ("chat_template_helpers.py", "inference.py", "mlx_inference.py"):
-        tree = ast.parse((root / name).read_text())
+        tree = ast.parse((root / name).read_text(encoding = "utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.FunctionDef) and node.name == "make_reasoning_normalizer":
                 built_in_factory |= set(constructions(node))
