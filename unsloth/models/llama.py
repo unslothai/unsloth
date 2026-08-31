@@ -3158,6 +3158,24 @@ class FastLlamaModel:
                                 ):
                                     continue
                                 module.weight[module.padding_idx] = 0
+
+        # LAST: `post_patch` replaces the embedding modules and the QKV/MLP
+        # patching below it replaces the forwards a hook wraps, so an earlier
+        # attach is lost. Skipped under vLLM, which owns the weights.
+        if not fast_inference:
+            try:
+                from unsloth.models.vision import _repair_dispatch_hooks
+                _repaired = _repair_dispatch_hooks(model)
+                if _repaired:
+                    logger.info(
+                        f"Unsloth: re-attached dispatch hooks to {_repaired} module(s) "
+                        "left unhooked by the split, so the model trains."
+                    )
+            except Exception as _exc:
+                logger.warning(
+                    f"Unsloth: could not check the dispatch hooks "
+                    f"({type(_exc).__name__}: {_exc})."
+                )
         return model, tokenizer
 
     @staticmethod
@@ -3655,6 +3673,17 @@ class FastLlamaModel:
                 clean_gpu_cache()
 
         model = _get_peft_model(model, lora_config)
+
+        try:
+            from .vision import _lift_endpoint_hooks_onto_adapters
+            _lifted = _lift_endpoint_hooks_onto_adapters(model)
+            if _lifted:
+                logger.info(
+                    f"Unsloth: lifted dispatch hooks onto {_lifted} adapter-wrapped "
+                    "embedding module(s), so a split model trains them."
+                )
+        except Exception as _exc:
+            logger.warning_once(f"Unsloth: could not lift adapter hooks: {_exc}")
         # Fix LoraConfig.auto_mapping is None
         fix_lora_auto_mapping(model)
 
