@@ -3684,3 +3684,55 @@ def test_the_window_reaches_the_runtime_on_every_generation_route(monkeypatch):
     vlm.models["m"] = {"audio_type": "audio_vlm"}
     next(vlm.generate_audio_input_response([{"role": "user", "content": "x"}], "", object()))
     assert seen[-1]["max_kv_size"] == 4096, "the audio route must carry the bound too"
+
+
+class _BlockMLX:
+    """Make `import mlx_lm...` fail the way it does on a box without the wheels."""
+
+    def __init__(self, *names):
+        self.names = names
+
+    def find_spec(self, fullname, path = None, target = None):
+        if fullname in self.names or fullname.startswith(tuple(f"{n}." for n in self.names)):
+            raise ModuleNotFoundError(f"No module named {fullname!r}", name = fullname)
+        return None
+
+
+@contextmanager
+def _without_mlx(*names):
+    blocker = _BlockMLX(*names)
+    dropped = {k: v for k, v in sys.modules.items() if k.split(".")[0] in names}
+    for key in dropped:
+        del sys.modules[key]
+    sys.meta_path.insert(0, blocker)
+    try:
+        yield
+    finally:
+        sys.meta_path.remove(blocker)
+        sys.modules.update(dropped)
+
+
+def test_the_mlx_module_imports_on_a_machine_with_no_mlx_wheels():
+    """Linux and Windows installs import this package tree without mlx present.
+
+    The backend is only constructed behind the Darwin gate, but the module is still
+    imported. An mlx import at module scope would fail every non-Mac boot.
+    """
+    import importlib
+
+    with _without_mlx("mlx", "mlx_lm", "mlx_vlm"):
+        module = importlib.reload(
+            importlib.import_module("core.inference.mlx_inference")
+        )
+        assert module.mlx_native_context_length(
+            SimpleNamespace(config = SimpleNamespace(max_position_embeddings = 131072))
+        ) == 131072
+    importlib.reload(module)
+
+
+def test_the_probe_answers_unknown_rather_than_raising_without_mlx():
+    """Nothing can be built to judge, which is "unknown", not "unbounded"."""
+    from core.inference.mlx_inference import _kv_window_enforced
+
+    with _without_mlx("mlx", "mlx_lm", "mlx_vlm"):
+        assert _kv_window_enforced(SimpleNamespace(layers = [object()]), False, 4096) is None
