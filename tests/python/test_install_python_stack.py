@@ -2411,8 +2411,8 @@ class TestExpectedTorchFlavorResolution:
                 assert ips._expected_torch_flavor_tag() == "cu128"
 
     def test_a_gpuless_host_with_nothing_recorded_says_nothing(self):
-        # "" is the only honest answer: inventing a CUDA expectation from an absent GPU
-        # would reinstall CUDA torch onto a CPU box on every single update.
+        # Inventing a CUDA expectation from an absent GPU would reinstall CUDA torch
+        # onto a CPU box on every update.
         with self._env():
             with (
                 mock.patch.object(ips, "_RECORDED_TORCH_TAG", None),
@@ -2435,17 +2435,16 @@ class TestExpectedTorchFlavorResolution:
                 assert ips._expected_torch_flavor_tag() == "cpu"
 
     def test_the_index_url_is_reused_only_for_its_own_family(self):
-        # setup.ps1 hands over the /cpu index alongside a "rocm" tag on the AMD Windows
-        # path. Repairing a cu124 mismatch from it would install the very CPU wheel the
-        # repair exists to remove.
+        # setup.ps1 hands over the /cpu index alongside a "rocm" tag on AMD Windows, so
+        # repairing from it would install the very CPU wheel the repair exists to remove.
         with self._env(UNSLOTH_TORCH_INSTALL_INDEX_URL = "https://mirror.local/whl/cu124/"):
             assert ips._expected_torch_index_url("cu124") == "https://mirror.local/whl/cu124"
         with self._env(UNSLOTH_TORCH_INSTALL_INDEX_URL = "https://download.pytorch.org/whl/cpu"):
             assert ips._expected_torch_index_url("cu124") == f"{ips._PYTORCH_WHL_BASE}/cu124"
 
     def test_a_credentialed_index_survives_intact(self):
-        # The whole reason the URL is forwarded rather than rebuilt: userinfo and a token
-        # query are not reconstructible from a family leaf.
+        # Why the URL is forwarded rather than rebuilt: userinfo and a token query are
+        # not reconstructible from a family leaf.
         url = "https://user:tok@mirror.local/whl/cu128?token=abc"
         with self._env(UNSLOTH_TORCH_INSTALL_INDEX_URL = url):
             assert ips._expected_torch_index_url("cu128") == url
@@ -2459,8 +2458,7 @@ class TestExpectedTorchFlavorResolution:
             assert ips._expected_torch_index_url("cu124") == f"{ips._PYTORCH_WHL_BASE}/cu124"
 
     def test_no_index_url_is_ever_persisted_by_the_manifest_write(self):
-        # The manifest lives in the venv and is read back by verify-install; a token in a
-        # pinned index URL must not follow it there.
+        # The manifest lives in the venv, so a token in a pinned URL must not reach it.
         source = inspect.getsource(ips.install_python_stack)
         assert "expected_torch_tag = torch_flavor_tag or _RECORDED_TORCH_TAG," in source
         assert "torch_index_url" not in source

@@ -793,9 +793,8 @@ def test_install_python_stack_windows_rocm_repair_pins_and_is_nonfatal():
         k == -1 or j > k
     ), "Windows ROCm repair must use the nonfatal pip_install_try wrapping the trio"
     window = text[i : i + 700]
-    # The trio is built just above the call now, so the win_arm64 exception can drop
-    # torchaudio the way setup.ps1 and the flavor repair do. Same requirement either
-    # way: the PINNED companions, never bare names.
+    # The trio is built just above the call now (win_arm64 drops torchaudio), but the
+    # requirement is unchanged: the PINNED companions, never bare names.
     trio = text[max(0, i - 900) : i + 700]
     assert (
         "_torch_pkg" in trio and "_vision_pkg" in trio and "_audio_pkg" in trio

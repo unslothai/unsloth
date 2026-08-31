@@ -302,14 +302,9 @@ def write_manifest(
     # exports nothing and would otherwise reinstall torch into a GGUF-only venv.
     if no_torch is not None:
         payload["no_torch"] = bool(no_torch)
-    # Additive for the same reason. The torch FLAVOR the installer selected (cu128 /
-    # rocm / xpu / cpu), never the index URL it selected it from: a pinned index can
-    # carry a token in its userinfo, query or fragment, and this file lives in the venv
-    # and is read back by verify-install, desktop-capabilities and the setup fast path.
-    # A repair rebuilds the URL from the tag, or reuses the pin still in the environment.
-    # Recorded because the in-app updater runs `unsloth studio update`, never install.ps1
-    # -- without this the update path has no record of which build the venv is supposed
-    # to hold and cannot tell a deliberate CPU install from a torch it lost to PyPI.
+    # The FLAVOR, never the index URL it came from: a pinned index can carry a token in
+    # its userinfo, query or fragment, and this file lives in the venv and is read back
+    # by verify-install, desktop-capabilities and the setup fast path.
     if expected_torch_tag:
         payload["expected_torch_tag"] = str(expected_torch_tag).strip().lower()
     path = manifest_path(root)

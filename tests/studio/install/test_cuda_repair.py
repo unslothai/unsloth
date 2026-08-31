@@ -29,8 +29,6 @@ stack_mod = importlib.util.module_from_spec(_STACK_SPEC)
 sys.modules[_STACK_SPEC.name] = stack_mod
 _STACK_SPEC.loader.exec_module(stack_mod)
 
-# setup.ps1's source, for the parts of this invariant that are PowerShell rather than a
-# Python call. Read once; the assertions on it are structural, not behavioural.
 _SETUP_SRC = (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
 
 # The probe prints its answer behind this marker, so chatter on either side of it cannot
@@ -712,13 +710,8 @@ class TestPreTuringWheelFamily:
         assert _sms("7.0\n", returncode = 1) is None
 
 
-# ── Windows torch-flavor invariant ───────────────────────────────────────────
-#
-# The in-app updater runs `unsloth studio update` -> setup.ps1 -> install_python_stack.py.
-# install.ps1, which holds the only torch-flavor repair there has ever been, is never on
-# that path, and the dependency steps install with deps and without an --index-url, so the
-# resolver's default source is PyPI -- whose Windows torch is 2.11.0+cpu. Two users' cu124
-# venvs came out of an update as 2.11.0+cpu with the update reporting success.
+# The updater runs setup.ps1 -> install_python_stack.py, never install.ps1, which held the
+# only flavor repair.
 
 _ensure_expected_torch_flavor = stack_mod._ensure_expected_torch_flavor
 _UNSET = object()
@@ -792,10 +785,6 @@ def _run_flavor_invariant(
             result.returncode = torch_rc
             out = _flavor_probe_stdout(state["version"])
             if (probe_cuda is not None or probe_hip is not None) and state["version"] == installed:
-                # An untagged wheel from a private index that DOES carry a runtime, which
-                # the tag alone cannot express. Overridden rather than derived, and only
-                # while the PRE-repair wheel is installed: whatever the repair puts there
-                # reports its own markers, and a real CPU wheel carries none.
                 out = _MARK + (f"{state['version']}|{probe_hip or ''}|{probe_cuda or ''}\n")
         else:
             result.returncode = 0
@@ -807,17 +796,13 @@ def _run_flavor_invariant(
         return result
 
     def _pip(*args, **kwargs):
-        # The real pip_install invalidates the memoized classification. The mock has to
-        # as well, or the re-probe after the repair answers with the pre-repair venv and
-        # every successful repair would read as a failure.
+        # The real pip_install invalidates the memoized classification.
         stack_mod._invalidate_torch_runtime_probe()
         if repaired is not None:
             state["version"] = repaired
 
     def _rocm(*args, **kwargs):
-        # The ROCm arm delegates to _ensure_rocm_torch rather than naming an index of its
-        # own, so the stand-in has to move the venv exactly as the real one would: the real
-        # function reaches pip_install internally, which is already patched here.
+        # The ROCm arm delegates, so the stand-in must move the venv too.
         _pip()
 
     def _which(name, *a, **k):
@@ -856,8 +841,6 @@ def _run_flavor_invariant(
             if value is None:
                 stack_mod.os.environ.pop(name, None)
         ok = _ensure_expected_torch_flavor()
-    # Hung off the pip mock rather than widening the tuple: every existing caller unpacks
-    # two values, and only the three ROCm tests need to see the delegation.
     mock_pip.rocm_repair = mock_rocm
     return ok, mock_pip
 
@@ -876,14 +859,12 @@ class TestExpectedTorchFlavorRepairs:
     def test_the_repair_uses_install_ps1s_bounded_trio(self):
         _ok, mock_pip = _run_flavor_invariant(repaired = "2.10.0+cu124")
         call_args = [str(a) for a in mock_pip.call_args.args]
-        # Bounded, and NOT the <2.12 Linux range: an unbounded trio can resolve straight
-        # back to the 2.11 wheel this repair exists to remove.
+        # NOT the <2.12 Linux range: an unbounded trio resolves back to the 2.11 wheel.
         for spec in ("torch>=2.4,<2.11.0", "torchvision>=0.19,<0.26.0", "torchaudio>=2.4,<2.11.0"):
             assert spec in call_args
 
     def test_untagged_pypi_wheel_is_repaired(self):
-        # PyPI forbids the local +cuNNN label, so an untagged wheel is the PyPI build --
-        # CPU-only on Windows. install.ps1's ConvertTo-TorchFlavorTag says "cpu" too.
+        # PyPI forbids +cuNNN, so untagged is its CPU-only Windows build.
         ok, mock_pip = _run_flavor_invariant(installed = "2.11.0", repaired = "2.10.0+cu124")
         assert ok is True
         assert mock_pip.call_count == 1
@@ -898,8 +879,7 @@ class TestExpectedTorchFlavorRepairs:
         assert _index_url(mock_pip).endswith("/cu128")
 
     def test_a_wedged_probe_classifies_from_disk_and_still_repairs(self):
-        # A stalled GPU driver hangs `import torch`, which is the host these repairs exist
-        # for. version.py on disk still names the wheel.
+        # A stalled driver hangs `import torch`; version.py on disk still names the wheel.
         ok, mock_pip = _run_flavor_invariant(
             probe_timeout = True,
             repaired = "2.10.0+cu124",
@@ -910,23 +890,16 @@ class TestExpectedTorchFlavorRepairs:
 
 class TestExpectedTorchFlavorFailsTheUpdate:
     def test_a_repair_that_leaves_cpu_torch_fails(self):
-        # The missing invariant: today this state exits 0 and the app silently runs on CPU.
         ok, mock_pip = _run_flavor_invariant(repaired = None)
         assert ok is False
         assert mock_pip.call_count == 1
 
     def test_the_failure_verdict_reads_torch_version_cuda_not_just_the_tag(self):
-        # An untagged wheel that does carry a CUDA runtime is a GPU build. Reinstalling it
-        # is right (the family is unconfirmable), failing the update over it is not.
+        # Untagged but carrying a CUDA runtime is a GPU build: reinstall, do not fail.
         ok, _mock_pip = _run_flavor_invariant(installed = "2.11.0", repaired = "2.11.0+cu124")
         assert ok is True
 
     def test_a_rocm_build_left_behind_is_not_called_cpu_only(self, capsys):
-        # A cu124 repair that comes back holding a ROCm wheel is a failure, because the
-        # requested family never arrived: a misconfigured mirror answering a /cu124
-        # request from a cached build is the case. But it is a DIFFERENT failure from a
-        # CPU-only venv, and it must not borrow that wording, which would send the
-        # reader after a problem this host does not have.
         ok, _mock_pip = _run_flavor_invariant(repaired = "2.9.1+rocm6.4")
         assert ok is False
         out = capsys.readouterr().out
@@ -974,19 +947,13 @@ class TestExpectedTorchFlavorSkips:
 
     @pytest.mark.parametrize("cvd", ["", "-1", " ", "  -1 "])
     def test_hidden_cuda_devices_is_a_no_op_for_an_inferred_expectation(self, cvd):
-        # An emptied mask says "do not look at my GPUs", so an expectation that could
-        # only have come from looking at them has nothing left to stand on.
         ok, mock_pip = _run_flavor_invariant(cvd = cvd, expected_env = None)
         assert ok is True
         mock_pip.assert_not_called()
 
     @pytest.mark.parametrize("cvd", ["", "-1", " ", "  -1 "])
     def test_a_mask_does_not_veto_an_explicit_expectation(self, cvd):
-        # The mask is a reason not to CONCLUDE cu124 from nvidia-smi. It is not a reason
-        # to ignore a cu124 setup.ps1 published, that the user pinned, or that the last
-        # install recorded. Letting it reproduced the whole defect: an update inheriting
-        # CUDA_VISIBLE_DEVICES="" skipped the invariant, took PyPI's CPU wheel from the
-        # dependency steps, and recorded the CUDA expectation over it.
+        # A reason not to CONCLUDE cu124 from a probe, not to ignore a stated one.
         for kwargs in (
             {"expected_env": "cu124"},
             {"expected_env": None, "index_family": "cu124"},
@@ -1003,18 +970,13 @@ class TestExpectedTorchFlavorSkips:
 
     @pytest.mark.parametrize("tag", ["current", "custom", "simple", "cu"])
     def test_an_unenforceable_expectation_is_a_no_op(self, tag):
-        # An unknown mirror leaf names no flavor, so there is nothing to check against.
-        # "xpu" and "rocm" are NOT in this list: setup.ps1 publishes both and both are
-        # enforced -- see TestExpectedXpuFlavorIsEnforced, which also covers the ROCm
-        # delegation.
+        # "xpu" and "rocm" are NOT here: both are published and both are enforced.
         ok, mock_pip = _run_flavor_invariant(expected_env = tag)
         assert ok is True
         mock_pip.assert_not_called()
 
     def test_an_empty_handover_tag_falls_through_rather_than_deciding(self):
-        # setup.ps1 removes the entry outright for an unknown leaf, but a caller's shell
-        # can still hand one down empty, and PowerShell 7.5+ keeps an entry assigned "".
-        # Either way it must read as "nobody said", not as "cpu".
+        # PowerShell 7.5+ keeps an entry assigned "", which must read as "nobody said".
         ok, mock_pip = _run_flavor_invariant(
             expected_env = "",
             recorded = "cu128",
@@ -1024,15 +986,12 @@ class TestExpectedTorchFlavorSkips:
         assert _index_url(mock_pip).endswith("/cu128")
 
     def test_missing_or_unimportable_torch_is_a_no_op(self):
-        # The base install owns a torch that cannot import at all, and force-reinstalling
-        # over it turns a broken driver into a wheel problem. install.ps1 declines too.
+        # Reinstalling over an unimportable torch turns a driver fault into a wheel one.
         ok, mock_pip = _run_flavor_invariant(torch_rc = 1)
         assert ok is True
         mock_pip.assert_not_called()
 
     def test_an_unreadable_venv_is_a_no_op(self):
-        # Probe timed out AND no on-disk label: nothing was learned, so nothing is done --
-        # ambiguity must never fail an update on its own.
         ok, mock_pip = _run_flavor_invariant(probe_timeout = True, disk_label = "")
         assert ok is True
         mock_pip.assert_not_called()
@@ -1040,7 +999,6 @@ class TestExpectedTorchFlavorSkips:
 
 class TestExpectedTorchFlavorResolution:
     def test_the_manifest_answers_when_the_environment_is_silent(self):
-        # A `python install_python_stack.py` with no setup script in front of it.
         ok, mock_pip = _run_flavor_invariant(
             expected_env = None,
             recorded = "cu128",
@@ -1067,8 +1025,7 @@ class TestExpectedTorchFlavorResolution:
         assert _index_url(mock_pip).endswith("/cu128")
 
     def test_the_live_probe_declines_without_an_nvidia_gpu(self):
-        # No GPU and no pin means no CUDA expectation exists to enforce; inventing one
-        # would reinstall CUDA torch onto a CPU-only box on every update.
+        # Inventing an expectation here reinstalls CUDA torch onto a CPU-only box.
         ok, mock_pip = _run_flavor_invariant(expected_env = None, recorded = None, nvidia = False)
         assert ok is True
         mock_pip.assert_not_called()
@@ -1079,8 +1036,7 @@ class TestExpectedTorchFlavorResolution:
         mock_pip.assert_not_called()
 
     def test_the_setup_scripts_index_url_is_used_when_its_leaf_matches(self):
-        # The only way an authenticated mirror can be repaired: the credentials are not
-        # reconstructible from a family leaf.
+        # Credentials are not reconstructible from a family leaf.
         _ok, mock_pip = _run_flavor_invariant(
             install_index_url = "https://mirror.local/whl/cu124?token=secret",
             repaired = "2.10.0+cu124",
@@ -1088,8 +1044,7 @@ class TestExpectedTorchFlavorResolution:
         assert _index_url(mock_pip) == "https://mirror.local/whl/cu124?token=secret"
 
     def test_an_index_url_naming_another_family_is_ignored(self):
-        # setup.ps1 hands over the /cpu index alongside a "rocm" tag on the AMD Windows
-        # path; repairing a cu* mismatch from it would install the CPU wheel being removed.
+        # setup.ps1 hands over /cpu alongside a "rocm" tag on the AMD Windows path.
         _ok, mock_pip = _run_flavor_invariant(
             install_index_url = "https://download.pytorch.org/whl/cpu",
             repaired = "2.10.0+cu124",
@@ -1171,8 +1126,7 @@ class TestExpectedXpuFlavorIsEnforced:
         )
         assert ok is True
         args = mock_pip.call_args[0]
-        # The XPU floor is 2.6, not the CUDA trio's 2.4: unsloth raises at import for an
-        # XPU device below it, and a 2.5 wheel would satisfy the CUDA range and be kept.
+        # XPU floor is 2.6, not the CUDA trio's 2.4: unsloth raises at import below it.
         assert "torch>=2.6,<2.11.0" in args
         assert "torchvision>=0.21,<0.26.0" in args
         assert any("xpu" in str(a) for a in args)
@@ -1262,7 +1216,6 @@ class TestTheDelegatedRocmRepairIsVerifiedByFamily:
         mock_pip.rocm_repair.assert_called_once()
 
     def test_a_repair_that_left_cpu_torch_still_reads_as_cpu(self):
-        # The two warnings differ, and this host has to get the CPU-only one.
         ok, _mock_pip = _run_flavor_invariant(
             installed = "2.11.0+cpu",
             repaired = "2.11.0+cpu",
@@ -1272,8 +1225,6 @@ class TestTheDelegatedRocmRepairIsVerifiedByFamily:
         assert ok is False
 
     def test_an_unreadable_venv_does_not_fail_the_update_on_its_own(self):
-        # The wedged-driver host these repairs exist for: the probe never returns and
-        # version.py names nothing. Ambiguity must not be turned into a failure.
         ok, _mock_pip = _run_flavor_invariant(
             installed = "2.11.0+cpu",
             repaired = "2.11.0+cpu",
@@ -1308,8 +1259,8 @@ class TestAPinnedCpuIndexIsEnforcedToo:
         assert "--force-reinstall" in [str(a) for a in mock_pip.call_args.args]
 
     def test_a_published_cpu_tag_with_no_pin_is_still_left_alone(self):
-        # The wedged-driver host: setup.ps1 saw no nvidia-smi output and published
-        # "cpu", but the venv is a healthy cu124 one that must not be downgraded.
+        # setup.ps1 publishes "cpu" when nvidia-smi answers nothing; the healthy cu124
+        # venv underneath must not be downgraded.
         ok, mock_pip = _run_flavor_invariant(
             installed = "2.6.0+cu124",
             expected_env = "cpu",
@@ -1340,8 +1291,7 @@ class TestAPinnedCpuIndexIsEnforcedToo:
         assert mock_pip.call_count == 1
 
     def test_a_cpu_backend_under_a_gpu_expectation_is_still_left_alone(self):
-        # _TORCH_BACKEND now reaches this function at all, so the disagreement guard has
-        # to cover it: a deliberate CPU backend must not be dragged up to cu124.
+        # A deliberate CPU backend must not be dragged up to cu124.
         ok, mock_pip = _run_flavor_invariant(
             installed = "2.11.0+cpu",
             expected_env = "cu124",
@@ -1418,7 +1368,6 @@ class TestTheRequestedFamilyIsVerifiedAfterEveryRepair:
         assert ok is False
 
     def test_an_unreadable_venv_still_passes(self):
-        # The wedged-driver host. Ambiguity must not fail an update by itself.
         ok, _mock_pip = _run_flavor_invariant(
             expected_env = "cu128",
             repaired = "2.6.0+cu128",
@@ -1489,8 +1438,6 @@ class TestAnExplicitPinOutranksTheManifest:
         assert "--force-reinstall" in [str(a) for a in mock_pip.call_args.args]
 
     def test_a_pinned_url_beats_a_stale_manifest_and_is_the_repair_source(self):
-        # A credentialed mirror is only repairable from the credentialed URL, so losing
-        # to the manifest also loses the source, not just the family.
         pin = "https://mirror.corp.example/whl/cu128"
         ok, mock_pip = _run_flavor_invariant(
             installed = "2.10.0+cu124",
@@ -1503,8 +1450,7 @@ class TestAnExplicitPinOutranksTheManifest:
         assert _index_url(mock_pip) == pin
 
     def test_a_rocm_pin_collapses_to_the_flavor_vocabulary(self):
-        # Every AMD leaf (rocm6.4, gfx1151) is "rocm" in the tag vocabulary, or the
-        # comparison against the installed flavor could never match.
+        # Every AMD leaf (rocm6.4, gfx1151) is "rocm" in the tag vocabulary.
         ok, mock_pip = _run_flavor_invariant(
             installed = "2.11.0+rocm7.2",
             expected_env = None,
@@ -1527,8 +1473,7 @@ class TestAnExplicitPinOutranksTheManifest:
         mock_pip.assert_not_called()
 
     def test_an_unrecognised_pin_still_falls_through_to_the_manifest(self):
-        # A /simple mirror names no family, so it answers nothing here; the caller's
-        # unknown-pin gate is what stops the manifest being acted on.
+        # A /simple mirror names no family; the caller's unknown-pin gate is the guard.
         ok, mock_pip = _run_flavor_invariant(
             installed = "2.11.0+cpu",
             expected_env = None,
@@ -1539,9 +1484,7 @@ class TestAnExplicitPinOutranksTheManifest:
         mock_pip.assert_not_called()
 
     def test_the_setup_handover_still_wins_over_a_pin(self):
-        # setup.ps1 consults the pin when it picks its index, so the handover already
-        # reflects it. If they disagree, the handover describes the run that just
-        # installed, which is the better account of what is actually in the venv.
+        # The handover describes the run that just installed; the pin may predate it.
         ok, mock_pip = _run_flavor_invariant(
             installed = "2.10.0+cu124",
             repaired = "2.10.0+cu126",
@@ -1696,38 +1639,30 @@ class TestThePackagesTiedToTheTorchReleaseAreResettled:
         assert any("torchao==0.16.0" in " ".join(c) for c in calls["torchao"])
 
     def test_a_build_that_did_not_move_at_all_does_nothing(self):
-        # The common case restores the wheel the venv already had. Reinstalling around
-        # it would add minutes to every update for nothing.
         calls = self._resync("2.10.0+cu124", "2.10.0+cu124", resident_xformers = "2.11.0+cu128")
         assert calls["torchao"] == []
         assert calls["removed"] == []
         assert calls["ok"] is True
 
     def test_a_cuda_major_change_alone_re_pins_torchao(self):
-        # _select_torchao_spec branches on cuda>=13, so cu124 -> cu130 at the same
-        # release changes the matched build even though the release did not move.
+        # _select_torchao_spec branches on cuda>=13, so cu124 -> cu130 moves the build.
         calls = self._resync("2.10.0+cu124", "2.10.0+cu130")
         assert calls["torchao"], "the CUDA major moved, so the pin has to be re-selected"
         assert any("torchao==0.17.0" in " ".join(c) for c in calls["torchao"])
 
     def test_a_flavor_change_within_one_cuda_major_leaves_torchao_alone(self):
-        # cu124 -> cu128 is the same major and the same release, so nothing about
-        # torchao's matched build changed.
         calls = self._resync("2.10.0+cu124", "2.10.0+cu128")
         assert calls["torchao"] == []
 
     def test_a_flavor_change_alone_still_rechecks_xformers(self):
-        # 2.10.0+cu124 -> 2.10.0+cu128 keeps the release, so torchao is untouched, but
-        # the extension is linked to the exact (torch, CUDA) PAIR and is now unloadable.
+        # xFormers links against the exact (torch, CUDA) pair.
         calls = self._resync("2.10.0+cu124", "2.10.0+cu128", resident_xformers = "2.10.0+cu124")
         assert calls["torchao"] == [], "the release did not move; torchao is fine"
         assert calls["removed"] == ["xformers"]
         assert calls["ok"] is True, "nothing here touched torch"
 
     def test_the_torchao_reinstall_cannot_drag_torch_back(self):
-        # torchao depends on torch, so a --force-reinstall that resolves dependencies
-        # re-resolves it from the unpinned default index -- on Windows, the 2.11.0+cpu
-        # wheel the repair had just removed, moments after removing it.
+        # torchao depends on torch: resolving deps re-pulls the wheel just removed.
         calls = self._resync("2.11.0+cu124", "2.10.0+cu124")
         assert calls["torchao"], "the release moved, so torchao is re-pinned"
         assert all("--no-deps" in c for c in calls["torchao"])
@@ -1764,8 +1699,6 @@ class TestThePackagesTiedToTheTorchReleaseAreResettled:
         assert calls["ok"] is True
 
     def test_neither_half_can_fail_the_update(self, capsys):
-        # Both are secondary to the flavor invariant, which has just fixed the real
-        # defect. Neither is worth failing the update it belongs to.
         with (
             patch.object(stack_mod, "_probe_installed_torch_version", return_value = "2.10.0+cu124"),
             patch.object(
@@ -1846,12 +1779,10 @@ class TestTheResyncNoticesItsOwnFailures:
             return stack_mod._resync_torch_coupled_packages("2.11.0+cu124")
 
     def test_a_torchao_install_that_did_not_take_is_reported(self, capsys):
-        # PyPI blocked behind a reachable torch index is the concrete case.
         self._resync_with(torchao_ok = False)
         assert "could not install" in capsys.readouterr().out
 
     def test_an_xformers_removal_that_was_blocked_is_reported(self, capsys):
-        # Locked files or a read-only environment, both plausible on Windows.
         self._resync_with(uninstall_ok = False)
         out = capsys.readouterr().out
         assert "could not remove the mismatched xFormers" in out
@@ -1862,16 +1793,14 @@ class TestTheResyncNoticesItsOwnFailures:
         assert "[WARN]" not in out
 
     def test_a_failure_still_does_not_fail_the_update(self):
-        # Secondary to the flavor invariant, which has just fixed the real defect. The
-        # return value reports whether torch may have MOVED, not whether all was well.
+        # The return value reports whether torch may have MOVED, not that all was well.
         assert self._resync_with(torchao_ok = False, uninstall_ok = False) is False
 
 
 class TestThePostRepairCheckUsesTheSameRuleAsThePreRepairOne:
     def test_an_untagged_gpu_wheel_does_not_satisfy_a_cpu_expectation(self):
-        # _torch_flavor_tag reads every untagged version as cpu, so a private index that
-        # answers a /cpu repair with an untagged CUDA wheel would be accepted by the
-        # post-repair check under the very rule the pre-repair check rejected it on.
+        # Untagged reads as cpu, so the post-repair check would accept the very wheel
+        # the pre-repair check rejected.
         with (
             patch.object(
                 stack_mod,
@@ -1880,7 +1809,6 @@ class TestThePostRepairCheckUsesTheSameRuleAsThePreRepairOne:
             ),
         ):
             assert stack_mod._installed_flavor_tag_now("cpu") == "cuda"
-            # And the ROCm spelling, since the two warnings differ.
             with patch.object(
                 stack_mod,
                 "_probe_torch_runtime",
@@ -1897,8 +1825,6 @@ class TestThePostRepairCheckUsesTheSameRuleAsThePreRepairOne:
             assert stack_mod._installed_flavor_tag_now("cpu") == "cpu"
 
     def test_the_adjustment_is_scoped_to_a_cpu_expectation(self):
-        # Under a cu124 expectation an untagged wheel is still "cpu": the repair is
-        # right either way, and only the CPU comparison needed the markers.
         with patch.object(
             stack_mod,
             "_probe_torch_runtime",
@@ -1976,15 +1902,10 @@ class TestADefinitiveImportFailureIsNotADriverHang:
         assert "$script:TorchImportDefinitivelyFailed = $true" in block
 
     def test_the_venv_is_still_kept_either_way(self):
-        # The rescue exists because deleting a venv does not fix a driver, and a faulted
-        # HIP or display driver raises at DLL load rather than timing out. Restricting
-        # the rescue itself to timeouts would resurrect exactly that bug.
+        # A faulted driver raises at DLL load rather than timing out.
         start = self._SOURCE.index("Test-VenvTorchIsCuda -VenvPath $VenvDir")
-        # The CUDA arm only, not the trailing else that handles "no family matched",
-        # which is the one branch that SHOULD still rebuild.
+        # The CUDA arm only: the trailing "no family matched" else SHOULD rebuild.
         arm = self._SOURCE[start : self._SOURCE.index("} else {", start)]
-        # Comments stripped: this arm's own commentary explains what the chain used to
-        # fall through to, and naming it there is not the same as doing it.
         code = "\n".join(line for line in arm.splitlines() if not line.strip().startswith("#"))
         assert "$shouldRebuild" not in code
         assert "$script:TorchImportDefinitivelyFailed = $true" in arm
