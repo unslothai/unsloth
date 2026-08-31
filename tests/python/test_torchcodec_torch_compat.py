@@ -504,21 +504,32 @@ def test_notebook_validator_reads_a_range_as_one_window():
     assert nv.rule_inst_004_torchcodec_torch(matching, COLAB_TORCH211, "nb.ipynb", 0) == []
 
     # Open below: the release pip picks is unnamed, so no stale baseline is kept either.
-    assert nv.rule_inst_004_torchcodec_torch(
-        '!pip install "torch<2.11"', COLAB_TORCH211, "nb.ipynb", 0
-    ) == []
+    assert (
+        nv.rule_inst_004_torchcodec_torch(
+            '!pip install "torch<2.11"', COLAB_TORCH211, "nb.ipynb", 0
+        )
+        == []
+    )
 
     # An inclusive cap does name one, so it still clamps rather than clearing.
     capped = '!pip install "torch==2.12.0" "torchcodec>=0.12"\n!pip install "torchcodec<=0.11"'
     assert len(nv.rule_inst_004_torchcodec_torch(capped, COLAB_TORCH211, "nb.ipynb", 0)) == 1
 
     # `>` is a floor like `>=`: it only shifts the minor when the window spans two.
-    assert len(nv.rule_inst_004_torchcodec_torch(
-        '!pip install "torch>2.12"', COLAB_TORCH211, "nb.ipynb", 0
-    )) == 1
-    assert nv.rule_inst_004_torchcodec_torch(
-        '!pip install "torch>2.11.999"', COLAB_TORCH211, "nb.ipynb", 0
-    ) == []
+    assert (
+        len(
+            nv.rule_inst_004_torchcodec_torch(
+                '!pip install "torch>2.12"', COLAB_TORCH211, "nb.ipynb", 0
+            )
+        )
+        == 1
+    )
+    assert (
+        nv.rule_inst_004_torchcodec_torch(
+            '!pip install "torch>2.11.999"', COLAB_TORCH211, "nb.ipynb", 0
+        )
+        == []
+    )
 
 
 def test_notebook_validator_reads_the_compatible_release_ceiling():
