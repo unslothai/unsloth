@@ -51,7 +51,10 @@ def test_cors_origins_for_mode_desktop_default():
 def test_cors_origins_for_mode_env_override(monkeypatch):
     monkeypatch.setenv("UNSLOTH_CORS_ORIGINS", "https://foo.example, http://localhost:9999")
     origins = cors_origins_for_mode(api_only = True, secure = False)
-    assert origins == ["https://foo.example", "http://localhost:9999"]
+    assert origins == list(_TAURI_CORS_ORIGINS) + ["https://foo.example", "http://localhost:9999"]
+
+    origins_wildcard = cors_origins_for_mode(api_only = False, secure = False)
+    assert origins_wildcard == ["https://foo.example", "http://localhost:9999"]
 
 
 @pytest.mark.parametrize(

@@ -196,11 +196,16 @@ def cors_origins_for_mode(*, api_only: bool, secure: bool) -> list[str]:
     """Allowed CORS origins. Default is any-origin (["*"]); api-only locks down
     to the Tauri desktop app, except in secure mode where the API is published
     over Cloudflare and must stay reachable from remote browser origins.
-    Can be overridden via UNSLOTH_CORS_ORIGINS."""
-    if custom := os.environ.get("UNSLOTH_CORS_ORIGINS"):
-        return [origin.strip() for origin in custom.split(",") if origin.strip()]
+    Extra origins can be appended via UNSLOTH_CORS_ORIGINS."""
+    custom = [
+        origin.strip()
+        for origin in os.environ.get("UNSLOTH_CORS_ORIGINS", "").split(",")
+        if origin.strip()
+    ]
     if api_only and not secure:
-        return list(_TAURI_CORS_ORIGINS)
+        return list(dict.fromkeys(list(_TAURI_CORS_ORIGINS) + custom))
+    if custom:
+        return custom
     return ["*"]
 
 
