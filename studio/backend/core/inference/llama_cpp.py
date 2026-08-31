@@ -869,7 +869,8 @@ def _native_linux_system_rocm_lib_dirs(binary_dir: str = "") -> "list[str]":
 #     digits / symbols (python3, c++, c#, objective-c, ts-node, ...) are
 #     all recognised; the closing fence may be indented or carry a `>`
 #     blockquote marker, matching what _has_unclosed_code_fence accepts.
-#   * HTML branches require a closing `</html>` so plan-only mentions of
+#   * HTML branches require a closing `</html>` (whitespace before the
+#     `>` is legal per the HTML spec) so plan-only mentions of
 #     `<html>` or `<!doctype>` do not bypass the re-prompt.
 #   * All `[\s\S]{...}?` runs are length-bounded so the search stays
 #     linear on adversarial input (CRLF spam, repeated `<html>` etc.).
@@ -879,7 +880,7 @@ _CLOSED_CODE_FENCE = re.compile(
     re.IGNORECASE,
 )
 _CLOSED_MARKUP_ARTIFACT = re.compile(
-    r"(?:<!doctype\b[\s\S]{0,200}?)?<html\b[\s\S]{0,4000}?</html>|<svg\b[\s\S]{0,4000}?</svg>",
+    r"(?:<!doctype\b[\s\S]{0,200}?)?<html\b[\s\S]{0,4000}?</html\s*>|<svg\b[\s\S]{0,4000}?</svg\s*>",
     re.IGNORECASE,
 )
 _HAS_ANSWER_ARTIFACT = re.compile(
@@ -894,9 +895,9 @@ _HAS_ANSWER_ARTIFACT = re.compile(
     # run of tildes; closer accepts >= opener length per CommonMark.
     r"|(?<!~)(?P<tf>~{3,})(?!~)[^\r\n]{0,200}\r?\n[\s\S]{1,4000}?\r?\n[ \t>]*(?P=tf)~*[ \t]*(?:\r?\n|\Z)"
     # Complete HTML page; doctype prefix is optional.
-    r"|(?:<!doctype\b[\s\S]{0,200}?)?<html\b[\s\S]{0,4000}?</html>"
+    r"|(?:<!doctype\b[\s\S]{0,200}?)?<html\b[\s\S]{0,4000}?</html\s*>"
     # Complete SVG document.
-    r"|<svg\b[\s\S]{0,4000}?</svg>",
+    r"|<svg\b[\s\S]{0,4000}?</svg\s*>",
     re.IGNORECASE,
 )
 
@@ -918,11 +919,21 @@ def _has_unclosed_code_fence(text: str) -> bool:
     strings like ``\\`\\`\\`python linenums=1`` still work, blockquoted
     or not: the ``>`` marker is stripped first so a quoted fence is
     judged at its real column instead of reading as prose.
+
+    This helper, not `_HAS_ANSWER_ARTIFACT`, is what decides that a
+    quoted closer belongs to a quoted opener. The pattern allows a `>`
+    on any closer so a quoted block is found at all; the open/close
+    state here then vetoes one whose quote depth does not match, which
+    is what stops a literal `> \\`\\`\\`` line inside an unquoted
+    ```` ```markdown ```` block from closing it.
     """
     active_char: Optional[str] = None
     active_len = 0
+    active_quote = 0
     for raw_line in text.splitlines():
-        line = _BLOCKQUOTE_PREFIX.sub("", raw_line)
+        quote = _BLOCKQUOTE_PREFIX.match(raw_line)
+        quote_depth = quote.group(0).count(">") if quote else 0
+        line = raw_line[quote.end() :] if quote else raw_line
         m = _FENCE_RUN_RE.search(line)
         if not m:
             continue
@@ -934,16 +945,25 @@ def _has_unclosed_code_fence(text: str) -> bool:
         # Inline + multi-word trailing or leading-space trailing both
         # read as prose ("Use ``` to start", "Use ```python to open").
         if is_inline:
+            # A later run on the same line closes an inline span ("the
+            # marker is ```python```"), so neither run is a fence.
+            if _FENCE_RUN_RE.search(raw_trailing):
+                continue
             if raw_trailing and raw_trailing[0] == " " and trailing:
                 continue
             if trailing and (" " in trailing or "\t" in trailing):
                 continue
         if active_char is None:
-            active_char = ch
-            active_len = len(fence)
-        elif ch == active_char and len(fence) >= active_len and not trailing:
+            active_char, active_len, active_quote = ch, len(fence), quote_depth
+        elif (
+            ch == active_char
+            and len(fence) >= active_len
+            and quote_depth == active_quote
+            and not trailing
+        ):
             active_char = None
             active_len = 0
+            active_quote = 0
     return active_char is not None
 
 
@@ -957,11 +977,11 @@ def _has_unclosed_markup_block(text: str) -> bool:
     response.
     """
     opens_html = len(re.findall(r"<html\b", text, re.IGNORECASE))
-    closes_html = len(re.findall(r"</html>", text, re.IGNORECASE))
+    closes_html = len(re.findall(r"</html\s*>", text, re.IGNORECASE))
     if opens_html > closes_html:
         return True
     opens_svg = len(re.findall(r"<svg\b", text, re.IGNORECASE))
-    closes_svg = len(re.findall(r"</svg>", text, re.IGNORECASE))
+    closes_svg = len(re.findall(r"</svg\s*>", text, re.IGNORECASE))
     return opens_svg > closes_svg
 
 
@@ -969,7 +989,7 @@ def _has_unclosed_markup_block(text: str) -> bool:
 # skeleton. Plan-only mentions ("First, I'll create an <html></html>
 # skeleton") would otherwise look like a complete page.
 _EMPTY_MARKUP_SKELETON = re.compile(
-    r"<(html|svg)\b[^>]*>\s*</\1>",
+    r"<(html|svg)\b[^>]*>\s*</\1\s*>",
     re.IGNORECASE,
 )
 _DOCTYPE_PREFIX = re.compile(

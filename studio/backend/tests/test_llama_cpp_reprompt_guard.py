@@ -238,6 +238,40 @@ def test_quoted_prose_mention_of_backticks_after_code():
     assert not _would_reprompt(text)
 
 
+def test_quoted_closer_does_not_close_an_unquoted_fence():
+    """A ``>`` closer belongs to a quoted container. Inside an unquoted
+    ```markdown block a literal ``> ``` `` line is content, so the block
+    is still open and the turn is still mid-stream."""
+    text = "First, let me show it.\n```markdown\nExample:\n> ```"
+    assert not _has_answer_artifact(text)
+    assert _would_reprompt(text)
+    # ... and the same output, actually closed, is a complete answer.
+    assert _has_answer_artifact(text + "\n```")
+
+
+def test_balanced_inline_fence_span_is_not_an_opener():
+    """``The marker is ```python``` `` is a balanced inline span, not a
+    fence. Scanning one delimiter per line read the first run as an
+    opener and left the answer looking unfinished."""
+    text = "First, let me show it.\n```python\nx = 1\n```\nThe marker is ```python```."
+    assert _has_answer_artifact(text)
+    assert not _would_reprompt(text)
+
+
+def test_markup_closing_tag_tolerates_whitespace():
+    """`</html >` and `</svg >` are legal per the HTML spec, and must
+    count both as artifacts and as closes in the balance check."""
+    samples = [
+        "First, let me show it.\n<html><body>hi</body></html >",
+        'First, let me draw it.\n<svg width="10"><circle r="3"/></svg >',
+    ]
+    for text in samples:
+        assert _has_answer_artifact(text), text
+        assert not _would_reprompt(text), text
+    # An empty skeleton stays a plan-only mention with the same spacing.
+    assert _would_reprompt("First, I'll search the web for current data, then <svg></svg >.")
+
+
 def test_blockquote_marker_does_not_close_an_open_fence_early():
     """The ``>`` tolerance is for the closing delimiter only; prose that
     merely quotes a fence must not close a block that is still open."""
