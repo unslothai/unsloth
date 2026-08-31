@@ -114,12 +114,17 @@ test("image and video family selectors opt all local inventories into the narrow
     "../src/features/video/video-page.tsx",
   ]) {
     const source = readFileSync(new URL(page, import.meta.url), "utf8");
+    const familyHint = source.indexOf("model architecture family");
+    const familyStart = source.lastIndexOf("<AdvancedSelect", familyHint);
     const familyHandler = source.slice(
-      source.indexOf('label="Family"'),
-      source.indexOf("options=", source.indexOf('label="Family"')),
+      familyStart,
+      source.indexOf("options=", familyHint),
     );
+    assert.ok(familyHint >= 0 && familyStart >= 0);
     assert.match(familyHandler, /v === "auto"/);
     assert.match(familyHandler, /pendingModelDefaults\?\.repoId/);
+    assert.match(familyHandler, /defaultsFor\(recipeRepoId, v\)/);
+    assert.doesNotMatch(familyHandler, /defaultsFor\("", v\)/);
   }
 
   const inventory = readFileSync(

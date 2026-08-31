@@ -3234,7 +3234,7 @@ function VideoGenerator({
           const d =
             v === "auto"
               ? defaultsFor(recipeRepoId)
-              : defaultsFor("", v);
+              : defaultsFor(recipeRepoId, v);
           setPendingModelDefaults({ ...d, repoId: recipeRepoId });
           setSteps(d.steps);
           setGuidance(d.guidance);

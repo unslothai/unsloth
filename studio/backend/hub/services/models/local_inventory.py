@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from itertools import islice
 from pathlib import Path
 from typing import List, NamedTuple, Optional
 
@@ -793,17 +794,18 @@ def _scan_custom_folder(
             "modular_model_index.json",
         )
     )
-    root_candidates = (
-        []
-        if root_has_architecture_evidence
-        else [
-            model
-            for checkpoint in sorted(folder_path.iterdir(), key = lambda path: path.name.lower())
-            if checkpoint.is_file() and checkpoint.suffix.lower() == ".safetensors"
-            for model in _classify_local_path(checkpoint, "models_dir")
-            if _is_inert_safetensors(model)
-        ]
-    )
+    root_candidates: list[LocalModelInfo] = []
+    if not root_has_architecture_evidence:
+        for checkpoint in islice(folder_path.iterdir(), _MAX_CUSTOM_FOLDER_ENTRIES):
+            if len(root_candidates) >= _MAX_MODELS_PER_CUSTOM_FOLDER:
+                break
+            if not checkpoint.is_file() or checkpoint.suffix.lower() != ".safetensors":
+                continue
+            root_candidates.extend(
+                model
+                for model in _classify_local_path(checkpoint, "models_dir")
+                if _is_inert_safetensors(model)
+            )
 
     generic = root_candidates + [
         m
@@ -871,6 +873,8 @@ def _promote_to_custom_source(model: LocalModelInfo) -> LocalModelInfo:
                 # classifier had ruled out. The format is unchanged here, so
                 # carrying the old verdict through is idempotent.
                 can_chat_override = model.capabilities.can_chat,
+                can_train_override = model.capabilities.can_train,
+                supports_lora_override = model.capabilities.supports_lora,
             ),
         }
     )

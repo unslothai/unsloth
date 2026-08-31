@@ -482,6 +482,12 @@ def test_custom_inventory_surfaces_a_safetensors_file_registered_by_path(tmp_pat
     assert [(Path(row.path), row.model_format, row.task) for row in rows] == [
         (checkpoint, "safetensors", None)
     ]
+    from hub.services.models.local_inventory import _promote_to_custom_source
+
+    promoted = _promote_to_custom_source(rows[0])
+    assert promoted.capabilities.can_chat is False
+    assert promoted.capabilities.can_train is False
+    assert promoted.capabilities.supports_lora is False
 
 
 def test_custom_inventory_keeps_file_rows_in_a_multi_checkpoint_registration(tmp_path):
@@ -511,6 +517,33 @@ def test_custom_inventory_does_not_detach_weights_from_parent_config(tmp_path):
     rows = _scan_custom_folder(root)
 
     assert all(Path(row.path) != weight for row in rows)
+
+
+def test_custom_inventory_bounds_loose_root_enumeration(tmp_path, monkeypatch):
+    """The root checkpoint pass must not request an entry beyond the shared scan bound."""
+    from hub.services.models import local_inventory
+
+    root = tmp_path / "large-custom"
+    root.mkdir()
+    original_iterdir = Path.iterdir
+    root_calls = 0
+
+    def bounded_iterdir(path):
+        nonlocal root_calls
+        if path == root and root_calls == 0:
+            root_calls += 1
+
+            def entries():
+                for index in range(local_inventory._MAX_CUSTOM_FOLDER_ENTRIES):
+                    yield root / f"entry-{index}.txt"
+                raise AssertionError("root enumeration exceeded its entry bound")
+
+            return entries()
+        return original_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", bounded_iterdir)
+
+    assert local_inventory._scan_custom_folder(root) == []
 
 
 def test_custom_inventory_keeps_configless_safetensors_shards_unknown(tmp_path):
