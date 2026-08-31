@@ -2063,19 +2063,18 @@ def _extract_reasoning_effort_levels(chat_template: str) -> list:
     ]
 
 
-# Files whose header has already been described in the log, keyed on identity rather than
-# name so a rebuilt or re-downloaded GGUF at the same path is described again. Bounded
-# because a long session can touch many models; a dropped entry only re-logs one block.
+# Headers already described in the log, keyed on identity rather than name so a rebuilt
+# GGUF at the same path is described again. Bounded; a dropped entry only re-logs once.
 _GGUF_METADATA_LOGGED: "dict[tuple, bool]" = {}
 _GGUF_METADATA_LOGGED_MAX = 32
 _GGUF_METADATA_LOGGED_LOCK = threading.Lock()
 
 
 def _note_gguf_metadata_read(gguf_path: str) -> bool:
-    """True the first time this exact file is read, False for every repeat.
+    """True the first time this exact file is read, False for repeats.
 
-    Falls open to True when the file cannot be stat'd: an unidentifiable read is better
-    logged than silently swallowed.
+    Falls open when the file cannot be stat'd: an unidentifiable read is better logged
+    than silently swallowed.
     """
     try:
         st = os.stat(gguf_path)
@@ -2124,9 +2123,8 @@ def detect_reasoning_flags(
         return flags
     tpl = chat_template
     prefix = f"{log_source}: " if log_source else ""
-    # The GGUF sniffer re-derives these on every probe, several times per request, so it
-    # asks for debug after the first read of a file. Capability lines are the same four
-    # facts about the same template every time.
+    # The GGUF sniffer re-derives these several times per request and the lines say the
+    # same thing every time, so it asks for debug after the first read of a file.
     _log = logger.debug if log_level == "debug" else logger.info
 
     # 'none' is this style's disable sentinel, not an effort level: the off
@@ -12778,13 +12776,10 @@ class LlamaCppBackend:
             # architecture" rather than "the read stopped early" -- what the preflight needs.
             self._gguf_header_parsed = kv_complete
 
-            # Ten call sites reach this, and each builds its own throwaway probe so the
-            # live backend's metadata is never clobbered, so nothing is shared between
-            # them. One POST /api/inference/estimate-memory walks the header 3-5 times
-            # and the Load Model panel fires that route on every slider change: measured
-            # over one 20s session with four chat tabs, this block was 140 of 296 log
-            # lines, 47% of everything Studio wrote. The facts are identical every time,
-            # so only the first read of a given file says them out loud.
+            # Ten call sites reach this, each via its own throwaway probe, and one
+            # estimate-memory POST walks the header 3-5 times: 140 of 296 log lines
+            # over a 20s four-tab session. The facts are identical every time, so only
+            # the first read of a given file says them out loud.
             first_read = _note_gguf_metadata_read(gguf_path)
             level = "info" if first_read else "debug"
             log_at = logger.info if first_read else logger.debug

@@ -1,14 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The GGUF header block says the same five things about the same file every time.
+"""The GGUF header block says the same things about the same file every time.
 
-Ten call sites reach ``_read_gguf_metadata``, each through its own throwaway probe, and a
-single ``POST /api/inference/estimate-memory`` walks the header three to five times. Driving
-four chat tabs for twenty seconds produced 140 of these lines out of 296 total: 47% of
-everything Studio wrote was one model's capabilities, repeated.
-
-These tests pin the two halves of the fix: repeats are demoted, and demoting them does not
+Ten call sites reach ``_read_gguf_metadata`` and one ``POST /api/inference/estimate-memory``
+walks the header three to five times: 140 of 296 log lines over a 20s four-tab session.
+These tests pin both halves of the fix: repeats are demoted, and demoting them does not
 change what is detected.
 """
 
@@ -46,8 +43,7 @@ def test_only_the_first_read_of_a_file_speaks_up(tmp_path):
 
 
 def test_a_changed_file_is_described_again(tmp_path):
-    """Keyed on identity, not name. A re-downloaded or rebuilt GGUF at the same path is a
-    different file and its header is worth stating."""
+    """Keyed on identity, not name: a rebuilt GGUF at the same path is worth stating."""
     path = _gguf(tmp_path)
     assert llama_cpp._note_gguf_metadata_read(path) is True
     import os
@@ -61,8 +57,7 @@ def test_a_changed_file_is_described_again(tmp_path):
 
 
 def test_an_unstattable_path_still_logs(tmp_path):
-    """Fails open. A read that cannot be identified is better said out loud than silently
-    swallowed, which is the failure mode a dedupe cache invites."""
+    """Fails open: an unidentifiable read is better said out loud than swallowed."""
     assert llama_cpp._note_gguf_metadata_read(str(tmp_path / "gone.gguf")) is True
 
 
@@ -81,8 +76,8 @@ TEMPLATE = (
 
 
 def test_debug_level_moves_the_capability_lines_off_info(monkeypatch):
-    """Asserted against the logger itself: this is structlog, so caplog does not see the
-    records and a caplog-based test would pass while the lines still went to info."""
+    """Asserted against the logger itself: structlog bypasses caplog, so a caplog test
+    would pass while the lines still went to info."""
     seen: list[tuple[str, str]] = []
     for level in ("info", "debug"):
         monkeypatch.setattr(
@@ -109,8 +104,8 @@ def test_debug_level_moves_the_capability_lines_off_info(monkeypatch):
 
 
 def test_the_level_does_not_change_what_is_detected():
-    """The whole point: this is a logging change. A capability that disappears when the
-    line is demoted would be a real regression hiding behind a quieter log."""
+    """A capability that disappears when the line is demoted would be a regression
+    hiding behind a quieter log."""
     loud = llama_cpp.detect_reasoning_flags(TEMPLATE, "qwen3.8", log_source = "GGUF metadata")
     quiet = llama_cpp.detect_reasoning_flags(
         TEMPLATE, "qwen3.8", log_source = "GGUF metadata", log_level = "debug"

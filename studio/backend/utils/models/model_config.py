@@ -3955,8 +3955,7 @@ class ModelConfig:
 
                 display_name = f"{identifier.split('/')[-1]} ({variant})"
                 # Debug: from_identifier is re-resolved on every validate, estimate and
-                # load, so this says the same thing about the same repo several times per
-                # request. The load path announces the model it actually starts.
+                # load. The load path announces the model it actually starts.
                 logger.debug(
                     f"Detected remote GGUF repo '{identifier}', "
                     f"variant={variant}, vision={has_vision}"

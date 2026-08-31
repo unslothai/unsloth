@@ -84,7 +84,7 @@ _QUIET_POLL_PATHS = {
     # otherwise emit nothing at all.
     "/api/inference/images/load-progress",
     "/api/inference/video/load-progress",
-    # Templated; reached through normalize_poll_path. See _TEMPLATED_POLL_PATHS.
+    # Templated; matched through normalize_poll_path. See _TEMPLATED_POLL_PATHS.
     "/api/chat/threads/{id}",
     "/api/chat/threads/{id}/forks",
 }
@@ -183,33 +183,24 @@ _CHAT_LIST_PATHS = {
     "/api/chat/threads",
     "/api/chat/projects",
 }
-# Templated paths. Every set above matches a path EXACTLY, which #7087 chose deliberately
-# so that thread detail and message reads kept their access line while the list polls were
-# suppressed. That is still the right call for a read a user triggers; what changed is that
-# streaming now drives these two on a loop. Measured over one 20s session with four chat
-# tabs: 25 lines for the thread read and 21 for its forks, 34% of the access log, to say a
-# generation in progress is still in progress.
-#
-# So they get a heartbeat rather than silence: the first of each window logs with its real
-# path and keeps its latency, the rest are dropped. Detail reads stay visible, which is what
-# #7087 was protecting, and the volume goes with the window.
+# Templated paths. The sets above match EXACTLY, which #7087 chose so detail reads kept
+# their access line; what changed is that streaming now drives these two on a loop (25 and
+# 21 lines, 34% of the access log, over a 20s four-tab session). So they get a heartbeat
+# rather than silence: the first of each window logs with its real path, the rest drop.
 _CHAT_THREAD_DETAIL = "/api/chat/threads/{id}"
 _CHAT_THREAD_FORKS = "/api/chat/threads/{id}/forks"
 _TEMPLATED_POLL_PATHS = frozenset({_CHAT_THREAD_DETAIL, _CHAT_THREAD_FORKS})
-# One id segment, no slashes. Anchored and specific: a deeper path such as
-# /threads/{id}/messages/{mid} must NOT collapse into the detail bucket, because a message
-# read is a different question and #7087's reasoning still applies to it.
+# One id segment, no slashes: a deeper path such as /threads/{id}/messages/{mid} must NOT
+# collapse into the detail bucket, since a message read is a different question.
 _CHAT_THREAD_PATH_RE = re.compile(r"^/api/chat/threads/(?!$)[^/]+(/forks)?$")
 
 
 def normalize_poll_path(path: str) -> str:
     """Collapse a per-resource id so a templated path can join a suppression class.
 
-    Returned value is used for CLASSIFICATION and for the de-duplication bucket only; the
-    line that is emitted still carries the real path. Sharing one bucket across ids is
-    deliberate, and is the same thing the liveness group does: four tabs polling four
-    different threads are still one question ("is it still streaming"), so budgeting them
-    per id would expect four lines where the design intends one.
+    Used for classification and the de-duplication bucket only; the emitted line still
+    carries the real path. One bucket across ids is deliberate, as with the liveness
+    group: four tabs polling four threads are still one question.
     """
     m = _CHAT_THREAD_PATH_RE.match(path)
     if m is None:
@@ -319,8 +310,7 @@ class LoggingMiddleware:
         # /api/inference/audio/stt/status?model=... extends the downloaded check to a
         # custom repo, so it keeps its own identity rather than joining the bucket.
         is_liveness = path in _LIVENESS_POLL_PATHS and not query
-        # A templated path is classified and bucketed by its template, so four tabs
-        # polling four threads share one heartbeat instead of emitting one each.
+        # Bucketed by template, so four tabs polling four threads share one heartbeat.
         norm = normalize_poll_path(path) if not query else path
         if path in _WATCHDOG_POLL_PATHS:
             # Zeroed along with the quiet window, so --verbose still logs every probe.

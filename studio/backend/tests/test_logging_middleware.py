@@ -745,9 +745,8 @@ def test_verbose_off_by_default_keeps_the_polls_quiet(logs):
 
 # ── templated chat detail polls ──
 def test_chat_thread_detail_polls_heartbeat_instead_of_one_line_each(logs, monkeypatch):
-    """Streaming drives these on a loop: measured over one four-tab session, 25 thread
-    reads and 21 fork reads in 20s, 34% of the access log to say a generation in progress
-    is still in progress."""
+    """Streaming drives these on a loop: 25 thread and 21 fork reads in 20s over one
+    four-tab session, 34% of the access log."""
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
     monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 60000)
 
@@ -761,9 +760,8 @@ def test_chat_thread_detail_polls_heartbeat_instead_of_one_line_each(logs, monke
 
 
 def test_four_tabs_share_one_bucket_per_template(logs, monkeypatch):
-    """The point of normalising: four tabs polling four different threads ask one
-    question. Keying the bucket on the real path would emit four lines per window and the
-    suppression would barely bite where it matters most."""
+    """Four tabs polling four different threads ask one question. Keying the bucket on the
+    real path would emit four lines per window."""
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
     monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 60000)
 
@@ -777,9 +775,8 @@ def test_four_tabs_share_one_bucket_per_template(logs, monkeypatch):
 
 
 def test_message_reads_are_not_collapsed_into_the_detail_bucket(logs, monkeypatch):
-    """#7087 narrowed these sets to exact matches so detail and message reads kept their
-    access line. A message read is a different question from "is it still streaming", so
-    the normaliser must not reach it."""
+    """A message read is a different question from "is it still streaming", so the
+    normaliser must not reach it (#7087)."""
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
     monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 60000)
 
@@ -799,8 +796,8 @@ def test_message_reads_are_not_collapsed_into_the_detail_bucket(logs, monkeypatc
 
 
 def test_the_thread_list_is_untouched_by_the_normaliser():
-    """/api/chat/threads is the list, already handled by _CHAT_LIST_PATHS, and must not be
-    dragged into the heartbeat class by a trailing-segment rule."""
+    """The list path is handled by _CHAT_LIST_PATHS and must not be dragged into the
+    heartbeat class by a trailing-segment rule."""
     assert hmod.normalize_poll_path("/api/chat/threads") == "/api/chat/threads"
     assert hmod.normalize_poll_path("/api/chat/threads/") == "/api/chat/threads/"
 

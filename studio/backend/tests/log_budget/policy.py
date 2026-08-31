@@ -69,8 +69,7 @@ def classify(handlers, path: str) -> str:
         return WATCHDOG
     if path in handlers._LIVENESS_POLL_PATHS:
         return LIVENESS
-    # Through the middleware's own normaliser, so a templated path is classified here the
-    # same way it is at run time rather than by a second copy of the rule that can drift.
+    # The middleware's own normaliser, so classification cannot drift from run time.
     if _normalize(handlers, path) in handlers._QUIET_POLL_PATHS:
         return QUIET
     return NORMAL
@@ -121,6 +120,5 @@ def bucket_of(handlers, path: str) -> str:
     """
     if classify(handlers, path) == LIVENESS:
         return "\x00liveness"
-    # Templated paths share one bucket for the same reason the liveness group does: four
-    # tabs polling four threads ask one question, and the design intends one line.
+    # Templated paths share one bucket for the same reason: one question, one line.
     return _normalize(handlers, path)
