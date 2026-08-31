@@ -109,3 +109,23 @@ test("the Train panel preselect actually consults the pairing", async () => {
   assert.ok(paired < first && first - paired < 40, "base_repos[0] is no longer the last resort");
   assert.match(source, /resolveDiffusionTrainingBase\(reportedFamily, loadedBaseRepo\)/);
 });
+
+test("deploy pins the load and recipe to the trained adapter family", async () => {
+  const source = await readFile(
+    new URL("../src/features/images/images-page.tsx", import.meta.url),
+    "utf8",
+  );
+  const deploy = source.slice(
+    source.indexOf("const handleDeployAdapter"),
+    source.indexOf("// Resolves true when the backend accepted the unload"),
+  );
+  assert.match(
+    deploy,
+    /applyImageModelDefaults\(args\.baseRepo, args\.family\)/,
+  );
+  assert.match(deploy, /family_override: args\.family/);
+  assert.match(
+    deploy,
+    /handleLoad\(args\.baseRepo, \{ kind: "pipeline" \}, deployAdvanced\)/,
+  );
+});

@@ -42,13 +42,13 @@ export function defaultsFor(
   steps: number;
   guidance: number;
 } {
-  const id = repoId.toLowerCase();
-  const matched = MODEL_DEFAULTS.find((entry) => id.includes(entry.match));
-  if (matched) return { steps: matched.steps, guidance: matched.guidance };
   if (familyOverride && familyOverride !== "auto") {
     const fam = familyOverride.toLowerCase();
     const famMatch = MODEL_DEFAULTS.find((entry) => fam.includes(entry.match));
     if (famMatch) return { steps: famMatch.steps, guidance: famMatch.guidance };
   }
+  const id = repoId.toLowerCase();
+  const matched = MODEL_DEFAULTS.find((entry) => id.includes(entry.match));
+  if (matched) return { steps: matched.steps, guidance: matched.guidance };
   return DEFAULT_GEN;
 }

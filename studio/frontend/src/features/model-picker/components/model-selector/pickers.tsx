@@ -118,6 +118,7 @@ import {
   taskForMediaPick,
   taskPickerRowMatches,
 } from "./audio-picker-policy";
+import { isFamilyOverrideLocalCandidate } from "./family-override-local-candidate";
 import { FolderBrowser } from "./folder-browser";
 import {
   type ModelCapabilities,
@@ -2360,6 +2361,7 @@ export function HubModelPicker({
   onEject,
   task,
   catalog,
+  allowUnknownLocalModels = false,
   communityModelPolicy = "none",
 }: {
   models: ModelOption[];
@@ -2389,6 +2391,8 @@ export function HubModelPicker({
   task?: HfTaskFilter;
   /** Curated catalog for a task-scoped picker: one canonical row per model, with its published formats as the second level. */
   catalog?: CatalogGroup[];
+  /** Show unclassified local safetensors when a media page has an explicit family override. */
+  allowUnknownLocalModels?: boolean;
   /** Also surface community (non-unsloth) models carrying `task`'s pipeline tags, below
    *  the unsloth rows and in search. Opt-in, since the runtime has to load an arbitrary
    *  publisher's checkpoint: true of audio, not of the curated pages. */
@@ -3491,13 +3495,14 @@ export function HubModelPicker({
           (m) =>
             filesystemRowsSupportedForTask(task, m.task) &&
             // The backend tags every local model with its task for exactly this: on the Images/Video pages a chat GGUF must not be offered.
-            passesTaskGate(
+            (passesTaskGate(
               m.task,
               m.model_id ?? m.id,
               task,
               catalog,
               activeCatalogArtifactIds,
-            ) &&
+            ) ||
+              isFamilyOverrideLocalCandidate(m, allowUnknownLocalModels)) &&
             localModelMatchesFormat(m, formatFilter) &&
             matchesLocalQuery(m),
         ),
@@ -3514,6 +3519,7 @@ export function HubModelPicker({
       task,
       catalog,
       activeCatalogArtifactIds,
+      allowUnknownLocalModels,
     ],
   );
   // Local ./models entries. Chat-only Unsloth runs GGUF (any host) and MLX (Mac only), so raw checkpoints there are hidden (mirrors the cached
@@ -3524,13 +3530,14 @@ export function HubModelPicker({
         localDirModels.filter(
           (m) =>
             filesystemRowsSupportedForTask(task, m.task) &&
-            passesTaskGate(
+            (passesTaskGate(
               m.task,
               m.model_id ?? m.id,
               task,
               catalog,
               activeCatalogArtifactIds,
-            ) &&
+            ) ||
+              isFamilyOverrideLocalCandidate(m, allowUnknownLocalModels)) &&
             (!chatOnly ||
               Boolean(task) ||
               localModelIsGguf(m) ||
@@ -3553,6 +3560,7 @@ export function HubModelPicker({
       task,
       catalog,
       activeCatalogArtifactIds,
+      allowUnknownLocalModels,
     ],
   );
   const sortedCustomFolderModels = useMemo(
@@ -3561,13 +3569,14 @@ export function HubModelPicker({
         customFolderModels.filter(
           (m) =>
             filesystemRowsSupportedForTask(task, m.task) &&
-            passesTaskGate(
+            (passesTaskGate(
               m.task,
               m.model_id ?? m.id,
               task,
               catalog,
               activeCatalogArtifactIds,
-            ) &&
+            ) ||
+              isFamilyOverrideLocalCandidate(m, allowUnknownLocalModels)) &&
             localModelMatchesFormat(m, formatFilter) &&
             matchesLocalQuery(m),
         ),
@@ -3584,6 +3593,7 @@ export function HubModelPicker({
       task,
       catalog,
       activeCatalogArtifactIds,
+      allowUnknownLocalModels,
     ],
   );
 

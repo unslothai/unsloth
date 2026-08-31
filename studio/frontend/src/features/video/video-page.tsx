@@ -183,14 +183,14 @@ function defaultsFor(
   repoId: string,
   familyOverride?: string | null,
 ): { steps: number; guidance: number } {
-  const id = repoId.toLowerCase();
-  const matched = MODEL_DEFAULTS.find((d) => id.includes(d.match));
-  if (matched) return matched;
   if (familyOverride && familyOverride !== "auto") {
     const fam = familyOverride.toLowerCase();
     const famMatch = MODEL_DEFAULTS.find((d) => fam.includes(d.match));
     if (famMatch) return famMatch;
   }
+  const id = repoId.toLowerCase();
+  const matched = MODEL_DEFAULTS.find((d) => id.includes(d.match));
+  if (matched) return matched;
   return DEFAULT_GEN;
 }
 
@@ -3348,6 +3348,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
             className="!h-[34px]"
             task={VIDEO_GEN_TASKS}
             catalog={VIDEO_CATALOG}
+            allowUnknownLocalModels={familyOverride !== "auto"}
             placeholder="Select video model"
             open={active && selectorOpen}
             onOpenChange={(o) => setSelectorOpen(active && o)}

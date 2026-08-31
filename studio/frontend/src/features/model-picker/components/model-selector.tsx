@@ -179,6 +179,8 @@ interface ModelSelectorProps {
   task?: HfTaskFilter;
   /** Canonical model groups (Images / Video pages): collapses a model's artifact repos into one row with a format second level and device-aware routing. Undefined (chat) changes nothing. */
   catalog?: CatalogGroup[];
+  /** Allow unclassified local safetensors when the caller supplies explicit architecture evidence. */
+  allowUnknownLocalModels?: boolean;
   /** Also list community (non-unsloth) models for `task`. Opt-in: only pages
    *  whose runtime loads arbitrary publishers. */
   communityModelPolicy?: CommunityModelPolicy;
@@ -376,6 +378,7 @@ function ModelSelectorContent({
   dataTour,
   task,
   catalog,
+  allowUnknownLocalModels,
   communityModelPolicy,
 }: {
   open: boolean;
@@ -401,6 +404,7 @@ function ModelSelectorContent({
   dataTour?: string;
   task?: HfTaskFilter;
   catalog?: CatalogGroup[];
+  allowUnknownLocalModels?: boolean;
   communityModelPolicy?: CommunityModelPolicy;
 }) {
   const t = useT();
@@ -616,6 +620,7 @@ function ModelSelectorContent({
               onEject={hasSelection && onEject ? onEject : undefined}
               task={task}
               catalog={catalog}
+              allowUnknownLocalModels={allowUnknownLocalModels}
               communityModelPolicy={communityModelPolicy}
               section={effectiveHubSection}
               sectionToggle={
@@ -671,6 +676,7 @@ export function ModelSelector({
   showCloudIndicator = false,
   task,
   catalog,
+  allowUnknownLocalModels = false,
   communityModelPolicy = "none",
   placeholder,
   loaded,
@@ -844,6 +850,7 @@ export function ModelSelector({
         dataTour={contentDataTour}
         task={task}
         catalog={catalog}
+        allowUnknownLocalModels={allowUnknownLocalModels}
         communityModelPolicy={communityModelPolicy}
       />
     </Popover>

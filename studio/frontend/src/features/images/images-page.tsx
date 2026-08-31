@@ -1423,7 +1423,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   const claimImageRecipe = imagePresets.claimRecipe;
   const imageFormClaimId = imagePresets.formClaimId;
   const applyImageModelDefaults = useCallback(
-    (repoId: string) => {
+    (repoId: string, override: string | null = familyOverride) => {
       const revert = quantRevert.current;
       if (revert && !revert.releaseRecipeClaim) {
         const claim = claimImageRecipe();
@@ -1434,7 +1434,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       // is whether the user takes the form after THIS pick, not after the one it replaced.
       const claimedAt = imageFormClaimId();
       pickRecipeSuperseded.current = () => imageFormClaimId() !== claimedAt;
-      const recommended = defaultsFor(repoId, familyOverride);
+      const recommended = defaultsFor(repoId, override);
       setPendingModelDefaults(recommended);
       setSteps(recommended.steps);
       setGuidance(recommended.guidance);
@@ -3079,8 +3079,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
       quantRevert.current = revert;
       setQuant(null);
-      applyImageModelDefaults(args.baseRepo);
-      void handleLoad(args.baseRepo, { kind: "pipeline" }).then((started) => {
+      applyImageModelDefaults(args.baseRepo, args.family);
+      const deployAdvanced = {
+        ...currentLoadAdvanced(args.baseRepo),
+        family_override: args.family,
+      };
+      void handleLoad(args.baseRepo, { kind: "pipeline" }, deployAdvanced).then((started) => {
         if (!started) {
           pendingDeploy.current = null;
           if (quantRevert.current === revert) {
@@ -3090,7 +3094,16 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         }
       });
     },
-    [applyImageModelDefaults, busy, handleLoad, pickGuard, quant, revertPick, setPageMode],
+    [
+      applyImageModelDefaults,
+      busy,
+      currentLoadAdvanced,
+      handleLoad,
+      pickGuard,
+      quant,
+      revertPick,
+      setPageMode,
+    ],
   );
 
   // Resolves true when the backend accepted the unload; handleCancelLoad reports the cancel only then.
@@ -3691,6 +3704,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                 triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"
                 task={IMAGE_GEN_TASKS}
                 catalog={IMAGE_CATALOG}
+                allowUnknownLocalModels={familyOverride !== "auto"}
                 placeholder="Select image model"
                 open={active && selectorOpen}
                 onOpenChange={(o) => setSelectorOpen(active && o)}

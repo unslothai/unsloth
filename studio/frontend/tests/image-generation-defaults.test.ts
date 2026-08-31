@@ -63,6 +63,28 @@ test("matches family overrides to family defaults without selecting more-specifi
     steps: 28,
     guidance: 3.5,
   });
+  // An explicit family is the backend's authority even when an opaque merge has a misleading
+  // family token in its filename.
+  assert.deepEqual(defaultsFor("local/sdxl-merge", "flux.1"), {
+    steps: 28,
+    guidance: 3.5,
+  });
+});
+
+test("video defaults also prefer the explicit family over a misleading repo name", () => {
+  const source = readFileSync(
+    new URL("../src/features/video/video-page.tsx", import.meta.url),
+    "utf8",
+  );
+  const defaults = source.slice(
+    source.indexOf("function defaultsFor("),
+    source.indexOf("function formatEta("),
+  );
+  const override = defaults.indexOf(
+    'if (familyOverride && familyOverride !== "auto")',
+  );
+  const repoMatch = defaults.indexOf("const matched = MODEL_DEFAULTS.find");
+  assert.ok(override >= 0 && repoMatch > override);
 });
 
 test("routed image picks apply and transactionally roll back model defaults", () => {
