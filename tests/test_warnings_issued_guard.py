@@ -181,10 +181,12 @@ class _FakeTrainer:
 
 def _wrapped():
     ns = _load(
-        "_ensure_warnings_issued", "_resolve_trainer_params", "_backwards_compatible_trainer"
+        "_ensure_warnings_issued", "_resolve_trainer_params",
+        "_route_unknown_trainer_kwargs", "_backwards_compatible_trainer",
     )
     if "trl" not in ns:
         pytest.skip("trl not installed")
+    ns["classify_config_kwarg"] = _classify_config_kwarg()
 
     class T(_FakeTrainer):
         pass
@@ -383,15 +385,34 @@ class _RecordingTrainer:
         self.train_dataset = train_dataset
 
 
-def _wrapped_recording():
+def _classify_config_kwarg():
+    """`rl_config_compat.classify_config_kwarg`, loaded by file spec.
+
+    Same reason as tests/test_rl_config_compat.py: importing it through the
+    package would run unsloth/__init__.py and drag in torch and unsloth_zoo.
+    """
+    import importlib.util
+
+    path = ROOT / "unsloth" / "models" / "rl_config_compat.py"
+    spec = importlib.util.spec_from_file_location("_rl_config_compat_for_guard", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.classify_config_kwarg
+
+
+def _wrapped_recording(trainer_base = None):
     config_class = _sft_config()
     ns = _load(
-        "_ensure_warnings_issued", "_resolve_trainer_params", "_backwards_compatible_trainer"
+        "_ensure_warnings_issued", "_resolve_trainer_params",
+        "_route_unknown_trainer_kwargs", "_backwards_compatible_trainer",
     )
     if "trl" not in ns:
         pytest.skip("trl not installed")
+    # `_route_unknown_trainer_kwargs` imports this relatively, which cannot work
+    # in the bare namespace `_load` builds, so hand it over directly.
+    ns["classify_config_kwarg"] = _classify_config_kwarg()
 
-    class T(_RecordingTrainer):
+    class T(trainer_base or _RecordingTrainer):
         pass
 
     T.__init__ = ns["_backwards_compatible_trainer"](T, config_class)
@@ -453,6 +474,85 @@ def test_a_kwarg_neither_side_takes_is_reported_not_swallowed(tmp_path):
 
     with pytest.raises(TypeError, match = unexpected):
         Trainer(model = _Bare(), args = config, **{unexpected: 2048})
+
+
+def test_a_field_trl_retired_is_reported_and_dropped_not_raised(tmp_path, capsys):
+    """The other half of "neither side takes it", and the half that has to stay quiet.
+
+    Twelve config fields were removed from SFTConfig/GRPOConfig/DPOConfig between
+    TRL 0.18 and 1.12. A script pinned to an older TRL passes them beside `args =`
+    exactly as the docs of the day said to, so turning them into TypeError breaks
+    code that was correct when it was written and cannot be fixed without editing
+    the library. models/rl_config_compat.py already decided that trade for config
+    kwargs; this keeps the trainer-kwarg path on the same side of it.
+    """
+    Trainer, config_class = _wrapped_recording()
+    config = config_class(output_dir = str(tmp_path), report_to = [])
+    retired = "rpo_alpha"  # DPOConfig, removed in TRL 0.29.0
+    assert retired not in {f.name for f in dataclasses.fields(config_class)}
+
+    trainer = Trainer(model = _Bare(), args = config, **{retired: 1.0})
+
+    assert trainer.args is config
+    assert not hasattr(config, retired)
+    assert retired in capsys.readouterr().out
+
+
+def test_a_field_trl_renamed_is_carried_across_to_the_new_name(tmp_path, capsys):
+    Trainer, config_class = _wrapped_recording()
+    fields = {f.name for f in dataclasses.fields(config_class)}
+    if "use_liger_kernel" not in fields or "use_liger_loss" in fields:
+        pytest.skip("installed trl does not show this rename on SFTConfig")
+    config = config_class(output_dir = str(tmp_path), report_to = [])
+
+    trainer = Trainer(model = _Bare(), args = config, use_liger_loss = True)
+
+    assert trainer.args.use_liger_kernel is True
+    assert "use_liger_kernel" in capsys.readouterr().out
+
+
+def test_a_name_trl_never_had_still_raises(tmp_path):
+    """The retirement table must not become a way to swallow typos."""
+    Trainer, config_class = _wrapped_recording()
+    config = config_class(output_dir = str(tmp_path), report_to = [])
+
+    with pytest.raises(TypeError, match = "learnign_rate"):
+        Trainer(model = _Bare(), args = config, learnign_rate = 3e-4)
+
+
+def test_a_variadic_trainer_receives_a_name_the_table_does_not_know(tmp_path):
+    """A trainer that declares `**kwargs` opted into arbitrary names, so an
+    unrecognised one is delivered rather than dropped."""
+
+    class _Variadic(_RecordingTrainer):
+        def __init__(self, model = None, args = None, train_dataset = None,
+                     processing_class = None, **kwargs):
+            super().__init__(model, args, train_dataset, processing_class)
+            self.extra = dict(kwargs)
+
+    Trainer, config_class = _wrapped_recording(trainer_base = _Variadic)
+    config = config_class(output_dir = str(tmp_path), report_to = [])
+
+    trainer = Trainer(model = _Bare(), args = config, some_extension_kwarg = 5)
+
+    assert trainer.extra == {"some_extension_kwarg": 5}
+
+
+def test_a_trainer_whose_config_parameter_is_not_called_args_does_not_KeyError(tmp_path):
+    """`trainer_params.discard`, not `.remove`: the set is built from the real
+    signature, so a trainer that names its config something else used to die with
+    a bare KeyError before it could say anything useful."""
+
+    class _OddlyNamed:
+        def __init__(self, model = None, config = None, **kwargs):
+            self.model, self.config, self.extra = model, config, dict(kwargs)
+
+    Trainer, config_class = _wrapped_recording(trainer_base = _OddlyNamed)
+    config = config_class(output_dir = str(tmp_path), report_to = [])
+
+    trainer = Trainer(model = _Bare(), args = config)
+
+    assert trainer.extra["args"] is config
 
 
 def test_trainer_kwargs_still_go_to_the_trainer(tmp_path):

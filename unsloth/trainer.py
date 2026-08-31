@@ -711,6 +711,71 @@ def _ensure_warnings_issued(model):
         pass
 
 
+def _route_unknown_trainer_kwargs(config_class, unknown, notify = None):
+    """Sort keyword names that neither the trainer nor the config declares.
+
+    `models/rl_config_compat.py` already holds unsloth's policy for an argument
+    TRL renamed or retired, but it is only consulted when a config is being
+    built, so the same name arriving as a *trainer* keyword never reached it.
+    That gap is the whole reason a retired field could be dropped in silence
+    here: twelve `SFTConfig`/`GRPOConfig`/`DPOConfig` fields have been removed
+    between TRL 0.18 and 1.12, and a script pinned to an older TRL passes them
+    beside `args = ...` exactly the way the docs of the day said to.
+
+    Consulting the table keeps the two paths in agreement:
+
+      * a renamed field is carried across to the new name,
+      * a retired field is reported by name with TRL's advice and dropped,
+      * a name TRL never had is returned for the trainer call, where normal
+        unexpected-keyword handling reports it.
+
+    Returns `(to_config, to_trainer)`.
+    """
+    if not unknown:
+        return {}, {}
+
+    try:
+        from .models.rl_config_compat import classify_config_kwarg
+    except Exception:
+        # tests/ loads this function by AST into a bare namespace, where there is
+        # no package to import from; it supplies the classifier directly instead.
+        classify_config_kwarg = globals().get("classify_config_kwarg")
+        if classify_config_kwarg is None:
+            # Vendored next to this file and stdlib-only, so reaching here in a
+            # real install should not happen. Keep the value on the trainer
+            # rather than invent a second, quieter policy for it.
+            return {}, dict(unknown)
+
+    if notify is None:
+        notify = print
+    config_name = getattr(config_class, "__name__", str(config_class))
+
+    to_config, to_trainer = {}, {}
+    for key, value in unknown.items():
+        try:
+            verdict, detail = classify_config_kwarg(config_class, key)
+        except Exception:
+            verdict, detail = "unknown", None
+
+        if verdict == "accepted":
+            to_config[key] = value
+        elif verdict == "rename":
+            to_config[detail] = value
+            notify(
+                f"Unsloth: TRL renamed `{key}` to `{detail}`. Forwarding your "
+                f"value to `{detail}` - update your code when convenient."
+            )
+        elif verdict == "retired":
+            notify(
+                f"Unsloth: `{key}` is not supported by the installed TRL's "
+                f"{config_name} and will be IGNORED - {detail}."
+            )
+        else:
+            to_trainer[key] = value
+
+    return to_config, to_trainer
+
+
 def _backwards_compatible_trainer(trainer_class, config_class):
     original_init = trainer_class.__init__
 
@@ -725,8 +790,11 @@ def _backwards_compatible_trainer(trainer_class, config_class):
         if ("args" in kwargs) and (Version(trl) >= Version("0.13.0.dev0")):
             training_args = kwargs.pop("args", None)
 
-            trainer_params.remove("self")
-            trainer_params.remove("args")
+            # `discard`, not `remove`: a trainer whose __init__ names its config
+            # something other than `args` would otherwise die with a KeyError
+            # here instead of whatever it was really going to say.
+            trainer_params.discard("self")
+            trainer_params.discard("args")
 
             # Fields that should be passed to Config init
             config_fields = {
@@ -749,6 +817,7 @@ def _backwards_compatible_trainer(trainer_class, config_class):
             # Separate kwargs into trainer kwargs and config kwargs
             trainer_kwargs = {}
             additional_config_kwargs = {}
+            unknown_kwargs = {}
 
             for key, value in kwargs.items():
                 if key in trainer_params:
@@ -758,9 +827,17 @@ def _backwards_compatible_trainer(trainer_class, config_class):
                 else:
                     # Neither side has this name, and the branch below only copies
                     # the keys the config recognises. Sorting it in with the config
-                    # kwargs therefore dropped it in silence. Leave it on the trainer
-                    # call so normal unexpected-keyword handling reports it.
-                    trainer_kwargs[key] = value
+                    # kwargs therefore dropped it in silence.
+                    unknown_kwargs[key] = value
+
+            # A name TRL renamed or retired is migrated or reported; anything
+            # else stays on the trainer call so the unexpected keyword is
+            # reported the ordinary way instead of disappearing.
+            migrated, unroutable = _route_unknown_trainer_kwargs(
+                config_class, unknown_kwargs,
+            )
+            additional_config_kwargs.update(migrated)
+            trainer_kwargs.update(unroutable)
 
             config_dict.update(additional_config_kwargs)
 
@@ -775,7 +852,9 @@ def _backwards_compatible_trainer(trainer_class, config_class):
                 # the moved values on the caller's config rather than rebuild it.
                 config = training_args
                 for key, value in additional_config_kwargs.items():
-                    if key in config_fields or key in moved_params:
+                    # `migrated` is already known to be a name this config takes,
+                    # so it does not have to clear the same gate a second time.
+                    if key in config_fields or key in moved_params or key in migrated:
                         setattr(config, key, value)
 
             # Reconstruct kwargs for Trainer

@@ -35,6 +35,7 @@ import dataclasses
 import inspect
 
 __all__ = [
+    "classify_config_kwarg",
     "filter_config_init_kwargs",
     "TRL_CONFIG_RENAMES",
     "TRL_REMOVED_FIELD_ADVICE",
@@ -161,6 +162,45 @@ def _is_untouched(config_class, name, value):
 
 def _default_notifier(message):
     print(message)
+
+
+def classify_config_kwarg(config_class, key):
+    """Say what `config_class` makes of `key`, without acting on it.
+
+    Returns `(verdict, detail)`, one of:
+
+        ("accepted", key)      the config declares this name
+        ("rename", new_name)   TRL renamed the field and the new name is here
+        ("retired", advice)    TRL removed the field; `advice` is the way out
+        ("unknown", None)      not a name TRL ever had, so a caller mistake
+        ("opaque", None)       the config declares nothing readable to judge by
+
+    `filter_config_init_kwargs` below acts on the same verdicts, but it drops
+    everything it does not recognise, which is right for a config constructor and
+    wrong for a trainer kwarg: `unsloth/trainer.py` has to leave an unrecognised
+    name on the trainer call so Python reports it. Exposing the verdict
+    separately lets both callers share one policy and one table.
+
+    A trailing `**kwargs` on the config is deliberately not treated as
+    acceptance. The generated `Unsloth<X>Config.__init__` has one, and taking it
+    at face value would classify every retired field as fine and put it back to
+    being swallowed. Only a name the config actually declares counts.
+    """
+    accepted, takes_var_keyword = _accepted_parameters(config_class)
+    if key in accepted:
+        return "accepted", key
+    if takes_var_keyword and not accepted:
+        return "opaque", None
+
+    renamed = TRL_CONFIG_RENAMES.get(key)
+    if renamed is not None and renamed in accepted:
+        return "rename", renamed
+
+    advice = TRL_REMOVED_FIELD_ADVICE.get(key)
+    if advice is not None:
+        return "retired", advice
+
+    return "unknown", None
 
 
 def filter_config_init_kwargs(
