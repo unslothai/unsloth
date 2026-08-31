@@ -330,9 +330,7 @@ def test_notebook_validator_reads_the_bounds_in_invocation_order():
     assert len(findings) == 1, "a later exact pin must win over an earlier floor"
     assert "torchcodec==0.11.1" in findings[0].message
 
-    upgraded = (
-        '!pip install "torch==2.12.0" "torchcodec==0.11.1"\n!pip install "torchcodec>=0.12"'
-    )
+    upgraded = '!pip install "torch==2.12.0" "torchcodec==0.11.1"\n!pip install "torchcodec>=0.12"'
     assert nv.rule_inst_004_torchcodec_torch(upgraded, COLAB_TORCH211, "nb.ipynb", 0) == []
 
     # The reported torch must be the one the notebook ends on, not the discarded floor.
@@ -342,16 +340,10 @@ def test_notebook_validator_reads_the_bounds_in_invocation_order():
     assert "torch==2.10.0" in findings[0].message
 
     # `<=` closes the same gap as `==`, and only downwards.
-    capped = (
-        '!pip install "torch==2.12.0" "torchcodec>=0.12"\n'
-        '!pip install "torchcodec<=0.11"'
-    )
+    capped = '!pip install "torch==2.12.0" "torchcodec>=0.12"\n!pip install "torchcodec<=0.11"'
     assert len(nv.rule_inst_004_torchcodec_torch(capped, COLAB_TORCH211, "nb.ipynb", 0)) == 1
 
-    lifted = (
-        '!pip install "torch==2.12.0" "torchcodec<=0.11"\n'
-        '!pip install "torchcodec>=0.12"'
-    )
+    lifted = '!pip install "torch==2.12.0" "torchcodec<=0.11"\n!pip install "torchcodec>=0.12"'
     assert nv.rule_inst_004_torchcodec_torch(lifted, COLAB_TORCH211, "nb.ipynb", 0) == []
 
     # A one-line range is not a downgrade: the floor still decides.
