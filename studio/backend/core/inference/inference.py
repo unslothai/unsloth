@@ -1365,13 +1365,11 @@ class InferenceBackend:
                 for m in messages
             ):
                 raise RuntimeError(
-                    "This vision request cannot be rendered without dropping tool-call "
-                    "history."
+                    "This vision request cannot be rendered without dropping tool-call history."
                 )
 
             if tools:
                 from core.inference.chat_template_helpers import _renders_tool_schema
-
                 if not _renders_tool_schema(processor, None, tools):
                     raise RuntimeError(
                         "This vision chat template cannot render an image alongside the "
