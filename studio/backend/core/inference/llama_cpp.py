@@ -423,6 +423,7 @@ from core.inference.tool_call_parser import (
     thinking_exhausted_message as _thinking_exhausted_message,
     unfinished_thought_progress as _unfinished_thought_progress,
 )
+from core.tool_healing import strip_outside_think as _strip_outside_think
 from core.inference.passthrough_healing import nudge_enabled as _nudge_enabled
 from core.inference.repetition_guard import is_repetition_dominated
 from core.inference.tool_loop_controller import (
@@ -906,7 +907,10 @@ def _has_unclosed_code_fence(text: str) -> bool:
             fence = m.group("backticks") or m.group("tildes")
             trailing = line[m.end() :].strip()
             ch = fence[0]
-            at_line_start = not line[: m.start()].strip()
+            prefix = line[: m.start()]
+            # CommonMark allows a fence at most 3 columns of indentation; deeper is
+            # an indented code block, so a delimiter in a fence body stays body.
+            at_line_start = not prefix.strip() and len(prefix.expandtabs(4)) <= 3
             if active_char is not None:
                 # CommonMark closes only on a delimiter that starts its own line
                 # and ends it, so "Use three backticks: ```" inside a block is
@@ -997,6 +1001,23 @@ def _strip_markup_around_fences(text: str) -> str:
         pos = m.end()
     out.append(_CLOSED_MARKUP_ARTIFACT.sub("", text[pos:]))
     return "".join(out)
+
+
+def _text_outside_think(text: str) -> str:
+    """``text`` with <think>/[THINK] blocks dropped, leaving what the user was told.
+
+    Those blocks are preserved for display, so judging whether an answer landed means
+    removing them. Routed through ``strip_outside_think`` so the span detection is the
+    one every strip path uses rather than a second reading of the markers.
+    """
+    outside: list[str] = []
+
+    def _collect(segment: str, _is_last: bool) -> str:
+        outside.append(segment)
+        return segment
+
+    _strip_outside_think(text, _collect)
+    return "".join(outside)
 
 
 def _has_answer_artifact(text: str) -> bool:
@@ -29363,8 +29384,14 @@ class LlamaCppBackend:
                         )
                         _reasoning = reasoning_accum.strip()
                         _stripped = _visible if _visible else _reasoning
+                        # A model whose template renders thinking as <think> in the
+                        # content channel keeps those blocks in _visible, and a fence
+                        # inside one is rehearsal, not an answer the user was shown.
+                        _visible_answer = _text_outside_think(_visible).strip()
                         _artifact_text = (
-                            _visible if _visible else (_reasoning if not has_content_tokens else "")
+                            _visible_answer
+                            if _visible_answer
+                            else (_reasoning if not has_content_tokens else "")
                         )
 
                         # ── Continue an answer the window cut in half ──

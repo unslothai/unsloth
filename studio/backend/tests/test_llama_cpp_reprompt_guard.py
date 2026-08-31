@@ -253,6 +253,16 @@ def test_bare_delimiter_in_prose_after_a_closed_block():
     assert _has_answer_artifact("First, here is code: ```\nx = 1\n```")
 
 
+def test_fence_body_indented_four_spaces_is_not_a_closer():
+    """CommonMark allows a fence at most 3 columns of indentation, so a deeper
+    delimiter in a markdown example is body and the block is still open."""
+    text = "First, let me show it.\n```markdown\n    ```\nstill going"
+    assert not _has_answer_artifact(text)
+    assert _would_reprompt(text)
+    # Three columns or fewer still closes.
+    assert _has_answer_artifact("First, let me show:\n```python\nx = 1\n  ```")
+
+
 def test_closer_must_start_its_own_line():
     """CommonMark closes on a delimiter that starts and ends its line, so a body
     line reading ``Use three backticks: ``` `` is content, not the closer."""
@@ -950,13 +960,34 @@ def test_hidden_reasoning_artifact_still_reprompts():
     reasoning_accum = "First, let me draft it.\n```python\nprint('hidden answer')\n```"
     has_content_tokens = True  # content existed but was stripped
 
-    visible = content_accum.strip()
+    assert _gate_would_reprompt(content_accum, reasoning_accum, has_content_tokens)
+
+
+def _gate_would_reprompt(content_accum, reasoning_accum, has_content_tokens):
+    """The re-prompt gate's own derivation of what counts as the visible answer."""
+    from core.inference.llama_cpp import _REPROMPT_MAX_CHARS, _text_outside_think
+    from core.inference.tool_call_parser import strip_tool_markup
+
+    visible_raw = content_accum.strip()
+    visible = strip_tool_markup(content_accum, final = True).strip() if visible_raw else ""
     reasoning = reasoning_accum.strip()
     stripped = visible if visible else reasoning
-    artifact_text = visible if visible else (reasoning if not has_content_tokens else "")
-    would_reprompt = bool(
+    visible_answer = _text_outside_think(visible).strip()
+    artifact_text = visible_answer or (reasoning if not has_content_tokens else "")
+    return bool(
         0 < len(stripped) < _REPROMPT_MAX_CHARS
         and _INTENT_SIGNAL.search(stripped)
         and not (artifact_text and _has_answer_artifact(artifact_text))
     )
-    assert would_reprompt
+
+
+def test_content_channel_think_block_is_not_an_answer():
+    """A template that renders thinking as ``<think>`` in the CONTENT channel keeps
+    those blocks in the visible text, but a fence rehearsed inside one is not an
+    answer the user was shown, so the nudge must still fire."""
+    think_only = "<think>First, let me write it.\n```python\nx = 1\n```\nDone.</think>"
+    assert _gate_would_reprompt(think_only, "", True)
+
+    # An answer after ``</think>`` is a real answer and still suppresses it.
+    with_answer = "<think>First, let me plan.</think>Here you go.\n```python\nx = 1\n```"
+    assert not _gate_would_reprompt(with_answer, "", True)
