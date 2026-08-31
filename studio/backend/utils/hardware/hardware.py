@@ -338,7 +338,6 @@ def _mlx_stack_detail() -> Optional[str]:
     return "; ".join(blockers[:3])
 
 
-
 # Every other GPU probe here starts from get_device(), so all go quiet the moment
 # torch.cuda.is_available() is False (issue #8473). This one asks what the OS sees.
 # Display-only: nothing here may be merged into the runtime device lists, which feed the

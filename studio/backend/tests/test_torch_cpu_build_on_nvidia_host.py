@@ -151,7 +151,6 @@ def cpu_torch_on_an_nvidia_host(monkeypatch):
     _smi(monkeypatch, _TWO_A4000_ROWS)
 
 
-
 def test_the_physical_probe_runs_without_a_cuda_device(cpu_torch_on_an_nvidia_host):
     inventory = hw.get_physical_gpu_inventory()
 
@@ -244,7 +243,6 @@ def test_the_windows_amd_adapters_are_inventoried_too(monkeypatch):
     ]
 
 
-
 def test_a_cpu_wheel_and_a_dead_cuda_wheel_are_different_reasons(monkeypatch):
     import sys
 
@@ -304,7 +302,6 @@ def test_a_runtime_that_raises_on_its_own_probe_counts_as_unavailable(monkeypatc
     assert hw.classify_torch_build() == "torch_cuda_unavailable"
 
 
-
 def _detect(monkeypatch):
     """Run one detection pass with the globals restored afterwards."""
     for name, value in (
@@ -353,7 +350,6 @@ def test_a_healthy_cuda_host_reports_no_mismatch_at_all(monkeypatch):
     _smi(monkeypatch, _TWO_A4000_ROWS)
 
     assert hw._torch_gpu_mismatch_report() == {}
-
 
 
 def _system_gpu_info(monkeypatch):
@@ -410,7 +406,6 @@ def test_a_cpu_host_with_no_cards_publishes_neither_field(monkeypatch):
     assert gpu["devices"] == []
     assert "mismatch" not in gpu
     assert "physical_devices" not in gpu
-
 
 
 @pytest.mark.parametrize("local", ["cpu", "cpu.cxx11.abi", "cpu.cxx11abi", "CPU"])
@@ -528,7 +523,6 @@ def test_path_resolution_is_a_no_op_off_windows_and_when_path_has_it(monkeypatch
     monkeypatch.setattr(nvidia.platform, "system", lambda: "Windows")
     monkeypatch.setattr(nvidia.shutil, "which", lambda _name: "/usr/bin/nvidia-smi")
     assert nvidia._nvidia_smi_executable() == "/usr/bin/nvidia-smi"
-
 
 
 @pytest.mark.parametrize("mask", ["", " ", "-1"])
@@ -713,7 +707,6 @@ def test_the_sysfs_probe_is_silent_where_there_is_no_sysfs(monkeypatch):
     assert hw._linux_drm_sysfs_records() == []
 
 
-
 def test_a_token_authenticated_cpu_pin_is_still_a_cpu_pin(monkeypatch, tmp_path):
     """A pinned index may carry its credential in the query, which is supported.
 
@@ -816,7 +809,6 @@ def test_export_and_video_read_the_refreshed_verdict(monkeypatch):
     hw.torch_build_snapshot()
     assert hw.export_capability()["export_unsupported_reason"] == "torch_cpu_build"
     assert hw.video_capability()["video_unsupported_reason"] == "torch_cpu_build"
-
 
 
 def test_windows_intel_adapters_are_inventoried_too(monkeypatch):
@@ -986,7 +978,6 @@ def test_a_process_that_cannot_start_a_thread_keeps_the_stale_answer(monkeypatch
     assert hw._physical_gpu_inventory_refreshing is False
 
 
-
 def test_a_stale_registry_record_is_not_reported_as_a_gpu(monkeypatch):
     """The DirectX registry outlives the hardware.
 
@@ -1141,7 +1132,6 @@ def test_a_host_whose_accelerator_never_came_back_is_not_re_detected(monkeypatch
     assert calls["n"] == 0
 
 
-
 def test_a_healthy_xpu_wheel_is_not_called_unavailable(monkeypatch):
     """An Intel host that started while its runtime was down and later recovered.
 
@@ -1289,7 +1279,6 @@ def test_a_missing_nvidia_smi_does_not_warn_every_refresh(monkeypatch, capsys):
     assert '"level": "warning"' in capsys.readouterr().out
 
 
-
 def test_the_recovery_actually_starts_a_detection_pass(monkeypatch):
     """Retiring the epoch alone did nothing, so the round-six fix never took effect.
 
@@ -1379,7 +1368,6 @@ def test_the_disk_label_reader_needs_no_interpreter(tmp_path):
         assert hw._installed_torch_label_on_disk() == ""
 
 
-
 def test_an_untagged_xpu_build_is_not_called_a_cpu_wheel(monkeypatch):
     """torch.version.xpu is the marker, and an untagged wheel can carry it.
 
@@ -1466,7 +1454,6 @@ def test_a_recovery_re_measures_torch_rather_than_reusing_the_old_answer(monkeyp
     assert (
         hw._torch_build_snapshot_cache is None
     ), "the recovery must drop the measurement it was taken before"
-
 
 
 def test_a_vendor_mask_does_not_hide_another_vendors_card(monkeypatch):
@@ -1623,7 +1610,6 @@ def test_the_mismatch_verdict_names_the_wheel_it_could_not_import(monkeypatch):
     assert hw._mismatch_verdict_for_this_host() == (None, None)
 
 
-
 def test_cuda_visible_devices_masks_an_amd_host_too(monkeypatch):
     """HIP honours CUDA_VISIBLE_DEVICES alongside its own variables.
 
@@ -1688,7 +1674,6 @@ def test_the_health_path_never_retries_a_failed_torch_import(monkeypatch):
     monkeypatch.setattr(hw, "TORCH_IMPORT_ERROR", None)
     monkeypatch.setattr(hw, "_torch_version_label", lambda: "2.11.0+cpu")
     assert hw._reported_torch_label() == "2.11.0+cpu"
-
 
 
 def test_an_amd_card_the_installers_decline_is_not_a_broken_install(monkeypatch):
@@ -1777,7 +1762,6 @@ def test_the_gfx_probe_answers_nothing_without_a_rocm_userspace(monkeypatch):
     assert hw._linux_amd_gfx_candidates() == ["gfx1030"]
 
 
-
 def test_a_cold_start_measures_the_inventory_before_honouring_a_mask(monkeypatch):
     """An irrelevant empty mask must not decide the verdict from a cold cache.
 
@@ -1850,7 +1834,6 @@ def test_an_absent_nvidia_smi_is_an_answer_not_a_failed_probe(monkeypatch):
     monkeypatch.setattr(nvidia.subprocess, "run", _hang)
     monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     assert hw.get_physical_gpu_inventory()["unknown"] is True
-
 
 
 def test_a_second_recovery_can_still_ask_for_a_pass(monkeypatch):
@@ -1943,7 +1926,6 @@ def test_the_hardware_module_loads_without_the_rest_of_the_package(tmp_path):
             f"{module} is imported at module scope; the no-torch sandbox stubs only "
             "utils.hardware, so import it inside the function that needs it"
         )
-
 
 
 def test_a_driver_without_the_cli_still_reports_its_cards(monkeypatch):
@@ -2067,7 +2049,6 @@ def test_the_installer_records_who_named_the_flavor(tmp_path, monkeypatch):
     assert manifest_mod.recorded_torch_flavor_was_pinned() is False
 
 
-
 def test_a_vendor_that_did_not_answer_keeps_the_inventory_unknown(monkeypatch):
     """A hybrid Intel iGPU plus NVIDIA dGPU host with nvidia-smi timing out.
 
@@ -2115,7 +2096,6 @@ def test_a_stale_registry_record_cannot_claim_a_longer_named_live_card(monkeypat
     # spell the same card differently, and one is routinely a prefix of the other.
     assert hw._claim_live_adapter("AMD Radeon RX 7900 XTX", ["AMD Radeon RX 7900 XTX 24GB"]) == 0
     assert hw._claim_live_adapter("Something Else", live) is None
-
 
 
 def test_a_broken_nvidia_smi_still_reports_the_kernel_driver_cards(monkeypatch):

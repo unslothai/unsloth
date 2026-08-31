@@ -59,8 +59,6 @@ def _publication_block() -> str:
     return _SETUP_SRC[start:end]
 
 
-
-
 class TestSetupPs1NoWipeEscape:
     """A direct `studio update` has no rollback copy -- only install.ps1 makes one -- so a
     wipe there is unrecoverable. Every way the bounded nvidia-smi probe can come back
@@ -109,8 +107,6 @@ class TestSetupPs1NoWipeEscape:
         assert "Keeping the installed Intel XPU environment" in _SETUP_SRC
 
 
-
-
 class TestSetupPs1PublishesTheFlavor:
     def test_the_tag_is_exported_before_the_stack_runs(self):
         export = _line_of(_SETUP_SRC, "$env:UNSLOTH_EXPECTED_TORCH_TAG =")
@@ -156,8 +152,6 @@ class TestSetupPs1PublishesTheFlavor:
             ), f"{name} must be removed, not blanked"
             assert f'$env:{name} = ""' not in block
             assert f"$env:{name} = if (" not in block
-
-
 
 
 class TestInstallPs1Parity:
@@ -213,8 +207,6 @@ class TestInstallPs1Parity:
         assert r'r"\+(cu\d+)"' in py
         assert '"+rocm" in value' in py
         assert '"+xpu" in value' in py
-
-
 
 
 def _install_stack_ast():
@@ -334,8 +326,6 @@ class TestStepTotals:
     )
     def test_the_other_platforms_are_unchanged(self, flags, total):
         assert _base_total(**flags) == total
-
-
 
 
 class TestManifestRecordsTheFlavor:
