@@ -121,34 +121,47 @@ class TestMaxIsPerRequestNotPerCache:
     in four caches (4104 each against 16384, so three).
     """
 
-    WINDOW = 4096          # per slot, and what "Max" sends
-    BUDGET = WINDOW * 4    # four private caches
+    WINDOW = 4096  # per slot, and what "Max" sends
+    BUDGET = WINDOW * 4  # four private caches
 
     def test_max_is_unstated_against_the_per_request_window(self):
-        assert _openai_llama_admission_output_allowance(
-            self.WINDOW, budget = self.BUDGET, prompt_tokens = 100,
-            context_window = self.WINDOW,
-        ) == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
+        assert (
+            _openai_llama_admission_output_allowance(
+                self.WINDOW,
+                budget = self.BUDGET,
+                prompt_tokens = 100,
+                context_window = self.WINDOW,
+            )
+            == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
+        )
 
     def test_four_default_chats_fit_four_private_caches(self):
         cost = _openai_llama_admission_tokens(
-            _chat(max_tokens = self.WINDOW), budget = self.BUDGET, capacity = 4,
+            _chat(max_tokens = self.WINDOW),
+            budget = self.BUDGET,
+            capacity = 4,
             context_window = self.WINDOW,
         )
-        assert cost * 4 <= self.BUDGET, (
-            f"four default chats cost {cost * 4} against {self.BUDGET}, so the fourth waits"
-        )
+        assert (
+            cost * 4 <= self.BUDGET
+        ), f"four default chats cost {cost * 4} against {self.BUDGET}, so the fourth waits"
 
     def test_a_real_cap_under_the_window_is_still_a_cap(self):
-        assert _openai_llama_admission_output_allowance(
-            512, budget = self.BUDGET, prompt_tokens = 100, context_window = self.WINDOW
-        ) == 512
+        assert (
+            _openai_llama_admission_output_allowance(
+                512, budget = self.BUDGET, prompt_tokens = 100, context_window = self.WINDOW
+            )
+            == 512
+        )
 
     def test_an_unknown_window_falls_back_to_the_budget(self):
         """Which is the unified case, where the two are the same number anyway."""
-        assert _openai_llama_admission_output_allowance(
-            self.BUDGET, budget = self.BUDGET, prompt_tokens = 100, context_window = None
-        ) == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
+        assert (
+            _openai_llama_admission_output_allowance(
+                self.BUDGET, budget = self.BUDGET, prompt_tokens = 100, context_window = None
+            )
+            == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
+        )
 
     def test_the_window_is_read_off_the_backend(self):
         from types import SimpleNamespace
@@ -162,8 +175,8 @@ class TestMaxIsPerRequestNotPerCache:
         from types import SimpleNamespace
 
         from routes.inference import _openai_llama_admission_context_window
-
         for value in (None, 0, -1, "nonsense"):
-            assert _openai_llama_admission_context_window(
-                SimpleNamespace(context_length = value)
-            ) is None
+            assert (
+                _openai_llama_admission_context_window(SimpleNamespace(context_length = value))
+                is None
+            )

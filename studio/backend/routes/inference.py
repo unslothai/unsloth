@@ -1733,7 +1733,10 @@ def _openai_llama_admission_context_window(llama_backend) -> Optional[int]:
 
 
 def _openai_llama_admission_output_allowance(
-    cap: Optional[int], *, budget: int, prompt_tokens: int,
+    cap: Optional[int],
+    *,
+    budget: int,
+    prompt_tokens: int,
     context_window: Optional[int] = None,
 ) -> int:
     """KV to reserve for what a request may still generate.
@@ -2107,7 +2110,9 @@ def _openai_llama_admission_recost(
         # literally would put the run back on the whole cache at its first round boundary,
         # undoing at round zero what the opening estimate stopped doing.
         output_tokens = _openai_llama_admission_output_allowance(
-            output_tokens, budget = budget, prompt_tokens = prompt_tokens,
+            output_tokens,
+            budget = budget,
+            prompt_tokens = prompt_tokens,
             context_window = _openai_llama_admission_context_window(llama_backend),
         )
         share = max(1, budget // max(1, capacity))
