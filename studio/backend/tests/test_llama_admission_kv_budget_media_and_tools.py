@@ -459,3 +459,142 @@ class TestTheBudgetIsTheWholeCacheNotOneSlot:
     def test_a_backend_that_cannot_say_keeps_slot_only_admission(self):
         from routes.inference import _openai_llama_admission_budget
         assert _openai_llama_admission_budget(_Payload()) is None
+
+
+class TestARoundIsCostedTheSameWayTheReservationWas:
+    """The re-cost REPLACES the opening reservation, so it has to count the same things.
+
+    ``_openai_llama_admission_recost`` fires at the top of every round including round
+    zero, before a tool loop has grown anything at all. A re-cost that counts fewer terms
+    than the reservation therefore does not merely fail to notice growth -- it shrinks a
+    correctly sized lease on a run that is still exactly the request that was admitted,
+    and hands the difference to the next arrival as room llama-server is already using.
+    That is the multi-slot ``Context size has been exceeded`` this accounting exists to
+    prevent, arriving through the mechanism meant to prevent it.
+    """
+
+    class _Backend:
+        base_url = "http://llama"
+        effective_parallel_slots = 4
+        _kv_cache_context_total = 4096
+        context_length = 4096
+        _mmproj_projector_type = None
+        _extra_args = None
+
+    class _Reservation:
+        def __init__(self, lease):
+            self._lease = lease
+
+        def lease_nowait(self):
+            return self._lease
+
+    def _round_zero(self, payload, *, output_tokens):
+        """Open a tool lease from ``payload``, then re-cost it before it has grown."""
+        import asyncio
+
+        from core.inference.llama_admission import LlamaAdmissionConfig, LlamaAdmissionQueue
+        from routes.inference import (
+            _openai_llama_admission_recost,
+            _openai_llama_admission_tokens,
+        )
+
+        async def _run():
+            queue = LlamaAdmissionQueue("test")
+            opened = _openai_llama_admission_tokens(
+                payload, budget = 4096, capacity = 4, tool_loop = True
+            )
+            reservation = queue.reserve(
+                capacity = 4,
+                config = LlamaAdmissionConfig(),
+                tokens = opened,
+                budget = 4096,
+            )
+            lease = reservation.lease_nowait()
+            assert lease is not None
+            _openai_llama_admission_recost(
+                self._Reservation(lease),
+                payload.messages,
+                request = None,
+                llama_backend = self._Backend(),
+                payload = payload,
+                output_tokens = output_tokens,
+            )
+            return opened, queue.snapshot().committed, queue
+
+        return asyncio.run(_run())
+
+    def test_round_zero_does_not_give_away_a_vision_prompt_s_image_allowance(self):
+        """The image parts are compacted to "[image]" for the text estimate, so the real
+        mtmd cost can only come from the count that compaction returns. Discarding it
+        re-costs a vision tool run DOWNWARD by the whole allowance on its first round."""
+        payload = _Payload(
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "what is in this picture?"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{_TINY_PNG}"},
+                        },
+                    ],
+                }
+            ],
+            enable_tools = True,
+            max_tokens = 128,
+        )
+        opened, committed, _ = self._round_zero(payload, output_tokens = 128)
+        # One image alone is 4224 against this 4096 budget, so the reservation clamps to
+        # the whole cache -- four times the 1024 share the re-cost used to drop it to.
+        assert _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS > 4096 and opened == 4096, opened
+        assert committed == opened, (
+            f"round zero shrank a correct lease from {opened} to {committed}, "
+            f"giving away {opened - committed} tokens of resident image KV"
+        )
+
+    def test_round_zero_keeps_an_uncapped_loop_s_output_allowance(self):
+        """No max_tokens and no max_completion_tokens: generation is bounded only by the
+        window, which is why the reservation charges ``budget - prompt``. Flattening the
+        absent cap to zero re-costs an uncapped loop down to its share while each of its
+        generations can still fill most of the cache."""
+        from routes.inference import _effective_openai_max_tokens
+
+        payload = _Payload(
+            messages = [{"role": "user", "content": "summarise the news"}],
+            enable_tools = True,
+        )
+        assert _effective_openai_max_tokens(payload) is None
+        opened, committed, queue = self._round_zero(
+            payload, output_tokens = _effective_openai_max_tokens(payload)
+        )
+        assert opened == 4096, opened
+        assert committed == opened, (
+            f"round zero shrank an uncapped loop from {opened} to {committed}"
+        )
+        # And the room it would have released must not admit anyone.
+        import asyncio
+
+        from core.inference.llama_admission import LlamaAdmissionConfig
+
+        async def _newcomer():
+            return queue.reserve(
+                capacity = 4, config = LlamaAdmissionConfig(), tokens = 2000, budget = 4096
+            ).lease_nowait()
+
+        assert asyncio.run(_newcomer()) is None
+
+    def test_round_zero_keeps_a_top_level_system_prompt(self):
+        """Anthropic keeps `system` and `tools` out of `messages` entirely, so for that
+        route this is most of the prompt."""
+        payload = _Payload(
+            messages = [{"role": "user", "content": "hi"}],
+            system = "You are a careful assistant that cites its sources. " * 200,
+            enable_tools = True,
+            max_tokens = 128,
+        )
+        opened, committed, _ = self._round_zero(payload, output_tokens = 128)
+        assert opened > 1024, f"the system text should push this past the share: {opened}"
+        assert committed == opened, (
+            f"round zero shrank the lease from {opened} to {committed}, dropping the "
+            f"non-message prompt the reservation charged"
+        )

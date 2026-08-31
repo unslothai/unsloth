@@ -17,6 +17,7 @@ properties that make it safe to call from inside a running generator.
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 
@@ -332,4 +333,163 @@ class TestWaitingForRoomInsteadOfRunningOverIt:
         first.release()
         thread.join(5)
         assert not thread.is_alive()
-        assert queue.snapshot().committed == 3000
+        # Behind the reparker, not instead of it. The barrier that held this arrival back
+        # comes down with the reclaim, and the reclaim is the last thing that touches the
+        # queue: if it does not run admission itself, nothing else will, and a request
+        # that fits in the room left over waits out the whole grown run for nothing --
+        # which, since a queued waiter also shuts reserve()'s fast path, holds every
+        # later arrival with it.
+        for _ in range(100):
+            await asyncio.sleep(0.01)
+            if newcomer.lease_nowait() is not None:
+                break
+        assert newcomer.lease_nowait() is not None, (
+            "the last repark barrier came down without re-running admission"
+        )
+        assert queue.snapshot().committed == 4000
+
+
+class TestGivingUpTheWait:
+    """What a reparker owes the pool when its wait ends without the bigger commitment.
+
+    ``yield_commitment`` has already taken the old figure off ``_committed``, but the
+    lease still occupies that KV at llama-server for as long as it lives. Handing it back
+    is therefore a CORRECTION, not a request, and a full cache must not be able to refuse
+    it: a lease that records a commitment it never restored subtracts it again on release
+    and leaves that much phantom room behind.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_full_cache_cannot_refuse_the_restore(self):
+        queue = LlamaAdmissionQueue("test")
+        loser = _lease(queue, tokens = 1024, budget = 4096)
+        winner = _lease(queue, tokens = 1024, budget = 4096)
+        assert queue.snapshot().committed == 2048
+
+        cancel = threading.Event()
+        out: list = []
+
+        def grow():
+            out.append(
+                loser.recost_waiting(4096, cancel_event = cancel, poll_s = 0.01)
+            )
+
+        thread = threading.Thread(target = grow, daemon = True)
+        thread.start()
+        while queue.snapshot().committed != 1024:
+            await asyncio.sleep(0.005)
+        # The other run takes the whole cache while this one is parked, so there is no
+        # room left for the restore to ask for.
+        assert winner.recost(4096) is True
+        assert queue.snapshot().committed == 4096
+
+        cancel.set()
+        thread.join(5)
+        assert out == [False]
+        assert queue._reparking == 0
+        # Both leases really hold their figures at llama-server, so the pool has to say
+        # so -- over the budget, because that is what is genuinely resident.
+        assert queue.snapshot().committed == 4096 + 1024, (
+            "a restore the cache could not fit was dropped instead of recorded"
+        )
+
+        loser.release()
+        assert queue.snapshot().committed == 4096, (
+            "release subtracted a commitment that was never restored"
+        )
+        # And the phantom room that leak created must not admit anyone.
+        newcomer = queue.reserve(
+            capacity = 4, config = LlamaAdmissionConfig(), tokens = 1000, budget = 4096
+        )
+        assert newcomer.lease_nowait() is None, (
+            "a newcomer was admitted into room the winner is still using"
+        )
+        winner.release()
+
+    @pytest.mark.asyncio
+    async def test_a_released_lease_restores_nothing(self):
+        """release() already handed back the 0 this lease held while parked, so
+        re-committing here would strand the difference for the life of the process."""
+        queue = LlamaAdmissionQueue("test")
+        holder = _lease(queue, tokens = 2000, budget = 4096)
+        _lease(queue, tokens = 2000, budget = 4096)
+
+        cancel = threading.Event()
+        thread = threading.Thread(
+            target = lambda: holder.recost_waiting(
+                4000, cancel_event = cancel, poll_s = 0.01
+            ),
+            daemon = True,
+        )
+        thread.start()
+        while queue.snapshot().committed != 2000:
+            await asyncio.sleep(0.005)
+        holder.release()
+        cancel.set()
+        thread.join(5)
+        assert not thread.is_alive()
+        assert queue._reparking == 0
+        assert queue.snapshot().committed == 2000, "the released lease was re-committed"
+
+
+class TestYieldingIsGatedOnTheServerActuallyClearing:
+    """A slot being idle is not the same as its KV cells being reclaimed.
+
+    Under ``--kv-unified`` the cells of a finished round stay resident until
+    ``prompt_clear()``, which llama-server runs only under ``--cache-idle-slots``.
+    ``--cache-ram 0`` force-disables that, and Studio emits exactly that on Windows under
+    full GPU offload (#5692) next to ``--kv-unified``. Yielding there would hand a second
+    caller room the first one is still occupying.
+    """
+
+    @pytest.mark.asyncio
+    async def test_growth_that_fits_does_not_care(self):
+        """The cheap path never yields anything, so gating must not disturb it."""
+        queue = LlamaAdmissionQueue("test")
+        holder = _lease(queue, tokens = 1000, budget = 4096)
+        assert holder.recost_waiting(2000, allow_yield = False) is True
+        assert queue.snapshot().committed == 2000
+
+    @pytest.mark.asyncio
+    async def test_growth_that_does_not_fit_declines_instead_of_yielding(self):
+        queue = LlamaAdmissionQueue("test")
+        holder = _lease(queue, tokens = 2000, budget = 4096)
+        _lease(queue, tokens = 2000, budget = 4096)
+
+        assert holder.recost_waiting(4000, allow_yield = False) is False
+        assert holder._tokens == 2000, "the old commitment was not kept"
+        assert queue.snapshot().committed == 4000, "capacity was handed out twice"
+        assert queue._reparking == 0
+
+    @pytest.mark.asyncio
+    async def test_it_does_not_block(self):
+        """Declining is the pre-existing behaviour: return, do not wait for room that is
+        never coming back on this server."""
+        queue = LlamaAdmissionQueue("test")
+        holder = _lease(queue, tokens = 2000, budget = 4096)
+        _lease(queue, tokens = 2000, budget = 4096)
+
+        started = time.monotonic()
+        assert holder.recost_waiting(
+            4000, allow_yield = False, timeout_s = 30.0, poll_s = 0.5
+        ) is False
+        assert time.monotonic() - started < 1.0
+
+    @pytest.mark.asyncio
+    async def test_yielding_is_still_the_default(self):
+        """Old callers, and every server that does clear, keep the waiting behaviour."""
+        queue = LlamaAdmissionQueue("test")
+        holder = _lease(queue, tokens = 2000, budget = 4096)
+        other = _lease(queue, tokens = 2000, budget = 4096)
+
+        thread = threading.Thread(
+            target = lambda: holder.recost_waiting(4000, poll_s = 0.01),
+            daemon = True,
+        )
+        thread.start()
+        while queue.snapshot().committed != 2000:
+            await asyncio.sleep(0.005)
+        other.release()
+        thread.join(5)
+        assert not thread.is_alive()
+        assert queue.snapshot().committed == 4000

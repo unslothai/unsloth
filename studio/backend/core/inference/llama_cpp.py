@@ -4171,6 +4171,35 @@ def _paravirtual_mmproj_pinnable(server_caps: Mapping[str, object]) -> bool:
     )
 
 
+def _idle_slot_clearing_active(cmd: Sequence[str], *, supports_cache_ram: bool) -> bool:
+    """True when *cmd* leaves llama-server clearing idle slots' KV.
+
+    ``--cache-idle-slots`` defaults ON but requires cache-ram, and ``--cache-ram 0``
+    force-disables it (``server-context.cpp``). So the starting point is the BINARY, not
+    the command line: a server old enough to lack ``--cache-ram`` never had idle-slot
+    clearing either, while a server that has it clears by default at 8192 MiB. An absent
+    flag therefore means the default is in force, not that clearing is off, which is the
+    common case since Studio only emits ``--cache-ram`` when something asked it to.
+
+    Last-wins, matching llama.cpp's own argument handling.
+    """
+    enabled = bool(supports_cache_ram)
+    for i, arg in enumerate(cmd):
+        if arg == "--cache-ram":
+            # A missing or unreadable value reads as no clearing rather than as the
+            # default: the conservative answer costs a re-cost, the other one hands out
+            # cells that are still resident.
+            try:
+                enabled = int(cmd[i + 1]) > 0
+            except (IndexError, TypeError, ValueError):
+                enabled = False
+        elif arg == "--cache-idle-slots":
+            enabled = True
+        elif arg == "--no-cache-idle-slots":
+            enabled = False
+    return enabled
+
+
 def _mmproj_env_is_audio_only(path: Optional[str]) -> bool:
     """True only when *path* names a readable projector with no vision tower.
 
@@ -5635,6 +5664,7 @@ class LlamaCppBackend:
         self._requested_spec_draft_cache_type: Optional[str] = None
         self._requested_ctx_checkpoints: Optional[int] = None
         self._requested_cache_ram: Optional[int] = None
+        self._idle_slot_clearing_active: bool = False
         self._chat_template: Optional[str] = None
         self._markup_tokens: list = []
         self._markup_profile = None
@@ -6086,6 +6116,17 @@ class LlamaCppBackend:
         return self._requested_cache_ram
 
     @property
+    def idle_slot_clearing_active(self) -> bool:
+        """Whether an idle slot's KV cells actually come back on this server.
+
+        Under ``--kv-unified`` an idle slot keeps its cells until ``prompt_clear()``,
+        which llama-server runs only under ``--cache-idle-slots``. False here means
+        releasing a slot frees nothing, so nothing may be handed to another caller on
+        the strength of it. False until a load has spawned, which is the safe answer.
+        """
+        return self._idle_slot_clearing_active
+
+    @property
     def max_context_length(self) -> Optional[int]:
         """Return the largest context that fits on this hardware at load time.
 
@@ -6118,6 +6159,7 @@ class LlamaCppBackend:
         self._requested_spec_draft_cache_type = None
         self._requested_ctx_checkpoints = None
         self._requested_cache_ram = None
+        self._idle_slot_clearing_active = False
 
     @staticmethod
     def _read_rss_bytes(pid: int) -> Optional[int]:
@@ -13060,6 +13102,7 @@ class LlamaCppBackend:
         self._requested_spec_draft_cache_type = None
         self._requested_ctx_checkpoints = None
         self._requested_cache_ram = None
+        self._idle_slot_clearing_active = False
         self._flash_attn_enabled = True
         self._effective_cache_types = ("f16", "f16")
         self._requested_cache_types = ("f16", "f16")
@@ -22210,6 +22253,13 @@ class LlamaCppBackend:
                             logger.debug(f"Could not open llama-server log file: {e}")
                             self._llama_log_path = None
                         _last_spawn_cmd = list(run_cmd)
+                        # Read off the argv actually being spawned rather than the intent,
+                        # so every emitter (the panel value, the Windows full-offload
+                        # tuning, a future one) is covered by construction.
+                        self._idle_slot_clearing_active = _idle_slot_clearing_active(
+                            run_cmd,
+                            supports_cache_ram = bool(server_caps.get("supports_cache_ram")),
+                        )
                         self._process = subprocess.Popen(
                             run_cmd,
                             stdout = subprocess.PIPE,
@@ -30504,6 +30554,19 @@ class LlamaCppBackend:
                 _final_preflight_succeeded = True
             except Exception as exc:
                 logger.warning("Could not preflight the rolling context window: %s", exc)
+
+        # The loop's own callback fires at the TOP of a round, so the breaks that lead
+        # here -- the tool-iteration cap, and a controller that turns tools off -- leave
+        # the assistant turn, its tool results and any nudge appended after the last
+        # re-cost. The final pass is then the largest request of the run and the one round
+        # the pool was never told about. Here rather than at the breaks: the recall above
+        # can rebind `conversation`, and this is the one point every path reaches with the
+        # list that is actually about to be sent.
+        if on_conversation_grew is not None:
+            try:
+                on_conversation_grew(conversation)
+            except Exception:  # accounting must never break a run in progress
+                logger.debug("tool loop final recost failed", exc_info = True)
 
         stream_payload = {
             "messages": neutralize_control_markup_in_messages(

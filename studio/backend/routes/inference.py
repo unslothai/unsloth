@@ -1646,6 +1646,22 @@ def _openai_llama_admission_budget(llama_backend) -> Optional[int]:
     return total or _positive_int_or_none(getattr(llama_backend, "context_length", None))
 
 
+def _openai_llama_admission_can_yield(llama_backend) -> bool:
+    """Whether a round between generations may hand its commitment back.
+
+    Only where llama-server actually clears an idle slot's KV. Under ``--kv-unified``
+    without ``--cache-idle-slots`` the cells of a finished round stay resident, so
+    yielding would not free capacity, only promise the same capacity twice. Studio
+    launches exactly that way on Windows under full GPU offload (``--cache-ram 0``,
+    #5692). There re-costing declines instead of waiting, which is what it did before
+    any of this existed.
+
+    A backend that cannot say (no load yet, or a stub) reads as False: declining is
+    always safe, double-booking is not.
+    """
+    return bool(getattr(llama_backend, "idle_slot_clearing_active", False))
+
+
 def _openai_llama_admission_extra_prompt_tokens(payload) -> int:
     """Prompt the request carries OUTSIDE ``messages``, in tokens.
 
@@ -1996,7 +2012,8 @@ def _openai_llama_admission_recost(
     *,
     request: Optional[Request],
     llama_backend,
-    output_tokens: int = 0,
+    payload = None,
+    output_tokens: Optional[int] = None,
     cancel_event = None,
     injected_tools = None,
 ) -> None:
@@ -2014,9 +2031,11 @@ def _openai_llama_admission_recost(
     ``recost_waiting`` yields the old commitment before asking for the bigger one, so a
     round that waits is not holding the room it is waiting for.
 
-    This is a safe place to wait precisely because it is between rounds: the previous
-    round's request has completed, so the slot is idle at llama-server and its cells have
-    been spilled to the prompt cache rather than pinned.
+    This is a safe place to wait because it is between rounds: the previous round's
+    request has completed, so the slot is idle at llama-server. Idle is not the same as
+    reclaimed, though, so the yield is gated on
+    ``_openai_llama_admission_can_yield``: only a server that clears idle slots actually
+    gives those cells back, and on one that does not this declines instead of waiting.
     """
     if reservation is None:
         return
@@ -2028,15 +2047,45 @@ def _openai_llama_admission_recost(
         if not budget:
             return
         capacity = _openai_llama_admission_capacity(request, llama_backend)
-        prompt_tokens = estimate_messages_tokens_dense(
-            _openai_llama_admission_messages_for_estimate(conversation)[0]
+        # Every term the OPENING reservation charges, charged again here. A re-cost that
+        # counts fewer things than the reservation it replaces does not merely fail to
+        # notice growth, it SHRINKS a correctly sized lease -- and because the callback
+        # fires at the top of round zero, before the conversation has grown at all, it
+        # does so on a run that is still exactly the request that was admitted. The room
+        # it hands back is room llama-server is already using, and the next arrival is
+        # admitted into it.
+        estimate_messages, message_image_parts = _openai_llama_admission_messages_for_estimate(
+            conversation
         )
+        prompt_tokens = estimate_messages_tokens_dense(estimate_messages)
         # Re-sent on every round alongside the conversation, so it belongs in every
         # re-costing too, not just the opening estimate.
         prompt_tokens += _openai_llama_admission_injected_tool_tokens(injected_tools)
+        # Anthropic keeps `system` and `tools` out of the message list entirely, so for
+        # that route this is most of the prompt.
+        prompt_tokens += _openai_llama_admission_extra_prompt_tokens(payload)
+        # mtmd embeddings, which are KV the message text cannot show: the image parts are
+        # compacted to "[image]" for the text estimate, so their real cost has to come
+        # from the count that compaction returns. A tool result may add images of its own
+        # (a screenshot tool), so this grows with the rounds like everything else here.
+        prompt_tokens += _openai_llama_admission_media_tokens(
+            payload,
+            message_image_parts = message_image_parts,
+            image_tokens = _openai_llama_admission_image_tokens(llama_backend),
+        )
+        if output_tokens is None:
+            # No cap named. Generation is then bounded only by the window (the opening
+            # estimate reserves `budget - prompt_tokens` for exactly this reason), so
+            # charging zero here let an uncapped loop drop to its share on round zero
+            # while each of its generations could still fill most of the cache.
+            output_tokens = max(0, budget - prompt_tokens)
         share = max(1, budget // max(1, capacity))
         want = max(1, min(budget, max(share, prompt_tokens + max(0, output_tokens))))
-        lease.recost_waiting(want, cancel_event = cancel_event)
+        lease.recost_waiting(
+            want,
+            cancel_event = cancel_event,
+            allow_yield = _openai_llama_admission_can_yield(llama_backend),
+        )
     except Exception:  # pragma: no cover - accounting must not break a live run
         logger.debug("llama admission recost failed", exc_info = True)
 
@@ -20523,7 +20572,13 @@ async def produce_openai_chat_completions(
                     conversation,
                     request = request,
                     llama_backend = llama_backend,
-                    output_tokens = effective_max_tokens or 0,
+                    # The same payload the opening reservation was priced from, so a
+                    # round is charged for its media and its non-message prompt too.
+                    payload = payload,
+                    # NOT `or 0`. None means no cap was named, which the reservation
+                    # prices as the rest of the budget; flattening it to zero re-costs an
+                    # uncapped loop down to its share on its very first round.
+                    output_tokens = effective_max_tokens,
                     injected_tools = tools_to_use,
                     # A round waiting for cache room must still answer Stop. This is the
                     # same event the loop polls at the top of every iteration, so a wait
@@ -27873,7 +27928,10 @@ async def anthropic_messages(
             conversation,
             request = request,
             llama_backend = llama_backend,
-            output_tokens = payload.max_tokens or 0,
+            # `system` and `tools` live outside `messages` on this route, so without the
+            # payload a re-cost drops most of the prompt it is meant to be charging.
+            payload = payload,
+            output_tokens = payload.max_tokens,
             injected_tools = openai_tools,
             cancel_event = cancel_event,
         )
