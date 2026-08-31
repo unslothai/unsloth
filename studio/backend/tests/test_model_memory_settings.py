@@ -1008,6 +1008,8 @@ class TestMlockActiveReflectsWhatWillActuallyBePassed:
 
     @staticmethod
     def _response(keep, no_res, backend, monkeypatch):
+        import core.inference.gpu_arbiter as arbiter
+        import core.inference.orchestrator as orchestrator
         import routes.inference
         import routes.settings as rs
         import utils.model_memory_settings as mm
@@ -1017,6 +1019,10 @@ class TestMlockActiveReflectsWhatWillActuallyBePassed:
         monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: no_res)
         monkeypatch.setattr(rs, "get_model_memory_settings", lambda: (keep, no_res))
         monkeypatch.setattr(rs, "memlock_limit_bytes", lambda: 8 * 1024 * 1024)
+        # Same reason as _install_backend: without these an inactive llama backend
+        # reads as ungoverned whenever an earlier test left a model in either one.
+        monkeypatch.setattr(arbiter, "current_owner", lambda: None)
+        monkeypatch.setattr(orchestrator, "peek_inference_backend", lambda: None)
         return rs._model_memory_response()
 
     @staticmethod
@@ -1458,6 +1464,8 @@ def _fake_backend(**attrs):
 
 
 def _install_backend(monkeypatch, backend, *, keep, no_res):
+    import core.inference.gpu_arbiter as arbiter
+    import core.inference.orchestrator as orchestrator
     import routes.inference
     import utils.model_memory_settings as mm
 
@@ -1465,6 +1473,12 @@ def _install_backend(monkeypatch, backend, *, keep, no_res):
     monkeypatch.setattr(mm, "get_keep_resident", lambda: keep)
     monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: no_res)
     monkeypatch.setattr(mm, "should_mlock", lambda: keep and not no_res)
+    # The ungoverned check reads the arbiter and the orchestrator singleton, so an
+    # inactive llama backend alone does not mean "nothing loaded": a model any
+    # earlier test left in either one answers instead. Pinned empty here; the
+    # ungoverned cases set their own after this returns.
+    monkeypatch.setattr(arbiter, "current_owner", lambda: None)
+    monkeypatch.setattr(orchestrator, "peek_inference_backend", lambda: None)
 
 
 class TestPreSpawnWindow:
