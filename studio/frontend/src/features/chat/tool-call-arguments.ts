@@ -195,6 +195,10 @@ export function toolCallReplayArguments(
     keys.length === 1 &&
     keys[0] === "_raw" &&
     typeof parsed._raw === "string" &&
+    // Non-empty, or the equality proves nothing: the adapter only writes the
+    // marker for text it tried to parse, so `{ _raw: "" }` is an argument a
+    // tool was really given rather than anything this file produced.
+    parsed._raw.length > 0 &&
     parsed._raw === argsText
   ) {
     return "{}";

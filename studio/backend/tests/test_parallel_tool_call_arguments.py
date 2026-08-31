@@ -656,6 +656,42 @@ def test_a_claim_on_a_split_born_card_leaves_every_call_its_own():
     ]
 
 
+def test_a_nameless_call_reserves_no_card_id():
+    # The client drops the card it drew for a call that never got a name, so
+    # the next round has to land on the number this one leaves free.
+    taken: set[str] = set()
+    cards: set[str] = set()
+    first = _Turn()
+    first.merge_structured([_delta(0, None, '{"a":1}')])
+    assert first.calls(taken, cards) == []
+
+    second = _Turn()
+    second.round = 1
+    second.merge_structured([_delta(0, "beta", '{"b":2}')])
+    assert [call.get("card_id") for call in second.calls(taken, cards)] == ["tool_call_0"]
+
+
+def test_a_card_ledger_is_append_only_across_rounds():
+    # A round that carries tool_call_0 as a provider id does not take the card
+    # an earlier round already drew under that spelling, so the third round
+    # numbers from what both are holding.
+    taken: set[str] = set()
+    cards: set[str] = set()
+    first = _Turn()
+    first.merge_structured([_delta(0, "alpha", '{"a":1}')])
+    assert [call.get("card_id") for call in first.calls(taken, cards)] == ["tool_call_0"]
+
+    second = _Turn()
+    second.round = 1
+    second.merge_structured([_delta(0, "beta", '{"b":2}', call_id = "tool_call_0")])
+    assert [call.get("card_id") for call in second.calls(taken, cards)] == [None]
+
+    third = _Turn()
+    third.round = 2
+    third.merge_structured([_delta(0, "gamma", '{"c":3}')])
+    assert [call.get("card_id") for call in third.calls(taken, cards)] == ["tool_call_1"]
+
+
 def test_a_stable_id_naming_a_longer_tool_opens_its_own_call():
     # Reading "web_search" as "web" grown gave the id to the completed call.
     turn = _Turn()

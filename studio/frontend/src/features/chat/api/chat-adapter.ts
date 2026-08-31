@@ -5349,6 +5349,17 @@ export function createOpenAIStreamAdapter(
           releaseStreamedCard(part.toolCallId);
           changed = true;
         }
+        // A call needs a name to run: _normalized_call drops a nameless one
+        // before it reserves a card id, so a card kept here holds a number the
+        // backend hands to the next round's call, and its events land on this
+        // blank card instead.
+        for (let at = toolCallParts.length - 1; at >= 0; at -= 1) {
+          const part = toolCallParts[at] as PositionedToolCallPart;
+          if (part.toolName || part._delta_index === undefined) continue;
+          toolCallParts.splice(at, 1);
+          releaseStreamedCard(part.toolCallId);
+          changed = true;
+        }
         openTailIds.clear();
         // The next round opens at index 0 again, and without this "B" then
         // "C" across the boundary named one call "BC".
@@ -5384,6 +5395,16 @@ export function createOpenAIStreamAdapter(
       const releaseStreamedCard = (partId: string): void => {
         reservedToolCallIds.delete(partId);
         toolPartIdByBackendId.delete(partId);
+        // A card that took a late provider id answers to a run-unique part id,
+        // so the id the provider sent is a separate key pointing at it. Left
+        // behind, that reservation makes the next round's mint skip a number
+        // the backend, which never reserved it for a call it filtered, reuses.
+        for (const [backendId, mapped] of [...toolPartIdByBackendId]) {
+          if (mapped !== partId) continue;
+          toolPartIdByBackendId.delete(backendId);
+          reservedToolCallIds.delete(backendId);
+          providerSentToolCallIds.delete(backendId);
+        }
         boundaryScans.delete(partId);
         openTailIds.delete(partId);
         liveArgsTextById.delete(partId);
@@ -5412,7 +5433,12 @@ export function createOpenAIStreamAdapter(
       // and third calls' results off each other's cards.
       const renumberMintedCards = (claimed: string): void => {
         const minted = toolCallParts.filter(
-          (part) => !providerSentToolCallIds.has(part.toolCallId),
+          (part) =>
+            !providerSentToolCallIds.has(part.toolCallId) &&
+            // This round's cards only. An earlier round's are complete, may
+            // already carry a result, and the backend's card ledger is
+            // append-only: it never renumbers one, so neither may this.
+            (part as PositionedToolCallPart)._delta_index !== undefined,
         ) as PositionedToolCallPart[];
         const carried = minted.map((part) => ({
           part,

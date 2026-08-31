@@ -221,6 +221,7 @@ function makeStream(mintPartIds = false): {
   feed: (batch: DeltaCall[], finished?: boolean) => boolean;
   parts: LoopPart[];
   resolveToolPartId: (backendId: string) => string;
+  endRound: () => void;
 } {
   const body = `
     const toolCallParts = [];
@@ -250,7 +251,15 @@ function makeStream(mintPartIds = false): {
       ${liftDeltaLoop()}
       return addedToolCall;
     }
-    return { feed, parts: toolCallParts, resolveToolPartId };
+    // Production drops a backend id's binding on tool_end, so an id the
+    // provider reuses in a later round reaches a card of its own. That branch
+    // is outside the lifted loop, so a test that spans rounds does it here.
+    const endRound = () => {
+      for (const part of toolCallParts) {
+        toolPartIdByBackendId.delete(part.toolCallId);
+      }
+    };
+    return { feed, parts: toolCallParts, resolveToolPartId, endRound };
   `;
   const js = ts.transpileModule(`const mintPartIds = ${mintPartIds};` + body, {
     compilerOptions: { target: ts.ScriptTarget.ES2022 },
@@ -274,6 +283,7 @@ function makeStream(mintPartIds = false): {
     feed: (batch: DeltaCall[], finished?: boolean) => boolean;
     parts: LoopPart[];
     resolveToolPartId: (backendId: string) => string;
+    endRound: () => void;
   };
 }
 
@@ -1075,6 +1085,71 @@ test("a born call carries only the metadata of the delta that opened it", () => 
   assert.deepEqual(stream.parts[1].extra_content, { delta: 2 });
 });
 
+test("a claim in a later round leaves an earlier round's card alone", () => {
+  // The backend's card ledger is append-only, so a card from a finished round
+  // keeps its number however a later round spells its ids. Renumbering it put
+  // the two sides one apart from the third round on, and the backend's events
+  // for the renamed card reached whatever had taken its old id.
+  const stream = makeStream(true);
+  stream.feed([{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }]);
+  stream.feed([], true);
+  stream.endRound();
+  stream.feed([
+    { id: "tool_call_0", index: 0, function: { name: "beta", arguments: '{"b":2}' } },
+  ]);
+  stream.feed([], true);
+  stream.endRound();
+  stream.feed([{ index: 0, function: { name: "gamma", arguments: '{"c":3}' } }]);
+
+  assert.deepEqual(
+    stream.parts.map((p) => [p.toolCallId, p.toolName]),
+    [
+      ["tool_call_0", "alpha"],
+      ["tool_call_0:uuid-1", "beta"],
+      ["tool_call_1", "gamma"],
+    ],
+  );
+});
+
+test("a dropped card gives back the provider id that aliased it", () => {
+  // A card that took a late provider id answers to a run-unique part id, so
+  // the id the provider sent is a second key pointing at it. Releasing only
+  // the part id left tool_call_1 reserved, and the next round minted
+  // tool_call_2 where the backend, which filters the unfinished call and never
+  // reserved it, minted tool_call_1.
+  const stream = makeStream(true);
+  stream.feed([{ index: 0, function: { name: "alpha", arguments: '{}{"x":' } }]);
+  stream.feed([{ id: "tool_call_1", index: 0, function: { arguments: "" } }]);
+  stream.feed([], true);
+  stream.endRound();
+  stream.feed([{ index: 0, function: { name: "beta", arguments: '{"b":2}' } }]);
+
+  assert.deepEqual(
+    stream.parts.map((p) => [p.toolCallId, p.toolName]),
+    [
+      ["tool_call_0", "alpha"],
+      ["tool_call_1", "beta"],
+    ],
+  );
+});
+
+test("a card that never got a name is dropped when the turn ends", () => {
+  // _normalized_call rejects a nameless call before it reserves a card id, so
+  // a card kept for one holds a number the backend gives the next round, and
+  // that round's events land on the blank card instead.
+  const stream = makeStream();
+  stream.feed([{ index: 0, function: { arguments: '{"a":1}' } }]);
+  assert.equal(stream.parts.length, 1);
+  stream.feed([], true);
+  assert.deepEqual(stream.parts, []);
+
+  stream.feed([{ index: 0, function: { name: "beta", arguments: '{"b":2}' } }]);
+  assert.deepEqual(
+    stream.parts.map((p) => [p.toolCallId, p.toolName]),
+    [["tool_call_0", "beta"]],
+  );
+});
+
 test("a stable id naming a longer tool opens its own call", () => {
   // Reading "web_search" as "web" grown gave the id to the completed card.
   const parts = run([
@@ -1336,6 +1411,15 @@ test("the marker is only recognised by the text that proves it", () => {
     toolCallReplayArguments("", { _raw: glued }),
     JSON.stringify({ _raw: glued }),
   );
+});
+
+test("an empty _raw is an argument, not the marker", () => {
+  // The adapter only writes the marker for text it tried to parse, and both
+  // writers are guarded on non-empty text, so `{ _raw: "" }` beside an empty
+  // argsText is a value a tool was really given. Equality alone read it as the
+  // marker and replayed {}.
+  assert.equal(toolCallReplayArguments("", { _raw: "" }), '{"_raw":""}');
+  assert.equal(toolCallReplayArguments(undefined, { _raw: "" }), '{"_raw":""}');
 });
 
 test("a tool that really takes a _raw parameter keeps it either way", () => {
