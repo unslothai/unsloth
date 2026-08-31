@@ -2425,7 +2425,14 @@ class TestStudioLoadersDeclareTheirPlannerEligibility(unittest.TestCase):
     """
 
     KNOWN_AUTO_MODELS = {"CsmForConditionalGeneration", "WhisperForConditionalGeneration"}
-    LOADERS = ("core/inference/inference.py", "core/training/trainer.py")
+    # Every module that resolves a device map for a load. export.py was missing from this
+    # list once, and its CSM and Whisper branches kept asking for the planner with nothing
+    # red: the guard is only worth what its scope covers.
+    LOADERS = (
+        "core/inference/inference.py",
+        "core/training/trainer.py",
+        "core/export/export.py",
+    )
 
     def _source(self, relative):
         return (Path(__file__).resolve().parent.parent / relative).read_text(encoding = "utf-8")
@@ -2437,7 +2444,14 @@ class TestStudioLoadersDeclareTheirPlannerEligibility(unittest.TestCase):
             calls = [
                 node
                 for node in ast.walk(tree)
-                if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "get_device_map"
+                if isinstance(node, ast.Call)
+                and getattr(node.func, "id", None)
+                in ("get_device_map", "_multi_gpu_device_map_kwargs")
+                # The helper's own body is where the flag is forwarded, not passed.
+                and not (
+                    getattr(node.func, "id", None) == "get_device_map"
+                    and relative.endswith("export.py")
+                )
             ]
             self.assertTrue(calls, f"{relative}: no get_device_map call found")
             for call in calls:
