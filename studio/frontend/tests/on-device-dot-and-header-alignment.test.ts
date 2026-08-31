@@ -106,15 +106,15 @@ test("one fit badge, so a colour or reveal change cannot miss a list", () => {
   assert.equal(PICKERS.split("VRAM_VERDICT = {").length - 1, 1, "one verdict table");
   assert.ok(!PICKERS.includes("!text-red-700"), "no red fit badge left");
   assert.ok(!PICKERS.includes(">\n        OOM\n"), "no OOM text pill left");
-  // Variant rows render the shared badge and opt out of the hover reveal.
-  assert.ok(
-    PICKERS.includes(
-      '<VramBadge status={oom ? "exceeds" : tight ? "tight" : null} />',
-    ),
+  // Variant rows render the shared badge, in the GGUF vocabulary, and opt out of the hover reveal.
+  assert.match(
+    PICKERS,
+    /<VramBadge\n\s*status=\{oom \? "exceeds" : tight \? "tight" : null\}\n\s*source="gguf"\n\s*\/>/,
   );
   assert.equal(
-    PICKERS.split("<VramBadge status={vramStatus} revealOnHover={true} />")
-      .length - 1,
+    PICKERS.split(
+      '<VramBadge status={vramStatus} source="device" revealOnHover={!selected} />',
+    ).length - 1,
     2,
     "both model row slots reveal on hover",
   );
@@ -124,17 +124,37 @@ test("each fit verdict is an info mark that explains itself", () => {
   // A pill shouted a three letter acronym; the mark says what it means on hover. Tight spills
   // past VRAM into system RAM, oom clears neither budget, so the two hints differ.
   assert.ok(PICKERS.includes("icon={InformationCircleIcon}"));
-  // Neither verdict blocks a load, so both hints say what to expect rather than refusing.
+  // A GGUF over budget still loads: llama-server hands it to --fit.
   assert.ok(
     PICKERS.includes(
-      "hint: \"Model doesn't fit but can still work with offloading. Expect slower inference.\"",
+      "hint: \"Model doesn't fit but still works with offloading. Expect slower inference.\"",
+    ),
+  );
+  // A model row's `tight` comes from checkVramFit, which is 75-100% of VRAM: it fits on the card
+  // entirely, so telling that row it spills into system RAM was false. The two vocabularies now
+  // get their own copy, chosen at the call site.
+  assert.ok(
+    PICKERS.includes(
+      'hint: "Only fits by spilling into system RAM. Expect slower inference."',
     ),
   );
   assert.ok(
     PICKERS.includes(
-      'hint: "Model only fits by spilling into system RAM. Expect slower inference."',
+      'hint: "Uses nearly all your VRAM, with little headroom for anything else."',
     ),
   );
+  // And a model row's `exceeds` no longer promises a slow load: it can be a curated pipeline whose
+  // loader refuses CPU offload outright.
+  assert.ok(
+    PICKERS.includes('hint: "Needs more memory than this device has."'),
+  );
+  assert.ok(PICKERS.includes('source="gguf"'));
+  assert.ok(PICKERS.includes('source="device"'));
+  // A selected over-budget row is exempt from dimming, so hiding its mark left it with no verdict
+  // at all until hovered, which is nothing at rest and nothing on touch.
+  assert.match(PICKERS, /exceeds &&\n\s*!selected &&/);
+  // And the mark suppresses the button it sits inside, so reading it cannot start a download.
+  assert.match(PICKERS, /onClick=\{\(event\) => \{\n\s*event\.preventDefault\(\);/);
   // Both marks are reachable by screen readers without the tooltip.
   assert.ok(PICKERS.includes('label: "Does not fit"'));
   assert.ok(PICKERS.includes('label: "Tight fit"'));

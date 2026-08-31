@@ -635,36 +635,78 @@ function DownloadedBadge() {
 /** What each fit verdict marks and says. Tight spills past VRAM into system RAM; oom clears
  *  neither budget, so it offloads further still. Both still run, so neither reads as an error:
  *  orange over red, and yellow one step below it. */
+const AMBER = "!text-yellow-600 dark:!text-yellow-400";
+const ORANGE = "!text-orange-600 dark:!text-orange-300";
+
+/** Two vocabularies reach this badge and they do not mean the same thing.
+ *
+ *  A VARIANT row's verdict comes from the GGUF classifier: `tight` is a spill out of VRAM into
+ *  system RAM, `exceeds` clears neither budget.
+ *
+ *  A MODEL row's comes from `checkVramFit`, where `tight` is 75-100% of VRAM, which still fits on
+ *  the card entirely. Telling that row it spills into system RAM was simply false, and it is the
+ *  common case on a normal GPU. */
 const VRAM_VERDICT = {
-  exceeds: {
-    label: "Does not fit",
-    tone: "!text-orange-600 dark:!text-orange-300",
-    hint: "Model doesn't fit but can still work with offloading. Expect slower inference.",
+  gguf: {
+    exceeds: {
+      label: "Does not fit",
+      tone: ORANGE,
+      hint: "Model doesn't fit but still works with offloading. Expect slower inference.",
+    },
+    tight: {
+      label: "Tight fit",
+      tone: AMBER,
+      hint: "Only fits by spilling into system RAM. Expect slower inference.",
+    },
   },
-  tight: {
-    label: "Tight fit",
-    tone: "!text-yellow-600 dark:!text-yellow-400",
-    hint: "Model only fits by spilling into system RAM. Expect slower inference.",
+  device: {
+    // A model row's `exceeds` is a GGUF repo whose smallest quant is over budget (llama-server
+    // offloads it) OR a curated pipeline that cannot offload at all. One string covers both only
+    // by promising nothing about which happens; the two are separated in the follow-up.
+    exceeds: {
+      label: "Does not fit",
+      tone: ORANGE,
+      hint: "Needs more memory than this device has.",
+    },
+    tight: {
+      label: "Tight fit",
+      tone: AMBER,
+      hint: "Uses nearly all your VRAM, with little headroom for anything else.",
+    },
   },
 } as const;
 
 /** VRAM verdict: an info mark that names itself on hover, rather than a shouted pill. */
 function VramBadge({
   status,
+  /** Which vocabulary `status` is spoken in. See VRAM_VERDICT: the same word means different
+   *  things on a model row and on a quant row. */
+  source,
   /** Model rows hold the mark in the layout and paint it on hover; variant rows always show it. */
   revealOnHover = false,
 }: {
   status?: VramFitStatus | null;
+  source: "gguf" | "device";
   revealOnHover?: boolean;
 }) {
   const verdict =
-    status === "exceeds" || status === "tight" ? VRAM_VERDICT[status] : null;
+    status === "exceeds" || status === "tight"
+      ? VRAM_VERDICT[source][status]
+      : null;
   if (!verdict) return null;
   return (
     <Tooltip delayDuration={0}>
       <TooltipTrigger asChild={true}>
+        {/* The mark sits inside the row/variant button, so a tap meant to read the explanation
+            would otherwise select the model or start its download. */}
+        {/* biome-ignore lint/a11y/useKeyWithClickEvents: the handler suppresses the enclosing
+            button, it does not add an interaction of its own */}
         <span
           aria-label={verdict.label}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+          }}
           className={cn(
             "flex size-[18px] shrink-0 items-center justify-center",
             verdict.tone,
@@ -1087,10 +1129,10 @@ function ModelRow({
                 META_COLUMN.vram,
               )}
             >
-              <VramBadge status={vramStatus} revealOnHover={true} />
+              <VramBadge status={vramStatus} source="device" revealOnHover={!selected} />
             </span>
           ) : (
-            <VramBadge status={vramStatus} revealOnHover={true} />
+            <VramBadge status={vramStatus} source="device" revealOnHover={!selected} />
           )}
           {aligned ? (
             <span
@@ -1959,7 +2001,10 @@ function GgufVariantExpander({
               ) : null}
             </span>
             <span className="flex items-center gap-1.5 shrink-0">
-              <VramBadge status={oom ? "exceeds" : tight ? "tight" : null} />
+              <VramBadge
+                status={oom ? "exceeds" : tight ? "tight" : null}
+                source="gguf"
+              />
               <span className="font-mono text-ui-10 text-muted-foreground tabular-nums">
                 {companionBytes === null ? (
                   <SizeText value={formatBytes(v.size_bytes)} />
