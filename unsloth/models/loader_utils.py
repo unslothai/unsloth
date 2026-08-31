@@ -120,13 +120,10 @@ def prepare_device_map():
 
 UNSLOTH_DEVICE_MAP = "unsloth"
 
-# Same planner, different answer when it declines. Every veto path in
-# `resolve_unsloth_device_map` ends in "sequential", which fills the first device to its
-# whole free budget before touching the next one -- right for a loader default, wrong for
-# a caller that picked several cards on their combined capacity and would rather have an
-# even split than a full first card. Naming the fallback is what makes that reachable
-# without every such caller having to enumerate the veto reasons, which are unsloth's and
-# can grow.
+# Same planner, different answer when it declines. Every veto path ends in "sequential",
+# which fills the first device to its whole free budget -- right for a loader default,
+# wrong for a caller that picked several cards on their combined capacity. Naming the
+# fallback spares such a caller enumerating veto reasons that are unsloth's and can grow.
 UNSLOTH_BALANCED_DEVICE_MAP = "unsloth_balanced"
 _PLANNED_DEVICE_MAPS = {UNSLOTH_DEVICE_MAP: "sequential", UNSLOTH_BALANCED_DEVICE_MAP: "balanced"}
 

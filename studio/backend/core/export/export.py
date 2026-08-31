@@ -102,7 +102,7 @@ def _multi_gpu_device_map_kwargs() -> dict:
             device_map = get_device_map(None)
         else:
             return {}
-        # Every sharding answer `get_device_map` gives. A "balanced"-only whitelist
+        # Every sharding answer `get_device_map` gives; a "balanced"-only whitelist
         # dropped the map the moment CUDA began asking for a planned one.
         if device_map in ("balanced", "unsloth", "unsloth_balanced"):
             return {"device_map": device_map}
@@ -143,13 +143,12 @@ def _is_cpu_spill_rejection(exc: BaseException) -> bool:
 
 
 def _is_device_map_infeasible(exc: BaseException) -> bool:
-    """The ``"unsloth"`` planner declining to place the model, matched by class name.
+    """The planner refusing to place the model, matched by class name.
 
-    It raises rather than spilling a bitsandbytes model to CPU. That is right for a
-    load the user asked for and wrong here: it budgets from free memory read before
-    this process opens a context, so a training or chat job holding the other cards
-    can make it refuse a model the single-device loader still fits. By name, because
-    importing the class would tie the export to a version that defines it.
+    It raises rather than spilling a bitsandbytes model to CPU, budgeting from free
+    memory read before this process opens a context -- so a training or chat job
+    holding the other cards can make it refuse a model the single-device loader
+    still fits. By name, so the export does not require a version defining it.
     """
     return type(exc).__name__ == "DeviceMapInfeasible"
 
@@ -681,8 +680,8 @@ class ExportBackend:
             trust_remote_code = trust_remote_code,
             hf_token = hf_token,
             # Named, not omitted: an omitted map is unsloth's DEFAULT_DEVICE_MAP, which
-            # `requested_device_map` upgrades back to the planner, so the retry would
-            # re-run the placement that just failed. A typed "sequential" passes through.
+            # `requested_device_map` upgrades back to the planner, re-running the
+            # placement that just failed. A typed "sequential" passes through.
             _device_map_override = {"device_map": "sequential"},
         )
 

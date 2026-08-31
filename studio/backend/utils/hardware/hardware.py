@@ -4948,25 +4948,19 @@ def get_device_map(gpu_ids: Optional[list[int]] = None) -> str:
 
     CUDA asks for unsloth's head-aware planner instead of accelerate's
     ``"balanced"``, which caps every device but the last at about
-    ``model_size / n_devices`` and charges cuda:0 alone for the largest layer.
-    On a quantized model the unquantized ``lm_head`` then does not fit, every
-    module lands on the last card, and a 4bit model wholly on a non-zero card
-    cannot be trained: ``Accelerator.prepare_model`` refuses it.
+    ``model_size / n_devices``. On a quantized model the unquantized ``lm_head``
+    then does not fit on cuda:0, every module lands on the last card, and a 4bit
+    model wholly on a non-zero card cannot be trained: ``prepare_model`` refuses it.
 
-    ``"unsloth_balanced"`` rather than ``"unsloth"``, because the planner
-    declines several shapes -- a full finetune, an explicit ``auto_model`` with
-    no ``_model_mapping``, a Falcon-H1 checkpoint whose bundled quantization
-    config omits the mamba exclusions, and any it adds later -- and its plain
-    fallback is ``"sequential"``, which fills cuda:0 to its whole free budget
-    before touching cuda:1. On a 7B in bf16 across 2x16 GiB that is the whole
-    model on cuda:0 against 13/19 for ``balanced``, with nothing left for
-    optimizer state, which is the opposite of what a caller that selected
-    several cards on their combined capacity asked for. Naming the fallback
-    keeps every declined shape sharded without Studio enumerating a list that
-    belongs to unsloth.
+    ``"unsloth_balanced"`` rather than ``"unsloth"`` because the planner declines
+    several shapes -- a full finetune, an ``auto_model`` with no ``_model_mapping``,
+    a Falcon-H1 checkpoint missing the mamba exclusions, and any added later -- and
+    the plain name falls back to ``"sequential"``, which fills cuda:0 to its whole
+    free budget: a 7B in bf16 across 2x16 GiB lands entirely on cuda:0 against 13/19
+    for ``balanced``. Naming the fallback keeps every declined shape sharded without
+    Studio enumerating a list that belongs to unsloth.
 
-    XPU keeps plain ``"balanced"``: the planner has no memory budgets for
-    non-CUDA backends at all.
+    XPU keeps plain ``"balanced"``: the planner has no non-CUDA memory budgets.
 
     Returns ``"sequential"`` (single device) otherwise, including CPU/MLX
     backends.
