@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import inspect
@@ -57,8 +56,7 @@ def test_require_gguf_accepts_a_gguf_model(monkeypatch):
 def test_claude_command_wires_all_three_gates():
     source = inspect.getsource(start.claude)
     assert (
-        "_preflight_agent_gguf(_CLAUDE_GGUF_AGENT, model, serve = serve, launch = launch)"
-        in source
+        "_preflight_agent_gguf(_CLAUDE_GGUF_AGENT, model, serve = serve, launch = launch)" in source
     )
     assert "preload_check = functools.partial(_attach_gguf_check, _CLAUDE_GGUF_AGENT)" in source
     assert '_require_gguf_for_agent(_CLAUDE_GGUF_AGENT, base, key, entry["id"])' in source

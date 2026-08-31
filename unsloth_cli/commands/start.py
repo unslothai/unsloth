@@ -2178,8 +2178,7 @@ def _fail_gguf_variant_missing(model_id: str, variant: str, variants: list) -> N
 
 def _fail_agent_needs_gguf(agent: _GgufAgent, model_id: str) -> NoReturn:
     message = (
-        f"{agent.label} needs a GGUF model served by llama-server, "
-        f"but {model_id} is not one."
+        f"{agent.label} needs a GGUF model served by llama-server, " f"but {model_id} is not one."
     )
     guess = f"{model_id}-GGUF"
     if "gguf" not in model_id.lower() and _is_hub_model_id(guess) and _hub_gguf_files(guess):
