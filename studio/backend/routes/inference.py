@@ -4410,9 +4410,7 @@ def _roster_name(raw: object) -> str:
 
 
 def _read_roster(
-    rag_scope: dict,
-    *,
-    max_bytes: int = _RAG_ROSTER_MAX_BYTES,
+    rag_scope: dict, *, max_bytes: int = _RAG_ROSTER_MAX_BYTES
 ) -> tuple[list[str], int]:
     import sqlite3 as _sqlite3
 
@@ -4469,11 +4467,7 @@ def _read_roster(
         conn.close()
 
 
-async def _rag_roster_sentence(
-    rag_scope: dict,
-    *,
-    max_bytes: int = _RAG_ROSTER_MAX_BYTES,
-) -> str:
+async def _rag_roster_sentence(rag_scope: dict, *, max_bytes: int = _RAG_ROSTER_MAX_BYTES) -> str:
     global _roster_failure_logged
     from starlette.concurrency import run_in_threadpool
 
