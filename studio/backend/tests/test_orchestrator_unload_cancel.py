@@ -2668,3 +2668,21 @@ def test_share_aborts_when_dispatcher_drain_fails(monkeypatch):
         o.share_distributed_object({"role": "user"}, timeout = 1.0)
 
     assert o._exclusive_op_pending is False, "the exclusive flag must not leak on the abort"
+
+
+def test_dispatched_share_refusal_is_public(monkeypatch):
+    # The refusal is operational and retryable, like its unload/TTS siblings above it.
+    # Without public=True the route's _friendly_gen_stream_error swaps it for
+    # "An internal error occurred.", so the client cannot tell it should retry.
+    o = _bare_orchestrator()
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
+    monkeypatch.setattr(
+        o, "_start_dispatcher", lambda: pytest.fail("must not start a dispatcher during a share")
+    )
+    o._exclusive_op_pending = True
+
+    out = list(o._generate_dispatched(messages = [{"role": "user", "content": "hi"}]))
+
+    assert len(out) == 1
+    assert "distributed object share" in str(out[0])
+    assert out[0].public is True

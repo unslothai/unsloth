@@ -1282,7 +1282,7 @@ class InferenceOrchestrator:
         # registered for it). Bail cleanly. The recheck below also catches the tight race
         # where the flag is set after this point (via the `not dispatcher_alive` guard).
         if self._exclusive_op_pending:
-            yield GenStreamError("Error: a distributed object share is in progress")
+            yield GenStreamError("Error: a distributed object share is in progress", public = True)
             return
 
         # Ensure the dispatcher runs. _start_dispatcher serializes concurrent starters under
