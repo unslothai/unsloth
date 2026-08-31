@@ -178,6 +178,28 @@ test("chat and the Hub answer the fit question with one formula", () => {
     "no task-wide media rule",
   );
   assert.ok(RECOMMENDED.includes("mediaLoad: opts.diffusionLoad"));
+  // The RULE and the DEVICE SOURCE both follow the runtime that places the row. A diffusion load
+  // is torch whatever the file format is, and on a Vulkan chat build inferenceGpu is a different
+  // device set: it can see a card torch cannot, so a media GGUF was badged and recommended
+  // against capacity the diffusion loader never gets.
+  assert.ok(
+    RECOMMENDED.includes(
+      "opts.diffusionLoad || !opts.isGguf ? opts.gpu : opts.inferenceGpu",
+    ),
+  );
+  assert.ok(
+    PICKERS.includes(
+      "diffusionLoad || !r.isGguf ? rowGpu : rowInferenceGpu",
+    ),
+  );
+  assert.ok(
+    PICKERS.includes("const expanderBudgetGpu = diffusionLoad ? gpu : inferenceGpu;"),
+  );
+  // And every expander reads that one budget, rather than reaching for inferenceGpu itself.
+  assert.ok(
+    !PICKERS.includes("inferenceGpu.systemRamAvailableGb"),
+    "no expander takes the GGUF backend's RAM directly",
+  );
   // Parent rows and the fit gate take the same rule as the quant rows under them, or a media row
   // reads as fitting while everything inside it reads as oom.
   assert.match(PICKERS, /diffusionLoad\n\s*\? classifyMediaGgufFit\(/);

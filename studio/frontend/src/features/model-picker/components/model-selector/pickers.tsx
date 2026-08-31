@@ -3387,7 +3387,7 @@ export function HubModelPicker({
       // The catalog's own verdict where it has one, so this list and the OOM badge on its rows
       // cannot disagree: hfModelFitsDevice counts RAM toward a load that never leaves the card.
       (catalogFit(r.id, pipelineBudget) ??
-        hfModelFitsDevice(r, r.isGguf ? rowInferenceGpu : rowGpu, {
+        hfModelFitsDevice(r, diffusionLoad || !r.isGguf ? rowGpu : rowInferenceGpu, {
           budgetFraction,
           // Not `&& r.isGguf`: on a task page a safetensors row is placed by the same backend, and
           // this rule IS the budget those rows had before the classifiers were merged. Restricting
@@ -3494,8 +3494,15 @@ export function HubModelPicker({
     // A curated pipeline loads through torch, and a task load puts the whole thing on ONE
     // device, so it is judged there. inferenceGpu is the GGUF backend's inventory, which can
     // be a different install (Vulkan llama.cpp) or the sum of several cards.
-    const pipelineBudget = artifactBudget(loadScopedGpu(gpu, Boolean(task)));
-    const rowInferenceGpu = loadScopedGpu(inferenceGpu, Boolean(task));
+    const rowGpu = loadScopedGpu(gpu, Boolean(task));
+    const pipelineBudget = artifactBudget(rowGpu);
+    // The inventory of the runtime that PLACES the row, not of its file format. An Images or
+    // Video GGUF goes to the diffusion backend, which is torch, and on a Vulkan chat build
+    // inferenceGpu is a different device set entirely: it can see a card torch cannot, so the
+    // media rule was scoring against capacity the diffusion loader never gets to use.
+    const rowInferenceGpu = diffusionLoad
+      ? rowGpu
+      : loadScopedGpu(inferenceGpu, Boolean(task));
     // Community rows come from their own listing; without them folded in here
     // they render with no size or VRAM chip.
     for (const r of [
@@ -3837,14 +3844,17 @@ export function HubModelPicker({
     info.available
       ? loadScopedGpu(info, Boolean(task)).memoryTotalGb
       : undefined;
-  const expanderGpuGb = expanderGpuGbFrom(inferenceGpu);
+  // Images / Video place through torch even where llama.cpp is a Vulkan build, so their budget
+  // comes from the torch inventory. Everything else keeps the GGUF backend's own.
+  const expanderBudgetGpu = diffusionLoad ? gpu : inferenceGpu;
+  const expanderGpuGb = expanderGpuGbFrom(expanderBudgetGpu);
   const expanderSystemGpuGb = expanderGpuGbFrom(gpu);
   // From the SAME scoping decision as the capacity above: loadScopedGpu narrows the count to 1
-  // with memoryTotalGb, so the per-card reserve is never charged host-wide against one card.
-  const expanderGpuCount = loadScopedGpu(
-    inferenceGpu,
-    Boolean(task),
-  ).deviceCount;
+  // with memoryTotalGb, so the per-card reserve is never charged host-wide against one card,
+  // and the RAM tier is the one that belongs to the device the load lands on.
+  const expanderScopedGpu = loadScopedGpu(expanderBudgetGpu, Boolean(task));
+  const expanderGpuCount = expanderScopedGpu.deviceCount;
+  const expanderRamGb = expanderScopedGpu.systemRamAvailableGb;
 
   // Each local section's search is scoped to its own models (matched by name).
   const localQuery = normalizeForSearch(debouncedQuery.trim());
@@ -5404,7 +5414,7 @@ export function HubModelPicker({
             onNavigatePastStart={() => hubModelList.focusOption(optionKey)}
             onNavigatePastEnd={() => hubModelList.moveFocus(optionKey, "next")}
             gpuGb={expanderGpuGb}
-            systemRamGb={inferenceGpu.systemRamAvailableGb || undefined}
+            systemRamGb={expanderRamGb || undefined}
             budgetKnown={inferenceGpu.budgetKnown}
             variantActions={{
               onUpdate: (quant, expectedBytes) =>
@@ -6300,10 +6310,7 @@ export function HubModelPicker({
                                       ? inferenceGpu.memoryTotalGb
                                       : undefined
                                   }
-                                  systemRamGb={
-                                    inferenceGpu.systemRamAvailableGb ||
-                                    undefined
-                                  }
+                                  systemRamGb={expanderRamGb || undefined}
                                   budgetKnown={inferenceGpu.budgetKnown}
                                 />
                               )}
@@ -6442,9 +6449,7 @@ export function HubModelPicker({
                                   hubModelList.moveFocus(optionKey, "next")
                                 }
                                 gpuGb={expanderGpuGb}
-                                systemRamGb={
-                                  inferenceGpu.systemRamAvailableGb || undefined
-                                }
+                                systemRamGb={expanderRamGb || undefined}
                                 budgetKnown={inferenceGpu.budgetKnown}
                               />
                             )}
@@ -6573,9 +6578,7 @@ export function HubModelPicker({
                                   hubModelList.moveFocus(optionKey, "next")
                                 }
                                 gpuGb={expanderGpuGb}
-                                systemRamGb={
-                                  inferenceGpu.systemRamAvailableGb || undefined
-                                }
+                                systemRamGb={expanderRamGb || undefined}
                                 budgetKnown={inferenceGpu.budgetKnown}
                               />
                             )}
@@ -6670,9 +6673,7 @@ export function HubModelPicker({
                                   hubModelList.moveFocus(optionKey, "next")
                                 }
                                 gpuGb={expanderGpuGb}
-                                systemRamGb={
-                                  inferenceGpu.systemRamAvailableGb || undefined
-                                }
+                                systemRamGb={expanderRamGb || undefined}
                                 budgetKnown={inferenceGpu.budgetKnown}
                                 variantActions={{
                                   onDelete: async (quant) => {
@@ -6795,9 +6796,7 @@ export function HubModelPicker({
                                 hubModelList.moveFocus(optionKey, "next")
                               }
                               gpuGb={expanderGpuGb}
-                              systemRamGb={
-                                inferenceGpu.systemRamAvailableGb || undefined
-                              }
+                              systemRamGb={expanderRamGb || undefined}
                               budgetKnown={inferenceGpu.budgetKnown}
                               variantActions={{
                                 onDelete: async (quant) => {
@@ -6911,9 +6910,7 @@ export function HubModelPicker({
                                   hubModelList.moveFocus(optionKey, "next")
                                 }
                                 gpuGb={expanderGpuGb}
-                                systemRamGb={
-                                  inferenceGpu.systemRamAvailableGb || undefined
-                                }
+                                systemRamGb={expanderRamGb || undefined}
                                 budgetKnown={inferenceGpu.budgetKnown}
                                 variantActions={{
                                   onDelete: async (quant) => {

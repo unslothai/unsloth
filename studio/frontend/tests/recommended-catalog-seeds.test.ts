@@ -377,6 +377,41 @@ test("both search lists judge a curated id the same way", () => {
   assert.equal(searchRowFitsDevice({ id: BNB, totalParams: 6e9 }, opts), false);
 });
 
+test("a media GGUF is sized against torch, not the GGUF backend", () => {
+  // A Vulkan llama.cpp build sees cards torch cannot, so inferenceGpu is a different inventory
+  // (use-gpu-info.ts keeps the torch view for diffusion for exactly this reason). Picking the
+  // budget by FILE FORMAT sent an Images GGUF to the Vulkan card's capacity, which the diffusion
+  // loader never gets to use.
+  const vulkanCard = {
+    available: true,
+    budgetKnown: true,
+    memoryTotalGb: 24,
+    maxDeviceMemoryGb: 24,
+    loadDeviceMemoryGb: 24,
+    systemRamAvailableGb: 0,
+  };
+  const torchCard = { ...vulkanCard, memoryTotalGb: 12, maxDeviceMemoryGb: 12, loadDeviceMemoryGb: 12 };
+  // 14 GiB: inside the 24 GiB card's media budget (16.8), past the 12 GiB one's (8.4).
+  const row = { id: "unsloth/Some-Image-GGUF", estimatedSizeBytes: 14 * 1024 ** 3 };
+  const opts = {
+    isGguf: true,
+    gpu: torchCard,
+    inferenceGpu: vulkanCard,
+    taskScoped: true,
+    diffusionLoad: true,
+  };
+  assert.equal(searchRowFitsDevice(row, opts), false);
+  // Chat is the case the GGUF backend's own inventory is right for, and it still gets it.
+  assert.equal(
+    searchRowFitsDevice(row, {
+      ...opts,
+      taskScoped: false,
+      diffusionLoad: false,
+    }),
+    true,
+  );
+});
+
 test("a search row is sized against the device a task load lands on", () => {
   const twoCards = {
     available: true,

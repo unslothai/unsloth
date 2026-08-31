@@ -292,7 +292,7 @@ export function searchRowFitsDevice<
   },
 ): boolean {
   const source = loadScopedGpu(
-    opts.isGguf ? opts.inferenceGpu : opts.gpu,
+    opts.diffusionLoad || !opts.isGguf ? opts.gpu : opts.inferenceGpu,
     opts.taskScoped,
   );
   return hfModelFitsDevice(
