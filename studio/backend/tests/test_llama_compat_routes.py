@@ -728,6 +728,6 @@ def test_the_v1_deny_list_never_shadows_a_path_studio_serves():
     assert "/v1/models" in served, "route walk found nothing; re-derive this"
     mod = _load()
     for probe in mod._UNSERVED_V1_PROBE_PATHS:
-        assert f"/{probe}" not in served, (
-            f"Studio now serves /{probe}; drop it from _UNSERVED_V1_PROBE_PATHS"
-        )
+        assert (
+            f"/{probe}" not in served
+        ), f"Studio now serves /{probe}; drop it from _UNSERVED_V1_PROBE_PATHS"
