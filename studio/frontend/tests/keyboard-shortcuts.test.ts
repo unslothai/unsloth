@@ -522,6 +522,10 @@ test("no default takes a chord the browser owns without a reason", () => {
     // the desktop build is where these are pressed.
     "Mod+Shift+BracketLeft",
     "Mod+Shift+BracketRight",
+    // Find in page: the one default that takes a browser chord on the web too,
+    // because the browser's own find is what it replaces. Reserving it is still
+    // right -- it is what warns a web user before they rebind onto it.
+    "Mod+KeyF",
   ]);
   for (const def of SHORTCUT_DEFS) {
     for (const slot of SHORTCUT_SLOTS) {
@@ -1580,6 +1584,7 @@ test("every action has a useShortcut call site", async () => {
     "../src/features/chat/mcp-composer-button.tsx",
     "../src/features/chat/components/chat-search-dialog.tsx",
     "../src/features/api-monitor/api-monitor-overlay.tsx",
+    "../src/features/find-in-page/components/find-in-page.tsx",
   ];
   const sources = await Promise.all(
     files.map((file) => readFile(new URL(file, import.meta.url), "utf8")),

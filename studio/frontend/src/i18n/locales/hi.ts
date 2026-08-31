@@ -55,6 +55,13 @@ export const hi = {
     shutdown: "शटडाउन",
   },
   shell: {
+    find: {
+      label: "पेज में खोजें",
+      previous: "पिछला मिलान",
+      next: "अगला मिलान",
+      close: "खोज बंद करें",
+      truncated: "यह पेज पूरी तरह खोजने के लिए बहुत लंबा है।",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -225,6 +232,10 @@ export const hi = {
       browserReserved:
         "आपका ब्राउज़र यह कुंजी संयोजन अपने पास रख सकता है। डेस्कटॉप ऐप में यह काम करता है।",
       actions: {
+        findInPage: {
+          label: "पेज में खोजें",
+          description: "इस पेज के टेक्स्ट में खोजें",
+        },
         openSettings: {
           label: "सेटिंग्स खोलें",
           description: "सेटिंग्स संवाद खोलें",

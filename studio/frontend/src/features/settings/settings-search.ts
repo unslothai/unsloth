@@ -197,6 +197,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.keyboardShortcuts.actions.switchToVideo.label",
     "settings.keyboardShortcuts.actions.switchToAudio.label",
     "settings.keyboardShortcuts.actions.switchToExport.label",
+    "settings.keyboardShortcuts.actions.findInPage.label",
     "settings.keyboardShortcuts.actions.toggleApiMonitor.label",
     "settings.keyboardShortcuts.actions.toggleSidebar.label",
     "settings.keyboardShortcuts.actions.openMcpServers.label",

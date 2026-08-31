@@ -31,6 +31,7 @@
   "include": [
     "src",
     "smoke-ansi-main.tsx",
+    "smoke-find-in-page-main.tsx",
     "smoke-autoscroll-main.tsx",
     "smoke-research-main.tsx",
     "smoke-heavy-thread-main.tsx",

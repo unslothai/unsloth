@@ -50,6 +50,13 @@ export const zhCN = {
     shutdown: "关闭服务",
   },
   shell: {
+    find: {
+      label: "在页面中查找",
+      previous: "上一个匹配项",
+      next: "下一个匹配项",
+      close: "关闭查找",
+      truncated: "此页面过长，无法搜索全部内容。",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -220,6 +227,10 @@ export const zhCN = {
       browserReserved:
         "浏览器可能会占用该组合键。桌面应用中可正常使用。",
       actions: {
+        findInPage: {
+          label: "在页面中查找",
+          description: "搜索此页面上的文本",
+        },
         openSettings: {
           label: "打开设置",
           description: "打开设置对话框",

@@ -47,6 +47,13 @@ export const en = {
     shutdown: "Shutdown",
   },
   shell: {
+    find: {
+      label: "Find in page",
+      previous: "Previous match",
+      next: "Next match",
+      close: "Close find",
+      truncated: "This page is too long to search in full.",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -222,6 +229,10 @@ export const en = {
       browserReserved:
         "Your browser may keep this chord for itself. It works in the desktop app.",
       actions: {
+        findInPage: {
+          label: "Find in page",
+          description: "Search the text on this page",
+        },
         openSettings: {
           label: "Open settings",
           description: "Open the settings dialog",

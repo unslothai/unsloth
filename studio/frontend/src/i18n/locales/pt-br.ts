@@ -54,6 +54,13 @@ export const ptBR = {
     shutdown: "Desligar",
   },
   shell: {
+    find: {
+      label: "Localizar na página",
+      previous: "Ocorrência anterior",
+      next: "Próxima ocorrência",
+      close: "Fechar busca",
+      truncated: "Esta página é longa demais para ser pesquisada por completo.",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -224,6 +231,10 @@ export const ptBR = {
       browserReserved:
         "Seu navegador pode reservar essa combinação. No app para desktop ela funciona.",
       actions: {
+        findInPage: {
+          label: "Localizar na página",
+          description: "Pesquisar o texto desta página",
+        },
         openSettings: {
           label: "Abrir configurações",
           description: "Abrir a janela de configurações",

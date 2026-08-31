@@ -19,6 +19,13 @@ export const it = {
     shutdown: "Arresta",
   },
   shell: {
+    find: {
+      label: "Trova nella pagina",
+      previous: "Risultato precedente",
+      next: "Risultato successivo",
+      close: "Chiudi ricerca",
+      truncated: "Questa pagina è troppo lunga per essere cercata per intero.",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -190,6 +197,10 @@ export const it = {
       browserReserved:
         "Il browser potrebbe riservare questa combinazione per sé. Nell’app desktop funziona.",
       actions: {
+        findInPage: {
+          label: "Trova nella pagina",
+          description: "Cerca il testo di questa pagina",
+        },
         openSettings: {
           label: "Apri le impostazioni",
           description: "Apri la finestra delle impostazioni",
