@@ -773,6 +773,177 @@ class TestBuildPipCmdUpgradeIntent:
         assert cmd == [sys.executable, "-m", "pip", "install", "--no-cache-dir", "somepackage"]
 
 
+class TestDamagedCorePayloadRepair:
+    """An upgrade of a distribution already at the wanted version installs
+    nothing: uv audits it, pip calls it satisfied, and both read metadata a
+    quarantine of the payload leaves intact."""
+
+    def test_the_uv_command_targets_only_the_named_package(self):
+        cmd = ips._build_uv_cmd(
+            ("--no-cache-dir", "--no-deps", "--reinstall-package", "x", "--force-reinstall", "x")
+        )
+        assert "--reinstall-package" in cmd
+        # Not --reinstall: that is the whole environment, torch included.
+        assert "--reinstall" not in cmd
+        assert "--no-deps" in cmd
+
+    def test_a_plain_force_reinstall_still_becomes_uv_reinstall(self):
+        assert "--reinstall" in ips._build_uv_cmd(("--force-reinstall", "x"))
+
+    def test_the_pip_fallback_drops_the_uv_only_flag(self):
+        cmd = ips._build_pip_cmd(
+            ("--no-cache-dir", "--no-deps", "--reinstall-package", "x", "--force-reinstall", "x")
+        )
+        assert "--reinstall-package" not in cmd
+        assert "--force-reinstall" in cmd and "--no-deps" in cmd
+        assert cmd.count("x") == 1
+        # It is not an upgrade request, so it must not acquire pip's upgrade flags.
+        assert "--upgrade" not in cmd
+
+    def test_a_damaged_package_is_reinstalled(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            ips.install_manifest,
+            "damaged_payload_files",
+            lambda name, **kwargs: ["gone"] if name == "unsloth-zoo" else [],
+        )
+        monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda name: ["1.0"])
+        monkeypatch.setattr(ips, "pip_install_try", lambda label, *args: calls.append(args))
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+        ips._repair_damaged_core_payload(("unsloth", "unsloth-zoo"))
+        assert len(calls) == 1
+        assert "--reinstall-package" in calls[0] and calls[0][-1] == "unsloth-zoo"
+
+    def test_a_healthy_tree_runs_nothing(self, monkeypatch):
+        monkeypatch.setattr(ips.install_manifest, "damaged_payload_files", lambda *a, **k: [])
+        monkeypatch.setattr(
+            ips, "pip_install_try", lambda *a, **k: pytest.fail("nothing to repair")
+        )
+        ips._repair_damaged_core_payload(("unsloth", "unsloth-zoo"))
+
+    def test_a_local_checkout_is_left_alone(self, monkeypatch):
+        """Its core packages are an editable overlay, not an index install."""
+        monkeypatch.setattr(
+            ips.install_manifest,
+            "damaged_payload_files",
+            lambda *a, **k: pytest.fail("a local checkout must not even be scanned"),
+        )
+        ips._repair_damaged_core_payload(("unsloth",), local_repo = "/src/unsloth")
+
+    def test_a_scan_that_raises_does_not_stop_the_install(self, monkeypatch):
+        def boom(*args, **kwargs):
+            raise OSError("unreadable")
+
+        monkeypatch.setattr(ips.install_manifest, "damaged_payload_files", boom)
+        monkeypatch.setattr(
+            ips, "pip_install_try", lambda *a, **k: pytest.fail("nothing was proven damaged")
+        )
+        ips._repair_damaged_core_payload(("unsloth",))
+
+    def test_a_repair_that_leaves_the_files_missing_fails(self, monkeypatch, capsys):
+        """Otherwise the pass that follows audits the intact metadata as
+        satisfied and write_manifest records a success nothing rechecks."""
+        monkeypatch.setattr(
+            ips.install_manifest, "damaged_payload_files", lambda name, **kwargs: ["gone"]
+        )
+        monkeypatch.setattr(ips, "pip_install_try", lambda label, *args: False)
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+        assert ips._repair_damaged_core_payload(("unsloth",)) is False
+
+    def test_a_reinstall_that_restored_the_files_is_a_success(self, monkeypatch):
+        """Judged on the tree, not pip's exit code: uv and pip both exit non-zero
+        for reasons that have nothing to do with the payload."""
+        seen = {"n": 0}
+
+        def scan(name, **kwargs):
+            seen["n"] += 1
+            return ["gone"] if seen["n"] == 1 else []
+
+        monkeypatch.setattr(ips.install_manifest, "damaged_payload_files", scan)
+        # Stubbed, or the presence check added beside the scan answers for the
+        # host: a source checkout with no unsloth distribution installed would
+        # fail this on the environment rather than on the code.
+        monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda name: ["1.0"])
+        monkeypatch.setattr(ips, "pip_install_try", lambda label, *args: False)
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+        assert ips._repair_damaged_core_payload(("unsloth",)) is True
+
+    def test_an_absent_distribution_is_refused_after_the_core_phase(self, monkeypatch):
+        """It has no RECORD to walk, so the scan alone reads it as undamaged.
+
+        The install.sh handoff sets SKIP_STUDIO_BASE=1 and the core phase never
+        runs, so this is the only place that would see unsloth-zoo gone before
+        write_manifest records the environment as a finished install.
+        """
+        monkeypatch.setattr(ips.install_manifest, "damaged_payload_files", lambda *a, **k: [])
+        monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda name: [])
+        monkeypatch.setattr(ips, "_safe_print", lambda *a, **k: None)
+        assert ips._repair_damaged_core_payload(("unsloth",), require_present = True) is False
+        # Off before the core phase: a fresh run has nothing installed yet.
+        assert ips._repair_damaged_core_payload(("unsloth",)) is True
+
+    def test_a_present_distribution_passes_the_presence_check(self, monkeypatch):
+        monkeypatch.setattr(ips.install_manifest, "damaged_payload_files", lambda *a, **k: [])
+        monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda name: ["1.0"])
+        assert ips._repair_damaged_core_payload(("unsloth",), require_present = True) is True
+
+    def test_the_companion_is_only_for_the_default_install(self):
+        assert ips._core_package_names("unsloth") == ("unsloth", "unsloth-zoo")
+        assert ips._core_package_names("unsloth-nightly") == ("unsloth-nightly",)
+
+    def test_the_default_is_recognised_however_it_is_spelled(self):
+        """verify_install canonicalizes, and the two disagreeing meant the deep
+        check scanned zoo, forced a pass, and no repair gate would touch it."""
+        for spelling in ("Unsloth", "UNSLOTH", "UnSloth"):
+            assert ips._core_package_names(spelling)[1:] == ("unsloth-zoo",), spelling
+        # PEP 503 folds runs of -_. to -, it does not delete them, so this is a
+        # different project and keeps its neighbours to itself.
+        assert ips._core_package_names("uns_loth") == ("uns_loth",)
+
+    def test_both_repair_sites_use_that_list(self):
+        source = inspect.getsource(ips)
+        assert (
+            source.count("_repair_damaged_core_payload(\n        _core_package_names")
+            + source.count("_repair_damaged_core_payload(_core_package_names")
+            == 2
+        )
+        assert "_repair_damaged_core_payload((package_name" not in source
+
+    def test_the_second_site_runs_before_the_manifest_is_written(self):
+        source = inspect.getsource(ips)
+        gate = source.rindex("_repair_damaged_core_payload(")
+        assert gate < source.index("install_manifest.write_manifest(")
+
+    def test_a_reinstall_that_removed_the_distribution_fails(self, monkeypatch):
+        """--force-reinstall uninstalls before it installs, and a failure in
+        between leaves nothing: an absent distribution has no RECORD, so the
+        payload scan alone would call the repair a success."""
+        scans = {"n": 0}
+
+        def scan(name, **kwargs):
+            scans["n"] += 1
+            # Damaged on the way in, and afterwards nothing left to call damaged.
+            return ["gone"] if scans["n"] == 1 else []
+
+        monkeypatch.setattr(ips.install_manifest, "damaged_payload_files", scan)
+        monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda name: [])
+        monkeypatch.setattr(ips, "pip_install_try", lambda label, *args: True)
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+        monkeypatch.setattr(ips, "_safe_print", lambda *a, **k: None)
+        assert ips._repair_damaged_core_payload(("unsloth",)) is False
+
+    def test_the_caller_aborts_the_install(self):
+        source = inspect.getsource(ips)
+        assert "if not _repair_damaged_core_payload(" in source
+
+    def test_the_repair_runs_before_the_core_phase(self):
+        """After it, the upgrade would already have audited the damage as fine."""
+        source = inspect.getsource(ips)
+        repair = source.index("_repair_damaged_core_payload(_core_package_names")
+        core = source.index("# 3. Core packages")
+        assert repair < core
+
+
 class TestDuplicateCoreMetadataRepair:
     def test_an_unrewritable_record_stops_the_repair_before_pip_runs(
         self, tmp_path, monkeypatch, capsys

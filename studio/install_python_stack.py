@@ -5706,6 +5706,118 @@ def _stage_replacement(name: str):
     return None
 
 
+def _core_package_names(package_name: str) -> "tuple[str, ...]":
+    """The distributions a run is responsible for.
+
+    unsloth-zoo only for the default install: `--package X` installs X alone, so
+    demanding the companion would force-reinstall an unrelated distribution and
+    fail the update on an unreachable zoo index. Canonically, because
+    verify_install reads `--package Unsloth` that way and the two disagreeing
+    had the deep check scan zoo and force a pass no repair gate would act on.
+    """
+    default = re.sub(r"[-_.]+", "-", package_name).lower() == "unsloth"
+    return (package_name, "unsloth-zoo") if default else (package_name,)
+
+
+def _repair_damaged_core_payload(
+    package_names: "tuple[str, ...]",
+    *,
+    local_repo: str = "",
+    require_present: bool = False,
+) -> bool:
+    """Reinstall managed core packages whose recorded files are gone or truncated.
+
+    An upgrade of a distribution already at the wanted version installs nothing:
+    uv audits it, pip calls it satisfied, and both read metadata a quarantine of
+    the payload leaves intact, so it has to be named for reinstall. Skipped for
+    a local checkout, whose core packages are an editable overlay.
+
+    False when the files are still missing afterwards and the caller aborts, or
+    the pass that follows audits the intact metadata as satisfied and
+    write_manifest records a success nothing rechecks. Judged on the tree, not
+    pip's exit code, so a reinstall that restored the files while exiting
+    non-zero still counts.
+
+    `require_present` also refuses a distribution not installed at all, which
+    has no RECORD and so reads as undamaged. Off before the core phase, where a
+    fresh run has nothing yet; on after it, where absence means the phase was
+    skipped (SKIP_STUDIO_BASE=1) or silently did nothing.
+    """
+    if local_repo:
+        return True
+    if require_present:
+        for name in package_names:
+            try:
+                present = any(install_manifest.installed_versions(name))
+            except Exception:
+                continue
+            if not present:
+                _safe_print(
+                    _red(
+                        f"   {name} is not installed, so this environment cannot run. "
+                        "Rerun the installer with the package index available."
+                    ),
+                    file = sys.stderr,
+                )
+                return False
+    damaged: list[str] = []
+    seen: set[str] = set()
+    for name in package_names:
+        canonical = re.sub(r"[-_.]+", "-", name).lower()
+        if canonical in seen:
+            continue
+        seen.add(canonical)
+        try:
+            if install_manifest.damaged_payload_files(name, limit = 1, budget_seconds = 0.0):
+                damaged.append(name)
+        except Exception:
+            continue
+    still_damaged: list[str] = []
+    for name in damaged:
+        _step(_LABEL, f"{name} is missing installed files; reinstalling it", _dim)
+        # --no-deps: resolving the graph would drag the torch build along. Both
+        # flags: pip has no per-package form, uv's --reinstall is environment-wide.
+        pip_install_try(
+            f"Reinstalling {name}",
+            "--no-cache-dir",
+            "--no-deps",
+            "--reinstall-package",
+            name,
+            "--force-reinstall",
+            name,
+        )
+        importlib.invalidate_caches()
+        # Presence first: --force-reinstall uninstalls before it installs, and
+        # what it leaves behind has no RECORD for the scan below to call
+        # damaged. Unconditional, unlike require_present: we only reinstall what
+        # the scan already found, so it was installed a moment ago.
+        try:
+            remaining = (
+                []
+                if any(install_manifest.installed_versions(name))
+                else [f"{name} is no longer installed"]
+            )
+        except Exception:
+            remaining = []
+        try:
+            remaining = remaining or install_manifest.damaged_payload_files(
+                name, budget_seconds = 0.0
+            )
+        except Exception:
+            pass
+        if remaining:
+            still_damaged.append(name)
+            _safe_print(
+                _red(
+                    f"   {name} is still missing installed files after a reinstall "
+                    f"({remaining[0]}). An unreachable or offline index cannot "
+                    "replace them; rerun with the index available."
+                ),
+                file = sys.stderr,
+            )
+    return not still_damaged
+
+
 def _repair_duplicate_core_metadata(
     package_names: "tuple[str, ...]",
     *,
@@ -5932,6 +6044,9 @@ def _translate_pip_args_for_uv(args: tuple[str, ...]) -> list[str]:
     for arg in args:
         if arg == "--no-cache-dir":
             continue  # uv cache is fast; drop this flag
+        elif arg == "--force-reinstall" and "--reinstall-package" in args:
+            # Already targeted by name; uv's --reinstall would rebuild torch.
+            continue
         elif arg == "--force-reinstall":
             translated.append("--reinstall")
         else:
@@ -5954,14 +6069,21 @@ def _build_pip_cmd(args: tuple[str, ...]) -> list[str]:
     """
     cmd = [sys.executable, "-m", "pip", "install"]
     upgrade: list[str] = []
-    skip_next = False
+    drop_next = ""
     for arg in args:
-        if skip_next:
-            skip_next = False
-            upgrade.append(arg)
+        if drop_next:
+            # The previous flag's value: never a bare positional of its own.
+            if drop_next == "--upgrade-package":
+                upgrade.append(arg)
+            drop_next = ""
             continue
         if arg == "--upgrade-package":
-            skip_next = True  # the flag; its value is the package to upgrade
+            drop_next = arg  # the flag; its value is the package to upgrade
+            continue
+        if arg == "--reinstall-package":
+            # uv-only. Its caller's --force-reinstall is environment-wide for
+            # pip, safe only because that call also passes --no-deps.
+            drop_next = arg
             continue
         cmd.append(arg)
     if upgrade:
@@ -6695,6 +6817,11 @@ def install_python_stack() -> int:
     ):
         return 1
 
+    # Intact metadata over a missing payload: the core phase would audit it as
+    # satisfied. Unbudgeted, since this run is already doing a full install.
+    if not _repair_damaged_core_payload(_core_package_names(package_name), local_repo = local_repo):
+        return 1
+
     # macOS arm64: install MLX stack at latest (UV_OVERRIDE relaxes the
     # mlx-vlm / mlx-lm transformers pin -- set at module load).
     if IS_MAC_ARM and not skip_base:
@@ -7070,6 +7197,16 @@ def install_python_stack() -> int:
         (package_name, "unsloth-zoo"),
         local_repo = local_repo,
         ci_source_overlay = ci_source_overlay,
+    ):
+        return 1
+
+    # 14c. write_manifest reads the installed version, so a core package absent
+    # or quarantined now is recorded as a finished install. The skip_base
+    # handoff never reaches the core phase, so nothing else would see it.
+    if not _repair_damaged_core_payload(
+        _core_package_names(package_name),
+        local_repo = local_repo,
+        require_present = True,
     ):
         return 1
 
