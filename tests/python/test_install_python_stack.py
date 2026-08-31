@@ -807,6 +807,7 @@ class TestDamagedCorePayloadRepair:
             "damaged_payload_files",
             lambda name, **kwargs: ["gone"] if name == "unsloth-zoo" else [],
         )
+        monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda name: ["1.0"])
         monkeypatch.setattr(ips, "pip_install_try", lambda label, *args: calls.append(args))
         monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
         ips._repair_damaged_core_payload(("unsloth", "unsloth-zoo"))
@@ -859,6 +860,10 @@ class TestDamagedCorePayloadRepair:
             return ["gone"] if seen["n"] == 1 else []
 
         monkeypatch.setattr(ips.install_manifest, "damaged_payload_files", scan)
+        # Stubbed, or the presence check added beside the scan answers for the
+        # host: a source checkout with no unsloth distribution installed would
+        # fail this on the environment rather than on the code.
+        monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda name: ["1.0"])
         monkeypatch.setattr(ips, "pip_install_try", lambda label, *args: False)
         monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
         assert ips._repair_damaged_core_payload(("unsloth",)) is True
@@ -885,6 +890,15 @@ class TestDamagedCorePayloadRepair:
     def test_the_companion_is_only_for_the_default_install(self):
         assert ips._core_package_names("unsloth") == ("unsloth", "unsloth-zoo")
         assert ips._core_package_names("unsloth-nightly") == ("unsloth-nightly",)
+
+    def test_the_default_is_recognised_however_it_is_spelled(self):
+        """verify_install canonicalizes, and the two disagreeing meant the deep
+        check scanned zoo, forced a pass, and no repair gate would touch it."""
+        for spelling in ("Unsloth", "UNSLOTH", "UnSloth"):
+            assert ips._core_package_names(spelling)[1:] == ("unsloth-zoo",), spelling
+        # PEP 503 folds runs of -_. to -, it does not delete them, so this is a
+        # different project and keeps its neighbours to itself.
+        assert ips._core_package_names("uns_loth") == ("uns_loth",)
 
     def test_both_repair_sites_use_that_list(self):
         source = inspect.getsource(ips)

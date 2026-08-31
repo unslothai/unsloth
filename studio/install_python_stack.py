@@ -4369,8 +4369,13 @@ def _core_package_names(package_name: str) -> "tuple[str, ...]":
     unsloth-zoo only for the default install: `--package X` installs X alone, so
     demanding the companion there would force-reinstall an unrelated
     distribution, and fail the update outright on an unreachable zoo index.
+
+    Compared canonically, since `--package Unsloth` is the default install and
+    verify_install already reads it that way. Disagreeing meant the deep check
+    scanned zoo, forced a pass, and then neither repair gate would touch it.
     """
-    return (package_name, "unsloth-zoo") if package_name == "unsloth" else (package_name,)
+    default = re.sub(r"[-_.]+", "-", package_name).lower() == "unsloth"
+    return (package_name, "unsloth-zoo") if default else (package_name,)
 
 
 def _repair_damaged_core_payload(

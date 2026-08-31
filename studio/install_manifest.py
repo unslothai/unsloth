@@ -493,12 +493,31 @@ _SHARED_NON_RUNTIME_ROOTS = frozenset(
     )
 )
 
+# Siblings the Windows launcher transaction stages beside a recorded file while
+# an update runs. `_move_launcher_aside` renames Scripts/unsloth.exe to
+# .update-stale before setup, so the deep check inside setup.ps1 sees the
+# recorded launcher missing on every healthy update. Absence with one of these
+# beside it is our own doing and recoverable by `_recover_missing_launcher`,
+# which reads exactly these three; absence without one is still damage.
+_INSTALLER_STAGED_SUFFIXES = (".update-stale", ".update-backup", ".deleteme")
+
 # Rewritten in place by our own setup: the size claim is waived, absence is not.
 _INSTALLER_REWRITTEN_NAMES = frozenset(("package-lock.json",))
 
 # `npm run build` in the installed tree rehashes every asset, so RECORD names
 # files our own setup deleted. Skipped whole: they are gone, not shorter.
 _INSTALLER_REGENERATED_TREES = (("studio", "frontend", "dist"),)
+
+
+def _staged_beside(target) -> bool:
+    """Whether an absent recorded file is one an update moved aside a moment ago."""
+    try:
+        path = Path(target)
+        return any(
+            path.with_name(path.name + suffix).exists() for suffix in _INSTALLER_STAGED_SUFFIXES
+        )
+    except (OSError, ValueError):
+        return False
 
 
 def _within(target: Path, anchor: Path) -> bool:
@@ -655,7 +674,8 @@ def _scan_payload_files(
                         continue
                     info = target.stat()
                 except FileNotFoundError:
-                    found.append(f"{rel} is missing")
+                    if not _staged_beside(target):
+                        found.append(f"{rel} is missing")
                 except NotADirectoryError:
                     # Not a FileNotFoundError: a parent replaced by a file.
                     found.append(f"{rel} is not reachable")

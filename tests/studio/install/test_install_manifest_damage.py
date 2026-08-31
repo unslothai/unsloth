@@ -608,3 +608,40 @@ def test_an_unbounded_scan_stays_on_this_thread(site_packages, monkeypatch):
         f"{PKG}/__init__.py is missing"
     ]
     assert seen["thread"] == caller
+
+
+def _launcher_case(site_packages: Path):
+    """A recorded console script, the way a wheel records one."""
+    venv = site_packages.parent
+    (venv / "pyvenv.cfg").write_text("home = /usr\n", encoding = "utf-8")
+    dist_info = _dist(site_packages)
+    size = _write(venv / "Scripts" / "unsloth.exe", "MZ binary\n")
+    _record(dist_info, [["../Scripts/unsloth.exe", "sha256=b", size]])
+    return venv / "Scripts" / "unsloth.exe"
+
+
+@pytest.mark.parametrize("suffix", [".update-stale", ".update-backup", ".deleteme"])
+def test_a_launcher_an_update_moved_aside_is_not_damage(site_packages, suffix):
+    """`_move_launcher_aside` renames Scripts/unsloth.exe before setup runs.
+
+    setup.ps1's deep check runs inside that window on every ordinary Windows
+    update, so without this a healthy no-op update loses its fast path and
+    force-reinstalls the core package over the network every time.
+    """
+    launcher = _launcher_case(site_packages)
+    launcher.rename(launcher.with_name(launcher.name + suffix))
+    assert install_manifest.damaged_payload_files(PKG) == []
+
+
+def test_a_launcher_with_nothing_staged_beside_it_is_still_damage(site_packages):
+    """The quarantine this exists to catch, with no update in flight."""
+    launcher = _launcher_case(site_packages)
+    launcher.unlink()
+    assert install_manifest.damaged_payload_files(PKG) == ["../Scripts/unsloth.exe is missing"]
+
+
+def test_an_unrelated_sibling_does_not_excuse_a_missing_file(site_packages):
+    """Only the three names `_recover_missing_launcher` reads count."""
+    launcher = _launcher_case(site_packages)
+    launcher.rename(launcher.with_name(launcher.name + ".bak"))
+    assert install_manifest.damaged_payload_files(PKG) == ["../Scripts/unsloth.exe is missing"]
