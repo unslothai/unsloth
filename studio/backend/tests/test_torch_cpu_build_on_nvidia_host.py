@@ -2174,6 +2174,34 @@ def test_hip_visible_devices_outranks_the_cuda_alias(monkeypatch):
     assert hw.classify_torch_build() is None
 
 
+def test_only_the_highest_priority_mask_that_is_set_decides(monkeypatch):
+    """A lower-priority variable naming devices does not un-hide them.
+
+    HIP stops at the first of the three that is SET, so HIP_VISIBLE_DEVICES=-1 hides
+    every AMD card however ROCR_VISIBLE_DEVICES is spelled. Reading the ROCR value there
+    would report a mismatch, and offer a repair, for a host masked exactly as asked.
+    """
+    import sys
+
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch("cpu"))
+    amd = [{"vendor": "amd", "gfx_candidates": ["gfx1100"]}]
+    monkeypatch.setattr(
+        hw, "get_physical_gpu_inventory", lambda **_kw: {"devices": amd, "unknown": False}
+    )
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "-1")
+    monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "0")
+    assert hw.classify_torch_build() is None
+    assert hw._devices_that_can_establish_a_mismatch(amd) == []
+
+    # The other direction, so this is precedence rather than "an emptied one always wins":
+    # ROCR only decides when HIP is unset, and then a named device is a real expectation.
+    monkeypatch.delenv("HIP_VISIBLE_DEVICES")
+    assert hw.classify_torch_build() == "torch_cpu_build"
+    assert hw._devices_that_can_establish_a_mismatch(amd) == amd
+
+
 # =============================================== a refresh that cannot answer is not news
 
 

@@ -907,14 +907,22 @@ def _vendors_masked_off(*, block_inventory: bool = False) -> set:
     for var in relevant:
         if _mask_is_emptied(var):
             masked |= _VISIBILITY_MASK_VENDORS.get(var, frozenset())
-    # HIP reads its own variables FIRST and falls back to CUDA_VISIBLE_DEVICES only when
-    # neither is set (the precedence _get_parent_visible_gpu_spec applies). A host that
-    # NAMES devices in HIP_VISIBLE_DEVICES has not hidden them.
-    if any(
-        os.environ.get(var) is not None and not _mask_is_emptied(var)
-        for var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES")
-        if var in relevant
-    ):
+    # HIP reads these three in order and stops at the first one SET, which is the
+    # precedence amd._first_visible_amd_gpu_id applies. So only that variable decides,
+    # and a lower-priority one naming devices says nothing: HIP_VISIBLE_DEVICES=-1 beside
+    # ROCR_VISIBLE_DEVICES=0 hides every AMD card, and reading the ROCR value there would
+    # offer a repair for a host that is masked exactly as asked.
+    amd_mask = next(
+        (
+            var
+            for var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
+            if var in relevant and os.environ.get(var) is not None
+        ),
+        None,
+    )
+    if amd_mask is not None and _mask_is_emptied(amd_mask):
+        masked.add("amd")
+    else:
         masked.discard("amd")
     return masked
 
