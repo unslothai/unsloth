@@ -84,18 +84,27 @@ test("the eviction branch is behind the same guard", () => {
   assert.ok(guardAt !== -1 && guardAt < evictionAt);
 });
 
-test("ordinary refresh does not defer all residency work during a load", () => {
+test("only the caller that hands off to a waiter defers residency during a load", () => {
   assert.doesNotMatch(
     SYNC,
-    /if \([^\n]*statusLoading[^\n]*\) return;/,
-    "the mount and send waiters own settlement; generic hydration must still publish residency",
+    /if \(statusLoading\) return;/,
+    "the send waiter and the lifecycle bus own settlement themselves; generic hydration must still publish residency",
   );
+  // Scoped to the mount waiter, which needs the checkpoint empty to poll at all. Its own call
+  // has not started it yet, and a later refresh is a different call, so both are checked.
+  // Behaviour is pinned in tests/studio/test_chat_mount_cli_load_adoption.py.
+  assert.match(
+    SYNC,
+    /if \(\s*statusLoading &&\s*\(options\?\.waitForServerModel \|\| pendingServerModelWaits > 0\)\s*\) \{/,
+  );
+  assert.match(SOURCE, /pendingServerModelWaits \+= 1;\s*try \{/);
+  assert.match(SOURCE, /\} finally \{\s*pendingServerModelWaits -= 1;\s*\}/);
 });
 
 test("a completed UI load still publishes residency while holding its lease", () => {
   const selectionGuard = SYNC.slice(
     SYNC.indexOf("const selectionChanged"),
-    SYNC.indexOf("const statusLoading"),
+    SYNC.indexOf("const chatActiveModel"),
   );
   assert.match(selectionGuard, /selectedCheckpoint !== selectedAtStart/);
   assert.doesNotMatch(

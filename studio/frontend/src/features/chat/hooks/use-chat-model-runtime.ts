@@ -212,42 +212,52 @@ const LORA_SUFFIX_RE = /_(\d{9,})$/;
 const CLI_LOAD_POLL_IDLE_MS = 60_000;
 const CLI_LOAD_POLL_MAX_MS = 600_000;
 
+// The observer polls only while the selection is empty, and every refresh writes that same
+// selection, so which call owns settlement cannot be a per-call argument: an unrelated refresh
+// landing mid-wait would end the wait on the outgoing model. Module-scoped for that reason.
+let pendingServerModelWaits = 0;
+
 async function waitForServerModel(signal?: AbortSignal): Promise<void> {
-  const started = Date.now();
-  let sawLoad = false;
+  pendingServerModelWaits += 1;
+  try {
+    const started = Date.now();
+    let sawLoad = false;
 
-  while (
-    !signal?.aborted &&
-    !useChatRuntimeStore.getState().params.checkpoint &&
-    !useChatRuntimeStore.getState().modelLoading
-  ) {
-    let status: InferenceStatusResponse | null = null;
-    try {
-      status = await getInferenceStatus();
-    } catch {
-      // A later poll can recover from a transient status failure.
-    }
-    if (
-      signal?.aborted ||
-      useChatRuntimeStore.getState().params.checkpoint ||
-      useChatRuntimeStore.getState().modelLoading
+    while (
+      !signal?.aborted &&
+      !useChatRuntimeStore.getState().params.checkpoint &&
+      !useChatRuntimeStore.getState().modelLoading
     ) {
-      return;
-    }
-
-    if (status) {
-      const loading = (status.loading?.length ?? 0) > 0;
-      sawLoad ||= loading;
-      if (!loading && status.active_model) {
-        await tryAdoptServerActiveModel({ status });
+      let status: InferenceStatusResponse | null = null;
+      try {
+        status = await getInferenceStatus();
+      } catch {
+        // A later poll can recover from a transient status failure.
+      }
+      if (
+        signal?.aborted ||
+        useChatRuntimeStore.getState().params.checkpoint ||
+        useChatRuntimeStore.getState().modelLoading
+      ) {
         return;
       }
-      if (!loading && sawLoad) return;
+
+      if (status) {
+        const loading = (status.loading?.length ?? 0) > 0;
+        sawLoad ||= loading;
+        if (!loading && status.active_model) {
+          await tryAdoptServerActiveModel({ status });
+          return;
+        }
+        if (!loading && sawLoad) return;
+      }
+      const elapsed = Date.now() - started;
+      if (!sawLoad && elapsed >= CLI_LOAD_POLL_IDLE_MS) return;
+      if (elapsed >= CLI_LOAD_POLL_MAX_MS) return;
+      await new Promise((resolve) => setTimeout(resolve, 500));
     }
-    const elapsed = Date.now() - started;
-    if (!sawLoad && elapsed >= CLI_LOAD_POLL_IDLE_MS) return;
-    if (elapsed >= CLI_LOAD_POLL_MAX_MS) return;
-    await new Promise((resolve) => setTimeout(resolve, 500));
+  } finally {
+    pendingServerModelWaits -= 1;
   }
 }
 
@@ -440,6 +450,8 @@ async function syncInferenceStatusToStore(options?: {
   preserveIdleUnloaded?: boolean;
   /** A TTS load owns the chat slot even though Chat did not start the load. */
   externalChatSlotLoad?: boolean;
+  /** waitForServerModel runs after this call and owns the settled answer. */
+  waitForServerModel?: boolean;
 }): Promise<void> {
   const signal = options?.signal;
   const includeLoras = options?.includeLoras ?? true;
@@ -484,10 +496,18 @@ async function syncInferenceStatusToStore(options?: {
 
     setModels(listRes.models.map(toChatModelRow));
 
+    const statusLoading = (statusRes.loading?.length ?? 0) > 0;
+    // A replacement reports the outgoing model as active and the incoming one as loading.
+    // Adopting the outgoing one sets the checkpoint waitForServerModel needs empty, so the
+    // observer -- the one this call is about to start, or one already polling -- would stop
+    // before the incoming model ever lands. Only the observer publishes a settled answer here.
+    if (statusLoading && (options?.waitForServerModel || pendingServerModelWaits > 0)) {
+      return;
+    }
+
     const selectedCheckpoint = useChatRuntimeStore.getState().params.checkpoint;
     const isExternalSelectionActive = isExternalModelId(selectedCheckpoint);
     const selectionChanged = selectedCheckpoint !== selectedAtStart;
-    const statusLoading = (statusRes.loading?.length ?? 0) > 0;
     // The local selection is re-derived from this status on every mount, so adopting a
     // TTS model made it the chat model without the user picking it. Read the slot as
     // empty and the eviction branch below clears the stale pick, as it does for an
