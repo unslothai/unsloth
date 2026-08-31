@@ -4363,7 +4363,22 @@ def _stage_replacement(name: str):
     return None
 
 
-def _repair_damaged_core_payload(package_names: "tuple[str, ...]", *, local_repo: str = "") -> bool:
+def _core_package_names(package_name: str) -> "tuple[str, ...]":
+    """The distributions a run is responsible for.
+
+    unsloth-zoo only for the default install: `--package X` installs X alone, so
+    demanding the companion there would force-reinstall an unrelated
+    distribution, and fail the update outright on an unreachable zoo index.
+    """
+    return (package_name, "unsloth-zoo") if package_name == "unsloth" else (package_name,)
+
+
+def _repair_damaged_core_payload(
+    package_names: "tuple[str, ...]",
+    *,
+    local_repo: str = "",
+    require_present: bool = False,
+) -> bool:
     """Reinstall managed core packages whose recorded files are gone or truncated.
 
     An upgrade of a distribution already at the wanted version installs nothing:
@@ -4376,9 +4391,30 @@ def _repair_damaged_core_payload(package_names: "tuple[str, ...]", *, local_repo
     write_manifest would record a success nothing rechecks. Judged on the tree
     rather than pip's exit code, so a reinstall that restored the files while
     exiting non-zero is not held against it.
+
+    `require_present` also refuses a distribution that is not installed at all,
+    which has no RECORD to walk and so reads as undamaged here. Off before the
+    core phase, where nothing has been installed yet on a fresh run, and on
+    after it, where a core package still absent means the phase was skipped
+    (the install.sh handoff sets SKIP_STUDIO_BASE=1) or silently did nothing.
     """
     if local_repo:
         return True
+    if require_present:
+        for name in package_names:
+            try:
+                present = any(install_manifest.installed_versions(name))
+            except Exception:
+                continue
+            if not present:
+                _safe_print(
+                    _red(
+                        f"   {name} is not installed, so this environment cannot run. "
+                        "Rerun the installer with the package index available."
+                    ),
+                    file = sys.stderr,
+                )
+                return False
     damaged: list[str] = []
     seen: set[str] = set()
     for name in package_names:
@@ -5422,7 +5458,7 @@ def install_python_stack() -> int:
 
     # Intact metadata over a missing payload: the core phase would audit it as
     # satisfied. Unbudgeted, since this run is already doing a full install.
-    if not _repair_damaged_core_payload((package_name, "unsloth-zoo"), local_repo = local_repo):
+    if not _repair_damaged_core_payload(_core_package_names(package_name), local_repo = local_repo):
         return 1
 
     # macOS arm64: install MLX stack at latest (UV_OVERRIDE relaxes the
@@ -5788,6 +5824,17 @@ def install_python_stack() -> int:
         (package_name, "unsloth-zoo"),
         local_repo = local_repo,
         ci_source_overlay = ci_source_overlay,
+    ):
+        return 1
+
+    # 14c. Same reasoning one step further: write_manifest reads the installed
+    # version, so a core package that is absent or quarantined now is recorded
+    # as a finished install. The skip_base handoff never reaches the core phase,
+    # so this is the only place that sees it.
+    if not _repair_damaged_core_payload(
+        _core_package_names(package_name),
+        local_repo = local_repo,
+        require_present = True,
     ):
         return 1
 

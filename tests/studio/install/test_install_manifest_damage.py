@@ -508,11 +508,15 @@ def test_a_vanished_companion_is_damage(tmp_path, monkeypatch, site_packages):
 
 
 def test_a_custom_package_does_not_have_to_ship_unsloth_zoo(tmp_path, monkeypatch, site_packages):
-    """`--package X` need not depend on it, and demanding it would repair that
-    environment on every run."""
+    """`--package X` installs X alone, so a damaged or absent unsloth-zoo beside
+    it belongs to something else and repairing it would mutate that."""
     dist_info, rows = _healthy(site_packages)
     _record(dist_info, rows)
     req_root = _complete_install(tmp_path, monkeypatch, site_packages)
+    zoo_info = _dist(site_packages, name = "unsloth-zoo", version = "2.0")
+    _write(site_packages / "unsloth_zoo" / "__init__.py", "y = 2\n")
+    _record(zoo_info, [["unsloth_zoo/__init__.py", "sha256=y", 999999]])
+
     state = install_manifest.verify_install(
         root = tmp_path, req_root = req_root, package_name = PKG, deep = True
     )
@@ -521,3 +525,11 @@ def test_a_custom_package_does_not_have_to_ship_unsloth_zoo(tmp_path, monkeypatc
 
 def _canonical_name(name):
     return install_manifest._canonical(name)
+
+
+def test_a_custom_package_installs_no_companion(monkeypatch):
+    """The installer's own view has to agree with the scan's."""
+    import install_python_stack as ips
+
+    assert ips._core_package_names("unsloth") == ("unsloth", "unsloth-zoo")
+    assert ips._core_package_names("unsloth-nightly") == ("unsloth-nightly",)

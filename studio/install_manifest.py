@@ -718,13 +718,13 @@ def verify_install(
         # Reused, not re-read: a manifest rewritten mid-run would make the scan
         # disagree with the checks that already passed.
         scan_package = (manifest or {}).get("package") or package_name
-        companions = () if _canonical(scan_package) == "unsloth-zoo" else ("unsloth-zoo",)
+        # unsloth-zoo only for the default install: `--package X` installs X
+        # alone, so scanning the companion there would report damage in an
+        # unrelated distribution and repair that environment on every run.
+        companions = ("unsloth-zoo",) if _canonical(scan_package) == "unsloth" else ()
         # A companion with no dist-info leaves the scan below nothing to walk,
-        # and nothing above ever looked at its version. Only for the default
-        # install, where unsloth-zoo is an unconditional dependency: a custom
-        # `--package` need not depend on it, and demanding it would repair that
-        # environment on every run.
-        if _canonical(scan_package) == "unsloth" and not vanished:
+        # and nothing above ever looked at its version.
+        if not vanished:
             for companion in companions:
                 present = (
                     _installed_version(companion, installed)

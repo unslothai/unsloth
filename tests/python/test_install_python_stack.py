@@ -863,6 +863,41 @@ class TestDamagedCorePayloadRepair:
         monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
         assert ips._repair_damaged_core_payload(("unsloth",)) is True
 
+    def test_an_absent_distribution_is_refused_after_the_core_phase(self, monkeypatch):
+        """It has no RECORD to walk, so the scan alone reads it as undamaged.
+
+        The install.sh handoff sets SKIP_STUDIO_BASE=1 and the core phase never
+        runs, so this is the only place that would see unsloth-zoo gone before
+        write_manifest records the environment as a finished install.
+        """
+        monkeypatch.setattr(ips.install_manifest, "damaged_payload_files", lambda *a, **k: [])
+        monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda name: [])
+        monkeypatch.setattr(ips, "_safe_print", lambda *a, **k: None)
+        assert ips._repair_damaged_core_payload(("unsloth",), require_present = True) is False
+        # Off before the core phase: a fresh run has nothing installed yet.
+        assert ips._repair_damaged_core_payload(("unsloth",)) is True
+
+    def test_a_present_distribution_passes_the_presence_check(self, monkeypatch):
+        monkeypatch.setattr(ips.install_manifest, "damaged_payload_files", lambda *a, **k: [])
+        monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda name: ["1.0"])
+        assert ips._repair_damaged_core_payload(("unsloth",), require_present = True) is True
+
+    def test_the_companion_is_only_for_the_default_install(self):
+        assert ips._core_package_names("unsloth") == ("unsloth", "unsloth-zoo")
+        assert ips._core_package_names("unsloth-nightly") == ("unsloth-nightly",)
+
+    def test_both_repair_sites_use_that_list(self):
+        source = inspect.getsource(ips)
+        assert source.count("_repair_damaged_core_payload(\n        _core_package_names") + source.count(
+            "_repair_damaged_core_payload(_core_package_names"
+        ) == 2
+        assert "_repair_damaged_core_payload((package_name" not in source
+
+    def test_the_second_site_runs_before_the_manifest_is_written(self):
+        source = inspect.getsource(ips)
+        gate = source.rindex("_repair_damaged_core_payload(")
+        assert gate < source.index("install_manifest.write_manifest(")
+
     def test_the_caller_aborts_the_install(self):
         source = inspect.getsource(ips)
         assert "if not _repair_damaged_core_payload(" in source
@@ -870,7 +905,7 @@ class TestDamagedCorePayloadRepair:
     def test_the_repair_runs_before_the_core_phase(self):
         """After it, the upgrade would already have audited the damage as fine."""
         source = inspect.getsource(ips)
-        repair = source.index("_repair_damaged_core_payload((package_name")
+        repair = source.index("_repair_damaged_core_payload(_core_package_names")
         core = source.index("# 3. Core packages")
         assert repair < core
 
