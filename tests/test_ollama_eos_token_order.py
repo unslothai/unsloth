@@ -48,7 +48,7 @@ print(json.dumps(sorted(namespace["get_ollama_eos_tokens"](_Tokenizer(tokens, bo
 
 
 def _extract_source():
-    with open(_CHAT_TEMPLATES, encoding="utf-8") as f:
+    with open(_CHAT_TEMPLATES, encoding = "utf-8") as f:
         source = f.read()
     for node in ast.parse(source).body:
         if isinstance(node, ast.FunctionDef) and node.name == "get_ollama_eos_tokens":
@@ -58,7 +58,7 @@ def _extract_source():
 
 def _run(seed):
     """Run the function in a fresh interpreter under a fixed PYTHONHASHSEED."""
-    environment = dict(os.environ, PYTHONHASHSEED=str(seed))
+    environment = dict(os.environ, PYTHONHASHSEED = str(seed))
     completed = subprocess.run(
         [
             sys.executable,
@@ -68,10 +68,10 @@ def _run(seed):
             json.dumps(_TOKENS),
             json.dumps(_BOS),
         ],
-        capture_output=True,
-        text=True,
-        env=environment,
-        check=True,
+        capture_output = True,
+        text = True,
+        env = environment,
+        check = True,
     )
     return json.loads(completed.stdout)
 
