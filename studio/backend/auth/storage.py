@@ -276,9 +276,7 @@ def credential_undelivered(username: str) -> bool:
             "SELECT password_hash FROM auth_user WHERE username = ?",
             (username,),
         ).fetchone()
-        if current is not None and hmac.compare_digest(
-            pending["value"], current["password_hash"]
-        ):
+        if current is not None and hmac.compare_digest(pending["value"], current["password_hash"]):
             return True
         # A later password change should clear this transactionally. Retain the
         # self-healing fallback for databases written by an older/mixed process.

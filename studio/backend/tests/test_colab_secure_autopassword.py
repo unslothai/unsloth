@@ -283,10 +283,13 @@ def test_undelivered_sentinel_ignores_a_hash_it_does_not_match():
     assert storage.credential_undelivered(admin) is False
     conn = storage.get_connection()
     try:
-        assert conn.execute(
-            "SELECT 1 FROM app_secrets WHERE key = ?",
-            (storage._CREDENTIAL_UNDELIVERED_KEY,),
-        ).fetchone() is None
+        assert (
+            conn.execute(
+                "SELECT 1 FROM app_secrets WHERE key = ?",
+                (storage._CREDENTIAL_UNDELIVERED_KEY,),
+            ).fetchone()
+            is None
+        )
     finally:
         conn.close()
 

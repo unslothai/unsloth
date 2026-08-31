@@ -1071,10 +1071,7 @@ def test_ordinary_password_change_clears_pending_delivery_state():
     )
     assert storage.credential_undelivered(storage.DEFAULT_ADMIN_USERNAME) is True
 
-    assert storage.update_password(
-        storage.DEFAULT_ADMIN_USERNAME,
-        "operator-chosen-password",
-    )
+    assert storage.update_password(storage.DEFAULT_ADMIN_USERNAME, "operator-chosen-password")
 
     assert storage.credential_undelivered(storage.DEFAULT_ADMIN_USERNAME) is False
 
