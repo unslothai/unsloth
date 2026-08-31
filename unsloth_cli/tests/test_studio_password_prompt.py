@@ -1339,6 +1339,78 @@ def test_cli_update_password_truncates_locked_bootstrap_after_change(monkeypatch
     assert bootstrap_file.read_text() == ""
 
 
+def test_stale_file_warning_failure_does_not_prevent_generated_password_delivery(
+    monkeypatch, tmp_path
+):
+    # The credential and its pending-delivery marker commit before stale-file
+    # cleanup. If the warning channel then disappears, delivery must still retry
+    # the preflighted console instead of abandoning a live password nobody saw.
+    import pathlib
+
+    studio_mod = _studio()
+    _install_prompt_env(monkeypatch, tmp_path, interactive = False)
+    _seed_auth(studio_mod)
+    bootstrap_file = tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE
+    real_unlink = pathlib.Path.unlink
+
+    def _locked_bootstrap(self, *args, **kwargs):
+        if self == bootstrap_file:
+            raise OSError("locked")
+        return real_unlink(self, *args, **kwargs)
+
+    class _Console:
+        closed = False
+
+        def __init__(self):
+            self.text = ""
+
+        def write(self, value):
+            self.text += value
+            return len(value)
+
+        def flush(self):
+            pass
+
+        def isatty(self):
+            return True
+
+    console = _Console()
+    warnings = []
+
+    def _warning_channel_died(message, **_kwargs):
+        warnings.append(str(message))
+        raise OSError("stderr disappeared")
+
+    monkeypatch.setattr(pathlib.Path, "unlink", _locked_bootstrap)
+    monkeypatch.setattr(studio_mod, "_one_time_secret_console_stream", lambda **_kw: console)
+    monkeypatch.setattr(studio_mod.typer, "echo", _warning_channel_died)
+
+    studio_mod._enforce_password_change_before_exposure(
+        cloudflare = None,
+        host = "127.0.0.1",
+        secure = True,
+        api_only = False,
+    )
+
+    assert warnings and "could not remove stale" in warnings[0]
+    assert "Password:" not in warnings[0]
+    generated = next(
+        line.split("Password:", 1)[1].strip()
+        for line in console.text.splitlines()
+        if "Password:" in line
+    )
+    assert _password_works(studio_mod, generated)
+    assert bootstrap_file.read_text(encoding = "utf-8") == ""
+    conn = studio_mod._connect_auth_db()
+    try:
+        assert conn.execute(
+            "SELECT 1 FROM app_secrets WHERE key = ?",
+            (studio_mod.CREDENTIAL_UNDELIVERED_PASSWORD_HASH_KEY,),
+        ).fetchone() is None
+    finally:
+        conn.close()
+
+
 def test_cli_update_password_compare_and_set_guard(monkeypatch, tmp_path):
     # Mirror backend storage.update_password: the auto-generated launch credential
     # is committed only while must_change_password is still 1. A user finishing
@@ -1396,6 +1468,64 @@ def test_cli_update_password_compare_and_set_guard(monkeypatch, tmp_path):
     # No collateral revocation on a rejected write.
     assert remaining_refresh == 1
     assert remaining_keys == 1
+
+
+@pytest.mark.parametrize("winner_pending", [True, False], ids = ["launcher", "user"])
+def test_autogeneration_cas_loser_checks_winners_delivery_state(
+    monkeypatch, tmp_path, winner_pending
+):
+    # A concurrent launcher leaves an atomic pending marker until its generated
+    # credential is displayed, so this losing process must not publish first. A
+    # user-selected password clears that marker transactionally and may launch.
+    studio_mod = _studio()
+    _install_prompt_env(monkeypatch, tmp_path, interactive = False)
+    _seed_auth(studio_mod)
+    real_update = studio_mod._cli_update_password
+    raced = []
+
+    def _race_with_winner(conn, username, generated, **kwargs):
+        if not raced:
+            raced.append(True)
+            winner_conn = studio_mod._connect_auth_db()
+            try:
+                assert real_update(
+                    winner_conn,
+                    username,
+                    "concurrent-winning-password",
+                    require_must_change = True,
+                    mark_credential_undelivered = winner_pending,
+                )
+            finally:
+                winner_conn.close()
+        return real_update(conn, username, generated, **kwargs)
+
+    monkeypatch.setattr(studio_mod, "_cli_update_password", _race_with_winner)
+
+    def _enforce():
+        studio_mod._enforce_password_change_before_exposure(
+            cloudflare = None,
+            host = "127.0.0.1",
+            secure = True,
+            api_only = False,
+        )
+
+    if winner_pending:
+        with pytest.raises(studio_mod.typer.Exit):
+            _enforce()
+    else:
+        _enforce()
+
+    assert raced == [True]
+    assert _password_works(studio_mod, "concurrent-winning-password")
+    conn = studio_mod._connect_auth_db()
+    try:
+        current_hash = conn.execute(
+            "SELECT password_hash FROM auth_user WHERE username = ?",
+            (studio_mod.DEFAULT_ADMIN_USERNAME,),
+        ).fetchone()[0]
+        assert studio_mod._credential_undelivered(conn, current_hash) is winner_pending
+    finally:
+        conn.close()
 
 
 def test_cli_update_password_marks_undelivered_in_same_transaction(monkeypatch, tmp_path):

@@ -2356,10 +2356,19 @@ def _terminal_password_gate(
             return False, False
         generated = _auto_generate_admin_password(_admin, out = out)
         if generated is None:
-            # Lost the compare-and-set: a password was set elsewhere between the
-            # gate's read and the rotation, so ours was never written. The account
-            # is no longer on the default credential, so proceed without showing a
-            # password that would not authenticate.
+            # Lost the compare-and-set: inspect the winner before publishing. A
+            # user-selected password atomically clears this state and is safe to
+            # keep, while another auto-launch atomically records its live hash as
+            # undelivered until its own banner succeeds. Publishing during that
+            # window could expose an account whose password nobody has seen.
+            if _auth_storage.credential_undelivered(_admin):
+                logger.error(
+                    "Refusing to publish Unsloth: another launch auto-generated the "
+                    "admin password but has not confirmed that it was displayed. Retry "
+                    "after that launch completes, or reset the credential with `unsloth "
+                    "studio reset-password`."
+                )
+                return False, False
             return True, True
         # Write the one-time credential to the raw console stream, NOT the
         # _TeeStream that _setup_server_disk_logging() installed: the tee mirrors

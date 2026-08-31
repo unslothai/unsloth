@@ -278,6 +278,28 @@ def test_gate_does_not_show_password_when_rotation_loses_the_race(monkeypatch):
     assert "auto-generated" not in out
 
 
+def test_gate_fails_closed_when_rotation_loses_to_an_undelivered_auto_launch(monkeypatch):
+    stderr = _patch_streams_autogen(monkeypatch)
+    _patch_seeded_admin(monkeypatch, requires_change = True)
+    monkeypatch.delenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", raising = False)
+    calls = _stub_update_password(monkeypatch, committed = False)
+    marker_checks = iter((False, True))
+    monkeypatch.setattr(
+        auth_storage,
+        "credential_undelivered",
+        lambda _username: next(marker_checks),
+    )
+
+    assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (
+        False,
+        False,
+    )
+
+    assert len(calls) == 1
+    generated = calls[0][1]
+    assert generated not in stderr.getvalue()
+
+
 def test_gate_autogenerates_even_when_deadline_cannot_arm(monkeypatch):
     # api-only launches never armed the bootstrap deadline and used to fail closed;
     # now a strong password is set instead, so the launch proceeds with real

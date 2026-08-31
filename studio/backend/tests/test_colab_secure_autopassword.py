@@ -117,6 +117,80 @@ def test_auto_generate_loses_race_to_a_concurrent_password_change(monkeypatch):
     assert storage.requires_password_change(admin) is False
 
 
+def test_tunnel_race_refuses_an_undelivered_auto_generated_winner(monkeypatch):
+    admin = _seed_admin(must_change_password = True)
+    real_update = storage.update_password
+    raced: list[str] = []
+
+    def _racing_update(username, new_password, **kwargs):
+        if not raced:
+            raced.append("auto")
+            assert (
+                real_update(
+                    username,
+                    "concurrent-auto-password-1",
+                    revoke_refresh_tokens = True,
+                    require_must_change = True,
+                    mark_credential_undelivered = True,
+                )
+                is not None
+            )
+        return real_update(username, new_password, **kwargs)
+
+    monkeypatch.setattr(storage, "update_password", _racing_update)
+    monkeypatch.setattr(colab, "_display_channel_active", lambda: True)
+    import cloudflare_tunnel
+
+    started = {"called": False}
+    monkeypatch.setattr(
+        cloudflare_tunnel,
+        "start_studio_tunnel",
+        lambda port, **_kwargs: started.update(called = True) or "https://example.invalid",
+    )
+
+    assert colab.start_cloudflare_tunnel(8888) is None
+    assert raced == ["auto"]
+    assert storage.credential_undelivered(admin) is True
+    assert started["called"] is False
+
+
+def test_tunnel_race_proceeds_with_a_concurrent_user_selected_winner(monkeypatch):
+    admin = _seed_admin(must_change_password = True)
+    real_update = storage.update_password
+    raced: list[str] = []
+
+    def _racing_update(username, new_password, **kwargs):
+        if not raced:
+            raced.append("user")
+            assert (
+                real_update(
+                    username,
+                    "concurrent-user-password-2",
+                    revoke_refresh_tokens = True,
+                    require_must_change = True,
+                )
+                is not None
+            )
+        return real_update(username, new_password, **kwargs)
+
+    monkeypatch.setattr(storage, "update_password", _racing_update)
+    monkeypatch.setattr(colab, "_display_channel_active", lambda: True)
+    import cloudflare_tunnel
+
+    started = {"called": False}
+    monkeypatch.setattr(
+        cloudflare_tunnel,
+        "start_studio_tunnel",
+        lambda port, **_kwargs: started.update(called = True)
+        or "https://example.trycloudflare.com",
+    )
+
+    assert colab.start_cloudflare_tunnel(8888) == "https://example.trycloudflare.com"
+    assert raced == ["user"]
+    assert storage.credential_undelivered(admin) is False
+    assert started["called"] is True
+
+
 def test_update_password_compare_and_set_guard():
     # Storage unit: the guarded update writes only while must_change_password = 1.
     admin = _seed_admin(must_change_password = True)
@@ -644,6 +718,22 @@ def test_consume_supplied_password_rejects_invalid_values_but_still_strips(monke
         assert "UNSLOTH_STUDIO_PASSWORD" not in os.environ
         # Left pending, so start_cloudflare_tunnel still secures the link itself.
         assert storage.requires_password_change(admin) is True
+
+
+def test_consume_supplied_password_rejects_the_current_bootstrap_password(monkeypatch):
+    import os
+
+    admin = _seed_admin(must_change_password = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_PASSWORD", "bootstrap-secret-123")
+
+    colab._consume_supplied_password_on_reuse()
+
+    assert "UNSLOTH_STUDIO_PASSWORD" not in os.environ
+    assert storage.requires_password_change(admin) is True
+    from auth import hashing
+
+    salt, pwd_hash, _jwt, _mc = storage.get_user_and_secret(admin)
+    assert hashing.verify_password("bootstrap-secret-123", salt, pwd_hash) is True
 
 
 def test_consume_supplied_password_never_logs_the_value(monkeypatch, caplog):

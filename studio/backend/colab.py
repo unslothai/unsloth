@@ -660,9 +660,10 @@ def _consume_supplied_password_on_reuse() -> None:
     normal path uses, so the password the user asked for is the one that protects
     the shared link instead of being silently replaced by an auto-generated one.
     An already-set password is never overwritten (that is `reset-password`'s job),
-    and a value that fails the length/whitespace rules is ignored, leaving
-    ``start_cloudflare_tunnel`` to auto-generate and display one. Never logs the
-    value, and never exits the process: this runs inside a notebook cell.
+    and a value that fails validation (including one equal to the bootstrap
+    password) is ignored, leaving ``start_cloudflare_tunnel`` to auto-generate and
+    display one. Never logs the value, and never exits the process: this runs inside
+    a notebook cell.
     """
     supplied = os.environ.pop(_SUPPLIED_PASSWORD_ENV, None) or None
     if not supplied:
@@ -672,9 +673,11 @@ def _consume_supplied_password_on_reuse() -> None:
             DEFAULT_ADMIN_USERNAME,
             MIN_PASSWORD_LENGTH,
             ensure_default_admin,
+            get_user_and_secret,
             requires_password_change,
             update_password,
         )
+        from auth.hashing import verify_password
 
         ensure_default_admin()
         if not requires_password_change(DEFAULT_ADMIN_USERNAME):
@@ -689,6 +692,21 @@ def _consume_supplied_password_on_reuse() -> None:
                 f"Ignoring {_SUPPLIED_PASSWORD_ENV}: a password must be at least "
                 f"{MIN_PASSWORD_LENGTH} characters and contain no spaces. A strong "
                 "one will be generated and shown in this cell instead."
+            )
+            return
+        record = get_user_and_secret(DEFAULT_ADMIN_USERNAME)
+        if record is None:
+            logger.warning(
+                f"Ignoring {_SUPPLIED_PASSWORD_ENV}: the current admin credential "
+                "could not be verified. A strong password will be generated and shown "
+                "in this cell instead."
+            )
+            return
+        if verify_password(supplied, record[0], record[1]):
+            logger.warning(
+                f"Ignoring {_SUPPLIED_PASSWORD_ENV}: the new password must differ from "
+                "the current bootstrap password. A strong password will be generated "
+                "and shown in this cell instead."
             )
             return
         if update_password(
@@ -738,6 +756,16 @@ def start_cloudflare_tunnel(port: int) -> "str | None":
         generated = _auto_generate_colab_admin_password()
     except _ColabCredentialHandoffFailed as e:
         logger.warning(f"Cloudflare link not started: {e}.")
+        return None
+    if generated is None and credential_undelivered(DEFAULT_ADMIN_USERNAME):
+        # A concurrent auto-launch won the compare-and-set but has not yet proved
+        # that its one-time card rendered. An ordinary user-selected password
+        # clears the marker in the same transaction, so it safely proceeds here.
+        logger.warning(
+            "Cloudflare link not started: another launch auto-generated the admin "
+            "password but has not confirmed that it was shown. Retry after that launch "
+            "completes, or reset it with `unsloth studio reset-password`."
+        )
         return None
     if generated is not None and not _display_admin_credentials(DEFAULT_ADMIN_USERNAME, generated):
         # The password was rotated and committed, but it could not be surfaced in

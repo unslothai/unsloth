@@ -1267,18 +1267,26 @@ def _cli_update_password(
             except OSError:
                 cleared = False
             if cleared:
-                typer.echo(
+                warning = (
                     f"Warning: could not remove stale {stale} file ({exc}); cleared its "
-                    "contents so the old credential cannot be reused.",
-                    err = True,
+                    "contents so the old credential cannot be reused."
                 )
             else:
-                typer.echo(
+                warning = (
                     f"Warning: could not remove or clear stale {stale} file ({exc}); the "
                     "old credential is still on disk. Remove it manually to prevent reuse "
-                    "after a reset.",
+                    "after a reset."
+                )
+            try:
+                typer.echo(
+                    warning,
                     err = True,
                 )
+            except Exception:
+                # The password and pending-delivery marker are already committed.
+                # A warning channel that disappeared must not prevent the caller
+                # from retrying credential delivery on its other console.
+                pass
     return True
 
 
@@ -1763,6 +1771,24 @@ def _enforce_password_change_before_exposure(
                 # must_change read above and this write, so ours was never stored.
                 # The account is off the seeded default, so launch with theirs and
                 # never show a credential that would not authenticate.
+                winner = conn.execute(
+                    "SELECT password_hash FROM auth_user WHERE username = ?",
+                    (DEFAULT_ADMIN_USERNAME,),
+                ).fetchone()
+                if winner and _credential_undelivered(conn, winner[0]):
+                    # A concurrent launcher won the CAS but has not delivered its
+                    # generated credential yet. Launching now would publish the
+                    # account before that operator has received the password. A
+                    # normal user-selected change clears this marker atomically,
+                    # so it continues through the return below.
+                    typer.echo(
+                        "Error: refusing to publish Unsloth on a public Cloudflare URL: "
+                        "a concurrent launch committed an auto-generated admin password "
+                        "that has not been displayed yet. Retry after that launch shows "
+                        "the credential, or reset it with `unsloth studio reset-password`.",
+                        err = True,
+                    )
+                    raise typer.Exit(1)
                 return
             # Delivery is post-commit: the seeded recovery password is already gone,
             # so a console that died since the preflight must not propagate its
