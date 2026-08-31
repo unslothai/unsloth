@@ -354,18 +354,14 @@ def _attach_bnb_multidevice_hooks(
     # to `.to(model.device)`, which the notice below explains.
     if len(all_devs) == 1:
         device = next(iter(all_devs))
-        if (
-            device.type == "cuda"
-            and (device.index or 0) != 0
-            and DEVICE_COUNT > 1
-        ):
+        if device.type == "cuda" and (device.index or 0) != 0 and DEVICE_COUNT > 1:
             print(
                 f"Unsloth: The whole model was placed on {device}, not split "
                 f"across the {DEVICE_COUNT} devices. A `device_map` of "
                 '"balanced" or "auto" does this to small quantized models. Pass '
                 'device_map = "unsloth" for a head-aware split, or '
                 'device_map = {"": 0} to pin it to the first device. Until then, '
-                "send inputs with `.to(model.device)` rather than `.to(\"cuda\")`."
+                'send inputs with `.to(model.device)` rather than `.to("cuda")`.'
             )
         return
 

@@ -62,15 +62,22 @@ class _Logger:
         self.messages.append(msg)
 
 
-def _load(device_count, dispatch_recorder, inferred_map = None):
+def _load(
+    device_count,
+    dispatch_recorder,
+    inferred_map = None,
+):
     """Exec the two functions under test with their module globals supplied.
 
     `DEVICE_COUNT` is a module constant read at call time, so the number of
     devices the host really has never decides the outcome of a test.
     """
     ns = {
-        "torch": torch, "os": os, "warnings": warnings,
-        "logger": _Logger(), "DEVICE_COUNT": device_count,
+        "torch": torch,
+        "os": os,
+        "warnings": warnings,
+        "logger": _Logger(),
+        "DEVICE_COUNT": device_count,
     }
     mod = ast.parse(_SRC)
     # `_repair_dispatch_hooks` (#9995) is called at the top of the function under
@@ -91,6 +98,7 @@ def _load(device_count, dispatch_recorder, inferred_map = None):
 
     # The function imports dispatch_model from `accelerate` at call time.
     import accelerate
+
     real = getattr(accelerate, "dispatch_model", None)
     accelerate.dispatch_model = dispatch_recorder
     ns["_restore_accelerate"] = lambda: setattr(accelerate, "dispatch_model", real)
@@ -107,14 +115,17 @@ class _Param:
 def _model(devices):
     return types.SimpleNamespace(
         parameters = lambda: iter([_Param(d) for d in devices]),
-        named_parameters = lambda: iter(
-            [(f"p{i}", _Param(d)) for i, d in enumerate(devices)]),
+        named_parameters = lambda: iter([(f"p{i}", _Param(d)) for i, d in enumerate(devices)]),
         is_loaded_in_4bit = True,
         _skip_keys_device_placement = None,
     )
 
 
-def _run(devices, device_count = 2, inferred_map = None):
+def _run(
+    devices,
+    device_count = 2,
+    inferred_map = None,
+):
     calls = []
 
     def recorder(*args, **kwargs):
@@ -123,8 +134,11 @@ def _run(devices, device_count = 2, inferred_map = None):
     ns = _load(device_count, recorder, inferred_map)
     try:
         ns["_attach_bnb_multidevice_hooks"](
-            _model(devices), load_in_4bit = True, load_in_8bit = False,
-            offload_embedding = False, fast_inference = False,
+            _model(devices),
+            load_in_4bit = True,
+            load_in_8bit = False,
+            offload_embedding = False,
+            fast_inference = False,
         )
     finally:
         ns["_restore_accelerate"]()
@@ -154,16 +168,14 @@ def test_whole_model_on_a_fourth_card_is_not_dispatched():
 def test_a_real_split_is_still_dispatched():
     # #5068: weights spread over two cards crash on the first forward without
     # AlignDevicesHook. That case must keep its hooks.
-    calls = _run([CUDA0, CUDA1], inferred_map = {"model.embed_tokens": CUDA0,
-                                                 "model.layers": CUDA1})
+    calls = _run([CUDA0, CUDA1], inferred_map = {"model.embed_tokens": CUDA0, "model.layers": CUDA1})
     assert len(calls) == 1, calls
     assert calls[0]["force_hooks"] is True
     assert calls[0]["device_map"] == {"model.embed_tokens": 0, "model.layers": 1}
 
 
 def test_cpu_offload_alongside_a_gpu_is_still_dispatched():
-    calls = _run([CUDA1, CPU], inferred_map = {"model.layers": CUDA1,
-                                               "model.embed_tokens": CPU})
+    calls = _run([CUDA1, CPU], inferred_map = {"model.layers": CUDA1, "model.embed_tokens": CPU})
     assert len(calls) == 1, calls
     assert calls[0]["device_map"] == {"model.layers": 1, "model.embed_tokens": "cpu"}
     # A cpu entry must not become the main device.
@@ -181,8 +193,11 @@ def test_an_already_dispatched_model_is_left_alone():
     model.hf_device_map = {"": 1}
     try:
         ns["_attach_bnb_multidevice_hooks"](
-            model, load_in_4bit = True, load_in_8bit = False,
-            offload_embedding = False, fast_inference = False,
+            model,
+            load_in_4bit = True,
+            load_in_8bit = False,
+            offload_embedding = False,
+            fast_inference = False,
         )
     finally:
         ns["_restore_accelerate"]()
@@ -195,8 +210,11 @@ def test_a_non_bnb_model_is_not_dispatched():
     model = types.SimpleNamespace(parameters = lambda: iter([_Param(CUDA1)]))
     try:
         ns["_attach_bnb_multidevice_hooks"](
-            model, load_in_4bit = False, load_in_8bit = False,
-            offload_embedding = False, fast_inference = False,
+            model,
+            load_in_4bit = False,
+            load_in_8bit = False,
+            offload_embedding = False,
+            fast_inference = False,
         )
     finally:
         ns["_restore_accelerate"]()
@@ -227,5 +245,5 @@ def test_the_collapse_is_reported_only_when_it_cost_the_user_a_card():
 def test_the_guard_is_a_device_count_not_a_cuda0_comparison():
     """The old predicate `all_devs == {torch.device("cuda", 0)}` skipped only
     cuda:0. Keeping it would silently reinstate the failure."""
-    assert 'all_devs == {default_cuda}' not in _SRC
+    assert "all_devs == {default_cuda}" not in _SRC
     assert "if len(all_devs) == 1:" in _SRC
