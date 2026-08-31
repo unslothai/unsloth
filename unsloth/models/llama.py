@@ -179,12 +179,15 @@ def _offload_frozen_module_for_training(
     module: ModulesToSaveWrapper,
     device_type: str,
     offload_device: Optional[str] = "cpu",
+    original_device = None,
 ) -> None:
     """Move the trainable copy to ``device_type`` and offload the frozen original.
 
     float16 is promoted to float32 for GPU compatibility (e.g. Tesla T4).
     ``offload_device`` currently only supports "cpu"; None leaves the frozen
-    module in place. Modifies ``module`` in-place.
+    module in place. ``original_device`` is the placement recorded before any
+    disk offload rebuilt the module, used when the copy no longer carries one.
+    Modifies ``module`` in-place.
     See https://github.com/unslothai/unsloth/pull/1200 (Tesla T4 float32).
     """
     if not hasattr(module, "modules_to_save"):
@@ -197,13 +200,17 @@ def _offload_frozen_module_for_training(
         new_dtype = torch.float32
 
     # `device_type` is a bare type like "cuda", and `.to("cuda")` resolves to the
-    # CURRENT device, which is cuda:0. On a model the loader split across cards
-    # that drags the trainable copy off its own card, and the forward then mixes
-    # devices. Keep the index the copy already has whenever it is on the right
-    # kind of device; a copy still on cpu or meta has no index to keep.
-    target_device = module.modules_to_save.default.weight.device
-    if target_device.type != torch.device(device_type).type:
-        target_device = device_type
+    # CURRENT device, which is cuda:0, so on a split model it drags the trainable
+    # copy off its own card and the forward then mixes devices. Prefer the index
+    # the copy already has; under the default `use_gradient_checkpointing =
+    # "unsloth"` it has none, because the disk offload above rebuilt it on CPU,
+    # so fall back to the placement recorded before that. Only then the bare type.
+    wanted_type = torch.device(device_type).type
+    target_device = device_type
+    for candidate in (module.modules_to_save.default.weight.device, original_device):
+        if candidate is not None and torch.device(candidate).type == wanted_type:
+            target_device = candidate
+            break
 
     module.modules_to_save.default.to(device = target_device, dtype = new_dtype, non_blocking = True)
     module.modules_to_save.default.requires_grad_(True)
@@ -3714,7 +3721,8 @@ class FastLlamaModel:
             assert hasattr(model.get_input_embeddings(), "modules_to_save")
 
             _offload_frozen_module_for_training(
-                model.get_input_embeddings(), DEVICE_TYPE_TORCH, offload_device = None
+                model.get_input_embeddings(), DEVICE_TYPE_TORCH, offload_device = None,
+                original_device = input_embeddings_device,
             )
 
         if train_lm_head:
@@ -3722,7 +3730,8 @@ class FastLlamaModel:
             assert hasattr(model.get_output_embeddings(), "modules_to_save")
 
             _offload_frozen_module_for_training(
-                model.get_output_embeddings(), DEVICE_TYPE_TORCH, offload_device = None
+                model.get_output_embeddings(), DEVICE_TYPE_TORCH, offload_device = None,
+                original_device = output_embeddings_device,
             )
 
         # Patch tokenizer to pad to the right

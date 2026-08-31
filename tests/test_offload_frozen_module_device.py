@@ -222,3 +222,80 @@ def test_on_real_hardware_a_module_on_the_current_card_is_unchanged():
     assert w.original_module.weight.device == torch.device("cpu")
     assert w.modules_to_save.default.weight.requires_grad
     assert not w.original_module.weight.requires_grad
+
+
+# The DEFAULT path. `use_gradient_checkpointing = "unsloth"` offloads the trained
+# embedding and head to disk BEFORE `_get_peft_model` runs, so PEFT builds
+# `modules_to_save.default` on CPU and the copy has no index left to preserve.
+# llama.py records the real placement first (`input_embeddings_device` /
+# `output_embeddings_device`, captured just above that offload) and hands it over.
+
+
+def test_a_copy_rebuilt_on_cpu_by_the_disk_offload_uses_the_recorded_device():
+    """The default-path regression: without this the copy lands on cuda:0."""
+    w = _Wrapper("cpu")
+    offload(w, "cuda", original_device = torch.device("cuda", 1))
+    assert _moved_to(w) == torch.device("cuda", 1)
+
+
+def test_the_recorded_device_is_used_for_the_first_card_too():
+    w = _Wrapper("cpu")
+    offload(w, "cuda", original_device = torch.device("cuda", 0))
+    assert _moved_to(w) == torch.device("cuda", 0)
+
+
+def test_a_copy_that_still_has_an_index_beats_the_recorded_device():
+    """The copy is live truth; the record only covers a copy that lost its index."""
+    w = _Wrapper("cuda:1")
+    offload(w, "cuda", original_device = torch.device("cuda", 0))
+    assert _moved_to(w) == torch.device("cuda", 1)
+
+
+def test_a_recorded_cpu_device_does_not_pin_the_copy_to_cpu():
+    """A model loaded on CPU records cpu; it must still reach the accelerator."""
+    w = _Wrapper("cpu")
+    offload(w, "cuda", original_device = torch.device("cpu"))
+    assert torch.device(_moved_to(w)).type == "cuda"
+
+
+def test_no_recorded_device_behaves_exactly_as_before():
+    """The two call sites that have nothing to record must be unaffected."""
+    w = _Wrapper("cpu")
+    offload(w, "cuda", original_device = None)
+    assert torch.device(_moved_to(w)).type == "cuda"
+
+
+def test_a_meta_copy_also_uses_the_recorded_device():
+    w = _Wrapper("meta")
+    offload(w, "cuda", original_device = torch.device("cuda", 2))
+    assert _moved_to(w) == torch.device("cuda", 2)
+
+
+def test_the_continued_pretraining_call_sites_pass_the_recorded_device():
+    """The helper supporting it is worthless if the callers drop it.
+
+    That is the exact shape of the original bug, so assert it against the real
+    source rather than trusting the call sites to stay correct. The continued
+    pretraining calls are the ones passing `offload_device`.
+    """
+    import ast
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    tree = ast.parse((root / "unsloth" / "models" / "llama.py").read_text())
+
+    checked = 0
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if getattr(node.func, "id", None) != "_offload_frozen_module_for_training":
+            continue
+        kwargs = {kw.arg for kw in node.keywords}
+        if "offload_device" not in kwargs:
+            continue  # the pre-wrapped PEFT branch, which records nothing
+        assert "original_device" in kwargs, (
+            "a continued-pretraining call dropped original_device, so a copy "
+            "rebuilt on CPU by the disk offload lands on cuda:0"
+        )
+        checked += 1
+    assert checked == 2, f"expected 2 continued-pretraining call sites, found {checked}"
