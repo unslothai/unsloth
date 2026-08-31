@@ -463,9 +463,12 @@ def test_notebook_validator_reads_compatible_release_pins():
     assert "torchcodec>=0.12.0" in findings[0].hint
 
     # Below the baseline it is a no-op, like any other floor.
-    assert nv.rule_inst_004_torchcodec_torch(
-        '!pip install "torch~=2.9.0"', COLAB_TORCH211, "nb.ipynb", 0
-    ) == []
+    assert (
+        nv.rule_inst_004_torchcodec_torch(
+            '!pip install "torch~=2.9.0"', COLAB_TORCH211, "nb.ipynb", 0
+        )
+        == []
+    )
 
     remedied = '!pip install "torch==2.12.0" "torchcodec~=0.13.0"'
     assert nv.rule_inst_004_torchcodec_torch(remedied, COLAB_TORCH211, "nb.ipynb", 0) == []
