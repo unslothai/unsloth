@@ -1323,13 +1323,29 @@ def test_an_unimportable_torch_still_reports_the_cards(monkeypatch, tmp_path):
     physical_devices and the System tab said no visible GPU while nvidia-smi could
     enumerate the card: the central failure, for the runtime-failure case.
     """
+    import importlib.abc
+    import importlib.util
     import sys
 
-    class _Exploding:
-        def __getattr__(self, _name):
+    # A real import that raises, not an object in sys.modules whose attribute access does.
+    # Reading __spec__ off an existing sys.modules entry is import-machinery behaviour that
+    # changed in 3.13: on 3.10-3.12 `import torch` hands back the stub untouched, so the
+    # premise below silently inverted and this test passed for the wrong reason.
+    class _WillNotLoad(importlib.abc.Loader):
+        def create_module(self, spec):
+            return None
+
+        def exec_module(self, module):
             raise OSError("[WinError 126] cudart64_12.dll could not be loaded")
 
-    monkeypatch.setitem(sys.modules, "torch", _Exploding())
+    class _Finder(importlib.abc.MetaPathFinder):
+        def find_spec(self, fullname, path = None, target = None):
+            if fullname == "torch":
+                return importlib.util.spec_from_loader("torch", _WillNotLoad())
+            return None
+
+    monkeypatch.delitem(sys.modules, "torch", raising = False)
+    monkeypatch.setattr(sys, "meta_path", [_Finder(), *sys.meta_path])
     # _has_torch() is NOT forced here: it reports False for a wheel that will not import,
     # and the early return on it used to keep this host from the on-disk fallback below.
     assert hw._has_torch() is False, "the premise: an unimportable torch reads as absent"
