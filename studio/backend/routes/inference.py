@@ -627,20 +627,21 @@ def _choice_seed(
     """A seed of its own per choice, so a seeded request samples n times rather
     than repeating one run. Shared by both drains so they cannot disagree.
 
-    llama-server holds the seed as a uint32 and draws at random for exactly one
-    value, LLAMA_DEFAULT_SEED (0xFFFFFFFF); ``-1`` is the only request seed that
-    converts to it, and offsetting that would make every choice after the first
-    deterministic. Every other negative is an ordinary fixed seed there, so it
-    must be offset like any other or all n choices repeat one run. The offset is
-    taken in that same uint32 domain, so a shifted seed cannot land on the
-    sentinel and turn one choice random. MLX maps every seed onto its key domain
-    instead, so nothing is exempt on that side.
+    llama-server reads the seed as a uint32 and draws at random for exactly one
+    value, LLAMA_DEFAULT_SEED (0xFFFFFFFF). Every seed congruent to it is that
+    sentinel, not just ``-1``: the schemas above also accept ``4294967295`` and
+    ``2**64-1``. Tested in that domain to match ``_apply_seeded_llama_request``,
+    since a literal ``-1`` left choice 0 random and cached while choice 1 was
+    offset into a fixed, uncached seed. Every other negative is an ordinary fixed
+    seed and must be offset, or all n choices repeat one run; offsetting in the
+    same domain cannot land on the sentinel. MLX maps every seed onto its key
+    domain, so nothing is exempt there.
     """
     if seed is None or not choice_index:
         return seed
     if not negative_is_random:
         return seed + choice_index
-    if seed == -1:
+    if (seed & 0xFFFFFFFF) == 0xFFFFFFFF:
         return seed
     return ((seed & 0xFFFFFFFF) + choice_index) % 0xFFFFFFFF
 
@@ -1462,6 +1463,7 @@ try:
         _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_STREAM_STALL_TIMEOUT_S,
+        _apply_seeded_llama_request,
         _emitted_n_batch,
         _extra_args_draft_device_pin,
         _extra_args_n_ubatch,
@@ -1519,6 +1521,7 @@ except ImportError:
         _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_STREAM_STALL_TIMEOUT_S,
+        _apply_seeded_llama_request,
         _emitted_n_batch,
         _extra_args_draft_device_pin,
         _extra_args_n_ubatch,
@@ -25435,6 +25438,8 @@ def _build_chat_request(
         chat_kwargs["temperature"] = payload.temperature
     if payload.top_p is not None:
         chat_kwargs["top_p"] = payload.top_p
+    if payload.seed is not None:
+        chat_kwargs["seed"] = payload.seed
     if payload.max_output_tokens is not None:
         chat_kwargs["max_tokens"] = payload.max_output_tokens
 
@@ -28030,6 +28035,7 @@ async def anthropic_messages(
                     min_p = min_p,
                     repetition_penalty = repetition_penalty,
                     presence_penalty = presence_penalty,
+                    seed = payload.seed,
                     tool_choice = openai_tool_choice,
                     session_id = payload.session_id,
                     cancel_id = payload.cancel_id,
@@ -28054,6 +28060,7 @@ async def anthropic_messages(
                 min_p = min_p,
                 repetition_penalty = repetition_penalty,
                 presence_penalty = presence_penalty,
+                seed = payload.seed,
                 tool_choice = openai_tool_choice,
                 disable_parallel_tool_use = _disable_parallel,
                 auto_heal_tool_calls = payload.auto_heal_tool_calls,
@@ -28171,6 +28178,7 @@ async def anthropic_messages(
                 presence_penalty = presence_penalty,
                 max_tokens = payload.max_tokens,
                 stop = stop,
+                seed = payload.seed,
                 cancel_event = cancel_event,
                 max_tool_iterations = 25,
                 on_conversation_grew = _anthropic_recost,
@@ -28239,6 +28247,7 @@ async def anthropic_messages(
             presence_penalty = presence_penalty,
             max_tokens = payload.max_tokens,
             stop = stop,
+            seed = payload.seed,
             cancel_event = cancel_event,
             promote_reasoning_only = False,
             perf_callback = _monitor_perf_callback(
@@ -29130,8 +29139,7 @@ def _build_passthrough_payload(
         tool_choice = reconciled_tool_choice(tool_choice, openai_tools, safe_tools)
         if tool_choice is not None:
             body["tool_choice"] = tool_choice
-    if seed is not None:
-        body["seed"] = seed
+    _apply_seeded_llama_request(body, seed)
     if stream and stream_options is not None:
         body["stream_options"] = stream_options
     body["max_tokens"] = (
@@ -29253,6 +29261,7 @@ async def _anthropic_passthrough_stream(
     min_p = None,
     repetition_penalty = None,
     presence_penalty = None,
+    seed = None,
     tool_choice = "auto",
     session_id = None,
     cancel_id = None,
@@ -29278,6 +29287,7 @@ async def _anthropic_passthrough_stream(
         min_p = min_p,
         repetition_penalty = repetition_penalty,
         presence_penalty = presence_penalty,
+        seed = seed,
         tool_choice = tool_choice,
         chat_template_kwargs = _reasoning_template_kwargs(
             llama_backend, enable_thinking, reasoning_effort, preserve_thinking
@@ -29553,6 +29563,7 @@ async def _anthropic_passthrough_non_streaming(
     min_p = None,
     repetition_penalty = None,
     presence_penalty = None,
+    seed = None,
     tool_choice = "auto",
     disable_parallel_tool_use = False,
     auto_heal_tool_calls = None,
@@ -29584,6 +29595,7 @@ async def _anthropic_passthrough_non_streaming(
         min_p = min_p,
         repetition_penalty = repetition_penalty,
         presence_penalty = presence_penalty,
+        seed = seed,
         tool_choice = tool_choice,
         chat_template_kwargs = _reasoning_template_kwargs(
             llama_backend, enable_thinking, reasoning_effort, preserve_thinking

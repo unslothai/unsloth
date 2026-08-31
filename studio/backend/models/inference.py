@@ -2929,6 +2929,12 @@ class ResponsesRequest(BaseModel):
     instructions: Optional[str] = Field(None, description = "System / developer instructions")
     temperature: Optional[float] = Field(None, ge = 0.0, le = 2.0)
     top_p: Optional[float] = Field(None, ge = 0.0, le = 1.0)
+    seed: Optional[int] = Field(
+        None,
+        ge = -(2**63),
+        le = 2**64 - 1,
+        description = "[x-unsloth] Best-effort deterministic sampling seed.",
+    )
     max_output_tokens: Optional[int] = Field(None, ge = 1)
     stream: bool = Field(False, description = "Whether to stream the response via SSE")
 
@@ -3279,6 +3285,12 @@ class AnthropicMessagesRequest(BaseModel):
     temperature: Optional[float] = None
     top_p: Optional[float] = None
     top_k: Optional[int] = None
+    seed: Optional[int] = Field(
+        None,
+        ge = -(2**63),
+        le = 2**64 - 1,
+        description = "[x-unsloth] Best-effort deterministic sampling seed.",
+    )
     stop_sequences: Optional[list[str]] = None
     metadata: Optional[dict] = None
     # [x-unsloth] extensions mirroring the OpenAI endpoint convenience fields

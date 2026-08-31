@@ -212,10 +212,15 @@ def _write_backend_fixture(home: Path, request_log: Path) -> None:
                     self.send_header("Content-Type", "application/json")
                     self.send_header("Content-Length", str(len(raw)))
                     self.send_header("Access-Control-Allow-Origin", "tauri://localhost")
-                    self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-HF-Token")
+                    self.send_header("Access-Control-Allow-Headers", self.allowed_headers())
                     self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
                     self.end_headers()
                     self.wfile.write(raw)
+
+                def allowed_headers(self):
+                    # Echo requested headers so this fixture follows frontend changes.
+                    asked = self.headers.get("Access-Control-Request-Headers")
+                    return asked or "Authorization, Content-Type, X-HF-Token"
 
                 def do_OPTIONS(self):
                     # Recorded like GET and POST. A preflight the browser rejects means the

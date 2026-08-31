@@ -177,6 +177,65 @@ def test_plain_stream_reports_request_scoped_live_prompt_and_generation_timings(
     assert samples[-1]["predicted_per_second"] == 200
 
 
+def test_plain_fixed_seed_disables_slot_prompt_cache_reuse(monkeypatch):
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [[_sse({"content": "seeded"}), _done()]],
+        payloads,
+    )
+
+    list(
+        backend.generate_chat_completion(
+            messages = [{"role": "user", "content": "repeat this"}],
+            seed = 3407,
+        )
+    )
+
+    assert payloads[0]["seed"] == 3407
+    assert payloads[0]["cache_prompt"] is False
+
+
+def test_the_uint32_random_seed_sentinel_also_keeps_cache_reuse(monkeypatch):
+    """llama.h defines LLAMA_DEFAULT_SEED as 0xFFFFFFFF and the seed is read as uint32, so
+    4294967295 is the same "pick one at random" as -1 and must keep prompt-cache reuse."""
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [[_sse({"content": "random"}), _done()]],
+        payloads,
+    )
+
+    list(
+        backend.generate_chat_completion(
+            messages = [{"role": "user", "content": "vary this"}],
+            seed = 0xFFFFFFFF,
+        )
+    )
+
+    assert payloads[0]["seed"] == 0xFFFFFFFF
+    assert "cache_prompt" not in payloads[0]
+
+
+def test_plain_random_seed_sentinel_keeps_slot_prompt_cache_reuse(monkeypatch):
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [[_sse({"content": "random"}), _done()]],
+        payloads,
+    )
+
+    list(
+        backend.generate_chat_completion(
+            messages = [{"role": "user", "content": "vary this"}],
+            seed = -1,
+        )
+    )
+
+    assert payloads[0]["seed"] == -1
+    assert "cache_prompt" not in payloads[0]
+
+
 def test_tool_stream_reports_progress_without_leaking_a_content_event(monkeypatch):
     stream = [
         _progress(processed = 512, cached = 0, time_ms = 64),

@@ -416,6 +416,9 @@ class TestSdistOnlyBuildArgs:
         for name in ips.SDIST_ONLY_PACKAGES:
             assert name in allow, f"{name} missing from clean-machine-assert.sh nobuild allowlist"
             assert f"'{name}'" in ps1, f"{name} missing from assert-nobuild.ps1 allowlist"
+        # overlay:false releases still need the temporary Diffusers sdist exemption.
+        assert "diffusers" in allow
+        assert "'diffusers'" in ps1
 
 
 class TestHardenedPipConfigRelaxation:
