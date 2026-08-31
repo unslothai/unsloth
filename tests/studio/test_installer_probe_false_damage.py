@@ -67,11 +67,16 @@ def _record(dist_info: Path, rows) -> None:
     (dist_info / "RECORD").write_text(buf.getvalue(), encoding = "utf-8", newline = "")
 
 
-def _dist(site_packages: Path, name = PKG, version = VER) -> Path:
+def _dist(
+    site_packages: Path,
+    name = PKG,
+    version = VER,
+) -> Path:
     dist_info = site_packages / f"{name}-{version}.dist-info"
     dist_info.mkdir(parents = True, exist_ok = True)
     (dist_info / "METADATA").write_text(
-        f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n", encoding = "utf-8")
+        f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n", encoding = "utf-8"
+    )
     (dist_info / "WHEEL").write_text("Wheel-Version: 1.0\n", encoding = "utf-8")
     return dist_info
 
@@ -82,17 +87,24 @@ def _write(path: Path, text: str) -> int:
     return len(text.encode())
 
 
-def _verdict(probe_source: str, tmp_path: Path, site_packages: Path, name = PKG) -> str:
+def _verdict(
+    probe_source: str,
+    tmp_path: Path,
+    site_packages: Path,
+    name = PKG,
+) -> str:
     runner = tmp_path / "run.py"
     runner.write_text(RUNNER, encoding = "utf-8")
     (tmp_path / "run.py.probe").write_text(probe_source, encoding = "utf-8")
     done = subprocess.run(
         [sys.executable, "-I", str(runner), name, str(site_packages)],
-        stdout = subprocess.PIPE, stderr = subprocess.PIPE, timeout = 120,
+        stdout = subprocess.PIPE,
+        stderr = subprocess.PIPE,
+        timeout = 120,
     )
     assert done.returncode == 0, done.stderr.decode(errors = "replace")
     sentinels = [
-        line[len("POSTVER="):]
+        line[len("POSTVER=") :]
         for line in done.stdout.decode(errors = "replace").splitlines()
         if line.startswith("POSTVER=")
     ]
@@ -111,14 +123,19 @@ def test_a_regenerated_frontend_dist_is_not_damage(probe_source, tmp_path):
     site_packages = tmp_path / "site-packages"
     dist_info = _dist(site_packages)
     payload = _write(site_packages / PKG / "__init__.py", "x = 1\n")
-    old = _write(site_packages / "studio/frontend/dist/assets/index-OLDHASH1.js", "console.log(1)\n")
+    old = _write(
+        site_packages / "studio/frontend/dist/assets/index-OLDHASH1.js", "console.log(1)\n"
+    )
     index = _write(site_packages / "studio/frontend/dist/index.html", "<html>old</html>\n")
-    _record(dist_info, [
-        [f"{PKG}/__init__.py", "sha256=x", payload],
-        ["studio/frontend/dist/assets/index-OLDHASH1.js", "sha256=x", old],
-        ["studio/frontend/dist/index.html", "sha256=x", index],
-        [f"{dist_info.name}/RECORD", "", ""],
-    ])
+    _record(
+        dist_info,
+        [
+            [f"{PKG}/__init__.py", "sha256=x", payload],
+            ["studio/frontend/dist/assets/index-OLDHASH1.js", "sha256=x", old],
+            ["studio/frontend/dist/index.html", "sha256=x", index],
+            [f"{dist_info.name}/RECORD", "", ""],
+        ],
+    )
 
     # What a rebuild leaves behind: new hashes, old names gone, index.html shorter.
     (site_packages / "studio/frontend/dist/assets/index-OLDHASH1.js").unlink()
@@ -133,12 +150,17 @@ def test_real_damage_is_still_caught_after_a_frontend_rebuild(probe_source, tmp_
     site_packages = tmp_path / "site-packages"
     dist_info = _dist(site_packages)
     payload = _write(site_packages / PKG / "__init__.py", "x = 1\n")
-    old = _write(site_packages / "studio/frontend/dist/assets/index-OLDHASH1.js", "console.log(1)\n")
-    _record(dist_info, [
-        [f"{PKG}/__init__.py", "sha256=x", payload],
-        ["studio/frontend/dist/assets/index-OLDHASH1.js", "sha256=x", old],
-        [f"{dist_info.name}/RECORD", "", ""],
-    ])
+    old = _write(
+        site_packages / "studio/frontend/dist/assets/index-OLDHASH1.js", "console.log(1)\n"
+    )
+    _record(
+        dist_info,
+        [
+            [f"{PKG}/__init__.py", "sha256=x", payload],
+            ["studio/frontend/dist/assets/index-OLDHASH1.js", "sha256=x", old],
+            [f"{dist_info.name}/RECORD", "", ""],
+        ],
+    )
     (site_packages / "studio/frontend/dist/assets/index-OLDHASH1.js").unlink()
     (site_packages / PKG / "__init__.py").unlink()
 
@@ -156,10 +178,13 @@ def test_a_pth_only_dispatch_wheel_is_not_damage(probe_source, tmp_path):
     _write(site_packages / PKG / "__init__.py", "x = 1\n")
     pth = _write(site_packages / f"{PKG}_packages.pth", f"import sys, os, {PKG}\n")
     (dist_info / "top_level.txt").write_text("\n", encoding = "utf-8")
-    _record(dist_info, [
-        [f"{PKG}_packages.pth", "sha256=x", pth],
-        [f"{dist_info.name}/RECORD", "", ""],
-    ])
+    _record(
+        dist_info,
+        [
+            [f"{PKG}_packages.pth", "sha256=x", pth],
+            [f"{dist_info.name}/RECORD", "", ""],
+        ],
+    )
 
     assert _verdict(probe_source, tmp_path, site_packages) == VER
 
@@ -170,12 +195,16 @@ def test_an_editable_whose_checkout_is_gone_is_still_damage(probe_source, tmp_pa
     dist_info = _dist(site_packages)
     checkout = tmp_path / "deleted-checkout"
     (dist_info / "direct_url.json").write_text(
-        json.dumps({"url": checkout.as_uri(), "dir_info": {"editable": True}}), encoding = "utf-8")
+        json.dumps({"url": checkout.as_uri(), "dir_info": {"editable": True}}), encoding = "utf-8"
+    )
     pth = _write(site_packages / f"__editable__.{PKG}.pth", str(checkout) + "\n")
-    _record(dist_info, [
-        [f"__editable__.{PKG}.pth", "sha256=x", pth],
-        [f"{dist_info.name}/RECORD", "", ""],
-    ])
+    _record(
+        dist_info,
+        [
+            [f"__editable__.{PKG}.pth", "sha256=x", pth],
+            [f"{dist_info.name}/RECORD", "", ""],
+        ],
+    )
 
     assert _verdict(probe_source, tmp_path, site_packages) == "__DAMAGED__"
 
@@ -188,10 +217,13 @@ def test_a_quoted_line_break_in_a_recorded_name_is_not_damage(probe_source, tmp_
     site_packages = tmp_path / "site-packages"
     dist_info = _dist(site_packages)
     size = _write(site_packages / PKG / bad, "x = 1\n")
-    _record(dist_info, [
-        [f"{PKG}/{bad}", "sha256=x", size],
-        [f"{dist_info.name}/RECORD", "", ""],
-    ])
+    _record(
+        dist_info,
+        [
+            [f"{PKG}/{bad}", "sha256=x", size],
+            [f"{dist_info.name}/RECORD", "", ""],
+        ],
+    )
 
     assert _verdict(probe_source, tmp_path, site_packages) == VER
 
