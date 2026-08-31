@@ -1,20 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Nothing here is importable at runtime, so none of it belongs in a release.
-#
-# include-package-data is on and setuptools-scm is the file finder, so every
-# tracked file under a surviving package directory ships unless something vetoes
-# it. packages.find only decides importability and exclude-package-data only
-# survives a wheel built straight from the git tree -- build.sh runs plain
-# `python -m build`, which builds the sdist first and the wheel from THAT sdist,
-# where the .git dir is gone. MANIFEST.in is the one veto that travels inside
-# the sdist, so it holds for both artifacts on the real release path.
-#
-# Dropping tests/security/fixtures is also what keeps antivirus scanners quiet:
-# those fixtures embed a real supply-chain IOC literal on purpose, so that the
-# scan_packages.py regression tests can prove the scanner trips on it. Shipping
-# them made VirusTotal flag the sdist (discussion #9577).
+# The only veto that travels inside the sdist, so it holds for the wheel too:
+# `python -m build` rebuilds the wheel from the sdist, where exclude-package-data
+# and packages.find no longer bite (no .git tree for the file finder).
+# tests/security/fixtures embeds a real supply-chain IOC literal on purpose, which
+# got the published sdist flagged by antivirus vendors (discussion #9577).
 prune tests
 prune studio/backend/tests
 prune studio/backend/hub/tests
