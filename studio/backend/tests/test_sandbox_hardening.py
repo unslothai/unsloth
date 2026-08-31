@@ -175,9 +175,9 @@ class TestPatchB_FindSensitivePathsHomeAnchored:
         ],
     )
     def test_legitimate_allowed(self, cmd):
-        assert not _find_sensitive_paths(
-            cmd
-        ), f"expected to allow (would dumbify tool calling): {cmd!r}"
+        assert not _find_sensitive_paths(cmd), (
+            f"expected to allow (would dumbify tool calling): {cmd!r}"
+        )
 
 
 class TestPatchB_FindSensitivePathsAbsolute:
@@ -222,9 +222,9 @@ class TestPatchB_FindSensitivePathsAbsolute:
         ],
     )
     def test_legitimate_absolute_allowed(self, cmd):
-        assert not _find_sensitive_paths(
-            cmd
-        ), f"expected to allow (would dumbify tool calling): {cmd!r}"
+        assert not _find_sensitive_paths(cmd), (
+            f"expected to allow (would dumbify tool calling): {cmd!r}"
+        )
 
 
 class TestPatchB_PythonShellExec:
@@ -263,9 +263,7 @@ class TestPatchB_PythonShellExec:
         ],
     )
     def test_legitimate_allowed(self, code):
-        assert not _is_blocked(
-            code
-        ), f"expected to allow (would dumbify tool calling): {code!r}"
+        assert not _is_blocked(code), f"expected to allow (would dumbify tool calling): {code!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -304,9 +302,7 @@ class TestPatchD_EvalExecLiteralPayload:
         ],
     )
     def test_legitimate_eval_exec_allowed(self, code):
-        assert not _is_blocked(
-            code
-        ), f"expected to allow (would dumbify tool calling): {code!r}"
+        assert not _is_blocked(code), f"expected to allow (would dumbify tool calling): {code!r}"
 
 
 class TestPatchD_EvalExecDynamicPayload:
@@ -387,9 +383,7 @@ class TestPatchD_NestedDepthCap:
         payload = inner
         for _ in range(depth):
             payload = f"exec({payload!r})"
-        assert not _is_blocked(
-            payload
-        ), f"shallow innocuous depth={depth} now blocked: {payload!r}"
+        assert not _is_blocked(payload), f"shallow innocuous depth={depth} now blocked: {payload!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -438,9 +432,7 @@ class TestFinding1_DirectOpenSensitivePaths:
         ],
     )
     def test_project_local_open_still_allowed(self, code):
-        assert not _is_blocked(
-            code
-        ), f"regression: project-local open() now blocked: {code!r}"
+        assert not _is_blocked(code), f"regression: project-local open() now blocked: {code!r}"
 
 
 class TestFinding4_ShellQuoteSplicing:
@@ -472,9 +464,7 @@ class TestFinding4_ShellQuoteSplicing:
         ],
     )
     def test_quote_spliced_project_local_allowed(self, cmd):
-        assert not _find_sensitive_paths(
-            cmd
-        ), f"regression: spliced project-local blocked: {cmd!r}"
+        assert not _find_sensitive_paths(cmd), f"regression: spliced project-local blocked: {cmd!r}"
 
 
 class TestFinding5_WindowsHomePrefixes:
@@ -504,9 +494,7 @@ class TestFinding5_WindowsHomePrefixes:
         ],
     )
     def test_legitimate_windows_paths_allowed(self, cmd):
-        assert not _find_sensitive_paths(
-            cmd
-        ), f"regression: legit Windows path blocked: {cmd!r}"
+        assert not _find_sensitive_paths(cmd), f"regression: legit Windows path blocked: {cmd!r}"
 
 
 class TestFinding6_DeepLiteralConcat:
@@ -550,9 +538,9 @@ class TestFinding7_NetworkHostStaticResolver:
         ],
     )
     def test_dynamic_trusted_host_allowed(self, code):
-        assert not _is_blocked(
-            code
-        ), f"regression: trusted host with dynamic literal blocked: {code!r}"
+        assert not _is_blocked(code), (
+            f"regression: trusted host with dynamic literal blocked: {code!r}"
+        )
 
 
 class TestFinding8_PathlibPathOpen:
@@ -602,9 +590,7 @@ class TestFinding9_ProjectLocalFalsePositives:
         ],
     )
     def test_project_local_lookalikes_allowed(self, cmd):
-        assert not _find_sensitive_paths(
-            cmd
-        ), f"false-positive (tool calling dumber): {cmd!r}"
+        assert not _find_sensitive_paths(cmd), f"false-positive (tool calling dumber): {cmd!r}"
 
 
 class TestFinding10_PublicSshKeyAllowed:
@@ -624,9 +610,7 @@ class TestFinding10_PublicSshKeyAllowed:
         ],
     )
     def test_public_ssh_keys_allowed(self, cmd):
-        assert not _find_sensitive_paths(
-            cmd
-        ), f"regression: public key read blocked: {cmd!r}"
+        assert not _find_sensitive_paths(cmd), f"regression: public key read blocked: {cmd!r}"
 
     @pytest.mark.parametrize(
         "cmd",
@@ -639,9 +623,7 @@ class TestFinding10_PublicSshKeyAllowed:
         ],
     )
     def test_private_ssh_keys_still_blocked(self, cmd):
-        assert _find_sensitive_paths(
-            cmd
-        ), f"regression: private key now allowed: {cmd!r}"
+        assert _find_sensitive_paths(cmd), f"regression: private key now allowed: {cmd!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -685,9 +667,7 @@ class TestCrossCuttingNoRegression:
         ],
     )
     def test_preexisting_allowed_still_pass(self, code):
-        assert not _is_blocked(
-            code
-        ), f"REGRESSION: pre-existing pass-through now blocked: {code!r}"
+        assert not _is_blocked(code), f"REGRESSION: pre-existing pass-through now blocked: {code!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -1328,16 +1308,12 @@ class TestFollowup_DynamicImportShellEscape:
         [
             "__import__('os').system('" + SUDO + " whoami')",
             "__import__('os').popen('cat ~/.ssh/id_rsa')",
-            "import importlib; importlib.import_module('os').system('"
-            + SUDO
-            + " whoami')",
+            "import importlib; importlib.import_module('os').system('" + SUDO + " whoami')",
             "from importlib import import_module; import_module('os').system('"
             + SUDO
             + " whoami')",
             "m = __import__('os'); m.system('" + SUDO + " whoami')",
-            "m = __import__('subprocess'); m.run(['"
-            + SUDO
-            + "', 'whoami'], shell=True)",
+            "m = __import__('subprocess'); m.run(['" + SUDO + "', 'whoami'], shell=True)",
             "import importlib; mod = importlib.import_module('os'); "
             "mod.popen('cat ~/.aws/credentials')",
         ],
@@ -1389,8 +1365,7 @@ class TestFollowup_ProcSelfSymlinkTraversal:
             "open('/proc/self/cwd/../../etc/shadow').read()",
             "open('/proc/1/root/etc/sudoers')",
             "import pathlib; pathlib.Path('/proc/self/root/etc/shadow').read_text()",
-            "from pathlib import Path; "
-            "Path('/proc/thread-self/root/etc/shadow').open()",
+            "from pathlib import Path; Path('/proc/thread-self/root/etc/shadow').open()",
         ],
     )
     def test_proc_self_symlink_traversal_open_blocked(self, code):
@@ -1801,9 +1776,7 @@ class TestR4_BraceCapOffByOne:
     def test_brace_with_n_dummies_blocked(self, n_dummies):
         dummies = ",".join(f"x{i}" for i in range(n_dummies))
         cmd = f"cat /home/u/.aws/{{{dummies},credentials}}"
-        assert _find_sensitive_paths(
-            cmd
-        ), f"brace bomb with {n_dummies} dummies leaked: {cmd!r}"
+        assert _find_sensitive_paths(cmd), f"brace bomb with {n_dummies} dummies leaked: {cmd!r}"
 
     def test_brace_bomb_within_limit_blocked(self):
         # 100 alts x 100 dummy chars per alt = comfortably under cap;
@@ -1811,9 +1784,7 @@ class TestR4_BraceCapOffByOne:
         # value names a sensitive path.
         dummies = ",".join(f"x{i}" for i in range(500))
         cmd = f"cat /home/u/.aws/{{{dummies},credentials}}"
-        assert _find_sensitive_paths(
-            cmd
-        ), f"brace bomb (501 alts) within cap leaked: {cmd!r}"
+        assert _find_sensitive_paths(cmd), f"brace bomb (501 alts) within cap leaked: {cmd!r}"
 
 
 class TestR4_ThreadSelfShellExpansion:
@@ -1831,9 +1802,7 @@ class TestR4_ThreadSelfShellExpansion:
         ],
     )
     def test_thread_self_shell_expansion_blocked(self, cmd):
-        assert _find_sensitive_paths(
-            cmd
-        ), f"thread-self shell expansion leaked: {cmd!r}"
+        assert _find_sensitive_paths(cmd), f"thread-self shell expansion leaked: {cmd!r}"
 
 
 class TestR4_EvalExecPrepass:
@@ -2207,9 +2176,7 @@ class TestR6_BraceBombEmptyAlt:
     def test_brace_bomb_empty_alt_blocked(self, n_dummies):
         dummies = ",".join(f"x{i}" for i in range(n_dummies))
         cmd = f"cat ~/{{,{dummies}}}/{{.ssh/id_rsa,other}}"
-        assert _find_sensitive_paths(
-            cmd
-        ), f"brace empty-alt bomb leaked at n={n_dummies}: {cmd!r}"
+        assert _find_sensitive_paths(cmd), f"brace empty-alt bomb leaked at n={n_dummies}: {cmd!r}"
 
     @pytest.mark.parametrize(
         "cmd",
@@ -2258,9 +2225,7 @@ class TestR7_DeepPathTraversal:
         ],
     )
     def test_deep_traversal_bash_blocked(self, cmd):
-        assert _find_sensitive_paths(
-            cmd
-        ), f"deep ~/foo/../../etc traversal leaked: {cmd!r}"
+        assert _find_sensitive_paths(cmd), f"deep ~/foo/../../etc traversal leaked: {cmd!r}"
 
     @pytest.mark.parametrize(
         "code",
@@ -2282,9 +2247,7 @@ class TestR7_DeepPathTraversal:
         ],
     )
     def test_in_home_traversal_allowed(self, cmd):
-        assert not _find_sensitive_paths(
-            cmd
-        ), f"legit in-home ../ traversal blocked: {cmd!r}"
+        assert not _find_sensitive_paths(cmd), f"legit in-home ../ traversal blocked: {cmd!r}"
 
 
 class TestR7_BraceFalsePositive:
@@ -2305,9 +2268,7 @@ class TestR7_BraceFalsePositive:
         ],
     )
     def test_user_data_brace_allowed(self, cmd):
-        assert not _find_sensitive_paths(
-            cmd
-        ), f"user-data brace falsely blocked: {cmd!r}"
+        assert not _find_sensitive_paths(cmd), f"user-data brace falsely blocked: {cmd!r}"
 
     @pytest.mark.parametrize(
         "cmd",
@@ -2330,9 +2291,7 @@ class TestR7_BraceFalsePositive:
         ],
     )
     def test_home_credential_brace_blocked(self, cmd):
-        assert _find_sensitive_paths(
-            cmd
-        ), f"home-credential brace listing leaked: {cmd!r}"
+        assert _find_sensitive_paths(cmd), f"home-credential brace listing leaked: {cmd!r}"
 
 
 class TestR7_BinOpAddDepthCap:
@@ -2352,9 +2311,7 @@ class TestR7_BinOpAddDepthCap:
         parts = ["''"] * pad + [repr(c) for c in target]
         expr = " + ".join(parts)
         code = f"open({expr}).read()"
-        assert _is_blocked(
-            code
-        ), f"long {n_parts}-operand concat leaked: open({expr!r})"
+        assert _is_blocked(code), f"long {n_parts}-operand concat leaked: open({expr!r})"
 
     def test_long_concat_legit_allowed(self):
         # A long concatenation that resolves to a benign path must
@@ -2415,3 +2372,58 @@ class TestR7_NetworkAndIoVisitorModuleRebinding:
     )
     def test_rebound_legit_allowed(self, code):
         assert not _is_blocked(code), f"legit rebinding blocked: {code!r}"
+
+
+class TestCurrentMainConflictRegressions:
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import requests as r\nf = r.get\nf('http://169.254.169.254/')",
+            "import requests as r\nf = r.get\ng = f\ng('http://169.254.169.254/')",
+            "import requests\ns = requests.Session()\nf = s.get\nf('http://169.254.169.254/')",
+        ],
+    )
+    def test_network_callable_aliases_blocked(self, code):
+        assert _is_blocked(code), f"network callable alias leaked: {code!r}"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import builtins\nf = builtins.exec\nf(\"open('/etc/shadow').read()\")",
+            "import builtins\nf = builtins.exec\ng = f\ng(\"open('/etc/shadow').read()\")",
+            "import shutil\nf = shutil.copy\nf('/etc/shadow', 'x')",
+            "import shutil\nf = shutil.copy\ng = f\ng('/etc/shadow', 'x')",
+        ],
+    )
+    def test_sensitive_callable_aliases_blocked(self, code):
+        assert _is_blocked(code), f"sensitive callable alias leaked: {code!r}"
+
+    def test_bindings_do_not_leak_between_functions(self):
+        code = "def source():\n    path = '/etc/shadow'\ndef consumer():\n    open(path)"
+        assert not _is_blocked(code), "binding from another function leaked into consumer"
+
+    def test_same_scope_binding_still_blocked(self):
+        code = "def consumer():\n    path = '/etc/shadow'\n    open(path)"
+        assert _is_blocked(code), "same-scope sensitive binding leaked"
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "cat /etc/*.conf",
+            "cat /etc/ssl/*.cnf",
+        ],
+    )
+    def test_benign_etc_globs_allowed(self, cmd):
+        assert not _find_sensitive_paths(cmd), f"benign /etc glob blocked: {cmd!r}"
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "cat /etc/*",
+            "cat /etc/sha*ow",
+            "cat /etc/ssh/ssh_host_*",
+            "cat ~/.ssh/id_*",
+        ],
+    )
+    def test_sensitive_globs_still_blocked(self, cmd):
+        assert _find_sensitive_paths(cmd), f"sensitive glob leaked: {cmd!r}"

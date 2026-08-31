@@ -7,7 +7,12 @@ class _AutoModelLike:
 
 
 class _FakeLazyMapping:
-    def __init__(self, entries, extra_content = None, broken_keys = ()):
+    def __init__(
+        self,
+        entries,
+        extra_content = None,
+        broken_keys = (),
+    ):
         self._entries = dict(entries)
         self._config_mapping = {k: f"Cfg_{k}" for k in self._entries}
         self._model_mapping = {k: f"Mdl_{k}" for k in self._entries}

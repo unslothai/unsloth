@@ -9,36 +9,28 @@ class QwenModelInfo(ModelInfo):
     @classmethod
     def construct_model_name(cls, base_name, version, size, quant_type, instruct_tag):
         key = f"{base_name}{version}-{size}B"
-        return super().construct_model_name(
-            base_name, version, size, quant_type, instruct_tag, key
-        )
+        return super().construct_model_name(base_name, version, size, quant_type, instruct_tag, key)
 
 
 class QwenVLModelInfo(ModelInfo):
     @classmethod
     def construct_model_name(cls, base_name, version, size, quant_type, instruct_tag):
         key = f"{base_name}{version}-VL-{size}B"
-        return super().construct_model_name(
-            base_name, version, size, quant_type, instruct_tag, key
-        )
+        return super().construct_model_name(base_name, version, size, quant_type, instruct_tag, key)
 
 
 class QwenQwQModelInfo(ModelInfo):
     @classmethod
     def construct_model_name(cls, base_name, version, size, quant_type, instruct_tag):
         key = f"{base_name}-{size}B"
-        return super().construct_model_name(
-            base_name, version, size, quant_type, instruct_tag, key
-        )
+        return super().construct_model_name(base_name, version, size, quant_type, instruct_tag, key)
 
 
 class QwenQVQPreviewModelInfo(ModelInfo):
     @classmethod
     def construct_model_name(cls, base_name, version, size, quant_type, instruct_tag):
         key = f"{base_name}-{size}B-Preview"
-        return super().construct_model_name(
-            base_name, version, size, quant_type, instruct_tag, key
-        )
+        return super().construct_model_name(base_name, version, size, quant_type, instruct_tag, key)
 
 
 # Qwen2.5 Model Meta
@@ -78,6 +70,9 @@ QwenQwQMeta = ModelMeta(
 )
 
 # Qwen QVQ Preview Model Meta
+# No QuantType.NONE: the unquantized mirror unsloth/QVQ-72B-Preview was removed
+# from the Hub (only unsloth/QVQ-72B-Preview-bnb-4bit remains). The upstream
+# Qwen/QVQ-72B-Preview is still registered via include_original_model.
 QwenQVQPreviewMeta = ModelMeta(
     org = "Qwen",
     base_name = "QVQ",
@@ -86,7 +81,7 @@ QwenQVQPreviewMeta = ModelMeta(
     model_sizes = ["72"],
     model_info_cls = QwenQVQPreviewModelInfo,
     is_multimodal = True,
-    quant_types = [QuantType.NONE, QuantType.BNB],
+    quant_types = [QuantType.BNB],
 )
 
 

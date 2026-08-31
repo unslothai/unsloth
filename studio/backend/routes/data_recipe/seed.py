@@ -10,6 +10,7 @@ import binascii
 import json
 import os
 import re
+import shutil
 from itertools import islice
 from pathlib import Path
 from typing import Any
@@ -17,20 +18,18 @@ from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, UploadFile, File as FastAPIFile, Form
 
-try:
-    from data_designer_unstructured_seed.chunking import (
-        build_multi_file_preview_rows,
-        build_unstructured_preview_rows,
-        normalize_unstructured_text,
-        resolve_chunking,
-    )
-except ImportError:
-    build_multi_file_preview_rows = None
-    build_unstructured_preview_rows = None
-    normalize_unstructured_text = None
-    resolve_chunking = None
 from core.data_recipe.jsonable import to_preview_jsonable
+from loggers import get_logger
 from utils.paths import ensure_dir, seed_uploads_root, unstructured_uploads_root
+from utils.utils import log_and_http_error
+from utils.upload_limits import (
+    LOCAL_SEED_UPLOAD_MAX_BYTES,
+    LOCAL_SEED_UPLOAD_MAX_LABEL,
+    UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES,
+    UNSTRUCTURED_RECIPE_UPLOAD_MAX_LABEL,
+    UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_BYTES,
+    UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_LABEL,
+)
 
 from models.data_recipe import (
     SeedInspectRequest,
@@ -38,8 +37,28 @@ from models.data_recipe import (
     SeedInspectUploadRequest,
     UnstructuredFileUploadResponse,
 )
+from utils.paths.path_utils import is_appledouble_metadata
 
+logger = get_logger(__name__)
 router = APIRouter()
+
+# Resolved on first use, not at module scope: the plugin package pulls the data
+# designer engine, pandas and pyarrow, delaying uvicorn binding the port.
+# False means "probed once, not installed", so callers still just see None.
+_CHUNKING: Any = None
+
+
+def _chunking() -> Any:
+    global _CHUNKING
+    if _CHUNKING is None:
+        try:
+            from data_designer_unstructured_seed import chunking
+        except ImportError:
+            _CHUNKING = False
+        else:
+            _CHUNKING = chunking
+    return _CHUNKING or None
+
 
 DATA_EXTS = (".parquet", ".jsonl", ".json", ".csv")
 DEFAULT_SPLIT = "train"
@@ -47,17 +66,15 @@ LOCAL_UPLOAD_EXTS = {".csv", ".json", ".jsonl"}
 UNSTRUCTURED_ALLOWED_EXTS = {".pdf", ".docx", ".txt", ".md"}
 SEED_UPLOAD_DIR = seed_uploads_root()
 UNSTRUCTURED_UPLOAD_ROOT = unstructured_uploads_root()
-MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
-MAX_TOTAL_SIZE = 100 * 1024 * 1024  # 100MB
-
 _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+# Frontend-generated upload namespace (UUID4 hex). Legacy node ids (n1, ...)
+# never match: those directories can be shared by several recipes.
+_UPLOAD_UID_RE = re.compile(r"^[0-9a-f]{32}$")
 
 
 def _validate_safe_id(value: str, label: str) -> str:
     if not value or not _SAFE_ID_RE.match(value):
-        raise HTTPException(
-            400, f"Invalid {label}: must be alphanumeric/dash/underscore only"
-        )
+        raise HTTPException(400, f"Invalid {label}: must be alphanumeric/dash/underscore only")
     return value
 
 
@@ -67,8 +84,7 @@ def _serialize_preview_value(value: Any) -> Any:
 
 def _serialize_preview_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
-        {str(key): _serialize_preview_value(value) for key, value in row.items()}
-        for row in rows
+        {str(key): _serialize_preview_value(value) for key, value in row.items()} for row in rows
     ]
 
 
@@ -116,7 +132,9 @@ def _select_best_file(data_files: list[str], split: str = DEFAULT_SPLIT) -> str 
 
 
 def _resolve_seed_hf_path(
-    dataset_name: str, data_files: list[str], split: str = DEFAULT_SPLIT
+    dataset_name: str,
+    data_files: list[str],
+    split: str = DEFAULT_SPLIT,
 ) -> str | None:
     selected = _select_best_file(data_files, split)
     if not selected:
@@ -156,10 +174,7 @@ def _build_stream_load_kwargs(
 
 
 def _load_preview_rows(
-    *,
-    load_dataset_fn,
-    load_kwargs: dict[str, Any],
-    preview_size: int,
+    *, load_dataset_fn, load_kwargs: dict[str, Any], preview_size: int
 ) -> list[dict[str, Any]]:
     streamed_ds = load_dataset_fn(**load_kwargs)
     return [row for row in islice(streamed_ds, preview_size)]
@@ -190,14 +205,16 @@ def _decode_base64_payload(content_base64: str) -> bytes:
         raise HTTPException(status_code = 400, detail = "invalid base64 payload") from exc
 
 
-def _read_preview_rows_from_local_file(
-    path: Path, preview_size: int
-) -> list[dict[str, Any]]:
+def _read_preview_rows_from_local_file(path: Path, preview_size: int) -> list[dict[str, Any]]:
     try:
         import pandas as pd
     except ImportError as exc:
-        raise HTTPException(
-            status_code = 500, detail = f"seed inspect dependencies unavailable: {exc}"
+        raise log_and_http_error(
+            exc,
+            500,
+            "seed inspect dependencies unavailable",
+            event = "data_recipe.seed.dependencies_unavailable",
+            log = logger,
         ) from exc
 
     ext = path.suffix.lower()
@@ -226,8 +243,12 @@ def _read_preview_rows_from_local_file(
     except HTTPException:
         raise
     except (ValueError, OSError) as exc:
-        raise HTTPException(
-            status_code = 422, detail = f"seed inspect failed: {exc}"
+        raise log_and_http_error(
+            exc,
+            422,
+            "seed inspect failed",
+            event = "data_recipe.seed.local_preview_failed",
+            log = logger,
         ) from exc
 
     rows = df.to_dict(orient = "records")
@@ -235,28 +256,29 @@ def _read_preview_rows_from_local_file(
 
 
 def _read_preview_rows_from_unstructured_file(
-    *,
-    path: Path,
-    preview_size: int,
-    chunk_size: int | None,
-    chunk_overlap: int | None,
+    *, path: Path, preview_size: int, chunk_size: int | None, chunk_overlap: int | None
 ) -> list[dict[str, Any]]:
-    if resolve_chunking is None or build_unstructured_preview_rows is None:
+    chunking = _chunking()
+    if chunking is None:
         raise HTTPException(
             500,
             "Unstructured seed support not available (missing data_designer_unstructured_seed)",
         )
-    size, overlap = resolve_chunking(chunk_size, chunk_overlap)
+    size, overlap = chunking.resolve_chunking(chunk_size, chunk_overlap)
     try:
-        rows = build_unstructured_preview_rows(
+        rows = chunking.build_unstructured_preview_rows(
             source_path = path,
             preview_size = preview_size,
             chunk_size = size,
             chunk_overlap = overlap,
         )
     except (FileNotFoundError, RuntimeError, ValueError, OSError) as exc:
-        raise HTTPException(
-            status_code = 422, detail = f"seed inspect failed: {exc}"
+        raise log_and_http_error(
+            exc,
+            422,
+            "seed inspect failed",
+            event = "data_recipe.seed.unstructured_preview_failed",
+            log = logger,
         ) from exc
     return _serialize_preview_rows(rows)
 
@@ -270,7 +292,8 @@ def _read_preview_rows_from_multi_files(
     chunk_size: int | None,
     chunk_overlap: int | None,
 ) -> list[dict[str, str]]:
-    if build_multi_file_preview_rows is None:
+    chunking = _chunking()
+    if chunking is None:
         raise HTTPException(
             500,
             "Unstructured seed support not available (missing data_designer_unstructured_seed)",
@@ -282,12 +305,10 @@ def _read_preview_rows_from_multi_files(
     for fid, fname in zip(file_ids, file_names):
         extracted = block_dir / f"{fid}.extracted.txt"
         if not extracted.exists():
-            raise HTTPException(
-                404, f"Extracted text not found for file: {fname} (id: {fid})"
-            )
+            raise HTTPException(404, f"Extracted text not found for file: {fname} (id: {fid})")
         file_entries.append((extracted, fname))
 
-    return build_multi_file_preview_rows(
+    return chunking.build_multi_file_preview_rows(
         file_entries = file_entries,
         preview_size = preview_size,
         chunk_size = chunk_size,
@@ -307,8 +328,12 @@ def inspect_seed_dataset(payload: SeedInspectRequest) -> SeedInspectResponse:
     try:
         from datasets import load_dataset
     except ImportError as exc:
-        raise HTTPException(
-            status_code = 500, detail = f"seed inspect dependencies unavailable: {exc}"
+        raise log_and_http_error(
+            exc,
+            500,
+            "seed inspect dependencies unavailable",
+            event = "data_recipe.seed.dependencies_unavailable",
+            log = logger,
         ) from exc
 
     split = _normalize_optional_text(payload.split) or DEFAULT_SPLIT
@@ -351,14 +376,16 @@ def inspect_seed_dataset(payload: SeedInspectRequest) -> SeedInspectResponse:
                 preview_size = preview_size,
             )
         except (ValueError, OSError, RuntimeError) as exc:
-            raise HTTPException(
-                status_code = 422, detail = f"seed inspect failed: {exc}"
+            raise log_and_http_error(
+                exc,
+                422,
+                "seed inspect failed",
+                event = "data_recipe.seed.hf_preview_failed",
+                log = logger,
             ) from exc
 
     if not preview_rows:
-        raise HTTPException(
-            status_code = 422, detail = "dataset appears empty or unreadable"
-        )
+        raise HTTPException(status_code = 422, detail = "dataset appears empty or unreadable")
     preview_rows = _serialize_preview_rows(preview_rows)
     columns = _extract_columns(preview_rows)
 
@@ -367,9 +394,7 @@ def inspect_seed_dataset(payload: SeedInspectRequest) -> SeedInspectResponse:
     else:
         resolved_path = _resolve_seed_hf_path(dataset_name, data_files, split)
         if not resolved_path:
-            raise HTTPException(
-                status_code = 422, detail = "unable to resolve seed dataset path"
-            )
+            raise HTTPException(status_code = 422, detail = "unable to resolve seed dataset path")
 
     return SeedInspectResponse(
         dataset_name = dataset_name,
@@ -382,82 +407,148 @@ def inspect_seed_dataset(payload: SeedInspectRequest) -> SeedInspectResponse:
 
 
 def _extract_text_from_file(file_path: Path, ext: str) -> str:
-    """Extract text from uploaded file based on extension, converting to markdown where possible."""
+    """Extract text from an uploaded file by extension, to markdown where possible."""
     if ext in {".txt", ".md"}:
         raw = file_path.read_text(encoding = "utf-8", errors = "ignore")
     elif ext == ".pdf":
         import pymupdf4llm
-
         raw = pymupdf4llm.to_markdown(
             str(file_path), write_images = False, show_progress = False, use_ocr = False
         )
     elif ext == ".docx":
         import mammoth
-
         with open(str(file_path), "rb") as f:
             result = mammoth.convert_to_markdown(f)
             raw = result.value
     else:
         raise ValueError(f"Unsupported file type: {ext}")
 
-    if normalize_unstructured_text is None:
+    chunking = _chunking()
+    if chunking is None:
         return raw
-    return normalize_unstructured_text(raw)
+    return chunking.normalize_unstructured_text(raw)
 
 
-def _get_block_total_size(block_dir: Path, file_ids: list[str]) -> int:
-    """Sum raw upload sizes for tracked file IDs only."""
-    if not block_dir.exists() or not file_ids:
+def _get_block_total_size(block_dir: Path) -> int:
+    """Sum raw upload sizes for the whole block from server-owned files."""
+    if not block_dir.exists():
         return 0
-    id_set = set(file_ids)
     total = 0
     for f in block_dir.iterdir():
         if not f.is_file():
             continue
         if f.name.endswith(".extracted.txt") or f.name.endswith(".meta.json"):
             continue
-        stem = f.name.split(".")[0]
-        if stem in id_set:
-            total += f.stat().st_size
+        # remove_unstructured_file keys on the name up to the first dot, which is empty for a
+        # "._" name, so a counted companion could never be removed and the quota never freed.
+        if is_appledouble_metadata(f):
+            continue
+        total += f.stat().st_size
     return total
 
 
-@router.post("/seed/upload-unstructured-file")
-async def upload_unstructured_file(
-    file: UploadFile = FastAPIFile(...),
-    block_id: str = Form(...),
-    existing_file_ids: str = Form(""),
-) -> UnstructuredFileUploadResponse:
-    _validate_safe_id(block_id, "block_id")
+def _require_within_budget(size_bytes: int, budget: int) -> None:
+    """413 on the tighter of the per-file cap and what the block has left."""
+    if size_bytes > UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES:
+        raise HTTPException(
+            413,
+            f"File too large ({size_bytes} bytes). Maximum is {UNSTRUCTURED_RECIPE_UPLOAD_MAX_LABEL}.",
+        )
+    if size_bytes > budget:
+        raise HTTPException(
+            413,
+            f"Total upload limit ({UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_LABEL}) exceeded",
+        )
 
-    tracked_ids = [fid.strip() for fid in existing_file_ids.split(",") if fid.strip()]
 
-    original_filename = file.filename or "upload"
-    ext = Path(original_filename).suffix.lower()
+def _require_unstructured_ext(filename: str) -> str:
+    """Reject an unsupported type before any bytes are read."""
+    ext = Path(filename).suffix.lower()
     if ext not in UNSTRUCTURED_ALLOWED_EXTS:
         raise HTTPException(
             400,
             f"Unsupported file type: {ext}. Allowed: {', '.join(sorted(UNSTRUCTURED_ALLOWED_EXTS))}",
         )
+    return ext
 
-    content = await file.read()
+
+def _read_native_drop(lease: str, budget: int) -> tuple[str, bytes]:
+    """Read a desktop drop; returns (filename, content).
+
+    The webview never names a path directly: Rust signs what the OS handed it,
+    and this re-verifies and re-stats that grant before reading a byte. Same
+    contract as the RAG route's ``_save_native_path_upload``.
+
+    ``budget`` is what is still allowed for this block. The path is a local file
+    of any size, so it is refused on its stat rather than after a multi-gigabyte
+    read, and the read itself stops one byte past the budget in case the file
+    grew between the two.
+    """
+    from utils.native_path_leases import NativePathLeaseError, verify_native_path_lease
+
+    try:
+        grant = verify_native_path_lease(
+            lease,
+            operation = "attach",
+            expected_kind = "attachment",
+            expected_path_type = "file",
+            allowed_suffixes = sorted(UNSTRUCTURED_ALLOWED_EXTS),
+        )
+    except NativePathLeaseError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    _require_unstructured_ext(grant.canonical_path.name)
+    try:
+        size_bytes = grant.canonical_path.stat().st_size
+    except OSError as exc:
+        raise HTTPException(400, "Dropped file could not be read.") from exc
+    _require_within_budget(size_bytes, budget)
+
+    try:
+        with grant.canonical_path.open("rb") as source:
+            content = source.read(budget + 1)
+    except OSError as exc:
+        raise HTTPException(400, "Dropped file could not be read.") from exc
+    _require_within_budget(len(content), budget)
+    return grant.canonical_path.name, content
+
+
+@router.post("/seed/upload-unstructured-file")
+async def upload_unstructured_file(
+    file: UploadFile | None = FastAPIFile(None),
+    block_id: str = Form(...),
+    native_path_lease: str | None = Form(None, alias = "nativePathLease"),
+) -> UnstructuredFileUploadResponse:
+    _validate_safe_id(block_id, "block_id")
+
+    block_dir = UNSTRUCTURED_UPLOAD_ROOT / block_id
+    # Reads 0 for a block with no directory yet, so this does not create one for
+    # an upload that is about to be refused.
+    budget = UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_BYTES - _get_block_total_size(block_dir)
+
+    # Desktop drops arrive as a signed path, not multipart bytes: Tauri hands
+    # the webview a path, never a File (#9036). isinstance, not a truth test:
+    # called outside FastAPI, an unfilled param is still a truthy Form marker.
+    lease = native_path_lease if isinstance(native_path_lease, str) else None
+    if lease:
+        original_filename, content = _read_native_drop(lease, budget)
+    elif file is not None and hasattr(file, "read"):
+        original_filename = file.filename or "upload"
+        # Before the read, as it was: a rejected 500 MB upload must not be
+        # pulled into memory first.
+        _require_unstructured_ext(original_filename)
+        content = await file.read()
+    else:
+        raise HTTPException(400, "No file was provided.")
+
+    ext = Path(original_filename).suffix.lower()
     size_bytes = len(content)
 
     if size_bytes == 0:
         raise HTTPException(400, "Empty file not allowed")
 
-    if size_bytes > MAX_FILE_SIZE:
-        raise HTTPException(
-            413, f"File too large ({size_bytes} bytes). Maximum is 50MB."
-        )
-
-    block_dir = UNSTRUCTURED_UPLOAD_ROOT / block_id
+    _require_within_budget(size_bytes, budget)
     ensure_dir(block_dir)
-    current_total = _get_block_total_size(block_dir, file_ids = tracked_ids)
-    if current_total + size_bytes > MAX_TOTAL_SIZE:
-        raise HTTPException(
-            413, f"Total upload limit ({MAX_TOTAL_SIZE // (1024 * 1024)}MB) exceeded"
-        )
 
     file_id = uuid4().hex
     raw_path = block_dir / f"{file_id}{ext}"
@@ -476,23 +567,57 @@ async def upload_unstructured_file(
                 error = "No extractable text found in file",
             )
         extracted_path.write_text(extracted_text, encoding = "utf-8")
-    except Exception as e:
+    except ImportError as e:
         raw_path.unlink(missing_ok = True)
         extracted_path.unlink(missing_ok = True)
+        missing = getattr(e, "name", None)
+        expected_missing = {".pdf": "pymupdf4llm", ".docx": "mammoth"}.get(ext)
+        if isinstance(e, ModuleNotFoundError) and missing == expected_missing:
+            logger.error(
+                "data_recipe.seed.text_extraction_dependency_missing",
+                error = str(e),
+                missing = missing,
+                exc_info = True,
+            )
+            return UnstructuredFileUploadResponse(
+                file_id = file_id,
+                filename = original_filename,
+                size_bytes = size_bytes,
+                status = "error",
+                error = f"Cannot read {ext} files: the '{missing}' package is not installed.",
+            )
+        logger.error(
+            "data_recipe.seed.text_extraction_failed",
+            error = str(e),
+            exc_info = True,
+        )
         return UnstructuredFileUploadResponse(
             file_id = file_id,
             filename = original_filename,
             size_bytes = size_bytes,
             status = "error",
-            error = f"Text extraction failed: {type(e).__name__}: {e}",
+            error = "Text extraction failed.",
+        )
+    except Exception as e:
+        raw_path.unlink(missing_ok = True)
+        extracted_path.unlink(missing_ok = True)
+        logger.error(
+            "data_recipe.seed.text_extraction_failed",
+            error = str(e),
+            exc_info = True,
+        )
+        return UnstructuredFileUploadResponse(
+            file_id = file_id,
+            filename = original_filename,
+            size_bytes = size_bytes,
+            status = "error",
+            error = "Text extraction failed.",
         )
 
     try:
         meta_path = block_dir / f"{file_id}.meta.json"
         meta_path.write_text(
-            json.dumps(
-                {"original_filename": original_filename, "size_bytes": size_bytes}
-            ),
+            json.dumps({"original_filename": original_filename, "size_bytes": size_bytes}),
             encoding = "utf-8",
         )
     except OSError:
@@ -541,6 +666,39 @@ async def remove_unstructured_file(block_id: str, file_id: str):
     return {"status": "ok"}
 
 
+@router.delete("/seed/unstructured-block/{block_id}")
+async def remove_unstructured_block(block_id: str):
+    """Delete a block's upload directory; files on disk still count toward its quota.
+
+    Only uid-namespaced directories may be bulk-deleted: they have exactly one
+    owning block. Legacy node-id directories (n1, ...) can be shared by other
+    recipes, so they are managed file-by-file instead.
+    """
+    _validate_safe_id(block_id, "block_id")
+    if not _UPLOAD_UID_RE.match(block_id):
+        raise HTTPException(400, "Invalid block_id: only uid-namespaced blocks can be deleted")
+
+    block_dir = (UNSTRUCTURED_UPLOAD_ROOT / block_id).resolve()
+    if not block_dir.is_relative_to(UNSTRUCTURED_UPLOAD_ROOT.resolve()):
+        raise HTTPException(400, "Invalid block_id: outside upload root")
+    if not block_dir.exists():
+        return {"status": "ok", "deleted": False}
+
+    try:
+        shutil.rmtree(block_dir)
+    except OSError as exc:
+        raise log_and_http_error(
+            exc,
+            500,
+            "failed to delete uploaded files",
+            event = "data_recipe.seed.unstructured_block_delete_failed",
+            log = logger,
+        ) from exc
+    if block_dir.exists():
+        raise HTTPException(500, "failed to delete uploaded files")
+    return {"status": "ok", "deleted": True}
+
+
 @router.post("/seed/inspect-upload", response_model = SeedInspectResponse)
 def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectResponse:
     if payload.file_ids is not None:
@@ -573,8 +731,7 @@ def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectRespons
     seed_source_type = _normalize_optional_text(payload.seed_source_type) or "local"
     filename = _sanitize_filename(payload.filename)
     ext = Path(filename).suffix.lower()
-    # Legacy single-file unstructured path only supports .txt/.md
-    # PDF/DOCX extraction uses the multi-file upload endpoint instead
+    # Legacy single-file path is .txt/.md only; PDF/DOCX use multi-file upload
     _LEGACY_UNSTRUCTURED_EXTS = {".txt", ".md"}
     if seed_source_type == "unstructured":
         if ext not in _LEGACY_UNSTRUCTURED_EXTS:
@@ -594,8 +751,11 @@ def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectRespons
     file_bytes = _decode_base64_payload(payload.content_base64)
     if not file_bytes:
         raise HTTPException(status_code = 400, detail = "empty upload payload")
-    if len(file_bytes) > MAX_FILE_SIZE:
-        raise HTTPException(status_code = 413, detail = "file too large (max 50MB)")
+    if len(file_bytes) > LOCAL_SEED_UPLOAD_MAX_BYTES:
+        raise HTTPException(
+            status_code = 413,
+            detail = f"file too large (max {LOCAL_SEED_UPLOAD_MAX_LABEL})",
+        )
 
     ensure_dir(SEED_UPLOAD_DIR)
     stored_name = f"{uuid4().hex}_{filename}"
@@ -615,9 +775,7 @@ def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectRespons
             int(payload.preview_size),
         )
     if not preview_rows:
-        raise HTTPException(
-            status_code = 422, detail = "dataset appears empty or unreadable"
-        )
+        raise HTTPException(status_code = 422, detail = "dataset appears empty or unreadable")
     columns = _extract_columns(preview_rows)
 
     return SeedInspectResponse(

@@ -7,17 +7,14 @@ import sys
 import warnings
 
 
-def clear_memory(variables_to_clear = None, verbose = False, clear_all_caches = True):
-    """
-    Comprehensive memory clearing for persistent memory leaks.
+def clear_memory(
+    variables_to_clear = None,
+    verbose = False,
+    clear_all_caches = True,
+):
+    """Comprehensive memory clearing for persistent memory leaks."""
 
-    Args:
-        variables_to_clear: List of variable names to clear
-        verbose: Print memory status
-        clear_all_caches: Clear all types of caches (recommended for memory leaks)
-    """
-
-    # Save current logging levels
+    # Save logging levels to restore later.
     saved_log_levels = {}
     for name, logger in logging.Logger.manager.loggerDict.items():
         if isinstance(logger, logging.Logger):
@@ -38,11 +35,11 @@ def clear_memory(variables_to_clear = None, verbose = False, clear_all_caches = 
             "bnb_config",
         ]
 
-    # 1. Clear LRU caches FIRST (very important for memory leaks)
+    # Clear LRU caches first (important for memory leaks).
     if clear_all_caches:
         clear_all_lru_caches(verbose)
 
-    # 2. Delete specified variables
+    # Delete specified variables.
     g = globals()
     deleted_vars = []
     for var in variables_to_clear:
@@ -53,50 +50,41 @@ def clear_memory(variables_to_clear = None, verbose = False, clear_all_caches = 
     if verbose and deleted_vars:
         print(f"Deleted variables: {deleted_vars}")
 
-    # 3. Multiple garbage collection passes (important for circular references)
+    # Multiple GC passes for circular references.
     for i in range(3):
         collected = gc.collect()
         if verbose and collected > 0:
             print(f"GC pass {i+1}: collected {collected} objects")
 
-    # 4. CUDA cleanup
+    # CUDA cleanup
     if torch.cuda.is_available():
-        # Get memory before cleanup
         if verbose:
             mem_before = torch.cuda.memory_allocated() / 1024**3
 
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
 
-        # Additional CUDA cleanup for persistent leaks
         if clear_all_caches:
-            # Reset memory stats
             torch.cuda.reset_peak_memory_stats()
             torch.cuda.reset_accumulated_memory_stats()
 
-            # Clear JIT cache
-            if hasattr(torch.jit, "_state") and hasattr(
-                torch.jit._state, "_clear_class_state"
-            ):
+            # Clear JIT cache.
+            if hasattr(torch.jit, "_state") and hasattr(torch.jit._state, "_clear_class_state"):
                 torch.jit._state._clear_class_state()
 
-            # Force another CUDA cache clear
             torch.cuda.empty_cache()
 
-        # Final garbage collection
         gc.collect()
 
         if verbose:
             mem_after = torch.cuda.memory_allocated() / 1024**3
             mem_reserved = torch.cuda.memory_reserved() / 1024**3
-            print(
-                f"GPU memory - Before: {mem_before:.2f} GB, After: {mem_after:.2f} GB"
-            )
+            print(f"GPU memory - Before: {mem_before:.2f} GB, After: {mem_after:.2f} GB")
             print(f"GPU reserved memory: {mem_reserved:.2f} GB")
             if mem_before > 0:
                 print(f"Memory freed: {mem_before - mem_after:.2f} GB")
 
-    # restore original logging levels
+    # Restore original logging levels.
     logging.getLogger().setLevel(root_level)
     for name, level in saved_log_levels.items():
         if name in logging.Logger.manager.loggerDict:
@@ -108,7 +96,7 @@ def clear_all_lru_caches(verbose = True):
     """Clear all LRU caches in loaded modules."""
     cleared_caches = []
 
-    # Modules to skip to avoid warnings
+    # Skip these to avoid warnings.
     skip_modules = {
         "torch.distributed",
         "torchaudio",
@@ -117,23 +105,21 @@ def clear_all_lru_caches(verbose = True):
         "torchaudio.backend",
     }
 
-    # Create a static list of modules to avoid RuntimeError
+    # Static list to avoid RuntimeError during iteration.
     modules = list(sys.modules.items())
 
-    # Method 1: Clear caches in all loaded modules
+    # Clear caches in all loaded modules.
     for module_name, module in modules:
         if module is None:
             continue
 
-        # Skip problematic modules
         if any(module_name.startswith(skip) for skip in skip_modules):
             continue
 
         try:
-            # Look for functions with lru_cache
             for attr_name in dir(module):
                 try:
-                    # Suppress warnings when checking attributes
+                    # Suppress warnings when checking attributes.
                     with warnings.catch_warnings():
                         warnings.simplefilter("ignore", FutureWarning)
                         warnings.simplefilter("ignore", UserWarning)
@@ -144,11 +130,11 @@ def clear_all_lru_caches(verbose = True):
                         attr.cache_clear()
                         cleared_caches.append(f"{module_name}.{attr_name}")
                 except Exception:
-                    continue  # Skip problematic attributes
+                    continue
         except Exception:
-            continue  # Skip problematic modules
+            continue
 
-    # Method 2: Clear specific known caches
+    # Clear specific known caches.
     known_caches = [
         "transformers.utils.hub.cached_file",
         "transformers.tokenization_utils_base.get_tokenizer",
@@ -169,7 +155,7 @@ def clear_all_lru_caches(verbose = True):
                     obj.cache_clear()
                     cleared_caches.append(cache_path)
         except Exception:
-            continue  # Skip problematic caches
+            continue
 
     if verbose and cleared_caches:
         print(f"Cleared {len(cleared_caches)} LRU caches")
@@ -183,7 +169,6 @@ def clear_specific_lru_cache(func):
     return False
 
 
-# Additional utility for monitoring cache sizes
 def monitor_cache_sizes():
     """Monitor LRU cache sizes across modules."""
     cache_info = []

@@ -28,7 +28,11 @@ def create_instruction_dataset(messages: list[dict] = DEFAULT_MESSAGES):
     return dataset
 
 
-def create_dataset(tokenizer, num_examples: int = None, messages: list[dict] = None):
+def create_dataset(
+    tokenizer,
+    num_examples: int = None,
+    messages: list[dict] = None,
+):
     dataset = create_instruction_dataset(messages)
 
     def _apply_chat_template(example):
@@ -52,31 +56,7 @@ def describe_param(
     include_infinity: bool = False,
     as_str: bool = True,
 ) -> dict:
-    """
-    Provide a statistical summary of a 2D weight matrix or tensor.
-    If as_str is True, the summary is returned as a formatted string.
-    Parameters:
-        param: torch.Tensor
-        include_l1 (bool): Whether to include the L1 norm (sum of absolute values).
-        include_l2 (bool): Whether to include the L2 norm (Frobenius norm).
-        include_infinity (bool): Whether to include the infinity norm (max absolute value).
-        as_str (bool): Whether to return the summary as a formatted string.
-
-    Returns:
-        dict: A dictionary with the following statistics:
-              - shape: Dimensions of the matrix.
-              - mean: Average value.
-              - median: Median value.
-              - std: Standard deviation.
-              - min: Minimum value.
-              - max: Maximum value.
-              - percentile_25: 25th percentile.
-              - percentile_75: 75th percentile.
-              Additionally, if enabled:
-              - L1_norm: Sum of absolute values.
-              - L2_norm: Euclidean (Frobenius) norm.
-              - infinity_norm: Maximum absolute value.
-    """
+    """Statistical summary of a tensor (optional L1/L2/inf norms); string if as_str else dict."""
 
     param = param.float()
     summary = {
@@ -101,16 +81,7 @@ def describe_param(
 
 
 def format_summary(stats: dict, precision: int = 6) -> str:
-    """
-    Format the statistical summary dictionary for printing.
-
-    Parameters:
-        stats (dict): The dictionary returned by describe_param.
-        precision (int): Number of decimal places for floating point numbers.
-
-    Returns:
-        str: A formatted string representing the summary.
-    """
+    """Format the describe_param summary dict into a printable string."""
     lines = []
     for key, value in stats.items():
         if isinstance(value, float):
@@ -119,9 +90,7 @@ def format_summary(stats: dict, precision: int = 6) -> str:
             # Format each element in tuples or lists (e.g., the shape)
             formatted_value = ", ".join(str(v) for v in value)
             formatted_value = (
-                f"({formatted_value})"
-                if isinstance(value, tuple)
-                else f"[{formatted_value}]"
+                f"({formatted_value})" if isinstance(value, tuple) else f"[{formatted_value}]"
             )
         else:
             formatted_value = str(value)
@@ -132,9 +101,7 @@ def format_summary(stats: dict, precision: int = 6) -> str:
 def get_peft_weights(model):
     # ruff: noqa
     is_lora_weight = lambda name: any(s in name for s in ["lora_A", "lora_B"])
-    return {
-        name: param for name, param in model.named_parameters() if is_lora_weight(name)
-    }
+    return {name: param for name, param in model.named_parameters() if is_lora_weight(name)}
 
 
 def describe_peft_weights(model):
@@ -142,7 +109,11 @@ def describe_peft_weights(model):
         yield name, describe_param(param, as_str = True)
 
 
-def check_responses(responses: list[str], answer: str, prompt: str = None) -> bool:
+def check_responses(
+    responses: list[str],
+    answer: str,
+    prompt: str = None,
+) -> bool:
     for i, response in enumerate(responses, start = 1):
         if answer in response:
             print(f"\u2713 response {i} contains answer")

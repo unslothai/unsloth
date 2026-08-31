@@ -11,7 +11,6 @@ import {
   isSemanticTargetHandle,
   normalizeRecipeHandleId,
 } from "../handles";
-import { isSemanticRelation } from "./relations";
 import {
   isCategoryConfig,
   isExpressionConfig,
@@ -21,6 +20,7 @@ import {
   VALIDATOR_OXC_CODE_LANGS,
   VALIDATOR_SQL_CODE_LANGS,
 } from "../validators/code-lang";
+import { isSemanticRelation } from "./relations";
 
 function buildTemplateWithRef(template: string, ref: string): string {
   if (template.includes(ref)) {
@@ -157,7 +157,10 @@ function isCompetingIncomingEdge(
   return source.kind === "sampler" && source.sampler_type === "datetime";
 }
 
-function isModelSemanticRelation(source: NodeConfig, target: NodeConfig): boolean {
+function isModelSemanticRelation(
+  source: NodeConfig,
+  target: NodeConfig,
+): boolean {
   return (
     (source.kind === "model_provider" && target.kind === "model_config") ||
     (source.kind === "model_config" && target.kind === "llm") ||
@@ -181,7 +184,9 @@ function canApplyCodeLangToValidator(
   if (normalized === "python") {
     return true;
   }
-  return VALIDATOR_SQL_CODE_LANGS.includes(normalized as typeof validator.code_lang);
+  return VALIDATOR_SQL_CODE_LANGS.includes(
+    normalized as typeof validator.code_lang,
+  );
 }
 
 function countHandleUsage(
@@ -333,12 +338,8 @@ export function applyRecipeConnection(
   if (!isValidRecipeConnection(connection, configs)) {
     return { edges };
   }
-  const initialSource = connection.source
-    ? configs[connection.source]
-    : null;
-  const initialTarget = connection.target
-    ? configs[connection.target]
-    : null;
+  const initialSource = connection.source ? configs[connection.source] : null;
+  const initialTarget = connection.target ? configs[connection.target] : null;
   if (!(initialSource && initialTarget)) {
     return { edges };
   }
@@ -386,17 +387,36 @@ export function applyRecipeConnection(
     nextBaseEdges,
   );
   if (source.kind === "model_provider" && target.kind === "model_config") {
-    // Keep the model_config.model field in sync with provider mode when the
-    // link is changed via graph drag (the model-config dialog path has its
-    // own applyProviderChange helper that does the same thing).
+    // Keep model_config.provider in sync when a drag changes the link.
+    // Local providers need an explicit load id; don't synthesize the legacy
+    // "local" placeholder. External relinks clear local-only GGUF metadata;
+    // legacy placeholders normalize back to empty.
     const isSourceLocal = source.is_local === true;
-    let nextModel = target.model;
-    if (isSourceLocal && !nextModel.trim()) {
-      nextModel = "local";
-    } else if (!isSourceLocal && nextModel === "local") {
-      nextModel = "";
-    }
-    const next = { ...target, provider: source.name, model: nextModel };
+    const isLegacyLocalPlaceholder =
+      target.model.trim().toLowerCase() === "local";
+    const previousProviderName = target.provider.trim();
+    const previousProvider = Object.values(configs).find(
+      (config) =>
+        config.kind === "model_provider" &&
+        config.name === previousProviderName,
+    );
+    const wasLinkedToLocal =
+      previousProvider?.kind === "model_provider" &&
+      previousProvider.is_local === true;
+    const shouldClearModel =
+      isLegacyLocalPlaceholder ||
+      (isSourceLocal ? !wasLinkedToLocal : wasLinkedToLocal);
+    const next = {
+      ...target,
+      provider: source.name,
+      ...(shouldClearModel ? { model: "" } : {}),
+      ...(shouldClearModel || !isSourceLocal
+        ? {
+            // biome-ignore lint/style/useNamingConvention: api schema
+            gguf_variant: undefined,
+          }
+        : {}),
+    };
     return { edges: nextEdges, configs: { ...configs, [target.id]: next } };
   }
   if (source.kind === "model_config" && target.kind === "llm") {
@@ -435,10 +455,9 @@ export function applyRecipeConnection(
       // biome-ignore lint/style/useNamingConvention: api schema
       target_columns: [source.name],
       // biome-ignore lint/style/useNamingConvention: api schema
-      code_lang:
-        (
-          canUseCodeLangForTarget ? nextCodeLang : target.code_lang
-        ) as typeof target.code_lang,
+      code_lang: (canUseCodeLangForTarget
+        ? nextCodeLang
+        : target.code_lang) as typeof target.code_lang,
     };
     return { edges: nextEdges, configs: { ...configs, [target.id]: next } };
   }

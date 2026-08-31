@@ -264,6 +264,8 @@ export type ModelConfig = {
   kind: "model_config";
   name: string;
   model: string;
+  // biome-ignore lint/style/useNamingConvention: api schema
+  gguf_variant?: string;
   provider: string;
   // biome-ignore lint/style/useNamingConvention: api schema
   inference_temperature?: string;
@@ -338,6 +340,8 @@ export type SeedConfig = {
   hf_token?: string;
   hf_endpoint?: string;
   local_file_name?: string;
+  // ui-only: stable per-block id for uploads, since node ids collide across imports
+  unstructured_upload_uid?: string;
   unstructured_file_ids?: string[];
   unstructured_file_names?: string[];
   unstructured_file_sizes?: number[];

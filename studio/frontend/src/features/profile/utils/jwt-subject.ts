@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * Read the JWT `sub` claim for display purposes only (not verified).
- */
+/** Read the JWT `sub` claim for display only (not verified). */
 export function decodeJwtSubject(token: string | null): string | null {
   if (!token) return null;
   try {

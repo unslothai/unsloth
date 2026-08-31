@@ -49,11 +49,7 @@ class GroupedGEMMResult:
 
 class Qwen3MoeGroupedGEMMBlock(torch.nn.Module):
     def __init__(
-        self,
-        config,
-        gate: torch.Tensor,
-        gate_up_proj: torch.Tensor,
-        down_proj: torch.Tensor,
+        self, config, gate: torch.Tensor, gate_up_proj: torch.Tensor, down_proj: torch.Tensor
     ):
         super().__init__()
         self.num_experts = config.num_experts
@@ -133,9 +129,7 @@ class Qwen3MoeGroupedGEMMBlock(torch.nn.Module):
         router_logits = torch.nn.functional.linear(hidden_states, self.gate)
 
         routing_weights = F.softmax(router_logits, dim = 1, dtype = torch.float)
-        routing_weights, selected_experts = torch.topk(
-            routing_weights, self.top_k, dim = -1
-        )
+        routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim = -1)
         if self.norm_topk_prob:  # only diff with mixtral sparse moe block!
             routing_weights /= routing_weights.sum(dim = -1, keepdim = True)
         # we cast back to the input dtype
@@ -161,17 +155,15 @@ class Qwen3MoeGroupedGEMMBlock(torch.nn.Module):
 
         hidden_states = hidden_states.view(-1, hidden_dim)
 
-        router_logits, routing_weights, selected_experts = self.run_router(
-            hidden_states
+        router_logits, routing_weights, selected_experts = self.run_router(hidden_states)
+
+        # Token counts per expert + gather indices (token->expert order).
+        # Auxiliary structs; not recorded in the autograd graph.
+        token_counts_by_expert, gather_indices = self.get_token_counts_and_gather_indices(
+            selected_experts
         )
 
-        # 1. Compute tokens per expert and indices for gathering tokes from token order to expert order
-        # NOTE: these are auxiliary data structs which don't need to be recorded in autograd graph
-        token_counts_by_expert, gather_indices = (
-            self.get_token_counts_and_gather_indices(selected_experts)
-        )
-
-        # 2. Permute tokens from token order to expert order
+        # Permute tokens into expert order
         hidden_states = permute(hidden_states, gather_indices, self.top_k)
         assert hidden_states.shape == (total_tokens, hidden_dim)
 
@@ -187,12 +179,11 @@ class Qwen3MoeGroupedGEMMBlock(torch.nn.Module):
         )
         assert second_gemm.shape == (total_tokens, hidden_dim)
 
-        # Post-processing
-        # 1. Unpermute from expert order to token order
+        # Unpermute from expert order back to token order
         hidden_states_unpermute = unpermute(second_gemm, gather_indices)
         assert hidden_states_unpermute.shape == (total_tokens, hidden_dim)
 
-        # 2. Merge topk weights
+        # Merge topk weights
         hidden_states = (
             hidden_states_unpermute.view(num_tokens, self.top_k, hidden_dim)
             * routing_weights[..., None]
@@ -259,9 +250,7 @@ class Qwen3MoeFusedGroupedGEMMBlock(Qwen3MoeGroupedGEMMBlock):
         dX_only: bool = False,
     ):
         config: Qwen3MoeConfig = moe_block.experts[0].config
-        gate, gate_up_proj, down_proj = Qwen3MoeGroupedGEMMBlock.extract_hf_weights(
-            moe_block
-        )
+        gate, gate_up_proj, down_proj = Qwen3MoeGroupedGEMMBlock.extract_hf_weights(moe_block)
         return cls(
             config,
             gate,
@@ -284,17 +273,14 @@ class Qwen3MoeFusedGroupedGEMMBlock(Qwen3MoeGroupedGEMMBlock):
 
         hidden_states = hidden_states.view(-1, hidden_dim)
 
-        router_logits, routing_weights, selected_experts = self.run_router(
-            hidden_states
-        )
-        # Pre-processing
-        # 1. Compute tokens per expert and indices for gathering tokes from token order to expert order
-        # NOTE: these are auxiliary data structs which don't need to be recorded in autograd graph
-        token_counts_by_expert, gather_indices = (
-            self.get_token_counts_and_gather_indices(selected_experts)
+        router_logits, routing_weights, selected_experts = self.run_router(hidden_states)
+        # Token counts per expert + gather indices (token->expert order).
+        # Auxiliary structs; not recorded in the autograd graph.
+        token_counts_by_expert, gather_indices = self.get_token_counts_and_gather_indices(
+            selected_experts
         )
 
-        # 2. permute_x -> permutation will be fused in prologue of first grouped gemm
+        # When permute_x is set, the permute fuses into the first gemm prologue
         if not self.permute_x:
             hidden_states = permute(hidden_states, gather_indices, self.top_k)
         # Start expert computation
@@ -332,15 +318,13 @@ class Qwen3MoeFusedGroupedGEMMBlock(Qwen3MoeGroupedGEMMBlock):
             dX_only = self.dX_only,
         )
 
-        # Post-processing
-        # 1. Unpermute from expert order to token order
+        # Unpermute from expert order back to token order
         if not self.permute_y:
             hidden_states = unpermute(hidden_states, gather_indices)
 
-        # 2. Merge topk weights
+        # Merge topk weights
         hidden_states = (
-            hidden_states.view(num_tokens, self.top_k, hidden_dim)
-            * routing_weights[..., None]
+            hidden_states.view(num_tokens, self.top_k, hidden_dim) * routing_weights[..., None]
         )
         hidden_states = hidden_states.sum(dim = 1)
 

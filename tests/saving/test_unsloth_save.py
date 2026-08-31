@@ -7,31 +7,53 @@ import importlib
 
 from unsloth import FastLanguageModel, FastModel
 
+# Every param here downloads a checkpoint and merges it on the accelerator;
+# the file was 877s, 29% of the repo's total test time, before its matrix was
+# cut to three models. CI runs it under `-m gpu`.
+pytestmark = pytest.mark.gpu
+
+# One model per save path, and the smallest model that still exercises the path.
+# This file runs in the default `pytest tests/` walk (unlike the rest of
+# tests/saving/, which is gated behind UNSLOTH_RUN_SAVING_SCRIPTS), so every
+# entry here is paid by anyone who runs the suite. The ten-model matrix it grew
+# to cost 877s, 29% of the whole repo's test time; these three cover the same
+# paths. Distinct paths, not distinct checkpoints, are what earn a slot:
+#
+#   * text, 16-bit on disk        -> Qwen2.5-0.5B-Instruct
+#   * text, already 4-bit on disk -> tinyllama-bnb-4bit
+#   * vision                      -> Qwen2.5-VL-3B-Instruct
+#
+# Dropped: tinyllama and Qwen2.5-0.5B (same text path as Qwen2.5-0.5B-Instruct,
+# and the first is 2x its size); Qwen2.5-0.5B-Instruct-bnb-4bit and
+# Phi-4-mini-instruct-bnb-4bit (loading a pre-quantized checkpoint is one path,
+# so it gets one model, not four); Phi-4-mini-instruct (3.8B, adds no path a
+# 0.5B does not); gemma-3-4b-it (vision, but 4B against Qwen2.5-VL's 3B);
+# Llama-3.2-11B-Vision-Instruct-bnb-4bit (11B, and its merged 16-bit write was
+# 21.3GB to $TMPDIR per run).
 model_to_test = [
-    # Text Models
-    "unsloth/tinyllama",
-    "unsloth/tinyllama-bnb-4bit",
+    # Text, 16-bit on disk.
     "unsloth/Qwen2.5-0.5B-Instruct",
-    "unsloth/Qwen2.5-0.5B-Instruct-bnb-4bit",
-    "unsloth/Phi-4-mini-instruct",
-    "unsloth/Phi-4-mini-instruct-bnb-4bit",
-    "unsloth/Qwen2.5-0.5B",
-    # Vision Models
-    "unsloth/gemma-3-4b-it",
-    "unsloth/Llama-3.2-11B-Vision-Instruct-bnb-4bit",
+    # Text, already 4-bit on disk: from_pretrained has to load a pre-quantized
+    # checkpoint and the merge has to dequantize back out of it.
+    "unsloth/tinyllama-bnb-4bit",
+    # Vision, and the only entry whose merged 16-bit output clears the 5GB
+    # safetensors shard limit -- so it is what keeps sharded output and its
+    # index file covered here. The dedicated sharded-index tests
+    # (vision_models/test_index_file_sharded_model.py,
+    # language_models/test_push_to_hub_merged_sharded_index_file.py) do NOT
+    # cover it in a default run: both are behind UNSLOTH_RUN_SAVING_SCRIPTS.
+    # Keep an entry above 5GB here, or that path stops being exercised.
     "unsloth/Qwen2.5-VL-3B-Instruct-bnb-4bit",
 ]
 
 torchao_models = [
-    "unsloth/tinyllama",
+    # One model: both entries drove the same save_pretrained_torchao path, and
+    # tinyllama is 1.1B against this one's 0.5B.
     "unsloth/Qwen2.5-0.5B-Instruct",
-    # "unsloth/Phi-4-mini-instruct",
-    # "unsloth/Qwen2.5-0.5B",
     # Skip the -bnb-4bit variants since they're already quantized
 ]
 
 
-# Variables
 save_file_sizes = {}
 save_file_sizes["merged_16bit"] = {}
 save_file_sizes["merged_4bit"] = {}
@@ -55,7 +77,6 @@ def loaded_model_tokenizer(request):
         load_in_4bit = True,
     )
 
-    # Apply LoRA
     model = FastModel.get_peft_model(
         model,
         r = 16,
@@ -69,7 +90,7 @@ def loaded_model_tokenizer(request):
 
 @pytest.fixture(scope = "session", params = torchao_models)
 def fp16_model_tokenizer(request):
-    """Load model in FP16 for TorchAO quantization"""
+    """Load model in FP16 for TorchAO quantization."""
     model_name = request.param
     print(f"Loading model in FP16 for TorchAO: {model_name}")
 
@@ -77,10 +98,9 @@ def fp16_model_tokenizer(request):
         model_name,
         max_seq_length = 128,
         dtype = None,
-        load_in_4bit = False,  # No BnB quantization
+        load_in_4bit = False,  # no BnB quantization
     )
 
-    # Apply LoRA
     model = FastModel.get_peft_model(
         model,
         r = 16,
@@ -112,7 +132,6 @@ def temp_save_dir():
 
 
 def delete_quantization_config(model):
-    # Since merged, edit quantization_config
     old_config = model.config
     new_config = model.config.to_dict()
     if "quantization_config" in new_config:
@@ -132,44 +151,32 @@ def test_save_merged_16bit(model, tokenizer, temp_save_dir: str):
         model.config._name_or_path.replace("/", "_"),
     )
 
-    model.save_pretrained_merged(
-        save_path, tokenizer = tokenizer, save_method = "merged_16bit"
-    )
+    model.save_pretrained_merged(save_path, tokenizer = tokenizer, save_method = "merged_16bit")
 
-    # Check model files
     assert os.path.isdir(save_path), f"Directory {save_path} does not exist."
-    assert os.path.isfile(
-        os.path.join(save_path, "config.json")
-    ), "config.json not found."
+    assert os.path.isfile(os.path.join(save_path, "config.json")), "config.json not found."
 
     weight_files = [
-        f
-        for f in os.listdir(save_path)
-        if f.endswith(".bin") or f.endswith(".safetensors")
+        f for f in os.listdir(save_path) if f.endswith(".bin") or f.endswith(".safetensors")
     ]
     assert len(weight_files) > 0, "No weight files found in the save directory."
 
-    # Check tokenizer files
     for file in tokenizer_files:
         assert os.path.isfile(
             os.path.join(save_path, file)
         ), f"{file} not found in the save directory."
 
-    # Check config to see if it is 16bit by checking for quantization config
+    # 16bit means no quantization config.
     config_path = os.path.join(save_path, "config.json")
     with open(config_path, "r") as f:
         config = json.load(f)
 
-    assert (
-        "quantization_config" not in config
-    ), "Quantization config not found in the model config."
+    assert "quantization_config" not in config, "Quantization config not found in the model config."
 
-    # Store the size of the model files
     total_size = sum(os.path.getsize(os.path.join(save_path, f)) for f in weight_files)
     save_file_sizes["merged_16bit"][model.config._name_or_path] = total_size
     print(f"Total size of merged_16bit files: {total_size} bytes")
 
-    # Test loading the model from the saved path
     loaded_model, loaded_tokenizer = FastLanguageModel.from_pretrained(
         save_path,
         max_seq_length = 128,
@@ -185,30 +192,21 @@ def test_save_merged_4bit(model, tokenizer, temp_save_dir: str):
         model.config._name_or_path.replace("/", "_"),
     )
 
-    model.save_pretrained_merged(
-        save_path, tokenizer = tokenizer, save_method = "merged_4bit_forced"
-    )
+    model.save_pretrained_merged(save_path, tokenizer = tokenizer, save_method = "merged_4bit_forced")
 
-    # Check model files
     assert os.path.isdir(save_path), f"Directory {save_path} does not exist."
-    assert os.path.isfile(
-        os.path.join(save_path, "config.json")
-    ), "config.json not found."
+    assert os.path.isfile(os.path.join(save_path, "config.json")), "config.json not found."
 
     weight_files = [
-        f
-        for f in os.listdir(save_path)
-        if f.endswith(".bin") or f.endswith(".safetensors")
+        f for f in os.listdir(save_path) if f.endswith(".bin") or f.endswith(".safetensors")
     ]
     assert len(weight_files) > 0, "No weight files found in the save directory."
 
-    # Check tokenizer files
     for file in tokenizer_files:
         assert os.path.isfile(
             os.path.join(save_path, file)
         ), f"{file} not found in the save directory."
 
-    # Store the size of the model files
     total_size = sum(os.path.getsize(os.path.join(save_path, f)) for f in weight_files)
     save_file_sizes["merged_4bit"][model.config._name_or_path] = total_size
 
@@ -218,16 +216,13 @@ def test_save_merged_4bit(model, tokenizer, temp_save_dir: str):
         total_size < save_file_sizes["merged_16bit"][model.config._name_or_path]
     ), "Merged 4bit files are larger than merged 16bit files."
 
-    # Check config to see if it is 4bit
+    # 4bit means there's a quantization config.
     config_path = os.path.join(save_path, "config.json")
     with open(config_path, "r") as f:
         config = json.load(f)
 
-    assert (
-        "quantization_config" in config
-    ), "Quantization config not found in the model config."
+    assert "quantization_config" in config, "Quantization config not found in the model config."
 
-    # Test loading the model from the saved path
     loaded_model, loaded_tokenizer = FastModel.from_pretrained(
         save_path,
         max_seq_length = 128,
@@ -257,60 +252,41 @@ def test_save_torchao(fp16_model_tokenizer, temp_save_dir: str):
     )
 
     weight_files_16bit = [
-        f
-        for f in os.listdir(save_path)
-        if f.endswith(".bin") or f.endswith(".safetensors")
+        f for f in os.listdir(save_path) if f.endswith(".bin") or f.endswith(".safetensors")
     ]
-    total_16bit_size = sum(
-        os.path.getsize(os.path.join(save_path, f)) for f in weight_files_16bit
-    )
+    total_16bit_size = sum(os.path.getsize(os.path.join(save_path, f)) for f in weight_files_16bit)
     save_file_sizes["merged_16bit"][model.config._name_or_path] = total_16bit_size
 
     torchao_save_path = save_path + "-torchao"
 
-    # Check model files
-    assert os.path.isdir(
-        torchao_save_path
-    ), f"Directory {torchao_save_path} does not exist."
-    assert os.path.isfile(
-        os.path.join(torchao_save_path, "config.json")
-    ), "config.json not found."
+    assert os.path.isdir(torchao_save_path), f"Directory {torchao_save_path} does not exist."
+    assert os.path.isfile(os.path.join(torchao_save_path, "config.json")), "config.json not found."
 
     weight_files = [
-        f
-        for f in os.listdir(torchao_save_path)
-        if f.endswith(".bin") or f.endswith(".safetensors")
+        f for f in os.listdir(torchao_save_path) if f.endswith(".bin") or f.endswith(".safetensors")
     ]
     assert len(weight_files) > 0, "No weight files found in the save directory."
 
-    # Check tokenizer files
     for file in tokenizer_files:
         assert os.path.isfile(
             os.path.join(torchao_save_path, file)
         ), f"{file} not found in the save directory."
 
-    # Store the size of the model files
-    total_size = sum(
-        os.path.getsize(os.path.join(torchao_save_path, f)) for f in weight_files
-    )
+    total_size = sum(os.path.getsize(os.path.join(torchao_save_path, f)) for f in weight_files)
     save_file_sizes["torchao"][model.config._name_or_path] = total_size
 
     assert (
         total_size < save_file_sizes["merged_16bit"][model.config._name_or_path]
     ), "torchao files are larger than merged 16bit files."
 
-    # Check config to see if it is quantized with torchao
     config_path = os.path.join(torchao_save_path, "config.json")
     with open(config_path, "r") as f:
         config = json.load(f)
 
-    assert (
-        "quantization_config" in config
-    ), "Quantization config not found in the model config."
+    assert "quantization_config" in config, "Quantization config not found in the model config."
 
-    # Test loading the model from the saved path
-    # can't set `load_in_4bit` to True because the model is torchao quantized
-    # can't quantize again with bitsandbytes
+    # load_in_4bit must stay False: a torchao-quantized model can't be
+    # re-quantized with bitsandbytes.
     import torch.serialization
 
     with torch.serialization.safe_globals([getattr]):
@@ -332,15 +308,12 @@ def test_save_and_inference_torchao(fp16_model_tokenizer, temp_save_dir: str):
 
     print(f"Testing TorchAO save and inference for: {model_name}")
 
-    save_path = os.path.join(
-        temp_save_dir, "torchao_models", model_name.replace("/", "_")
-    )
+    save_path = os.path.join(temp_save_dir, "torchao_models", model_name.replace("/", "_"))
 
     from torchao.quantization import Int8DynamicActivationInt8WeightConfig
 
     torchao_config = Int8DynamicActivationInt8WeightConfig()
 
-    # Save with TorchAO
     model.save_pretrained_torchao(
         save_path,
         tokenizer = tokenizer,
@@ -350,12 +323,10 @@ def test_save_and_inference_torchao(fp16_model_tokenizer, temp_save_dir: str):
 
     torchao_save_path = save_path + "-torchao"
 
-    # Verify files exist
     assert os.path.isdir(
         torchao_save_path
     ), f"TorchAO directory {torchao_save_path} does not exist."
 
-    # Load with safe globals
     import torch.serialization
 
     with torch.serialization.safe_globals([getattr]):
@@ -366,7 +337,7 @@ def test_save_and_inference_torchao(fp16_model_tokenizer, temp_save_dir: str):
             load_in_4bit = False,
         )
 
-    FastModel.for_inference(loaded_model)  # Enable native 2x faster inference
+    FastModel.for_inference(loaded_model)
 
     messages = [
         {
@@ -377,21 +348,20 @@ def test_save_and_inference_torchao(fp16_model_tokenizer, temp_save_dir: str):
     inputs = loaded_tokenizer.apply_chat_template(
         messages,
         tokenize = True,
-        add_generation_prompt = True,  # Must add for generation
+        add_generation_prompt = True,  # required for generation
         return_tensors = "pt",
     ).to("cuda")
 
-    outputs = loaded_model.generate(  # ← Use loaded_model, not model
+    outputs = loaded_model.generate(
         input_ids = inputs,
         max_new_tokens = 64,
-        use_cache = False,  # Avoid cache issues
+        use_cache = False,  # avoid cache issues
         temperature = 1.5,
         min_p = 0.1,
         do_sample = True,
         pad_token_id = loaded_tokenizer.pad_token_id or loaded_tokenizer.eos_token_id,
     )
 
-    # Decode with the LOADED tokenizer
     generated_text = loaded_tokenizer.decode(outputs[0], skip_special_tokens = True)
     input_text = loaded_tokenizer.decode(inputs[0], skip_special_tokens = True)
     response_part = generated_text[len(input_text) :].strip()
