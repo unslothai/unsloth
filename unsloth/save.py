@@ -1857,6 +1857,59 @@ def get_executable(executables):
 
 # Output types convert_hf_to_gguf.py can emit directly via --outtype.
 _DIRECT_CONVERT_OUTTYPES = ("f32", "f16", "bf16", "q8_0")
+_FULL_PRECISION_GGUF_TYPES = ("f32", "f16", "bf16")
+_GGUF_DEFAULT_SHARD_SIZE = "50GB"
+_GGUF_NO_SHARDING = "0"
+_GGUF_SHARD_SIZE_RE = re.compile(r"^(\d+)\s*([MG])B?$", re.IGNORECASE)
+
+
+def _resolve_gguf_shard_size(gguf_shard_size: Optional[str]) -> str:
+    """Validate and normalize the final GGUF shard size."""
+    if gguf_shard_size is None:
+        return _GGUF_DEFAULT_SHARD_SIZE
+    if not isinstance(gguf_shard_size, str):
+        raise TypeError("Unsloth: gguf_shard_size must be a string or None.")
+
+    value = gguf_shard_size.strip()
+    if value.casefold() in ("", "0", "none"):
+        return _GGUF_NO_SHARDING
+
+    match = _GGUF_SHARD_SIZE_RE.fullmatch(value)
+    if match is None:
+        raise ValueError(
+            f"Unsloth: gguf_shard_size={gguf_shard_size!r} is invalid. "
+            "Use a positive whole number in MB or GB, such as '500MB' or '4GB', "
+            "or pass '0' for one file."
+        )
+
+    magnitude = int(match.group(1))
+    unit = match.group(2).upper()
+    if magnitude == 0:
+        raise ValueError(
+            "Unsloth: gguf_shard_size must be positive. Pass '0' without a unit "
+            "to request one file."
+        )
+    multiplier = 1_000_000 if unit == "M" else 1_000_000_000
+    if magnitude > sys.maxsize // multiplier:
+        raise ValueError("Unsloth: gguf_shard_size is too large for this platform.")
+    return f"{magnitude}{unit}B"
+
+
+def _converter_gguf_shard_size(
+    gguf_shard_size: str,
+    first_conversion: str,
+    quantization_methods,
+    is_vlm: bool,
+) -> str:
+    """Choose the converter limit without splitting final quantized files or VLM companions."""
+    keeps_converter_output = first_conversion in quantization_methods
+    if (
+        not is_vlm
+        and keeps_converter_output
+        and first_conversion in _FULL_PRECISION_GGUF_TYPES
+    ):
+        return gguf_shard_size
+    return _GGUF_NO_SHARDING
 
 
 def _choose_first_conversion(
@@ -1896,6 +1949,7 @@ def save_to_gguf(
     gguf_directory: Optional[Union[str, os.PathLike]] = None,
     merge_is_disposable: bool = False,
     preexisting_weights = None,
+    gguf_shard_size: Optional[str] = None,
 ):
     """
     Orchestrates the complete GGUF conversion process.
@@ -1909,6 +1963,8 @@ def save_to_gguf(
     `preexisting_weights` is what `model_directory` held before the merge wrote it,
     so reclamation can take only what this export produced. `None` means the caller
     cannot say, and nothing is reclaimed.
+    `gguf_shard_size` applies to final f32, f16 and bf16 converter outputs. Quantized
+    outputs remain single-file. None preserves the historical 50GB converter limit.
     """
     # print_output True only if UNSLOTH_ENABLE_LOGGING=1
     if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") == "1":
@@ -2001,6 +2057,13 @@ def save_to_gguf(
         first_conversion = "f16"
 
     first_conversion_dtype = "" if first_conversion == "None" else first_conversion
+    gguf_shard_size = _resolve_gguf_shard_size(gguf_shard_size)
+    converter_shard_size = _converter_gguf_shard_size(
+        gguf_shard_size,
+        first_conversion,
+        quantization_method,
+        is_vlm,
+    )
     # Print conversion info
     needs_quantize_pass = any(m != first_conversion for m in quantization_method)
     if needs_quantize_pass:
@@ -2056,7 +2119,7 @@ def save_to_gguf(
             supported_vision_archs = supported_vision_archs,
             is_vlm = is_vlm,
             is_gpt_oss = is_gpt_oss,
-            max_shard_size = "50GB",
+            max_shard_size = converter_shard_size,
             print_output = print_output,
         )
     # update is_vlm switch
@@ -4562,6 +4625,7 @@ def unsloth_save_pretrained_gguf(
     save_method: str = None,
     imatrix_file = None,
     merge_is_disposable: bool = True,
+    gguf_shard_size: Optional[str] = None,
 ):
     """
     Same as .save_pretrained(...) except 4bit weights are auto
@@ -4575,6 +4639,9 @@ def unsloth_save_pretrained_gguf(
     the converter, so it may be reclaimed if the quants would otherwise not fit. Pass False
     to keep the weights when `save_directory` is part of the caller's own deliverable (the
     SentenceTransformer export writes its module directory there).
+
+    gguf_shard_size: maximum final f32, f16 or bf16 GGUF shard size in MB or GB. Pass
+    "0" for one file. None preserves the historical 50GB converter limit.
 
     Choose for `quantization_method` to be:
     "not_quantized"  : "Recommended. Fast conversion. Slow inference, big files.",
@@ -4609,6 +4676,7 @@ def unsloth_save_pretrained_gguf(
     if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
         tokenizer = patch_saving_functions(tokenizer)
     save_directory = os.path.normpath(os.fspath(save_directory))
+    gguf_shard_size = _resolve_gguf_shard_size(gguf_shard_size)
 
     # save_method="lora" exports the adapter itself as a GGUF LoRA (not a merged model).
     if save_method is not None and str(save_method).lower() == "lora":
@@ -4714,6 +4782,7 @@ def unsloth_save_pretrained_gguf(
     del arguments["imatrix_file"]  # only used by the gguf quantize step, not the 16bit merge
     del arguments["_gguf_prewarm_ok"]  # a local decision, not a save_pretrained kwarg
     del arguments["merge_is_disposable"]  # decides reclamation, not how the merge is written
+    del arguments["gguf_shard_size"]  # only used by the gguf converter
 
     # Preserve the requested output before reusing a non-PEFT checkpoint as input.
     # Same definition the preflight sized, so the disk it measured is the one
@@ -4882,6 +4951,7 @@ def unsloth_save_pretrained_gguf(
             gguf_directory = gguf_directory,
             merge_is_disposable = merge_is_disposable,
             preexisting_weights = preexisting_weights,
+            gguf_shard_size = gguf_shard_size,
         )
     except Exception as e:
         if _gguf_child_was_oom_killed(e):
@@ -5402,6 +5472,7 @@ def unsloth_push_to_hub_gguf(
     save_method: str = None,
     imatrix_file = None,
     is_main_process: bool = True,
+    gguf_shard_size: Optional[str] = None,
 ):
     """
     Same as .push_to_hub(...) except 4bit weights are auto
@@ -5498,6 +5569,7 @@ def unsloth_push_to_hub_gguf(
             temporary_location = temporary_location,
             maximum_memory_usage = maximum_memory_usage,
             imatrix_file = imatrix_file,
+            gguf_shard_size = gguf_shard_size,
         )
 
         # Extract results
