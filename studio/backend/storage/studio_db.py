@@ -118,7 +118,10 @@ class _StudioDbConnection(sqlite3.Connection):
 
 
 def _connect_studio_db(
-    database: "str | os.PathLike[str]", *, timeout: float, check_same_thread: bool = True
+    database: "str | os.PathLike[str]",
+    *,
+    timeout: float,
+    check_same_thread: bool = True,
 ) -> sqlite3.Connection:
     """Open a studio.db connection with a shared close gate."""
     return sqlite3.connect(

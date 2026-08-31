@@ -198,7 +198,7 @@ def test_studio_db_factories_serialize_connection_close(db, monkeypatch):
 
     modules = (providers_db, mcp_servers_db, credential_secrets)
     for module in modules:
-        monkeypatch.setattr(module, "studio_db_path", lambda db=db: db)
+        monkeypatch.setattr(module, "studio_db_path", lambda db = db: db)
         monkeypatch.setattr(module, "_schema_ready", False)
 
     factories = [
@@ -246,9 +246,7 @@ def test_studio_db_factories_serialize_connection_close(db, monkeypatch):
         except BaseException as exc:  # noqa: BLE001
             errors.append(exc)
 
-    threads = [
-        threading.Thread(target = open_and_close, args = (factory,)) for factory in factories
-    ]
+    threads = [threading.Thread(target = open_and_close, args = (factory,)) for factory in factories]
     for thread in threads:
         thread.start()
     ready.wait(timeout = 5)
