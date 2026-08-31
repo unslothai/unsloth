@@ -5862,6 +5862,17 @@ def _direct_llama_request(counted: bool = True):
         _direct_llama_request_finished()
 
 
+def _direct_llama_inflight_count() -> int:
+    """How many direct llama-server calls are in flight right now.
+
+    These bypass admission and open no API-monitor row, so a count that omits them
+    reads 0 through a healthy TTS or RAG-vision generation. The engine stats line
+    treats 0 as proof that a held slot is llama-server's alone, so it needs this.
+    """
+    with _direct_llama_inflight_lock:
+        return _direct_llama_inflight
+
+
 def _direct_llama_is_busy() -> bool:
     """Whether a direct llama call (RAG caption/OCR) holds the server right now.
 

@@ -313,8 +313,14 @@ def test_the_real_hook_reads_the_api_monitor(monkeypatch):
     hook and it resolves the live monitor rather than a stub of one."""
     from core.inference.api_monitor import api_monitor
 
-    assert ls._api_monitor_running_count() == api_monitor.active_count()
-    assert isinstance(ls._api_monitor_running_count(), int)
+    from routes.inference import _direct_llama_inflight_count
+
+    if api_monitor.enabled:
+        expected = api_monitor.active_count() + _direct_llama_inflight_count()
+        assert ls._api_monitor_running_count() == expected
+        assert isinstance(ls._api_monitor_running_count(), int)
+    else:
+        assert ls._api_monitor_running_count() is None
 
     captured = {}
 
@@ -368,19 +374,18 @@ def test_a_model_load_is_not_counted_as_a_request_in_flight():
     ), "the load must be a running row, or this test proves nothing"
     assert monitor.active_count() == 0
 
-    # And through the hook itself, against the live singleton, so swapping
-    # active_count() for a raw count of running rows fails here rather than only in
-    # the helper above.
-    from core.inference.api_monitor import api_monitor
+    # And through the hook itself, so swapping active_count() for a raw count of
+    # running rows fails here rather than only in the helper above. Against a monitor
+    # this test owns, not the ambient singleton: UNSLOTH_STUDIO_DISABLE_API_MONITOR is
+    # a supported setting and would otherwise make the hook return None here.
+    import core.inference.api_monitor as am
 
-    entry_id = api_monitor.record_lifecycle(
-        event = "load", model = "unsloth/Qwen3-27B-GGUF", running = True
-    )
+    real = am.api_monitor
+    am.api_monitor = monitor
     try:
-        assert any(e.status == "running" for e in api_monitor._entries)
         assert ls._api_monitor_running_count() == 0
     finally:
-        api_monitor.discard(entry_id)
+        am.api_monitor = real
 
 
 def test_the_count_is_read_under_the_monitors_lock_while_it_mutates():
@@ -443,9 +448,13 @@ def test_a_disabled_api_monitor_omits_the_count_rather_than_reporting_zero():
     am.api_monitor = disabled
     try:
         assert ls._api_monitor_running_count() is None
+        # The enabled path, against a monitor this test owns. Reading the ambient
+        # singleton here would fail whenever UNSLOTH_STUDIO_DISABLE_API_MONITOR is set,
+        # which is a supported configuration, not a broken checkout.
+        am.api_monitor = ApiMonitor(max_entries = 8, enabled = True)
+        assert ls._api_monitor_running_count() == 0
     finally:
         am.api_monitor = real
-    assert ls._api_monitor_running_count() is not None
 
 
 def test_the_count_is_process_wide_and_only_zero_is_conclusive():
@@ -459,4 +468,50 @@ def test_the_count_is_process_wide_and_only_zero_is_conclusive():
     assert "process-wide" in src
     assert "ONE direction" in src
     hook = inspect.getdoc(ls._api_monitor_running_count) or ""
-    assert "Process-wide" in hook and "not per engine" in hook
+    assert "process-wide, not per engine" in hook
+
+
+def test_a_direct_llama_call_is_counted_even_though_it_opens_no_monitor_row():
+    """/audio/generate reaches llama-server through _direct_llama_request and never
+    opens an API-monitor row, so the rows alone read 0 for the whole of a healthy TTS
+    generation -- and 0 is the value this field states most strongly. Same for
+    /completions, /embeddings and RAG vision, which that counter's own comment names.
+    """
+    from core.inference.api_monitor import ApiMonitor
+    from routes import inference as inf
+    import core.inference.api_monitor as am
+
+    real = am.api_monitor
+    am.api_monitor = ApiMonitor(max_entries = 8, enabled = True)
+    try:
+        assert ls._api_monitor_running_count() == 0
+        with inf._direct_llama_request():
+            assert inf._direct_llama_inflight_count() == 1
+            assert ls._api_monitor_running_count() == 1, (
+                "a direct llama call must not read as an idle Studio"
+            )
+        assert ls._api_monitor_running_count() == 0
+    finally:
+        am.api_monitor = real
+
+
+def test_an_unreadable_direct_count_omits_the_field_rather_than_understating_it():
+    """A partial count understates, and understating is the direction that misleads:
+    it is what claims the slot is held by finished work."""
+    from core.inference.api_monitor import ApiMonitor
+    import core.inference.api_monitor as am
+    from routes import inference as inf
+
+    real = am.api_monitor
+    real_count = inf._direct_llama_inflight_count
+    am.api_monitor = ApiMonitor(max_entries = 8, enabled = True)
+
+    def _boom():
+        raise RuntimeError("cannot read the direct count")
+
+    inf._direct_llama_inflight_count = _boom
+    try:
+        assert ls._api_monitor_running_count() is None
+    finally:
+        inf._direct_llama_inflight_count = real_count
+        am.api_monitor = real

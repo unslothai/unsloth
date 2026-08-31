@@ -282,10 +282,16 @@ def _api_monitor_running_count():
     model load shows as running but is not an in-flight API request, and counting one
     would answer the opposite of the question this field exists to settle.
 
-    Process-wide, not per engine: the monitor does not record which backend a request
-    went to, so a concurrent external-provider call counts here too. That makes only
-    the zero direction conclusive, which is the direction this field is read in -- see
-    the note on the emit site.
+    Two sources, because neither sees all of it. The API monitor rows cover routed
+    requests; direct llama calls (/completions, /embeddings, GGUF TTS, RAG vision)
+    bypass admission and open no row at all, so on their own the rows read 0 through a
+    healthy TTS generation -- and 0 is the value this field states most strongly.
+
+    Still process-wide, not per engine: the monitor does not record which backend a
+    routed request went to, so a concurrent external-provider call counts here too.
+    That is why only the zero direction is load bearing -- see the note on the emit
+    site. Either source being unreadable returns None, since a partial count would
+    understate, and understating is exactly the direction that misleads.
 
     Imported at call time, not module scope: this module is stdlib-only by design
     and is loaded from the llama.cpp backend, which the monitor's package imports
@@ -299,6 +305,10 @@ def _api_monitor_running_count():
         # slot is held by work Studio already finished". Omit rather than assert it.
         if not api_monitor.enabled:
             return None
-        return api_monitor.active_count()
+        monitored = api_monitor.active_count()
+
+        from routes.inference import _direct_llama_inflight_count
+
+        return monitored + _direct_llama_inflight_count()
     except Exception:  # noqa: BLE001 -- diagnostics must never break the poller
         return None
