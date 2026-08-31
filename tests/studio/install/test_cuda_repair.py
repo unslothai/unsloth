@@ -1603,8 +1603,16 @@ class TestThePackagesTiedToTheTorchReleaseAreResettled:
         *,
         resident_xformers = None,
         installed_spec = False,
+        torchao_install_fails = False,
     ):
         calls = {"torchao": [], "removed": []}
+
+        def _try(*a, **k):
+            # Returns a BOOL, as the real pip_install_try does. list.append() returns
+            # None, so a stub that only appended reported failure on every call and every
+            # test here silently exercised the could-not-install branch.
+            calls["torchao"].append([str(x) for x in a])
+            return not torchao_install_fails
 
         with (
             patch.object(stack_mod, "_probe_installed_torch_version", return_value = after),
@@ -1621,7 +1629,7 @@ class TestThePackagesTiedToTheTorchReleaseAreResettled:
             patch.object(
                 stack_mod,
                 "pip_install_try",
-                side_effect = lambda *a, **k: calls["torchao"].append([str(x) for x in a]),
+                side_effect = _try,
             ),
             patch.object(
                 stack_mod,
@@ -1691,6 +1699,32 @@ class TestThePackagesTiedToTheTorchReleaseAreResettled:
     def test_an_absent_xformers_is_not_touched(self):
         calls = self._resync("2.11.0+cu124", "2.10.0+cu124", resident_xformers = None)
         assert calls["removed"] == []
+
+    def test_a_torchao_that_cannot_be_reinstalled_across_a_cuda_major_is_removed(self):
+        """cu124 to cu130 with the torchao source unreachable.
+
+        _select_torchao_spec exists because a torchao compiled for CUDA 12 cannot load its
+        cpp extension under cu130, so leaving the resident one behind completes the update
+        with a package that may fail on import. Same remedy the xFormers arm applies.
+        """
+        calls = self._resync(
+            "2.10.0+cu124", "2.10.0+cu130", torchao_install_fails = True
+        )
+        assert calls["torchao"], "the CUDA major moved, so the pin is re-selected"
+        assert calls["removed"] == ["torchao"]
+
+    def test_a_release_only_move_that_cannot_reinstall_keeps_torchao(self):
+        """No CUDA-major change, so the resident build still loads: this one IS the slow path."""
+        calls = self._resync(
+            "2.11.0+cu124", "2.10.0+cu124", torchao_install_fails = True
+        )
+        assert calls["torchao"], "the release moved, so the pin is re-selected"
+        assert calls["removed"] == [], "a same-major torchao is slower, not broken"
+
+    def test_a_torchao_that_reinstalls_cleanly_is_not_removed(self):
+        calls = self._resync("2.10.0+cu124", "2.10.0+cu130")
+        assert calls["torchao"], "the CUDA major moved"
+        assert calls["removed"] == [], "the replacement landed; nothing to remove"
 
     def test_an_unreadable_torch_after_the_repair_does_nothing(self):
         calls = self._resync("2.11.0+cu124", None, resident_xformers = "2.11.0+cu128")
@@ -1916,3 +1950,77 @@ class TestADefinitiveImportFailureIsNotADriverHang:
             in self._SOURCE
         )
         assert "$script:TorchImportDefinitivelyFailed = $false" in self._SOURCE
+
+
+class TestARepairedTorchThatCannotImport:
+    """The verification after a repair, when the new wheel does not load.
+
+    _probe_torch_runtime answers (ran, importable, ...). A torch that RAN and did not
+    import is a definitive answer, not the ambiguity the on-disk fallback exists for:
+    version.py still reports the requested +cu*/+xpu tag from a half-written or DLL-less
+    wheel, so reading it would accept the repair and write a completion manifest over a
+    torch nothing can import. Only a probe that could not run at all (a hung driver) may
+    fall back to disk.
+    """
+
+    def _probe(self, monkeypatch, *, ran, importable, version):
+        monkeypatch.setattr(
+            stack_mod, "_probe_torch_runtime",
+            lambda: (ran, importable, version, None, "12.4" if "+cu" in (version or "") else None),
+        )
+        monkeypatch.setattr(
+            stack_mod, "_installed_torch_label_on_disk", lambda: version or ""
+        )
+
+    def test_a_definitive_import_failure_is_not_read_off_disk(self, monkeypatch):
+        self._probe(monkeypatch, ran = True, importable = False, version = "2.6.0+cu124")
+        assert (
+            stack_mod._installed_flavor_tag_now("cu124") == stack_mod._TORCH_TAG_UNIMPORTABLE
+        )
+
+    def test_a_probe_that_could_not_run_still_falls_back_to_disk(self, monkeypatch):
+        # The wedged-driver host this fallback exists for.
+        self._probe(monkeypatch, ran = False, importable = False, version = "2.6.0+cu124")
+        assert stack_mod._installed_flavor_tag_now("cu124") == "cu124"
+
+    def test_a_healthy_probe_is_unaffected(self, monkeypatch):
+        self._probe(monkeypatch, ran = True, importable = True, version = "2.6.0+cu124")
+        assert stack_mod._installed_flavor_tag_now("cu124") == "cu124"
+
+    def test_the_sentinel_cannot_be_mistaken_for_a_flavor(self):
+        sentinel = stack_mod._TORCH_TAG_UNIMPORTABLE
+        for tag in ("cpu", "cu124", "cu128", "rocm", "xpu", ""):
+            assert sentinel != tag
+        assert sentinel, "falsy would be swallowed by the ambiguity branch"
+
+    def test_the_update_fails_rather_than_reporting_success(self, monkeypatch):
+        """End to end: a cu124 repair whose wheel will not import must not return True."""
+        lines = []
+        monkeypatch.setattr(stack_mod, "IS_WINDOWS", True)
+        monkeypatch.setattr(stack_mod, "IS_MACOS", False)
+        monkeypatch.setattr(stack_mod, "NO_TORCH", False)
+        monkeypatch.setattr(stack_mod, "_TORCH_BACKEND", "")
+        monkeypatch.setattr(stack_mod, "_RECORDED_TORCH_TAG", None)
+        monkeypatch.setattr(stack_mod, "_safe_print", lambda *a, **k: lines.append(" ".join(map(str, a))))
+        monkeypatch.setattr(stack_mod, "_has_usable_nvidia_gpu", lambda: True)
+        monkeypatch.setenv("UNSLOTH_EXPECTED_TORCH_TAG", "cu124")
+        monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+        monkeypatch.delenv("UNSLOTH_TORCH_INSTALL_INDEX_URL", raising = False)
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+
+        state = {"ran": True, "importable": True, "version": "2.11.0+cpu"}
+        monkeypatch.setattr(
+            stack_mod, "_probe_torch_runtime",
+            lambda: (state["ran"], state["importable"], state["version"], None, None),
+        )
+        monkeypatch.setattr(
+            stack_mod, "_installed_torch_label_on_disk", lambda: state["version"]
+        )
+
+        def _pip(_label, *_a, **_k):
+            # The repair lands the right family, and it does not import.
+            state.update(ran = True, importable = False, version = "2.6.0+cu124")
+
+        monkeypatch.setattr(stack_mod, "pip_install", _pip)
+        assert stack_mod._ensure_expected_torch_flavor() is False
+        assert any("cannot be imported" in ln for ln in lines), lines

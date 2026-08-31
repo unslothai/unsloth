@@ -3002,6 +3002,11 @@ def _explicit_cpu_torch_index_pin() -> bool:
     return pin is not None and _torch_index_leaf(pin) == "cpu"
 
 
+# Not a flavor tag, so no `== expected` comparison can accept it, and truthy, so no
+# `if not _now` ambiguity branch can swallow it.
+_TORCH_TAG_UNIMPORTABLE = "unimportable"
+
+
 def _installed_flavor_tag_now(expected: str = "") -> str:
     """The venv's CURRENT flavor tag, re-probed, or "" when nothing could be read.
 
@@ -3023,8 +3028,33 @@ def _installed_flavor_tag_now(expected: str = "") -> str:
         if expected == "cpu" and tag == "cpu" and (_hip or _cuda):
             return "rocm" if _hip else "cuda"
         return tag
+    if _ran:
+        # The probe ANSWERED, and the answer was that this torch does not import. That is
+        # not the ambiguity the disk fallback exists for: version.py would report the
+        # requested +cu*/+xpu tag from a half-written or DLL-less wheel, the caller would
+        # read tag == expected, and the update would write a completion manifest over a
+        # torch nothing can import. A torch that failed to import BEFORE the repair never
+        # reaches here -- the pre-repair chain returns early on it.
+        return _TORCH_TAG_UNIMPORTABLE
     label = _installed_torch_label_on_disk()
     return _torch_flavor_tag(label) if label else ""
+
+
+def _warn_repair_left_torch_unimportable(expected: str) -> bool:
+    """Report a repair whose wheel cannot be imported, and fail. Always returns False.
+
+    Distinct from _warn_wrong_flavor and _warn_still_cpu: the family on disk may well be
+    the requested one, so naming it would send the reader after a wheel that is already
+    correct. What is wrong is that it does not load.
+    """
+    _safe_print("")
+    _safe_print(
+        f"   [WARN] PyTorch was reinstalled for {expected} but the result cannot be imported."
+    )
+    _safe_print("   [WARN] The venv is not usable in this state.")
+    _safe_print("   [WARN] Re-run this installer, or reinstall the build for your GPU manually.")
+    _safe_print("   [WARN]     irm https://unsloth.ai/install.ps1 | iex")
+    return False
 
 
 def _warn_wrong_flavor(expected: str, installed: str) -> bool:
@@ -3138,12 +3168,23 @@ def _resync_torch_coupled_packages(label_before: str) -> bool:
                     "--no-cache-dir",
                     _spec,
                 ):
-                    # Returns False rather than raising: an unreachable PyPI would
-                    # otherwise leave the incompatible build in place silently.
-                    _safe_print(
-                        f"   [WARN] could not install {_spec} for the repaired torch; the "
-                        f"torchao kernels will fall back to the slow path."
-                    )
+                    # Across a CUDA-major move the resident build is not merely slower:
+                    # _select_torchao_spec exists because a torchao compiled for CUDA 12
+                    # cannot load its cpp under cu130. Remove it, the way the xFormers arm
+                    # below removes a build made for a torch that is gone, rather than
+                    # completing the update with a package that may fail on import. A
+                    # release-only move keeps the old warning: that one really is the
+                    # slow path.
+                    if _cuda_moved and _uninstall_distribution("torchao"):
+                        _note(
+                            f"removed the torchao built for a different CUDA major; "
+                            f"install {_spec} by hand to restore its kernels"
+                        )
+                    else:
+                        _safe_print(
+                            f"   [WARN] could not install {_spec} for the repaired torch; the "
+                            f"torchao kernels will fall back to the slow path."
+                        )
         except Exception as e:
             _safe_print(f"   [WARN] could not re-match torchao after the repair: {e}")
     try:
@@ -3234,6 +3275,8 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
         # The FAMILY: a transient repo.amd.com failure is non-fatal in there, and the cu124
         # wheel it leaves passes _torch_build_is_gpu.
         _now = _installed_flavor_tag_now(expected)
+        if _now == _TORCH_TAG_UNIMPORTABLE:
+            return _warn_repair_left_torch_unimportable(expected)
         if _now == expected:
             return True
         if not _now:
@@ -3269,11 +3312,15 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
     # The family: a mirror can answer /cu128 with a cached cu124 wheel, and
     # _torch_build_is_gpu is family-blind.
     _now = _installed_flavor_tag_now(expected)
+    if _now == _TORCH_TAG_UNIMPORTABLE:
+        return _warn_repair_left_torch_unimportable(expected)
     if _now == expected:
         if _resync_torch_coupled_packages(_label_before):
             return True
         # The resync installs --no-deps, but this function's verification is behind us.
         _after = _installed_flavor_tag_now(expected)
+        if _after == _TORCH_TAG_UNIMPORTABLE:
+            return _warn_repair_left_torch_unimportable(expected)
         if _after in (expected, ""):
             return True
         _safe_print("   [WARN] the post-repair package resync changed the torch build.")
