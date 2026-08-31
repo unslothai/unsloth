@@ -102,9 +102,8 @@ def _multi_gpu_device_map_kwargs() -> dict:
             device_map = get_device_map(None)
         else:
             return {}
-        # Both sharding answers `get_device_map` can give. A whitelist of just
-        # "balanced" silently dropped the map the moment CUDA started asking for
-        # "unsloth", leaving the export on the loader default.
+        # Both sharding answers `get_device_map` gives. A "balanced"-only whitelist
+        # dropped the map once CUDA began asking for "unsloth".
         if device_map in ("balanced", "unsloth"):
             return {"device_map": device_map}
     except Exception as exc:
@@ -144,14 +143,13 @@ def _is_cpu_spill_rejection(exc: BaseException) -> bool:
 
 
 def _is_device_map_infeasible(exc: BaseException) -> bool:
-    """The ``"unsloth"`` planner declining to place the model, by class name.
+    """The ``"unsloth"`` planner declining to place the model, matched by class name.
 
-    It raises rather than spilling a bitsandbytes model to CPU, which is the right
-    answer for a load the user asked for and the wrong one here: the planner budgets
-    from free memory read before this process opens a context, so a training or chat
-    job holding the other cards can make it refuse a model the single-device loader
-    still fits. Matched by name because the class lives in unsloth and importing it
-    would tie the export to a version that defines it.
+    It raises rather than spilling a bitsandbytes model to CPU. That is right for a
+    load the user asked for and wrong here: it budgets from free memory read before
+    this process opens a context, so a training or chat job holding the other cards
+    can make it refuse a model the single-device loader still fits. By name, because
+    importing the class would tie the export to a version that defines it.
     """
     return type(exc).__name__ == "DeviceMapInfeasible"
 
@@ -682,11 +680,9 @@ class ExportBackend:
             load_in_4bit = load_in_4bit,
             trust_remote_code = trust_remote_code,
             hf_token = hf_token,
-            # Spelled out, not omitted. An omitted device_map takes unsloth's
-            # DEFAULT_DEVICE_MAP, which `requested_device_map` upgrades back to the
-            # planner unless UNSLOTH_AUTO_DEVICE_MAP=0, so the retry would re-run the
-            # placement that just failed and report the same error. An explicitly typed
-            # "sequential" is a choice the caller made and passes through untouched.
+            # Named, not omitted: an omitted map is unsloth's DEFAULT_DEVICE_MAP, which
+            # `requested_device_map` upgrades back to the planner, so the retry would
+            # re-run the placement that just failed. A typed "sequential" passes through.
             _device_map_override = {"device_map": "sequential"},
         )
 

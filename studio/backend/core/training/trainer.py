@@ -982,9 +982,8 @@ class UnslothTrainer:
                         self._update_progress(error = friendly, is_training = False)
                         return False
 
-            # A full finetune, and the two audio routes that pass an explicit auto_model,
-            # are ones unsloth's planner declines; its "sequential" fallback fills cuda:0
-            # first, which is the wrong shape for a training run. They keep "balanced".
+            # The planner declines a full finetune and an explicit auto_model, and its
+            # "sequential" fallback fills cuda:0 first: wrong shape for a training run.
             device_map = get_device_map(
                 gpu_ids,
                 planner_eligible = not full_finetuning and self._audio_type not in ("csm", "whisper"),
