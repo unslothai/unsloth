@@ -1,0 +1,317 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import { idleProbeVerdict } from "./adopt-rules";
+import { disposableTimeoutSignal } from "../lib/abort-signals";
+import {
+  getActiveDatasetDownloads,
+  getAllActiveModelDownloads,
+  type DownloadJobState,
+} from "./api";
+import { DOWNLOAD_KIND, isResolvedTransport } from "./constants";
+import { ACTIVE_STATES, POLL_REQUEST_TIMEOUT_MS } from "./download-manager-config";
+import {
+  apiGetProgress,
+  apiGetStatus,
+  isRequestTimeout,
+} from "./download-api-adapter";
+import type {
+  DownloadRequest,
+  ManagedDownload,
+} from "./download-manager-types";
+import {
+  getState,
+  jobKeyOf,
+  removeJob,
+  repoKeyOf,
+} from "./download-manager-state";
+import {
+  adoptJob,
+  applyProgressUpdate,
+  finalize,
+  hasObservedExpectedBytes,
+} from "./poll-loop";
+import { runtimeRegistry } from "./runtime-registry";
+
+const HYDRATE_STATUS_TIMEOUT_RETRIES = 4;
+const HYDRATE_STATUS_RETRY_MS = 2_500;
+const HYDRATE_ADOPTION_RETRY_MS = 2_500;
+const HYDRATE_ADOPTION_MAX_RETRIES = 12;
+
+let hydrated = false;
+
+type HydratedIdleProbeResult = "active" | "gone" | "settled";
+
+function safeGeneration(value: number | undefined): number | undefined {
+  return Number.isSafeInteger(value) ? value : undefined;
+}
+
+async function withHydrationTimeout<T>(
+  request: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const timeout = disposableTimeoutSignal(POLL_REQUEST_TIMEOUT_MS);
+  try {
+    return await request(timeout.signal);
+  } finally {
+    timeout.dispose();
+  }
+}
+
+function removeLocalActivePeers(
+  kind: DownloadRequest["kind"],
+  repoId: string,
+  variant: string | null,
+): void {
+  const activeRepoKey = repoKeyOf(kind, repoId);
+  const activeJobKey = jobKeyOf(kind, repoId, variant);
+  const snapshotJobKey = jobKeyOf(kind, repoId, null);
+  for (const job of Object.values(getState().jobs)) {
+    if (job.external) continue;
+    if (!ACTIVE_STATES.has(job.state)) continue;
+    if (repoKeyOf(job.kind, job.repoId) !== activeRepoKey) continue;
+    if (variant !== null && kind === DOWNLOAD_KIND.MODEL) {
+      if (job.key === activeJobKey) continue;
+      if (job.key === snapshotJobKey) removeJob(job.key);
+      continue;
+    }
+    if (job.key !== activeJobKey) removeJob(job.key);
+  }
+}
+
+async function adoptActiveModelDownloads(): Promise<void> {
+  const downloads = await withHydrationTimeout((signal) =>
+    getAllActiveModelDownloads(signal),
+  );
+  for (const download of downloads) {
+    const repoId = download.repo_id?.trim();
+    if (!repoId || !ACTIVE_STATES.has(download.state)) continue;
+    removeLocalActivePeers(
+      DOWNLOAD_KIND.MODEL,
+      repoId,
+      download.variant ?? null,
+    );
+    adoptJob(
+      {
+        kind: DOWNLOAD_KIND.MODEL,
+        repoId,
+        variant: download.variant ?? null,
+        expectedBytes: 0,
+      },
+      safeGeneration(download.generation),
+      download.state,
+      isResolvedTransport(download.transport) ? download.transport : undefined,
+      // null, not undefined: this endpoint always reports the marker, so "no
+      // marker" has to clear one a previous run left in storage.
+      isResolvedTransport(download.cancel_transport)
+        ? download.cancel_transport
+        : null,
+    );
+  }
+}
+
+async function adoptActiveDatasetDownloads(): Promise<void> {
+  const downloads = await withHydrationTimeout((signal) =>
+    getActiveDatasetDownloads(signal),
+  );
+  for (const download of downloads) {
+    const repoId = download.repo_id?.trim();
+    if (!repoId || !ACTIVE_STATES.has(download.state)) continue;
+    removeLocalActivePeers(DOWNLOAD_KIND.DATASET, repoId, null);
+    adoptJob(
+      {
+        kind: DOWNLOAD_KIND.DATASET,
+        repoId,
+        variant: null,
+        expectedBytes: 0,
+      },
+      safeGeneration(download.generation),
+      download.state,
+      isResolvedTransport(download.transport) ? download.transport : undefined,
+      // null, not undefined: this endpoint always reports the marker, so "no
+      // marker" has to clear one a previous run left in storage.
+      isResolvedTransport(download.cancel_transport)
+        ? download.cancel_transport
+        : null,
+    );
+  }
+}
+
+type BackendAdoptionSide = "model" | "dataset";
+
+const BACKEND_ADOPTERS: Record<BackendAdoptionSide, () => Promise<void>> = {
+  model: adoptActiveModelDownloads,
+  dataset: adoptActiveDatasetDownloads,
+};
+
+// Adopt backend-running downloads this client doesn't know about. Retry only
+// the failed side(s) so backend readiness settles without duplicating jobs.
+async function hydrateBackendActiveDownloads(
+  attempt = 0,
+  sides: readonly BackendAdoptionSide[] = ["model", "dataset"],
+): Promise<void> {
+  const results = await Promise.allSettled(
+    sides.map((side) => BACKEND_ADOPTERS[side]()),
+  );
+  const pending = sides.filter(
+    (_, index) => results[index].status === "rejected",
+  );
+  if (pending.length === 0 || attempt >= HYDRATE_ADOPTION_MAX_RETRIES) return;
+  scheduleBackendAdoptionRetry(attempt + 1, pending);
+}
+
+function scheduleBackendAdoptionRetry(
+  attempt: number,
+  sides: readonly BackendAdoptionSide[],
+): void {
+  const timer = window.setTimeout(() => {
+    runtimeRegistry.hydrationRetryTimers.delete(timer);
+    void hydrateBackendActiveDownloads(attempt, sides);
+  }, HYDRATE_ADOPTION_RETRY_MS);
+  runtimeRegistry.hydrationRetryTimers.add(timer);
+}
+
+async function probeHydratedIdleProgress(
+  key: string,
+  job: ManagedDownload,
+): Promise<HydratedIdleProbeResult> {
+  try {
+    const progressResp = await withHydrationTimeout((signal) =>
+      apiGetProgress(job, signal),
+    );
+    const current = getState().jobs[key];
+    if (!current || !ACTIVE_STATES.has(current.state)) return "settled";
+    applyProgressUpdate(key, current, progressResp);
+    const updated = getState().jobs[key];
+    if (!updated || !ACTIVE_STATES.has(updated.state)) return "settled";
+    if (hasObservedExpectedBytes(updated)) {
+      finalize(key, "complete", { bytes: updated.downloadedBytes });
+      return "settled";
+    }
+    // The raw reading decides this one, not the figure the card keeps. Whether
+    // anything is on disk is a question about the cache, and a persisted job
+    // whose cache was wiped has to read "gone" here rather than adopt and sit
+    // in the panel as a phantom download until the idle-evict grace expires
+    // sixty seconds later, blocking a fresh start for the same repo meanwhile.
+    // The reason the resolved figure holds a zero over -- an unresolvable
+    // variant file set -- is answered on the backend now, so a finished
+    // download does not reach this line reading zero in the first place.
+    //
+    // A zero alone is still not proof, though: a transient measurement failure comes back as a
+    // perfectly successful all-zero response, and calling that "gone" drops a job whose partial
+    // cache is sitting right there. cache_path is the discriminator -- the backend only answers
+    // null when no cache dir for this repo exists at all, and a dir it scanned and measured at
+    // zero still names itself. So the cache being absent is what retires the card, not the
+    // counter being zero.
+    return idleProbeVerdict(
+      progressResp.downloaded_bytes,
+      progressResp.cache_path,
+      progressResp.target_present,
+      progressResp.cache_measured,
+    );
+  } catch {
+    return "active";
+  }
+}
+
+async function settleHydratedJob(
+  key: string,
+  req: DownloadRequest,
+  status: {
+    state: DownloadJobState;
+    error?: string | null;
+    generation?: number;
+  },
+): Promise<void> {
+  if (status.state === "running" || status.state === "cancelling") {
+    adoptJob(req, safeGeneration(status.generation), status.state);
+  } else if (status.state === "complete") {
+    finalize(key, "complete");
+  } else if (status.state === "cancelled") {
+    finalize(key, "cancelled");
+  } else if (status.state === "error") {
+    finalize(key, "error", { error: status.error ?? null });
+  } else {
+    const job = getState().jobs[key];
+    if (job && hasObservedExpectedBytes(job)) {
+      finalize(key, "complete", { bytes: job.downloadedBytes });
+    } else if (job?.state === "running" || job?.state === "cancelling") {
+      const probeResult = await probeHydratedIdleProgress(key, job);
+      if (probeResult === "settled") return;
+      if (probeResult === "active" && job.state === "running") {
+        adoptJob(req);
+        return;
+      }
+      const latest = getState().jobs[key];
+      if (latest && hasObservedExpectedBytes(latest)) {
+        finalize(key, "complete", { bytes: latest.downloadedBytes });
+      } else {
+        finalize(key, job.state === "cancelling" ? "cancelled" : "gone");
+      }
+    } else {
+      finalize(key, "gone");
+    }
+  }
+}
+
+function scheduleHydrationProbeRetry(
+  key: string,
+  req: DownloadRequest,
+  attempt: number,
+): void {
+  const timer = window.setTimeout(() => {
+    runtimeRegistry.hydrationRetryTimers.delete(timer);
+    const job = getState().jobs[key];
+    if (!job || !ACTIVE_STATES.has(job.state)) return;
+    void probeHydratedJob(key, req, attempt);
+  }, HYDRATE_STATUS_RETRY_MS);
+  runtimeRegistry.hydrationRetryTimers.add(timer);
+}
+
+async function probeHydratedJob(
+  key: string,
+  req: DownloadRequest,
+  attempt: number,
+): Promise<void> {
+  const job = getState().jobs[key];
+  if (!job || !ACTIVE_STATES.has(job.state)) return;
+  try {
+    const status = await withHydrationTimeout((signal) =>
+      apiGetStatus(job, signal),
+    );
+    const current = getState().jobs[key];
+    if (!current || !ACTIVE_STATES.has(current.state)) return;
+    await settleHydratedJob(key, req, status);
+  } catch (error) {
+    if (isRequestTimeout(error) && attempt < HYDRATE_STATUS_TIMEOUT_RETRIES) {
+      scheduleHydrationProbeRetry(key, req, attempt + 1);
+      return;
+    }
+    adoptJob(req);
+  }
+}
+
+export function hydrateDownloadManager(): void {
+  if (hydrated) return;
+  hydrated = true;
+  void hydrateBackendActiveDownloads();
+  const jobs = Object.values(getState().jobs);
+  for (const job of jobs) {
+    // External jobs are live in memory and have no hub job to probe.
+    if (job.external) continue;
+    if (!ACTIVE_STATES.has(job.state)) {
+      removeJob(job.key);
+      continue;
+    }
+    const req: DownloadRequest = {
+      kind: job.kind,
+      repoId: job.repoId,
+      variant: job.variant,
+      expectedBytes: job.expectedBytes,
+    };
+    void probeHydratedJob(job.key, req, 0);
+  }
+}
+
+export function resetHydrationState(): void {
+  hydrated = false;
+}

@@ -3,15 +3,27 @@
 
 "use client";
 
-import { type ToolCallMessagePartComponent, useAuiState } from "@assistant-ui/react";
-import { GlobeIcon, LoaderIcon } from "lucide-react";
-import { memo, useEffect, useState } from "react";
+import {
+  type ToolCallMessagePartComponent,
+  useAuiState,
+} from "@assistant-ui/react";
+import { GlobeIcon } from "lucide-react";
+
+import {
+  isSearchImagesToolResult,
+  useToolAwaitingApproval,
+} from "@/features/chat";
+import { stringifyToolResult } from "@/lib/strip-ansi";
+import { memo } from "react";
+import { SearchImageThumb } from "./search-image";
 import { Source, SourceIcon, SourceTitle } from "./sources";
+import { toolArgText } from "./tool-arg-text";
 import {
   ToolFallbackContent,
   ToolFallbackRoot,
   ToolFallbackTrigger,
 } from "./tool-fallback";
+import { useToolActivityOpen } from "./use-tool-activity-open";
 
 interface ParsedSource {
   title: string;
@@ -23,11 +35,23 @@ const RE_BLOCK_SEP = /\n---\n/;
 const RE_TITLE = /Title:\s*(.+)/;
 const RE_URL = /URL:\s*(.+)/;
 const RE_SNIPPET = /Snippet:\s*(.+)/s;
+// Mirrors _normalize_url_scheme: a dotted host, optionally followed by a port
+// that may be empty ("example.com:" fetches on the default port) but otherwise
+// has to be in range, so the card names a host only when the backend fetches it.
+const RE_BARE_HOST =
+  /^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?::(\d{0,5}))?(?:[/?#]|$)/;
+
+function isBareHostFetchedAsHttps(value: string): boolean {
+  const match = RE_BARE_HOST.exec(value);
+  if (!match) return false;
+  const port = match[1];
+  if (!port) return true;
+  return Number(port) >= 1 && Number(port) <= 65535;
+}
 
 /**
- * Reject anything that is not a real http(s) URL. Web-search / web-fetch
- * output is provider-controlled, so hostile ``javascript:`` / ``data:``
- * lines must not reach the Source badge's <a href>.
+ * Reject non-http(s) URLs. Web-search/fetch output is provider-controlled,
+ * so hostile `javascript:` / `data:` lines must not reach a Source <a href>.
  */
 function isSafeHttpUrl(raw: string): boolean {
   const value = raw.trim();
@@ -67,46 +91,79 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
   args,
   result,
   status,
+  toolCallId,
 }) => {
-  const query = (args as { query?: string })?.query ?? "";
-  const url = ((args as { url?: string })?.url ?? "").trim();
-  const pattern = (args as { pattern?: string })?.pattern ?? "";
-  const actionType = (args as { action_type?: string })?.action_type ?? "";
-  // gpt-5.x agentic action.type: search | open_page | find_in_page.
-  const isFindInPage = actionType === "find_in_page" || (!!url && !!pattern);
+  // Coerced, like image_queries below: a local model routinely emits a number or an
+  // object here, and .trim() on one crashes the card that was meant to show the call.
+  const query = toolArgText((args as { query?: unknown })?.query);
+  const url = toolArgText((args as { url?: unknown })?.url).trim();
+  const pattern = toolArgText((args as { pattern?: unknown })?.pattern);
+  const actionType = toolArgText(
+    (args as { action_type?: unknown })?.action_type,
+  );
+  const isFindInPage =
+    actionType === "find_in_page" || (!!url && !!pattern.trim());
   const isUrlFetch = !!url && !isFindInPage;
+  const rawImageQueries = (args as { image_queries?: unknown })?.image_queries;
+  const imageQueries = Array.isArray(rawImageQueries)
+    ? rawImageQueries
+        .map((q) => toolArgText(q).trim())
+        .filter(Boolean)
+        .slice(0, 5)
+    : [];
+  const imageLabel = imageQueries.join(", ");
+  const isImageOnly =
+    !isUrlFetch &&
+    !isFindInPage &&
+    !query.trim() &&
+    imageQueries.length > 0;
+  // The header speaks for the result: a call that found nothing must not claim it did.
+  const foundImages = isSearchImagesToolResult(result);
+  const bareUrl = url.startsWith("//") ? url.slice(2) : url;
+  const candidateUrl = isBareHostFetchedAsHttps(bareUrl)
+    ? `https://${bareUrl}`
+    : url;
+  const safeUrl = isSafeHttpUrl(candidateUrl) ? candidateUrl : "";
   const displayDomain = (() => {
-    if (!url) return "";
+    if (!safeUrl) return "";
     try {
-      const parsed = new URL(url);
-      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "";
+      const parsed = new URL(safeUrl);
       return parsed.hostname.replace(/^www\./, "");
     } catch {
       return "";
     }
   })();
   const isRunning = status?.type === "running";
-  const sources = result
-    ? parseSearchResults(
-        typeof result === "string" ? result : JSON.stringify(result),
-      )
-    : [];
+  const withImages = isSearchImagesToolResult(result);
+  const resultText =
+    result == null
+      ? ""
+      : withImages
+        ? stringifyToolResult(result.text)
+        : stringifyToolResult(result);
+  const images = withImages ? result.webImages : [];
+  const sources = resultText ? parseSearchResults(resultText) : [];
 
   // Collapse when LLM starts generating text after the tool call
   const hasText = useAuiState(({ message }) =>
-    message.content.some((p) => p.type === "text" && "text" in p && (p as { text: string }).text.length > 0),
+    message.content.some(
+      (p) =>
+        p.type === "text" &&
+        "text" in p &&
+        (p as { text: string }).text.length > 0,
+    ),
   );
-  const [open, setOpen] = useState(isRunning);
-  useEffect(() => {
-    if (isRunning) {
-      setOpen(true);
-    } else if (hasText) {
-      setOpen(false);
-    }
-  }, [isRunning, hasText]);
+  // Ask permission gates every local tool call, and what is being approved
+  // lives inside the content while Allow/Deny render outside it.
+  const awaitingApproval = useToolAwaitingApproval(toolCallId);
+  const [open, setOpen] = useToolActivityOpen(isRunning, hasText);
 
   return (
-    <ToolFallbackRoot open={open} onOpenChange={setOpen}>
+    <ToolFallbackRoot
+      open={open}
+      onOpenChange={setOpen}
+      awaitingApproval={awaitingApproval}
+    >
       <ToolFallbackTrigger
         toolName={
           isFindInPage
@@ -114,9 +171,19 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
               ? `Found "${pattern}" in ${displayDomain || "page"}`
               : `Find in ${displayDomain || "page"}`
             : isUrlFetch
-              ? displayDomain ? `Read ${displayDomain}` : "Read page"
+              ? displayDomain
+                ? `Read ${displayDomain}`
+                : "Read page"
+            : isImageOnly
+              ? isRunning
+                ? `Finding images for “${imageLabel}”`
+                : foundImages
+                  ? `Found images for “${imageLabel}”`
+                  : `No images for “${imageLabel}”`
               : query
-                ? `Searched "${query}"`
+                ? imageLabel && foundImages
+                  ? `Searched "${query}" · images for ${imageLabel}`
+                  : `Searched "${query}"`
                 : "Web Search"
         }
         status={status}
@@ -124,45 +191,86 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
       />
       <ToolFallbackContent>
         {isRunning ? (
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <LoaderIcon className="size-3.5 animate-spin" />
+          <div className="flex items-center text-sm text-muted-foreground">
             <span>
-              {isFindInPage
-                ? pattern
-                  ? <>Finding &ldquo;{pattern}&rdquo; in {displayDomain || "page"}&hellip;</>
-                  : <>Searching {displayDomain || "page"}&hellip;</>
-                : isUrlFetch
-                  ? <>Reading {displayDomain || "page"}&hellip;</>
-                  : query
-                    ? <>Searching for &ldquo;{query}&rdquo;&hellip;</>
-                    : <>Searching&hellip;</>
-              }
+              {isFindInPage ? (
+                pattern ? (
+                  <>
+                    Finding &ldquo;{pattern}&rdquo; in {displayDomain || "page"}
+                    &hellip;
+                  </>
+                ) : (
+                  <>Searching {displayDomain || "page"}&hellip;</>
+                )
+              ) : isUrlFetch ? (
+                <>Reading {displayDomain || "page"}&hellip;</>
+              ) : isImageOnly ? (
+                <>Finding images for &ldquo;{imageLabel}&rdquo;&hellip;</>
+              ) : query ? (
+                <>Searching for &ldquo;{query}&rdquo;&hellip;</>
+              ) : (
+                <>Searching&hellip;</>
+              )}
             </span>
           </div>
-        ) : sources.length > 0 ? (
-          <div className="flex flex-wrap gap-1.5">
-            {sources.map((source, i) => (
-              <Source
-                key={`${source.url}-${i}`}
-                href={source.url}
-                variant="outline"
-                size="sm"
-                className="inline-flex items-center gap-1.5"
-              >
-                <SourceIcon url={source.url} size={3} />
-                <SourceTitle>{source.title}</SourceTitle>
-              </Source>
-            ))}
+        ) : sources.length === 0 && images.length > 0 ? (
+          <div className="flex flex-col gap-2">
+            <div
+              className="flex flex-wrap gap-1.5"
+              data-testid="web-search-images"
+            >
+              {images.map((entry) => (
+                <SearchImageThumb key={entry.id} entry={entry} size="strip" />
+              ))}
+            </div>
+            {resultText && (
+              <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
+                {resultText}
+              </pre>
+            )}
           </div>
-        ) : url ? (
+        ) : sources.length > 0 ? (
+          <div className="flex flex-col gap-2">
+            <div className="flex flex-wrap gap-1.5">
+              {sources.map((source, i) => (
+                <Source
+                  key={`${source.url}-${i}`}
+                  href={source.url}
+                  variant="outline"
+                  size="sm"
+                  className="inline-flex items-center gap-1.5"
+                >
+                  <SourceIcon url={source.url} size={3} />
+                  <SourceTitle>{source.title}</SourceTitle>
+                </Source>
+              ))}
+            </div>
+            {images.length > 0 && (
+              <div
+                className="flex flex-wrap gap-1.5"
+                data-testid="web-search-images"
+              >
+                {images.map((entry) => (
+                  <SearchImageThumb key={entry.id} entry={entry} size="strip" />
+                ))}
+              </div>
+            )}
+          </div>
+        ) : safeUrl ? (
           <a
-            href={url}
+            href={safeUrl}
             target="_blank"
             rel="noreferrer noopener"
             className="break-all text-xs text-primary underline-offset-4 hover:underline"
           >
             {url}
           </a>
+        ) : resultText ? (
+          <div>
+            <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
+              {resultText}
+            </pre>
+          </div>
         ) : null}
       </ToolFallbackContent>
     </ToolFallbackRoot>

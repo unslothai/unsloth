@@ -40,19 +40,21 @@ function SourceIcon({
   url,
   className,
   size = 3,
+  allowRemoteIcons = true,
   ...props
-}: ComponentProps<"span"> & { url: string; size?: number }) {
+}: ComponentProps<"span"> & { url: string; size?: number; allowRemoteIcons?: boolean }) {
   const [hasError, setHasError] = useState(false);
   const domain = extractDomain(url);
   const SIZE_CLASSES: Record<number, string> = { 3: "size-3", 4: "size-4", 5: "size-5" };
   const sizeClass = SIZE_CLASSES[size] ?? "size-3";
 
-  if (hasError) {
+  // When disabled, render the letter fallback instead of fetching a third-party favicon.
+  if (hasError || !allowRemoteIcons) {
     return (
       <span
         data-slot="source-icon-fallback"
         className={cn(
-          `flex ${sizeClass} shrink-0 items-center justify-center rounded-sm bg-muted font-medium text-[10px]`,
+          `flex ${sizeClass} shrink-0 items-center justify-center rounded-sm bg-muted font-medium text-ui-10`,
           className,
         )}
         {...props}
@@ -104,7 +106,7 @@ function Source({
       variant={variant}
       size={size}
       className={cn(
-        "rounded-full cursor-pointer outline-none hover:bg-chat-icon-bg-hover! hover:text-chat-icon-fg-hover! focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50",
+        "rounded-full cursor-pointer outline-none hover:bg-chat-icon-bg-hover! hover:text-chat-icon-fg-hover! focus-visible:border-ring",
         className,
       )}
     >
@@ -126,11 +128,10 @@ function Source({
 
 // ── Source badge with hover card ─────────────────────────────
 
-interface SourceData {
+export interface SourceData {
   /**
-   * Stable per-citation key. Two Anthropic document citations into
-   * different spans of the same source share a ``url``, so React keys
-   * on ``id`` to keep each footnote distinct.
+   * Stable per-citation key. Two Anthropic citations into different spans of
+   * the same source share a `url`, so React keys on `id` to keep them distinct.
    */
   id: string;
   url: string;
@@ -138,7 +139,10 @@ interface SourceData {
   description?: string;
 }
 
-const SourceBadge: FC<{ source: SourceData }> = ({ source }) => {
+const SourceBadge: FC<{ source: SourceData; allowRemoteIcons?: boolean }> = ({
+  source,
+  allowRemoteIcons = true,
+}) => {
   const domain = extractDomain(source.url);
   const displayTitle = source.title || domain;
 
@@ -147,7 +151,7 @@ const SourceBadge: FC<{ source: SourceData }> = ({ source }) => {
       <HoverCardTrigger asChild>
         <span className="inline-block">
           <Source href={source.url}>
-            <SourceIcon url={source.url} />
+            <SourceIcon url={source.url} allowRemoteIcons={allowRemoteIcons} />
             <SourceTitle>{displayTitle}</SourceTitle>
           </Source>
         </span>
@@ -159,7 +163,12 @@ const SourceBadge: FC<{ source: SourceData }> = ({ source }) => {
         style={{ animation: "none" }}
       >
         <div className="flex gap-2.5">
-          <SourceIcon url={source.url} size={4} className="mt-0.5 shrink-0" />
+          <SourceIcon
+            url={source.url}
+            size={4}
+            className="mt-0.5 shrink-0"
+            allowRemoteIcons={allowRemoteIcons}
+          />
           <div className="min-w-0 space-y-1">
             <p className="text-sm font-semibold leading-tight truncate">
               {source.title || domain}
@@ -179,15 +188,17 @@ const SourceBadge: FC<{ source: SourceData }> = ({ source }) => {
 
 // ── Grouped sources with 2-row collapse ─────────────────────
 
-const SourcesGroup: FC = () => {
+const SourcesGroup: FC<{ sources?: SourceData[]; allowRemoteIcons?: boolean }> = ({
+  sources: suppliedSources,
+  allowRemoteIcons = true,
+}) => {
   const message = useMessage();
   const containerRef = useRef<HTMLDivElement>(null);
   const [visibleCount, setVisibleCount] = useState<number | null>(null);
   const [expanded, setExpanded] = useState(false);
 
-  // Extract source parts from the message
-  const sources: SourceData[] = [];
-  if (message.content) {
+  const messageSources: SourceData[] = [];
+  if (!suppliedSources && message.content) {
     for (const part of message.content) {
       if (
         part.type === "source" &&
@@ -201,7 +212,7 @@ const SourcesGroup: FC = () => {
           typeof (part as { id?: unknown }).id === "string"
             ? ((part as { id: string }).id)
             : url;
-        sources.push({
+        messageSources.push({
           id: partId,
           url,
           title: (part as { title?: string }).title || "",
@@ -211,6 +222,7 @@ const SourcesGroup: FC = () => {
       }
     }
   }
+  const sources = suppliedSources ?? messageSources;
 
   // Measure how many badges fit in 2 rows
   const measure = useCallback(() => {
@@ -220,7 +232,6 @@ const SourcesGroup: FC = () => {
     const children = Array.from(container.children) as HTMLElement[];
     if (children.length === 0) return;
 
-    // Find the top of the first child as baseline
     const firstTop = children[0].offsetTop;
     let rowCount = 1;
     let prevTop = firstTop;
@@ -263,26 +274,35 @@ const SourcesGroup: FC = () => {
 
   return (
     <div className="relative mt-2 mb-3">
-      {/* Hidden measurement container — renders all badges to measure row positions */}
+      {/* Hidden measurement container: renders all badges off-screen to read
+          each child's offsetTop and decide how many fit in two rows. The
+          absolute/h-0/overflow-hidden wrapper clips the pills so they don't add
+          to scrollHeight (~30px per row) and create a phantom empty scroll area
+          below the message. offsetTop reads correctly because the wrapper is
+          positioned (absolute) and the flex-wrapped children measure against it. */}
       <div
-        ref={containerRef}
         aria-hidden
-        className="flex w-full flex-wrap gap-1 invisible absolute pointer-events-none"
+        className="absolute pointer-events-none overflow-hidden h-0 w-full left-0 top-0"
       >
-        {sources.map((source) => (
-          <span key={source.id} className="inline-block">
-            <Source href={source.url}>
-              <SourceIcon url={source.url} />
-              <SourceTitle>{source.title || extractDomain(source.url)}</SourceTitle>
-            </Source>
-          </span>
-        ))}
+        <div
+          ref={containerRef}
+          className="flex w-full flex-wrap gap-1 invisible"
+        >
+          {sources.map((source) => (
+            <span key={source.id} className="inline-block">
+              <Source href={source.url}>
+                <SourceIcon url={source.url} allowRemoteIcons={allowRemoteIcons} />
+                <SourceTitle>{source.title || extractDomain(source.url)}</SourceTitle>
+              </Source>
+            </span>
+          ))}
+        </div>
       </div>
 
       {/* Visible container */}
       <div className="flex flex-wrap gap-1">
         {displayedSources.map((source) => (
-          <SourceBadge key={source.id} source={source} />
+          <SourceBadge key={source.id} source={source} allowRemoteIcons={allowRemoteIcons} />
         ))}
         {shouldCollapse && !expanded && (
           <button

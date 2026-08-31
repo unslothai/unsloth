@@ -1,17 +1,4 @@
-"""Tests for Studio GGUF export pinning convert_hf_to_gguf.py via
-UNSLOTH_LLAMA_CPP_SCRIPTS_DIR with graceful fallback when unsloth_zoo
-lacks the local-script resolver.
-
-Verifies:
-  - export.py imports LLAMA_CPP_DEFAULT_DIR and _resolve_local_convert_script
-    from unsloth_zoo.llama_cpp inside a single try/except ImportError so a
-    zoo missing either symbol degrades to a warning instead of crashing.
-  - os.environ.setdefault("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", LLAMA_CPP_DEFAULT_DIR)
-    is called inside the try; setdefault preserves explicit user overrides
-    and assigns the default when unset.
-  - The compatibility warning is gated on a module-level flag so it fires
-    once per process rather than on every export call.
-"""
+"""Unsloth GGUF export pins convert_hf_to_gguf.py via UNSLOTH_LLAMA_CPP_SCRIPTS_DIR, with a once-per-process warning fallback when unsloth_zoo lacks the local-script resolver."""
 
 from __future__ import annotations
 
@@ -23,14 +10,9 @@ from pathlib import Path
 
 
 SOURCE_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "studio"
-    / "backend"
-    / "core"
-    / "export"
-    / "export.py"
+    Path(__file__).resolve().parents[2] / "studio" / "backend" / "core" / "export" / "export.py"
 )
-SRC = SOURCE_PATH.read_text()
+SRC = SOURCE_PATH.read_text(encoding = "utf-8")
 TREE = ast.parse(SRC)
 
 
@@ -50,13 +32,36 @@ def _find_pin_try(tree: ast.AST):
             if (
                 isinstance(stmt, ast.ImportFrom)
                 and stmt.module == "unsloth_zoo.llama_cpp"
-                and any(
-                    alias.name == "_resolve_local_convert_script"
-                    for alias in stmt.names
-                )
+                and any(alias.name == "_resolve_local_convert_script" for alias in stmt.names)
             ):
                 return node
     return None
+
+
+# The pin catches Exception, not ImportError: a half-built unsloth_zoo raises
+# RuntimeError or AttributeError too. Anything that still catches an ImportError
+# counts, so widening the handler again does not break this test.
+_CATCHES_IMPORT_ERROR = ("ImportError", "Exception", "BaseException")
+
+
+def _catches_import_error(handler: ast.ExceptHandler) -> bool:
+    if handler.type is None:  # bare except
+        return True
+    names = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
+    return any(isinstance(n, ast.Name) and n.id in _CATCHES_IMPORT_ERROR for n in names)
+
+
+# A half-built unsloth_zoo imports and then raises RuntimeError or AttributeError, which
+# ImportError alone does not cover.
+_CATCHES_EVERYTHING = ("Exception", "BaseException")
+
+
+def _covers_half_built_zoo(handler: ast.ExceptHandler) -> bool:
+    if handler.type is None:  # bare except
+        return True
+    names = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
+    caught = {n.id for n in names if isinstance(n, ast.Name)}
+    return bool(caught & set(_CATCHES_EVERYTHING)) or {"RuntimeError", "AttributeError"} <= caught
 
 
 def test_warning_flag_defined_at_module_scope():
@@ -106,21 +111,22 @@ def test_setdefault_inside_try_block():
 def test_warning_handler_gated_on_module_flag():
     try_node = _find_pin_try(TREE)
     assert try_node is not None
-    handlers = [
-        h
-        for h in try_node.handlers
-        if isinstance(h.type, ast.Name) and h.type.id == "ImportError"
-    ]
+    handlers = [h for h in try_node.handlers if _catches_import_error(h)]
     assert handlers
-    handler = handlers[0]
+    # And it has to keep covering the half-built cases, not just the missing-module one. That is
+    # what #8603 widened the handler for: an unsloth_zoo that imports but raises RuntimeError or
+    # AttributeError aborts the export otherwise, and a revert to ImportError alone still
+    # satisfies _catches_import_error above.
+    covering = [h for h in handlers if _covers_half_built_zoo(h)]
+    assert (
+        covering
+    ), "the scripts pin must fall back on a half-built unsloth_zoo, not just a missing one"
+    handler = covering[0]
     flag_reads = []
     flag_writes = []
     warning_calls = []
     for node in ast.walk(ast.Module(body = handler.body, type_ignores = [])):
-        if (
-            isinstance(node, ast.Name)
-            and node.id == "_LLAMA_CPP_SCRIPTS_WARNING_EMITTED"
-        ):
+        if isinstance(node, ast.Name) and node.id == "_LLAMA_CPP_SCRIPTS_WARNING_EMITTED":
             if isinstance(node.ctx, ast.Load):
                 flag_reads.append(node)
             elif isinstance(node.ctx, ast.Store):
@@ -141,7 +147,6 @@ def test_warning_handler_gated_on_module_flag():
 
 def test_default_dir_is_string_for_setdefault_compat():
     from unsloth_zoo.llama_cpp import LLAMA_CPP_DEFAULT_DIR
-
     assert isinstance(LLAMA_CPP_DEFAULT_DIR, str)
 
 
@@ -175,10 +180,7 @@ def _simulate_pin_block(emit_records, set_value):
                 LLAMA_CPP_DEFAULT_DIR,
                 _resolve_local_convert_script,  # noqa: F401
             )
-
-            os.environ.setdefault(
-                "UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", LLAMA_CPP_DEFAULT_DIR
-            )
+            os.environ.setdefault("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", LLAMA_CPP_DEFAULT_DIR)
         except ImportError:
             if not state["emitted"]:
                 emit_records.append("warned")
@@ -220,7 +222,6 @@ def test_no_warning_when_both_symbols_present(monkeypatch):
             LLAMA_CPP_DEFAULT_DIR,
             _resolve_local_convert_script,  # noqa: F401
         )
-
         os.environ.setdefault("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", LLAMA_CPP_DEFAULT_DIR)
     except ImportError:
         if not state["emitted"]:

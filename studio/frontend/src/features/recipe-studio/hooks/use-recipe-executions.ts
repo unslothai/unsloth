@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { getInferenceStatus, loadModel } from "@/features/chat";
-import { toast } from "@/lib/toast";
+import { createLoadingToastIcon, toast } from "@/lib/toast";
 import { toastError } from "@/shared/toast";
 import { useCallback, useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -238,8 +238,15 @@ async function loadLocalModelSelection(
 ): Promise<string | null> {
   const { target, ggufVariant } = selection;
   const modelLabel = ggufVariant ? `${target} (${ggufVariant})` : target;
-  const toastId = toast.loading(`Loading ${modelLabel}...`, {
+  let loadToastDismissed = false;
+  const toastId = toast.message(`Loading ${modelLabel}...`, {
     description: "Starting the local inference server for this recipe.",
+    duration: Number.POSITIVE_INFINITY,
+    closeButton: true,
+    icon: createLoadingToastIcon(),
+    onDismiss: () => {
+      loadToastDismissed = true;
+    },
   });
   try {
     const isGguf = GGUF_MODEL_PATTERN.test(target) || Boolean(ggufVariant);
@@ -264,8 +271,19 @@ async function loadLocalModelSelection(
       cache_type_kv: null,
       // biome-ignore lint/style/useNamingConvention: api schema
       speculative_type: null,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      tensor_parallel: false,
     });
-    toast.success(`Loaded ${modelLabel}`, { id: toastId, duration: 2000 });
+    const successOptions = {
+      description: undefined,
+      duration: 2000,
+      icon: undefined,
+    };
+    if (loadToastDismissed) {
+      toast.success(`Loaded ${modelLabel}`, successOptions);
+    } else {
+      toast.success(`Loaded ${modelLabel}`, { ...successOptions, id: toastId });
+    }
     return null;
   } catch (error) {
     toast.dismiss(toastId);
@@ -563,10 +581,9 @@ export function useRecipeExecutions({
 
     resetForRecipe();
 
-    // Seed previewRows from the recipe's original run.rows (read from the
-    // loaded JSON, not the rebuilt payload (the builder hardcodes 5).
-    // Templates ship their own suggested preview size (e.g. GitHub Support
-    // Bot: 10); we honor it so users don't see a surprise 5.
+    // Seed previewRows from the recipe's original run.rows (the loaded JSON, not
+    // the rebuilt payload, which hardcodes 5). Templates ship a suggested preview
+    // size (e.g. GitHub Support Bot: 10); honor it so users don't see a surprise 5.
     if (
       typeof initialRunRows === "number" &&
       Number.isFinite(initialRunRows) &&
@@ -794,8 +811,8 @@ export function useRecipeExecutions({
       }
 
       // Flip to the Runs pane before validation starts. Validation can re-crawl
-      // the seed (multiple seconds for the github_repo reader), and runExecution()
-      // later no-ops this callback if the view has already been flipped.
+      // the seed (seconds for the github_repo reader); runExecution() later no-ops
+      // this callback if the view has already been flipped.
       onExecutionStart?.();
 
       const normalizedRows = sanitizeExecutionRows(rows, kind);
@@ -811,11 +828,11 @@ export function useRecipeExecutions({
         return false;
       }
 
-      // Recipe and Chat share one singleton local inference backend. This
-      // direct load is a point-in-time handoff to job creation, not a lease:
-      // if Chat swaps models after this succeeds, the backend will reject or
-      // run against the active backend state. A future generation token should
-      // be validated across this load and the `/jobs` loaded-model gate.
+      // Recipe and Chat share one singleton local inference backend. This direct
+      // load is a point-in-time handoff to job creation, not a lease: if Chat
+      // swaps models after this succeeds, the backend runs against current state.
+      // A future generation token should be validated across this load and the
+      // `/jobs` loaded-model gate.
       const restorePrevious = await prepareLocalModelForExecution(payload);
       if (restorePrevious === false) {
         return false;

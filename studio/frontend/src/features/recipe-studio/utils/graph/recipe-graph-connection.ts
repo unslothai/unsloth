@@ -387,10 +387,10 @@ export function applyRecipeConnection(
     nextBaseEdges,
   );
   if (source.kind === "model_provider" && target.kind === "model_config") {
-    // Keep model_config.provider in sync when a graph drag changes the link.
-    // Local providers now require an explicit selected load id; do not synthesize
-    // the legacy "local" placeholder. External relinks clear local-only GGUF
-    // metadata, while legacy placeholders are normalized back to empty.
+    // Keep model_config.provider in sync when a drag changes the link.
+    // Local providers need an explicit load id; don't synthesize the legacy
+    // "local" placeholder. External relinks clear local-only GGUF metadata;
+    // legacy placeholders normalize back to empty.
     const isSourceLocal = source.is_local === true;
     const isLegacyLocalPlaceholder =
       target.model.trim().toLowerCase() === "local";

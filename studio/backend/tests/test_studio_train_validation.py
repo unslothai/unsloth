@@ -18,11 +18,13 @@ from models.training import (
     _MAX_LORA_ALPHA,
     _MAX_LORA_R,
     _MAX_SEQ_LENGTH,
+    _MAX_VISION_IMAGE_SIZE,
+    _MIN_VISION_IMAGE_SIZE,
 )
 
 
 def _check_field(field_name: str, value):
-    """Run the field validator without constructing a full TrainingStartRequest."""
+    """Run the field validator without building a full TrainingStartRequest."""
     from models.training import TrainingStartRequest
 
     schema_field = TrainingStartRequest.model_fields[field_name]
@@ -60,6 +62,50 @@ class TestBatchSizeCap:
     def test_below_min_rejects(self):
         with pytest.raises(ValidationError):
             _check_field("batch_size", 0)
+
+
+class TestVisionImageSizeCap:
+    def test_none_accepts_model_default(self):
+        _check_field("vision_image_size", None)
+
+    @pytest.mark.parametrize(
+        "value",
+        [_MIN_VISION_IMAGE_SIZE, 640, 1000, _MAX_VISION_IMAGE_SIZE],
+    )
+    def test_in_range_accepts(self, value):
+        _check_field("vision_image_size", value)
+        assert _MIN_VISION_IMAGE_SIZE == 256
+        assert _MAX_VISION_IMAGE_SIZE == 2048
+
+    @pytest.mark.parametrize(
+        "value",
+        [_MIN_VISION_IMAGE_SIZE - 1, _MAX_VISION_IMAGE_SIZE + 1, 640.5, True],
+    )
+    def test_invalid_rejects(self, value):
+        with pytest.raises(ValidationError):
+            _check_field("vision_image_size", value)
+
+    @pytest.mark.parametrize("value", [True, False])
+    def test_bool_error_says_integer_not_range(self, value):
+        # Regression guard: bools say "integer or null", not "in [256, 2048]".
+        with pytest.raises(ValidationError) as exc:
+            _check_field("vision_image_size", value)
+        assert "integer or null" in str(exc.value)
+
+    @pytest.mark.parametrize("value", ["++512", "--256", "+-+512", "+", "-"])
+    def test_multi_sign_string_says_integer_not_raw(self, value):
+        # Regression guard: multi-sign strings say "integer or null", not int()'s raw message.
+        with pytest.raises(ValidationError) as exc:
+            _check_field("vision_image_size", value)
+        assert "integer or null" in str(exc.value)
+        assert "invalid literal" not in str(exc.value)
+
+    @pytest.mark.parametrize("value", ["５１２", "٥١٢", "१०२४"])
+    def test_unicode_digit_string_rejected(self, value):
+        # Reject non-ASCII (full-width/Arabic-Indic/Devanagari) digits.
+        with pytest.raises(ValidationError) as exc:
+            _check_field("vision_image_size", value)
+        assert "integer or null" in str(exc.value)
 
 
 class TestLoraRCap:

@@ -3,8 +3,8 @@
 
 """Regression tests for OpenAI Responses tool-result rendering.
 
-Covers two bug classes: empty web_search cards (per-card result seeded
-with "Searching: <query>") and orphan shell_call cards (bundled-output
+Two bug classes: empty web_search cards (per-card result seeded with
+"Searching: <query>") and orphan shell_call cards (bundled-output
 fallback + final flush at response.completed / response.incomplete).
 """
 
@@ -137,8 +137,8 @@ def test_web_search_each_call_carries_its_own_query_as_result(monkeypatch):
 
 
 def test_web_search_last_call_overwritten_with_citations(monkeypatch):
-    """Last call still gets the aggregated citation list; earlier calls
-    keep their per-call `Searching:` text."""
+    """Last call gets the aggregated citations; earlier calls keep their
+    per-call `Searching:` text."""
     sse_events = [
         {
             "type": "response.output_item.done",
@@ -170,12 +170,12 @@ def test_web_search_last_call_overwritten_with_citations(monkeypatch):
     events = _tool_events(lines)
     ends = [e for e in events if e["type"] == "tool_end"]
     by_id: dict = {}
-    # Keep the LAST tool_end per id (the citation overwrite for ws_2).
+    # Keep the LAST tool_end per id (citation overwrite for ws_2).
     for e in ends:
         by_id[e["tool_call_id"]] = e
     # First call keeps its own query.
     assert by_id["ws_1"]["result"] == "Searching: first query"
-    # Last call gets overwritten with the citation block.
+    # Last call overwritten with the citation block.
     assert "Title: Example A" in by_id["ws_2"]["result"]
     assert "URL: https://example.com/a" in by_id["ws_2"]["result"]
 

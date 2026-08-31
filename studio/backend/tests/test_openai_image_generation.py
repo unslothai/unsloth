@@ -3,18 +3,11 @@
 
 """Unit tests for OpenAI Responses API image_generation tool wiring.
 
-The image_generation tool is a server-side Responses-API tool:
-``{type: "image_generation"}`` in the request's tools array, and the
-result comes back as an ``image_generation_call`` output item carrying
-the base64 image on ``result``. Studio translates the output item
-into ``_toolEvent`` chunks (``tool_start`` with `kind:"image"`,
-``tool_end`` with ``image_b64`` + ``image_mime``) so the chat adapter
-can render the image inline.
-
-These tests pin: the tool is added to the outbound body only when the
-caller asks for it on a cloud OpenAI base; the SSE output_item.done
-for ``image_generation_call`` produces the expected _toolEvent chunks;
-non-cloud bases drop the tool silently.
+The tool is a server-side Responses-API tool (``{type: "image_generation"}``);
+the result comes back as an ``image_generation_call`` output item, which Unsloth
+translates into ``_toolEvent`` chunks so the chat adapter renders it inline.
+Tests pin: the tool is added to the body only on a cloud OpenAI base when asked
+for, the done event produces the expected chunks, and non-cloud bases drop it.
 """
 
 import asyncio
@@ -75,8 +68,8 @@ def _capture_body(monkeypatch, *, base_url: str, enabled_tools) -> dict:
 
 
 def _collect_tool_events(monkeypatch) -> list[dict]:
-    """Drive a Responses stream that emits one image_generation_call done
-    event and return the parsed _toolEvent chunks."""
+    """Drive a Responses stream with one image_generation_call done event and
+    return the parsed _toolEvent chunks."""
 
     sse = (
         b"event: response.output_item.done\n"
@@ -207,9 +200,12 @@ def test_image_generation_done_emits_tool_event_chunks(monkeypatch):
     ends = [e for e in image_events if e.get("type") == "tool_end"]
     assert len(starts) == 1, image_events
     assert len(ends) == 1, image_events
+    # `_server_tool: True` marks this as a provider-side synthetic tool card
+    # for the frontend's history serializer.
     assert starts[0]["arguments"] == {
         "kind": "image",
         "prompt": "A photorealistic cat sitting",
+        "_server_tool": True,
         "openai_image_generation_call_id": "img_abc",
     }
     assert ends[0]["image_b64"] == "AAAA"
@@ -217,3 +213,96 @@ def test_image_generation_done_emits_tool_event_chunks(monkeypatch):
     assert ends[0]["size"] == "1024x1024"
     assert ends[0]["quality"] == "high"
     assert ends[0]["background"] == "opaque"
+
+
+# ── replayed reasoning item stays input-safe ────────────────────────
+
+
+def test_reasoning_replay_item_drops_status():
+    """Responses 400s with "Unknown parameter: 'input[1].status'" when an input
+    reasoning item carries `status`, which broke every replayed image edit."""
+    replay = ep_mod._sanitize_openai_reasoning_replay_item(
+        {
+            "type": "reasoning",
+            "id": "rs_abc",
+            "status": "completed",
+            "summary": [{"type": "summary_text", "text": "thinking"}],
+            "encrypted_content": "secret",
+        }
+    )
+    # Asserted field by field rather than as a whole-dict match. What this test
+    # is about is `status`, and an exact match also silently pinned everything
+    # else the sanitizer may legitimately need to carry.
+    assert "status" not in replay
+    assert replay["type"] == "reasoning"
+    assert replay["id"] == "rs_abc"
+    assert replay["summary"] == [{"type": "summary_text", "text": "thinking"}]
+    # Kept deliberately: a zero-data-retention org gets store=false forced on it,
+    # so the id resolves to nothing server side and the encrypted blob is the
+    # only way the model's reasoning state survives into the next request.
+    assert replay["encrypted_content"] == "secret"
+
+
+def test_replayed_image_edit_body_has_no_status_field(monkeypatch):
+    """End to end: a stored turn with reasoning + image_generation_call must
+    reach the wire without `status` on the reasoning item."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode())
+        return httpx.Response(
+            200,
+            content = (
+                b"event: response.completed\n"
+                b'data: {"type":"response.completed",'
+                b'"response":{"output":[],"usage":{"input_tokens":0,"output_tokens":0}}}\n\n'
+            ),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    monkeypatch.setattr(
+        ep_mod,
+        "_http_client",
+        httpx.AsyncClient(transport = httpx.MockTransport(handler)),
+    )
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "openai",
+            base_url = "https://api.openai.com/v1",
+            api_key = "sk-test",
+        )
+        async for _ in client.stream_chat_completion(
+            messages = [
+                {"role": "user", "content": "draw a cat"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "reasoning",
+                            "id": "rs_abc",
+                            "status": "completed",
+                            "summary": [],
+                        },
+                        {"type": "image_generation_call", "id": "ig_abc"},
+                    ],
+                },
+                {"role": "user", "content": "make it blue"},
+            ],
+            model = "gpt-5.5",
+            max_tokens = 32,
+            reasoning_effort = "medium",
+            enabled_tools = ["image_generation"],
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    items = captured["body"]["input"]
+    reasoning = [i for i in items if isinstance(i, dict) and i.get("type") == "reasoning"]
+    assert reasoning, items
+    assert "status" not in reasoning[0], reasoning[0]
+    # The paired call must survive, else the edit loses its reference.
+    assert any(
+        i.get("type") == "image_generation_call" for i in items if isinstance(i, dict)
+    ), items

@@ -8,6 +8,10 @@ import type {
   ValidatorCodeLang,
   ValidatorConfig,
 } from "../../types";
+import {
+  isSupportedModelProviderType,
+  normalizeModelProviderType,
+} from "../model-provider-types";
 import { VALIDATOR_OXC_CODE_LANGS } from "../validators/code-lang";
 import { isOxcCodeShape } from "../validators/oxc-code-shape";
 import { isOxcValidationMode } from "../validators/oxc-mode";
@@ -133,9 +137,11 @@ export function validateUsedProviders(
     if (!provider.endpoint.trim()) {
       errors.push(`Model provider ${provider.name}: endpoint is required.`);
     }
-    if (!provider.provider_type.trim()) {
+    const providerType =
+      normalizeModelProviderType(provider.provider_type) || "openai";
+    if (!isSupportedModelProviderType(providerType)) {
       errors.push(
-        `Model provider ${provider.name}: provider_type is required.`,
+        `Model provider ${provider.name}: provider_type '${providerType}' is not supported by Data Designer. Use openai for OpenAI-compatible providers or anthropic for native Anthropic.`,
       );
     }
   }
