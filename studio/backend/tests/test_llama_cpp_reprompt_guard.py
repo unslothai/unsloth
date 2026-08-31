@@ -330,9 +330,7 @@ def test_closing_tag_in_prose_does_not_eat_a_fence_closer():
     )
     # A page that ENCLOSES a fence is one block and goes whole, so a later literal
     # delimiter inside it is removed with it rather than left looking unclosed.
-    enclosing = (
-        "First, let me show it.\n<html>\n```python\nx = 1\n```\n<pre>\n```\n</pre>\n</html>"
-    )
+    enclosing = "First, let me show it.\n<html>\n```python\nx = 1\n```\n<pre>\n```\n</pre>\n</html>"
     assert _has_answer_artifact(enclosing)
     assert not _would_reprompt(enclosing)
 
