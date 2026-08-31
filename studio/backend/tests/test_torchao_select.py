@@ -145,6 +145,12 @@ def test_skips_torchao_on_windows_rocm(
     monkeypatch.setattr(mod, "LOCAL_DD_UNSTRUCTURED_PLUGIN", unstructured_plugin)
     monkeypatch.setattr(mod, "LOCAL_DD_GITHUB_PLUGIN", github_plugin)
     monkeypatch.setattr(mod.subprocess, "run", lambda *args, **kwargs: subprocess_result)
+    # SKIP_STUDIO_BASE never installs unsloth; the later presence check would
+    # abort a walk that is only here to prove torchao was skipped.
+    monkeypatch.setattr(mod, "_repair_duplicate_core_metadata", lambda *args, **kwargs: True)
+    monkeypatch.setattr(mod, "_repair_damaged_core_payload", lambda *args, **kwargs: True)
+    monkeypatch.setattr(mod.install_manifest, "write_manifest", lambda **kwargs: True)
+    monkeypatch.setattr(mod, "_ensure_expected_torch_flavor", lambda *args, **kwargs: True)
 
     assert mod.install_python_stack() == 0
 

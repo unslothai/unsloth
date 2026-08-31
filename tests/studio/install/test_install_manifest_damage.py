@@ -686,11 +686,17 @@ def test_an_unimportable_helper_forces_the_dependency_pass(tmp_path, contents, e
     script_dir.mkdir()
     if contents is not None:
         (script_dir / "install_manifest.py").write_text(contents, encoding = "utf-8")
+    # Repo tests set PYTHONPATH to studio/. That would import the checkout's
+    # helper when SCRIPT_DIR has none, and verify_install would then fail the
+    # runner venv instead of taking the documented absent-file fast path.
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
     result = subprocess.run(
         [sys.executable, "-c", _installer_helper_probe(), str(script_dir)],
         capture_output = True,
+        cwd = str(tmp_path),
+        env = env,
     )
-    assert result.returncode == expected
+    assert result.returncode == expected, (result.stdout, result.stderr)
 
 
 def test_both_installers_run_the_same_helper_probe():
