@@ -101,7 +101,8 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             r"|(?:^|-)deep-research\b"
             # Chat Completions only.
             # https://developers.openai.com/api/docs/models/o1-mini
-            r"|^o1-mini\b"
+            # https://developers.openai.com/api/docs/models/o1-preview
+            r"|^o1-(?:mini|preview)\b"
             # Retired canonical id retained by /v1/models.
             r"|^gpt-5\.3$"
             # Legacy bases and the first-generation embedding / search /

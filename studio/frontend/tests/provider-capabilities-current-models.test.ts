@@ -89,7 +89,11 @@ test("the gpt-5.1 and gpt-5.2 ladders drop minimal for none", () => {
     assert.equal(caps.supportsReasoningOff, true, model);
     assert.deepEqual([...caps.reasoningEffortLevels], levels, model);
   }
-  // Bare gpt-5 keeps the old ladder, so the split must not swallow it.
+  // The Codex tuning drops minimal without gaining none.
+  const codex = getExternalReasoningCapabilities("openai", "gpt-5-codex");
+  assert.equal(codex.supportsReasoningOff, false);
+  assert.deepEqual([...codex.reasoningEffortLevels], ["low", "medium", "high"]);
+  // Bare gpt-5 keeps the old ladder, so the splits must not swallow it.
   const five = getExternalReasoningCapabilities("openai", "gpt-5");
   assert.equal(five.supportsReasoningOff, false);
   assert.deepEqual(

@@ -84,6 +84,7 @@ def test_openai_drops_families_that_are_not_on_the_responses_endpoint():
             "gpt-4o-search-preview",
             "gpt-4o-mini-search-preview",
             "o1-mini",
+            "o1-preview",
             "gpt-4o-transcribe",
             "gpt-4o-mini-transcribe",
         ],

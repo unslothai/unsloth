@@ -830,6 +830,12 @@ const OPENAI_REASONING_MODELS = [
     supportsOff: true,
     levels: ["none", "low", "medium", "high"],
   },
+  // The Codex tuning drops the lowest tier without gaining "none".
+  {
+    prefixes: ["gpt-5-codex"],
+    supportsOff: false,
+    levels: ["low", "medium", "high"],
+  },
   {
     prefixes: ["gpt-5"],
     supportsOff: false,
