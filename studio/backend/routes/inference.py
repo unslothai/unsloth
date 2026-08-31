@@ -1997,7 +1997,11 @@ _OPENAI_LLAMA_UNCAPPED_MIN_OUTPUT_TOKENS = 256
 
 
 def _openai_llama_uncapped_max_tokens(
-    payload, *, request: Optional[Request], llama_backend, injected_prompt_tokens: int = 0
+    payload,
+    *,
+    request: Optional[Request],
+    llama_backend,
+    injected_prompt_tokens: int = 0,
 ) -> Optional[int]:
     """The cap to give a request that names none, so it does not reserve the whole cache.
 

@@ -64,7 +64,11 @@ def _cap(payload, backend = None):
     )
 
 
-def _cap_with_injection(payload, injected, backend = None):
+def _cap_with_injection(
+    payload,
+    injected,
+    backend = None,
+):
     return routes_inference._openai_llama_uncapped_max_tokens(
         payload,
         request = None,
@@ -169,7 +173,9 @@ class TestPromptInjectedAfterTheSizing:
 
     def test_the_date_prompt_is_priced_when_it_is_on(self, monkeypatch):
         monkeypatch.setattr(
-            routes_inference, "current_date_prompt_line", lambda **_: "The current date is 2026-08-31."
+            routes_inference,
+            "current_date_prompt_line",
+            lambda **_: "The current date is 2026-08-31.",
         )
         assert routes_inference._openai_llama_uncapped_injected_date_tokens(None) > 0
 
