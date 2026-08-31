@@ -126,6 +126,9 @@ export function fitsDevice(opts: {
   if (!anyBudget) return !budgetKnown;
   if (sizeBytes && sizeBytes > 0) {
     if (mediaLoad) {
+      // No RAM tier on a host pool: diffusion offload moves bytes inside that one pool and frees
+      // nothing. llama.cpp below keeps its tier, because a GGUF really does spill into whatever
+      // host RAM the GPU window does not already cover.
       return (
         classifyMediaGgufFit(
           sizeBytes,
@@ -215,6 +218,7 @@ export function loadScopedGpu<
     maxDeviceMemoryGb: number;
     loadDeviceMemoryGb: number;
     loadDeviceSharedMemory?: boolean;
+    loadDeviceSharesHostMemory?: boolean;
     systemRamAvailableGb: number;
     systemRamAvailableHostGb?: number;
     deviceCount?: number;
@@ -230,11 +234,23 @@ export function loadScopedGpu<
     // once per HOST GPU against a ONE-card budget. Two 24 GiB cards at a 1.0 setting scored an
     // audio quant against 23.28 GiB where the loader offers the selected card's 23.5.
     deviceCount: 1,
-    systemRamAvailableGb:
-      gpu.loadDeviceSharedMemory === false
-        ? (gpu.systemRamAvailableHostGb ?? gpu.systemRamAvailableGb)
-        : gpu.systemRamAvailableGb,
+    // The raw-host figure is the RAM a DEDICATED task device may claim back from a shared GPU's
+    // reservation. Gated on the folded flag, not shared_memory: that one is Windows-only, so a
+    // Linux ROCm APU took this branch and undid the very subtraction that keeps its GTT window
+    // out of the RAM tier.
+    systemRamAvailableGb: hostPooledLoadDevice(gpu)
+      ? gpu.systemRamAvailableGb
+      : (gpu.systemRamAvailableHostGb ?? gpu.systemRamAvailableGb),
   };
+}
+
+/** Whether the device a task load lands on draws from host RAM. Prefers the folded flag, which
+ *  counts a Linux APU that reports unified_memory without shared_memory. */
+function hostPooledLoadDevice(gpu: {
+  loadDeviceSharedMemory?: boolean;
+  loadDeviceSharesHostMemory?: boolean;
+}): boolean {
+  return gpu.loadDeviceSharesHostMemory ?? gpu.loadDeviceSharedMemory === true;
 }
 
 /** One fit predicate for both search lists (curated matches and the Hub rows

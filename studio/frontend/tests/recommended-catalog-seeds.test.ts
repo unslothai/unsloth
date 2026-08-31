@@ -9,6 +9,7 @@ import {
   VIDEO_CATALOG,
   curatedSizeBytesFor,
 } from "../src/features/model-picker/components/model-selector/model-catalog.ts";
+import { classifyGgufFit } from "../src/lib/gguf-fit.ts";
 import {
   hfModelFitsDevice,
   loadScopedGpu,
@@ -304,6 +305,53 @@ test("a dedicated task device keeps RAM reserved by a shared GPU", () => {
   assert.equal(loadScopedGpu(mixedHost, true).systemRamAvailableGb, 40);
   assert.equal(loadScopedGpu(sharedLoadDevice, true).systemRamAvailableGb, 8);
   assert.equal(loadScopedGpu(mixedHost, false), mixedHost);
+
+  // A Linux ROCm APU reports unified_memory without shared_memory, so it used to take the
+  // raw-host branch above and undo the very subtraction that keeps its GTT window out of the RAM
+  // tier. The folded flag is what the reservation question actually turns on.
+  const linuxApu = {
+    ...mixedHost,
+    loadDeviceMemoryGb: 32,
+    loadDeviceSharedMemory: false,
+    loadDeviceSharesHostMemory: true,
+  };
+  assert.equal(loadScopedGpu(linuxApu, true).systemRamAvailableGb, 8);
+  // The dedicated card still claims it back: this gate narrowed, it did not close.
+  assert.equal(
+    loadScopedGpu({ ...linuxApu, loadDeviceSharesHostMemory: false }, true)
+      .systemRamAvailableGb,
+    40,
+  );
+});
+
+test("a unified GPU window is not also offered as system RAM", () => {
+  // 48 GiB host, a 32 GiB GTT window. gpuMemoryTotalsGb counts that window as DEDICATED when
+  // shared_memory is false, so systemRamAvailableGb kept the whole 48 and classifyGgufFit added
+  // half of it to the window a second time: a ~43 GiB file needing ~50 scored `partial` against
+  // an invented ~55 GiB budget, promising an offload into memory the machine does not have.
+  const apu = {
+    available: true,
+    budgetKnown: true,
+    memoryTotalGb: 32,
+    maxDeviceMemoryGb: 32,
+    loadDeviceMemoryGb: 32,
+    loadDeviceSharedMemory: false,
+    loadDeviceSharesHostMemory: true,
+    systemRamAvailableHostGb: 48,
+    deviceCount: 1,
+  };
+  const scoped = (systemRamAvailableGb: number) =>
+    loadScopedGpu({ ...apu, systemRamAvailableGb }, true);
+  const verdict = (g: ReturnType<typeof scoped>) =>
+    classifyGgufFit(43 * 1024 ** 3, {
+      gpuGb: g.memoryTotalGb,
+      systemRamGb: g.systemRamAvailableGb,
+      gpuCount: g.deviceCount,
+    });
+  // Unsubtracted, the way a Linux APU used to arrive.
+  assert.equal(verdict(scoped(48)), "partial");
+  // Subtracted once, the way Windows and Apple Silicon always were.
+  assert.equal(verdict(scoped(48 - 32)), "oom");
 });
 
 test("both search lists judge a curated id the same way", () => {

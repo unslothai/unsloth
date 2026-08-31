@@ -119,9 +119,20 @@ function toGpuInfo(
   const loadDevice = pickLoadDevice(devices);
   return {
     ...base,
+    // Folded, not raw `shared_memory`: hardware.py sets that flag only on Windows, so a Linux ROCm
+    // APU arrives unified true / shared false and its GTT window was never subtracted here. The
+    // RAM tier then offered the very bytes the window is a view INTO as a second budget.
     systemRamAvailableGb: systemRamAvailableOutsideSharedPoolGb(
       base.systemRamAvailableGb,
-      gpuSharedHostMemoryGb(devices),
+      gpuSharedHostMemoryGb(
+        devices.map((device) => ({
+          ...device,
+          shared_memory: sharesHostMemory({
+            sharedMemory: device.shared_memory === true,
+            unifiedMemory: device.unified_memory === true,
+          }),
+        })),
+      ),
     ),
     sharedMemory: memoryTotals.shared > 0 && memoryTotals.dedicated === 0,
     // Additive, and deliberately some() where sharedMemory above is "no dedicated

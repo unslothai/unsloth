@@ -226,14 +226,32 @@ test("chat and the Hub answer the fit question with one formula", () => {
   assert.ok(RECOMMENDED.includes("deviceCount: 1,"), "scoped to one device");
   assert.ok(PICKERS.includes("gpuCount: rowInferenceGpu.deviceCount"));
   assert.ok(RECOMMENDED.includes("gpuCount: source.deviceCount ?? opts.gpuCount"));
-  assert.equal(
-    PICKERS.split("gpuCount={expanderGpuCount}").length - 1,
-    7,
-    "every expander counts the scoped inventory",
-  );
   assert.ok(
     !PICKERS.includes("gpuCount={inferenceGpu.deviceCount}"),
     "never the unscoped host count",
+  );
+  // Counted against the expanders themselves, not a fixed 7: the fine-tuned / exported GGUF list
+  // is the eighth and was missed, so its host read as one card and over-budgeted at a 1.0 setting.
+  assert.equal(
+    PICKERS.split("gpuCount={expanderGpuCount}").length - 1,
+    7,
+    "every task-scoped expander counts the scoped inventory",
+  );
+  assert.equal(
+    PICKERS.split("gpuCount={gpu.deviceCount}").length - 1,
+    1,
+    "the exported GGUF list counts its own host",
+  );
+  assert.equal(
+    PICKERS.split("<GgufVariantExpander").length - 1,
+    8,
+    "and that is every expander there is",
+  );
+  // The APU window comes out of the RAM tier where the figure is built, so every rule downstream
+  // sees one pool counted once.
+  assert.ok(
+    GPU_INFO.includes("shared_memory: sharesHostMemory({"),
+    "the RAM tier folds unified in",
   );
   assert.ok(HUB_CARD.includes("gpuCount?: number;"));
   assert.ok(RECOMMENDED.includes("budgetFraction: opts.budgetFraction,"));
@@ -311,6 +329,14 @@ test("each fit verdict is an info mark that explains itself", () => {
     ),
   );
   assert.ok(PICKERS.includes("aria-label={verdict.label}"));
+  // An over-budget figure is a TOTAL: `partial` splits across VRAM and RAM, and the number is
+  // weights plus activations plus KV, so "Needs ~47GB VRAM" argued with the offload verdict.
+  assert.ok(
+    PICKERS.includes("`Needs ~${vramEst}GB memory (GPU: ${gpuGb}GB)`"),
+  );
+  assert.ok(!PICKERS.includes("GB VRAM (GPU:"), "no VRAM wording on an overage");
+  // A load that stays on the card still says VRAM, which is what it means there.
+  assert.ok(PICKERS.includes("GB VRAM (tight fit on"));
   // A marginal row is a full GPU load, so it is not dimmed with the over budget ones.
   assert.ok(
     PICKERS.includes(
@@ -324,7 +350,7 @@ test("a GGUF row takes the GGUF verdict, not the torch refusal", () => {
   // This branch used to set "exceeds", the one verdict that says a model will not load. A GGUF is
   // offloaded by llama-server rather than refused, so the row said the opposite of what happens,
   // and it is the verdict shown on the Recommended list where most rows are over budget.
-  assert.ok(PICKERS.includes("status: ggufRowFit(sizeBytes, inferenceGpu),"));
+  assert.ok(PICKERS.includes("status: ggufRowFit(sizeBytes, rowInferenceGpu),"));
   // A boolean here collapsed marginal and partial into "no badge", so a repo whose smallest quant
   // already needed offload rendered as a clean fit beside variant rows saying otherwise.
   assert.ok(!PICKERS.includes("exceedsSize"));

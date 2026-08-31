@@ -306,10 +306,16 @@ test("every list that judges a row against the device asks the same helper", () 
 });
 
 test("GGUF rows keep the inference backend's budget", () => {
-  // They load through llama.cpp, so its inventory is the right one for them.
+  // They load through llama.cpp, so its inventory is the right one for them, load-scoped the way
+  // the quant rows and the fit filter scope it: a task load lands on ONE device, and judging the
+  // parent by the multi-GPU sum let a downloaded media row read as safe over oom variants.
   assert.match(
     declarationText("recommendedMeta"),
-    /ggufRowFit\(sizeBytes, inferenceGpu\)/,
+    /ggufRowFit\(sizeBytes, rowInferenceGpu\)/,
+  );
+  assert.match(
+    declarationText("recommendedMeta"),
+    /rowInferenceGpu = loadScopedGpu\(inferenceGpu, Boolean\(task\)\)/,
   );
 });
 

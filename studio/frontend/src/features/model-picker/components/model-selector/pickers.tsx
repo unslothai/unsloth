@@ -719,9 +719,11 @@ function diffusionRefuses(
   return fit === "oom" && diffusionLoad && hostPooled;
 }
 
-/** The RAM a media verdict may add to the GPU budget. Zero on a host pool, where the two are the
- *  same bytes: `classifyMediaGgufFit` adds them, so an APU counted its GTT window AND the host RAM
- *  behind it and returned `partial` (offload) for a load the planner refuses outright. */
+/** The RAM a DIFFUSION verdict may add to the GPU budget. Zero on a host pool: offload there
+ *  moves bytes inside the one pool and frees nothing, so `classifyMediaGgufFit` adding a RAM tier
+ *  promised an offload the planner refuses. llama.cpp is not this case -- a GGUF really does spill
+ *  into whatever host RAM the GPU window does not already cover, and `systemRamAvailableGb` now
+ *  has that window subtracted out. */
 function mediaRamBudgetGb(systemRamGb: number, hostPooled: boolean): number {
   return hostPooled ? 0 : systemRamGb;
 }
@@ -1007,7 +1009,10 @@ function ModelRow({
   const vramTooltipText =
     showVramTooltip && vramStatus
       ? exceeds
-        ? `Needs ~${vramEst}GB VRAM (GPU: ${gpuGb}GB)`
+        ? // "memory", not "VRAM": every over-budget verdict here is a total. A GGUF at
+          // `partial` splits across VRAM and RAM, and the figure is weights plus activations
+          // plus KV, so "Needs ~47GB VRAM" contradicted the offload verdict beside it.
+          `Needs ~${vramEst}GB memory (GPU: ${gpuGb}GB)`
         : vramStatus === "tight" || vramStatus === "marginal"
           ? `~${vramEst}GB VRAM (tight fit on ${gpuGb}GB)`
           : `~${vramEst}GB VRAM`
@@ -3490,6 +3495,7 @@ export function HubModelPicker({
     // device, so it is judged there. inferenceGpu is the GGUF backend's inventory, which can
     // be a different install (Vulkan llama.cpp) or the sum of several cards.
     const pipelineBudget = artifactBudget(loadScopedGpu(gpu, Boolean(task)));
+    const rowInferenceGpu = loadScopedGpu(inferenceGpu, Boolean(task));
     // Community rows come from their own listing; without them folded in here
     // they render with no size or VRAM chip.
     for (const r of [
@@ -3531,7 +3537,10 @@ export function HubModelPicker({
           meta,
           // The classifier's own verdict, so a GGUF row never borrows "exceeds", which is the
           // torch-only refusal used by the curated branch below.
-          status: ggufRowFit(sizeBytes, inferenceGpu),
+          // The device the load LANDS on, same as the quant rows under it and the fit filter
+          // beside it. The curated branch below already scoped; this one did not, so a downloaded
+          // media parent could read as safe while every variant inside it read as oom.
+          status: ggufRowFit(sizeBytes, rowInferenceGpu),
           // The figure the verdict was reached with, not the raw file size. classifyGgufFit scores
           // weights PLUS activations and KV, so a 20 GiB quant needing 24 GiB read "tight fit"
           // beside a tooltip saying "~20GB VRAM". The media rule scores the raw size, so that one
@@ -6990,6 +6999,8 @@ function FineTunedRows({
     available: boolean;
     budgetKnown: boolean;
     memoryTotalGb: number;
+    /** GPUs memoryTotalGb sums, for the loader's per-card VRAM reserve. */
+    deviceCount?: number;
     systemRamAvailableGb: number;
   };
 }) {
@@ -7141,6 +7152,7 @@ function FineTunedRows({
                   loraModelList.moveFocus(optionKey, "next")
                 }
                 gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
+                gpuCount={gpu.deviceCount}
                 systemRamGb={gpu.systemRamAvailableGb || undefined}
                 budgetKnown={gpu.budgetKnown}
                 sourceOverride={isExportedGguf ? "exported" : undefined}
