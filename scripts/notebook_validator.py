@@ -277,6 +277,7 @@ class PipInvocation:
     raw: str
     line_no: int = 0
     action: str = "install"  # "install" | "uninstall"
+    conditional: bool = False  # the fallback side of an `||`: runs only if the left failed
 
 
 PIP_LINE_RE = re.compile(
@@ -364,40 +365,40 @@ def _glue_line_continuations(text: str) -> list[tuple[int, str]]:
     return out
 
 
-def _split_chained(line: str) -> list[str]:
-    """One shell line -> one entry per command that certainly runs. Only the first `!`.
+def _split_chained(line: str) -> list[tuple[str, bool]]:
+    """One shell line -> `(command, conditional)` per command. Only the first keeps the `!`.
 
     `pip uninstall -y x && pip install x==1` is two commands with two actions; read as one,
     the regex hands the whole line to the first and the reinstall lands in the uninstall's
     package list. Scanned rather than split on a pattern because a PEP 508 marker puts a
-    quoted `;` inside a single argument (`"torch==2.12.0; python_version >= '3.10'"`).
+    quoted `;` inside a single argument (`"torch==2.12.0; python_version >= '3.10'"`), and a
+    backslash escapes the next character outside single quotes, as the shlex pass in
+    parse_pip_line does.
 
-    A `||` fallback runs only when the command before it failed, so everything up to the end
-    of that and-or list is dropped until an `&&` or a `;`, since the lists are
-    left-associative and `(A || B) && C` runs C when A succeeded. An unquoted
-    `#` that starts a word comments out the rest of the line, so scanning stops there. A
-    backslash escapes the next character outside single quotes, matching the shlex pass in
-    parse_pip_line, so `\\;` stays inside the argument.
+    A `||` fallback runs only when the command before it failed, so it is flagged conditional
+    rather than dropped: it can still run, and the rules that must see every install path
+    (R-INST-001 and the git+ ban above all) have to keep seeing it. Only the effective-version
+    replay skips them. The tail ends at an `&&` or a `;`, since the lists are left-associative
+    and `(A || B) && C` runs C when A succeeded. An unquoted `#` that starts a word comments
+    out the rest of the line, so scanning stops there.
     """
-    out: list[str] = []
+    out: list[tuple[str, bool]] = []
     buf: list[str] = []
     quote = ""
-    skipping = False  # inside the conditional tail of an and-or list
+    conditional = False
     i = 0
 
     def flush() -> None:
         nonlocal buf
-        if not skipping:
-            out.append("".join(buf))
+        out.append(("".join(buf), conditional))
         buf = []
 
     while i < len(line):
         ch = line[i]
         if ch == "\\" and quote != "'" and i + 1 < len(line):
-            if not skipping:
-                buf.append(ch)
-                buf.append(line[i + 1])
-            i += 2  # an escaped separator is part of the argument, as shlex reads it
+            buf.append(ch)
+            buf.append(line[i + 1])
+            i += 2
         elif quote:
             buf.append(ch)
             if ch == quote:
@@ -411,30 +412,32 @@ def _split_chained(line: str) -> list[str]:
             break  # a control operator ends a word, so `;#` starts a comment too
         elif line.startswith("||", i):
             flush()
-            skipping = True
+            conditional = True
             i += 2
         elif line.startswith("&&", i):
             flush()
-            skipping = False  # and-or lists are left-associative: (A || B) && C runs C
+            conditional = False  # left-associative: (A || B) && C runs C when A succeeded
             i += 2
         elif ch == ";":
             flush()
-            skipping = False
+            conditional = False
             i += 1
         else:
-            if not skipping:
-                buf.append(ch)
+            buf.append(ch)
             i += 1
     flush()
-    head, *rest = out or [""]
-    return [head] + [f"!{part}" for part in (piece.strip() for piece in rest) if part]
+    (head, head_conditional), *rest = out
+    return [(head, head_conditional)] + [
+        (f"!{text}", flag) for text, flag in ((piece.strip(), flag) for piece, flag in rest) if text
+    ]
 
 
 def iter_pip_invocations(install_cell: str) -> Iterator[PipInvocation]:
     for line_no, line in _glue_line_continuations(install_cell):
-        for command in _split_chained(line):
+        for command, conditional in _split_chained(line):
             inv = parse_pip_line(command, line_no)
             if inv is not None:
+                inv.conditional = conditional
                 yield inv
 
 
@@ -724,15 +727,15 @@ def _window_names_one_minor(floor: str | None, ceiling: str | None) -> bool:
 
 def _spec_window(
     pins: list[tuple[str, str]],
-) -> tuple[str | None, str | None, str | None, str | None, list[str]]:
-    """`(exact, floor, cap, ceiling, exclusions)` for one requirement.
+) -> tuple[str | None, str | None, str | None, str | None, list[str], bool]:
+    """`(exact, floor, cap, ceiling, exclusions, floor_excludes_itself)` for one requirement.
 
     `cap` is an inclusive `<=`, which names the version pip lands on; `ceiling` is an
-    exclusive `<` or the one `~=` implies, which does not. `>` counts as a floor: it names a
-    version pip will not install, but the callers compare minors, and a bound one release out
-    only shifts the minor when the window spans two of them, where the other bound decides.
+    exclusive `<` or the one `~=` implies, which does not. A `>` floor comes back with the
+    flag set, since the endpoint it names is the one version pip will not install.
     """
     exact = floor = cap = ceiling = None
+    floor_excludes_itself = False
     exclusions: list[str] = []
     for op, ver in pins:
         if op == "==":
@@ -742,6 +745,7 @@ def _spec_window(
         elif op in (">=", ">", "~="):
             if floor is None or cmp_versions(ver, floor) > 0:
                 floor = ver
+                floor_excludes_itself = op == ">"
         elif op == "<=":
             if cap is None or cmp_versions(ver, cap) < 0:
                 cap = ver
@@ -752,7 +756,7 @@ def _spec_window(
             implied = _compatible_release_ceiling(ver)
             if implied is not None and (ceiling is None or cmp_versions(implied, ceiling) < 0):
                 ceiling = implied
-    return exact, floor, cap, ceiling, exclusions
+    return exact, floor, cap, ceiling, exclusions, floor_excludes_itself
 
 
 def _effective_version(install_cell: str, target: str, resolved: str | None) -> str | None:
@@ -768,11 +772,15 @@ def _effective_version(install_cell: str, target: str, resolved: str | None) -> 
     the window's floor, or an inclusive `<=` when the move is downwards. Moving down only
     names a version when the window holds one minor, which is the granularity the callers
     compare on: `>=0.10,<0.11` and `~=0.10.0` do, `>=0.10,<0.12` and `>=0.9,!=0.11.*` do not.
-    Anything that cannot say where the install lands clears the version rather than keeping a
-    stale one, and a bound on an absent package leaves it absent.
+    A `>` floor names the one version pip will not install, so it too only moves the version
+    when a ceiling pins the minor. Anything that cannot say where the install lands clears the
+    version rather than keeping a stale one, and a bound on an absent package leaves it
+    absent.
     """
     current = resolved
     for inv in iter_pip_invocations(install_cell):
+        if inv.conditional:
+            continue  # runs only when the command before it failed
         # One command names a project once as far as pip is concerned: it intersects repeated
         # arguments into a single requirement, so they have to be one window here too.
         pins: list[tuple[str, str]] = []
@@ -794,8 +802,8 @@ def _effective_version(install_cell: str, target: str, resolved: str | None) -> 
         if inv.action == "uninstall":
             current = None  # removed; a later install can put it back
             continue
-        exact, floor, cap, ceiling, exclusions = _spec_window(pins)
-        # Where an install lands when it has to move down, or None when nothing names it.
+        exact, floor, cap, ceiling, exclusions, exclusive_floor = _spec_window(pins)
+        # Where an install lands when it has to move, or None when nothing names it.
         landing = floor if _window_names_one_minor(floor, ceiling) else None
         if exact is not None:
             current = exact
@@ -804,7 +812,7 @@ def _effective_version(install_cell: str, target: str, resolved: str | None) -> 
         elif any(_version_is_excluded(current, ver) for ver in exclusions):
             current = landing  # pip cannot keep what is installed
         elif floor is not None and cmp_versions(floor, current) > 0:
-            current = floor
+            current = landing if exclusive_floor else floor
         elif cap is not None and cmp_versions(current, cap) > 0:
             current = cap  # `<=V` allows V, so V is what pip picks
         elif ceiling is not None and cmp_versions(current, ceiling) >= 0:

