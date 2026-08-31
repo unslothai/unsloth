@@ -660,6 +660,30 @@ def _is_safetensors_shard_file(path: Path) -> bool:
     return _SAFETENSORS_SHARD_SUFFIX.search(path.name) is not None
 
 
+_DIFFUSION_COMPANION_WEIGHT_STEMS = frozenset(
+    {"ae", "vae", "clip_l", "clip_g", "t5xxl", "learned_embeds", "embeddings"}
+)
+_DIFFUSION_COMPANION_WEIGHT_PREFIXES = (
+    "vae_",
+    "text_encoder",
+    "clip_l_",
+    "clip_g_",
+    "t5xxl_",
+)
+
+
+def _is_diffusion_companion_weight_file(path: Path) -> bool:
+    lower = _weight_basename(path.name)
+    if not lower.endswith(".safetensors"):
+        return False
+    stem = lower.removesuffix(".safetensors").replace("-", "_").replace(".", "_")
+    return (
+        stem in _DIFFUSION_COMPANION_WEIGHT_STEMS
+        or stem.startswith(_DIFFUSION_COMPANION_WEIGHT_PREFIXES)
+        or stem.endswith("_vae")
+    )
+
+
 def _is_transformers_bin_weight_file(path: Path) -> bool:
     return _is_transformers_bin_weight_name(path.name)
 
@@ -982,6 +1006,7 @@ def _classify_local_path(
         and not has_adapter_weights
         and not has_checkpoint_weights
         and not any(_is_safetensors_shard_file(f) for f in safetensors_files)
+        and not any(_is_diffusion_companion_weight_file(f) for f in safetensors_files)
         and len(safetensors_files) == 1
     )
     trusted_hf_cache_repo = source == "hf_cache" and bool(model_id)

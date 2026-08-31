@@ -135,6 +135,7 @@ import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 import {
   DEFAULT_GEN,
   defaultsFor,
+  residentImageDefaultsIdentity,
   residentImageDefaultsSeedKey,
 } from "./image-generation-defaults";
 
@@ -1413,7 +1414,12 @@ export function ImagesPage({
   );
   const imageDefaultRecipe = useMemo<ImageGenerationPresetParams>(() => {
     const residentRecommended = defaultsFor(
-      status?.repo_id ?? status?.base_repo ?? "",
+      residentImageDefaultsIdentity({
+        repoId: status?.repo_id,
+        baseRepo: status?.base_repo,
+        modelKind: status?.model_kind,
+        lastLoad: lastLoad.current,
+      }),
       status?.family,
     );
     const recommended = status?.loaded
@@ -1428,7 +1434,7 @@ export function ImagesPage({
       batchSize: 1,
       runs: 1,
     };
-  }, [pendingModelDefaults, status?.base_repo, status?.family, status?.loaded, status?.repo_id]);
+  }, [pendingModelDefaults, status?.base_repo, status?.family, status?.loaded, status?.model_kind, status?.repo_id]);
   const applyImagePresetParams = useCallback((params: ImageGenerationPresetParams) => {
     setNegativePrompt(params.negativePrompt);
     // Same rule restoreSettings follows: a negative prompt that is in effect has to be visible, or

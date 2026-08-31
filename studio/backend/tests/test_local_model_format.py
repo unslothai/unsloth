@@ -544,6 +544,26 @@ def test_local_inventories_reject_loose_diffusers_lora_weights(tmp_path):
     assert _scan_custom_folder(tmp_path / "custom") == []
 
 
+def test_local_inventories_reject_loose_diffusion_companion_weights(tmp_path):
+    """Known VAE, encoder, and embedding payload names are not base checkpoints."""
+    from hub.services.models.local_inventory import _scan_custom_folder, _scan_models_dir
+
+    names = (
+        "ae.safetensors",
+        "vae.safetensors",
+        "clip_l.safetensors",
+        "t5xxl_fp16.safetensors",
+        "learned_embeds.safetensors",
+    )
+    for index, name in enumerate(names):
+        models = tmp_path / f"models-{index}"
+        custom = tmp_path / f"custom-{index}"
+        _touch(models / name)
+        _touch(custom / name)
+        assert _scan_models_dir(models) == [], name
+        assert _scan_custom_folder(custom) == [], name
+
+
 def test_custom_inventory_keeps_file_rows_in_a_multi_checkpoint_registration(tmp_path):
     """Reducing a file registration to its parent must not lose it beside another checkpoint."""
     from hub.services.models.local_inventory import _coerce_scan_folder_path, _scan_custom_folder

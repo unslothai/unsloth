@@ -7,6 +7,7 @@ import test from "node:test";
 
 import {
   defaultsFor,
+  residentImageDefaultsIdentity,
   residentImageDefaultsSeedKey,
 } from "../src/features/images/image-generation-defaults.ts";
 import {
@@ -53,6 +54,36 @@ test("resident image default identity includes the resolved family", () => {
       family: "flux.1",
       modelKind: "pipeline",
     }),
+  );
+});
+
+test("resident defaults retain a matching page-owned checkpoint filename", () => {
+  assert.equal(
+    residentImageDefaultsIdentity({
+      repoId: "C:\\models\\opaque",
+      baseRepo: "black-forest-labs/FLUX.1-dev",
+      modelKind: "single_file",
+      lastLoad: {
+        repoId: "C:/models/opaque",
+        kind: "single_file",
+        filename: "FLUX_1_schnell.safetensors",
+      },
+    }),
+    "C:/models/opaque/FLUX_1_schnell.safetensors",
+  );
+  assert.equal(
+    residentImageDefaultsIdentity({
+      repoId: "C:/models/replaced",
+      baseRepo: "black-forest-labs/FLUX.1-dev",
+      modelKind: "single_file",
+      lastLoad: {
+        repoId: "C:/models/old",
+        kind: "single_file",
+        filename: "FLUX_1_schnell.safetensors",
+      },
+    }),
+    "C:/models/replaced",
+    "a stale page-owned target must not describe another client's resident model",
   );
 });
 
@@ -224,7 +255,7 @@ test("the image Default preset keeps the resolved family after load completion",
   const recipe = source.slice(recipeStart, recipeEnd);
   assert.match(
     recipe,
-    /defaultsFor\(\s*status\?\.repo_id \?\? status\?\.base_repo \?\? "",\s*status\?\.family/,
+    /defaultsFor\(\s*residentImageDefaultsIdentity\([\s\S]*lastLoad: lastLoad\.current[\s\S]*status\?\.family/,
   );
   assert.match(recipe, /status\?\.family/);
 });

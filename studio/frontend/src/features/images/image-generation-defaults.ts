@@ -6,6 +6,34 @@ import { familyTokenMatches } from "../../lib/family-token-matching.ts";
 // Generation defaults when the model is unrecognised. Also seeds the Create sliders.
 export const DEFAULT_GEN = { steps: 9, guidance: 0 };
 
+function normalizedModelPath(value: string): string {
+  return value.trim().replaceAll("\\", "/").replace(/\/+$/, "").toLowerCase();
+}
+
+/** Retain a page-owned checkpoint filename only while status still describes that load target. */
+export function residentImageDefaultsIdentity(input: {
+  repoId?: string | null;
+  baseRepo?: string | null;
+  modelKind?: string | null;
+  lastLoad?: {
+    repoId: string;
+    kind: "gguf" | "single_file" | "pipeline";
+    filename?: string;
+  } | null;
+}): string {
+  const statusIdentity = input.repoId ?? input.baseRepo ?? "";
+  const load = input.lastLoad;
+  if (
+    !input.repoId ||
+    !load?.filename ||
+    normalizedModelPath(load.repoId) !== normalizedModelPath(input.repoId) ||
+    (input.modelKind != null && load.kind !== input.modelKind)
+  ) {
+    return statusIdentity;
+  }
+  return `${load.repoId.replace(/[\\/]+$/, "")}/${load.filename.replace(/^[\\/]+/, "")}`;
+}
+
 /** Stable identity for defaults seeded from a model already resident in another client. */
 export function residentImageDefaultsSeedKey(input: {
   repoId: string;
