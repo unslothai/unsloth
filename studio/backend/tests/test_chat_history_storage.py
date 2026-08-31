@@ -1385,4 +1385,4 @@ def test_sync_preserves_non_list_attachments_and_malformed_stored_json(
     restored = studio_db.sync_chat_messages("thread-1", [user_a, user_b])
     by_id = {message["id"]: message for message in restored}
     assert by_id["user-a"]["attachments"] == {"legacy": True, "name": "notes.md"}
-    assert by_id["user-b"]["attachments"] is None
+    assert "attachments" not in by_id["user-b"]
