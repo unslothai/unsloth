@@ -1,36 +1,39 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The llama-server / Ollama discovery surface, so third-party clients can probe us.
+"""Answer engine discovery probes with JSON, or with a 404, but never with the app.
 
 Studio already answers the OpenAI surface (``GET /v1/models``,
-``POST /v1/chat/completions``), and clients that reach a local port commonly probe
-llama-server's and Ollama's discovery endpoints alongside it to work out what they
-are talking to. Those probes used to land on the SPA catch-all in main.py, which
-serves index.html for anything that is not under ``/api/`` or ``/v1/``: a client
-asking ``GET /props`` got 200 and a page of HTML. 200-with-HTML is worse than a
-404, because a probe reads the status first and only then fails on the body.
+``POST /v1/chat/completions``), and clients that reach a local port probe the
+engine endpoints alongside it to work out what they are talking to. Those probes
+used to land on the SPA catch-all in main.py, which serves index.html for anything
+that is not under ``/api/`` or ``/v1/``: a client asking ``GET /props`` got 200 and
+a page of HTML. 200-with-HTML is worse than a 404, because a probe reads the status
+first and only then fails on the body.
 
 GET  /props, /v1/props  -> llama-server's props, with model_path replaced by the
                            public model id (never the on-disk .gguf path)
-GET  /version, /api/version -> {"version": ...}, the Ollama shape
-GET  /api/tags          -> the catalog in Ollama's list shape
-POST /api/show          -> one model in Ollama's show shape
+GET  /version           -> {"version": ...}
 
-Read-only and authenticated exactly like ``GET /v1/models``: /props carries the
-chat template and the slot count, and the listings carry the same ids /v1/models
-publishes, so none of it may be looser than the endpoint it mirrors.
+Everything else llama-server serves and Studio does not -- /slots, /completion,
+/tokenize, ... -- gets an explicit 404 (``_ENGINE_PROBE_PATHS``), on the real HTTP
+method as well as GET.
+
+Deliberately NOT served: Ollama's ``/api/tags`` and ``/api/show``. Answering those
+identifies this server as Ollama, and a client that completes Ollama discovery then
+posts to ``/api/chat`` or ``/api/generate``, which Studio does not serve, so it would
+fail at generation instead of falling back to the OpenAI surface that does work. The
+reporting user's client did exactly that fallback and succeeded. Advertising a
+protocol we do not implement is the same defect as the HTML 200, one layer up.
 """
 
 from __future__ import annotations
 
 import asyncio
 import functools
-import time
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException
 
 from auth.authentication import get_current_subject
 from loggers import get_logger
@@ -69,27 +72,6 @@ _ENGINE_PROBE_PATHS = frozenset(
 def is_engine_probe_path(full_path: str) -> bool:
     """True for an engine endpoint that must 404 rather than render the app shell."""
     return full_path.strip("/").lower() in _ENGINE_PROBE_PATHS
-
-
-# Ollama clients read modified_at as an RFC3339 stamp and reject a bare epoch.
-_EPOCH_FMT = "%Y-%m-%dT%H:%M:%SZ"
-_EPOCH_ZERO = "1970-01-01T00:00:00Z"
-# RFC3339 wants a four digit year, so the value is clamped to 1970..9999 rather than
-# passed through. That also makes the three platforms agree: gmtime() accepts a wildly
-# out of range epoch on Linux and returns a five digit year no client can parse,
-# rejects anything before 1970 on macOS, and rejects both ends on Windows. Clamping
-# first means the same catalog row renders identically everywhere.
-_EPOCH_MAX = 253402300799  # 9999-12-31T23:59:59Z
-
-
-def _rfc3339(epoch: Optional[int]) -> str:
-    try:
-        seconds = min(max(int(epoch or 0), 0), _EPOCH_MAX)
-        return time.strftime(_EPOCH_FMT, time.gmtime(seconds))
-    except (OverflowError, OSError, TypeError, ValueError):
-        # A literal, not another gmtime() call: on a platform strict enough to reject
-        # the value above, the fallback would raise out of the handler too.
-        return _EPOCH_ZERO
 
 
 def _inference():
@@ -151,8 +133,9 @@ def _server_props() -> dict:
     """
     llama_backend = _inference().get_llama_cpp_backend()
     public_id = _loaded_public_model_id()
+    llama_loaded = bool(getattr(llama_backend, "is_loaded", False))
     props: dict[str, Any] = {}
-    if getattr(llama_backend, "is_loaded", False):
+    if llama_loaded:
         # Bounded (5s) and documented to return None rather than raise, so an engine
         # that is mid-restart degrades to the local view instead of failing the probe.
         # Belt and braces anyway: a probe is the wrong place to discover that the
@@ -167,14 +150,21 @@ def _server_props() -> dict:
     props.pop("model_path", None)
     if public_id:
         props["model_path"] = public_id
-    props.setdefault("default_generation_settings", {})
-    settings = props["default_generation_settings"]
-    if isinstance(settings, dict) and "n_ctx" not in settings:
-        n_ctx = getattr(llama_backend, "context_length", None)
-        if n_ctx:
-            settings["n_ctx"] = int(n_ctx)
-    props.setdefault("total_slots", 0)
-    props.setdefault("chat_template", getattr(llama_backend, "chat_template", "") or "")
+
+    # Only when llama-server owns the resident model. With a Transformers or MLX model
+    # loaded the llama backend is unloaded, and reading its fields anyway would pair the
+    # orchestrator's model_path with n_ctx 0, an empty template and total_slots 0 -- a
+    # self-contradictory description of a model that is in fact serving. Omitting them
+    # says "no llama-server props to report", which is true.
+    if llama_loaded:
+        props.setdefault("default_generation_settings", {})
+        settings = props["default_generation_settings"]
+        if isinstance(settings, dict) and "n_ctx" not in settings:
+            n_ctx = getattr(llama_backend, "context_length", None)
+            if n_ctx:
+                settings["n_ctx"] = int(n_ctx)
+        props.setdefault("total_slots", 0)
+        props.setdefault("chat_template", getattr(llama_backend, "chat_template", "") or "")
     props["build_info"] = f"unsloth-studio/{_studio_version()}"
     return props
 
@@ -190,94 +180,30 @@ async def llama_props(current_subject: str = Depends(get_current_subject)):
 
 
 @router.get("/version", include_in_schema = False)
-@router.get("/api/version", include_in_schema = False)
-async def ollama_version(current_subject: str = Depends(get_current_subject)):
-    """Ollama-compatible version probe."""
+async def studio_version(current_subject: str = Depends(get_current_subject)):
+    """Version probe. Bare /version only -- Ollama spells it /api/version, and
+    answering there is part of claiming to be Ollama."""
     return {"version": _studio_version()}
 
 
-# ── /api/tags ─────────────────────────────────────────────────────────────────
+# ── probe paths Studio does not serve ─────────────────────────────────────────
 
 
-def _ollama_details(model: dict) -> dict:
-    return {
-        "parent_model": "",
-        "format": "gguf",
-        "family": "",
-        "families": None,
-        "parameter_size": "",
-        # Ollama clients display this verbatim; the catalog's quant is the honest
-        # answer and an empty string is the honest answer when there is none.
-        "quantization_level": str(model.get("quant") or ""),
-    }
+async def _probe_not_found():
+    raise HTTPException(status_code = 404, detail = "API endpoint not found")
 
 
-def _ollama_tag(model: dict) -> dict:
-    model_id = str(model.get("id") or "")
-    return {
-        "name": model_id,
-        "model": model_id,
-        "modified_at": _rfc3339(model.get("created")),
-        # Ollama publishes a byte size and a blob digest. Studio's catalog carries
-        # neither for every entry, and inventing them would make a client believe a
-        # digest it could compare against. 0 and "" are the documented empty values.
-        "size": 0,
-        "digest": "",
-        "details": _ollama_details(model),
-    }
-
-
-@router.get("/api/tags", include_in_schema = False)
-async def ollama_tags(current_subject: str = Depends(get_current_subject)):
-    """Ollama-compatible model listing, from the same catalog as ``GET /v1/models``."""
-    models = await _inference()._openai_catalog_objects()
-    return {"models": [_ollama_tag(m) for m in models]}
-
-
-# ── /api/show ─────────────────────────────────────────────────────────────────
-
-
-class OllamaShowRequest(BaseModel):
-    # Ollama accepts either spelling and clients send both; neither is required,
-    # so an empty body falls back to whatever is loaded rather than 422-ing a probe.
-    model: Optional[str] = None
-    name: Optional[str] = None
-
-
-@router.post("/api/show", include_in_schema = False)
-async def ollama_show(
-    body: Optional[OllamaShowRequest] = None, current_subject: str = Depends(get_current_subject)
-):
-    """Ollama-compatible model detail (``POST /api/show``)."""
-    from fastapi import HTTPException
-
-    requested = None
-    if body is not None:
-        requested = body.model or body.name
-    requested = (requested or _loaded_public_model_id() or "").strip()
-    if not requested:
-        raise HTTPException(status_code = 404, detail = "model not found")
-
-    models = await _inference()._openai_catalog_objects()
-    # Case-insensitive, matching /v1/models/{id}: the resolver lowercases its index.
-    match = next(
-        (m for m in models if str(m.get("id") or "").lower() == requested.lower()),
-        None,
+# GET is deliberately absent: it stays with the SPA catch-all, which looks for a real
+# asset first and only then applies is_engine_probe_path(). Registering GET here would
+# shadow that lookup. Without these, a POST to /completion or /tokenize matched the
+# GET-only catch-all and returned 405, which a discovery client reads as "the endpoint
+# exists, wrong method" -- the same false positive the 404 is meant to close, and these
+# endpoints are POST in llama-server. OPTIONS is left alone so CORS preflight is
+# unaffected; HEAD already resolves against the catch-all's GET route.
+for _probe_path in sorted(_ENGINE_PROBE_PATHS):
+    router.add_api_route(
+        f"/{_probe_path}",
+        _probe_not_found,
+        methods = ["POST", "PUT", "PATCH", "DELETE"],
+        include_in_schema = False,
     )
-    if match is None:
-        raise HTTPException(status_code = 404, detail = "model not found")
-
-    capabilities = ["completion"]
-    if match.get("supports_tools"):
-        capabilities.append("tools")
-    if match.get("supports_vision"):
-        capabilities.append("vision")
-    return {
-        "license": "",
-        "modelfile": "",
-        "parameters": "",
-        "template": "",
-        "details": _ollama_details(match),
-        "model_info": {},
-        "capabilities": capabilities,
-    }

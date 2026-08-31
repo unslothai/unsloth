@@ -81,7 +81,11 @@ class _Backend:
         return self._props
 
 
-def _inference_double(backend, catalog):
+def _inference_double(
+    backend,
+    catalog,
+    orchestrator = None,
+):
     """Stand-in for routes.inference, injected through llama_compat._inference().
 
     Deliberately not a sys.modules entry: an earlier revision stubbed
@@ -91,8 +95,8 @@ def _inference_double(backend, catalog):
     inference = types.SimpleNamespace()
     inference.get_llama_cpp_backend = lambda: backend
     inference._llama_public_model_id = lambda b, fallback = None: b._openai_advertised_id
-    inference._orchestrator_public_model_id = lambda b: None
-    inference._peek_inference_backend = lambda: None
+    inference._peek_inference_backend = lambda: orchestrator
+    inference._orchestrator_public_model_id = lambda b: b.active_model_name
 
     async def _objects():
         return catalog
@@ -104,7 +108,11 @@ def _inference_double(backend, catalog):
 _MOD = None
 
 
-def _load(backend = None, catalog = None):
+def _load(
+    backend = None,
+    catalog = None,
+    orchestrator = None,
+):
     """The real routes/llama_compat.py, with routes.inference replaced by a double."""
     global _MOD
     if _MOD is None:
@@ -117,6 +125,7 @@ def _load(backend = None, catalog = None):
     double = _inference_double(
         backend if backend is not None else _Backend(),
         CATALOG if catalog is None else catalog,
+        orchestrator,
     )
     _MOD._inference = lambda: double
     return _MOD
@@ -158,17 +167,24 @@ def test_the_reported_probe_sequence_no_longer_returns_html():
     """
     mod = _load()
     with _client(mod) as c:
+        # The two that used to answer with the app shell now answer with JSON.
+        for path in ("/props", "/v1/props", "/version"):
+            r = c.get(path)
+            assert r.status_code == 200, (path, r.status_code)
+            assert "application/json" in r.headers["content-type"], path
+
+        # The Ollama pair stays a 404 on purpose: see test_the_ollama_surface_is_not
+        # _advertised. What matters is that no probe in the sequence gets HTML.
+        # 405 for POST /api/show is main.py's standing answer for a POST to any unknown
+        # /api/ path, unchanged by this PR; what matters is that none of them is HTML.
         for method, path in (
-            ("GET", "/props"),
-            ("GET", "/v1/props"),
-            ("GET", "/version"),
+            ("GET", "/api/v1/models"),
             ("GET", "/api/tags"),
             ("POST", "/api/show"),
         ):
             r = c.request(method, path, json = {} if method == "POST" else None)
-            assert r.status_code == 200, (method, path, r.status_code)
-            assert "application/json" in r.headers["content-type"], (method, path)
-            assert "text/html" not in r.headers["content-type"], (method, path)
+            assert r.status_code in (404, 405), (method, path, r.status_code)
+            assert "text/html" not in r.headers.get("content-type", ""), (method, path)
 
 
 def test_the_html_fallback_is_what_used_to_answer_these():
@@ -243,7 +259,11 @@ def test_props_with_nothing_loaded_reports_no_model():
     with _client(mod) as c:
         body = c.get("/props").json()
     assert "model_path" not in body
-    assert body["total_slots"] == 0
+    # No llama-server, so no llama-server props. Reporting total_slots 0 and an empty
+    # template would describe an engine that is not running.
+    assert "total_slots" not in body
+    assert "chat_template" not in body
+    assert body["build_info"].startswith("unsloth-studio/")
 
 
 def test_v1_props_and_props_agree():
@@ -255,138 +275,18 @@ def test_v1_props_and_props_agree():
 # ── /version ──────────────────────────────────────────────────────────────────
 
 
-def test_version_answers_on_both_spellings():
+def test_version_answers_on_the_bare_path_only():
+    """Ollama spells it /api/version; answering there is part of claiming to be Ollama."""
     mod = _load()
     with _client(mod) as c:
-        bare = c.get("/version").json()
-        prefixed = c.get("/api/version").json()
-    assert bare == prefixed
-    assert isinstance(bare["version"], str) and bare["version"]
-
-
-# ── /api/tags ─────────────────────────────────────────────────────────────────
-
-
-def test_tags_publishes_the_same_ids_as_v1_models():
-    mod = _load()
-    with _client(mod) as c:
-        models = c.get("/api/tags").json()["models"]
-    assert [m["name"] for m in models] == [m["id"] for m in CATALOG]
-    assert all(m["name"] == m["model"] for m in models)
-
-
-def test_tags_modified_at_is_rfc3339_not_an_epoch():
-    """Ollama clients parse this as a timestamp; a bare integer makes them throw."""
-    mod = _load()
-    with _client(mod) as c:
-        first = c.get("/api/tags").json()["models"][0]
-    assert first["modified_at"] == "2023-11-14T22:13:20Z"
-
-
-def test_tags_reports_the_quant_it_knows_and_no_invented_digest():
-    mod = _load()
-    with _client(mod) as c:
-        models = c.get("/api/tags").json()["models"]
-    assert models[0]["details"]["quantization_level"] == "UD-Q4_K_XL"
-    # The unquantised catalog row must not borrow the previous row's value.
-    assert models[1]["details"]["quantization_level"] == ""
-    # Studio has no blob digest for these. Empty, never fabricated: a client that
-    # compared a made-up digest would re-pull on every check.
-    assert all(m["digest"] == "" and m["size"] == 0 for m in models)
-
-
-def test_tags_on_an_empty_catalog_is_an_empty_list_not_an_error():
-    mod = _load(catalog = [])
-    with _client(mod) as c:
-        r = c.get("/api/tags")
-    assert r.status_code == 200
-    assert r.json() == {"models": []}
-
-
-# ── /api/show ─────────────────────────────────────────────────────────────────
-
-
-def test_show_accepts_both_ollama_spellings():
-    mod = _load()
-    with _client(mod) as c:
-        by_model = c.post("/api/show", json = {"model": "unsloth/Laguna-S-2.1-GGUF"})
-        by_name = c.post("/api/show", json = {"name": "unsloth/Laguna-S-2.1-GGUF"})
-    assert by_model.status_code == 200
-    assert by_model.json() == by_name.json()
-
-
-def test_show_matches_case_insensitively_like_v1_models():
-    mod = _load()
-    with _client(mod) as c:
-        r = c.post("/api/show", json = {"model": "UNSLOTH/laguna-s-2.1-gguf"})
-    assert r.status_code == 200
-    assert r.json()["details"]["quantization_level"] == ""
-
-
-def test_show_with_an_empty_body_falls_back_to_the_loaded_model():
-    """A probe often POSTs {} just to see whether the endpoint exists. 422 would
-    make it conclude the server is not Ollama-compatible."""
-    mod = _load()
-    with _client(mod) as c:
-        r = c.post("/api/show", json = {})
-    assert r.status_code == 200
-    assert r.json()["details"]["quantization_level"] == "UD-Q4_K_XL"
-
-
-def test_show_404s_an_unknown_model():
-    mod = _load()
-    with _client(mod) as c:
-        r = c.post("/api/show", json = {"model": "not/a-real-model"})
-    assert r.status_code == 404
-    assert "text/html" not in r.headers["content-type"]
-
-
-def test_show_404s_rather_than_500s_when_nothing_is_loaded_and_no_model_is_named():
-    mod = _load(backend = _Backend(loaded = False))
-    with _client(mod) as c:
-        assert c.post("/api/show", json = {}).status_code == 404
+        bare = c.get("/version")
+        prefixed = c.get("/api/version")
+    assert bare.status_code == 200
+    assert isinstance(bare.json()["version"], str) and bare.json()["version"]
+    assert prefixed.status_code == 404
 
 
 # ── platform and robustness, from the sandbox run ─────────────────────────────
-
-
-@pytest.mark.parametrize("osname", ["Linux", "Darwin", "Windows"])
-@pytest.mark.parametrize(
-    "created",
-    [0, 1, -1, 1_700_000_000, 2**31, 2**40, 10**18, 1.5, None, "nope", float("nan")],
-)
-def test_modified_at_is_a_four_digit_year_stamp_on_every_platform(osname, created, monkeypatch):
-    """gmtime() disagrees across the three platforms at both ends of its range: Linux
-    accepts a huge epoch and returns a five digit year no client can parse, macOS
-    rejects anything before 1970, Windows rejects both ends. Clamping first is what
-    makes one catalog row render identically everywhere."""
-    mod = _load()
-    real = time.gmtime
-
-    def platform_gmtime(value):
-        if osname == "Windows" and not (0 <= value < 32536850000):
-            raise OSError(22, "Invalid argument")
-        if osname == "Darwin" and value < 0:
-            raise OSError(22, "Invalid argument")
-        return real(value)
-
-    monkeypatch.setattr(mod.time, "gmtime", platform_gmtime)
-    out = mod._rfc3339(created)
-    time.strptime(out, "%Y-%m-%dT%H:%M:%SZ")
-    assert len(out) == 20 and out.endswith("Z"), out
-    assert 1970 <= int(out[:4]) <= 9999, out
-
-
-def test_the_timestamp_fallback_does_not_itself_call_gmtime(monkeypatch):
-    """An earlier revision fell back to gmtime(0), which raises too on a platform
-    strict enough to have rejected the first call, taking /api/tags with it."""
-    mod = _load()
-    monkeypatch.setattr(
-        mod.time, "gmtime", lambda _v: (_ for _ in ()).throw(OSError(22, "Invalid argument"))
-    )
-    assert mod._rfc3339(1_700_000_000) == "1970-01-01T00:00:00Z"
-    with _client(mod) as c:
-        assert len(c.get("/api/tags").json()["models"]) == len(CATALOG)
 
 
 @pytest.mark.parametrize(
@@ -495,3 +395,89 @@ def test_no_client_side_ui_route_is_shadowed_by_the_deny_list():
     assert declared, "no client routes parsed; the parser needs updating"
     shadowed = {p for p in declared if mod.is_engine_probe_path(p)}
     assert not shadowed, f"UI route(s) shadowed by the probe deny-list: {shadowed}"
+
+
+# ── the four findings from review ─────────────────────────────────────────────
+
+
+def test_the_ollama_surface_is_not_advertised():
+    """Answering /api/tags identifies this server as Ollama, and a client that
+    completes Ollama discovery then posts to /api/chat or /api/generate, which Studio
+    does not serve. The reporting user's client got 404 here, fell back to the OpenAI
+    surface, and worked; advertising a protocol we do not implement would have broken
+    exactly that client. Same defect as the HTML 200, one layer up."""
+    mod = _load()
+    routes = {r.path for r in mod.router.routes}
+    assert "/api/tags" not in routes
+    assert "/api/show" not in routes
+    assert "/api/version" not in routes
+    # And the inference endpoints an Ollama client would go on to call are absent, which
+    # is what makes advertising the discovery pair wrong rather than merely incomplete.
+    assert "/api/chat" not in routes and "/api/generate" not in routes
+
+
+@pytest.mark.parametrize("method", ["POST", "PUT", "PATCH", "DELETE"])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/completion",
+        "/tokenize",
+        "/detokenize",
+        "/rerank",
+        "/infill",
+        "/embedding",
+        "/apply-template",
+        "/slots",
+    ],
+)
+def test_unserved_engine_endpoints_404_on_their_real_method_not_405(method, path):
+    """These are POST endpoints in llama-server. The deny-list guard lives in the SPA's
+    GET catch-all, so before this a POST matched the GET-only route and returned 405,
+    which a discovery client reads as "exists, wrong method" -- the same false positive
+    the 404 exists to close."""
+    mod = _load()
+    with _client(mod) as c:
+        r = c.request(method, path, json = {})
+    assert r.status_code == 404, (method, path, r.status_code)
+    assert "text/html" not in r.headers.get("content-type", ""), (method, path)
+
+
+def test_get_on_a_probe_path_still_reaches_the_asset_lookup(tmp_path):
+    """The non-GET routes deliberately omit GET, or they would shadow the catch-all's
+    static lookup and re-break the asset case."""
+    mod = _load()
+    assert not any(
+        "GET" in (getattr(r, "methods", None) or set()) and r.path == "/completion"
+        for r in mod.router.routes
+    )
+
+
+def test_props_does_not_pair_an_orchestrator_model_with_llama_server_fields():
+    """With a Transformers or MLX model resident the llama backend is unloaded. Reading
+    its fields anyway advertised the orchestrator's model alongside n_ctx 0, an empty
+    template and total_slots 0: a self-contradictory description of a model that is in
+    fact serving."""
+
+    class _Orchestrator:
+        active_model_name = "unsloth/Llama-3.2-3B"
+
+    mod = _load(backend = _Backend(loaded = False), orchestrator = _Orchestrator())
+    with _client(mod) as c:
+        body = c.get("/props").json()
+    assert body["model_path"] == "unsloth/Llama-3.2-3B"
+    for llama_only in ("total_slots", "chat_template", "default_generation_settings"):
+        assert llama_only not in body, llama_only
+
+
+def test_the_probe_paths_are_admitted_under_keyless_inference_scope():
+    """keyless_api_access_scope="inference" lets a keyless client list models and chat.
+    A 401 on /props in front of that surface reads as an auth wall over the whole thing
+    and stops discovery, which is the opposite of what the scope grants."""
+    from utils.keyless_api_access import _INFERENCE_ROUTES
+
+    assert ("GET", "/v1/models") in _INFERENCE_ROUTES, "baseline moved; re-derive this"
+    for path in ("/props", "/v1/props", "/version"):
+        assert ("GET", path) in _INFERENCE_ROUTES, path
+    # Not the Ollama paths: they are not served at all.
+    for path in ("/api/tags", "/api/show", "/api/version"):
+        assert ("GET", path) not in _INFERENCE_ROUTES, path
