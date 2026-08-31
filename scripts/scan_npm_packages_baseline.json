@@ -1,0 +1,5 @@
+{
+  "_comment": "scan_npm_packages.py allowlist. Each entry is a HIGH/CRITICAL finding manually judged benign. Matched on (package, package-relative path, pattern, evidence hash); a new payload under an already-listed package/path/pattern reopens instead of riding the entry. severity is for review only. Regenerate with --write-baseline AFTER reviewing every line. EMPTY by design: a full scan of studio/frontend/package-lock.json (915 packages) produced 0 findings, so nothing needs suppressing and the CI gate can run enforcing (SCAN_ENFORCE=1) as-is. If a future dependency adds a reviewed-benign HIGH/CRITICAL, add it here rather than weakening a pattern.",
+  "version": 3,
+  "entries": []
+}

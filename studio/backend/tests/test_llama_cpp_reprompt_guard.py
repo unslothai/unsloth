@@ -524,9 +524,7 @@ def test_no_backtrack_on_plan_framing_long_preamble():
     payload with many false intent triggers must still complete fast."""
     import time
 
-    payload = (
-        "Here's my plan:\n" + ("long preamble text. " * 90) + "\nsearch the web for X"
-    )
+    payload = "Here's my plan:\n" + ("long preamble text. " * 90) + "\nsearch the web for X"
     t0 = time.time()
     _has_answer_artifact(payload)
     elapsed_ms = (time.time() - t0) * 1000
@@ -580,16 +578,8 @@ def test_no_reprompt_on_numbered_answer_with_bare_find_or_check():
     """Bare ``find`` / ``check`` / ``verify`` without a freshness word
     stay valid answer verbs ("find the bug", "check the answer")."""
     samples = [
-        (
-            "Here's how I'd debug this:\n"
-            "1. Find the failing test.\n"
-            "2. Check the stack trace."
-        ),
-        (
-            "First, here are common steps:\n"
-            "1. Verify your input.\n"
-            "2. Check each assertion."
-        ),
+        ("Here's how I'd debug this:\n1. Find the failing test.\n2. Check the stack trace."),
+        ("First, here are common steps:\n1. Verify your input.\n2. Check each assertion."),
     ]
     for s in samples:
         assert _has_answer_artifact(s), s
@@ -678,21 +668,13 @@ def test_reasoning_only_visible_artifact_suppresses_reprompt():
     from core.inference.llama_cpp import _REPROMPT_MAX_CHARS
 
     content_accum = ""
-    reasoning_accum = (
-        "First, let me set up pygame.\n"
-        "```python\n"
-        "import pygame\n"
-        "pygame.init()\n"
-        "```"
-    )
+    reasoning_accum = "First, let me set up pygame.\n```python\nimport pygame\npygame.init()\n```"
     has_content_tokens = False
 
     visible = content_accum.strip()
     reasoning = reasoning_accum.strip()
     stripped = visible if visible else reasoning
-    artifact_text = (
-        visible if visible else (reasoning if not has_content_tokens else "")
-    )
+    artifact_text = visible if visible else (reasoning if not has_content_tokens else "")
     would_reprompt = bool(
         0 < len(stripped) < _REPROMPT_MAX_CHARS
         and _INTENT_SIGNAL.search(stripped)
@@ -707,11 +689,7 @@ def test_no_reprompt_on_binary_search_algorithm_answer():
     re-prompt. The lookup gating on ``search`` requires a freshness or
     web/internet target, so ``Search the left half`` stays an answer."""
     samples = [
-        (
-            "First, use binary search:\n"
-            "1. Search the left half.\n"
-            "2. Search the right half."
-        ),
+        ("First, use binary search:\n1. Search the left half.\n2. Search the right half."),
         (
             "First, here are the debugging steps:\n"
             "1. Search the project for the failing function.\n"
@@ -800,12 +778,7 @@ def test_no_reprompt_on_lesson_plan_answer_without_explicit_header():
             "2. Run for 20 minutes.\n"
             "3. Cool down with stretching."
         ),
-        (
-            "My weekly plan:\n"
-            "1. Monday: rest.\n"
-            "2. Tuesday: jog.\n"
-            "3. Wednesday: swim."
-        ),
+        ("My weekly plan:\n1. Monday: rest.\n2. Tuesday: jog.\n3. Wednesday: swim."),
     ]
     for content in samples:
         assert _has_answer_artifact(content), content
@@ -831,11 +804,7 @@ def test_reprompts_on_direct_intent_numbered_local_action_plan():
             "2. Calculate the average.\n"
             "3. Explain the result."
         ),
-        (
-            "First, I'll create a Python game:\n"
-            "1. Set up pygame.\n"
-            "2. Add the game loop."
-        ),
+        ("First, I'll create a Python game:\n1. Set up pygame.\n2. Add the game loop."),
         (
             "First, I'll do these:\n"
             "1. Create the Python file.\n"
@@ -858,11 +827,7 @@ def test_no_reprompt_on_let_me_explain_numbered_answer():
             "2. Bananas are yellow.\n"
             "3. Cherries are red."
         ),
-        (
-            "Let me show the matches:\n"
-            "1. Maroon 5 - Animals.\n"
-            "2. Hozier - Take Me to Church."
-        ),
+        ("Let me show the matches:\n1. Maroon 5 - Animals.\n2. Hozier - Take Me to Church."),
     ]
     for content in samples:
         assert _has_answer_artifact(content), content
@@ -874,9 +839,7 @@ def test_same_line_open_fence_with_numbered_body_still_reprompts():
     let me write it. ``\\u00e0``text\\n...") still gates the numbered-list
     fallback. The unclosed-fence helper now uses ``search`` so inline
     openers are tracked, not just openers at column 0."""
-    content = (
-        "First, let me write it. ```text\n" "1. Install dependencies\n" "2. Run the app"
-    )
+    content = "First, let me write it. ```text\n1. Install dependencies\n2. Run the app"
     assert not _has_answer_artifact(content)
     assert _would_reprompt(content)
 
@@ -892,22 +855,10 @@ def test_reprompts_on_first_step_numbered_compute_plan():
             "1. Load the rows.\n"
             "2. Compute the average revenue."
         ),
-        (
-            "First, parse the pasted JSON:\n"
-            "1. Load the object.\n"
-            "2. Calculate the total."
-        ),
-        (
-            "First, create the Python game:\n"
-            "1. Set up pygame.\n"
-            "2. Add the game loop."
-        ),
-        (
-            "Step 1: analyze the uploaded CSV:\n"
-            "1. Load rows.\n"
-            "2. Compute the total."
-        ),
-        ("I'll look that up:\n" "1. Search the docs.\n" "2. Summarize the result."),
+        ("First, parse the pasted JSON:\n1. Load the object.\n2. Calculate the total."),
+        ("First, create the Python game:\n1. Set up pygame.\n2. Add the game loop."),
+        ("Step 1: analyze the uploaded CSV:\n1. Load rows.\n2. Compute the total."),
+        ("I'll look that up:\n1. Search the docs.\n2. Summarize the result."),
     ]
     for content in samples:
         assert _would_reprompt(content), content
@@ -918,13 +869,8 @@ def test_reprompts_on_incomplete_html_with_inner_numbered_list():
     list must NOT be treated as a final answer; the markup is still
     being streamed."""
     samples = [
-        (
-            "First, I'll draft a page.\n"
-            "<html><body>\n"
-            "1. Section one.\n"
-            "2. Section two.\n"
-        ),
-        ("Let me design a chart.\n" "<svg width='100'>\n" "1. circle.\n" "2. rect."),
+        ("First, I'll draft a page.\n<html><body>\n1. Section one.\n2. Section two.\n"),
+        ("Let me design a chart.\n<svg width='100'>\n1. circle.\n2. rect."),
     ]
     for content in samples:
         assert not _has_answer_artifact(content), content
@@ -988,7 +934,7 @@ def test_no_reprompt_on_code_fence_containing_markup_literal():
 def test_reprompts_on_i_will_gather_identify_numbered_plan():
     """First-person + gather/identify verbs in list items is a tool
     stall when the intent appears directly before the list."""
-    content = "I'll:\n" "1. Gather the relevant files.\n" "2. Identify the issue."
+    content = "I'll:\n1. Gather the relevant files.\n2. Identify the issue."
     assert not _has_answer_artifact(content), content
     assert _would_reprompt(content), content
 
@@ -1056,11 +1002,7 @@ def test_reprompts_on_take_follow_complete_steps_numbered_plan():
             "2. Read the relevant section.\n"
             "3. Answer."
         ),
-        (
-            "Let me complete these steps:\n"
-            "1. Read the uploaded CSV.\n"
-            "2. Check the totals."
-        ),
+        ("Let me complete these steps:\n1. Read the uploaded CSV.\n2. Check the totals."),
     ]
     for content in samples:
         assert not _has_answer_artifact(content), content
@@ -1088,12 +1030,8 @@ def test_reprompts_on_direct_first_person_read_check_open_plan():
     first-person intent only; bare ``First, ...`` and ``Step N: ...``
     keep their narrower verb whitelist."""
     samples = [
-        (
-            "Let me read the uploaded file:\n"
-            "1. Identify the columns.\n"
-            "2. Return the total."
-        ),
-        ("I will check the docs:\n" "1. Gather relevant sections.\n" "2. Answer."),
+        ("Let me read the uploaded file:\n1. Identify the columns.\n2. Return the total."),
+        ("I will check the docs:\n1. Gather relevant sections.\n2. Answer."),
         (
             "First, I'll review the repository:\n"
             "1. Open the relevant file.\n"
@@ -1118,9 +1056,7 @@ def test_no_reprompt_on_html_with_inner_svg_or_self_closing_tag():
     skipped when a real artifact already exists."""
     samples = [
         "<html><body><svg width='10'/></body></html>",
-        "<html><body>"
-        + "<script>const s = '<svg width=10>';</script>"
-        + "</body></html>",
+        "<html><body>" + "<script>const s = '<svg width=10>';</script>" + "</body></html>",
     ]
     for content in samples:
         assert _has_answer_artifact(content), content
@@ -1177,9 +1113,7 @@ def test_empty_markup_before_real_artifact_still_counts_real_artifact():
 def test_doctype_empty_html_skeleton_still_reprompts():
     """``<!doctype html><html></html>`` is an empty skeleton even with
     a doctype prefix; the artifact check must reject it."""
-    content = (
-        "First, I'll create a <!doctype html><html></html> skeleton, then add CSS."
-    )
+    content = "First, I'll create a <!doctype html><html></html> skeleton, then add CSS."
     assert not _has_answer_artifact(content)
     assert _would_reprompt(content)
 
@@ -1231,11 +1165,7 @@ def test_no_reprompt_on_first_use_binary_search_answer():
     """``First, use binary search:`` is an ordinary algorithm answer.
     ``use`` is not in the direct-numbered-plan verb whitelist so the
     following list stays an answer."""
-    content = (
-        "First, use binary search:\n"
-        "1. Search the left half.\n"
-        "2. Search the right half."
-    )
+    content = "First, use binary search:\n1. Search the left half.\n2. Search the right half."
     assert _has_answer_artifact(content)
     assert not _would_reprompt(content)
 
@@ -1261,13 +1191,8 @@ def test_open_fence_with_inner_numbered_list_still_reprompts():
     """A response that opens a code fence and emits numbered lines INSIDE
     must NOT count those lines as a completed numbered-list answer."""
     samples = [
-        (
-            "First, let me write it.\n"
-            "```text\n"
-            "1. Install dependencies\n"
-            "2. Run the app"
-        ),
-        ("Let me draft a checklist.\n" "````markdown\n" "1. step one\n" "2. step two"),
+        ("First, let me write it.\n```text\n1. Install dependencies\n2. Run the app"),
+        ("Let me draft a checklist.\n````markdown\n1. step one\n2. step two"),
     ]
     for content in samples:
         assert not _has_answer_artifact(content), content
@@ -1281,17 +1206,13 @@ def test_hidden_reasoning_artifact_still_reprompts():
     from core.inference.llama_cpp import _REPROMPT_MAX_CHARS
 
     content_accum = ""
-    reasoning_accum = (
-        "First, let me draft it.\n" "```python\n" "print('hidden answer')\n" "```"
-    )
+    reasoning_accum = "First, let me draft it.\n```python\nprint('hidden answer')\n```"
     has_content_tokens = True  # content existed but was stripped
 
     visible = content_accum.strip()
     reasoning = reasoning_accum.strip()
     stripped = visible if visible else reasoning
-    artifact_text = (
-        visible if visible else (reasoning if not has_content_tokens else "")
-    )
+    artifact_text = visible if visible else (reasoning if not has_content_tokens else "")
     would_reprompt = bool(
         0 < len(stripped) < _REPROMPT_MAX_CHARS
         and _INTENT_SIGNAL.search(stripped)

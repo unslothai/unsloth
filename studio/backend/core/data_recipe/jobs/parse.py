@@ -46,9 +46,14 @@ class ParsedUpdate:
     source_progress: SourceProgress | None = None
 
 
-# kinda of a bummber but currently only option, Best effort parser from data-designer logs -> structured status for UI.
+# Best-effort parser from data-designer logs -> structured status for UI.
 _RE_SAMPLERS = re.compile(
     r"Preparing samplers to generate (?P<rows>\d+) records across (?P<cols>\d+) columns"
+)
+# Current data-designer phrasing for the same sampling stage (the line above is
+# kept for older builds). No column count is reported here, so only rows is set.
+_RE_SAMPLING_SEED = re.compile(
+    r"Sampling (?P<rows>\d+) records from .*?seed dataset", re.IGNORECASE
 )
 _RE_COLCFG = re.compile(r"model config for column '(?P<col>[^']+)'")
 _RE_PROCESSING_COL = re.compile(r"Processing .* column '(?P<col>[^']+)'")
@@ -119,8 +124,7 @@ def parse_log_message(msg: str) -> ParsedUpdate | None:
                 page_items = page_items,
                 rate_remaining = int(m.group("remaining")),
                 message = (
-                    f"Scraping GitHub source: {repo} "
-                    f"{resource} page {page} (+{page_items})"
+                    f"Scraping GitHub source: {repo} " f"{resource} page {page} (+{page_items})"
                 ),
             ),
         )
@@ -134,10 +138,7 @@ def parse_log_message(msg: str) -> ParsedUpdate | None:
                 source = "github",
                 status = "rate_limited",
                 retry_after_sec = seconds,
-                message = (
-                    "Waiting for GitHub rate limit. "
-                    "Studio will resume automatically."
-                ),
+                message = ("Waiting for GitHub rate limit. Unsloth will resume automatically."),
             ),
         )
 
@@ -151,8 +152,7 @@ def parse_log_message(msg: str) -> ParsedUpdate | None:
                 status = "rate_limited",
                 retry_after_sec = seconds,
                 message = (
-                    "Waiting for GitHub secondary rate limit. "
-                    "Studio will resume automatically."
+                    "Waiting for GitHub secondary rate limit. Unsloth will resume automatically."
                 ),
             ),
         )
@@ -166,10 +166,7 @@ def parse_log_message(msg: str) -> ParsedUpdate | None:
                 source = "github",
                 status = "rate_limited",
                 retry_after_sec = seconds,
-                message = (
-                    "Waiting for GitHub rate limit. "
-                    "Studio will resume automatically."
-                ),
+                message = ("Waiting for GitHub rate limit. Unsloth will resume automatically."),
             ),
         )
 
@@ -229,6 +226,13 @@ def parse_log_message(msg: str) -> ParsedUpdate | None:
             stage = STAGE_SAMPLING,
             rows = int(m.group("rows")),
             cols = int(m.group("cols")),
+        )
+
+    m = _RE_SAMPLING_SEED.search(msg)
+    if m:
+        return ParsedUpdate(
+            stage = STAGE_SAMPLING,
+            rows = int(m.group("rows")),
         )
 
     if "Sorting column configs into a Directed Acyclic Graph" in msg:
@@ -335,7 +339,7 @@ def apply_update(job: Job, update: ParsedUpdate) -> None:
         _apply_source_progress(job, update.source_progress)
 
     if update.stage in USAGE_RESET_STAGES:
-        # usage summary is a short block so we reset once we move into the next stage.
+        # Usage summary is a short block; reset on the next stage.
         job._in_usage_summary = False
 
     if update.usage_section_start is not None:
@@ -387,15 +391,13 @@ def _apply_source_progress(job: Job, progress: SourceProgress) -> None:
         count_key = f"{progress.repo}:{progress.resource}"
         if page_key not in job._source_seen_pages:
             job._source_seen_pages.add(page_key)
-            job._source_counts[count_key] = int(
-                job._source_counts.get(count_key, 0)
-            ) + int(page_items or 0)
+            job._source_counts[count_key] = int(job._source_counts.get(count_key, 0)) + int(
+                page_items or 0
+            )
 
     fetched_items = sum(job._source_counts.values())
     if fetched_items <= 0:
-        fetched_items = progress.fetched_items or (
-            previous.fetched_items if previous else None
-        )
+        fetched_items = progress.fetched_items or (previous.fetched_items if previous else None)
 
     estimated_total = (
         progress.estimated_total
@@ -415,14 +417,10 @@ def _apply_source_progress(job: Job, progress: SourceProgress) -> None:
         repo = progress.repo or (previous.repo if previous else None),
         resource = progress.resource or (previous.resource if previous else None),
         page = (
-            progress.page
-            if progress.page is not None
-            else (previous.page if previous else None)
+            progress.page if progress.page is not None else (previous.page if previous else None)
         ),
         page_items = (
-            page_items
-            if page_items is not None
-            else (previous.page_items if previous else None)
+            page_items if page_items is not None else (previous.page_items if previous else None)
         ),
         fetched_items = fetched_items,
         estimated_total = estimated_total,
@@ -453,9 +451,7 @@ def _compute_overall_progress(job: Job, column_progress: Progress) -> Progress:
     if len(job._column_done) == 0:
         done = current_done
     else:
-        sum_done = sum(
-            max(0, min(value, total_rows)) for value in job._column_done.values()
-        )
+        sum_done = sum(max(0, min(value, total_rows)) for value in job._column_done.values())
         done = int(sum_done / total_columns)
 
     prev_done = int(job.progress.done or 0)

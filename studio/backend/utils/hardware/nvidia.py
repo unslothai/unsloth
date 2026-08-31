@@ -25,20 +25,12 @@ def _parse_smi_value(raw: str):
 
 
 def _build_gpu_metrics(
-    vram_used_mb,
-    vram_total_mb,
-    power_draw,
-    power_limit,
-    **extra,
+    vram_used_mb, vram_total_mb, power_draw, power_limit, **extra
 ) -> dict[str, Any]:
     return {
         **extra,
-        "vram_used_gb": round(vram_used_mb / 1024, 2)
-        if vram_used_mb is not None
-        else None,
-        "vram_total_gb": round(vram_total_mb / 1024, 2)
-        if vram_total_mb is not None
-        else None,
+        "vram_used_gb": round(vram_used_mb / 1024, 2) if vram_used_mb is not None else None,
+        "vram_total_gb": round(vram_total_mb / 1024, 2) if vram_total_mb is not None else None,
         "vram_utilization_pct": round((vram_used_mb / vram_total_mb) * 100, 1)
         if vram_used_mb is not None and vram_total_mb and vram_total_mb > 0
         else None,
@@ -50,12 +42,31 @@ def _build_gpu_metrics(
     }
 
 
-def _visible_ordinal_map(
-    parent_visible_ids: Optional[list[int]],
-) -> Optional[dict[int, int]]:
+def _visible_ordinal_map(parent_visible_ids: Optional[list[int]]) -> Optional[dict[int, int]]:
     if parent_visible_ids is None:
         return None
     return {gpu_id: ordinal for ordinal, gpu_id in enumerate(parent_visible_ids)}
+
+
+def _uuid_visible_ordinal_map(
+    parent_cuda_visible_devices: Optional[str], gpu_rows: list[tuple[int, str]]
+) -> Optional[dict[int, int]]:
+    """Resolve an ordered full-GPU UUID mask against nvidia-smi rows."""
+    tokens = [
+        token.strip().lower()
+        for token in (parent_cuda_visible_devices or "").split(",")
+        if token.strip()
+    ]
+    if not tokens or any(not token.startswith("gpu-") for token in tokens):
+        return None
+
+    visible_ordinals: dict[int, int] = {}
+    for ordinal, token in enumerate(tokens):
+        matches = [idx for idx, gpu_uuid in gpu_rows if gpu_uuid.lower().startswith(token)]
+        if len(matches) != 1 or matches[0] in visible_ordinals:
+            return None
+        visible_ordinals[matches[0]] = ordinal
+    return visible_ordinals
 
 
 def get_physical_gpu_count() -> Optional[int]:
@@ -65,6 +76,8 @@ def get_physical_gpu_count() -> Optional[int]:
             ["nvidia-smi", "-L"],
             capture_output = True,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 5,
             env = child_env_without_native_path_secret(),
             **_windows_hidden_subprocess_kwargs(),
@@ -91,6 +104,8 @@ def get_primary_gpu_utilization() -> dict[str, Any]:
             ],
             capture_output = True,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 5,
             env = child_env_without_native_path_secret(),
             **_windows_hidden_subprocess_kwargs(),
@@ -118,31 +133,27 @@ def get_primary_gpu_utilization() -> dict[str, Any]:
 
 
 def get_visible_gpu_utilization(
-    parent_visible_ids: Optional[list[int]],
-    parent_cuda_visible_devices: Optional[str] = None,
+    parent_visible_ids: Optional[list[int]], parent_cuda_visible_devices: Optional[str] = None
 ) -> dict[str, Any]:
-    # When parent_visible_ids is None (UUID/MIG mask), we cannot safely
-    # map nvidia-smi rows to the process's visible devices. Return empty
-    # instead of exposing all physical GPUs.
-    if parent_visible_ids is None:
-        return {
-            "available": False,
-            "backend_cuda_visible_devices": parent_cuda_visible_devices,
-            "parent_visible_gpu_ids": [],
-            "devices": [],
-            "index_kind": "unresolved",
-        }
     visible_ordinals = _visible_ordinal_map(parent_visible_ids)
+    includes_uuid = parent_visible_ids is None
+    query_fields = "index,"
+    if includes_uuid:
+        query_fields += "uuid,"
+    query_fields += (
+        "utilization.gpu,temperature.gpu,memory.used,memory.total,power.draw,power.limit"
+    )
     try:
         result = subprocess.run(
             [
                 "nvidia-smi",
-                "--query-gpu=index,utilization.gpu,temperature.gpu,"
-                "memory.used,memory.total,power.draw,power.limit",
+                f"--query-gpu={query_fields}",
                 "--format=csv,noheader,nounits",
             ],
             capture_output = True,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 5,
             env = child_env_without_native_path_secret(),
             **_windows_hidden_subprocess_kwargs(),
@@ -154,7 +165,7 @@ def get_visible_gpu_utilization(
             "backend_cuda_visible_devices": parent_cuda_visible_devices,
             "parent_visible_gpu_ids": parent_visible_ids or [],
             "devices": [],
-            "index_kind": "physical",
+            "index_kind": "physical" if parent_visible_ids is not None else "unresolved",
         }
     if result.returncode != 0 or not result.stdout.strip():
         return {
@@ -162,56 +173,74 @@ def get_visible_gpu_utilization(
             "backend_cuda_visible_devices": parent_cuda_visible_devices,
             "parent_visible_gpu_ids": parent_visible_ids or [],
             "devices": [],
-            "index_kind": "physical",
+            "index_kind": "physical" if parent_visible_ids is not None else "unresolved",
         }
 
-    devices = []
+    gpu_rows: list[tuple[int, list[str]]] = []
     for line in result.stdout.strip().splitlines():
         parts = [p.strip() for p in line.split(",")]
-        if len(parts) < 7:
+        if len(parts) < (8 if includes_uuid else 7):
             continue
 
         try:
             idx = int(parts[0])
         except (ValueError, TypeError):
             continue
+        gpu_rows.append((idx, parts))
 
+    if parent_visible_ids is None:
+        visible_ordinals = _uuid_visible_ordinal_map(
+            parent_cuda_visible_devices,
+            [(idx, parts[1]) for idx, parts in gpu_rows],
+        )
+        if visible_ordinals is None:
+            return {
+                "available": False,
+                "backend_cuda_visible_devices": parent_cuda_visible_devices,
+                "parent_visible_gpu_ids": [],
+                "devices": [],
+                "index_kind": "unresolved",
+            }
+
+    devices = []
+    field_offset = 1 if includes_uuid else 0
+    for idx, parts in gpu_rows:
         if visible_ordinals is not None and idx not in visible_ordinals:
             continue
 
+        visible_ordinal = visible_ordinals[idx] if visible_ordinals is not None else len(devices)
         devices.append(
             _build_gpu_metrics(
-                vram_used_mb = _parse_smi_value(parts[3]),
-                vram_total_mb = _parse_smi_value(parts[4]),
-                power_draw = _parse_smi_value(parts[5]),
-                power_limit = _parse_smi_value(parts[6]),
-                index = idx,
-                index_kind = "physical",
-                visible_ordinal = (
-                    visible_ordinals[idx]
-                    if visible_ordinals is not None
-                    else len(devices)
-                ),
-                gpu_utilization_pct = _parse_smi_value(parts[1]),
-                temperature_c = _parse_smi_value(parts[2]),
+                vram_used_mb = _parse_smi_value(parts[3 + field_offset]),
+                vram_total_mb = _parse_smi_value(parts[4 + field_offset]),
+                power_draw = _parse_smi_value(parts[5 + field_offset]),
+                power_limit = _parse_smi_value(parts[6 + field_offset]),
+                index = visible_ordinal if includes_uuid else idx,
+                index_kind = "relative" if includes_uuid else "physical",
+                visible_ordinal = visible_ordinal,
+                gpu_utilization_pct = _parse_smi_value(parts[1 + field_offset]),
+                temperature_c = _parse_smi_value(parts[2 + field_offset]),
             )
         )
+
+    # nvidia-smi emits physical row order, so a reordering mask would hand back
+    # devices whose position contradicts their own visible_ordinal.
+    devices.sort(key = lambda d: d["visible_ordinal"])
 
     return {
         "available": len(devices) > 0,
         "backend_cuda_visible_devices": parent_cuda_visible_devices,
         "parent_visible_gpu_ids": parent_visible_ids or [],
         "devices": devices,
-        "index_kind": "physical",
+        "index_kind": "relative" if includes_uuid else "physical",
     }
 
 
 def get_backend_visible_gpu_info(
-    parent_visible_ids: Optional[list[int]],
-    backend_cuda_visible_devices: Optional[str],
+    parent_visible_ids: Optional[list[int]], backend_cuda_visible_devices: Optional[str]
 ) -> dict[str, Any]:
-    # When parent_visible_ids is None (UUID/MIG mask), we cannot safely
-    # map nvidia-smi rows to the process's visible devices.
+    # parent_visible_ids None (UUID/MIG mask): can't map nvidia-smi rows to
+    # visible devices.
     if parent_visible_ids is None:
         return {
             "available": False,
@@ -230,6 +259,8 @@ def get_backend_visible_gpu_info(
             ],
             capture_output = True,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 10,
             env = child_env_without_native_path_secret(),
             **_windows_hidden_subprocess_kwargs(),
@@ -263,7 +294,7 @@ def get_backend_visible_gpu_info(
             continue
         if visible_ordinals is not None and idx not in visible_ordinals:
             continue
-        # Use split with limit to handle GPU names containing commas
+        # Rejoin in case the GPU name contains commas
         name = parts[1] if len(parts) == 3 else ", ".join(parts[1:-1])
         try:
             mem_total_mb = int(parts[-1])
@@ -274,9 +305,7 @@ def get_backend_visible_gpu_info(
                 "index": idx,
                 "index_kind": "physical",
                 "visible_ordinal": (
-                    visible_ordinals[idx]
-                    if visible_ordinals is not None
-                    else len(devices)
+                    visible_ordinals[idx] if visible_ordinals is not None else len(devices)
                 ),
                 "name": name,
                 "memory_total_gb": round(mem_total_mb / 1024, 2),

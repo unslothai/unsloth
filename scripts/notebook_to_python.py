@@ -22,19 +22,14 @@ import urllib.parse
 from pathlib import Path
 
 
-# Hosts we are willing to fetch raw notebook JSON from. Anything else
-# is rejected before `urlopen` so a typoed / hostile URL cannot pull
-# code from arbitrary infrastructure.
+# Allowlist of hosts for raw notebook fetches; anything else rejected before urlopen.
 _ALLOWED_NOTEBOOK_HOSTS = {
     "raw.githubusercontent.com",
     "gist.githubusercontent.com",
 }
 
 
-# Shell metacharacters that imply the cell's `!cmd` line cannot be
-# parsed as a flat argv. If any of these appears, `shlex.split` would
-# either fail or, worse, silently strip the operator -- so we keep
-# `shell=True` for that command and emit a review marker.
+# Metacharacters that mean a `!cmd` line can't be a flat argv -> keep shell=True + review marker.
 _SHELL_METACHARS_RE = re.compile(r"\$\(|`|\|\||\||&&|>>?|<<?|\*|\?|;")
 
 
@@ -46,12 +41,8 @@ def needs_fstring(cmd: str) -> bool:
 
 def github_blob_to_raw(url: str) -> str:
     """Convert GitHub blob URL to raw URL."""
-    # https://github.com/user/repo/blob/branch/path
-    #   -> https://raw.githubusercontent.com/user/repo/branch/path
-    # Compare the parsed host exactly (not as a substring) so a URL
-    # like https://attacker.example.com/github.com/blob/... does NOT
-    # get rewritten to a github raw URL. Closes CodeQL alert
-    # py/incomplete-url-substring-sanitization.
+    # github.com/user/repo/blob/branch/path -> raw.githubusercontent.com/user/repo/branch/path
+    # Exact host match (not substring) so attacker.example.com/github.com/blob/... is not rewritten.
     parsed = urllib.parse.urlparse(url)
     if parsed.netloc != "github.com" or "/blob/" not in parsed.path:
         return url
@@ -63,18 +54,12 @@ def github_blob_to_raw(url: str) -> str:
 
 def download_notebook(url: str) -> tuple[str, str]:
     """Download notebook from URL. Returns (content, filename)."""
-    # Convert blob URL to raw if needed
     raw_url = github_blob_to_raw(url)
 
-    # Extract filename from URL
     parsed = urllib.parse.urlparse(raw_url)
     filename = os.path.basename(urllib.parse.unquote(parsed.path))
 
-    # Host allowlist. Refuse to fetch from anywhere the campaign IOC
-    # tables flag (or just anywhere we don't recognise). The blob->raw
-    # conversion above only emits `raw.githubusercontent.com`, so a
-    # rejection here means the caller hand-typed a URL pointing
-    # somewhere we don't trust.
+    # Host allowlist: refuse to fetch from anything we don't recognise.
     host = parsed.hostname
     if host not in _ALLOWED_NOTEBOOK_HOSTS:
         raise ValueError(
@@ -82,7 +67,6 @@ def download_notebook(url: str) -> tuple[str, str]:
             f"{sorted(_ALLOWED_NOTEBOOK_HOSTS)}"
         )
 
-    # Download
     print(f"Downloading {url}...")
     with urllib.request.urlopen(raw_url, timeout = 60) as response:
         content = response.read().decode("utf-8")
@@ -97,29 +81,18 @@ def is_url(path: str) -> bool:
 
 def replace_colab_paths(source: str) -> str:
     """Replace Colab-specific /content/ paths with current working directory."""
-    # Replace /content/ with f-string using _WORKING_DIR
     source = source.replace('"/content/', 'f"{_WORKING_DIR}/')
     source = source.replace("'/content/", "f'{_WORKING_DIR}/")
     return source
 
 
 def _emit_shell_command(indent: str, full_cmd: str, *, allow_shell: bool) -> list[str]:
-    """Render a `!cmd` notebook line as one or more Python statements.
+    """Render a `!cmd` notebook line as Python statements.
 
-    When the command body is f-string-interpolated, contains shell
-    metacharacters, or spans multiple lines, falling back to
-    `shell=True` is the only correct option -- `shlex.split` would
-    either drop operators or fail outright. We surface that with a
-    `# WARNING: shell=True; reviewed for hostile input` comment so a
-    reviewer cannot miss it.
-
-    Otherwise we emit `subprocess.run(shlex.split(cmd), shell=False)`
-    so the converted script is not a re-injection vector if the
-    notebook ever interpolates user-controlled data.
-
-    `allow_shell` defaults to True at the CLI for backwards
-    compatibility. Setting it to False makes `shell=True` emission a
-    hard error (no surprise behaviour).
+    f-string interpolation, shell metacharacters, or multiline force
+    shell=True (shlex.split would drop operators), flagged with a
+    WARNING comment. Otherwise emit shell=False argv form. allow_shell
+    False makes shell=True emission a hard error.
     """
     needs_f = needs_fstring(full_cmd)
     has_meta = bool(_SHELL_METACHARS_RE.search(full_cmd))
@@ -144,7 +117,6 @@ def _emit_shell_command(indent: str, full_cmd: str, *, allow_shell: bool) -> lis
             stmt = f"{indent}subprocess.run({f_prefix}{full_cmd!r}, shell=True)"
         return [warn, stmt]
 
-    # Shell-safe argv form.
     return [f"{indent}subprocess.run(shlex.split({full_cmd!r}), shell=False)"]
 
 
@@ -159,12 +131,10 @@ def convert_cell_to_python(source: str, *, allow_shell: bool = True) -> str:
         stripped = line.strip()
         indent = line[: len(line) - len(line.lstrip())]
 
-        # Skip %%capture
         if stripped.startswith("%%capture"):
             i += 1
             continue
 
-        # Handle %%file magic
         if stripped.startswith("%%file "):
             filename = stripped[7:].strip()
             file_lines = []
@@ -178,7 +148,6 @@ def convert_cell_to_python(source: str, *, allow_shell: bool = True) -> str:
             result.append(f'{indent}    _f.write("""{file_content}""")')
             continue
 
-        # Handle ! shell commands
         if stripped.startswith("!"):
             cmd_lines = [stripped[1:]]
             while cmd_lines[-1].rstrip().endswith("\\") and i + 1 < len(lines):
@@ -186,9 +155,7 @@ def convert_cell_to_python(source: str, *, allow_shell: bool = True) -> str:
                 cmd_lines.append(lines[i].strip())
             full_cmd = "\n".join(cmd_lines)
 
-            result.extend(
-                _emit_shell_command(indent, full_cmd, allow_shell = allow_shell)
-            )
+            result.extend(_emit_shell_command(indent, full_cmd, allow_shell = allow_shell))
 
         # %cd path -> os.chdir(path)
         elif stripped.startswith("%cd "):
@@ -310,23 +277,16 @@ def convert_notebook_to_script(
             content = f.read()
         source_name = source
 
-    # Generate output filename
     output_filename = filename.replace(".ipynb", ".py")
-    # Clean up filename
-    output_filename = (
-        output_filename.replace("(", "").replace(")", "").replace("-", "_")
-    )
+    output_filename = output_filename.replace("(", "").replace(")", "").replace("-", "_")
 
-    # Add output directory if specified
     if output_dir:
         output_path = os.path.join(output_dir, output_filename)
     else:
         output_path = output_filename
 
-    # Convert
     script = convert_notebook(content, source_name, allow_shell = allow_shell)
 
-    # Write output
     with open(output_path, "w", encoding = "utf-8") as f:
         f.write(script)
 
@@ -337,9 +297,7 @@ def convert_notebook_to_script(
 def main():
     import argparse
 
-    class Formatter(
-        argparse.ArgumentDefaultsHelpFormatter, argparse.RawDescriptionHelpFormatter
-    ):
+    class Formatter(argparse.ArgumentDefaultsHelpFormatter, argparse.RawDescriptionHelpFormatter):
         pass
 
     parser = argparse.ArgumentParser(
@@ -353,17 +311,9 @@ Examples:
   python notebook_to_python.py https://github.com/unslothai/notebooks/blob/main/nb/Oute_TTS_(1B).ipynb
 """,
     )
-    parser.add_argument(
-        "notebooks", nargs = "+", help = "Notebook files or URLs to convert."
-    )
-    parser.add_argument(
-        "-o", "--output", dest = "output_dir", default = ".", help = "Output directory."
-    )
-    # Default True for backwards compatibility: existing Colab notebooks
-    # routinely use pipes / redirection / interpolation in `!cmd` lines
-    # and the converted script needs to keep working. Operators who
-    # convert untrusted notebooks should pass --no-allow-shell to force
-    # a hard error on every metacharacter-bearing cell.
+    parser.add_argument("notebooks", nargs = "+", help = "Notebook files or URLs to convert.")
+    parser.add_argument("-o", "--output", dest = "output_dir", default = ".", help = "Output directory.")
+    # Default True for backwards compat; pass --no-allow-shell for untrusted notebooks.
     parser.add_argument(
         "--allow-shell",
         dest = "allow_shell",
@@ -381,14 +331,9 @@ Examples:
 
     args = parser.parse_args()
 
-    # Create output directory if needed
     os.makedirs(args.output_dir, exist_ok = True)
 
-    # SF2: track per-notebook failures so a CI invocation that converts
-    # 10 notebooks but silently fails on 3 is no longer reported as
-    # success. Each failure is collected and the loop continues so the
-    # caller sees the full set; final exit status is 1 if anything
-    # failed.
+    # Track per-notebook failures; continue the loop and exit 1 if any failed.
     failures: list[tuple[str, str]] = []
     ok = 0
     total = len(args.notebooks)

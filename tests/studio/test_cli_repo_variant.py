@@ -1,8 +1,6 @@
 """Tests for the ``repo:variant`` shorthand parser used by ``unsloth studio run``.
 
-Loads ``unsloth_cli/commands/studio.py`` directly via ``importlib`` with a
-minimal ``typer`` stub so the test doesn't drag in the rest of
-``unsloth_cli`` (which transitively imports the unsloth training stack).
+Loads studio.py via importlib with a minimal typer stub to avoid importing the unsloth training stack.
 """
 
 from __future__ import annotations
@@ -16,12 +14,7 @@ import pytest
 
 
 def _load_split_repo_variant():
-    """Load ``_split_repo_variant`` from studio.py with typer stubbed.
-
-    studio.py decorates Typer commands at import time, so a stub that
-    accepts (and discards) those calls is enough to let module
-    execution complete and expose the helper we want to test.
-    """
+    """Load ``_split_repo_variant`` from studio.py with typer stubbed (discards decorator calls)."""
     if "typer" not in sys.modules:
         typer_stub = types.ModuleType("typer")
 
@@ -42,12 +35,8 @@ def _load_split_repo_variant():
         typer_stub.echo = lambda *args, **kwargs: None
         sys.modules["typer"] = typer_stub
 
-    studio_py = (
-        Path(__file__).resolve().parents[2] / "unsloth_cli" / "commands" / "studio.py"
-    )
-    spec = importlib.util.spec_from_file_location(
-        "_studio_for_repo_variant_test", studio_py
-    )
+    studio_py = Path(__file__).resolve().parents[2] / "unsloth_cli" / "commands" / "studio.py"
+    spec = importlib.util.spec_from_file_location("_studio_for_repo_variant_test", studio_py)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module._split_repo_variant
@@ -125,17 +114,14 @@ def test_empty_string():
 
 
 def test_trailing_colon_no_variant():
-    # "org/repo:" -- no quant label after the colon. Pass through
-    # unchanged so the backend's existing validation surfaces a
-    # clearer error than "variant ''".
+    # "org/repo:" has no quant label; pass through unchanged so backend validation gives a clearer error.
     repo, variant = _split("org/repo:")
     assert repo == "org/repo:"
     assert variant is None
 
 
 def test_slash_in_variant_disqualifies_split():
-    # "foo:bar/baz" -- the suffix has a slash, so this isn't a quant
-    # label; treat the whole thing as opaque.
+    # "foo:bar/baz" suffix has a slash, so it's not a quant label; treat as opaque.
     repo, variant = _split("foo:bar/baz")
     assert repo == "foo:bar/baz"
     assert variant is None

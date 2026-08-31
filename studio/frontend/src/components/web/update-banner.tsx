@@ -2,25 +2,46 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { ReleaseNotesPanel } from "@/components/update/release-notes-panel";
+import { type DeviceType, usePlatformStore } from "@/config/env";
 import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { cn } from "@/lib/utils";
+import { Download } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { type ReactElement, useEffect, useRef, useState } from "react";
 
-const STUDIO_UPDATE_CMD = "unsloth studio update";
+// macOS, Linux and WSL update via the POSIX installer; only native Windows
+// (PowerShell) needs the irm one-liner. Any non-windows device_type (incl. wsl)
+// resolves to the curl command below.
+const STUDIO_INSTALL_UNIX_CMD = "curl -fsSL https://unsloth.ai/install.sh | sh";
+const STUDIO_INSTALL_WINDOWS_CMD = "irm https://unsloth.ai/install.ps1 | iex";
 const RELEASE_NOTES_URL = "https://unsloth.ai/docs/new/changelog";
 const EASE_OUT_QUART: [number, number, number, number] = [0.165, 0.84, 0.44, 1];
 
+function installCommandForDevice(deviceType: DeviceType): string {
+  return deviceType === "windows"
+    ? STUDIO_INSTALL_WINDOWS_CMD
+    : STUDIO_INSTALL_UNIX_CMD;
+}
+
 interface WebUpdateBannerProps {
   enabled?: boolean;
+  // false: fill the parent instead of self-anchoring, so it can stack with the
+  // llama.cpp banner. true (default) keeps standalone mounts working.
+  positioned?: boolean;
 }
 
 export function WebUpdateBanner({
   enabled = true,
+  positioned = true,
 }: WebUpdateBannerProps): ReactElement | null {
-  const { status, dismiss } = useWebUpdateCheck({ enabled });
+  const { status, dismiss, snooze } = useWebUpdateCheck({ enabled });
+  const deviceType = usePlatformStore((s) => s.deviceType);
+  const installCmd = installCommandForDevice(deviceType);
   const [copiedVersion, setCopiedVersion] = useState<string | null>(null);
+  const [notesVersion, setNotesVersion] = useState<string | null>(null);
   const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -36,37 +57,70 @@ export function WebUpdateBanner({
   }
 
   async function handleCopyCommand() {
-    if (!(await copyToClipboard(STUDIO_UPDATE_CMD))) {
+    if (!(await copyToClipboard(installCmd))) {
       return;
     }
     setCopiedVersion(status?.latestVersion ?? null);
     if (dismissTimerRef.current) {
       clearTimeout(dismissTimerRef.current);
     }
-    dismissTimerRef.current = setTimeout(() => dismiss(), 900);
+    // Copying is not updating: snooze instead of dismissing, so the banner
+    // returns on the next launch if the install is still behind.
+    dismissTimerRef.current = setTimeout(() => snooze(), 1200);
   }
+
+  const copied = status != null && copiedVersion === status.latestVersion;
+  // Keyed by version so a new offer collapses the panel.
+  const notesOpen = status != null && notesVersion === status.latestVersion;
 
   return (
     <AnimatePresence>
       {status ? (
         <motion.div
-          initial={{ opacity: 0, y: -12, scale: 0.96 }}
+          initial={{ opacity: 0, y: 12, scale: 0.96 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
-          exit={{ opacity: 0, y: -8, scale: 0.97 }}
+          exit={{ opacity: 0, y: 8, scale: 0.97 }}
           transition={{ duration: 0.35, ease: EASE_OUT_QUART }}
-          className="fixed top-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[380px]"
+          className={cn(
+            // Wider than the other overlays: notes preview plus three buttons.
+            positioned
+              ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[448px]"
+              : // Floor = the header and the action row, the parts of this card
+                // that cannot give up height. Under it a capped rail takes the
+                // height out of the notes, which clip; min-height:auto would
+                // instead be the whole card, so this one would yield nothing
+                // and clip the banner below it.
+                //
+                // A fixed part plus a font-scaled part, the shape index.css
+                // already uses for --picker-control-h, because only some of the
+                // card moves with Settings > Appearance. Measured at every step
+                // from 15px to 20px rather than guessed, and exact across that
+                // range: 184, 189, 194, 199, 204, 209. Scaling the whole 12rem
+                // box instead asked 256px where 209 was needed, and a floor
+                // nothing can meet covers the composer for no gain.
+                //
+                // Below 384px the action pair wraps onto a row of its own on
+                // top of the notes toggle's, and the card needs a whole extra
+                // row: 259px at 20px where the wide card needs 209. A floor
+                // that misses it lets a dodging placement clip a row of
+                // buttons inside the card's own overflow-hidden surface. The
+                // narrow constants bound that regime (229, 235, 241, 247, 253,
+                // 259) and are exact from 17px up, where the extra wrap starts.
+                "pointer-events-auto flex min-h-[calc(109px+80px*var(--ui-font-scale,1))] w-[calc(100vw-2rem)] max-w-[448px] flex-col max-[383px]:min-h-[calc(139px+96px*var(--ui-font-scale,1))]",
+          )}
+          data-testid="web-update-banner"
         >
-          <div className="corner-squircle relative overflow-hidden border border-border/60 bg-background/95 px-5 py-4 shadow-lg backdrop-blur-md">
+          <div className="relative flex max-h-[calc(100dvh_-_2rem)] min-h-0 flex-col overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
             <button
               type="button"
               onClick={dismiss}
-              className="absolute top-3 right-3 flex size-6 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
+              className="absolute top-2.5 right-3 flex size-6 items-center justify-center rounded-full text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
               aria-label="Dismiss update notification"
             >
               <svg
                 aria-hidden="true"
-                width="14"
-                height="14"
+                width="12"
+                height="12"
                 viewBox="0 0 14 14"
                 fill="none"
                 xmlns="http://www.w3.org/2000/svg"
@@ -80,53 +134,68 @@ export function WebUpdateBanner({
               </svg>
             </button>
 
-            <div className="flex items-start gap-2 pr-5">
-              <span className="text-lg" aria-hidden="true">
-                🦥
-              </span>
+            <div className="flex min-w-0 shrink-0 items-start gap-4 pr-6">
+              <Download
+                aria-hidden="true"
+                className="mt-1 size-5 shrink-0 text-foreground"
+                strokeWidth={1.75}
+              />
               <div className="min-w-0">
-                <p className="text-sm font-semibold text-foreground">
-                  Package update available: {status.latestVersion}
+                <p className="font-heading text-base font-medium text-foreground">
+                  New Unsloth version
                 </p>
-                <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                  Installed package: {status.currentVersion}. To update Studio,
-                  run this in your terminal, then restart Studio.
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  {status.currentVersion} &rarr;{" "}
+                  <span className="font-medium text-foreground">
+                    {status.latestVersion}
+                  </span>
                 </p>
               </div>
             </div>
 
-            <div className="mt-3 flex flex-wrap items-center gap-2">
-              <Button
-                size="sm"
-                className="corner-squircle"
-                onClick={handleCopyCommand}
-              >
-                {copiedVersion === status.latestVersion
-                  ? "Copied"
-                  : "Copy command"}
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                className="corner-squircle"
-                asChild={true}
-              >
-                <a
-                  href={RELEASE_NOTES_URL}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  Release notes
-                </a>
-              </Button>
+            <ReleaseNotesPanel
+              version={status.latestVersion}
+              open={notesOpen}
+              releaseNotesUrl={RELEASE_NOTES_URL}
+              className="min-h-0 flex-1"
+            />
+
+            {/* one row at one type size; wraps only on narrow viewports, and
+                never compresses on a short one */}
+            <div className="mt-4 flex shrink-0 flex-wrap items-center justify-between gap-y-2">
               <Button
                 size="sm"
                 variant="ghost"
-                className="corner-squircle"
-                onClick={dismiss}
+                className="-ml-2 h-auto whitespace-nowrap rounded-full px-2.5 py-2 text-ui-13 font-medium text-foreground"
+                onClick={() =>
+                  setNotesVersion(notesOpen ? null : status.latestVersion)
+                }
+                aria-expanded={notesOpen}
+                data-testid="web-update-release-notes-toggle"
               >
-                Later
+                {notesOpen ? "Hide release notes" : "Show release notes"}
               </Button>
+              {/* wrap + right-align so buttons stack instead of clipping on very narrow banners */}
+              <div className="flex flex-wrap items-center justify-end gap-x-1 gap-y-2">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-auto whitespace-nowrap rounded-full px-2.5 py-2 text-ui-13 font-medium text-foreground"
+                  onClick={snooze}
+                  data-testid="web-update-snooze-button"
+                >
+                  Remind me later
+                </Button>
+                <Button
+                  size="sm"
+                  // -mr optically aligns the filled pill's edge with the card padding
+                  className="-mr-1 h-auto whitespace-nowrap rounded-full px-3 py-2 text-ui-13"
+                  onClick={handleCopyCommand}
+                  data-testid="web-update-copy-button"
+                >
+                  {copied ? "Copied" : "Copy command"}
+                </Button>
+              </div>
             </div>
           </div>
         </motion.div>

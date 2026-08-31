@@ -31,10 +31,7 @@ try:
         flex_attention as _flex_attention,
         create_block_mask as _create_block_mask,
     )
-
-    _flex_attention = torch.compile(
-        _flex_attention, dynamic = True, options = torch_compile_options
-    )
+    _flex_attention = torch.compile(_flex_attention, dynamic = True, options = torch_compile_options)
     HAS_FLEX_ATTENTION = False
 except:
     HAS_FLEX_ATTENTION = False
@@ -116,9 +113,7 @@ else:
         causal_mask = create_block_mask(causal_masker, max_seq_length)
         return causal_mask
 
-    def create_flex_attention_sliding_window_mask(
-        max_seq_length = 8192, sliding_window = 4096
-    ):
+    def create_flex_attention_sliding_window_mask(max_seq_length = 8192, sliding_window = 4096):
         sliding_masker = sliding_window_masker(sliding_window)
         causal_mask = create_block_mask(sliding_masker, max_seq_length)
         return causal_mask
