@@ -235,9 +235,9 @@ def test_sentence_transformer_declines_to_a_value_st_device_normalises():
         and ast.unparse(node.value) != "requested_device_map(device_map)"
     ]
     assert "'sequential'" in declines, "the decline is not a literal 'sequential'"
-    assert "_PLANNED_DEVICE_MAPS[device_map]" not in declines, (
-        "declining to the sharding fallback sends 'balanced' to SentenceTransformer(device=)"
-    )
+    assert (
+        "_PLANNED_DEVICE_MAPS[device_map]" not in declines
+    ), "declining to the sharding fallback sends 'balanced' to SentenceTransformer(device=)"
 
     whitelists = [
         node
