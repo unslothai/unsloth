@@ -101,7 +101,11 @@ test("every OpenAI family the picker admits carries its documented cap", () => {
     ["gpt-5.3", 16384],
     ["gpt-5.2", 128000],
     ["gpt-5.1", 128000],
+    // The chat aliases cap at 16,384 whatever their family does.
     ["gpt-5-chat-latest", 16384],
+    ["gpt-5.1-chat-latest", 16384],
+    ["gpt-5.2-chat-latest", 16384],
+    ["gpt-5.3-chat-latest", 16384],
     ["gpt-5", 128000],
     ["gpt-5-mini", 128000],
     ["gpt-4.1", 32768],

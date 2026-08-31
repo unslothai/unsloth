@@ -96,6 +96,18 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
   // than clamping it, which makes an overstated cap a failed request and an
   // understated one merely a shorter answer. First match wins, so a bare
   // family prefix (`gpt-5`, `gpt-4`) goes last or it swallows its own minors.
+  // Every `-chat-latest` alias caps at 16,384 whatever its family's ceiling
+  // is, so the aliases go ahead of the family rows.
+  {
+    providerType: "openai",
+    prefixes: [
+      "gpt-5.3-chat-latest",
+      "gpt-5.2-chat-latest",
+      "gpt-5.1-chat-latest",
+      "gpt-5-chat-latest",
+    ],
+    cap: 16384,
+  },
   {
     providerType: "openai",
     prefixes: ["gpt-5.6", "gpt-5.5-pro", "gpt-5.5", "gpt-5.2", "gpt-5.1"],
@@ -103,7 +115,6 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
   },
   { providerType: "openai", prefixes: ["gpt-5.4-pro", "gpt-5.4"], cap: 65536 },
   { providerType: "openai", prefixes: ["gpt-5.3"], cap: 16384 },
-  { providerType: "openai", prefixes: ["gpt-5-chat-latest"], cap: 16384 },
   { providerType: "openai", prefixes: ["gpt-5"], cap: 128000 },
   { providerType: "openai", prefixes: ["gpt-4.1"], cap: 32768 },
   { providerType: "openai", prefixes: ["gpt-4.5"], cap: 16384 },
