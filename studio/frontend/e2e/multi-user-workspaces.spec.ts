@@ -144,14 +144,12 @@ test("owner account UX and per-account chat workspaces are isolated", async ({
   await expect(accountsDialog.getByTestId("setup-code")).toHaveText(
     aliceSetupCode,
   );
-  await expect(
-    accountsDialog.getByText("alice", { exact: true }),
-  ).toBeVisible();
+  await expect(accountsDialog.getByTestId("managed-account-alice")).toBeVisible();
   await expect(
     accountsDialog.getByText("Awaiting first sign-in", { exact: true }),
   ).toBeVisible();
   if (evidenceDir) {
-    await accountCreator.page.screenshot({
+    await accountsDialog.screenshot({
       path: path.join(evidenceDir, "02-setup-code-shown-once.png"),
     });
   }
@@ -160,9 +158,15 @@ test("owner account UX and per-account chat workspaces are isolated", async ({
       response.url().endsWith("/api/auth/users/alice/setup-code") &&
       response.request().method() === "POST",
   );
-  accountCreator.page.once("dialog", (dialog) => dialog.accept());
   await accountsDialog
-    .getByRole("button", { name: "Regenerate setup code for alice" })
+    .getByRole("button", { name: "Account actions for alice" })
+    .click();
+  await accountCreator.page
+    .getByRole("menuitem", { name: "Generate new setup code" })
+    .click();
+  await accountCreator.page
+    .getByRole("alertdialog")
+    .getByRole("button", { name: "Generate code" })
     .click();
   const regeneratedAlice = (await (
     await regenerateAliceResponse
@@ -283,7 +287,7 @@ test("owner account UX and per-account chat workspaces are isolated", async ({
     ownerBrowser.page.getByText("bob", { exact: true }),
   ).toBeVisible();
   if (evidenceDir) {
-    await ownerBrowser.page.screenshot({
+    await ownerBrowser.page.getByRole("dialog").screenshot({
       path: path.join(evidenceDir, "04-owner-accounts.png"),
     });
   }
