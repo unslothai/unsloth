@@ -637,6 +637,26 @@ def test_a_provider_claiming_a_minted_id_displaces_the_id_less_call():
     assert reported == [("tool_call_1", "alpha"), ("tool_call_0", "beta")]
 
 
+def test_a_claim_on_a_split_born_card_leaves_every_call_its_own():
+    # The client renumbers its minted cards when a provider claims one of their
+    # spellings, so the numbering here is what it has to land on: the claim
+    # keeps tool_call_1 and the three id-less calls take 0, 2 and 3 in order.
+    turn = _Turn()
+    turn.merge_structured([_delta(0, "alpha", '{"a":1}{"b":2}{"c":3}')])
+    turn.merge_structured([_delta(1, "beta", '{"d":4}', call_id = "tool_call_1")])
+
+    reported = [
+        (call.get("card_id") or call["id"], call["function"]["arguments"])
+        for call in turn.calls()
+    ]
+    assert reported == [
+        ("tool_call_0", '{"a":1}'),
+        ("tool_call_2", '{"b":2}'),
+        ("tool_call_3", '{"c":3}'),
+        ("tool_call_1", '{"d":4}'),
+    ]
+
+
 def test_a_stable_id_naming_a_longer_tool_opens_its_own_call():
     # Reading "web_search" as "web" grown gave the id to the completed call.
     turn = _Turn()

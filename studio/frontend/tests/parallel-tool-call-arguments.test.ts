@@ -1007,6 +1007,50 @@ test("a provider claiming a minted id displaces the card holding it", () => {
   );
 });
 
+test("a card taking a late provider id gives its minted id back", () => {
+  // The backend never reserves a minted id for a call the provider went on to
+  // name, so holding it made the next call at that index mint tool_call_1
+  // against the backend's tool_call_0.
+  const stream = makeStream();
+  stream.feed([{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }]);
+  stream.feed([{ id: "call_a", index: 0, function: { arguments: "" } }]);
+  stream.feed([{ index: 0, function: { name: "beta", arguments: '{"b":2}' } }]);
+
+  assert.deepEqual(
+    stream.parts.map((p) => [p.toolCallId, p.toolName]),
+    [
+      ["call_a", "alpha"],
+      ["tool_call_0", "beta"],
+    ],
+  );
+});
+
+test("a claim on a split-born card renumbers every minted card", () => {
+  // A split marks every born card but the last _has_stable_id, to keep a late
+  // id off the calls already spoken for, so reading that as provider-owned let
+  // the claim merge into one: "alphabeta" with the arguments glued. The
+  // backend reserves the claim and then numbers the id-less calls in order, so
+  // matching it means renumbering all of them, not just the one displaced;
+  // otherwise its tool_start for the second call reaches the third's card.
+  const stream = makeStream();
+  stream.feed([
+    { index: 0, function: { name: "alpha", arguments: '{"a":1}{"b":2}{"c":3}' } },
+  ]);
+  stream.feed([
+    { id: "tool_call_1", index: 1, function: { name: "beta", arguments: '{"d":4}' } },
+  ]);
+
+  assert.deepEqual(
+    stream.parts.map((p) => [p.toolCallId, p.toolName, p.argsText]),
+    [
+      ["tool_call_0", "alpha", '{"a":1}'],
+      ["tool_call_2", "alpha", '{"b":2}'],
+      ["tool_call_3", "alpha", '{"c":3}'],
+      ["tool_call_1", "beta", '{"d":4}'],
+    ],
+  );
+});
+
 test("a born call carries only the metadata of the delta that opened it", () => {
   // The merged fields belong to the call the slot was holding; carried onto a
   // born call they put one call's signature on another, and Gemini validates a

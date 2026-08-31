@@ -5293,6 +5293,11 @@ export function createOpenAIStreamAdapter(
       // A card is minted before its part joins `toolCallParts`, so without
       // this a batch opening three calls mints one id three times.
       const reservedToolCallIds = new Set<string>();
+      // Of those, the ones the provider itself sent. A minted card holds its
+      // id only until the provider claims that spelling; `_has_stable_id` does
+      // not say which is which, since a split marks every card but the last
+      // with it to keep a late id off the calls already spoken for.
+      const providerSentToolCallIds = new Set<string>();
       const boundaryScans = new Map<
         string,
         ReturnType<typeof createBoundaryScan>
@@ -5398,6 +5403,52 @@ export function createOpenAIStreamAdapter(
         const at = codexRoundToolCallIds.indexOf(from);
         if (at !== -1) codexRoundToolCallIds[at] = to;
         paintStreamedCard(to);
+      };
+      // The backend reserves every id the provider sent before it mints any
+      // card id, so a claim arriving mid-response moves every card the client
+      // had already numbered. Renumber them all, in the order the backend
+      // walks them, or its tool_start reaches the wrong card: with three calls
+      // in one delta and a later `tool_call_1`, the two sides read the second
+      // and third calls' results off each other's cards.
+      const renumberMintedCards = (claimed: string): void => {
+        const minted = toolCallParts.filter(
+          (part) => !providerSentToolCallIds.has(part.toolCallId),
+        ) as PositionedToolCallPart[];
+        const carried = minted.map((part) => ({
+          part,
+          from: part.toolCallId,
+          scan: boundaryScans.get(part.toolCallId),
+          live: liveArgsTextById.get(part.toolCallId),
+          openTail: openTailIds.has(part.toolCallId),
+        }));
+        for (const held of carried) {
+          reservedToolCallIds.delete(held.from);
+          toolPartIdByBackendId.delete(held.from);
+          boundaryScans.delete(held.from);
+          liveArgsTextById.delete(held.from);
+          openTailIds.delete(held.from);
+          // Cleared before any of them is minted again: the mint reads the ids
+          // the parts are holding, and a stale one makes the first card skip
+          // the number the backend gives it.
+          const at = toolCallParts.indexOf(held.part);
+          if (at !== -1) toolCallParts[at] = { ...held.part, toolCallId: "" };
+        }
+        // Held back only now: the loop above frees every minted id, and one of
+        // them is the spelling being claimed.
+        reservedToolCallIds.add(claimed);
+        for (const held of carried) {
+          const to = mintStreamedCardId(held.part._delta_index);
+          paintStreamedCard(to);
+          if (held.scan) boundaryScans.set(to, held.scan);
+          if (held.live !== undefined) liveArgsTextById.set(to, held.live);
+          if (held.openTail) openTailIds.add(to);
+          const at = codexRoundToolCallIds.indexOf(held.from);
+          if (at !== -1) codexRoundToolCallIds[at] = to;
+          const index = toolCallParts.findIndex((part) => part.toolCallId === "");
+          if (index !== -1) {
+            toolCallParts[index] = { ...held.part, toolCallId: to };
+          }
+        }
       };
       /**
        * Parts for the calls after the first in a slot holding several. Nothing
@@ -7131,24 +7182,28 @@ export function createOpenAIStreamAdapter(
                   // Before resolving: a provider claiming a minted spelling
                   // would resolve onto that card and merge the two calls. The
                   // backend's reserve-then-mint order lands on the same pair.
-                  if (stableId && !toolCallParts.some((part) => part.toolCallId === stableId && part._has_stable_id)) {
-                    const clash = toolCallParts.findIndex(
-                      (part) => part.toolCallId === stableId,
-                    );
-                    if (clash !== -1) {
-                      reservedToolCallIds.add(stableId);
-                      const part = toolCallParts[clash] as PositionedToolCallPart;
-                      const renamed = mintStreamedCardId(part._delta_index);
-                      renameStreamedCard(part.toolCallId, renamed);
-                      toolCallParts[clash] = { ...part, toolCallId: renamed };
-                    }
+                  if (
+                    stableId &&
+                    !providerSentToolCallIds.has(stableId) &&
+                    toolCallParts.some((part) => part.toolCallId === stableId)
+                  ) {
+                    // Renumber first: the claimed spelling is held by a minted
+                    // card until this runs, and marking it provider-sent any
+                    // earlier would exempt that very card from the move.
+                    renumberMintedCards(stableId);
+                    providerSentToolCallIds.add(stableId);
+                    reservedToolCallIds.add(stableId);
                   }
                   const stablePartId = stableId
                     ? resolveToolPartId(stableId)
                     : undefined;
                   // Reserved before any card id is minted, so a provider that
                   // happens to spell an id `tool_call_0` keeps it to itself.
-                  if (stableId) reservedToolCallIds.add(stableId);
+                  if (stableId) {
+                    reservedToolCallIds.add(stableId);
+                    providerSentToolCallIds.add(stableId);
+                  }
+                  if (stablePartId) providerSentToolCallIds.add(stablePartId);
                   // match by resolved id when the fragment carries one, else by
                   // index slot; streams that send neither get a minted
                   // tool_call_<n> id.
@@ -7335,10 +7390,13 @@ export function createOpenAIStreamAdapter(
                           true && !slotText,
                     };
                     toolCallParts[existingIndex] = updated;
-                    // A fork whose object is still open answers to its late id
-                    // from here on, so it stays held back under that one.
-                    if (stablePartId && openTailIds.delete(existing.toolCallId)) {
-                      openTailIds.add(stablePartId);
+                    // The card answers to its late id from here on, so what was
+                    // keyed on the provisional one moves and the id itself goes
+                    // back: the backend never reserved it for a call the
+                    // provider went on to name, and holding it makes the next
+                    // mint skip the number the backend hands out.
+                    if (stablePartId && stablePartId !== existing.toolCallId) {
+                      renameStreamedCard(existing.toolCallId, stablePartId);
                     }
                     if (isSplit) {
                       // The slot keeps one segment, not the whole string, so
