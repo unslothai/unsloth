@@ -418,3 +418,26 @@ export function mergedToolCallArgumentsText(
     return stringifyJson(mergedArgs ?? {});
   }
 }
+
+/**
+ * The argument text one streamed delta contributes to its call's slot.
+ *
+ * The API specifies `function.arguments` as a string fragment, but llama-server
+ * has shipped it as an already-decoded object. The adapter's guard read those
+ * as `""`, which kept the stream alive but silently dropped the call's whole
+ * payload; serializing preserves it. Anything else non-string is a shape no
+ * provider has produced, and contributes nothing rather than `"undefined"`.
+ */
+export function streamedToolCallArguments(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (value === null || typeof value !== "object") {
+    return "";
+  }
+  try {
+    return JSON.stringify(value) ?? "";
+  } catch {
+    return "";
+  }
+}

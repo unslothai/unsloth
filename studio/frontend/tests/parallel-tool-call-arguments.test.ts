@@ -16,6 +16,7 @@ import ts from "typescript";
 import {
   createBoundaryScan,
   splitTopLevelJsonObjects,
+  streamedToolCallArguments,
   toolCallReplayArguments,
 } from "../src/features/chat/tool-call-arguments.ts";
 import {
@@ -267,6 +268,7 @@ function makeStream(mintPartIds = false): {
   return new Function(
     "splitTopLevelJsonObjects",
     "createBoundaryScan",
+    "streamedToolCallArguments",
     "findStreamedToolCallPartIndex",
     "mintStreamedToolCallId",
     "bindStreamedToolCallCard",
@@ -275,6 +277,7 @@ function makeStream(mintPartIds = false): {
   )(
     splitTopLevelJsonObjects,
     createBoundaryScan,
+    streamedToolCallArguments,
     findStreamedToolCallPartIndex,
     mintStreamedToolCallId,
     bindStreamedToolCallCard,
@@ -723,6 +726,10 @@ test("a name resent or grown after a call closed invents nothing", () => {
 test("an argument fragment that is not a string does not abort the stream", () => {
   // llama-server has shipped `arguments` as a decoded object rather than the
   // string the API specifies, and the chunk is cast rather than validated.
+  // The object is serialized rather than dropped -- it is the call's whole
+  // payload -- so it stands as one complete arguments document, and a further
+  // fragment in the same slot reads as the next parallel call. The stream
+  // keeps working either way, which is what this pins.
   const parts = run([
     [
       {
@@ -733,10 +740,13 @@ test("an argument fragment that is not a string does not abort the stream", () =
         },
       },
     ],
-    [{ index: 0, function: { arguments: '{"a":1}' } }],
+    [{ index: 0, function: { arguments: '{"b":2}' } }],
   ]);
 
-  assert.deepEqual(shape(parts), [["alpha", '{"a":1}']]);
+  assert.deepEqual(shape(parts), [
+    ["alpha", '{"a":1}'],
+    ["alpha", '{"b":2}'],
+  ]);
 });
 
 test("a fragment that does not open an object does not open a call", () => {
@@ -1569,5 +1579,57 @@ test("a tool that really takes a _raw parameter keeps it either way", () => {
   assert.equal(
     toolCallReplayArguments(undefined, { _raw: '{"one":1}' }),
     '{"_raw":"{\\"one\\":1}"}',
+  );
+});
+
+// ---------------------------------------------------------------------------
+// D. Decoded-object argument deltas (extracted from #9909 at review invitation)
+// ---------------------------------------------------------------------------
+
+test("decoded object arguments preserve their JSON payload", () => {
+  // llama-server has shipped `function.arguments` as a decoded object. The
+  // string-only guard read those as "" -- stream alive, payload silently gone.
+  assert.equal(
+    streamedToolCallArguments({ query: "雪", nested: [1, { ok: true }] }),
+    '{"query":"雪","nested":[1,{"ok":true}]}',
+  );
+});
+
+test("string fragments pass through byte-exact and junk contributes nothing", () => {
+  assert.equal(streamedToolCallArguments('{"partial'), '{"partial');
+  assert.equal(streamedToolCallArguments(""), "");
+  assert.equal(streamedToolCallArguments(undefined), "");
+  assert.equal(streamedToolCallArguments(null), "");
+  assert.equal(streamedToolCallArguments(7), "");
+});
+
+test("the adapter's delta site reads arguments through the helper", () => {
+  // The guard it replaces dropped a decoded object's payload; pinned so a
+  // tidy-up cannot quietly bring the typeof-ternary back.
+  assert.ok(
+    adapterSource.includes(
+      "const deltaArgs = streamedToolCallArguments(",
+    ),
+    "chat-adapter.ts no longer routes delta arguments through streamedToolCallArguments",
+  );
+});
+
+test("a delta whose arguments arrive as a decoded object keeps its payload", () => {
+  const parts = run([
+    [
+      {
+        id: "call-obj",
+        index: 0,
+        function: {
+          name: "web_search",
+          // What llama-server has actually shipped, cast or not.
+          arguments: { query: "value" } as unknown as string,
+        },
+      },
+    ],
+  ]);
+  assert.deepEqual(
+    parts.map((part) => part.argsText),
+    ['{"query":"value"}'],
   );
 });
