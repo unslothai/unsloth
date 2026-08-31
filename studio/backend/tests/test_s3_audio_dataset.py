@@ -52,7 +52,11 @@ class _FakePaginator:
 class _FakeS3Client:
     """The house fake, plus per-key content so a manifest can hold real rows."""
 
-    def __init__(self, keys, contents = None):
+    def __init__(
+        self,
+        keys,
+        contents = None,
+    ):
         self._keys = list(keys)
         self._contents = contents or {}
         self.downloaded = []
@@ -70,7 +74,11 @@ class _FakeS3Client:
             f.write(self._contents.get(key, f"content-of:{key}"))
 
 
-def _install(monkeypatch, keys, contents = None):
+def _install(
+    monkeypatch,
+    keys,
+    contents = None,
+):
     client = _FakeS3Client(keys, contents)
     monkeypatch.setattr(s3_dataset, "boto3_available", lambda: True)
     monkeypatch.setattr(s3_dataset, "_build_s3_client", lambda cfg: client)

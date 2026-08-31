@@ -178,17 +178,12 @@ def _download_one(client, bucket, key, local_path, cancel_callback) -> None:
 
 def _key_relative_to_prefix(key: str, prefix: Optional[str]) -> str:
     if prefix and key.startswith(prefix):
-        key = key[len(prefix):]
+        key = key[len(prefix) :]
     return key.lstrip("/")
 
 
 def _download_structured(
-    client,
-    bucket: str,
-    prefix: Optional[str],
-    keys: list[str],
-    target_dir: str,
-    cancel_callback,
+    client, bucket: str, prefix: Optional[str], keys: list[str], target_dir: str, cancel_callback
 ) -> dict[str, str]:
     """Download ``keys`` mirroring their prefix-relative layout. Returns key -> local path."""
     local_by_key: dict[str, str] = {}
@@ -357,9 +352,7 @@ def prepare_s3_dataset_download(
                 client, bucket, prefix, audio_keys, target_dir, cancel_callback
             )
             local_files = list(manifest_local_by_key.values())
-            _rewrite_audio_references(
-                manifest_local_by_key, audio_local_by_key, bucket, prefix
-            )
+            _rewrite_audio_references(manifest_local_by_key, audio_local_by_key, bucket, prefix)
         else:
             # The tabular-only layout keeps its flat, collision-renamed shape.
             used_paths: set[str] = set()
