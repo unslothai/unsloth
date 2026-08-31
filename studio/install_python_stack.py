@@ -7223,17 +7223,25 @@ def install_python_stack() -> int:
     # 13b. torchcodec, pinned to the venv's torch minor (_select_torchcodec_spec), which
     #      extras-no-deps.txt cannot do because markers cannot see torch. Must run after the
     #      repair above: that can move torch onto another minor, staling an earlier choice.
+    #      The runtime probe reports nothing on a timeout (the wedged-driver host it exists to
+    #      tolerate), so read the installed metadata before giving up: guessing here means
+    #      downgrading a matching codec onto the default and recreating the mismatch.
+    _codec_torch_ver = None
+    if not NO_TORCH and not PLATFORM_LACKS_TORCHCODEC_WHEEL:
+        _codec_torch_ver = _probe_installed_torch_version() or _installed_distribution_version(
+            "torch"
+        )
     if NO_TORCH:
         _progress("torchcodec (skipped, no torch)")
     elif PLATFORM_LACKS_TORCHCODEC_WHEEL:
         _progress("torchcodec (skipped, no wheel for this platform)")
+    elif not _codec_torch_ver:
+        _progress("torchcodec (skipped, torch version unknown)")
+        _note("could not read the installed torch version -- leaving torchcodec alone")
     else:
         _progress("torchcodec")
-        _codec_torch_ver = _probe_installed_torch_version()
         _codec_spec = _select_torchcodec_spec(_codec_torch_ver)
-        _safe_print(
-            f"   torch {_codec_torch_ver or 'unknown'} detected -- installing {_codec_spec}"
-        )
+        _safe_print(f"   torch {_codec_torch_ver} detected -- installing {_codec_spec}")
         pip_install(
             "Installing torchcodec",
             "--no-deps",

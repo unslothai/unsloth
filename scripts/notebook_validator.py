@@ -624,24 +624,35 @@ def resolved_set(install_cell: str, colab: dict[str, str]) -> dict[str, str]:
 
 
 def rule_inst_001_git_plus(install_cell: str, file: str, cell_idx: int) -> list[Finding]:
+    """Whole lines, not parsed commands.
+
+    The question is whether the cell can reach a `git+` source at all, so the answer must not
+    depend on how a line splits into commands: a fallback, a `(...)` group, an `if ...; then`
+    body, anything the splitter does not turn into a recognisable pip command would otherwise
+    hide one. A line counts when any part of it parses as a pip install.
+    """
     findings: list[Finding] = []
-    # Every path, fallbacks included: a git+ install that runs only when something else
-    # failed is still a git+ install.
-    for inv in iter_pip_invocations(install_cell):
-        if any("git+" in p for p in inv.packages) or "git+" in inv.raw:
-            if any(allowed in inv.raw for allowed in GIT_PLUS_ALLOWLIST):
-                continue
-            findings.append(
-                Finding(
-                    rule = "R-INST-001",
-                    file = file,
-                    cell = cell_idx,
-                    line = inv.line_no,
-                    severity = "error",
-                    message = "install line uses `git+` (volatile, not pinned to a release)",
-                    hint = f"replace with a `pip install foo==X.Y.Z` from PyPI; allow-list is {GIT_PLUS_ALLOWLIST}",
-                )
+    for line_no, line in _glue_line_continuations(install_cell):
+        commands = [
+            parse_pip_line(command, line_no) for command, _ in _split_chained(line)
+        ]
+        if not any(inv is not None for inv in commands) and PIP_LINE_RE.match(line) is None:
+            continue
+        if "git+" not in line:
+            continue
+        if any(allowed in line for allowed in GIT_PLUS_ALLOWLIST):
+            continue
+        findings.append(
+            Finding(
+                rule = "R-INST-001",
+                file = file,
+                cell = cell_idx,
+                line = line_no,
+                severity = "error",
+                message = "install line uses `git+` (volatile, not pinned to a release)",
+                hint = f"replace with a `pip install foo==X.Y.Z` from PyPI; allow-list is {GIT_PLUS_ALLOWLIST}",
             )
+        )
     return findings
 
 
@@ -734,7 +745,8 @@ _ARCHIVE_RE = re.compile(
 
 def _archive_requirement(argument: str) -> tuple[str, str] | None:
     """`(project, version)` for a direct archive install, or None when it is not one."""
-    if "://" not in argument and not argument.lower().endswith((".whl", ".tar.gz", ".zip")):
+    lowered = argument.lower().split("#", 1)[0].split("?", 1)[0]
+    if "://" not in argument and not lowered.endswith((".whl", ".tar.gz", ".zip")):
         return None
     leaf = argument.split("#", 1)[0].split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]
     leaf = urllib.parse.unquote(leaf)  # a URL spells the local tag `%2Bcu130`
@@ -744,17 +756,28 @@ def _archive_requirement(argument: str) -> tuple[str, str] | None:
     return match.group("name").replace("_", "-").lower(), match.group("version")
 
 
+def cmp_releases(a: str, b: str) -> int:
+    """`cmp_versions` with the release segments padded, as PEP 440 compares them.
+
+    `cmp_versions` stops at the shorter tuple, so it reads `0.11.0` as above `0.11`. That is
+    harmless for ordering across different releases and wrong wherever the question is whether
+    two spellings name the same one, which is what an exclusion and a minor bound both ask.
+    """
+    left = [int(part) for part in re.findall(r"\d+", normalise_version(a))]
+    right = [int(part) for part in re.findall(r"\d+", normalise_version(b))]
+    width = max(len(left), len(right))
+    left += [0] * (width - len(left))
+    right += [0] * (width - len(right))
+    return (left > right) - (left < right)
+
+
 def _version_is_excluded(version: str, exclusion: str) -> bool:
     """True when `!=exclusion` rules `version` out. A trailing `.*` is a prefix match."""
     wanted = normalise_version(exclusion).split(".")
     if wanted and wanted[-1] == "*":
         wanted = wanted[:-1]
         return normalise_version(version).split(".")[: len(wanted)] == wanted
-    # PEP 440 pads the release segment, so `!=0.11` rules out an installed `0.11.0`.
-    left = [int(part) for part in re.findall(r"\d+", normalise_version(version))]
-    right = [int(part) for part in re.findall(r"\d+", normalise_version(exclusion))]
-    width = max(len(left), len(right))
-    return left + [0] * (width - len(left)) == right + [0] * (width - len(right))
+    return cmp_releases(version, exclusion) == 0
 
 
 def _window_names_one_minor(
@@ -775,7 +798,8 @@ def _window_names_one_minor(
     if ceiling is None:
         return False
     next_minor = _compatible_release_ceiling(f"{version_minor(floor)}.0")
-    return next_minor is not None and cmp_versions(ceiling, next_minor) <= 0
+    # Padded: `<0.11.0` and `<0.11` name the same boundary.
+    return next_minor is not None and cmp_releases(ceiling, next_minor) <= 0
 
 
 def _spec_window(
@@ -846,14 +870,16 @@ def _effective_version(
         pins: list[tuple[str, str]] = []
         named = False
         for raw in inv.packages:
-            sp = parse_spec(raw)
-            if sp is None:
-                archive = _archive_requirement(raw)
-                if archive is not None and archive[0] == target:
+            # Before parse_spec, which reads `./torchcodec-0.13.0-...whl` as a project called
+            # `.` and hides the archive behind a name that never matches.
+            archive = _archive_requirement(raw)
+            if archive is not None:
+                if archive[0] == target:
                     named = True
                     pins.append(("==", archive[1]))
                 continue
-            if sp.name != target:
+            sp = parse_spec(raw)
+            if sp is None or sp.name != target:
                 continue
             named = True
             pins.extend(sp.pins)

