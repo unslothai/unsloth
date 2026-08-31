@@ -16,29 +16,14 @@
 
 """`_offload_frozen_module_for_training` must not drag the copy off its card.
 
-Continued pretraining puts `embed_tokens` and `lm_head` in `target_modules`,
-which makes PEFT build a `ModulesToSaveWrapper` around each. `llama.py` then
-calls this helper to move the trainable copy onto the accelerator and offload
-the frozen original to CPU, passing `DEVICE_TYPE_TORCH`, which is the bare
-string "cuda".
+Continued pretraining puts `embed_tokens` and `lm_head` in `target_modules`, so
+PEFT wraps each in a `ModulesToSaveWrapper` and llama.py moves the trainable
+copy onto the accelerator with `DEVICE_TYPE_TORCH`, the bare string "cuda".
+A bare "cuda" carries no index and resolves to the CURRENT device, so a copy on
+cuda:1 was moved to cuda:0 while the rest of its layer stayed behind.
 
-A bare "cuda" has no index:
-
-    >>> torch.device("cuda").index is None
-    True
-    >>> torch.zeros(2).to("cuda").device
-    device(type='cuda', index=0)
-
-So on a model the loader split across cards, a copy sitting on cuda:1 was moved
-to cuda:0 while the rest of its layer stayed behind, and the forward then mixed
-devices. Single-GPU runs never saw it, because there cuda:0 is where the copy
-already was.
-
-These tests drive the real helper with a stub that RECORDS the device it is
-handed rather than allocating anything. That is deliberate: the case under test
-is a second card, and recording the argument tests the decision on any box,
-including CI runners with no GPU at all. The one test that does allocate is
-skipped without CUDA and only covers the no-regression direction.
+The stub RECORDS the device it is handed rather than allocating, so the second
+card is testable on any box, including CI runners with no GPU.
 """
 
 import types
@@ -47,13 +32,7 @@ import torch
 
 
 def _load_helper():
-    """Import the helper without dragging in the whole loader.
-
-    `unsloth.models.llama` is expensive to import and pulls hardware probes, so
-    the suite would become a GPU test by accident. The function is self
-    contained, so read it out of the module source and exec it in a namespace
-    holding only what it closes over.
-    """
+    """Exec the helper from source: importing llama.py would pull hardware probes."""
     import ast
     import pathlib
 
@@ -132,7 +111,6 @@ def test_a_copy_on_the_second_card_stays_on_the_second_card():
 
 
 def test_a_copy_on_the_third_card_stays_on_the_third_card():
-    """Not special cased to index 1: any index the copy already has is kept."""
     w = _Wrapper("cuda:3")
     offload(w, "cuda")
     assert _moved_to(w) == torch.device("cuda", 3)
@@ -152,14 +130,12 @@ def test_a_copy_on_cpu_is_still_moved_onto_the_accelerator():
 
 
 def test_a_copy_on_meta_is_still_moved_onto_the_accelerator():
-    """A deferred-init module has no index to preserve."""
     w = _Wrapper("meta")
     offload(w, "cuda")
     assert torch.device(_moved_to(w)).type == "cuda"
 
 
 def test_mps_keeps_its_own_device_rather_than_being_sent_to_cuda():
-    """Apple silicon reaches here with DEVICE_TYPE_TORCH == "mps"."""
     w = _Wrapper("mps")
     offload(w, "mps")
     assert torch.device(_moved_to(w)).type == "mps"
@@ -206,8 +182,6 @@ def test_a_module_without_modules_to_save_is_untouched():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
 def test_on_real_hardware_a_module_on_the_current_card_is_unchanged():
-    """No-regression check with real allocation. Single card is enough."""
-
     class _Real:
         def __init__(self):
             self.modules_to_save = types.SimpleNamespace(
@@ -272,12 +246,7 @@ def test_a_meta_copy_also_uses_the_recorded_device():
 
 
 def test_the_continued_pretraining_call_sites_pass_the_recorded_device():
-    """The helper supporting it is worthless if the callers drop it.
-
-    That is the exact shape of the original bug, so assert it against the real
-    source rather than trusting the call sites to stay correct. The continued
-    pretraining calls are the ones passing `offload_device`.
-    """
+    """A helper supporting it is worthless if the callers drop it, which was the bug."""
     import ast
     import pathlib
 
