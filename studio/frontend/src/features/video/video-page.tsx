@@ -753,8 +753,10 @@ const H3_BF16_REPO = "MiniMaxAI/MiniMax-H3";
 function isH3PipelinePick(
   repoId: string,
   kind: VideoLoadOptions["kind"],
+  familyOverride?: string | null,
 ): boolean {
   if (kind !== "pipeline") return false;
+  if (familyOverride === "minimax-h3" || familyOverride === "h3") return true;
   const id = repoId.toLowerCase();
   if (id === H3_BF16_REPO.toLowerCase()) return true;
   const leaf = id.replace(/\\/g, "/").replace(/\/+$/, "").split("/").at(-1) ?? "";
@@ -2661,7 +2663,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       pick.opts.filename ? `${pick.repoId}/${pick.opts.filename}` : pick.repoId,
     );
     // A routed pick owns the page exactly like a direct one, so it has to offer the same choice.
-    if (isH3PipelinePick(pick.repoId, pick.opts.kind)) {
+    if (isH3PipelinePick(pick.repoId, pick.opts.kind, familyOverride)) {
       setPendingH3Load({
         repoId: pick.repoId,
         opts: pick.opts,
@@ -2773,7 +2775,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         // The distilled variant lives in the checkpoint name, not the repo id, so include the filename when seeding defaults.
         // Without it these distilled entries fall through to the generic LTX 40-step/CFG-4 defaults instead of the 8-step schedule.
         applyVideoModelDefaults(spec.filename ? `${id}/${spec.filename}` : id);
-        if (isH3PipelinePick(id, spec.kind)) {
+        if (isH3PipelinePick(id, spec.kind, familyOverride)) {
           setPendingH3Load({
             repoId: id,
             opts: { kind: spec.kind, filename: spec.filename },
@@ -2889,7 +2891,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       applyVideoModelDefaults(id);
       // The on-device copy of the H3 pipeline lands here rather than in the curated branch, and
       // it needs the same partition question: without it the load silently takes fl2va.
-      if (isH3PipelinePick(id, "pipeline")) {
+      if (isH3PipelinePick(id, "pipeline", familyOverride)) {
         setPendingH3Load({
           repoId: id,
           opts: { kind: "pipeline" },

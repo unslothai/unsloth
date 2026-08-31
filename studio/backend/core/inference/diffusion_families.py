@@ -450,7 +450,7 @@ def excluded_model_reason(repo_id: str) -> Optional[str]:
     """The stated reason ``repo_id`` is unsupported, or None when it is simply unknown."""
     needle = (repo_id or "").lower()
     for token, reason in _EXCLUDED_MODELS:
-        if _token_in_needle(token, needle):
+        if family_token_matches(token, needle):
             return reason
     return None
 
@@ -1313,7 +1313,7 @@ def sd_cpp_text_encoders_for(
         identity = f"{repo_id or ''}/{gguf_filename or ''}".lower()
         # Match the size token on its own: klein-BASE-9B is 9B too, and matching "klein-9b"
         # literally handed it the 4B text encoder.
-        if _token_in_needle("9b", identity) or "klein9b" in identity:
+        if family_token_matches("9b", identity) or "klein9b" in identity:
             return _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS
     return fam.sd_cpp_text_encoders
 
