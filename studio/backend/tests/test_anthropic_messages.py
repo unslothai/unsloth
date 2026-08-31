@@ -1776,12 +1776,15 @@ class TestAnthropicPassthroughStreamAdapter:
                 16,
                 "msg_1",
                 "test-model",
+                seed = 3407,
             )
             return await self._collect(response)
 
         lines = asyncio.run(run())
 
         assert captured["body"]["stream_options"] == {"include_usage": True}
+        assert captured["body"]["seed"] == 3407
+        assert captured["body"]["cache_prompt"] is False
         message_delta = self._payloads(lines, "message_delta")[0]
         assert message_delta["usage"]["input_tokens"] == 2
         assert message_delta["usage"]["output_tokens"] == 4
@@ -2305,6 +2308,61 @@ class TestAnthropicMessagesToolRouting:
             "role": "system",
             "content": "The current date is 2026-08-15.",
         }
+
+    @pytest.mark.parametrize(
+        ("extra", "expected_path"),
+        [
+            ({}, "plain"),
+            ({"enable_tools": True, "permission_mode": "off"}, "tools"),
+        ],
+        ids = ["plain", "server-tools"],
+    )
+    def test_seed_reaches_internal_anthropic_generation(self, monkeypatch, extra, expected_path):
+        backend = _mock_backend(monkeypatch)
+
+        _drive(
+            anthropic_messages(
+                _basic_payload(seed = 3407, **extra),
+                request = self._Request(),
+                current_subject = "t",
+            )
+        )
+
+        [(path, kwargs)] = backend.calls
+        assert path == expected_path
+        assert kwargs["seed"] == 3407
+
+    @pytest.mark.parametrize("stream", [False, True])
+    def test_seed_reaches_anthropic_client_tool_passthrough(self, monkeypatch, stream):
+        import routes.inference as inf_mod
+        from fastapi.responses import JSONResponse
+
+        _mock_backend(monkeypatch)
+        captured = {}
+
+        async def _passthrough(*args, **kwargs):
+            captured.update(kwargs)
+            return JSONResponse({"type": "message", "content": []})
+
+        helper = (
+            "_anthropic_passthrough_stream" if stream else "_anthropic_passthrough_non_streaming"
+        )
+        monkeypatch.setattr(inf_mod, helper, _passthrough)
+        payload = _basic_payload(
+            seed = 3407,
+            stream = stream,
+            tools = [
+                {
+                    "name": "lookup",
+                    "description": "Look something up",
+                    "input_schema": {"type": "object"},
+                }
+            ],
+        )
+
+        _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
+
+        assert captured["seed"] == 3407
 
     def test_plain_non_streaming_records_api_monitor_entry(self, monkeypatch):
         import routes.inference as inf_mod

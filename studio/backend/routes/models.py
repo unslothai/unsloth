@@ -4469,6 +4469,7 @@ async def get_gguf_variants(
                     # the row reads as its whole relative path.
                     display_label = getattr(v, "display_label", None),
                     size_bytes = v.size_bytes,
+                    shard_count = int(getattr(v, "shard_count", 0) or 0),
                     download_size_bytes = int(
                         getattr(v, "download_size_bytes", v.size_bytes) or v.size_bytes
                     ),
