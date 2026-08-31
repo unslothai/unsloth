@@ -2647,3 +2647,24 @@ def test_a_scoped_load_cancel_that_never_reports_back_releases_the_load():
         with inf._scoped_load_attempts_lock:
             inf._scoped_load_attempts.clear()
             inf._scoped_load_cancel_tombstones.clear()
+
+
+def test_share_aborts_when_dispatcher_drain_fails(monkeypatch):
+    # _wait_dispatcher_idle returns False only when it left a live dispatcher behind for
+    # still-active compare requests. If the share reads _mailboxes instead, a compare
+    # stream that unregisters right after the deadline makes the map look empty and the
+    # share proceeds -- that dispatcher then eats the unaddressed "shared" reply and the
+    # share hangs (forever, for the CLI's timeout=None).
+    o = _bare_orchestrator()
+    o._mailbox_lock = threading.Lock()
+    o._mailboxes = {}
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
+    monkeypatch.setattr(o, "_wait_dispatcher_idle", lambda: False)
+    monkeypatch.setattr(
+        o, "_send_cmd", lambda cmd: pytest.fail("must not share past a failed drain")
+    )
+
+    with pytest.raises(RuntimeError, match = "compare requests are active"):
+        o.share_distributed_object({"role": "user"}, timeout = 1.0)
+
+    assert o._exclusive_op_pending is False, "the exclusive flag must not leak on the abort"

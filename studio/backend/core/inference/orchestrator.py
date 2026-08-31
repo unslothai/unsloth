@@ -1500,7 +1500,14 @@ class InferenceOrchestrator:
         with self._dispatcher_lifecycle_lock:
             self._exclusive_op_pending = True
         try:
-            self._wait_dispatcher_idle()
+            # False means the drain deadline passed and the dispatcher was deliberately left
+            # running; that is the authoritative signal. The mailbox snapshot below is not --
+            # a compare stream unregistering just after the deadline empties it while its
+            # dispatcher still owns resp_queue and would drop the unaddressed "shared" reply.
+            if not self._wait_dispatcher_idle():
+                raise RuntimeError(
+                    "Cannot share distributed objects while compare requests are active"
+                )
             with self._mailbox_lock:
                 if self._mailboxes:
                     raise RuntimeError(
