@@ -10278,3 +10278,42 @@ def test_every_gguf_choice_gets_a_seed_of_its_own():
     # Choice 0 is always the caller's own seed, on both drains.
     assert _choice_seed(-2, 0, negative_is_random = True) == -2
     assert _choice_seed(None, 2, negative_is_random = True) is None
+
+
+def test_the_two_seed_helpers_agree_on_which_seeds_are_random():
+    """``-1`` is not the only request seed that reaches LLAMA_DEFAULT_SEED.
+
+    llama-server reads the seed as a uint32, so every value congruent to
+    0xFFFFFFFF is the sentinel: ``-1``, ``4294967295`` and ``2**64-1`` all draw
+    at random, and the schemas above accept all three. Measured against a real
+    llama-server: each of those three produced varying output across repeated
+    requests, while 4294967294 and 0 did not.
+
+    ``_apply_seeded_llama_request`` compares in that uint32 domain. This helper
+    has to use the same test, or one request disagrees with itself -- choice 0
+    keeps the caller's random seed while choice 1 is offset into a fixed one, so
+    half the choices are reproducible and half are not, and only half of them
+    disable prompt caching.
+    """
+    from core.inference.llama_cpp import _LLAMA_RANDOM_SEED, _apply_seeded_llama_request
+    from routes.inference import _choice_seed
+
+    for seed in (-1, 0xFFFFFFFF, 2**64 - 1):
+        served = [_choice_seed(seed, i, negative_is_random = True) for i in range(3)]
+        assert all((v & 0xFFFFFFFF) == _LLAMA_RANDOM_SEED for v in served), (seed, served)
+
+        # And the cache policy must reach the same verdict for every choice.
+        for value in served:
+            payload: dict = {}
+            _apply_seeded_llama_request(payload, value)
+            assert "cache_prompt" not in payload, (seed, value, payload)
+
+    # The converse: a fixed seed stays fixed for every choice, and every choice
+    # turns the cache off.
+    for seed in (0, 5, 4294967294):
+        served = [_choice_seed(seed, i, negative_is_random = True) for i in range(3)]
+        assert all((v & 0xFFFFFFFF) != _LLAMA_RANDOM_SEED for v in served), (seed, served)
+        for value in served:
+            payload = {}
+            _apply_seeded_llama_request(payload, value)
+            assert payload["cache_prompt"] is False, (seed, value)
