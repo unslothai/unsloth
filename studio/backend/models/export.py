@@ -49,9 +49,7 @@ def _validate_gguf_shard_size(value: Optional[str]) -> Optional[str]:
         return "0"
     match = _GGUF_SHARD_SIZE_RE.fullmatch(raw)
     if match is None:
-        raise ValueError(
-            "gguf_shard_size must be a positive whole number in MB or GB, or '0'"
-        )
+        raise ValueError("gguf_shard_size must be a positive whole number in MB or GB, or '0'")
     magnitude = int(match.group(1))
     unit = match.group(2).upper()
     if magnitude == 0:

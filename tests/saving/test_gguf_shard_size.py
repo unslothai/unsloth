@@ -84,10 +84,7 @@ def test_public_save_rejects_invalid_size_before_model_work():
     ],
 )
 def test_converter_only_shards_final_full_precision_outputs(
-    first_conversion,
-    methods,
-    is_vlm,
-    expected,
+    first_conversion, methods, is_vlm, expected
 ):
     assert (
         save_mod._converter_gguf_shard_size(

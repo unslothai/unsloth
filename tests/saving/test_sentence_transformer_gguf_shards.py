@@ -26,9 +26,7 @@ class _FakeSentenceTransformer:
 
 
 def test_sentence_transformer_save_forwards_gguf_shard_size(
-    sentence_transformer_module,
-    tmp_path,
-    monkeypatch,
+    sentence_transformer_module, tmp_path, monkeypatch
 ):
     seen = {}
     monkeypatch.setattr(
@@ -48,8 +46,7 @@ def test_sentence_transformer_save_forwards_gguf_shard_size(
 
 
 def test_sentence_transformer_push_forwards_gguf_shard_size(
-    sentence_transformer_module,
-    monkeypatch,
+    sentence_transformer_module, monkeypatch
 ):
     seen = {}
 

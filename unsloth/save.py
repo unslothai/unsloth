@@ -1896,18 +1896,11 @@ def _resolve_gguf_shard_size(gguf_shard_size: Optional[str]) -> str:
 
 
 def _converter_gguf_shard_size(
-    gguf_shard_size: str,
-    first_conversion: str,
-    quantization_methods,
-    is_vlm: bool,
+    gguf_shard_size: str, first_conversion: str, quantization_methods, is_vlm: bool
 ) -> str:
     """Choose the converter limit without splitting final quantized files or VLM companions."""
     keeps_converter_output = first_conversion in quantization_methods
-    if (
-        not is_vlm
-        and keeps_converter_output
-        and first_conversion in _FULL_PRECISION_GGUF_TYPES
-    ):
+    if not is_vlm and keeps_converter_output and first_conversion in _FULL_PRECISION_GGUF_TYPES:
         return gguf_shard_size
     return _GGUF_NO_SHARDING
 
@@ -1966,11 +1959,7 @@ def _find_llama_gguf_split(quantizer_location: str) -> str:
     )
 
 
-def _split_vlm_main_gguf(
-    initial_files,
-    gguf_shard_size: str,
-    quantizer_location: str,
-):
+def _split_vlm_main_gguf(initial_files, gguf_shard_size: str, quantizer_location: str):
     """Split one VLM text GGUF while leaving mmproj and MTP companions untouched."""
     max_bytes = _gguf_shard_size_bytes(gguf_shard_size)
     if max_bytes == 0:
@@ -2037,8 +2026,7 @@ def _split_vlm_main_gguf(
         existing = [path for path in destinations if os.path.exists(path)]
         if existing:
             raise FileExistsError(
-                "Unsloth: refusing to overwrite an existing GGUF shard set: "
-                + ", ".join(existing)
+                "Unsloth: refusing to overwrite an existing GGUF shard set: " + ", ".join(existing)
             )
 
         moved = []
@@ -2410,8 +2398,7 @@ def save_to_gguf(
                             sum(
                                 os.path.getsize(f)
                                 for f in initial_files
-                                if os.path.isfile(f)
-                                and not _is_gguf_companion(f)
+                                if os.path.isfile(f) and not _is_gguf_companion(f)
                             )
                             * _ratio
                         )
@@ -2495,11 +2482,7 @@ def save_to_gguf(
         # once when the host has headroom for two copies, else a multi-quant export that
         # fit sequentially could OOM.
         try:
-            base_bytes = sum(
-                os.path.getsize(f)
-                for f in initial_files
-                if not _is_gguf_companion(f)
-            )
+            base_bytes = sum(os.path.getsize(f) for f in initial_files if not _is_gguf_companion(f))
             mem_ok = psutil.virtual_memory().available >= int(2.5 * base_bytes)
         except Exception:
             mem_ok = False

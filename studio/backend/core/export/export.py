@@ -1124,11 +1124,7 @@ class ExportBackend:
                 "Upgrade unsloth and unsloth_zoo, or clear the shard-size option.",
                 None,
             )
-        shard_kw = (
-            {"gguf_shard_size": gguf_shard_size}
-            if gguf_shard_size is not None
-            else {}
-        )
+        shard_kw = {"gguf_shard_size": gguf_shard_size} if gguf_shard_size is not None else {}
         # Resolution reads a Hub repo, so the local save needs the token too -- kept out of
         # imatrix_kw, which the push below shares and already names token= itself.
         local_token_kw = (

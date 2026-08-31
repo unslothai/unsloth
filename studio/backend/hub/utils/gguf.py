@@ -1397,9 +1397,7 @@ def list_gguf_variants(
             filename = filename,
             quant = quant,
             size_bytes = size,
-            shard_count = complete_gguf_shard_count(
-                [path for path, _size in main_files], filename
-            ),
+            shard_count = complete_gguf_shard_count([path for path, _size in main_files], filename),
         )
         for quant, (filename, size) in group_gguf_variant_files(main_files).items()
     ]
@@ -1488,9 +1486,7 @@ def list_local_gguf_variants(
             filename = filename,
             quant = quant,
             size_bytes = size,
-            shard_count = complete_gguf_shard_count(
-                [path for path, _size in main_files], filename
-            ),
+            shard_count = complete_gguf_shard_count([path for path, _size in main_files], filename),
         )
         for quant, (filename, size) in group_gguf_variant_files(main_files).items()
     ]

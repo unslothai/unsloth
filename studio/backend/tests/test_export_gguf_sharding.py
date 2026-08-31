@@ -22,6 +22,7 @@ _HELPERS_SPEC.loader.exec_module(_HELPERS)
 _install_export_backend_stubs = _HELPERS._install_export_backend_stubs
 _load_module = _HELPERS._load_module
 
+
 @pytest.mark.parametrize(
     "value, expected",
     [
@@ -45,6 +46,7 @@ def test_gguf_request_normalizes_shard_size(value, expected):
 def test_gguf_request_rejects_invalid_shard_size(value):
     with pytest.raises(ValidationError, match = "gguf_shard_size"):
         ExportGGUFRequest(save_directory = "/tmp/export", gguf_shard_size = value)
+
 
 def test_orchestrator_preserves_shard_size_in_command():
     from core.export.orchestrator import ExportOrchestrator
@@ -159,11 +161,7 @@ def test_backend_forwards_shard_size_to_local_and_hub_exports(tmp_path, monkeypa
     assert success is True, message
     assert output_path == str(save_directory.resolve())
     assert seen["local"] == "512MB"
-    assert seen["hub"] == {
-        "repo_id": "owner/model",
-        "private": True,
-        "gguf_shard_size": "512MB",
-    }
+    assert seen["hub"] == {"repo_id": "owner/model", "private": True, "gguf_shard_size": "512MB"}
 
 
 def test_backend_rejects_old_exporter_only_when_option_is_set(tmp_path, monkeypatch):
