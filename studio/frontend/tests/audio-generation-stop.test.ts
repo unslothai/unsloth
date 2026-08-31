@@ -13,7 +13,7 @@ const source = readFileSync(
 test("generation exposes Stop only while the request controller can abort", () => {
   assert.match(
     source,
-    /const handleStopGeneration[\s\S]*const controller = generateAbort\.current;[\s\S]*!controller \|\| controller\.signal\.aborted[\s\S]*setGenerationPhase\("stopping"\);[\s\S]*controller\.abort\(\)/,
+    /const handleStopGeneration[\s\S]*const controller = generateAbort\.current;[\s\S]*!controller \|\| controller\.signal\.aborted[\s\S]*updateGenerationPhase\("stopping"\);[\s\S]*controller\.abort\(\)/,
   );
   assert.match(
     source,
@@ -51,23 +51,34 @@ test("generation progress follows the request-owned lifecycle", () => {
   );
   assert.match(
     generation,
-    /busyRef\.current = "generating";\s*setBusy\("generating"\);\s*setGenerationPhase\("preparing"\);\s*const releaseInFlight/,
+    /busyRef\.current = "generating";\s*setBusy\("generating"\);\s*updateGenerationPhase\("preparing"\);\s*const releaseInFlight/,
   );
   assert.match(
     generation,
-    /generateAbort\.current = controller;\s*setGenerationPhase\("generating"\);\s*try \{\s*const generated = await generateAudio/,
+    /generateAbort\.current = controller;\s*updateGenerationPhase\("generating"\);\s*try \{\s*const generated = await generateAudio/,
   );
   assert.match(
     generation,
-    /const generated = await generateAudio[\s\S]*?\);\s*setGenerationPhase\("finishing"\);\s*const refreshed = await refreshGallery/,
+    /const generated = await generateAudio[\s\S]*?\);\s*updateGenerationPhase\("finishing"\);\s*const refreshed = await refreshGallery/,
   );
   assert.match(
     generation,
-    /catch \(error\) \{\s*if \(!controller\.signal\.aborted\) \{\s*setGenerationPhase\("finishing"\);[\s\S]*await refreshStatus\(\)/,
+    /catch \(error\) \{\s*if \(!controller\.signal\.aborted\) \{\s*updateGenerationPhase\("finishing"\);[\s\S]*await refreshStatus\(\)/,
   );
   assert.match(
     generation,
-    /finally \{\s*generateAbort\.current = null;\s*setGenerationPhase\(null\);\s*busyRef\.current = null;\s*setBusy\(null\)/,
+    /finally \{\s*generateAbort\.current = null;\s*updateGenerationPhase\(null\);\s*busyRef\.current = null;\s*setBusy\(null\)/,
+  );
+});
+
+test("mode transitions read the synchronously authoritative generation phase", () => {
+  assert.match(
+    source,
+    /const generationPhaseRef = useRef<AudioGenerationPhase>\(generationPhase\);\s*const updateGenerationPhase = useCallback\(\s*\(nextPhase: AudioGenerationPhase\) => \{\s*generationPhaseRef\.current = nextPhase;\s*setGenerationPhase\(nextPhase\)/,
+  );
+  assert.match(
+    source,
+    /canTransitionAudioMode\(busyRef\.current, generationPhaseRef\.current\)/,
   );
 });
 

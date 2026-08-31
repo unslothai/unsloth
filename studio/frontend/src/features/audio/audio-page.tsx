@@ -332,6 +332,14 @@ export function AudioPage({
   busyRef.current = busy;
   const [generationPhase, setGenerationPhase] =
     useState<AudioGenerationPhase>(null);
+  const generationPhaseRef = useRef<AudioGenerationPhase>(generationPhase);
+  const updateGenerationPhase = useCallback(
+    (nextPhase: AudioGenerationPhase) => {
+      generationPhaseRef.current = nextPhase;
+      setGenerationPhase(nextPhase);
+    },
+    [],
+  );
   const generationPresentation = audioGenerationPresentation(generationPhase);
 
   // --- TTS (main inference slot) -----------------------------------------
@@ -360,9 +368,9 @@ export function AudioPage({
   const handleStopGeneration = useCallback(() => {
     const controller = generateAbort.current;
     if (!controller || controller.signal.aborted) return;
-    setGenerationPhase("stopping");
+    updateGenerationPhase("stopping");
     controller.abort();
-  }, []);
+  }, [updateGenerationPhase]);
   const ttsLoadInFlight = useRef(false);
   // A pick that lost the race with a load still settling. Replayed once it does.
   const pendingRoutedTtsPick = useRef<{
@@ -1085,7 +1093,9 @@ export function AudioPage({
         if (nextMode === "transcribe") invalidatePendingTtsSelection();
         return true;
       }
-      if (!canTransitionAudioMode(busyRef.current, generationPhase)) {
+      if (
+        !canTransitionAudioMode(busyRef.current, generationPhaseRef.current)
+      ) {
         toast.info(
           "Wait for the active audio task to finish before switching modes.",
         );
@@ -1128,7 +1138,6 @@ export function AudioPage({
     },
     [
       invalidatePendingTtsSelection,
-      generationPhase,
       handleStopGeneration,
       mode,
       releaseTranscribeSelection,
@@ -1863,10 +1872,10 @@ export function AudioPage({
     if (busyRef.current) return;
     busyRef.current = "generating";
     setBusy("generating");
-    setGenerationPhase("preparing");
+    updateGenerationPhase("preparing");
     const releaseInFlight = pendingTranscribeRelease.current;
     if (releaseInFlight && !(await releaseInFlight)) {
-      setGenerationPhase(null);
+      updateGenerationPhase(null);
       busyRef.current = null;
       setBusy(null);
       setMode("transcribe");
@@ -1874,7 +1883,7 @@ export function AudioPage({
     }
     const instructions = audioInstructions.trim();
     if (musicGeneration && !instructions) {
-      setGenerationPhase(null);
+      updateGenerationPhase(null);
       busyRef.current = null;
       setBusy(null);
       toast.error("Add a music description for MiniMax Music 3.");
@@ -1883,7 +1892,7 @@ export function AudioPage({
     const language = audioLanguage.trim();
     const controller = new AbortController();
     generateAbort.current = controller;
-    setGenerationPhase("generating");
+    updateGenerationPhase("generating");
     try {
       const generated = await generateAudio(text, {
         ...(!musicGeneration && temperatureEdited ? { temperature } : {}),
@@ -1900,7 +1909,7 @@ export function AudioPage({
           : {}),
         signal: controller.signal,
       });
-      setGenerationPhase("finishing");
+      updateGenerationPhase("finishing");
       const refreshed = await refreshGallery();
       const generatedClip = persistedClipForGeneration(
         generated.clip_id,
@@ -1937,7 +1946,7 @@ export function AudioPage({
       }
     } catch (error) {
       if (!controller.signal.aborted) {
-        setGenerationPhase("finishing");
+        updateGenerationPhase("finishing");
         toast.error(
           error instanceof Error ? error.message : "Audio generation failed.",
         );
@@ -1945,7 +1954,7 @@ export function AudioPage({
       }
     } finally {
       generateAbort.current = null;
-      setGenerationPhase(null);
+      updateGenerationPhase(null);
       busyRef.current = null;
       setBusy(null);
       if (activeRef.current && modeRef.current === "speak")
@@ -1963,6 +1972,7 @@ export function AudioPage({
     instructionsKind,
     temperature,
     temperatureEdited,
+    updateGenerationPhase,
     maxTokens,
     refreshGallery,
     refreshStatus,

@@ -652,12 +652,12 @@ test("generation is claimed before the transcribe release is awaited", () => {
   // each resumed into its own generateAudio while generateAbort tracked only the last.
   assert.match(
     audioPageSource,
-    /if \(busyRef\.current\) return;\s*busyRef\.current = "generating";\s*setBusy\("generating"\);\s*setGenerationPhase\("preparing"\);\s*const releaseInFlight = pendingTranscribeRelease\.current;\s*if \(releaseInFlight/,
+    /if \(busyRef\.current\) return;\s*busyRef\.current = "generating";\s*setBusy\("generating"\);\s*updateGenerationPhase\("preparing"\);\s*const releaseInFlight = pendingTranscribeRelease\.current;\s*if \(releaseInFlight/,
   );
   // And a release that failed hands the slot back rather than wedging the button.
   assert.match(
     audioPageSource,
-    /if \(releaseInFlight && !\(await releaseInFlight\)\) \{\s*setGenerationPhase\(null\);\s*busyRef\.current = null;\s*setBusy\(null\);\s*setMode\("transcribe"\);/,
+    /if \(releaseInFlight && !\(await releaseInFlight\)\) \{\s*updateGenerationPhase\(null\);\s*busyRef\.current = null;\s*setBusy\(null\);\s*setMode\("transcribe"\);/,
   );
 });
 
