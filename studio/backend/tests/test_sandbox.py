@@ -73,8 +73,13 @@ def sandboxed_workdir(tmp_path, monkeypatch):
     from core.inference import tools
 
     sid = "_sbtest"
-    monkeypatch.setitem(tools._workdirs, sid, str(tmp_path))
-    yield sid, str(tmp_path)
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path))
+    tools._workdirs.pop(sid, None)
+    workdir = tools._get_workdir(sid)
+    try:
+        yield sid, workdir
+    finally:
+        tools._workdirs.pop(sid, None)
 
 
 @pytest.fixture
@@ -360,10 +365,9 @@ def test_get_workdir_returns_realpath_when_home_is_symlinked(tmp_path, monkeypat
     real_home.mkdir()
     home_symlink = tmp_path / "home_symlink"
     os.symlink(real_home, home_symlink)
-    monkeypatch.setattr(
-        os.path,
-        "expanduser",
-        lambda p: str(home_symlink) if p == "~" else p,
+    monkeypatch.setenv(
+        "UNSLOTH_STUDIO_SANDBOX_HOME",
+        str(home_symlink / "sandbox"),
     )
 
     from core.inference import tools
@@ -373,7 +377,7 @@ def test_get_workdir_returns_realpath_when_home_is_symlinked(tmp_path, monkeypat
     try:
         assert os.path.realpath(wd) == wd, wd
         assert str(home_symlink) not in wd, wd
-        assert str(real_home) in wd, wd
+        assert str(real_home / "sandbox") in wd, wd
     finally:
         tools._workdirs.pop("_realpath_test", None)
 

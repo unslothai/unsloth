@@ -1,4 +1,4 @@
-"""Regression tests for the installers' post-install autostart opt-out."""
+"""Regression tests for installer controls and process exits."""
 
 from __future__ import annotations
 
@@ -9,6 +9,8 @@ import subprocess
 from pathlib import Path
 
 import pytest
+
+from unsloth_pwsh_runner import run_pwsh
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INSTALL_SH = REPO_ROOT / "install.sh"
@@ -90,7 +92,10 @@ def test_windows_skip_autostart_value_parsing_with_no_torch(value: str, expected
     env = os.environ.copy()
     env["UNSLOTH_NO_TORCH"] = "1"
     env["UNSLOTH_SKIP_AUTOSTART"] = value
-    result = subprocess.run(
+    # run_pwsh, not subprocess.run: an interpreter killed at startup never evaluated the
+    # UNSLOTH_SKIP_AUTOSTART parser, and check = True would present that as this parser
+    # answering wrongly for the value. See tests/_shared/unsloth_pwsh_runner.py.
+    result = run_pwsh(
         [
             "pwsh",
             "-NoProfile",
@@ -118,6 +123,30 @@ def test_windows_skip_autostart_bypasses_only_the_interactive_prompt():
     assert source.index("Start Unsloth Studio now? [Y/n]") < source.index(
         'step "launch" "manual commands:"'
     )
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
+def test_windows_installer_invalid_package_fails():
+    # run_pwsh, not subprocess.run: this case asserts a non-zero exit, which a pwsh that
+    # aborted at startup also produces, so the crash would read as install.ps1 having
+    # rejected the bad package name. See tests/_shared/unsloth_pwsh_runner.py.
+    result = run_pwsh(
+        [
+            "pwsh",
+            "-NoProfile",
+            "-NonInteractive",
+            "-File",
+            str(INSTALL_PS1),
+            "--package",
+            "bad!",
+        ],
+        capture_output = True,
+        text = True,
+        timeout = 30,
+    )
+
+    assert result.returncode != 0
+    assert "package name contains invalid characters" in result.stdout + result.stderr
 
 
 def test_skip_autostart_is_documented_for_all_installers():

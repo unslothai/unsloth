@@ -26,7 +26,7 @@ def _load_get_model_name():
     namespace = dict(mapper_ns)
     namespace["SUPPORTS_FOURBIT"] = True
     namespace["_env_says_offline"] = lambda: True
-    namespace["_get_new_mapper"] = lambda: ({}, {}, {})
+    namespace["_get_new_mapper"] = lambda: ({}, {}, {}, {}, {})
 
     wanted = {"__get_model_name", "_resolve_with_mappers", "get_model_name"}
     for node in tree.body:

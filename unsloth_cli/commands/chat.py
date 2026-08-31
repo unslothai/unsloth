@@ -8,6 +8,7 @@ import typer
 from rich.console import Console
 
 from unsloth_cli._inference import (
+    SpeculativeType,
     collect_stream,
     configure_quiet_logging,
     connect_studio_server,
@@ -126,38 +127,44 @@ def _drain_available_stdin() -> None:
         return
 
 
-def _pick_trained_model(console) -> str:
+def _pick_model(console) -> str:
     ensure_studio_backend_path()
-    from utils.models import scan_trained_models
+    from unsloth_cli._model_catalog import list_chat_models
 
-    trained = scan_trained_models()
-    if not trained:
+    entries = list_chat_models()
+    if not entries:
         typer.echo(
-            "No trained models found in your outputs folder. "
-            "Pass a model id or path: `unsloth chat <model>`.",
+            "No local models found. Pass a model id or path: `unsloth chat <model>`.",
             err = True,
         )
         raise typer.Exit(code = 1)
 
-    console.print("Your trained models (newest first):", style = "bold")
-    for i, (display_name, _, model_type) in enumerate(trained, 1):
-        console.print(f"  {i}. {display_name}  ({model_type})", markup = False)
+    console.print("Your models", style = "bold")
+    width = max(len(e.name) for e in entries)
+    group = None
+    for i, entry in enumerate(entries, 1):
+        if entry.group != group:
+            group = entry.group
+            console.print(f"\n  {group}", style = "bright_black")
+        line = f"  {i:>2}. {entry.name:<{width}}   {entry.detail}".rstrip()
+        console.print(line, markup = False, highlight = False, soft_wrap = True)
+    console.print()
 
     while True:
         try:
-            raw = input(f"Chat with [1-{len(trained)}, Enter = 1]: ").strip()
+            raw = input(f"Chat with [1-{len(entries)}, Enter = 1]: ").strip()
         except (EOFError, KeyboardInterrupt):
             raise typer.Exit(code = 1)
         if not raw:
-            return trained[0][1]
-        if raw.isdigit() and 1 <= int(raw) <= len(trained):
-            return trained[int(raw) - 1][1]
-        console.print(f"Pick a number between 1 and {len(trained)}.", style = "yellow")
+            return entries[0].model
+        if raw.isdigit() and 1 <= int(raw) <= len(entries):
+            return entries[int(raw) - 1].model
+        console.print(f"Pick a number between 1 and {len(entries)}.", style = "yellow")
 
 
 def chat(
     model: Optional[str] = typer.Argument(
-        None, help = "HF model id or local path. Omit to pick one of your trained models."
+        None, help = "HF model id or local path. Omit to pick one of your local models."
     ),
     hf_token: Optional[str] = typer.Option(
         None, "--hf-token", envvar = "HF_TOKEN", help = "Hugging Face token if needed."
@@ -180,6 +187,18 @@ def chat(
             "of by layer. Under non-MPI mlx.launch, select MLX tensor "
             "parallel mode instead of pipeline mode."
         ),
+    ),
+    speculative_type: Optional[SpeculativeType] = typer.Option(
+        None,
+        "--speculative-type",
+        help = "Speculative decoding mode for GGUF models, including DSpark sidecar discovery.",
+    ),
+    spec_draft_n_max: Optional[int] = typer.Option(
+        None,
+        "--spec-draft-n-max",
+        min = 1,
+        max = 16,
+        help = "Maximum draft tokens per step for MTP or DSpark (1..16).",
     ),
     llama_extra_args: Optional[List[str]] = typer.Option(
         None,
@@ -206,7 +225,7 @@ def chat(
     no_server: bool = typer.Option(
         False,
         "--no-server",
-        help = "Load the model in-process even if a Studio server is running.",
+        help = "Load the model in-process even if an Unsloth server is running.",
     ),
 ):
     """Start an interactive chat with a model (loads once, stays warm)."""
@@ -238,7 +257,7 @@ def chat(
                     markup = False,
                 )
             raise typer.Exit(code = 1)
-        model = _pick_trained_model(console)
+        model = _pick_model(console)
 
     # Resolve first so --compare can be rejected before the slow load.
     with quiet_if_nonzero_mlx_rank():
@@ -261,15 +280,19 @@ def chat(
         tensor_parallel = tensor_parallel,
         llama_extra_args = llama_extra_args,
     )
+    if speculative_type is not None:
+        load_opts["speculative_type"] = speculative_type
+    if spec_draft_n_max is not None:
+        load_opts["spec_draft_n_max"] = spec_draft_n_max
 
-    # Prefer a running Studio server: instant starts, model shared with the UI.
+    # Prefer a running Unsloth server: instant starts, model shared with the UI.
     chat_backend = (
         None if (no_server or is_mlx_distributed) else connect_studio_server(model, **load_opts)
     )
     server_mode = chat_backend is not None
     if server_mode and should_print:
         console.print(
-            "(Studio server connected — model stays warm after /exit)",
+            "(Unsloth server connected — model stays warm after /exit)",
             style = "bright_black",
         )
     else:
@@ -331,7 +354,7 @@ def chat(
             enable_thinking = show_thinking,
             use_adapter = use_adapter,
         )
-        return raise_on_streamed_error(stream) if is_mlx_distributed else stream
+        return raise_on_streamed_error(stream)
 
     if should_print:
         console.print()

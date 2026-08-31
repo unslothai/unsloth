@@ -100,6 +100,27 @@ def test_status_response_exposes_update_size_bytes():
     assert rl.LlamaUpdateStatusResponse(**without).model_dump()["update_size_bytes"] is None
 
 
+def test_status_response_exposes_update_component():
+    model = rl.LlamaUpdateStatusResponse(
+        supported = True,
+        update_available = True,
+        llama_update_available = False,
+        update_component = "whisper",
+        whisper = {
+            "update_available": True,
+            "installed_tag": "v1",
+            "latest_tag": "v2",
+        },
+    )
+    assert model.model_dump()["update_component"] == "whisper"
+
+
+def test_backend_status_response_exposes_selection_applied():
+    model = rl.LlamaBackendStatusResponse(selection_applied = False)
+
+    assert model.model_dump()["selection_applied"] is False
+
+
 def test_status_handler_runs_off_event_loop(monkeypatch):
     seen = {}
 

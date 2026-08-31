@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import importlib.util
 import json
 import threading
 import time
@@ -99,10 +100,10 @@ def test_no_tracker_enter_inside_async_generators():
 def test_tracker_enter_exists_in_sync_body_of_chat_completions():
     top = None
     for n in ast.walk(_TREE):
-        if isinstance(n, ast.AsyncFunctionDef) and n.name == "openai_chat_completions":
+        if isinstance(n, ast.AsyncFunctionDef) and n.name == "produce_openai_chat_completions":
             top = n
             break
-    assert top is not None, "openai_chat_completions handler missing"
+    assert top is not None, "produce_openai_chat_completions handler missing"
     count = 0
     for sub in ast.walk(top):
         if not isinstance(sub, ast.Call):
@@ -116,7 +117,7 @@ def test_tracker_enter_exists_in_sync_body_of_chat_completions():
         ):
             count += 1
     assert count >= 3, (
-        f"expected >=3 _tracker.__enter__() calls in openai_chat_completions "
+        f"expected >=3 _tracker.__enter__() calls in produce_openai_chat_completions "
         f"(one per streaming path), got {count}"
     )
 
@@ -147,7 +148,7 @@ def test_async_generators_cleanup_tracker_in_finally():
 
 
 def test_chat_completions_streams_avoid_starlette_task_group():
-    top = _async_function("openai_chat_completions")
+    top = _async_function("produce_openai_chat_completions")
     legacy_calls = []
     same_task_calls = 0
     for sub in ast.walk(top):
@@ -189,7 +190,7 @@ def test_openai_passthrough_stream_avoids_starlette_task_group():
 
 
 def test_local_chat_streams_install_same_task_disconnect_watcher():
-    top = _async_function("openai_chat_completions")
+    top = _async_function("produce_openai_chat_completions")
     assert _calls_name(top, "_await_disconnect_then_cancel"), (
         "Local same-task streams must watch request disconnects themselves; "
         "do not restore Starlette's task-group StreamingResponse for this."
@@ -256,6 +257,20 @@ _WANTED = {
 }
 
 
+def _load_active_generations():
+    """The real registry `_TrackedCancel` records runs in.
+
+    Loaded straight off disk rather than imported, so the extracted class runs
+    against the genuine module without pulling in the whole route package (and
+    without putting studio/backend on sys.path for the rest of the session).
+    """
+    path = SOURCE_PATH.parents[1] / "state" / "active_generations.py"
+    spec = importlib.util.spec_from_file_location("studio_active_generations", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _load_registry_module():
     chunks = []
     for n in _TREE.body:
@@ -274,7 +289,7 @@ def _load_registry_module():
             and n.target.id in _WANTED
         ):
             chunks.append(seg)
-    mod = {}
+    mod = {"active_generations": _load_active_generations()}
     exec("import threading, time\n" + "\n\n".join(chunks), mod)
     return mod
 
@@ -674,16 +689,18 @@ def test_generate_stream_cancels_backend_on_stream_cancelled_error():
             body_src = "\n".join(ast.unparse(stmt) for stmt in sub.body)
             found_cancel_handler = (
                 "cancel_event.set()" in body_src
-                and "backend.reset_generation_state()" in body_src
+                and "backend.reset_generation_state(cancel_event)" in body_src
                 and any(isinstance(stmt, ast.Raise) and stmt.exc is None for stmt in sub.body)
             )
         if isinstance(sub, ast.Try) and sub.finalbody:
             final_src = "\n".join(ast.unparse(stmt) for stmt in sub.finalbody)
-            found_finally_cleanup = (
+            # Accumulate: an existence claim, and the cleanup sits in a nested try whose
+            # own finally only unregisters the swap-gate entry.
+            found_finally_cleanup = found_finally_cleanup or (
                 "not completed" in final_src
                 and "not cancel_event.is_set()" in final_src
                 and "cancel_event.set()" in final_src
-                and "backend.reset_generation_state()" in final_src
+                and "backend.reset_generation_state(cancel_event)" in final_src
                 and _awaits_to_thread_gen_close(sub)
             )
 
@@ -708,7 +725,7 @@ def test_stream_chunks_cancel_branch_resets_backend_state():
     fn = None
     top = None
     for n in ast.walk(_TREE):
-        if isinstance(n, ast.AsyncFunctionDef) and n.name == "openai_chat_completions":
+        if isinstance(n, ast.AsyncFunctionDef) and n.name == "produce_openai_chat_completions":
             top = n
             break
     assert top is not None
@@ -731,11 +748,11 @@ def test_stream_chunks_cancel_branch_resets_backend_state():
         ):
             continue
         body_src = "\n".join(ast.unparse(s) for s in sub.body)
-        if "backend.reset_generation_state()" in body_src:
+        if "backend.reset_generation_state(cancel_event)" in body_src:
             return
     raise AssertionError(
         "stream_chunks `if cancel_event.is_set():` branch must call "
-        "backend.reset_generation_state() -- matches the existing "
+        "backend.reset_generation_state(cancel_event) -- matches the existing "
         "request.is_disconnected() / CancelledError cleanup paths and "
         "prevents KV-cache drift after cancel-via-POST"
     )

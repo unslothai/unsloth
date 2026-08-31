@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Studio chat composer IME + multilingual regression smoke.
+"""Unsloth chat composer IME + multilingual regression smoke.
 
 Covers: stuck IME composition (#5318 / PR #5327), multilingual paste round-trip,
 stuck compositionend (#5546), and Mac input-method switch recovery (keydown/blur).
@@ -10,6 +10,7 @@ playwright_chat_ui.py: BASE_URL, STUDIO_NEW_PW, PW_ART_DIR, STUDIO_UI_STRICT.
 """
 
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -119,17 +120,73 @@ with sync_playwright() as p:
     console_errors: list[str] = []
     expected_probe_cancel_500s = [0]
 
+    # A send answers "does this thread / message row exist yet" with a GET that
+    # 404s until the row lands (#8136 replaced a full listing with that read),
+    # and the browser logs every 404 as a console.error with no URL in its text.
+    # Those two reads are expected traffic on a healthy send. The URL alone does
+    # not identify them: a persistence PUT or PATCH to the very same path 404s on
+    # exactly these patterns, and silently exempting that would hide a real
+    # failure to save. So the exemption is resolved against the response ledger
+    # below -- a console 404 is forgiven only if an actual GET 404 was observed
+    # at that URL, and each observed GET is spent by at most one console error.
+    EXPECTED_404_URL_RES = (
+        re.compile(r"/api/chat/threads/[^/?#]+$"),
+        re.compile(r"/api/chat/threads/[^/?#]+/messages/[^/?#]+$"),
+    )
+
+    # url -> count of GET responses that returned 404 and are not yet spent.
+    unspent_get_404s: dict[str, int] = {}
+    # (text, url) for console 404s whose URL matched; resolved after the run.
+    deferred_404_console: list[tuple[str, str]] = []
+
+    def _url_is_exemptible(url: str) -> bool:
+        return any(pattern.search(url) for pattern in EXPECTED_404_URL_RES)
+
+    def _on_response(response):
+        try:
+            if response.status != 404:
+                return
+            url = response.url
+            if response.request.method != "GET" or not _url_is_exemptible(url):
+                return
+            unspent_get_404s[url] = unspent_get_404s.get(url, 0) + 1
+        except Exception:
+            return
+
     def _on_console(m):
         if m.type != "error":
             return
         try:
-            console_errors.append(m.text)
+            text = m.text
+            url = ""
+            try:
+                url = (m.location or {}).get("url", "") or ""
+            except Exception:
+                url = ""
+            if "status of 404" in text and _url_is_exemptible(url):
+                deferred_404_console.append((text, url))
+                return
+            console_errors.append(text)
         except Exception:
             return
+
+    def _resolve_deferred_404s() -> None:
+        """Promote every console 404 with no matching unspent GET into a failure.
+
+        Ordering between the response event and the console error is not
+        guaranteed, so resolution happens once at the end rather than inline.
+        """
+        for text, url in deferred_404_console:
+            remaining = unspent_get_404s.get(url, 0)
+            if remaining > 0:
+                unspent_get_404s[url] = remaining - 1
+                continue
+            console_errors.append(text)
 
     def _attach_listeners(target):
         target.on("pageerror", lambda e: page_errors.append(str(e)))
         target.on("console", _on_console)
+        target.on("response", _on_response)
 
     _attach_listeners(page)
 
@@ -241,10 +298,12 @@ with sync_playwright() as p:
 
     # Source-level guard: grep the unmounted edit/compare composers' JSX for dir="auto".
     _repo_root = Path(__file__).resolve().parents[2]
-    _thread_src = (
-        _repo_root / "studio/frontend/src/components/assistant-ui/thread.tsx"
-    ).read_text()
-    _shared_src = (_repo_root / "studio/frontend/src/features/chat/shared-composer.tsx").read_text()
+    _thread_src = (_repo_root / "studio/frontend/src/components/assistant-ui/thread.tsx").read_text(
+        encoding = "utf-8"
+    )
+    _shared_src = (_repo_root / "studio/frontend/src/features/chat/shared-composer.tsx").read_text(
+        encoding = "utf-8"
+    )
     _edit_idx = _thread_src.find("aui-edit-composer-input")
     if _edit_idx == -1 or 'dir="auto"' not in _thread_src[_edit_idx : _edit_idx + 600]:
         soft_fail('edit composer source is missing dir="auto"')
@@ -570,6 +629,17 @@ with sync_playwright() as p:
     )
     # Second watchdog cycle: requestSubmit() after the re-armed window must be
     # allowed; the buggy build stays gated forever.
+    #
+    # The flush has to be read off the composer that is on screen when the
+    # submit settles, not off the node captured before it. A send in a new chat
+    # swaps the empty-thread view for the thread view, so React unmounts the
+    # textarea this step composed into and mounts a fresh one. Since #8136
+    # rendered the send without waiting on persistence, that swap lands inside
+    # the 250ms settle window, and the detached node keeps '你好' forever --
+    # which reads as "Send never unlocked" on a build that sent the message
+    # correctly. `sent` is the corroboration that the flush came from a real
+    # send and not from the composer being replaced: a blocked submit leaves
+    # the text in the live composer and adds no user message.
     rearm_probe = page.evaluate(
         """async (selector) => {
             const ta = document.querySelector(selector);
@@ -578,25 +648,46 @@ with sync_playwright() as p:
             const before = ta.value;
             // Wait past the 2500ms watchdog + slack so the re-armed timer
             // fires. If the fix is missing this still resolves but the
-            // submit will not flush the textarea.
+            // submit will not flush the composer.
             await new Promise(r => setTimeout(r, 3500));
             try { form.requestSubmit(); } catch (e) {}
-            // Give the submit handler a tick to flush state.
-            await new Promise(r => setTimeout(r, 250));
-            return {ok: true, before, after: ta.value};
+            // Give the submit handler a tick to flush state, then re-read the
+            // live composer (see above; `ta` may be detached by now).
+            let live = null;
+            let sent = false;
+            for (let i = 0; i < 12; i++) {
+                await new Promise(r => setTimeout(r, 250));
+                live = document.querySelector(selector);
+                sent = Array.from(
+                    document.querySelectorAll('.aui-user-message-root')
+                ).some((n) => (n.innerText || '').includes(before));
+                if (sent && live && live.value !== before) break;
+            }
+            return {
+                ok: true,
+                before,
+                after: live ? live.value : null,
+                sent,
+                detached: !ta.isConnected,
+            };
         }""",
         'textarea[aria-label="Message input"]',
     )
-    if rearm_probe.get("ok") and rearm_probe.get("after") == rearm_probe.get("before"):
+    if rearm_probe.get("ok") and (
+        rearm_probe.get("after") == rearm_probe.get("before") or not rearm_probe.get("sent")
+    ):
         shoot("06d-keydown-rearm-FAIL")
         fail(
             "After the keydown re-pin the watchdog never re-armed; Send "
             "stayed permanently locked on the WSL+Chrome stuck-end path "
-            "(#5546 follow-up regression)."
+            "(#5546 follow-up regression). Live composer still "
+            f"{rearm_probe.get('after')!r}, message delivered="
+            f"{rearm_probe.get('sent')}."
         )
     info(
-        "watchdog re-armed after keydown re-pin: textarea flushed from "
-        f"{rearm_probe.get('before')!r} to {rearm_probe.get('after')!r}"
+        "watchdog re-armed after keydown re-pin: composer flushed from "
+        f"{rearm_probe.get('before')!r} to {rearm_probe.get('after')!r} "
+        f"(message delivered; composer node swapped={rearm_probe.get('detached')})"
     )
     shoot("06d-keydown-rearm")
     info("keydown re-pin re-arm PASS")
@@ -758,6 +849,7 @@ with sync_playwright() as p:
 
     # 7. Final state: filter benign 401 noise via is_benign_*; fail on real errors.
     shoot("07-final")
+    _resolve_deferred_404s()
     real_page_errors = [e for e in page_errors if not is_benign_page_error(e)]
     probe_cancel_500_allowance = expected_probe_cancel_500s[0]
     real_console_errors = []

@@ -18,6 +18,7 @@ import pytest
 
 # install_python_stack.py lives at repo_root/studio/install_python_stack.py
 _INSTALL_SCRIPT = Path(__file__).resolve().parents[2] / "install_python_stack.py"
+_EXTRAS_REQUIREMENTS = Path(__file__).resolve().parent.parent / "requirements" / "extras.txt"
 
 
 def _load_module(monkeypatch):
@@ -79,6 +80,21 @@ def test_default_spec_matches_table(monkeypatch):
     assert mod._select_torchao_spec("2.9.0") == mod._TORCHAO_DEFAULT_SPEC
 
 
+def test_matching_torchao_pin_does_not_need_force_reinstall(monkeypatch):
+    mod = _load_module(monkeypatch)
+    monkeypatch.setattr(mod, "_installed_distribution_version", lambda _name: "0.17.0")
+    assert mod._exact_distribution_spec_is_installed("torchao==0.17.0")
+    assert not mod._exact_distribution_spec_is_installed("torchao==0.16.0")
+
+
+def test_windows_first_hop_uses_einx_wheel_without_shared_test_tree():
+    requirements = _EXTRAS_REQUIREMENTS.read_text(encoding = "utf-8")
+    assert 'einx<0.4.3; sys_platform == "win32"' in requirements
+    # einx dropped 3.9 in 0.4.0, so the non-Windows side is split by interpreter.
+    assert 'einx==0.4.3; sys_platform != "win32" and python_version >= "3.10"' in requirements
+    assert 'einx==0.3.0; sys_platform != "win32" and python_version < "3.10"' in requirements
+
+
 @pytest.mark.parametrize(
     ("rocm_windows_torch_installed", "installed_torch_is_windows_rocm"),
     [
@@ -118,6 +134,13 @@ def test_skips_torchao_on_windows_rocm(
     monkeypatch.setattr(
         mod, "_installed_torch_is_windows_rocm", lambda: installed_torch_is_windows_rocm
     )
+    # #10053 added a require_present gate to install_python_stack: after the core phase
+    # it refuses when a managed distribution is not installed at all, which SKIP_STUDIO_BASE
+    # guarantees here. Unstubbed, this test asks whether unsloth happens to be installed in
+    # whatever environment runs it -- it passes on a developer machine that has it and fails
+    # in CI, which is not what the test is about. Stubbed like every other installer side
+    # effect below.
+    monkeypatch.setattr(mod, "_repair_damaged_core_payload", lambda *a, **k: True)
     monkeypatch.setattr(mod, "_bootstrap_uv", lambda: False)
     monkeypatch.setattr(mod, "_repair_bad_anyio", lambda: None)
     monkeypatch.setattr(mod, "_ensure_rocm_torch", lambda: None)
