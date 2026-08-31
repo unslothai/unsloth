@@ -279,6 +279,10 @@ def _video_engine() -> Any:
 _ENGINES = {DIFFUSION: _diffusion_engine, VIDEO: _video_engine}
 
 
+def engine_if_imported(owner: str) -> Any:
+    return _ENGINES[owner]()
+
+
 def _completed_token(progress: dict[str, Any]) -> Optional[tuple[Any, ...]]:
     """Identity of the last FINISHED job, for a backend that publishes a terminal record.
 

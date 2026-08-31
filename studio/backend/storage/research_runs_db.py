@@ -859,7 +859,33 @@ def retry(run_id: str, max_retries: int = 3) -> str:
         conn.close()
 
 
+_CLAIMABLE_SQL = """SELECT r.id FROM research_runs r
+               JOIN research_thread_claims c ON c.thread_id=r.thread_id
+               WHERE r.owner_subject=c.owner_subject
+                 AND r.status IN ('planning','queued','running','cancelling')
+                 AND (r.lease_owner IS NULL OR r.lease_expires_at < ?)
+               LIMIT 1"""
+
+
+def _has_claimable(now: int) -> bool:
+    """Read-only probe for claimable work, taking no write lock.
+
+    The supervisor polls twice a second forever and almost every poll finds nothing, so
+    opening BEGIN IMMEDIATE first meant an idle Studio held the writer lock 2x/second and
+    any slow writer elsewhere became a stream of "database is locked" here.
+    """
+    conn = get_connection()
+    try:
+        return conn.execute(_CLAIMABLE_SQL, (now,)).fetchone() is not None
+    finally:
+        conn.close()
+
+
 def claim_next(worker_id: str, lease_ms: int = 120_000) -> dict | None:
+    # Advisory only: the row can disappear between this probe and the transaction below,
+    # which the "row is None" branch inside already handles.
+    if not _has_claimable(now_ms()):
+        return None
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")

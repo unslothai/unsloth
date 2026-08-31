@@ -2721,6 +2721,7 @@ from models.inference import (
     ImageGenerationData,
     ImageGenerationResponse,
     AudioSpeechRequest,
+    AudioGalleryFlagsPatch,
     AudioGalleryItem,
     AudioGalleryListResponse,
     LoadResponse,
@@ -2758,11 +2759,14 @@ from models.inference import (
     ResponsesUnknownInputItem,
     ResponsesFunctionCallInputItem,
     ResponsesFunctionCallOutputInputItem,
+    ResponsesCustomToolCallInputItem,
+    ResponsesCustomToolCallOutputInputItem,
     ResponsesOutputTextContent,
     ResponsesOutputMessage,
     ResponsesOutputReasoning,
     ResponsesOutputReasoningContent,
     ResponsesOutputFunctionCall,
+    ResponsesOutputCustomToolCall,
     ResponsesUsage,
     ResponsesResponse,
     AnthropicMessagesRequest,
@@ -6834,8 +6838,7 @@ def _target_accepts_request_input(
 
 
 _AUDIO_IMAGE_INPUT_DETAIL = (
-    "This model takes audio or an image in one message, not both."
-    " Send the image on its own turn."
+    "This model takes audio or an image in one message, not both. Send the image on its own turn."
 )
 
 
@@ -16486,10 +16489,20 @@ async def openai_audio_speech(
     ``voice``/``speed`` ignored, and only WAV exists, so another ``response_format`` is
     a 400 rather than a silent container mismatch."""
     if body.provider_id:
+        fmt = (body.response_format or "wav").strip().lower()
+        if fmt != "wav":
+            raise HTTPException(
+                status_code = 400,
+                detail = (
+                    f"Unsupported response_format '{body.response_format}' for an external "
+                    "TTS connection. Only 'wav' is supported."
+                ),
+            )
         # This branch never touches the local GGUF. Drop it before any monitor or
         # upstream await so slow external speech cannot block a local swap/training
         # start or reset the local model's idle timer.
         from core.inference.llama_keepwarm import untrack_current_request
+
         untrack_current_request(request.scope)
         # A saved TTS connection is still media traffic through this server,
         # just like the proxied STT path below. Keep it visible in the monitor
@@ -23507,6 +23520,12 @@ def _openai_model_objects() -> list[dict]:
         _native_ctx = _positive_int_or_none(getattr(llama_backend, "native_context_length", None))
         if _native_ctx is not None:
             entry["native_context_length"] = _native_ctx
+        # The same gate /v1/audio/speech applies: _audio_type alone also matches whisper
+        # (ASR) and audio_vlm (Gemma 3n chat), which that route rejects with a 400.
+        if getattr(llama_backend, "_is_audio", False) and (
+            getattr(llama_backend, "_audio_type", None) in _GGUF_TTS_AUDIO_TYPES
+        ):
+            entry["task"] = _TTS_MODEL_TASK
         models.append(entry)
 
     # Check Unsloth backend
@@ -23531,6 +23550,12 @@ def _openai_model_objects() -> list[dict]:
                     break
         if _ctx is not None:
             entry["context_length"] = _ctx
+        if (
+            not model_info.get("is_mlx")
+            and model_info.get("is_audio")
+            and (model_info.get("audio_type") in _TRANSFORMERS_TTS_AUDIO_TYPES)
+        ):
+            entry["task"] = _TTS_MODEL_TASK
         models.append(entry)
 
     return models
@@ -23601,6 +23626,264 @@ def _catalog_lock() -> asyncio.Lock:
         return lock
 
 
+def _classified_catalog(models: list) -> list:
+    from hub.services.models.catalog_classification import _local_model_classification
+
+    classified = []
+    for model in models:
+        if getattr(model, "task", None) is None and hasattr(model, "model_copy"):
+            try:
+                task, audio_type = _local_model_classification(model)
+                model = model.model_copy(update = {"task": task, "audio_type": audio_type})
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "model task classification failed for %s: %s", getattr(model, "id", "?"), exc
+                )
+        classified.append(model)
+    return classified
+
+
+_MEDIA_MODEL_TASKS = ("text-to-image", "text-to-video")
+_STT_MODEL_TASK = "automatic-speech-recognition"
+_TTS_MODEL_TASK = "text-to-speech"
+
+
+def _media_owner(task: str) -> str:
+    from core.inference.gpu_arbiter import DIFFUSION, VIDEO
+    return DIFFUSION if task == "text-to-image" else VIDEO
+
+
+def _resident_media_status(task: str) -> Optional[dict]:
+    from core.inference.media_keepwarm import engine_if_imported
+    try:
+        engine = engine_if_imported(_media_owner(task))
+        status = engine.status() if engine is not None else None
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("%s status unavailable for /v1/models: %s", task, exc)
+        return None
+    return status if status and status.get("loaded") else None
+
+
+_MEDIA_PICK_CACHE: dict = {"at": None, "picks": {}}
+_MEDIA_PICK_CACHE_LOCK = threading.Lock()
+
+
+def _validated_media_picks(catalog_at: float) -> dict:
+    """The (id, pick) rows per task, rebuilt only when the shared catalog scan is replaced.
+
+    Each media index keeps its own short TTL and its own ``collect_local_models`` walk, so
+    resolving them per request made an otherwise-cached /v1/models pay two extra full
+    scans. The Settings usage examples poll this endpoint, so that cost repeats.
+    """
+    if _MEDIA_PICK_CACHE["at"] == catalog_at:
+        return _MEDIA_PICK_CACHE["picks"]
+    with _MEDIA_PICK_CACHE_LOCK:
+        if _MEDIA_PICK_CACHE["at"] == catalog_at:
+            return _MEDIA_PICK_CACHE["picks"]
+        from core.inference.media_locality import is_edit_only, missing_download_bytes
+        from core.inference.media_model_index import (
+            available_media_model_ids,
+            resolve_local_media_model,
+        )
+
+        picks: dict = {}
+        for task in _MEDIA_MODEL_TASKS:
+            rows = []
+            for model_id in available_media_model_ids(task):
+                pick = resolve_local_media_model(model_id, task = task)
+                if pick is None:
+                    continue
+                # The local catalog tags an instruction-editing checkpoint text-to-image, but it
+                # ships no txt2img workflow: the switch refuses it with a 400 and a resident one
+                # is refused by /v1/images/generations too.
+                if task == "text-to-image" and is_edit_only(pick):
+                    continue
+                try:
+                    local = missing_download_bytes(_media_owner(task), pick) == 0
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("media locality unavailable for %s: %s", model_id, exc)
+                    local = False
+                rows.append((model_id, pick, local))
+            picks[task] = rows
+        _MEDIA_PICK_CACHE.update(at = catalog_at, picks = picks)
+        return picks
+
+
+def _media_model_objects(catalog: list, created: int, catalog_at: float) -> list[dict]:
+    """Downloaded image/video models, as the generation resolver actually sees them.
+
+    Built from the media index rather than the raw catalog, because that index is what
+    /v1/images/generations and /v1/videos resolve a name against: it drops partial pulls,
+    directories no loader can open, and builds a sibling quant cannot be told apart from.
+    Anything it rejects would be advertised here and then answered with model_not_found.
+
+    Residency goes through ``resident_is_pick`` for the same reason. A standalone GGUF
+    loads with its parent directory as the model path and an HF cache repo with its
+    snapshot directory, so comparing the public id or the catalog's own path reports the
+    resident model as unloaded. Residency is read per request; only the scan is cached.
+    """
+    from core.inference.media_model_index import (
+        partition_matches,
+        resident_is_gguf,
+        satisfied_by,
+    )
+    from hub.utils.gguf import extract_quant_token
+
+    display_by_id: dict[str, str] = {}
+    for info in catalog:
+        cid = getattr(info, "model_id", None) or public_model_id(getattr(info, "id", None))
+        display = getattr(info, "display_name", None)
+        if cid and display:
+            display_by_id.setdefault(cid, display)
+
+    picks_by_task = _validated_media_picks(catalog_at)
+    objects: list[dict] = []
+    for task in _MEDIA_MODEL_TASKS:
+        status = _resident_media_status(task)
+        for model_id, pick, local in picks_by_task.get(task, ()):
+            loaded = bool(status) and satisfied_by(status, model_id, pick)
+            if not loaded and not local:
+                continue
+            obj = {
+                "id": model_id,
+                "object": "model",
+                "created": created,
+                "owned_by": _OWNED_BY,
+                "task": task,
+                "loaded": loaded,
+            }
+            quant = (status.get("gguf_variant") if loaded else None) or (
+                extract_quant_token(pick.gguf_filename) if pick.gguf_filename else None
+            )
+            if quant:
+                obj["quant"] = quant
+            display = display_by_id.get(model_id)
+            if display:
+                obj["display_name"] = display
+            objects.append(obj)
+        resident_id = str((status or {}).get("repo_id") or "").strip()
+        resident_workflows = (status or {}).get("workflows") or ()
+        if (
+            status
+            and resident_id
+            and not resident_is_gguf(status)
+            and partition_matches(status)
+            and (
+                task != "text-to-image" or not resident_workflows or "txt2img" in resident_workflows
+            )
+            and public_model_id(resident_id) == resident_id
+            and not any(obj["id"].lower() == resident_id.lower() for obj in objects)
+        ):
+            objects.append(
+                {
+                    "id": resident_id,
+                    "object": "model",
+                    "created": created,
+                    "owned_by": _OWNED_BY,
+                    "task": task,
+                    "loaded": True,
+                }
+            )
+    return objects
+
+
+_CUSTOM_STT_CACHE: dict = {"at": None, "ids": ()}
+_CUSTOM_STT_CACHE_LOCK = threading.Lock()
+
+
+def _downloaded_custom_stt_ids(catalog_at: Optional[float]) -> tuple[str, ...]:
+    if catalog_at is not None and _CUSTOM_STT_CACHE["at"] == catalog_at:
+        return _CUSTOM_STT_CACHE["ids"]
+    with _CUSTOM_STT_CACHE_LOCK:
+        if catalog_at is not None and _CUSTOM_STT_CACHE["at"] == catalog_at:
+            return _CUSTOM_STT_CACHE["ids"]
+        from core.inference import stt_sidecar
+        from hub.services.models.cache_inventory import _scan_cached_models
+
+        try:
+            ids = tuple(
+                sorted(
+                    row["repo_id"]
+                    for row in _scan_cached_models()
+                    if row.get("task") == _STT_MODEL_TASK
+                    and not row.get("partial")
+                    and isinstance(row.get("repo_id"), str)
+                    and stt_sidecar.is_model_downloaded(row["repo_id"])
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("custom stt cache scan unavailable for /v1/models: %s", exc)
+            ids = ()
+        _CUSTOM_STT_CACHE.update(at = catalog_at, ids = ids)
+        return ids
+
+
+def _stt_model_objects(created: int, catalog_at: Optional[float] = None) -> list[dict]:
+    """Downloaded speech-to-text models this endpoint's own route can actually serve.
+
+    /v1/audio/transcriptions resolves an id to an engine by itself: only the mtmd ids are
+    forced, and everything else lands on Transformers. So a curated Whisper id cached only
+    for whisper.cpp is not servable here (the route loads the absent Transformers snapshot
+    and 409s), and neither engine can serve anything while its runtime is missing (501).
+    Both engines are therefore gated on their own availability, and residency is read only
+    from the engines this route can select.
+    """
+    try:
+        from core.inference import stt_mtmd_sidecar, stt_sidecar
+
+        whisper_ready = stt_sidecar.is_available()
+        mtmd_ready = stt_mtmd_sidecar.is_available()
+        loaded = set()
+        if whisper_ready:
+            whisper_loaded = stt_sidecar.get_stt_sidecar().loaded_model
+            loaded.add(stt_sidecar.STT_MODELS.get(whisper_loaded, whisper_loaded))
+        if mtmd_ready:
+            loaded.add(stt_mtmd_sidecar.get_mtmd_stt_sidecar().loaded_model)
+        loaded -= {None}
+
+        ids: list[str] = []
+        if whisper_ready:
+            ids.extend(
+                repo_id
+                for model_id, repo_id in stt_sidecar.STT_MODELS.items()
+                if stt_sidecar.is_model_downloaded(model_id)
+            )
+            ids.extend(
+                model_id
+                for model_id in _downloaded_custom_stt_ids(catalog_at)
+                if model_id not in ids
+            )
+        if mtmd_ready:
+            ids.extend(
+                model_id
+                for model_id in stt_mtmd_sidecar.MTMD_STT_MODELS
+                if stt_mtmd_sidecar.is_model_downloaded(model_id)
+            )
+        # A custom Whisper repo the route can still reload by name while it is resident.
+        ids.extend(sorted(model_id for model_id in loaded if model_id not in ids))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("stt models unavailable for /v1/models: %s", exc)
+        return []
+    objects = []
+    for model_id in ids:
+        obj = {
+            "id": model_id,
+            "object": "model",
+            "created": created,
+            "owned_by": _OWNED_BY,
+            "task": _STT_MODEL_TASK,
+            "loaded": model_id in loaded,
+        }
+        spec = stt_mtmd_sidecar.MTMD_STT_MODELS.get(model_id)
+        if spec is not None:
+            from hub.utils.gguf import extract_quant_token
+            quant = extract_quant_token(spec.model_file)
+            if quant:
+                obj["quant"] = quant
+        objects.append(obj)
+    return objects
+
+
 async def _cached_local_catalog() -> list:
     """Locally available models (models dir + HF caches + LM Studio + scan
     folders), cached for a few seconds. Returns a list of LocalModelInfo.
@@ -23622,7 +23905,7 @@ async def _cached_local_catalog() -> list:
         try:
             from routes.models import collect_local_models
             _CATALOG_CACHE["models"] = await asyncio.to_thread(
-                collect_local_models, Path("./models").resolve()
+                lambda: _classified_catalog(collect_local_models(Path("./models").resolve()))
             )
         except Exception as exc:
             logger.debug("model catalog scan failed: %s", exc)
@@ -23633,27 +23916,163 @@ async def _cached_local_catalog() -> list:
     return _CATALOG_CACHE["models"]
 
 
-def _servable_catalog_rows(catalog) -> list[tuple[object, bool, tuple[str, ...], bool]]:
+# One tuple, published in a single assignment: the fast path below reads it without the
+# lock, and three separate fields could be caught half-replaced -- old stamp and old
+# catalog still matching while `rows` already held the next catalog's rows.
+# How long a scan may answer without any counter having moved. Bounds the one case the
+# counters cannot see, a file added or removed from a scan folder outside Studio, while
+# still collapsing the burst of polls that motivated the cache: at 5s a client polling
+# every second still takes four hits out of five.
+_SERVABLE_SCAN_TTL_S = 5.0
+_SERVABLE_SCAN_CACHE: dict = {"entry": None}  # (catalog_at, catalog, generation, at, rows)
+_SERVABLE_SCAN_CACHE_LOCK = threading.Lock()
+
+
+def _servability_generation() -> tuple[int, int, int]:
+    """Every counter the cached servability answer depends on.
+
+    A tuple rather than one number: the three move independently and no single existing
+    counter covers the others, so combining them here is what keeps a stale row from
+    outliving any one of the events that should have retired it. All three are cheap
+    reads of module state; nothing here touches the filesystem.
+
+    Nothing is caught. A missing counter would silently pin this key at a constant and
+    quietly undo the invalidation it exists to provide, which is worse than the import
+    error that says so.
+    """
+    from core.inference.local_model_resolver import index_generation
+    from utils.hardware import hardware as hw
+
+    from hub.utils.inventory_scan import hf_cache_scans_epoch
+
+    return (
+        index_generation(),
+        int(hf_cache_scans_epoch()),
+        int(hw.DETECTION_GENERATION),
+    )
+
+
+def _servable_catalog_scan(catalog, catalog_at: Optional[float]):
+    """``(info, is_gguf, quants, resident_key)`` per servable entry, rebuilt only when
+    the shared catalog scan is replaced.
+
+    ``local_servable_model`` stats many files and reads a ``config.json`` per entry, and
+    /v1/models re-ran that for the whole catalog on every request even though the catalog
+    behind it was already cached -- 316-621ms against 13-34ms for the internal list, which
+    touches no filesystem. Keyed on the catalog stamp like ``_validated_media_picks``, so
+    a rescan is what invalidates it and nothing goes stale behind a separate TTL.
+    """
+    from core.inference.local_model_resolver import (
+        index_generation,
+        local_load_dir,
+        local_servable_model,
+    )
+    from hub.services.models.catalog_classification import _UNSUPPORTED_DIFFUSION_TASK
+
+    # Identity as well as the stamp: _CATALOG_CACHE["at"] only advances inside
+    # _cached_local_catalog, so a caller that supplies a catalog from anywhere else
+    # would otherwise be served the previous scan under an unchanged stamp.
+    #
+    # And every signal the servability decision itself reads, because the catalog is the
+    # coarsest of them and would otherwise pin a stale answer for the rest of its TTL,
+    # where the per-request scan re-derived one each time:
+    #
+    #   resolver index   a model or quant deleted from ./models, an export, a download
+    #   HF cache epoch   a cached Hub repo deleted; deletion.py invalidates only this
+    #   detection gen    hardware.DEVICE changing under the resolver, which is what
+    #                    decides servability for non-GGUF checkpoints. An Apple Silicon
+    #                    MLX self-repair flips CPU to MLX after startup, and an early
+    #                    /v1/models would otherwise hide those checkpoints until the TTL.
+    def _fresh():
+        """Read the entry and the generation as one validated snapshot.
+
+        Generation, entry, generation. The counter only ever advances, so equal ends mean
+        no invalidation landed between them; an unequal pair means one did and the rows in
+        hand may predate it. Without the second read a delete that completes between the
+        generation read and the entry read is accepted anyway, on the lock-free path and
+        under the lock alike, since invalidate_index does not take this lock.
+        """
+        before = _servability_generation()
+        entry = _SERVABLE_SCAN_CACHE["entry"]  # one read, so the tuple cannot tear
+        if entry is None or catalog_at is None:
+            return None
+        at, cached_catalog, cached_generation, scanned_at, rows = entry
+        if cached_generation != before or _servability_generation() != before:
+            return None
+        # Its own TTL as well as the generation. The counters cover Studio's own download
+        # and delete paths; a file removed from a scan folder by hand moves none of them,
+        # and the per-request scan used to notice that immediately. A directory mtime
+        # would not help: editing or deleting a file inside a nested directory does not
+        # bump the root's mtime, which is why the resolver's own mtime memo was dropped.
+        if time.monotonic() - scanned_at > _SERVABLE_SCAN_TTL_S:
+            return None
+        return rows if at == catalog_at and cached_catalog is catalog else None
+
+    hit = _fresh()
+    if hit is not None:
+        return hit
+    with _SERVABLE_SCAN_CACHE_LOCK:
+        hit = _fresh()
+        if hit is not None:
+            return hit
+        # Captured before the scan: an invalidation that lands while it runs must make
+        # the stored entry stale rather than be stamped in as if the scan had seen it.
+        generation = _servability_generation()
+        scanned = []
+        for info in catalog:
+            if getattr(info, "task", None) in (
+                *_MEDIA_MODEL_TASKS,
+                _STT_MODEL_TASK,
+                _TTS_MODEL_TASK,
+                _UNSUPPORTED_DIFFUSION_TASK,
+            ):
+                continue
+            servable = local_servable_model(info)
+            if servable is None:
+                continue
+            is_gguf, quants = servable
+            # The source path, not the resolved load dir: an HF repo's snapshot pointer can
+            # move within the catalog's lifetime, and a cached snapshot path would then
+            # report a freshly loaded model as unloaded. Residency resolves it per call.
+            scanned.append((info, is_gguf, quants, getattr(info, "path", None)))
+        if catalog_at is not None:
+            # The generation read BEFORE the scan, not after: an invalidation that
+            # landed while the scan ran would otherwise be stamped in as if the scan
+            # had seen it, and the very delete this guards against would be cached.
+            _SERVABLE_SCAN_CACHE["entry"] = (
+                catalog_at,
+                catalog,
+                generation,
+                time.monotonic(),
+                scanned,
+            )
+        return scanned
+
+
+def _servable_catalog_rows(
+    catalog, catalog_at: Optional[float] = None
+) -> list[tuple[object, bool, tuple[str, ...], bool]]:
     """``(info, is_gguf, quants, resident)`` per catalog entry this server can serve
     from disk. Module scope, and always called through ``asyncio.to_thread``: the file
-    checks stat many files and the residency check reads the inference singleton."""
-    from core.inference.local_model_resolver import local_load_dir, local_servable_model
+    checks stat many files and the residency check reads the inference singleton.
 
-    rows = []
-    for info in catalog:
-        servable = local_servable_model(info)
-        if servable is None:
-            continue
-        is_gguf, quants = servable
-        path = getattr(info, "path", None)
-        # the load dir, since an HF cache repo loads as a snapshot exact_only cannot match.
-        resident = _resolves_to_resident(
-            path if is_gguf else local_load_dir(path),
-            llama_only = is_gguf,
-            exact_only = not is_gguf,
+    Residency is read per request; only the scan is cached. That includes resolving the
+    HF snapshot a non-GGUF path currently points at, since a download can move it inside
+    the catalog's lifetime and a cached snapshot would report a loaded model as unloaded."""
+    from core.inference.local_model_resolver import local_load_dir
+    return [
+        (
+            info,
+            is_gguf,
+            quants,
+            _resolves_to_resident(
+                path if is_gguf else local_load_dir(path),
+                llama_only = is_gguf,
+                exact_only = not is_gguf,
+            ),
         )
-        rows.append((info, is_gguf, quants, resident))
-    return rows
+        for info, is_gguf, quants, path in _servable_catalog_scan(catalog, catalog_at)
+    ]
 
 
 async def _openai_catalog_objects() -> list[dict]:
@@ -23668,15 +24087,19 @@ async def _openai_catalog_objects() -> list[dict]:
     # build waits on detection. Inline, an early GET /v1/models held the loop for the import.
     for entry in await asyncio.to_thread(_openai_model_objects):
         by_id[entry["id"]] = {**entry, "loaded": True}
+    orchestrator = _peek_inference_backend()
+    resident_id = _orchestrator_public_model_id(orchestrator) if orchestrator else None
 
     # Downloaded but unloaded: GGUF via llama.cpp, other weights via the orchestrator.
     catalog = await _cached_local_catalog()
-    for info, is_gguf, quants, loaded in await asyncio.to_thread(_servable_catalog_rows, catalog):
+    catalog_at = _CATALOG_CACHE["at"]
+    for info, is_gguf, quants, loaded in await asyncio.to_thread(
+        _servable_catalog_rows, catalog, catalog_at
+    ):
         cid = getattr(info, "model_id", None) or public_model_id(getattr(info, "id", None))
         if not cid or cid in by_id:
             continue
         if loaded and not is_gguf:
-            resident_id = _orchestrator_public_model_id(get_inference_backend())
             if resident_id in by_id:
                 continue
         obj = {
@@ -23698,6 +24121,15 @@ async def _openai_catalog_objects() -> list[dict]:
         if display:
             obj["display_name"] = display
         by_id[cid] = obj
+
+    media = await asyncio.to_thread(
+        lambda: (
+            _media_model_objects(catalog, _created, _CATALOG_CACHE["at"])
+            + _stt_model_objects(_created, _CATALOG_CACHE["at"])
+        )
+    )
+    for obj in media:
+        by_id.setdefault(obj["id"], obj)
 
     return list(by_id.values())
 
@@ -24264,8 +24696,44 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
 # =====================================================================
 
 
+_RESPONSES_CUSTOM_APPLY_PATCH = "apply_patch"
+
+
+def _is_responses_apply_patch_tool(tool: Any) -> bool:
+    if not isinstance(tool, dict):
+        return False
+    format_spec = tool.get("format")
+    return (
+        tool.get("type") == "custom"
+        and tool.get("name") == _RESPONSES_CUSTOM_APPLY_PATCH
+        and isinstance(format_spec, dict)
+        and format_spec.get("type") == "grammar"
+        and format_spec.get("syntax") == "lark"
+        and isinstance(format_spec.get("definition"), str)
+    )
+
+
+def _responses_custom_tool_names(tools: Optional[list[dict]]) -> set[str]:
+    return {tool["name"] for tool in tools or [] if _is_responses_apply_patch_tool(tool)}
+
+
+def _responses_apply_patch_description(tool: dict) -> str:
+    description = (
+        "Edit files by passing one complete patch in the input field. "
+        "Every added content line must start with +. Example:\n"
+        "*** Begin Patch\n"
+        "*** Add File: path/to/file.txt\n"
+        "+first line\n"
+        "*** End Patch"
+    )
+    format_spec = tool.get("format")
+    if isinstance(format_spec, dict) and isinstance(format_spec.get("definition"), str):
+        description += "\n\nThe input must match this Lark grammar:\n" + format_spec["definition"]
+    return description
+
+
 def _translate_responses_tools_to_chat(tools: Optional[list[dict]]) -> Optional[list[dict]]:
-    """Translate Responses-shape function tools to the Chat Completions nested shape.
+    """Translate supported Responses tools to the Chat Completions function shape.
 
     Responses uses a flat shape per tool entry::
 
@@ -24278,16 +24746,38 @@ def _translate_responses_tools_to_chat(tools: Optional[list[dict]]) -> Optional[
          "function": {"name": "...", "description": "...",
                       "parameters": {...}, "strict": true}}
 
-    Only ``type=="function"`` entries are forwarded. Built-in Responses tools
-    (``web_search``, ``file_search``, ``mcp``, ...) are dropped: llama-server
-    doesn't implement them server-side, so keeping them would produce an opaque
-    upstream 400.
+    Codex's freeform ``apply_patch`` custom tool becomes a string-input function
+    for local chat templates. Other custom and built-in Responses tools are
+    dropped because llama-server cannot execute them server-side.
     """
     if not tools:
         return None
     out: list[dict] = []
     for tool in tools:
         if not isinstance(tool, dict):
+            continue
+        if _is_responses_apply_patch_tool(tool):
+            out.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": _RESPONSES_CUSTOM_APPLY_PATCH,
+                        "description": _responses_apply_patch_description(tool),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "input": {
+                                    "type": "string",
+                                    "description": "A complete patch matching the tool grammar.",
+                                }
+                            },
+                            "required": ["input"],
+                            "additionalProperties": False,
+                        },
+                        "strict": False,
+                    },
+                }
+            )
             continue
         if tool.get("type") != "function":
             continue
@@ -24304,7 +24794,9 @@ def _translate_responses_tools_to_chat(tools: Optional[list[dict]]) -> Optional[
     return out or None
 
 
-def _translate_responses_tool_choice_to_chat(tool_choice: Any) -> Any:
+def _translate_responses_tool_choice_to_chat(
+    tool_choice: Any, custom_tool_names: Optional[set[str]] = None
+) -> Any:
     """Translate a Responses-shape ``tool_choice`` to the Chat Completions shape.
 
     String values (``"auto"``/``"none"``/``"required"``) pass through unchanged.
@@ -24319,10 +24811,14 @@ def _translate_responses_tool_choice_to_chat(tool_choice: Any) -> Any:
         return tool_choice
     if (
         isinstance(tool_choice, dict)
-        and tool_choice.get("type") == "function"
+        and tool_choice.get("type") in ("function", "custom")
         and "name" in tool_choice
         and "function" not in tool_choice
     ):
+        if tool_choice.get("type") == "custom":
+            custom_tool_names = custom_tool_names or set()
+            if tool_choice["name"] not in custom_tool_names:
+                return tool_choice
         return {"type": "function", "function": {"name": tool_choice["name"]}}
     return tool_choice
 
@@ -24577,7 +25073,7 @@ def _responses_reasoning_output_item(reasoning_text: str, item_id: Optional[str]
 def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
     """Convert a ResponsesRequest's ``input`` into a Chat-format ``ChatMessage`` list.
 
-    Handles the three input item shapes allowed by the Responses API:
+    Handles the supported input item shapes from the Responses API:
 
     - ``ResponsesInputMessage`` -- regular chat messages (text or multimodal).
     - ``ResponsesFunctionCallInputItem`` -- a prior assistant tool call
@@ -24586,6 +25082,8 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
     - ``ResponsesFunctionCallOutputInputItem`` -- a tool result the client is
       returning. Becomes a ``role="tool"`` message with ``tool_call_id`` set to
       the originating ``call_id`` so llama-server can reconcile call with result.
+    - ``ResponsesCustomToolCallInputItem`` and its output counterpart -- the
+      freeform call is wrapped in the local ``input`` function argument.
 
     System / developer content is collected from ``instructions`` *and* any
     ``role="system"`` / ``role="developer"`` entries in ``input``, then merged
@@ -24613,6 +25111,13 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
         if payload.input:
             messages.append(ChatMessage(role = "user", content = payload.input))
         return _with_system(messages)
+
+    custom_tool_names = _responses_custom_tool_names(payload.tools)
+    custom_tool_call_ids = {
+        item.call_id
+        for item in payload.input
+        if isinstance(item, ResponsesCustomToolCallInputItem) and item.name in custom_tool_names
+    }
 
     for item in payload.input:
         if isinstance(item, ResponsesFunctionCallInputItem):
@@ -24643,6 +25148,39 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
                     role = "tool",
                     tool_call_id = item.call_id,
                     content = output,
+                )
+            )
+            continue
+
+        if isinstance(item, ResponsesCustomToolCallInputItem):
+            if item.call_id not in custom_tool_call_ids:
+                continue
+            messages.append(
+                ChatMessage(
+                    role = "assistant",
+                    content = None,
+                    tool_calls = [
+                        {
+                            "id": item.call_id,
+                            "type": "function",
+                            "function": {
+                                "name": item.name,
+                                "arguments": json.dumps({"input": item.input}, ensure_ascii = False),
+                            },
+                        }
+                    ],
+                )
+            )
+            continue
+
+        if isinstance(item, ResponsesCustomToolCallOutputInputItem):
+            if item.call_id not in custom_tool_call_ids:
+                continue
+            messages.append(
+                ChatMessage(
+                    role = "tool",
+                    tool_call_id = item.call_id,
+                    content = _responses_tool_output_content(item.output),
                 )
             )
             continue
@@ -24746,7 +25284,9 @@ def _build_chat_request(
     if chat_tools is not None:
         chat_kwargs["tools"] = chat_tools
 
-    chat_tool_choice = _translate_responses_tool_choice_to_chat(payload.tool_choice)
+    chat_tool_choice = _translate_responses_tool_choice_to_chat(
+        payload.tool_choice, _responses_custom_tool_names(payload.tools)
+    )
     if chat_tool_choice is not None:
         chat_kwargs["tool_choice"] = chat_tool_choice
     if payload.parallel_tool_calls is not None:
@@ -24797,23 +25337,50 @@ def _build_chat_request(
     return ChatCompletionRequest(**chat_kwargs)
 
 
-def _chat_tool_calls_to_responses_output(tool_calls: list[dict]) -> list[dict]:
-    """Map Chat Completions ``tool_calls`` into Responses ``function_call`` output items.
+def _responses_custom_tool_input(arguments: Any) -> str:
+    if not isinstance(arguments, str):
+        return ""
+    try:
+        parsed = json.loads(arguments)
+    except json.JSONDecodeError:
+        return arguments
+    if isinstance(parsed, dict) and isinstance(parsed.get("input"), str):
+        return parsed["input"]
+    return arguments
+
+
+def _chat_tool_calls_to_responses_output(
+    tool_calls: list[dict], custom_tool_names: Optional[set[str]] = None
+) -> list[dict]:
+    """Map local function calls back into their Responses output item types.
 
     The Chat Completions id (``call_xxx``) is the shared correlation key across
     turns in the Responses API -- stored as ``call_id`` on the output item and
-    echoed back by the client as ``function_call_output.call_id`` next turn.
+    echoed back by the client in the tool output on the next turn.
     """
+    custom_tool_names = custom_tool_names or set()
     items: list[dict] = []
     for tc in tool_calls:
         if tc.get("type") != "function":
             continue
         fn = tc.get("function") or {}
+        name = fn.get("name", "")
+        arguments = fn.get("arguments", "") or ""
+        if name in custom_tool_names:
+            items.append(
+                ResponsesOutputCustomToolCall(
+                    call_id = tc.get("id", ""),
+                    name = name,
+                    input = _responses_custom_tool_input(arguments),
+                    status = "completed",
+                ).model_dump()
+            )
+            continue
         items.append(
             ResponsesOutputFunctionCall(
                 call_id = tc.get("id", ""),
-                name = fn.get("name", ""),
-                arguments = fn.get("arguments", "") or "",
+                name = name,
+                arguments = arguments,
                 status = "completed",
             ).model_dump()
         )
@@ -24911,7 +25478,11 @@ async def _responses_non_streaming(
                     content = [ResponsesOutputTextContent(text = text)],
                 ).model_dump()
             )
-        output_items.extend(_chat_tool_calls_to_responses_output(tool_calls))
+        output_items.extend(
+            _chat_tool_calls_to_responses_output(
+                tool_calls, _responses_custom_tool_names(payload.tools)
+            )
+        )
 
         response = ResponsesResponse(
             id = resp_id,
@@ -24977,10 +25548,9 @@ async def _responses_stream(
     Output items are allocated as upstream deltas appear. Reasoning/text deltas
     open top-level ``reasoning`` / ``message`` items; each tool call from
     ``delta.tool_calls[]`` is promoted to its own top-level ``function_call``
-    item (one per distinct ``tool_calls[].index``) and relayed as
-    ``response.function_call_arguments.delta`` / ``.done`` events so clients
-    (Codex, OpenAI Python SDK) can reconstruct the call incrementally and reply
-    with a ``function_call_output`` item next turn.
+    item (one per distinct ``tool_calls[].index``). Regular functions relay
+    argument deltas. Codex's bridged ``apply_patch`` call is buffered and
+    restored to one native ``custom_tool_call`` item with raw patch input.
     """
     from core.inference.llama_keepwarm import mark_response_failed
 
@@ -24988,6 +25558,7 @@ async def _responses_stream(
     created_at = int(time.time())
 
     chat_req = _build_chat_request(payload, messages, stream = True)
+    custom_tool_names = _responses_custom_tool_names(payload.tools)
 
     llama_backend = get_llama_cpp_backend()
     if not llama_backend.is_loaded:
@@ -25177,7 +25748,8 @@ async def _responses_stream(
                 if fn.get("name") and not st["name"]:
                     st["name"] = fn["name"]
 
-            if not st["opened"] and st["call_id"] and st["name"]:
+            is_custom_tool = st["name"] in custom_tool_names
+            if not is_custom_tool and not st["opened"] and st["call_id"] and st["name"]:
                 item_added = {
                     "type": "response.output_item.added",
                     "output_index": st["output_index"],
@@ -25194,8 +25766,9 @@ async def _responses_stream(
                 st["opened"] = True
 
             arg_delta = fn.get("arguments") or ""
-            if arg_delta and st["opened"]:
+            if arg_delta:
                 st["arguments"] += arg_delta
+            if arg_delta and st["opened"]:
                 args_delta_event = {
                     "type": "response.function_call_arguments.delta",
                     "item_id": st["item_id"],
@@ -25203,11 +25776,6 @@ async def _responses_stream(
                     "delta": arg_delta,
                 }
                 events.append(_sse("response.function_call_arguments.delta", args_delta_event))
-            elif arg_delta:
-                # Buffer args until we can open the item (some models
-                # send id/name in the same chunk as the first arg delta;
-                # if not, stash).
-                st["arguments"] += arg_delta
             return events
 
         def _claim_output_index() -> int:
@@ -25426,17 +25994,27 @@ async def _responses_stream(
                     )
                 )
             for st in tool_call_state.values():
+                if st["name"] in custom_tool_names:
+                    item = {
+                        "type": "custom_tool_call",
+                        "status": "completed",
+                        "call_id": st["call_id"],
+                        "name": st["name"],
+                        "input": _responses_custom_tool_input(st["arguments"]),
+                    }
+                else:
+                    item = {
+                        "type": "function_call",
+                        "id": st["item_id"],
+                        "status": "completed",
+                        "call_id": st["call_id"],
+                        "name": st["name"],
+                        "arguments": st["arguments"],
+                    }
                 indexed_items.append(
                     (
                         st["output_index"],
-                        {
-                            "type": "function_call",
-                            "id": st["item_id"],
-                            "status": "completed",
-                            "call_id": st["call_id"],
-                            "name": st["name"],
-                            "arguments": st["arguments"],
-                        },
+                        item,
                     )
                 )
             return [item for _, item in sorted(indexed_items, key = lambda pair: pair[0])]
@@ -25866,6 +26444,25 @@ async def _responses_stream(
                         },
                     },
                 )
+                continue
+
+            if st["name"] in custom_tool_names:
+                if not st["call_id"]:
+                    st["call_id"] = f"call_{uuid.uuid4().hex[:12]}"
+                custom_input = _responses_custom_tool_input(st["arguments"])
+                item_done = {
+                    "type": "response.output_item.done",
+                    "output_index": st["output_index"],
+                    "item": {
+                        "type": "custom_tool_call",
+                        "status": "completed",
+                        "call_id": st["call_id"],
+                        "name": st["name"],
+                        "input": custom_input,
+                    },
+                }
+                api_monitor.append_reply(monitor_id, _monitor_call_text(st["name"], custom_input))
+                yield _sse("response.output_item.done", item_done)
                 continue
 
             # If id/name never arrived (malformed upstream), synthesise so the
@@ -31726,6 +32323,7 @@ async def list_gallery_audio(
     offset: int = 0,
     before_mtime: Optional[float] = None,
     before_id: Optional[str] = None,
+    archived: bool = False,
     current_subject: str = Depends(get_current_subject),
 ):
     from pydantic import ValidationError
@@ -31755,6 +32353,7 @@ async def list_gallery_audio(
         offset,
         before = before,
         valid = _valid_gallery_audio,
+        archived = archived,
     )
     has_more = len(entries) > limit
     visible = entries[:limit]
@@ -31788,6 +32387,24 @@ async def get_gallery_audio_file(
     )
 
 
+@studio_router.patch("/audio/gallery/{audio_id}", response_model = AudioGalleryItem)
+async def update_gallery_audio_flags(
+    audio_id: str,
+    patch: AudioGalleryFlagsPatch,
+    current_subject: str = Depends(get_current_subject),
+):
+    from core.inference import audio_gallery
+
+    try:
+        record = await asyncio.to_thread(audio_gallery.set_flags, audio_id, archived = patch.archived)
+    except OSError as exc:
+        logger.warning("audio_gallery.set_flags_failed: %s", exc)
+        raise HTTPException(status_code = 500, detail = "Could not save the change to this clip.")
+    if record is None:
+        raise HTTPException(status_code = 404, detail = "Audio not found.")
+    return AudioGalleryItem(**record)
+
+
 @studio_router.delete("/audio/gallery/{audio_id}")
 async def delete_gallery_audio(audio_id: str, current_subject: str = Depends(get_current_subject)):
     from core.inference import audio_gallery
@@ -31801,7 +32418,17 @@ async def delete_gallery_audio(audio_id: str, current_subject: str = Depends(get
 @studio_router.delete("/audio/gallery")
 async def clear_gallery_audio(current_subject: str = Depends(get_current_subject)):
     from core.inference import audio_gallery
-    removed = await asyncio.to_thread(audio_gallery.clear)
+    from core.inference.gallery_flags import FlagsUnavailable
+
+    try:
+        removed = await asyncio.to_thread(audio_gallery.clear)
+    except FlagsUnavailable as exc:
+        logger.warning("audio_gallery.clear_blocked: %s", exc)
+        raise HTTPException(
+            status_code = 503,
+            detail = "Could not read the gallery's archive data, so clearing was stopped to "
+            "avoid deleting archived clips.",
+        )
     return {"removed": removed}
 
 
