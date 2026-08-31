@@ -1454,9 +1454,7 @@ def _rocm_miscomputing_host() -> bool:
         # both masks for the same reason.
         _archs = [
             _code.strip().lower().split(":")[0]
-            for _code in _detect_amd_gfx_codes(
-                ignore_hsa_override = True, ignore_visible_masks = True
-            )
+            for _code in _detect_amd_gfx_codes(ignore_hsa_override = True, ignore_visible_masks = True)
         ]
         if not _archs:
             _inferred = (_infer_linux_amd_gfx_arch() or "").strip().lower().split(":")[0]

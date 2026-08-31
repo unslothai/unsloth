@@ -6886,7 +6886,7 @@ class TestRocmMiscomputingArchDemotion:
         assert len(calls) == 1
 
     def test_a_mask_cannot_shrink_the_host_to_its_bad_gpu(self, monkeypatch):
-        """"Every arch is bad" is a question about the host, so it must be asked of the
+        """ "Every arch is bad" is a question about the host, so it must be asked of the
         whole host. ROCR_VISIBLE_DEVICES hiding the healthy dGPU would otherwise leave
         gfx1033 as the only arch and demote a working ROCm install to CPU. install.sh's
         _probe_amd_gfx_arch unsets both masks for exactly this reason."""
