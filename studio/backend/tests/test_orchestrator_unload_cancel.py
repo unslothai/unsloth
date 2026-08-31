@@ -2650,11 +2650,8 @@ def test_a_scoped_load_cancel_that_never_reports_back_releases_the_load():
 
 
 def test_share_aborts_when_dispatcher_drain_fails(monkeypatch):
-    # _wait_dispatcher_idle returns False only when it left a live dispatcher behind for
-    # still-active compare requests. If the share reads _mailboxes instead, a compare
-    # stream that unregisters right after the deadline makes the map look empty and the
-    # share proceeds -- that dispatcher then eats the unaddressed "shared" reply and the
-    # share hangs (forever, for the CLI's timeout=None).
+    # Reading _mailboxes instead: a stream unregistering just past the deadline empties the
+    # map, so the share runs on while that dispatcher eats its reply. timeout=None hangs.
     o = _bare_orchestrator()
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {}
@@ -2671,9 +2668,7 @@ def test_share_aborts_when_dispatcher_drain_fails(monkeypatch):
 
 
 def test_dispatched_share_refusal_is_public(monkeypatch):
-    # The refusal is operational and retryable, like its unload/TTS siblings above it.
-    # Without public=True the route's _friendly_gen_stream_error swaps it for
-    # "An internal error occurred.", so the client cannot tell it should retry.
+    # Without public=True _friendly_gen_stream_error swaps this for "An internal error occurred."
     o = _bare_orchestrator()
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
     monkeypatch.setattr(
@@ -2689,9 +2684,7 @@ def test_dispatched_share_refusal_is_public(monkeypatch):
 
 
 def test_dispatched_share_recheck_refusal_names_the_share(monkeypatch):
-    # A share that starts after the pre-check but before mailbox registration is caught by
-    # the under-lock recheck. Folding it into `unloading` reported "model is being unloaded"
-    # for a request no unload ever touched.
+    # Folding this into `unloading` said "model is being unloaded" with no unload in sight.
     o = _bare_orchestrator()
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {}

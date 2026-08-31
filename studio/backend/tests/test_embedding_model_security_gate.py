@@ -127,9 +127,7 @@ def _security_raises():
 
 
 def test_scan_error_fails_open_instead_of_500(client, monkeypatch):
-    # An offline/timed-out scan is a gate failure, not a verdict. It must not turn the
-    # settings route into a 500 the user cannot get past. Same policy as
-    # _guard_model_security in core/rag/embeddings.py, which returns on a scan error.
+    # A scan error is a gate failure, not a verdict; same policy as _guard_model_security.
     c, saved = client
     monkeypatch.setitem(sys.modules, "utils.security", _security_raises())
     import utils.models as models

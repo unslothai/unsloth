@@ -280,11 +280,9 @@ class InferenceOrchestrator:
         # orphaning the extra thread (self._dispatcher_thread tracks only the last). The
         # orphan later steals the "unloaded" reply off resp_queue and hangs unload_model.
         self._dispatcher_lifecycle_lock = threading.Lock()
-        # Set (under _dispatcher_lifecycle_lock) while an exclusive op reads the shared
-        # resp_queue directly under _gen_lock (e.g. share_distributed_object). Blocks
-        # _start_dispatcher and _generate_dispatched so a concurrent compare request
-        # can't spawn a dispatcher that steals the exclusive op's reply off resp_queue
-        # (no mailbox is registered for it, so the dispatcher would drop it).
+        # Set under _dispatcher_lifecycle_lock while share_distributed_object reads resp_queue
+        # under _gen_lock with no mailbox registered: a dispatcher spawned meanwhile would take
+        # its reply and drop it as unaddressed. Blocks _start_dispatcher/_generate_dispatched.
         self._exclusive_op_pending = False
 
         # Local state mirrors (updated from subprocess responses)
@@ -1277,10 +1275,7 @@ class InferenceOrchestrator:
             yield GenStreamError("Error: audio generation is in progress", public = True)
             return
 
-        # An exclusive op (share_distributed_object) is reading resp_queue directly under
-        # _gen_lock; spawning a dispatcher now would let it steal that reply (no mailbox is
-        # registered for it). Bail cleanly. The recheck below also catches the tight race
-        # where the flag is set after this point (via the `not dispatcher_alive` guard).
+        # A share owns resp_queue; the under-lock recheck below covers a flag set after here.
         if self._exclusive_op_pending:
             yield GenStreamError("Error: a distributed object share is in progress", public = True)
             return
@@ -1345,12 +1340,9 @@ class InferenceOrchestrator:
                 or self.active_model_name != expected_model
                 or not dispatcher_alive
             )
-            # An exclusive op (share_distributed_object) sets _exclusive_op_pending before its
-            # _wait_dispatcher_idle drains/stops the dispatcher; registering a mailbox now would
-            # be orphaned when it stops (the compare stream would then hang with no thread
-            # routing its responses). Rechecked here under _mailbox_lock so the gate is atomic
-            # with registration -- the unlocked pre-check plus _start_dispatcher's refusal alone
-            # leave a window. Kept out of `unloading` so the refusal names the share.
+            # Under _mailbox_lock so the gate is atomic with registration: the share's
+            # _wait_dispatcher_idle stops the dispatcher, orphaning a mailbox registered in the
+            # window the unlocked pre-check leaves. Separate from `unloading` so the refusal names it.
             share_reserved = self._exclusive_op_pending
             tts_reserved = self._exclusive_tts_pending
             probe_reserved = getattr(self, "_exclusive_vram_probe_pending", False)
@@ -1493,19 +1485,12 @@ class InferenceOrchestrator:
         if not self._ensure_subprocess_alive():
             raise RuntimeError("Inference subprocess is not running")
 
-        # Block the compare dispatcher for the whole share: this op reads resp_queue
-        # directly under _gen_lock without registering a mailbox, so a dispatcher spawned
-        # by a concurrent compare request would consume the "shared" reply, find no mailbox
-        # for it, and drop it -- hanging the share to its timeout. Set BEFORE
-        # _wait_dispatcher_idle so nothing can spawn in the window between the drain and the
-        # _gen_lock read loop; reset in finally.
+        # Set BEFORE the drain: the window between it and the read loop below is spawnable.
         with self._dispatcher_lifecycle_lock:
             self._exclusive_op_pending = True
         try:
-            # False means the drain deadline passed and the dispatcher was deliberately left
-            # running; that is the authoritative signal. The mailbox snapshot below is not --
-            # a compare stream unregistering just after the deadline empties it while its
-            # dispatcher still owns resp_queue and would drop the unaddressed "shared" reply.
+            # False means it left the dispatcher alive, and only this return says so: a compare
+            # stream unregistering just past the deadline empties the mailbox snapshot below.
             if not self._wait_dispatcher_idle():
                 raise RuntimeError(
                     "Cannot share distributed objects while compare requests are active"

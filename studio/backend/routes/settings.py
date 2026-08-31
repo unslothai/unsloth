@@ -2747,9 +2747,8 @@ def update_embedding_model(
                 local_only_load = local_only_load,
             ).blocked
         except Exception:
-            # Fail open on a scan error (network/offline/timeout): a gate failure must
-            # not 500 the settings route. Mirrors _guard_model_security in embeddings.py,
-            # which never bricks the embedder on a scan error.
+            # A scan error is a gate failure, not a verdict: fail open rather than 500 the
+            # route, as _guard_model_security in core/rag/embeddings.py does.
             logger.warning(
                 "Embedding-model security scan errored for %r; allowing (fail-open)",
                 model,
