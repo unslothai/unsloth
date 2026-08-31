@@ -1739,15 +1739,28 @@ case "$OS" in
         # guard and logs a warning (set UNSLOTH_STUDIO_SANDBOX_STRICT=1 to refuse
         # instead of falling back). Missing bwrap must not block install, so this
         # is intentionally outside the required-dependency handling above.
-        if command -v bwrap >/dev/null 2>&1; then
+        bubblewrap_usable() {
+            BWRAP_BIN="$(command -v bwrap 2>/dev/null)" || return 1
+            TRUE_BIN="$(command -v true 2>/dev/null)" || TRUE_BIN="/usr/bin/true"
+            "$BWRAP_BIN" --ro-bind / / --unshare-all --die-with-parent "$TRUE_BIN" \
+                </dev/null >/dev/null 2>&1
+        }
+
+        if bubblewrap_usable; then
             step "sandbox" "bubblewrap found (OS-level tool sandbox enabled)"
+        elif command -v bwrap >/dev/null 2>&1; then
+            step "sandbox" "bubblewrap found but unavailable; tool execution uses the in-process guard only" "$C_WARN"
+            substep "The current kernel or security policy does not allow bubblewrap namespaces"
         elif command -v apt-get >/dev/null 2>&1; then
             apt-get install -y bubblewrap </dev/null >/dev/null 2>&1 || true
             if ! command -v bwrap >/dev/null 2>&1 && command -v sudo >/dev/null 2>&1; then
                 sudo -n apt-get install -y bubblewrap </dev/null >/dev/null 2>&1 || true
             fi
-            if command -v bwrap >/dev/null 2>&1; then
+            if bubblewrap_usable; then
                 step "sandbox" "installed bubblewrap (OS-level tool sandbox enabled)"
+            elif command -v bwrap >/dev/null 2>&1; then
+                step "sandbox" "installed bubblewrap but it is unavailable; tool execution uses the in-process guard only" "$C_WARN"
+                substep "The current kernel or security policy does not allow bubblewrap namespaces"
             else
                 step "sandbox" "bubblewrap not installed; tool execution uses the in-process guard only" "$C_WARN"
                 substep "Optional: sudo apt-get install -y bubblewrap  (enables the OS-level sandbox)"

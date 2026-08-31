@@ -17,7 +17,7 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 _SANDBOX_EXEC = "/usr/bin/sandbox-exec"
-_BWRAP_PROBE_BIN = shutil.which("true") or "/usr/bin/true"
+_BWRAP_PROBE_BIN = os.path.realpath(os.path.abspath(shutil.which("true") or "/usr/bin/true"))
 
 _sandbox_available_cache: bool | None = None
 # Absolute path to ``bwrap``, resolved once at probe time so the runtime
@@ -140,6 +140,7 @@ def _linux_probe() -> _ProbeResult:
     if bwrap is None:
         logger.warning("bwrap not found on PATH; tool execution will run unsandboxed")
         return _ProbeResult(ok = False)
+    bwrap = os.path.realpath(os.path.abspath(bwrap))
     result = _probe(
         [
             bwrap,
@@ -155,6 +156,21 @@ def _linux_probe() -> _ProbeResult:
     if result.ok:
         _linux_bwrap_path = bwrap
     return result
+
+
+def start_sandbox_probe() -> None:
+    """Warm the optional sandbox probe without delaying or failing startup."""
+
+    def _warm_sandbox_probe():
+        try:
+            sandbox_available()
+        except Exception as exc:
+            logger.debug("sandbox availability probe failed at startup: %s", exc)
+
+    try:
+        threading.Thread(target = _warm_sandbox_probe, daemon = True).start()
+    except Exception as exc:
+        logger.debug("sandbox availability probe could not start: %s", exc)
 
 
 def sandbox_available() -> bool:
@@ -529,9 +545,9 @@ def _resolve_nproc_limit() -> int:
 # Import-time sanity: catch the case where a maintainer accidentally
 # adds a literal `{` to the template (e.g. a dict literal) which would
 # turn .format() into a KeyError at every tool call.
-assert "12345" in _LINUX_NPROC_WRAPPER_TEMPLATE.format(
-    nproc = 12345
-), "_LINUX_NPROC_WRAPPER_TEMPLATE does not format cleanly"
+assert "12345" in _LINUX_NPROC_WRAPPER_TEMPLATE.format(nproc = 12345), (
+    "_LINUX_NPROC_WRAPPER_TEMPLATE does not format cleanly"
+)
 
 
 def _linux_inner_rlimit_wrapper(inner_argv: list[str]) -> list[str]:

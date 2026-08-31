@@ -587,6 +587,23 @@ def test_sandbox_available_concurrent_calls_consistent(monkeypatch):
         assert sandbox._linux_bwrap_path is not None
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason = "Linux bwrap path only")
+def test_linux_probe_canonicalizes_relative_path(monkeypatch, tmp_path):
+    sandbox = _load_sandbox_module()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sandbox, "_sandbox_available_cache", None)
+    monkeypatch.setattr(sandbox, "_linux_bwrap_path", None)
+    monkeypatch.setattr(sandbox.shutil, "which", lambda _: "bin/bwrap")
+    monkeypatch.setattr(
+        sandbox,
+        "_probe",
+        lambda argv, label: sandbox._ProbeResult(ok = True),
+    )
+
+    assert sandbox.sandbox_available() is True
+    assert sandbox._linux_bwrap_path == os.path.realpath(tmp_path / "bin" / "bwrap")
+
+
 # ---------------------------------------------------------------------------
 # Profile-injection guard, NPROC clamping, and transient-probe caching.
 # ---------------------------------------------------------------------------

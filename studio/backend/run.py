@@ -1069,23 +1069,6 @@ def _apply_cli_tool_policy(enable_tools: "Optional[bool]") -> None:
     set_tool_policy(enable_tools)
 
 
-def _start_sandbox_probe() -> None:
-    """Warm the optional OS-sandbox probe without affecting startup."""
-    def _warm_sandbox_probe():
-        try:
-            from core.inference.sandbox import sandbox_available
-            sandbox_available()
-        except Exception as exc:
-            logger.debug("sandbox availability probe failed at startup: %s", exc)
-
-    try:
-        threading.Thread(target = _warm_sandbox_probe, daemon = True).start()
-    except Exception as exc:
-        # Thread creation can fail under process/thread exhaustion.  The probe
-        # is only a warm-up; the first tool call can still run it synchronously.
-        logger.debug("sandbox availability probe could not start: %s", exc)
-
-
 def run_server(
     host: str = "127.0.0.1",
     port: int = 8888,
@@ -1220,7 +1203,7 @@ def run_server(
             print("=" * 50)
             if blocker:
                 pid, name = blocker
-                print(f"Port {original_port} is already in use by " f"{name} (PID {pid}).")
+                print(f"Port {original_port} is already in use by {name} (PID {pid}).")
             else:
                 print(f"Port {original_port} is already in use.")
             print(f"Unsloth Studio will use port {port} instead.")
@@ -1373,12 +1356,6 @@ def run_server(
         "run_server uvicorn ready after %.1fms",
         (time.perf_counter() - boot_started) * 1000,
     )
-
-    # Warm the OS-sandbox probe in the background so the "tool execution
-    # sandboxed / unsandboxed" status is logged at startup instead of being
-    # deferred to the first tool call, and so that first call does not pay the
-    # probe's timeout. Best effort: a failure here must never block startup.
-    _start_sandbox_probe()
 
     _write_pid_file()
     import atexit
