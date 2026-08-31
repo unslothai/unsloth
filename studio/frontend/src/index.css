@@ -2095,6 +2095,45 @@ html[data-chat-font] .aui-root {
 		cursor: pointer;
 	}
 
+	/* Split Thinking pill: the left half toggles, the right half opens the menu.
+	   The container paints the one pill background, so hovering either half
+	   lights the whole pill instead of a half-pill wedge. */
+	.unsloth-thinking-split {
+		@apply inline-flex shrink-0 items-center rounded-full transition-colors;
+	}
+
+	.unsloth-thinking-split:hover {
+		@apply bg-primary/10 dark:bg-white/[0.1];
+	}
+
+	.unsloth-thinking-split:has([data-state="open"]) {
+		@apply bg-muted-foreground/10;
+	}
+
+	/* The open menu disables pointer events outside itself, and the trigger
+	   opts back in above. The toggle half needs the same, or half of what
+	   looks and lights like one pill stops answering clicks. */
+	.unsloth-thinking-split:has([data-state="open"]) .unsloth-thinking-split-toggle {
+		pointer-events: auto;
+	}
+
+	.unsloth-thinking-split .unsloth-thinking-pill:hover,
+	.unsloth-thinking-split .unsloth-thinking-pill[data-state="open"] {
+		background: transparent;
+	}
+
+	.unsloth-thinking-split-toggle {
+		@apply pr-1;
+	}
+
+	.unsloth-thinking-split-toggle + .unsloth-thinking-pill {
+		@apply pl-0.5;
+	}
+
+	.unsloth-thinking-split-icon {
+		display: none;
+	}
+
 	/* Keep Thinking on the control row in narrow split layouts. */
 	@container (max-width: 36rem) {
 		.unsloth-thinking-pill {
@@ -2105,6 +2144,19 @@ html[data-chat-font] .aui-root {
 		.unsloth-thinking-label,
 		.unsloth-thinking-caret {
 			display: none;
+		}
+
+		/* No caret to aim at, so the trigger takes the whole pill back. */
+		.unsloth-thinking-split-toggle {
+			display: none;
+		}
+
+		.unsloth-thinking-split-toggle + .unsloth-thinking-pill {
+			@apply px-0;
+		}
+
+		.unsloth-thinking-split-icon {
+			display: block;
 		}
 
 		.unsloth-thinking-pill[data-pill-label] {
