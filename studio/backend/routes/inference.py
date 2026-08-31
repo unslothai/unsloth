@@ -1722,6 +1722,7 @@ def _openai_llama_admission_output_allowance(
     budget: int,
     prompt_tokens: int,
     context_window: Optional[int] = None,
+    share: Optional[int] = None,
 ) -> int:
     """KV to reserve for what a request may still generate.
 
@@ -1729,12 +1730,21 @@ def _openai_llama_admission_output_allowance(
     max_tokens = backend_ctx and "Max" sends the context length, so both mean unstated, and
     charging the window for either serialises the queue. Measured against the per-request
     window, since the budget is N times larger under --no-kv-unified.
+
+    Invariant when a ``share`` is known: an unstated request costs at most its fair share of
+    the cache, so ``capacity`` of them always fit. A flat allowance breaks that on a small
+    cache, where 1024 is most of a share on its own (4096 over four slots admitted three).
+    A prompt already past its share keeps the flat allowance, since it does not fit either
+    way and a zero allowance would only hide that it will still generate.
     """
     window = context_window or budget
     if cap is not None and cap < window:
         return cap
     # Clamped to the WINDOW: a request cannot occupy more KV than its own slot holds.
-    return min(_OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS, max(0, window - prompt_tokens))
+    allowance = min(_OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS, max(0, window - prompt_tokens))
+    if share is not None and share > prompt_tokens:
+        allowance = min(allowance, share - prompt_tokens)
+    return allowance
 
 
 def _extra_args_image_max_tokens(extra_args) -> Optional[int]:
@@ -1955,7 +1965,11 @@ def _openai_llama_admission_tokens(
     )
     # Reserving the rest of the budget for either made concurrency 1 for the default chat.
     output_tokens = _openai_llama_admission_output_allowance(
-        cap, budget = budget, prompt_tokens = prompt_tokens, context_window = context_window
+        cap,
+        budget = budget,
+        prompt_tokens = prompt_tokens,
+        context_window = context_window,
+        share = max(1, budget // max(1, capacity)),
     )
     # A tool loop opens at its own estimate with an equal share as the floor, and re-costs
     # as it grows (generate_chat_completion_with_tools on_conversation_grew ->
@@ -2083,13 +2097,14 @@ def _openai_llama_admission_recost(
         )
         # Reading "Max" literally here would put the run back on the whole cache at its
         # first round boundary.
+        share = max(1, budget // max(1, capacity))
         output_tokens = _openai_llama_admission_output_allowance(
             output_tokens,
             budget = budget,
             prompt_tokens = prompt_tokens,
             context_window = _openai_llama_admission_context_window(llama_backend),
+            share = share,
         )
-        share = max(1, budget // max(1, capacity))
         want = max(1, min(budget, max(share, prompt_tokens + max(0, output_tokens))))
         lease.recost_waiting(
             want,

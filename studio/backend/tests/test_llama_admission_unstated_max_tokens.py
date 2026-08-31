@@ -174,6 +174,56 @@ class TestMaxIsPerRequestNotPerCache:
             )
 
 
+class TestTheAllowanceFitsTheAdvertisedSlots:
+    """A flat allowance is most of a share on a small cache, so it broke the very thing it
+    was added to fix: at 4096 over four slots a default chat cost 1032 and only three ran,
+    and at 2048 only one did. Clamped to the share, ``capacity`` of them always fit.
+    """
+
+    def _cost(self, budget, capacity):
+        return _openai_llama_admission_tokens(
+            _chat(max_tokens = budget), budget = budget, capacity = capacity,
+            context_window = budget,
+        )
+
+    def test_capacity_default_chats_fit_at_every_cache_size(self):
+        for budget in (2048, 4096, 8192, 32768, 262144):
+            cost = self._cost(budget, 4)
+            assert cost * 4 <= budget, f"{budget} cache admits only {budget // cost} of 4"
+
+    def test_a_large_cache_is_unchanged(self):
+        """The clamp must bite only where the share is the tighter of the two."""
+        assert self._cost(32768, 4) == self._cost(262144, 4)
+
+    def test_the_share_only_ever_lowers_the_allowance(self):
+        base = _openai_llama_admission_output_allowance(
+            None, budget = 4096, prompt_tokens = 100, context_window = 4096
+        )
+        assert (
+            _openai_llama_admission_output_allowance(
+                None, budget = 4096, prompt_tokens = 100, context_window = 4096, share = 1024
+            )
+            < base
+        )
+
+    def test_a_prompt_past_its_share_keeps_the_flat_allowance(self):
+        """Zeroing it would admit a request with no room to generate at all."""
+        assert (
+            _openai_llama_admission_output_allowance(
+                None, budget = 8192, prompt_tokens = 3000, context_window = 8192, share = 2048
+            )
+            == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
+        )
+
+    def test_a_named_cap_ignores_the_share(self):
+        assert (
+            _openai_llama_admission_output_allowance(
+                256, budget = 2048, prompt_tokens = 10, context_window = 2048, share = 512
+            )
+            == 256
+        )
+
+
 class TestTheAllowanceCannotExceedOneSlot:
     """A request cannot occupy more KV than its own slot holds, so the allowance is clamped
     against the WINDOW; clamping against the aggregate budget charged a long-prompt chat for
