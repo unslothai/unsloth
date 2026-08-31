@@ -12,7 +12,10 @@ import threading
 from contextlib import contextmanager
 from typing import Optional, Generator
 from core.inference.message_content import content_to_text
-from core.inference.runtime_context import runtime_context_length
+from core.inference.runtime_context import (
+    MAX_REQUESTABLE_CONTEXT,
+    runtime_context_length,
+)
 from core.inference.chat_template_helpers import (
     ReasoningChannelNormalizer,
     detect_reasoning_channel_markers,
@@ -1609,10 +1612,17 @@ class MLXInferenceBackend:
         Mirrors the GGUF resolution order: whatever the load attached or was asked for is
         honored verbatim, while asking for nothing takes the trained window. The served
         length is what bounds the KV cache, where the architecture allows it.
+
+        The served value is held to the same ceiling a request is (LoadRequest bounds
+        max_seq_length at MAX_REQUESTABLE_CONTEXT), because it drives the cache and the
+        usage bar's denominator. Llama-4 Scout declares 10,485,760, ten times that: served
+        unclamped would make the bar meaningless and name a length no control can ask for.
+        The native window is reported as read, since it is metadata about the model.
         """
         native = mlx_native_context_length(model)
         served = runtime_context_length(model, max_seq_length) or native
         if served:
+            served = min(int(served), MAX_REQUESTABLE_CONTEXT)
             logger.info("MLX context: served=%s native=%s", served, native)
         return served, native, native
 
@@ -1637,7 +1647,7 @@ class MLXInferenceBackend:
                 "to confirm it.",
                 int(served),
             )
-        return enforced is True
+        return enforced
 
     def _resolve_kv_policy(self, is_vlm, kv_bits, max_seq_length, served):
         """The quantization status and cache window this load will run with.
@@ -1652,7 +1662,11 @@ class MLXInferenceBackend:
         enforced, which would otherwise spend the quantization and bound nothing.
         """
         pinned = _positive_int(max_seq_length) is not None
-        enforceable = self._kv_cache_window_enforceable(served)
+        # Tri-state: True confirmed, False confirmed unbounded, None nothing could be
+        # built to judge. Only True installs a bound; the other two are reported apart
+        # so a client can tell "does not apply" from "could not be checked".
+        confirmed = self._kv_cache_window_enforceable(served)
+        enforceable = confirmed is True
         quant = _kv_quant_status(
             _normalize_mlx_kv_bits(kv_bits),
             self._model,
@@ -1660,9 +1674,12 @@ class MLXInferenceBackend:
             pinned and enforceable,
         )
         if not enforceable or (quant["kv_bits"] is not None and not pinned):
-            return quant, None
+            # No bound installed. False where the probe answered either way, since the
+            # window is not a limit here whatever the architecture could have done;
+            # None only where nothing could be built to judge.
+            return quant, None, None if confirmed is None else False
         logger.info("MLX KV cache limited to %d tokens", int(served))
-        return quant, int(served)
+        return quant, int(served), True
 
     def load_model(
         self,
@@ -1786,7 +1803,7 @@ class MLXInferenceBackend:
         # Classify before the first generation: an ineligible cache would otherwise
         # raise inside maybe_quantize_kv_cache mid-stream, after converting the
         # leading entries.
-        self._kv_quant, self._kv_cache_window = self._resolve_kv_policy(
+        self._kv_quant, self._kv_cache_window, _ctx_enforced = self._resolve_kv_policy(
             is_vision, kv_bits, max_seq_length, _served_ctx
         )
         if self._kv_quant["kv_bits"] is not None:
@@ -1862,6 +1879,10 @@ class MLXInferenceBackend:
             # same number, and a request may exceed both.
             "native_context_length": _native_ctx,
             "max_context_length": _max_ctx,
+            # Whether the served window actually bounds the cache: True confirmed on a
+            # real cache, False confirmed unbounded, None nothing could be built to judge.
+            # Without it the API reports a limit a client cannot tell from an enforced one.
+            "context_length_enforced": _ctx_enforced,
             "mlx_kv_bits": self._kv_quant["kv_bits"],
             "mlx_kv_bits_requested": self._kv_quant["requested_kv_bits"],
             "mlx_kv_quant_eligibility": self._kv_quant["eligibility"],

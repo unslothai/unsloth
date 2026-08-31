@@ -7,6 +7,11 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+#: Longest context a load may ask for, and the ceiling a resolved window is held to.
+#: LoadRequest.max_seq_length bounds requests by this; a backend that reads a wider
+#: window from the model reports it as native but does not serve past it.
+MAX_REQUESTABLE_CONTEXT = 1048576
+
 
 def runtime_context_length(model: Any, fallback: Optional[int] = None) -> Optional[int]:
     """Return the effective context length Unsloth attached to a loaded model."""

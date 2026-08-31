@@ -2320,6 +2320,9 @@ export function ChatPage({
   );
   const contextUsage = useChatRuntimeStore((state) => state.contextUsage);
   const loadedIsGguf = useChatRuntimeStore((state) => state.loadedIsGguf);
+  const loadedContextEnforced = useChatRuntimeStore(
+    (state) => state.loadedContextEnforced,
+  );
   const platformDeviceType = usePlatformStore((state) => state.deviceType);
   const platformChatOnlyReason = usePlatformStore(
     (state) => state.chatOnlyReason,
@@ -4154,6 +4157,7 @@ export function ChatPage({
                   platformDeviceType,
                   platformChatOnlyReason,
                 )}
+                contextEnforced={loadedContextEnforced}
                 className="h-[var(--studio-chat-control-height,34px)]"
               />
             ) : null}

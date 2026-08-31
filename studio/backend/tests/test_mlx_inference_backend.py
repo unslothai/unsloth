@@ -3494,23 +3494,29 @@ def test_the_load_policy_bounds_a_pin_only_where_the_bound_can_be_enforced(monke
         backend = MLXInferenceBackend()
         backend._model = model
         backend._is_vlm = False
-        quant, window = backend._resolve_kv_policy(
+        quant, window, enforced = backend._resolve_kv_policy(
             False, kv_bits, requested, requested if served is unset else served
         )
-        return quant["kv_bits"], window
+        return quant["kv_bits"], window, enforced
 
-    assert policy(honours, 4, 8192) == (None, 8192)  # enforceable pin outranks quantization
-    assert policy(honours, 4, 0, 262144) == (4, None)  # auto yields to quantization
-    assert policy(honours, None, 8192) == (None, 8192)
-    assert policy(honours, None, 0, 262144) == (None, 262144)  # nothing to yield to
+    assert policy(honours, 4, 8192) == (None, 8192, True)  # enforceable pin outranks quant
+    # Auto yields to quantization, and a window that bounds nothing says so.
+    assert policy(honours, 4, 0, 262144) == (4, None, False)
+    assert policy(honours, None, 8192) == (None, 8192, True)
+    assert policy(honours, None, 0, 262144) == (None, 262144, True)  # nothing to yield to
 
     # An unenforceable pin spends nothing: neither bounded nor stripped of quantization.
-    assert policy(owns, 4, 8192) == (4, None)
-    assert policy(owns, None, 8192) == (None, None)
+    # The verdict still travels, so the API can say the window is not a limit.
+    assert policy(owns, 4, 8192) == (4, None, False)
+    assert policy(owns, None, 8192) == (None, None, False)
 
     # A window nobody could read bounds nothing rather than bounding at zero.
-    assert policy(honours, None, 0, None) == (None, None)  # unreadable
-    assert policy(honours, None, 0, 0) == (None, None)  # non-positive
+    assert policy(honours, None, 0, None) == (None, None, False)  # unreadable
+    assert policy(honours, None, 0, 0) == (None, None, False)  # non-positive
+
+    # A shape the probe cannot judge is null, not a confirmed "not enforced".
+    unreadable = SimpleNamespace(layers = [object()], make_cache = lambda: None)
+    assert policy(unreadable, None, 8192) == (None, None, None)
 
 
 def test_quantization_is_refused_for_a_pinned_context_rather_than_raising_mid_stream():

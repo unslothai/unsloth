@@ -175,6 +175,9 @@ export function isServedByLlamaCpp(x: {
   checkpoint?: string | null;
 }): boolean {
   if (isExternalModelId(x.checkpoint)) return false;
+  // A load that reported a non-GGUF backend settles it: the variant and path token
+  // outlive the pick that set them, so neither survives as evidence past a reload.
+  if (x.loadedIsGguf === false) return false;
   return (
     x.loadedIsGguf === true ||
     x.activeGgufVariant != null ||
@@ -200,11 +203,13 @@ export function loadedContextFields(resp: {
   context_length?: number | null;
   native_context_length?: number | null;
   max_context_length?: number | null;
+  context_length_enforced?: boolean | null;
 } | null): {
   loadedContextLength: number | null;
   maxContextLength: number | null;
   nativeContextLength: number | null;
   loadedIsGguf: boolean | null;
+  loadedContextEnforced: boolean | null;
 } {
   if (!resp) {
     return {
@@ -212,6 +217,7 @@ export function loadedContextFields(resp: {
       maxContextLength: null,
       nativeContextLength: null,
       loadedIsGguf: null,
+      loadedContextEnforced: null,
     };
   }
   const isGguf = resp.is_gguf ?? false;
@@ -223,6 +229,7 @@ export function loadedContextFields(resp: {
       maxContextLength: null,
       nativeContextLength: null,
       loadedIsGguf: false,
+      loadedContextEnforced: null,
     };
   }
   return {
@@ -230,6 +237,9 @@ export function loadedContextFields(resp: {
     maxContextLength: resp.max_context_length ?? loaded,
     nativeContextLength: resp.native_context_length ?? null,
     loadedIsGguf: isGguf,
+    // llama.cpp allocates the window it reports, so a GGUF load is enforced by
+    // construction. Everything else answers for itself, or says nothing.
+    loadedContextEnforced: isGguf ? true : (resp.context_length_enforced ?? null),
   };
 }
 

@@ -248,6 +248,7 @@ export interface LoadModelResponse {
   context_length?: number | null;
   max_context_length?: number | null;
   native_context_length?: number | null;
+  context_length_enforced?: boolean | null;
   supports_reasoning?: boolean;
   reasoning_style?:
     | "enable_thinking"
@@ -365,6 +366,7 @@ export interface InferenceStatusResponse {
   context_length?: number | null;
   max_context_length?: number | null;
   native_context_length?: number | null;
+  context_length_enforced?: boolean | null;
   cache_type_kv?: string | null;
   mlx_kv_bits?: number | null;
   mlx_kv_bits_requested?: number | null;

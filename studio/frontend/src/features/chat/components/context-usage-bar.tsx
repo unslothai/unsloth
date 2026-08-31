@@ -32,6 +32,7 @@ export const ContextUsageBar: FC<
   promptTokens,
   completionTokens,
   isMlx,
+  contextEnforced,
   className,
 }) => {
   const state = deriveContextUsageBar({
@@ -42,6 +43,7 @@ export const ContextUsageBar: FC<
     promptTokens,
     completionTokens,
     isMlx,
+    contextEnforced,
   });
   if (!state) return null;
 
@@ -141,6 +143,13 @@ export const ContextUsageBar: FC<
                   answers get slower and less accurate. Increase{" "}
                   <span className="font-medium">Context Length</span> in the
                   chat Settings panel to fit the whole conversation.
+                </>
+              ) : advice === "unenforced-limit" ? (
+                <>
+                  This model builds its own cache, so{" "}
+                  <span className="font-medium">Context Length</span> is the
+                  window it was sized for, not a limit on it: the cache keeps
+                  growing and lowering the setting will not save memory.
                 </>
               ) : (
                 <>

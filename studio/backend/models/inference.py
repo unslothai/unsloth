@@ -27,6 +27,7 @@ from core.inference.llama_server_args import (
     PARALLEL_MAX,
     PARALLEL_MIN,
 )
+from core.inference.runtime_context import MAX_REQUESTABLE_CONTEXT
 from core.inference.video_families import MAX_VIDEO_NUM_FRAMES
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
 
@@ -54,7 +55,7 @@ class LoadRequest(BaseModel):
     max_seq_length: int = Field(
         0,
         ge = 0,
-        le = 1048576,
+        le = MAX_REQUESTABLE_CONTEXT,
         description = (
             "Maximum sequence length. Send 0 to let a backend that sizes its own window "
             "(llama.cpp or MLX) choose the context itself."
@@ -430,7 +431,7 @@ class ValidateModelRequest(BaseModel):
     )
     # Intended load settings so validate's coexistence check matches the follow-up
     # /load; defaults preserve old behavior for callers that omit them.
-    max_seq_length: int = Field(0, ge = 0, le = 1048576)
+    max_seq_length: int = Field(0, ge = 0, le = MAX_REQUESTABLE_CONTEXT)
     load_in_4bit: bool = Field(True)
     cache_type_kv: Optional[str] = Field(None)
     tensor_parallel: bool = Field(False)
@@ -1076,6 +1077,14 @@ class _InferenceRuntimeFields(BaseModel):
     native_context_length: Optional[int] = Field(
         None,
         description = "Model's native context length, from GGUF metadata or the MLX model config",
+    )
+    context_length_enforced: Optional[bool] = Field(
+        None,
+        description = (
+            "Whether context_length actually bounds the runtime's KV cache. True confirmed, "
+            "false confirmed unbounded, null the backend does not answer. MLX builds a cache "
+            "to check, since a model with its own make_cache ignores the requested size."
+        ),
     )
     supports_reasoning: bool = Field(
         False,

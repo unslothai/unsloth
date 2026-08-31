@@ -25,6 +25,8 @@ export type ContextUsageBarInput = {
   // MLX keeps generating past the window instead of stopping there, so it needs the
   // opposite advice from llama.cpp once a conversation outgrows the limit.
   isMlx?: boolean;
+  /** context_length_enforced as the load reported it; null where it does not answer. */
+  contextEnforced?: boolean | null;
 };
 
 /**
@@ -40,14 +42,19 @@ export type ContextLimitAdvice =
   | "none"
   | "stops-at-limit"
   | "mlx-near-limit"
-  | "mlx-past-limit";
+  | "mlx-past-limit"
+  | "unenforced-limit";
 
 function contextLimitAdvice(
   used: number,
   total: number,
   isMlx: boolean | undefined,
+  enforced: boolean | null | undefined,
 ): ContextLimitAdvice {
   if ((used / total) * 100 <= 85) return "none";
+  // A window the backend confirmed does not bound the cache is not a limit at all:
+  // nothing rotates and nothing stops, so neither of the other two is true of it.
+  if (enforced === false) return "unenforced-limit";
   if (!isMlx) return "stops-at-limit";
   return used > total ? "mlx-past-limit" : "mlx-near-limit";
 }
@@ -73,6 +80,7 @@ export function deriveContextUsageBar({
   promptTokens,
   completionTokens,
   isMlx,
+  contextEnforced,
 }: ContextUsageBarInput): ContextUsageBarState | null {
   const limit = typeof total === "number" && total > 0 ? total : null;
   const usedTokens =
@@ -117,6 +125,6 @@ export function deriveContextUsageBar({
     totalRowValue: `${formatTokenCountFull(usedTokens)} / ${formatTokenCountFull(limit)}`,
     percent: Math.min((usedTokens / limit) * 100, 100),
     hasUsageDetails,
-    advice: contextLimitAdvice(usedTokens, limit, isMlx),
+    advice: contextLimitAdvice(usedTokens, limit, isMlx, contextEnforced),
   };
 }

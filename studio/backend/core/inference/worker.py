@@ -506,6 +506,10 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         model_info[_ctx_field] = int(_ctx_value)
                 except Exception as _ctx_exc:
                     logger.warning("%s forward failed: %s", _ctx_field, _ctx_exc)
+            # Tri-state, so it is forwarded as it is rather than coerced: None means the
+            # backend does not answer, which is not the same as a confirmed False.
+            if _entry.get("context_length_enforced") is not None:
+                model_info["context_length_enforced"] = bool(_entry["context_length_enforced"])
             # Backend post-load audio classification outranks pre-load config.
             model_info.update(
                 {k: _entry[k] for k in ("is_audio", "audio_type", "has_audio_input") if k in _entry}

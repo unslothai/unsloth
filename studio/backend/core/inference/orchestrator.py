@@ -238,6 +238,7 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
         "native_context_length": model_info.get("native_context_length"),
         "max_context_length": model_info.get("max_context_length"),
         "requested_context_length": model_info.get("requested_context_length"),
+        "context_length_enforced": model_info.get("context_length_enforced"),
     }
 
 

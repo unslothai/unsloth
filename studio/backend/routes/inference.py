@@ -6228,6 +6228,9 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         mlx_kv_quant_reason = None,
         mlx_kv_quant_note = None,
         chat_template_override_reason = None,
+        # llama.cpp allocates the window it reports, so a GGUF load is bounded by
+        # construction rather than by inspection.
+        context_length_enforced = True,
         # Older/custom backend doubles predate this additive runtime field.
         preserve_thinking_default = bool(getattr(llama_backend, "preserve_thinking_default", False)),
         speculative_type = llama_backend.requested_spec_mode,
@@ -13213,6 +13216,7 @@ async def _load_model_impl(
                         _model_info.get("native_context_length")
                     ),
                     max_context_length = _positive_int_or_none(_model_info.get("max_context_length")),
+                    context_length_enforced = _model_info.get("context_length_enforced"),
                     chat_template = _chat_template,
                 )
 
@@ -13943,6 +13947,7 @@ async def _load_model_impl(
             context_length = _positive_int_or_none(_model_info.get("context_length")),
             native_context_length = _positive_int_or_none(_model_info.get("native_context_length")),
             max_context_length = _positive_int_or_none(_model_info.get("max_context_length")),
+            context_length_enforced = _model_info.get("context_length_enforced"),
             chat_template = _chat_template,
         )
 
@@ -16044,6 +16049,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             context_length = _positive_int_or_none(model_info.get("context_length")),
             native_context_length = _positive_int_or_none(model_info.get("native_context_length")),
             max_context_length = _positive_int_or_none(model_info.get("max_context_length")),
+            context_length_enforced = model_info.get("context_length_enforced"),
             # 0 is an answer -- the load asked the backend to size its own window --
             # while None means this backend records no request at all.
             requested_context_length = _non_negative_int_or_none(
@@ -23589,6 +23595,8 @@ def _openai_model_objects() -> list[dict]:
             _value = _positive_int_or_none(model_info.get(_field))
             if _value is not None:
                 entry[_field] = _value
+        if model_info.get("context_length_enforced") is not None:
+            entry["context_length_enforced"] = bool(model_info["context_length_enforced"])
         models.append(entry)
 
     return models

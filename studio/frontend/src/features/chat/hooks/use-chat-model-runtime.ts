@@ -106,6 +106,7 @@ import {
 } from "../types/api";
 import { isExternalModelId } from "../external-providers";
 import {
+  DEFAULT_MAX_SEQ_LENGTH,
   DEFAULT_PER_MODEL_CONFIG,
   applyPerModelConfigToRuntime,
   currentRuntimePerModelConfig,
@@ -923,7 +924,7 @@ export function useChatModelRuntime() {
                     : resolveInitialConfig(modelId, ggufVariant).config
                         .maxSeqLength,
                 ),
-                defaultMaxSeqLength: live.params.maxSeqLength,
+                defaultMaxSeqLength: live.params.maxSeqLength || DEFAULT_MAX_SEQ_LENGTH,
                 presetSource: live.activePresetSource,
               });
             },
@@ -1446,7 +1447,7 @@ export function useChatModelRuntime() {
                 activeGgufVariant: loadActiveGgufVariant,
                 isMlx: isServedByMlx(isGguf, platform.deviceType, platform.chatOnlyReason),
                 pinnedMaxSeqLength,
-                defaultMaxSeqLength: stateBeforeUnload.params.maxSeqLength,
+                defaultMaxSeqLength: stateBeforeUnload.params.maxSeqLength || DEFAULT_MAX_SEQ_LENGTH,
                 presetSource: loadActivePresetSource,
               }),
             );
@@ -1669,7 +1670,7 @@ export function useChatModelRuntime() {
               activeGgufVariant: loadActiveGgufVariant,
               isMlx: isServedByMlx(isGguf, platform.deviceType, platform.chatOnlyReason),
               pinnedMaxSeqLength,
-              defaultMaxSeqLength: stateBeforeUnload.params.maxSeqLength,
+              defaultMaxSeqLength: stateBeforeUnload.params.maxSeqLength || DEFAULT_MAX_SEQ_LENGTH,
               presetSource: loadActivePresetSource,
             });
             const loadMaxSeqLength = resolveFitMaxSeqLength(
