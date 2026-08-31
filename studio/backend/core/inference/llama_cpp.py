@@ -5509,12 +5509,8 @@ _PROC_ROOT = "/proc"
 
 
 def _metal_capable_host() -> bool:
-    """True where an empty CUDA/HIP probe still means GPU offload, i.e. Apple Silicon.
-
-    Not ``sys.platform == "darwin"``: auto_detect_backend picks Metal only on Apple
-    Silicon and falls back to CPU otherwise, so an Intel Mac with an empty probe really
-    is CPU-only and wants the diagnostic.
-    """
+    """Apple Silicon, where an empty CUDA/HIP probe still means GPU offload. Not
+    ``darwin``: auto_detect_backend resolves an Intel Mac to CPU, which wants the line."""
     try:
         from utils.hardware import is_apple_silicon
         return bool(is_apple_silicon())
@@ -8981,24 +8977,15 @@ class LlamaCppBackend:
     def _explain_empty_gpu_probe(binary: Optional[str] = None) -> str:
         """Why ``_get_gpu_memory`` came back empty, as one short phrase.
 
-        The probe returns ``[]`` for at least six unrelated reasons -- no torch, a
-        torch without CUDA/HIP, an empty or mismatched visibility mask, the #7624
-        arch gate dropping every card, amd-smi declining, or genuinely no device --
-        and every one of them lands the model on the CPU. A user's log recorded the
-        verdict and none of the reason, so "why did my model go to RAM" could not be
-        answered from it at all.
-
-        Facts only, gathered cheaply: no ``mem_get_info`` call, so this never creates
-        the HIP primary context the amd-smi branch exists to avoid. Never raises, and
-        never returns "" -- an unexplained empty list is the thing being fixed.
+        Six unrelated causes share that one empty list -- no torch, no usable device, a
+        stale visibility mask, the #7624 arch gate, amd-smi declining, or no GPU at all --
+        and they need different fixes. No ``mem_get_info`` call, so this never creates the
+        HIP context the amd-smi branch avoids. Never raises, never returns "".
         """
         try:
             binary = binary or LlamaCppBackend._find_llama_server_binary()
             if _metal_capable_host():
-                # Not a CPU verdict: the probe reads CUDA and HIP, so it is empty on
-                # every Mac, and an Apple Silicon one still offloads to Metal. Same
-                # check as the load site, so an Intel Mac -- which auto_detect_backend
-                # resolves to CPU -- falls through and gets its real reason instead.
+                # Same check as the load site: an Intel Mac wants its real reason.
                 return "this probe reads CUDA and HIP only; Apple Silicon offloads through Metal"
             if LlamaCppBackend._is_vulkan_backend(binary):
                 return "the Vulkan probe reported no device"
@@ -20242,23 +20229,9 @@ class LlamaCppBackend:
                         and not _arch_gate_forced_cpu
                         and not _metal_capable_host()
                     ):
-                        # States what this process observed, and stops there. It says
-                        # nothing about where the model ends up or what runs it: llama.cpp
-                        # enumerates devices itself, and whether the fitter runs is not
-                        # known here either, since a last-wins --fit off in extra_args is
-                        # appended to the command much further down (the later code asks
-                        # fit_is_effectively_on for exactly that reason). An explicit
-                        # gpu_ids pick is pinned for the child below, so it is excluded.
-                        #
-                        # _detected_gpus, not gpus: both Manual modes empty `gpus` on
-                        # purpose to stand the planner down, and the GPU is fully used
-                        # there. The arch gate already warns better when it is the cause.
-                        #
-                        # Apple Silicon, not darwin: the probe reads CUDA and HIP, so it
-                        # is empty on every Mac, but only an Apple Silicon one is
-                        # offloading to Metal. An Intel Mac really is CPU-only and wants
-                        # this line (auto_detect_backend picks Metal on is_apple_silicon
-                        # and falls back to CPU otherwise).
+                        # Claims no placement: llama.cpp enumerates devices itself.
+                        # _detected_gpus, not gpus: Manual modes empty gpus on purpose.
+                        # gpu_ids is pinned for the child below; the arch gate warns better.
                         logger.warning(
                             "Studio could not enumerate any GPU, so this load was planned "
                             "without device information: %s",

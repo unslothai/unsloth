@@ -3,16 +3,10 @@
 
 """_explain_empty_gpu_probe: why _get_gpu_memory came back empty.
 
-From a real report. A user's model ran on the CPU and their whole log said:
-
-    GGUF size: 16.4 GB, ... GPUs free: [], selected: None, --fit: on
-    Load mode: the whole load (34.3 GB) fits without paging
-
-which records the verdict and none of the reason, so the question actually being
-asked -- why did my model go to system RAM -- could not be answered from it. The
-probe returns [] for at least six unrelated reasons and every one lands on the CPU;
-these tests pin that each names itself, and that the explainer never creates the HIP
-context the amd-smi branch exists to avoid.
+A user's log recorded `GPUs free: []` and none of the reason. Six unrelated causes
+share that empty list and need different fixes, so these pin that each names itself,
+that the explainer never creates the HIP context the amd-smi branch avoids, and that
+neither it nor the load site claims an outcome (placement is llama.cpp's, not ours).
 """
 
 import sys
@@ -80,9 +74,7 @@ def _load_site_guard() -> str:
     while start >= 0 and not lines[start].lstrip().startswith("if "):
         start -= 1
     assert start >= 0, "no enclosing if statement"
-    # Forward to the END of the block, not just to the marker line. Stopping at the
-    # marker cut the message's own continuation literal out of the extract, so a mutant
-    # that rewrote it went undetected -- the test read a line that had not changed.
+    # To the END of the block: stopping at the marker hid a mutant in the continuation.
     base = len(lines[start]) - len(lines[start].lstrip())
     end = hit
     while end + 1 < len(lines):
@@ -163,8 +155,7 @@ class TestItReportsTheVisibilityMask:
         "var", ["CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "GPU_DEVICE_ORDINAL"]
     )
     def test_an_empty_mask_is_called_out(self, monkeypatch, var):
-        """A container or a stale mask hides every device, and looks identical to
-        having no GPU unless the mask is printed."""
+        """A container hiding every device looks identical to having none."""
         _clear_masks(monkeypatch)
         monkeypatch.setenv(var, "")
         monkeypatch.setitem(sys.modules, "torch", _fake_torch(available = False))
@@ -184,9 +175,7 @@ class TestItReportsTheVisibilityMask:
 
 class TestItIsSafeToCallOnAnyPath:
     def test_it_never_touches_mem_get_info(self, monkeypatch):
-        """Reading memory creates a HIP primary context the backend never gives
-        back (~700 MiB), which is the whole reason the amd-smi branch exists. The
-        fake raises if it is called, so reaching a verdict here proves it was not."""
+        """mem_get_info leaks a ~700 MiB HIP context; the fake raises if called."""
         _clear_masks(monkeypatch)
         monkeypatch.setitem(sys.modules, "torch", _fake_torch())
         monkeypatch.setattr(
@@ -213,10 +202,8 @@ class TestItIsSafeToCallOnAnyPath:
 
 
 class TestMacOSIsNotACpuVerdict:
-    """This probe reads CUDA and HIP only, so it is empty on every Mac -- including an
-    Apple Silicon one whose model is about to run entirely on the Metal GPU. There is a
-    whole "No GPU is enumerated on Metal" branch in load_model for that state. Warning
-    there would tell every Mac user the opposite of what happens."""
+    """The probe reads CUDA and HIP, so it is empty on every Mac; an Apple Silicon one
+    is still offloading to Metal."""
 
     @pytest.mark.parametrize("torch_state", ["absent", "no_cuda", "rocm_like"])
     def test_the_reason_names_metal_rather_than_blaming_torch(self, monkeypatch, torch_state):
@@ -233,8 +220,7 @@ class TestMacOSIsNotACpuVerdict:
         assert "torch" not in msg, "on macOS the probe's blind spot is the answer, not torch"
 
     def test_the_load_site_exempts_only_metal_capable_macs(self):
-        """Source-level, because load_model cannot be driven from a unit test. The
-        simulation in temp/simgpu executes this same guard across the platform matrix."""
+        """Source-level: load_model cannot be driven from a unit test."""
         guard = _load_site_guard()
         assert "_metal_capable_host()" in guard, (
             "the exemption must be Apple Silicon, not every Mac: an Intel Mac with an "
@@ -244,11 +230,8 @@ class TestMacOSIsNotACpuVerdict:
 
 
 class TestManualModeIsNotAnAbsentGpu:
-    """Both Manual modes set ``gpus = []`` on purpose, to stand the Python planner down
-    and let ``--fit`` or an explicit ``--gpu-layers`` place the model. The GPU is fully
-    used there. The reporting user's own log shows ``GPUs free: []`` directly beneath
-    "Manual mode with Auto layers hands memory management to llama.cpp --fit", so an
-    empty list there is this, not a probe that failed."""
+    """Both Manual modes empty ``gpus`` on purpose to stand the planner down, and the
+    GPU is fully used there. The reporting user's log is this case, not a failed probe."""
 
     def test_the_warning_reads_detected_gpus_not_gpus(self):
         assert (
@@ -269,14 +252,11 @@ class TestManualModeIsNotAnAbsentGpu:
 
 
 class TestItDoesNotAssertTheLaunchOutcome:
-    """llama.cpp enumerates devices itself and still receives ``--fit on``, so it can
-    place on a GPU this probe never saw. An explicit ``gpu_ids`` pick is pinned for the
-    child further down. Claiming "will run on the CPU" from an empty probe therefore
-    states an outcome this code does not know."""
+    """llama.cpp enumerates devices itself, and an explicit ``gpu_ids`` pick is pinned
+    below, so an empty probe cannot tell you where the model ends up."""
 
     def test_the_message_reports_the_probe_not_the_placement(self):
-        # Comments stripped: the guard's own note explains why it must not claim CPU,
-        # and matching that would pass while the message said the opposite.
+        # Comments stripped: the guard's own note names the claim it forbids.
         body = "\n".join(
             line for line in _load_site_guard().splitlines() if not line.lstrip().startswith("#")
         )
@@ -302,9 +282,7 @@ class TestItDoesNotAssertTheLaunchOutcome:
 
 
 class TestIntelMacGetsItsRealReason:
-    """The load site warns on an Intel Mac, since auto_detect_backend resolves it to CPU.
-    The explainer has to agree: a blanket Darwin branch would answer "macOS offloads
-    through Metal" on a host that offloads through nothing."""
+    """The load site warns on an Intel Mac, so the explainer must not answer "Metal"."""
 
     def test_an_intel_mac_does_not_get_the_metal_answer(self, monkeypatch):
         _clear_masks(monkeypatch)
@@ -333,10 +311,8 @@ class TestIntelMacGetsItsRealReason:
 
 
 class TestItDoesNotClaimTheFitterRuns:
-    """use_fit is the internal default, read before extra_args are appended to the
-    command; a last-wins ``--fit off`` there wins. The later code asks
-    fit_is_effectively_on for exactly this distinction, and cmd does not exist yet at
-    the warning, so the message must not mention the fitter at all."""
+    """use_fit is the pre-extras default and a last-wins ``--fit off`` beats it, so the
+    message must not mention the fitter."""
 
     def test_the_message_does_not_mention_fit(self):
         body = "\n".join(
