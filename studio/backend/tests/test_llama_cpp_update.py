@@ -11,6 +11,7 @@ the apply flow (job lifecycle, installer invocation, post-swap re-read).
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -258,16 +259,21 @@ def test_status_managed_source_git_current_no_refresh(monkeypatch, tmp_path):
     assert st["source_refresh"] is True
 
 
-def test_start_update_managed_source_refresh_runs_installer(monkeypatch, tmp_path):
-    # No prebuilt asset, but managed source refresh is offered: apply still
-    # invokes the installer so it can fall through to compiling from source.
+def test_start_update_managed_source_refresh_falls_back_to_setup(monkeypatch, tmp_path):
+    # No matching prebuilt: install_llama_prebuilt.py exits EXIT_FALLBACK (2);
+    # the updater must then invoke setup.sh/setup.ps1 to compile from source.
+    # Faking exit 0 from the prebuilt installer alone would hide the broken path.
     install_dir = tmp_path / "llama.cpp"
     binary = install_dir / "build" / "bin" / "llama-server"
     binary.parent.mkdir(parents = True)
     binary.write_text("stub")
+    studio = tmp_path
+    (studio / "install_llama_prebuilt.py").write_text("# stub installer\n")
+    setup_name = "setup.ps1" if os.name == "nt" else "setup.sh"
+    (studio / setup_name).write_text("# stub setup\n")
     monkeypatch.delenv("UNSLOTH_LLAMA_CPP_PATH", raising = False)
     monkeypatch.setattr(upd, "_find_binary", lambda: str(binary))
-    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(upd, "_installer_script", lambda: studio / "install_llama_prebuilt.py")
     _no_prebuilt(monkeypatch)
     monkeypatch.setattr(
         upd,
@@ -279,35 +285,110 @@ def test_start_update_managed_source_refresh_runs_installer(monkeypatch, tmp_pat
     monkeypatch.setattr(upd, "_installed_build_number", lambda b: None)
     monkeypatch.setattr(upd, "_managed_source_git_behind", lambda *a, **k: None)
 
-    captured = {}
+    calls: list[list] = []
+
+    def _popen(cmd, **kwargs):
+        cmd_list = list(cmd)
+        calls.append(cmd_list)
+        joined = " ".join(str(c) for c in cmd_list)
+        if "install_llama_prebuilt" in joined:
+            # Real installer contract when no asset matches this host.
+            return _FakeInstallerPopen(
+                cmd_list, returncode = upd._EXIT_FALLBACK, lines = ["no prebuilt\n"]
+            )
+        # setup.sh / setup.ps1 owns the compile after EXIT_FALLBACK.
+        binary.write_text("rebuilt-from-source")
+        return _FakeInstallerPopen(cmd_list, returncode = 0, lines = ["built ok\n"])
+
+    monkeypatch.setattr(upd.subprocess, "Popen", _popen)
 
     class _Proc:
         returncode = 0
         stdout = ""
-        stderr = "version: 0.3.0-dev (build 1, commit deadbee)\n"
+        stderr = "version: 0.3.0-dev (build 11000, commit deadbee)\n"
 
-    def _fake_run(cmd, **kwargs):
-        return _Proc()
-
-    def _on_start(cmd):
-        captured["cmd"] = cmd
-        _write_install(install_dir, "b11000")
-
-    monkeypatch.setattr(upd.subprocess, "run", _fake_run)
-    _patch_installer_popen(monkeypatch, on_start = _on_start)
+    monkeypatch.setattr(upd.subprocess, "run", lambda *a, **k: _Proc())
 
     res = upd.start_update()
     assert res["started"] is True, res
     deadline = time.time() + 10
+    job = upd.get_update_status()["job"]
     while time.time() < deadline:
-        if upd.get_update_status()["job"]["state"] in ("success", "error"):
+        job = upd.get_update_status()["job"]
+        if job["state"] in ("success", "error"):
             break
         time.sleep(0.05)
-    assert "cmd" in captured
-    cmd = captured["cmd"]
-    assert "--install-dir" in cmd and str(install_dir) in cmd
-    assert "--llama-tag" in cmd and "latest" in cmd
-    assert "--published-release-tag" not in cmd
+    assert job["state"] == "success", job
+    assert len(calls) == 2, calls
+    assert "install_llama_prebuilt" in " ".join(str(c) for c in calls[0])
+    setup_joined = " ".join(str(c) for c in calls[1])
+    assert setup_name in setup_joined or "powershell" in setup_joined.lower() or "bash" in setup_joined
+    assert "Rebuilt llama.cpp from source" in (job.get("message") or "")
+
+
+def test_start_update_managed_source_refresh_requires_setup(monkeypatch, tmp_path):
+    # EXIT_FALLBACK with no setup script must refuse rather than claim success.
+    install_dir = tmp_path / "llama.cpp"
+    binary = install_dir / "build" / "bin" / "llama-server"
+    binary.parent.mkdir(parents = True)
+    binary.write_text("stub")
+    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_PATH", raising = False)
+    monkeypatch.setattr(upd, "_find_binary", lambda: str(binary))
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(upd, "_setup_script", lambda: None)
+    _no_prebuilt(monkeypatch)
+    monkeypatch.setattr(
+        upd,
+        "_resolve_source_build_for_host",
+        lambda *, force_refresh = False: {"source_ref": "b11000"},
+    )
+    monkeypatch.setattr(upd, "_installed_build_number", lambda b: None)
+    monkeypatch.setattr(upd, "_managed_source_git_behind", lambda *a, **k: None)
+
+    res = upd.start_update()
+    assert res["started"] is False
+    assert res["reason"] == "setup_missing"
+
+
+def test_whisper_only_update_clears_source_refresh_flag(monkeypatch, tmp_path):
+    # A managed source tree that is already current still reports source_refresh
+    # on the llama half; once whisper is the displayed component that flag must
+    # drop so the banner does not say "Rebuilds llama.cpp from source".
+    binary = tmp_path / "llama.cpp" / "build" / "bin" / "llama-server"
+    binary.parent.mkdir(parents = True)
+    binary.write_text("stub")
+    monkeypatch.setattr(upd, "_find_binary", lambda: str(binary))
+    _no_prebuilt(monkeypatch)
+    monkeypatch.setattr(
+        upd,
+        "_resolve_source_build_for_host",
+        lambda *, force_refresh = False: {"source_ref": "master"},
+    )
+    monkeypatch.setattr(upd, "_installed_build_number", lambda b: 11000)
+    monkeypatch.setattr(
+        upd,
+        "_managed_source_git_behind",
+        lambda *a, **k: (False, "d7bd3bf", "d7bd3bf"),
+    )
+    monkeypatch.setattr(
+        upd,
+        "_whisper_chain_status",
+        lambda **kw: {
+            "update_available": True,
+            "skip_reason": None,
+            "status": {
+                "installed_tag": "v1.0.0",
+                "latest_tag": "v1.1.0",
+                "update_size_bytes": 12,
+            },
+            "phase": {"install_dir": tmp_path},
+        },
+    )
+    st = upd.get_update_status()
+    assert st["update_available"] is True
+    assert st["llama_update_available"] is False
+    assert st["update_component"] == "whisper"
+    assert st["source_refresh"] is False
 
 
 def test_status_source_build_offers_prebuilt(monkeypatch, tmp_path):

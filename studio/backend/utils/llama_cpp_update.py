@@ -63,6 +63,10 @@ logger = structlog.get_logger(__name__)
 
 DEFAULT_PUBLISHED_REPO = "unslothai/llama.cpp"
 _INSTALL_TIMEOUT_SECONDS = 1800  # 30 min ceiling for download + build/validate
+# Source compiles (cmake + CUDA/ROCm) routinely exceed the prebuilt ceiling.
+_SOURCE_BUILD_TIMEOUT_SECONDS = 7200
+# install_llama_prebuilt.py EXIT_FALLBACK: no matching prebuilt; setup.sh/ps1 compiles.
+_EXIT_FALLBACK = 2
 # install_llama_prebuilt.py EXIT_NO_SPACE: out of disk, retrying will not help.
 _EXIT_NO_SPACE = 4
 # A concrete backend selection could not be satisfied.
@@ -119,6 +123,71 @@ def _installer_script() -> Optional[Path]:
     """Locate install_llama_prebuilt.py (UNSLOTH_LLAMA_INSTALLER wins)."""
     return _flow.find_installer_script(
         env_var = "UNSLOTH_LLAMA_INSTALLER", script_name = "install_llama_prebuilt.py"
+    )
+
+
+def _setup_script() -> Optional[Path]:
+    """Locate setup.sh / setup.ps1 beside the llama installer (the EXIT_FALLBACK owner)."""
+    installer = _installer_script()
+    if installer is None:
+        return None
+    name = "setup.ps1" if os.name == "nt" else "setup.sh"
+    path = installer.parent / name
+    return path if path.is_file() else None
+
+
+def _setup_source_build_cmd(script: Path) -> list[str]:
+    """Argv that runs the studio setup script the same way the CLI updater does."""
+    if os.name == "nt":
+        system_root = os.environ.get("SystemRoot") or r"C:\Windows"
+        powershell = str(
+            Path(system_root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+        )
+        if not Path(powershell).is_file():
+            powershell = "powershell.exe"
+        # -Command + *>&1 matches unsloth_cli so Write-Host reaches the pipe.
+        script_literal = str(script).replace("'", "''")
+        return [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            f"& '{script_literal}' *>&1",
+        ]
+    return ["bash", str(script)]
+
+
+def _run_setup_source_build(
+    *,
+    desired_ref: Optional[str],
+    set_progress,
+) -> None:
+    """Compile managed llama.cpp via setup.sh / setup.ps1 (installer's EXIT_FALLBACK owner)."""
+    script = _setup_script()
+    if script is None:
+        raise RuntimeError(
+            "No matching llama.cpp prebuilt is available, and setup.sh/setup.ps1 "
+            "could not be located to rebuild from source."
+        )
+    env = dict(os.environ, UNSLOTH_PROGRESS_PERCENT_STEP = "5")
+    # Force the source path even if a prebuilt appears mid-flight; this is the
+    # managed refresh for hosts that already resolved as source-only.
+    env["UNSLOTH_LLAMA_FORCE_COMPILE"] = "1"
+    # Skip the desktop frontend rebuild; the in-app updater only needs llama.cpp.
+    env["SKIP_STUDIO_FRONTEND"] = "1"
+    if os.name != "nt":
+        # setup.sh llama-only mode: skip base/venv reinstall (Windows has no twin yet).
+        env["UNSLOTH_STUDIO_LLAMA_ONLY"] = "1"
+    if desired_ref:
+        env["UNSLOTH_LLAMA_FORCE_COMPILE_REF"] = str(desired_ref)
+    cmd = _setup_source_build_cmd(script)
+    logger.info("llama update: source build via setup", cmd = " ".join(cmd))
+    _flow.stream_installer(
+        cmd,
+        env,
+        set_progress = set_progress,
+        timeout_seconds = _SOURCE_BUILD_TIMEOUT_SECONDS,
     )
 
 
@@ -477,6 +546,10 @@ def _merge_whisper_status(status: dict, *, force_refresh: bool = False) -> dict:
     if plan is None:
         status["whisper"] = None
         status["update_component"] = "llama" if status["llama_update_available"] else None
+        if status.get("update_component") == "whisper":
+            status["source_refresh"] = False
+        else:
+            status["source_refresh"] = bool(status.get("source_refresh"))
         return status
     sub = plan.get("status") or {}
     status["whisper"] = {
@@ -496,6 +569,12 @@ def _merge_whisper_status(status: dict, *, force_refresh: bool = False) -> dict:
         if whisper_update_available
         else None
     )
+    # source_refresh describes a llama.cpp source rebuild. A whisper-only banner
+    # must not inherit that flag or the UI claims it is rebuilding llama.cpp.
+    if status.get("update_component") == "whisper":
+        status["source_refresh"] = False
+    else:
+        status["source_refresh"] = bool(status.get("source_refresh"))
     return status
 
 
@@ -740,6 +819,8 @@ def _run_llama_phase(
     llama_backend: Optional[str] = None,
     rocm_gfx: Optional[str] = None,
     backend_request: Optional[str] = None,
+    source_refresh: bool = False,
+    desired_ref: Optional[str] = None,
 ) -> dict:
     """The llama phase of a chained update: put the backend into a maintenance
     state, run the installer for the latest prebuilt, then refresh caches so the
@@ -747,7 +828,11 @@ def _run_llama_phase(
     raises on failure.
 
     pin_release_tag pins the installer to that exact published release instead
-    of letting it re-resolve "latest" itself (see start_update for why)."""
+    of letting it re-resolve "latest" itself (see start_update for why).
+
+    source_refresh: no matching prebuilt for this host. ``install_llama_prebuilt.py``
+    then exits ``EXIT_FALLBACK`` (2) and setup.sh / setup.ps1 owns the compile.
+    """
     backend = None
     model_was_active = False
     mtmd_guard = ExitStack()
@@ -806,12 +891,25 @@ def _run_llama_phase(
         # Advisory even then, applied only if this host's own probe finds none.
         if rocm_gfx and llama_backend == "auto":
             env["UNSLOTH_ROCM_GFX_REMEMBERED"] = rocm_gfx
-        _flow.stream_installer(
-            cmd,
-            env,
-            set_progress = set_progress,
-            timeout_seconds = _INSTALL_TIMEOUT_SECONDS,
-        )
+        try:
+            _flow.stream_installer(
+                cmd,
+                env,
+                set_progress = set_progress,
+                timeout_seconds = (
+                    _SOURCE_BUILD_TIMEOUT_SECONDS if source_refresh else _INSTALL_TIMEOUT_SECONDS
+                ),
+            )
+        except _flow.InstallerExit as exc:
+            # Contractual handoff: no matching prebuilt -> setup compiles from source.
+            if source_refresh and exc.returncode == _EXIT_FALLBACK:
+                logger.info(
+                    "llama update: prebuilt installer fell back to source build",
+                    returncode = exc.returncode,
+                )
+                _run_setup_source_build(desired_ref = desired_ref, set_progress = set_progress)
+            else:
+                raise
 
         # Drop stale caches so the banner re-checks the swapped marker.
         # If GitHub is offline, latest stays unknown and the banner fails open.
@@ -826,6 +924,13 @@ def _run_llama_phase(
         new_tag = (new_marker or {}).get("release_tag") or (new_marker or {}).get("tag")
         new_backend = marker_backend(new_marker)
         new_backend_request = marker_backend_request(new_marker)
+
+        if source_refresh and not new_tag:
+            build_num = _installed_build_number(_find_binary())
+            if build_num is not None:
+                new_tag = f"b{build_num}"
+            elif desired_ref:
+                new_tag = str(desired_ref)
 
         new_repo = (new_marker or {}).get("published_repo")
         if pin_release_tag and backend_request is not None:
@@ -856,15 +961,22 @@ def _run_llama_phase(
 
         logger.info("llama update: success", to_tag = new_tag, backend = new_backend)
         reload_hint = " Reload your model to use it." if model_was_active else ""
+        if source_refresh:
+            message = (
+                f"Rebuilt llama.cpp from source"
+                f"{f' ({new_tag})' if new_tag else ''}.{reload_hint}"
+            )
+        elif backend_request is not None:
+            message = (
+                f"llama.cpp is now running on {new_backend or backend_request}.{reload_hint}"
+            )
+        else:
+            message = f"Updated llama.cpp to {new_tag}.{reload_hint}"
         return {
             "to_tag": new_tag,
             "backend": new_backend,
             "reload_required": model_was_active,
-            "message": (
-                f"llama.cpp is now running on {new_backend or backend_request}.{reload_hint}"
-                if backend_request is not None
-                else f"Updated llama.cpp to {new_tag}.{reload_hint}"
-            ),
+            "message": message,
         }
     except _flow.InstallerExit as exc:
         # Raw "installer exited 4: <log tail>" says nothing actionable in the UI.
@@ -1014,6 +1126,8 @@ def _plan_llama_phase(backend_request: Optional[str] = None) -> dict:
             installed_release_tag if backend_request is not None else status.get("latest_tag")
         )
         pin_release_tag = None if sys.platform == "darwin" else wanted_tag
+        source_refresh = False
+        desired_ref = None
     elif backend_request is not None:
         # Never replace a user-managed tree with a prebuilt implicitly.
         return {
@@ -1063,10 +1177,24 @@ def _plan_llama_phase(backend_request: Optional[str] = None) -> dict:
         repo = src.get("published_repo") or (res or {}).get("repo") or DEFAULT_PUBLISHED_REPO
         from_tag = src.get("installed_tag")
         # Source refresh with no matching prebuilt: leave asset unset so the
-        # installer falls through to compiling the resolved source plan.
+        # installer exits EXIT_FALLBACK (2) and setup.sh/ps1 compiles.
         asset = None
-        if res and res.get("prebuilt_available") and not src.get("source_refresh"):
+        source_refresh = bool(src.get("source_refresh"))
+        desired_ref = src.get("latest_tag") if source_refresh else None
+        if res and res.get("prebuilt_available") and not source_refresh:
             asset = res.get("asset")
+        if source_refresh and _setup_script() is None:
+            return {
+                "skip_reason": "setup_missing",
+                "refusal": {
+                    "started": False,
+                    "reason": "setup_missing",
+                    "message": (
+                        "No official llama.cpp prebuilt is available for this host, "
+                        "and setup.sh/setup.ps1 could not be located to rebuild from source."
+                    ),
+                },
+            }
         # A source build records no choice, so there is nothing to preserve here.
         llama_backend = None
         rocm_gfx = None
@@ -1095,6 +1223,8 @@ def _plan_llama_phase(backend_request: Optional[str] = None) -> dict:
             "llama_backend": llama_backend,
             "rocm_gfx": rocm_gfx,
             "backend_request": backend_request,
+            "source_refresh": source_refresh,
+            "desired_ref": desired_ref,
         }
     }
 
@@ -1334,6 +1464,8 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
                             llama_backend = llama_spec.get("llama_backend"),
                             rocm_gfx = llama_spec.get("rocm_gfx"),
                             backend_request = llama_spec.get("backend_request"),
+                            source_refresh = bool(llama_spec.get("source_refresh")),
+                            desired_ref = llama_spec.get("desired_ref"),
                         )
                     )
                     if llama_spec
@@ -1364,6 +1496,8 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
             starting_message = f"Installing the {backend_request} llama.cpp build..."
         elif backend_request is not None:
             starting_message = "Re-pairing whisper.cpp with llama.cpp..."
+        elif llama_spec and llama_spec.get("source_refresh"):
+            starting_message = "Rebuilding llama.cpp from source..."
         else:
             starting_message = f"Downloading and installing the latest {running} prebuilt..."
 
