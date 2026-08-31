@@ -1266,6 +1266,13 @@ class TestAnthropicStreamEmitter:
 # =====================================================================
 
 
+def _connected_request(disconnected = False):
+    async def _is_disconnected():
+        return disconnected
+
+    return SimpleNamespace(is_disconnected = _is_disconnected)
+
+
 class TestAnthropicToolNonStreaming:
     @pytest.mark.parametrize(
         ("helper", "event"),
@@ -1288,7 +1295,7 @@ class TestAnthropicToolNonStreaming:
             yield event
 
         async def _run():
-            task = asyncio.create_task(helper(_run_gen, "msg_1", "m"))
+            task = asyncio.create_task(helper(_connected_request(), _run_gen, "msg_1", "m"))
             await asyncio.sleep(0)
             heartbeat_ticks = 0
             while not task.done():
@@ -1320,7 +1327,9 @@ class TestAnthropicToolNonStreaming:
             yield {"type": "content", "text": "ok"}
 
         async def _run():
-            task = asyncio.create_task(_anthropic_tool_non_streaming(_run_gen, "msg_1", "m"))
+            task = asyncio.create_task(
+                _anthropic_tool_non_streaming(_connected_request(), _run_gen, "msg_1", "m")
+            )
             await asyncio.sleep(0)
             heartbeat_ticks = 0
             while not task.done():
@@ -1359,7 +1368,9 @@ class TestAnthropicToolNonStreaming:
             yield event
 
         async def _cancel_generation():
-            task = asyncio.create_task(helper(_run_gen, "msg_1", "m", cancel_event = cancel_event))
+            task = asyncio.create_task(
+                helper(_connected_request(), _run_gen, "msg_1", "m", cancel_event = cancel_event)
+            )
             assert await asyncio.to_thread(generator_started.wait, 1.0)
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
@@ -1368,6 +1379,45 @@ class TestAnthropicToolNonStreaming:
             assert generator_stopped.is_set()
 
         asyncio.run(_cancel_generation())
+
+    @pytest.mark.parametrize(
+        ("helper", "event"),
+        [
+            pytest.param(
+                _anthropic_tool_non_streaming,
+                {"type": "content", "text": "ok"},
+                id = "tools",
+            ),
+            pytest.param(_anthropic_plain_non_streaming, "ok", id = "plain"),
+        ],
+    )
+    def test_client_disconnect_cancels_generation(self, helper, event):
+        generator_started = threading.Event()
+        cancel_event = threading.Event()
+        emitted = 0
+
+        def _run_gen():
+            nonlocal emitted
+            generator_started.set()
+            for _ in range(400):
+                if cancel_event.wait(0.005):
+                    return
+                emitted += 1
+                yield event
+
+        async def _drive():
+            request = _connected_request(disconnected = True)
+            response = await helper(
+                request, _run_gen, "msg_1", "m", cancel_event = cancel_event
+            )
+            assert await asyncio.to_thread(generator_started.wait, 1.0)
+            return response
+
+        response = asyncio.run(_drive())
+
+        assert cancel_event.is_set()
+        assert emitted < 400
+        assert response.status_code == 200
 
     def test_duplicate_tool_start_replaces_provisional_tool_block(self):
         def _run_gen():
@@ -1390,7 +1440,9 @@ class TestAnthropicToolNonStreaming:
                 "result": "Rendered HTML canvas.",
             }
 
-        response = asyncio.run(_anthropic_tool_non_streaming(_run_gen, "msg_1", "m"))
+        response = asyncio.run(
+            _anthropic_tool_non_streaming(_connected_request(), _run_gen, "msg_1", "m")
+        )
         body = json.loads(response.body)
         tool_blocks = [block for block in body["content"] if block["type"] == "tool_use"]
 
@@ -1411,7 +1463,9 @@ class TestAnthropicToolNonStreaming:
 
         tools = [{"type": "function", "function": {"name": "web_search", "parameters": {}}}]
         response = asyncio.run(
-            _anthropic_tool_non_streaming(_run_gen, "msg_1", "m", openai_tools = tools)
+            _anthropic_tool_non_streaming(
+                _connected_request(), _run_gen, "msg_1", "m", openai_tools = tools
+            )
         )
         body = json.loads(response.body)
         text = "".join(b["text"] for b in body["content"] if b["type"] == "text")
