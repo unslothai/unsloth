@@ -2868,7 +2868,11 @@ if DEVICE_COUNT == 1 and int(os.environ.get("WORLD_SIZE", "1")) <= 1:
     import accelerate.state
 
     accelerate.state.PartialState._prepare_backend = _prepare_backend
-    accelerate.accelerator.Accelerator.distributed_type = lambda *args, **kwargs: DistributedType.NO
+    # `Accelerator.distributed_type` is a @property upstream, so assigning a bare
+    # function creates a bound method, not a value, and every `!= DistributedType.NO`
+    # guard flips to True on a single device — the exact case this block rules out.
+    # Wrap in property() so it replaces the eager descriptor. #10028
+    accelerate.accelerator.Accelerator.distributed_type = property(lambda self, *args, **kwargs: DistributedType.NO)
 
 
 # to move multiple tensors to the same device
