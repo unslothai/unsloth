@@ -259,6 +259,28 @@ test("a pasted separator cannot match across a block boundary", () => {
   assert.deepEqual(findMatches(index, `a${BLOCK_SEPARATOR}b`), []);
 });
 
+test("content-visibility skipping is not treated as invisibility", () => {
+  // A `content-visibility: auto` subtree the reader has not scrolled to is SKIPPED, not hidden,
+  // and asking `checkVisibility` about that would drop the far half of a Hub README from the
+  // index. Nothing would put it back: scrolling renders the subtree without mutating the DOM.
+  const asked: unknown[] = [];
+  const probe = {
+    ...el("DIV", [text("readme")]),
+    checkVisibility: (options?: unknown) => {
+      asked.push(options);
+      return true;
+    },
+  };
+  const index = buildTextIndex(el("DIV", [probe]));
+  assert.equal(index.text.includes("readme"), true);
+  assert.equal(asked.length, 1);
+  assert.deepEqual(asked[0], {
+    contentVisibilityAuto: false,
+    opacityProperty: false,
+    visibilityProperty: true,
+  });
+});
+
 test("a query spanning whitespace matches the phrase as it renders", () => {
   // HTML collapses runs of whitespace, so a markdown paragraph soft-wrapped mid-sentence renders
   // as one line while its text node still holds the newline.
@@ -296,6 +318,42 @@ test("a document past the ceiling is flattened as far as it goes and says so", (
   // What was read is still usable, which is the point of stopping rather than giving up.
   assert.ok(index.segments.length > 0);
   assert.ok(findMatches(index, "xxx").length > 0);
+});
+
+test("the ceiling holds across a block boundary", () => {
+  // A node landing exactly on the ceiling used to let the next block's separator push `length`
+  // past it, and the negative `room` that followed made `slice(0, room)` take all but the last
+  // character of the following node: a 500,000 character overshoot on a 4,000,000 cap.
+  const index = buildTextIndex(
+    el("DIV", [
+      el("P", [text("x".repeat(MAX_INDEX_CHARS))]),
+      el("P", [text("y".repeat(500_000))]),
+    ]),
+  );
+  assert.equal(index.text.length, MAX_INDEX_CHARS);
+  assert.equal(index.truncated, true);
+  assert.deepEqual(findMatches(index, "yyy", 5), []);
+});
+
+test("nothing lands past the ceiling however the walk arrives at it", () => {
+  // Every shape that reaches the cap: one oversized node, many small ones, and a boundary in the
+  // middle. None may report an index longer than the cap it was given.
+  const shapes = [
+    [el("P", [text("x".repeat(MAX_INDEX_CHARS + 1_000))])],
+    Array.from({ length: 9 }, () => el("P", [text("x".repeat(500_000))])),
+    [
+      el("P", [text("x".repeat(MAX_INDEX_CHARS - 1))]),
+      el("P", [text("y".repeat(1_000))]),
+    ],
+  ];
+  for (const [i, children] of shapes.entries()) {
+    const index = buildTextIndex(el("DIV", children));
+    assert.ok(
+      index.text.length <= MAX_INDEX_CHARS,
+      `shape ${i} indexed ${index.text.length}, past the ${MAX_INDEX_CHARS} cap`,
+    );
+    assert.equal(index.truncated, true, `shape ${i} did not report truncation`);
+  }
 });
 
 test("a document inside the ceiling is not marked truncated", () => {
@@ -437,6 +495,24 @@ test("the bar stays out of a backgrounded scope, and off the document origin", a
   assert.equal(/\babsolute\b/.test(surface[1]), false);
   // And capped, so a narrow window cannot push it off the left edge.
   assert.match(surface[1], /max-w-\[calc\(100vw-2rem\)\]/);
+});
+
+test("a match with no geometry is aimed at through its nearest laid-out ancestor", async () => {
+  const dom = await readFile(
+    new URL("../src/features/find-in-page/lib/find-dom.ts", import.meta.url),
+    "utf8",
+  );
+  // Text inside a skipped subtree has a collapsed rect while the subtree's own box keeps its
+  // placeholder geometry, so the walk aims at that instead of giving up.
+  assert.match(dom, /export function revealRect\(range: Range\): DOMRect \| null/);
+  assert.match(dom, /export function rangeTop\(range: Range\): number \| null/);
+  // And both readers go through it rather than reading the range rect directly.
+  const engine = await readFile(
+    new URL("../src/features/find-in-page/hooks/use-find-in-page.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(engine, /const top = rangeTop\(range\);/);
+  assert.equal(/range\.getBoundingClientRect\(\)/.test(engine), false);
 });
 
 test("a fresh query starts from the scroll container's top, not the window's", async () => {

@@ -68,6 +68,14 @@ function Conversation({ extra }: { extra: string[] }) {
           {i === 0 ? <p>{"A soft wrapped\n          phrase about unsloth."}</p> : null}
         </div>
       ))}
+      {/* Skipped, not hidden: what a Hub README and a maths-bearing thread use. It sits below the
+          fold of a long list, so the engine really is skipping it, and it has to stay searchable. */}
+      <div
+        data-skipped=""
+        style={{ contentVisibility: "auto", containIntrinsicSize: "auto 400px" }}
+      >
+        <p>unsloth inside a skipped subtree</p>
+      </div>
       {extra.map((text, i) => (
         <div
           // biome-ignore lint/suspicious/noArrayIndexKey: append-only list

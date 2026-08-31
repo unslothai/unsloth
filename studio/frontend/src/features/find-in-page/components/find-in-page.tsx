@@ -14,10 +14,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef } from "react";
 import { useFindInPage } from "../hooks/use-find-in-page.ts";
-import {
-  FIND_SCOPE_ATTRIBUTE,
-  MAX_MATCHES,
-} from "../lib/find-text-index.ts";
+import { FIND_SCOPE_ATTRIBUTE, MAX_MATCHES } from "../lib/find-text-index.ts";
 import { useFindInPageStore } from "../stores/find-in-page-store.ts";
 
 /**

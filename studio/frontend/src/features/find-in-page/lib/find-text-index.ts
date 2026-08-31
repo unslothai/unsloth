@@ -176,10 +176,16 @@ export function skipsSubtree(element: FindElementLike): boolean {
   if (element.getAttribute("aria-hidden") === "true") return true;
   // Anything the engine is not painting. Attributes alone miss the common case: a responsive
   // `hidden lg:flex` is a CLASS, and text under it would be counted, and walked to, while nobody
-  // can see it. Opacity is left out so a message still fading in stays findable.
+  // can see it.
+  //
+  // `contentVisibilityAuto` stays OFF. A `content-visibility: auto` subtree the reader has not
+  // scrolled to yet is skipped, not hidden, and asking about it would drop the far half of a Hub
+  // README (hub.css) and of a maths-bearing thread from the index. Nothing would put it back
+  // either: scrolling renders the subtree without mutating the DOM, so the observer never fires.
+  // Opacity is off too, so a message still fading in stays findable.
   return (
     element.checkVisibility?.({
-      contentVisibilityAuto: true,
+      contentVisibilityAuto: false,
       opacityProperty: false,
       visibilityProperty: true,
     }) === false
@@ -212,6 +218,13 @@ export function buildTextIndex(root: FindElementLike): FindTextIndex {
         const node = child as FindTextNodeLike;
         const full = node.data;
         if (full.length === 0) continue;
+        // Checked before the separator is written, not after: a separator emitted with the ceiling
+        // already reached pushes `length` past it, and the negative `room` that follows turns
+        // `slice(0, room)` into "all but the last character" of the next node.
+        if (length >= MAX_INDEX_CHARS) {
+          truncated = true;
+          return;
+        }
         if (pendingSeparator) {
           pendingSeparator = false;
           if (length > 0) {
@@ -219,17 +232,19 @@ export function buildTextIndex(root: FindElementLike): FindTextIndex {
             length += 1;
           }
         }
+        const room = MAX_INDEX_CHARS - length;
+        if (room <= 0) {
+          truncated = true;
+          return;
+        }
         // A single node can be bigger than the whole ceiling: one Bash step's log arrives as one
         // text node. Take the prefix that fits rather than dropping the node, or a document made
         // of one such node would index to nothing at all.
-        const room = MAX_INDEX_CHARS - length;
         const raw = full.length > room ? full.slice(0, room) : full;
         if (raw.length < full.length) truncated = true;
-        if (raw.length > 0) {
-          parts.push(foldChunk(raw));
-          segments.push({ node, start: length, length: raw.length });
-          length += raw.length;
-        }
+        parts.push(foldChunk(raw));
+        segments.push({ node, start: length, length: raw.length });
+        length += raw.length;
         if (truncated) return;
       } else if (child.nodeType === ELEMENT_NODE) {
         visit(child as FindElementLike);

@@ -202,6 +202,39 @@ function revealWithin(scroller: Element, rect: DOMRect): boolean {
   return true;
 }
 
+/** The element a range starts in, which is where both walks below begin. */
+function elementFor(range: Range): Element | null {
+  const start = range.startContainer;
+  return start.nodeType === 1
+    ? (start as Element)
+    : (start.parentElement ?? null);
+}
+
+/**
+ * A rect to aim at for `range`, or null when nothing about it is laid out.
+ *
+ * A `content-visibility: auto` subtree the reader has not reached is skipped, so a range inside it
+ * has a collapsed rect at the origin while the subtree's own box still has its placeholder
+ * geometry. Aiming at the nearest ancestor that is laid out gets the reader there; the subtree
+ * renders on the way and the highlight lands once it does.
+ */
+export function revealRect(range: Range): DOMRect | null {
+  const rect = range.getBoundingClientRect();
+  if (rect.width !== 0 || rect.height !== 0) return rect;
+  let element = elementFor(range);
+  while (element) {
+    const box = element.getBoundingClientRect();
+    if (box.width !== 0 || box.height !== 0) return box;
+    element = element.parentElement;
+  }
+  return null;
+}
+
+/** Where `range` sits vertically, through the same fallback. */
+export function rangeTop(range: Range): number | null {
+  return revealRect(range)?.top ?? null;
+}
+
 /**
  * The top edge of the scroll container `range` sits in, in window coordinates.
  *
@@ -210,9 +243,7 @@ function revealWithin(scroller: Element, rect: DOMRect): boolean {
  * a fresh query backwards to an occurrence the reader cannot see.
  */
 export function scrollViewportTop(range: Range): number {
-  const start = range.startContainer;
-  let element: Element | null =
-    start.nodeType === 1 ? (start as Element) : (start.parentElement ?? null);
+  let element = elementFor(range);
   while (element) {
     if (scrollsAxis(element, "y")) return element.getBoundingClientRect().top;
     element = element.parentElement;
@@ -228,17 +259,13 @@ export function scrollViewportTop(range: Range): number {
  * `100dvh` grid with `overflow-hidden`.
  */
 export function scrollRangeIntoView(range: Range): void {
-  const start = range.startContainer;
-  const from =
-    start.nodeType === 1 ? (start as Element) : (start.parentElement ?? null);
-  if (!from) return;
-  let element: Element | null = from;
+  let element = elementFor(range);
   // Bounded by DOM depth, and each step is one rect read plus at most one scroll write.
   while (element) {
     if (scrollsAxis(element, "y") || scrollsAxis(element, "x")) {
-      const rect = range.getBoundingClientRect();
-      // A collapsed rect means the text is not being laid out. Nothing to reveal.
-      if (rect.width === 0 && rect.height === 0) return;
+      // Re-read each time: scrolling the inner container decides what the outer one still owes.
+      const rect = revealRect(range);
+      if (!rect) return;
       revealWithin(element, rect);
     }
     element = element.parentElement;

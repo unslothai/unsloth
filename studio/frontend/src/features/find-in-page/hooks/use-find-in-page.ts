@@ -16,6 +16,7 @@ import {
   paintWindow,
   rangeForMatch,
   resolveFindScope,
+  rangeTop,
   scrollRangeIntoView,
   scrollViewportTop,
   selectRangeFallback,
@@ -70,7 +71,8 @@ function firstMatchFromViewport(
     const mid = (lo + hi) >> 1;
     const range = rangeForMatch(index, matches[mid]);
     if (!range) return 0;
-    const top = range.getBoundingClientRect().top;
+    const top = rangeTop(range);
+    if (top === null) return 0;
     if (top >= scrollViewportTop(range)) {
       found = mid;
       hi = mid - 1;
