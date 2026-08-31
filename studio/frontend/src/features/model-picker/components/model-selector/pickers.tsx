@@ -3766,13 +3766,18 @@ export function HubModelPicker({
       sortCachedRepos(
         cachedGguf.filter(
           (c) =>
-            passesTaskGate(
+            (passesTaskGate(
               c.task,
               c.repo_id,
               task,
               catalog,
               activeCatalogArtifactIds,
-            ) &&
+            ) ||
+              isFamilyOverrideLocalCandidate(
+                { model_format: "gguf", task: c.task },
+                allowUnknownLocalModels,
+                unknownLocalModelFamily,
+              )) &&
             // A speech GGUF no backend here can decode (CSM) would otherwise be listed as
             // a chat model and only fail in llama-server. Non-audio rows always pass.
             audioPickIsRoutable({
@@ -3796,6 +3801,8 @@ export function HubModelPicker({
       task,
       catalog,
       activeCatalogArtifactIds,
+      allowUnknownLocalModels,
+      unknownLocalModelFamily,
     ],
   );
   // Cached non-GGUF repos. In chat, passesTaskGate drops diffusers image repos; the Images picker keeps them, but only unsloth-hosted ones this backend can load. Base repos are cached as dependencies and fail the trust gate.

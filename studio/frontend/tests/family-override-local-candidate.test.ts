@@ -80,6 +80,23 @@ test("an explicit family surfaces only unclassified local safetensors", () => {
     true,
     "an explicit family recovers a GGUF whose diffusion architecture was ambiguous",
   );
+  assert.equal(
+    isFamilyOverrideLocalCandidate(
+      {
+        model_format: "gguf",
+        task: "image-diffusion-unsupported",
+      },
+      true,
+      "sdxl",
+    ),
+    false,
+    "SDXL accepts a safetensors pipeline checkpoint, not a GGUF transformer",
+  );
+  assert.equal(
+    isFamilyOverrideLocalCandidate(opaqueSafetensors, true, "sdxl"),
+    true,
+    "the GGUF restriction must not hide SDXL safetensors checkpoints",
+  );
 });
 
 test("image and video family selectors opt all local inventories into the narrow fallback", () => {
@@ -113,6 +130,14 @@ test("image and video family selectors opt all local inventories into the narrow
     )?.length ?? 0,
     3,
     "LM Studio, ./models, and custom-folder rows must use the same fallback",
+  );
+  const cachedStart = picker.indexOf("const sortedCachedGguf");
+  const cachedEnd = picker.indexOf("const sortedLmStudio", cachedStart);
+  assert.ok(cachedStart >= 0 && cachedEnd > cachedStart);
+  assert.match(
+    picker.slice(cachedStart, cachedEnd),
+    /isFamilyOverrideLocalCandidate\([\s\S]*model_format: "gguf"[\s\S]*task: c\.task[\s\S]*allowUnknownLocalModels[\s\S]*unknownLocalModelFamily/,
+    "cached GGUF rows need the same explicit-family escape as filesystem rows",
   );
   assert.equal(
     picker.match(
@@ -158,4 +183,24 @@ test("image and video family selectors opt all local inventories into the narrow
     BARE_CHECKPOINT_CAPABILITY_SIGNATURE,
     "only the backend's deliberately non-chat bare-checkpoint capability signature may bypass the inventory guard",
   );
+});
+
+test("family edits preserve a resident model's live generation recipe", () => {
+  for (const page of [
+    "../src/features/images/images-page.tsx",
+    "../src/features/video/video-page.tsx",
+  ]) {
+    const source = readFileSync(new URL(page, import.meta.url), "utf8");
+    const familyHint = source.indexOf("model architecture family");
+    const familyStart = source.lastIndexOf("<AdvancedSelect", familyHint);
+    const familyHandler = source.slice(
+      familyStart,
+      source.indexOf("options=", familyHint),
+    );
+    assert.match(
+      familyHandler,
+      /if \(!status\?\.loaded\)\s*\{[\s\S]*setSteps\(d\.steps\)[\s\S]*setGuidance\(d\.guidance\)[\s\S]*\}/,
+      `${page}: a load-time family edit must not change the resident family's live recipe`,
+    );
+  }
 });

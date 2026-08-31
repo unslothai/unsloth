@@ -20,7 +20,7 @@ export function isFamilyOverrideLocalCandidate(
   familyOverride?: string | null,
 ): boolean {
   const family = familyOverride?.trim().toLowerCase();
-  const supportsSingleFile = ![
+  const supportsStandaloneCheckpoint = ![
     "ideogram-4",
     "minimax-h3",
     "h3",
@@ -28,7 +28,10 @@ export function isFamilyOverrideLocalCandidate(
   ].includes(family ?? "");
   const recoverableDiffusionGguf =
     model.model_format === "gguf" &&
-    model.task === "image-diffusion-unsupported";
+    model.task === "image-diffusion-unsupported" &&
+    // SDXL's one-file path consumes a complete safetensors pipeline. A GGUF contains only a
+    // transformer and is rejected by the backend's single_file_is_pipeline guard.
+    family !== "sdxl";
   const inertSafetensors =
     model.task == null &&
     model.model_format === "safetensors" &&
@@ -37,7 +40,7 @@ export function isFamilyOverrideLocalCandidate(
     model.capabilities.supportsLora === false;
   return (
     allowUnknownLocalModels &&
-    supportsSingleFile &&
+    supportsStandaloneCheckpoint &&
     (recoverableDiffusionGguf || inertSafetensors)
   );
 }

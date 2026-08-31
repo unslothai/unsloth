@@ -3209,8 +3209,12 @@ function VideoGenerator({
               ? defaultsFor(recipeRepoId)
               : defaultsFor(recipeRepoId, v);
           setPendingModelDefaults({ ...d, repoId: recipeRepoId });
-          setSteps(d.steps);
-          setGuidance(d.guidance);
+          // Family is a load-time choice. Do not combine its recipe with the old resident model
+          // while the user is still deciding whether to Reapply.
+          if (!status?.loaded) {
+            setSteps(d.steps);
+            setGuidance(d.guidance);
+          }
         }}
         options={VIDEO_FAMILY_OPTIONS}
       />

@@ -3648,8 +3648,12 @@ export function ImagesPage({
             family: v,
             loadSeq: current?.loadSeq ?? null,
           }));
-          setSteps(d.steps);
-          setGuidance(d.guidance);
+          // This control changes the next load, not the model that is resident now. Keep its
+          // live recipe until Reapply succeeds and status publishes the newly resolved family.
+          if (!status?.loaded) {
+            setSteps(d.steps);
+            setGuidance(d.guidance);
+          }
         }}
         options={DIFFUSION_FAMILY_OPTIONS}
       />
