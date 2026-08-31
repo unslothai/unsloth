@@ -1914,13 +1914,16 @@ const GeneratedImageViewportOverlay: FC<{
         }
         aria-label="Generated image preview"
       >
-        <div className="pointer-events-auto relative flex min-h-0 w-full max-w-[1100px] flex-1 flex-col items-center justify-center gap-3">
-          <div className="flex min-h-0 flex-1 items-center justify-center">
-            <div className="relative inline-block">
+        <div className="relative flex min-h-0 w-full max-w-[1100px] flex-1 flex-col items-center justify-center gap-3">
+          {/* Column flex so the frame shrinks to the row and `max-h-full` on the image
+          resolves against a definite height; the frame still hugs the image, which is what
+          keeps the controls on its corner. */}
+          <div className="flex min-h-0 max-h-[620px] flex-1 flex-col items-center justify-center">
+            <div className="pointer-events-auto relative min-h-0">
               <img
                 src={overlay.image}
                 alt={overlay.title}
-                className="block h-auto max-h-[min(70vh,620px)] w-auto max-w-full rounded-2xl object-contain sm:max-w-[520px]"
+                className="block h-auto max-h-full w-auto max-w-full rounded-2xl object-contain sm:max-w-[520px]"
               />
               <div className="absolute right-2 top-2 z-10 flex shrink-0 items-center gap-2 rounded-full bg-background/80 p-1.5 ring-1 ring-border/30 backdrop-blur-sm">
                 <Button

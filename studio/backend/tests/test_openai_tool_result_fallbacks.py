@@ -250,7 +250,7 @@ def test_web_search_find_in_page_action_renders_url_and_pattern(monkeypatch):
     assert starts[0]["arguments"]["pattern"] == "population"
     assert starts[0]["arguments"]["action_type"] == "find_in_page"
     assert "population" in ends[0]["result"]
-    assert "en.wikipedia.org" in ends[0]["result"]
+    assert "https://en.wikipedia.org/wiki/Tiger" in ends[0]["result"]
 
 
 def test_web_search_action_queries_plural_falls_back(monkeypatch):
@@ -503,3 +503,87 @@ def test_shell_call_incomplete_does_not_double_emit(monkeypatch):
     assert len(ends) == 1
     assert ends[0]["tool_call_id"] == "scall_done"
     assert "done" in ends[0]["result"]
+
+
+# ── web_search `include` selectors are OpenAI-cloud only ───────────────
+
+
+def _capture_body(monkeypatch, *, base_url: str, enabled_tools) -> dict:
+    """Run one request against a mock transport and return the JSON body sent."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content = _openai_sse([{"type": "response.completed", "response": {}}]),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = _make_client(base_url)
+        await _collect(
+            client._stream_openai_responses(
+                messages = [{"role": "user", "content": "x"}],
+                model = "gpt-5.5",
+                temperature = 0.7,
+                top_p = 0.95,
+                max_tokens = 4096,
+                enable_thinking = None,
+                reasoning_effort = None,
+                enabled_tools = enabled_tools,
+            )
+        )
+        await client.close()
+
+    _drive(run())
+    return captured["body"]
+
+
+def test_cloud_openai_requests_web_search_sources(monkeypatch):
+    body = _capture_body(
+        monkeypatch,
+        base_url = "https://api.openai.com/v1",
+        enabled_tools = ["web_search"],
+    )
+    assert {"type": "web_search"} in body["tools"]
+    assert body["include"] == ["web_search_call.action.sources", "web_search_call.results"]
+
+
+def test_azure_openai_requests_web_search_sources(monkeypatch):
+    body = _capture_body(
+        monkeypatch,
+        base_url = "https://my-resource.openai.azure.com/openai/v1",
+        enabled_tools = ["web_search"],
+    )
+    assert body["include"] == ["web_search_call.action.sources", "web_search_call.results"]
+
+
+def test_custom_base_url_keeps_web_search_but_drops_the_include(monkeypatch):
+    # `include` is an OpenAI enum; a strict Responses server that implements
+    # web_search still 400s the whole request on an unknown value, so only the
+    # tool may reach a custom base. Same gate as prompt_cache_retention /
+    # context_management / shell / image_generation.
+    for base_url in (
+        "http://127.0.0.1:11434/v1",
+        "https://api.openai.com.attacker.com/v1",
+        "https://evil.com/api.openai.com/v1",
+    ):
+        body = _capture_body(
+            monkeypatch,
+            base_url = base_url,
+            enabled_tools = ["web_search"],
+        )
+        assert {"type": "web_search"} in body["tools"], base_url
+        assert "include" not in body, base_url
+
+
+def test_no_web_search_means_no_include(monkeypatch):
+    body = _capture_body(
+        monkeypatch,
+        base_url = "https://api.openai.com/v1",
+        enabled_tools = ["code_execution"],
+    )
+    assert "include" not in body

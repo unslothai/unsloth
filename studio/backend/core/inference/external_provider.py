@@ -5389,6 +5389,14 @@ class ExternalProviderClient:
         web_search_enabled_openai = bool(
             _responses_hosted_builtins_allowed and enabled_tools and "web_search" in enabled_tools
         )
+        # The per-call sources/results selectors are an OpenAI-cloud `include` enum, so a
+        # strict Responses server that implements `web_search` still 400s the whole request
+        # on them. Same gate the other cloud-only fields above use.
+        web_search_include_openai = web_search_enabled_openai and is_openai_cloud
+        _web_search_include = [
+            "web_search_call.action.sources",
+            "web_search_call.results",
+        ]
 
         if (enabled_tools or responses_user_function_tools) and not _responses_tool_choice_none:
             tools_array: list[dict[str, Any]] = list(responses_user_function_tools)
@@ -5411,11 +5419,8 @@ class ExternalProviderClient:
                 tools_array.append(_openai_image_generation_tool())
             if tools_array:
                 body["tools"] = tools_array
-            if web_search_enabled_openai:
-                body["include"] = [
-                    "web_search_call.action.sources",
-                    "web_search_call.results",
-                ]
+            if web_search_include_openai:
+                body["include"] = list(_web_search_include)
         if responses_tool_choice is not None:
             body["tool_choice"] = responses_tool_choice
 
@@ -5449,11 +5454,8 @@ class ExternalProviderClient:
                     attempt_body["tools"] = tools_array_attempt
                 else:
                     attempt_body.pop("tools", None)
-                if web_search_enabled_openai:
-                    attempt_body["include"] = [
-                        "web_search_call.action.sources",
-                        "web_search_call.results",
-                    ]
+                if web_search_include_openai:
+                    attempt_body["include"] = list(_web_search_include)
                 else:
                     attempt_body.pop("include", None)
             if responses_tool_choice is not None:
