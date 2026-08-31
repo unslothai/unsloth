@@ -484,8 +484,7 @@ def list_managed_users(_admin: str = Depends(require_admin)) -> ManagedUserListR
     status_code = status.HTTP_201_CREATED,
 )
 def create_managed_user(
-    payload: CreateManagedUserRequest,
-    _admin: str = Depends(require_admin),
+    payload: CreateManagedUserRequest, _admin: str = Depends(require_admin)
 ) -> CreatedManagedUserResponse:
     try:
         setup = storage.create_managed_user(payload.username)
@@ -509,8 +508,7 @@ def create_managed_user(
     response_model = CreatedManagedUserResponse,
 )
 def regenerate_managed_user_setup_code(
-    username: str,
-    _admin: str = Depends(require_admin),
+    username: str, _admin: str = Depends(require_admin)
 ) -> CreatedManagedUserResponse:
     try:
         setup = storage.regenerate_managed_user_setup_code(username)
@@ -531,10 +529,7 @@ def regenerate_managed_user_setup_code(
 
 
 @router.delete("/users/{username}", status_code = status.HTTP_204_NO_CONTENT)
-def delete_managed_user(
-    username: str,
-    current_admin: str = Depends(require_admin),
-) -> Response:
+def delete_managed_user(username: str, current_admin: str = Depends(require_admin)) -> Response:
     if username == current_admin:
         raise HTTPException(
             status_code = status.HTTP_400_BAD_REQUEST,

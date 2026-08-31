@@ -221,7 +221,6 @@ class ExportOrchestrator:
 
     def owns_workspace(self, subject: Optional[str] = None) -> bool:
         from utils.workspace_context import current_workspace_subject
-
         requested = subject or current_workspace_subject()
         with self._workspace_guard():
             return getattr(self, "_workspace_subject", None) in (None, requested)
@@ -467,7 +466,6 @@ class ExportOrchestrator:
             workspace_subject = subject
             if workspace_subject is None:
                 from utils.workspace_context import current_workspace_subject
-
                 workspace_subject = current_workspace_subject()
             if self._export_active and not self.owns_workspace(workspace_subject):
                 return False, "Export resources are currently in use by another account."

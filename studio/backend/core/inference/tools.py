@@ -8128,7 +8128,6 @@ def sandbox_root() -> str:
                 current_workspace_subject,
                 workspace_key,
             )
-
             subject = current_workspace_subject()
             if subject != LEGACY_WORKSPACE_SUBJECT:
                 return os.path.join(root, "workspaces", workspace_key(subject))

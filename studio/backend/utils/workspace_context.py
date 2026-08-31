@@ -37,13 +37,7 @@ def reset_workspace_subject(token: Token[str]) -> None:
     _workspace_subject.reset(token)
 
 
-def run_in_workspace(
-    subject: str,
-    target: Callable[..., Any],
-    /,
-    *args: Any,
-    **kwargs: Any,
-) -> Any:
+def run_in_workspace(subject: str, target: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
     """Run ``target`` with an explicit workspace binding.
 
     ``ContextVar`` values follow asyncio tasks and ``asyncio.to_thread`` calls,

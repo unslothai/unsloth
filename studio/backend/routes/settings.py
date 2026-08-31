@@ -2924,9 +2924,7 @@ def _require_ui_session(via_api_key: bool = Depends(authenticated_via_api_key)) 
         raise HTTPException(status_code = 403, detail = "Remote access requires a UI session.")
 
 
-def _require_install_admin(
-    current_subject: str = Depends(get_current_subject),
-) -> str:
+def _require_install_admin(current_subject: str = Depends(get_current_subject)) -> str:
     """Protect controls that change exposure for the whole Studio process."""
     from auth import storage
 

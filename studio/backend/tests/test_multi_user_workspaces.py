@@ -340,9 +340,7 @@ def test_api_usage_writer_routes_each_receipt_to_its_account_database(
                 ).fetchall()
             finally:
                 conn.close()
-            assert [(row["id"], row["subject"]) for row in rows] == [
-                (f"{subject}-usage", subject)
-            ]
+            assert [(row["id"], row["subject"]) for row in rows] == [(f"{subject}-usage", subject)]
         finally:
             reset_workspace_subject(token)
 
@@ -488,7 +486,9 @@ def test_legacy_unsloth_account_is_promoted_once_during_role_migration(
 @pytest.fixture
 def account_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(auth_storage, "DB_PATH", tmp_path / "auth" / "auth.db")
-    monkeypatch.setattr(auth_storage, "_BOOTSTRAP_PW_PATH", tmp_path / "auth" / ".bootstrap_password")
+    monkeypatch.setattr(
+        auth_storage, "_BOOTSTRAP_PW_PATH", tmp_path / "auth" / ".bootstrap_password"
+    )
     auth_storage.create_initial_user(
         "unsloth",
         "owner-password",
@@ -558,7 +558,9 @@ def test_setup_code_is_hashed_expires_and_is_not_listed(account_client):
     assert expired.status_code == wrong.status_code == 401
     assert expired.json() == wrong.json()
     listed_user = next(
-        user for user in client.get("/api/auth/users").json()["users"] if user["username"] == "alice"
+        user
+        for user in client.get("/api/auth/users").json()["users"]
+        if user["username"] == "alice"
     )
     assert listed_user["setup_code_expired"] is True
     assert "setup_code" not in listed_user
@@ -578,25 +580,32 @@ def test_regenerating_pending_setup_code_revokes_old_code_and_refresh_session(ac
     assert regenerated.status_code == 200
     second_code = regenerated.json()["setup_code"]
     assert second_code != first_code
-    assert client.post(
-        "/api/auth/login",
-        json = {"username": "alice", "password": first_code},
-    ).status_code == 401
-    assert client.post(
-        "/api/auth/refresh",
-        json = {"refresh_token": first_login.json()["refresh_token"]},
-    ).status_code == 401
-    assert client.post(
-        "/api/auth/login",
-        json = {"username": "alice", "password": second_code},
-    ).status_code == 200
+    assert (
+        client.post(
+            "/api/auth/login",
+            json = {"username": "alice", "password": first_code},
+        ).status_code
+        == 401
+    )
+    assert (
+        client.post(
+            "/api/auth/refresh",
+            json = {"refresh_token": first_login.json()["refresh_token"]},
+        ).status_code
+        == 401
+    )
+    assert (
+        client.post(
+            "/api/auth/login",
+            json = {"username": "alice", "password": second_code},
+        ).status_code
+        == 200
+    )
 
 
 def test_setup_code_becomes_permanent_password_then_cannot_be_regenerated(account_client):
     client, _app = account_client
-    setup_code = client.post("/api/auth/users", json = {"username": "alice"}).json()[
-        "setup_code"
-    ]
+    setup_code = client.post("/api/auth/users", json = {"username": "alice"}).json()["setup_code"]
     first_login = client.post(
         "/api/auth/login",
         json = {"username": "alice", "password": setup_code},
@@ -617,14 +626,20 @@ def test_setup_code_becomes_permanent_password_then_cannot_be_regenerated(accoun
         assert row["setup_code_expires_at"] is None
     finally:
         conn.close()
-    assert client.post(
-        "/api/auth/login",
-        json = {"username": "alice", "password": setup_code},
-    ).status_code == 401
-    assert client.post(
-        "/api/auth/login",
-        json = {"username": "alice", "password": "alice-permanent-password"},
-    ).status_code == 200
+    assert (
+        client.post(
+            "/api/auth/login",
+            json = {"username": "alice", "password": setup_code},
+        ).status_code
+        == 401
+    )
+    assert (
+        client.post(
+            "/api/auth/login",
+            json = {"username": "alice", "password": "alice-permanent-password"},
+        ).status_code
+        == 200
+    )
     assert client.post("/api/auth/users/alice/setup-code").status_code == 409
 
 
@@ -634,10 +649,7 @@ def test_standard_account_cannot_manage_users(account_client):
     app.dependency_overrides[get_current_subject] = lambda: "alice"
 
     assert client.get("/api/auth/users").status_code == 403
-    assert client.post(
-        "/api/auth/users",
-        json = {"username": "bob"},
-    ).status_code == 403
+    assert client.post("/api/auth/users", json = {"username": "bob"}).status_code == 403
 
 
 def test_only_owner_can_change_installation_wide_server_access(account_client):
@@ -679,9 +691,7 @@ def test_real_tokens_enforce_roles_and_deletion_revokes_sessions_but_keeps_works
             json = {"username": "unsloth", "password": "owner-password"},
         )
         assert owner_login.status_code == 200
-        owner_headers = {
-            "Authorization": f"Bearer {owner_login.json()['access_token']}"
-        }
+        owner_headers = {"Authorization": f"Bearer {owner_login.json()['access_token']}"}
         created_alice = client.post(
             "/api/auth/users",
             headers = owner_headers,
@@ -695,9 +705,7 @@ def test_real_tokens_enforce_roles_and_deletion_revokes_sessions_but_keeps_works
             json = {"username": "alice", "password": alice_setup_code},
         )
         assert first_login.status_code == 200
-        first_headers = {
-            "Authorization": f"Bearer {first_login.json()['access_token']}"
-        }
+        first_headers = {"Authorization": f"Bearer {first_login.json()['access_token']}"}
         changed = client.post(
             "/api/auth/change-password",
             headers = first_headers,
@@ -708,9 +716,7 @@ def test_real_tokens_enforce_roles_and_deletion_revokes_sessions_but_keeps_works
         )
         assert changed.status_code == 200
         alice_tokens = changed.json()
-        alice_headers = {
-            "Authorization": f"Bearer {alice_tokens['access_token']}"
-        }
+        alice_headers = {"Authorization": f"Bearer {alice_tokens['access_token']}"}
         assert client.get("/api/auth/me", headers = alice_headers).status_code == 200
         assert client.get("/api/auth/users", headers = alice_headers).status_code == 403
 
@@ -725,10 +731,13 @@ def test_real_tokens_enforce_roles_and_deletion_revokes_sessions_but_keeps_works
 
         assert client.delete("/api/auth/users/alice", headers = owner_headers).status_code == 204
         assert client.get("/api/auth/me", headers = alice_headers).status_code == 401
-        assert client.post(
-            "/api/auth/refresh",
-            json = {"refresh_token": alice_tokens["refresh_token"]},
-        ).status_code == 401
+        assert (
+            client.post(
+                "/api/auth/refresh",
+                json = {"refresh_token": alice_tokens["refresh_token"]},
+            ).status_code
+            == 401
+        )
 
         recreated = client.post(
             "/api/auth/users",
@@ -762,6 +771,7 @@ def test_authenticated_chat_routes_select_the_token_subject_workspace(
     app.include_router(chat_history_routes.router, prefix = "/api/chat")
 
     with TestClient(app) as client:
+
         def headers(username: str) -> dict[str, str]:
             response = client.post(
                 "/api/auth/login",
@@ -772,26 +782,38 @@ def test_authenticated_chat_routes_select_the_token_subject_workspace(
 
         alice_headers = headers("alice")
         bob_headers = headers("bob")
-        assert client.post(
-            "/api/chat/threads",
-            headers = alice_headers,
-            json = _thread("Alice route"),
-        ).status_code == 200
+        assert (
+            client.post(
+                "/api/chat/threads",
+                headers = alice_headers,
+                json = _thread("Alice route"),
+            ).status_code
+            == 200
+        )
 
         bob_threads = client.get("/api/chat/threads", headers = bob_headers)
         assert bob_threads.status_code == 200
         assert bob_threads.json() == {"threads": []}
 
-        assert client.post(
-            "/api/chat/threads",
-            headers = bob_headers,
-            json = _thread("Bob route"),
-        ).status_code == 200
-        assert client.get(
-            "/api/chat/threads/same-client-id",
-            headers = alice_headers,
-        ).json()["title"] == "Alice route"
-        assert client.get(
-            "/api/chat/threads/same-client-id",
-            headers = bob_headers,
-        ).json()["title"] == "Bob route"
+        assert (
+            client.post(
+                "/api/chat/threads",
+                headers = bob_headers,
+                json = _thread("Bob route"),
+            ).status_code
+            == 200
+        )
+        assert (
+            client.get(
+                "/api/chat/threads/same-client-id",
+                headers = alice_headers,
+            ).json()["title"]
+            == "Alice route"
+        )
+        assert (
+            client.get(
+                "/api/chat/threads/same-client-id",
+                headers = bob_headers,
+            ).json()["title"]
+            == "Bob route"
+        )

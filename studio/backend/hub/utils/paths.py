@@ -96,7 +96,6 @@ def exports_root() -> Path:
 
 def tmp_root() -> Path:
     from utils.paths.storage_roots import tmp_root as shared_tmp_root
-
     return shared_tmp_root()
 
 

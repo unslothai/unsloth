@@ -513,10 +513,7 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
                 )
             except Exception as exc:
                 logger.debug("auto-switch: scan folder %r failed: %s", folder, exc)
-        found += [
-            (info, private_subject)
-            for info in suppress_grouped_gguf_file_rows(custom_found)
-        ]
+        found += [(info, private_subject) for info in suppress_grouped_gguf_file_rows(custom_found)]
     except Exception as exc:
         logger.debug("auto-switch: scan folders enumerate failed: %s", exc)
     for info, workspace_subject in found:
@@ -694,11 +691,7 @@ def _index() -> dict[str, _LocalGgufEntry]:
         # ``ts > 0``: monotonic() counts from boot, so under a TTL of uptime an
         # invalidated stamp reads as recent and would serve what was just revoked.
         subject = current_workspace_subject()
-        if (
-            ts > 0.0
-            and now - ts < _CACHE_TTL_S
-            and _scan_subject in {None, subject}
-        ):
+        if ts > 0.0 and now - ts < _CACHE_TTL_S and _scan_subject in {None, subject}:
             return cached
         fresh = _build_index()
         # Stamp AFTER the scan, not with the pre-scan ``now``: a multi-root scan on

@@ -37,9 +37,7 @@ _stop = threading.Event()
 _thread: threading.Thread | None = None
 _thread_stop: threading.Event | None = None
 _thread_lock = threading.Lock()
-_workspace_workers: dict[
-    str, tuple[threading.Thread, threading.Event, threading.Event]
-] = {}
+_workspace_workers: dict[str, tuple[threading.Thread, threading.Event, threading.Event]] = {}
 _worker_lock = threading.Lock()  # legacy-account compatibility and singleton guard
 _workspace_worker_locks: dict[str, threading.Lock] = {}
 _worker_state = threading.local()
@@ -1864,6 +1862,7 @@ def start_auto_sync(
         # not turn a one-shot startup preflight into a process-lifetime outage.
         pass
     if subject != LEGACY_WORKSPACE_SUBJECT:
+
         def launch_workspace() -> bool:
             with _thread_lock:
                 active = _workspace_workers.get(subject)

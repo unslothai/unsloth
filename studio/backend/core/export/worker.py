@@ -528,7 +528,6 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
     subject = config.get("subject")
     if isinstance(subject, str) and subject:
         from utils.workspace_context import set_workspace_subject
-
         set_workspace_subject(subject)
 
     # Install fd-level stdout/stderr capture FIRST so every subsequent print and

@@ -55,7 +55,6 @@ def _run_diffusion_child(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     subject = config.get("subject")
     if isinstance(subject, str) and subject:
         from utils.workspace_context import set_workspace_subject
-
         set_workspace_subject(subject)
 
     # Fresh spawned interpreter: re-apply the OS-trust-store injection, inside
@@ -478,7 +477,6 @@ class DiffusionTrainingService:
 
     def owns_workspace(self, subject: str | None = None) -> bool:
         from utils.workspace_context import current_workspace_subject
-
         requested = subject or current_workspace_subject()
         with self._lock:
             return self._active_workspace_subject in (None, requested)
@@ -714,7 +712,6 @@ class DiffusionTrainingService:
 
     def status(self) -> dict[str, Any]:
         from utils.workspace_context import current_workspace_subject
-
         requested = current_workspace_subject()
         with self._lock:
             if self._active_workspace_subject not in (None, requested):

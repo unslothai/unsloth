@@ -1188,9 +1188,8 @@ async def start_training(
     try:
         logger.info(f"Starting training job with model: {request.model_name}")
         backend = get_training_backend()
-        if (
-            await asyncio.to_thread(backend.is_training_active)
-            and not _training_workspace_owned(backend, current_subject)
+        if await asyncio.to_thread(backend.is_training_active) and not _training_workspace_owned(
+            backend, current_subject
         ):
             return TrainingJobResponse(
                 job_id = "",
@@ -2950,11 +2949,7 @@ async def start_diffusion_training(
     reserved = False
     try:
         owns_workspace = getattr(service, "owns_workspace", None)
-        if (
-            service.is_active()
-            and callable(owns_workspace)
-            and not owns_workspace(current_subject)
-        ):
+        if service.is_active() and callable(owns_workspace) and not owns_workspace(current_subject):
             raise HTTPException(
                 status_code = 409,
                 detail = (
