@@ -2423,7 +2423,9 @@ class TestExpectedTorchFlavorResolution:
             with (
                 mock.patch.object(ips, "_TORCH_BACKEND", "cuda"),
                 mock.patch.object(ips, "_RECORDED_TORCH_TAG", "cpu"),
-                mock.patch.object(ips, "_installed_torch_version_label", return_value = "2.9.1+cu128"),
+                mock.patch.object(
+                    ips, "_installed_torch_version_label", return_value = "2.9.1+cu128"
+                ),
             ):
                 assert ips._expected_torch_flavor_tag() == "cu128"
                 # And the stale provenance goes with it: pinned answers per family, so the
