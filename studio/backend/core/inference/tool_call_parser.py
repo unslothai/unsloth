@@ -637,6 +637,10 @@ def _strip_gemma_wrapperless_calls(text: str, enabled_tool_names: Optional[set] 
         if not m:
             out.append(text[cursor:])
             break
+        # A blocked execution call is markup the PARSER skipped, not a sentence: it holds its
+        # position, so a promotable call after it is still anchored and still gets stripped.
+        # Without that the executed call's raw text stays in the answer and in history.
+        blocked = m.group(1) in _EXECUTION_CLASS_TOOL_NAMES
         keep_as_prose = not _markerless_promotable(m.group(1), enabled_tool_names) or (
             not _gemma_call_is_anchored(text, m.start(), floor)
         )
@@ -653,6 +657,8 @@ def _strip_gemma_wrapperless_calls(text: str, enabled_tool_names: Optional[set] 
         if keep_as_prose:
             # Not promotable or not anchored is prose: keep it whole.
             out.append(text[cursor:next_index])
+            if blocked:
+                floor = next_index
         else:
             out.append(text[cursor : m.start()])
             floor = next_index
@@ -2279,13 +2285,8 @@ def _parse_llama3_bare_json(
         if not isinstance(name, str) or not name:
             break
         # Markerless JSON is ambiguous: treat it as a call only when the name is promotable.
-        if name in _EXECUTION_CLASS_TOOL_NAMES:
-            # Blocked, not data. The model did write a call here, we just refuse to promote
-            # it from a bare span, so skip the object and keep decoding the chain (as the
-            # Gemma and rehearsal scanners do) instead of dropping a benign call after it.
-            cursor += end_offset
-            continue
-        if not _markerless_promotable(name, enabled_tool_names):
+        blocked = name in _EXECUTION_CLASS_TOOL_NAMES
+        if not blocked and not _markerless_promotable(name, enabled_tool_names):
             # A name outside the tool list means the turn is an ordinary JSON answer rather
             # than a call chain, so stop rather than promote objects deeper in the data.
             break
@@ -2312,6 +2313,14 @@ def _parse_llama3_bare_json(
                 break
         else:
             break
+        if blocked:
+            # Call-shaped but blocked: the model DID write a call, we only refuse to promote
+            # it from a bare span. Skip the object and keep decoding the chain (as the Gemma
+            # and rehearsal scanners do) instead of dropping a benign call after it. The
+            # shape check above still runs first, so a data object like
+            # {"name":"terminal","result":".."} stops the chain like any other non-call.
+            cursor += end_offset
+            continue
         out.append(
             {
                 "id": f"call_{id_offset + len(out)}",
@@ -2737,8 +2746,12 @@ def strip_leading_bare_json_call(text: str, enabled_tool_names: Optional[set] = 
         # Skip the Llama-3 ``;`` inter-call separator between chained calls.
         if stripped_any or kept:
             probe = probe.lstrip(" \t\n\r;")
+        # What was consumed to reach ``probe``. It belongs to the display only when the
+        # object before it is still on screen; the separator of an executed call goes with
+        # the call. Sentinel/whitespace stripping only removes a prefix, so this is exact.
+        sep = remainder[: len(remainder) - len(probe)] if kept else ""
         if not (probe.startswith("{") and ('"name"' in probe or '"function"' in probe)):
-            return _out(probe)
+            return _out(sep + probe)
         # Only suppress when the leading object's TOP-LEVEL name is markerless-promotable. A
         # nested ``"name"`` (e.g. {"result":{"name":"web_search",...}}) is data, not the call
         # name, so it must not gate the strip. An un-extractable name or one outside the tool
@@ -2746,24 +2759,24 @@ def strip_leading_bare_json_call(text: str, enabled_tool_names: Optional[set] = 
         name = _top_level_bare_json_name(probe)
         blocked = name in _EXECUTION_CLASS_TOOL_NAMES
         if not blocked and not _markerless_promotable(name, enabled_tool_names):
-            return _out(probe)
+            return _out(sep + probe)
         end = _balanced_brace_end(probe, 0)
         if end is None:
             # Truncated: a blocked object is prose to the end, a promotable one is an
             # unrecoverable call fragment.
-            return _out(probe) if blocked else ""
+            return _out(sep + probe) if blocked else ""
         # A closed object must have the CALL SHAPE the parser accepts (dict ``parameters``,
         # or dict / JSON-string ``arguments``). An ordinary JSON answer like
         # {"name":"web_search","result":"no call"} is content, so the strip keeps it visible.
         try:
             obj = json.loads(probe[: end + 1])
         except (json.JSONDecodeError, ValueError):
-            return _out(probe)
+            return _out(sep + probe)
         if not _bare_json_call_shaped(obj):
-            return _out(probe)
+            return _out(sep + probe)
         if blocked:
             # Mirrors the parser skipping it: visible as text, and the scan goes on.
-            kept.append(probe[: end + 1])
+            kept.append(sep + probe[: end + 1])
         else:
             stripped_any = True
         remainder = probe[end + 1 :]

@@ -265,8 +265,11 @@ def test_split_rehearsal_hold_does_not_apply_to_execution_names(name):
     from core.inference.safetensors_agentic import _is_rehearsal_prefix
 
     assert _is_rehearsal_prefix(name, EXEC_TOOLS) is False
-    assert _is_rehearsal_prefix(name, EXEC_TOOLS, unrestricted = True) is False
     assert _gguf_prefix(name, EXEC_TOOLS) is False
+    # Unrestricted mode has no tool list, so a bare name is still open (it could extend to a
+    # promotable one) and stays held until the ``[`` settles it. See
+    # test_an_open_execution_name_prefix_is_still_held_unrestricted.
+    assert _is_rehearsal_prefix(f"{name}[", EXEC_TOOLS, unrestricted = True) is False
     assert _is_rehearsal_prefix("web_search", EXEC_TOOLS) is True
     assert _gguf_prefix("web_search", EXEC_TOOLS) is True
 
@@ -401,3 +404,60 @@ def test_streaming_stripper_still_renders_a_blocked_call_verbatim():
     for i in range(1, len(text) + 1):
         out = stripper.strip(text[:i])
     assert out == text
+
+
+# --------------------------------- a blocked span is skipped, not a licence to change the rest
+
+
+def test_a_blocked_object_that_is_not_call_shaped_still_stops_the_chain():
+    # {"name":"terminal","result":".."} is an ordinary JSON answer, not a call the guard
+    # blocked, so the turn is data and nothing after it may be promoted.
+    chain = '{"name":"terminal","result":"data"};{"name":"web_search","parameters":{"query":"x"}}'
+    assert parse_tool_calls_from_text(chain, enabled_tool_names = EXEC_ENABLED) == []
+
+
+def test_bare_json_chain_strip_keeps_the_separators_around_kept_objects():
+    # Both objects are kept as prose, so the ``;`` between them and the prose after them
+    # has to survive; gluing them together corrupts the text the guard promised to show.
+    from core.inference.tool_call_parser import strip_leading_bare_json_call
+
+    pair = '{"name":"terminal","arguments":{}}; {"name":"python","arguments":{}}'
+    assert strip_leading_bare_json_call(pair, EXEC_ENABLED) == pair
+
+    trailing = '{"name":"terminal","arguments":{}}; and here is why.'
+    assert strip_leading_bare_json_call(trailing, EXEC_ENABLED) == trailing
+
+
+def test_gemma_strip_still_removes_a_promoted_call_after_a_blocked_one():
+    # The blocked call holds its position, so the promotable one beside it is still anchored
+    # and still leaves the text. Otherwise the executed call is emitted verbatim and replayed
+    # as assistant history.
+    text = 'call:terminal{command:"id"} call:web_search{query:"x"}'
+    calls = parse_tool_calls_from_text(text, enabled_tool_names = EXEC_ENABLED)
+    assert [c["function"]["name"] for c in calls] == ["web_search"]
+    out = strip_tool_markup(text, final = True, enabled_tool_names = EXEC_ENABLED)
+    assert 'call:terminal{command:"id"}' in out
+    assert "web_search" not in out
+
+
+def test_a_disabled_call_does_not_anchor_its_neighbour():
+    # Unchanged from before the guard: a disabled name is ordinary prose, so the call after
+    # it stays unanchored and the display keeps both.
+    text = 'call:foo{a:1} call:web_search{query:"x"}'
+    assert strip_tool_markup(text, final = True, enabled_tool_names = EXEC_ENABLED) == text
+
+
+def test_an_open_execution_name_prefix_is_still_held_unrestricted():
+    """``terminal`` alone may still become ``terminal_logs``, which IS promotable.
+
+    Releasing it the moment the chunk ends leaks the first half of a real call as prose,
+    so the hold lasts until the ``[`` settles which tool it is.
+    """
+    from core.inference.safetensors_agentic import _is_rehearsal_prefix
+
+    tools = [{"type": "function", "function": {"name": "terminal_logs"}}]
+    assert _is_rehearsal_prefix("terminal", tools, unrestricted = True) is True
+    assert _is_rehearsal_prefix("terminal_logs", tools, unrestricted = True) is True
+    assert _is_rehearsal_prefix("terminal_logs[", tools, unrestricted = True) is True
+    # Once the bracket lands the name is settled, and this one is blocked.
+    assert _is_rehearsal_prefix("terminal[", tools, unrestricted = True) is False

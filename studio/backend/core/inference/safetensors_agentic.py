@@ -125,7 +125,11 @@ def _is_rehearsal_prefix(
     if unrestricted:
         if _UNRESTRICTED_REHEARSAL_RE.fullmatch(stripped) is None:
             return False
-        return _markerless_promotable(stripped.split("[", 1)[0], None)
+        name, bracket, _ = stripped.partition("[")
+        # Until the ``[`` lands the name is still open: ``terminal`` may yet become
+        # ``terminal_logs``, which IS promotable, so releasing it now would leak the first
+        # half of a real call as prose. Hold it and decide once the shape is settled.
+        return not bracket or _markerless_promotable(name, None)
     for name in _active_tool_names(active_tools):
         # Active by construction, so the only gate left is the built-in execution class,
         # and it must stay an O(1) set test: this loop runs per streamed chunk over the whole
