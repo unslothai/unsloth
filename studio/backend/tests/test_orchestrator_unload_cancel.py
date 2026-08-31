@@ -2686,3 +2686,32 @@ def test_dispatched_share_refusal_is_public(monkeypatch):
     assert len(out) == 1
     assert "distributed object share" in str(out[0])
     assert out[0].public is True
+
+
+def test_dispatched_share_recheck_refusal_names_the_share(monkeypatch):
+    # A share that starts after the pre-check but before mailbox registration is caught by
+    # the under-lock recheck. Folding it into `unloading` reported "model is being unloaded"
+    # for a request no unload ever touched.
+    o = _bare_orchestrator()
+    o._mailbox_lock = threading.Lock()
+    o._mailboxes = {}
+    o._request_cancel_events = {}
+    o._dispatcher_thread = _AliveDispatcher()
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
+    monkeypatch.setattr(o, "_start_dispatcher", lambda: False)
+    monkeypatch.setattr(
+        o, "_send_cmd", lambda cmd: pytest.fail("must not send generate during a share")
+    )
+
+    def flip(*a, **k):
+        o._exclusive_op_pending = True
+        return {"type": "generate", "request_id": "r1"}
+
+    monkeypatch.setattr(o, "_build_generate_cmd", flip)
+
+    out = list(o._generate_dispatched(messages = [{"role": "user", "content": "hi"}]))
+
+    assert len(out) == 1
+    assert "distributed object share" in str(out[0])
+    assert "unloaded" not in str(out[0])
+    assert o._mailboxes == {}, "must not leave an orphaned mailbox"

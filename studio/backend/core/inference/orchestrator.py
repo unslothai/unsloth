@@ -1342,19 +1342,19 @@ class InferenceOrchestrator:
             )
             unloading = (
                 self._unload_pending
-                # An exclusive op (share_distributed_object) sets _exclusive_op_pending
-                # before its _wait_dispatcher_idle drains/stops the dispatcher; registering
-                # a mailbox now would be orphaned when it stops (the compare stream would
-                # then hang with no thread routing its responses). Rechecked here under
-                # _mailbox_lock so the gate is atomic with registration -- the unlocked
-                # pre-check plus _start_dispatcher's refusal alone leave a window.
-                or self._exclusive_op_pending
                 or self.active_model_name != expected_model
                 or not dispatcher_alive
             )
+            # An exclusive op (share_distributed_object) sets _exclusive_op_pending before its
+            # _wait_dispatcher_idle drains/stops the dispatcher; registering a mailbox now would
+            # be orphaned when it stops (the compare stream would then hang with no thread
+            # routing its responses). Rechecked here under _mailbox_lock so the gate is atomic
+            # with registration -- the unlocked pre-check plus _start_dispatcher's refusal alone
+            # leave a window. Kept out of `unloading` so the refusal names the share.
+            share_reserved = self._exclusive_op_pending
             tts_reserved = self._exclusive_tts_pending
             probe_reserved = getattr(self, "_exclusive_vram_probe_pending", False)
-            blocked = unloading or tts_reserved or probe_reserved
+            blocked = unloading or share_reserved or tts_reserved or probe_reserved
             if not blocked:
                 self._mailboxes[request_id] = mailbox
                 if cancel_event is not None:
@@ -1372,7 +1372,9 @@ class InferenceOrchestrator:
             if orphaned_dispatcher:
                 self._stop_dispatcher()
             detail = (
-                "Error: audio generation is in progress"
+                "Error: a distributed object share is in progress"
+                if share_reserved
+                else "Error: audio generation is in progress"
                 if tts_reserved
                 else "Error: model switch is checking GPU memory"
                 if probe_reserved
