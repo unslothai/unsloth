@@ -4572,8 +4572,9 @@ def claude(
                 "--plugin-dir",
                 _agent_config_path(plugin, ["claude"]),
                 # Before ctx.args: a forwarded `--` would turn later flags positional.
-                "--allowedTools",
-                f"{_CLAUDE_SUBAGENT_TOOL},{_CLAUDE_SUBAGENT_PLAN_TOOL}",
+                # `=` form: --allowedTools is variadic, so a detached value swallows
+                # the first forwarded positional.
+                f"--allowedTools={_CLAUDE_SUBAGENT_TOOL},{_CLAUDE_SUBAGENT_PLAN_TOOL}",
                 *_yolo_command_flags("claude", yolo),
                 *ctx.args,
             ]

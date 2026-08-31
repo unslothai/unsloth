@@ -25,7 +25,14 @@ def _import_with(value, marker = None):
     """Imports the module in a fresh process with `value` inherited, returns the env."""
     environment = dict(os.environ)
     environment[_ENV_KEY] = value.format(marker = marker) if marker else value
-    environment["UNSLOTH_ALLOW_CPU"] = "1"
+    # The child imports unsloth, and unsloth_zoo.get_device_type() raises on a host
+    # with no torch accelerator. In-process this file rides on whatever set the
+    # variable earlier in the session -- studio/backend/tests/conftest.py does, with
+    # setdefault -- so whether the child inherited it came down to what else was in
+    # the run. It was not, in Repo tests (CPU), and the child died before reaching
+    # the module under test. Pin it: this test is about the dtype field, and it
+    # should read the same on a runner with a card and on one without.
+    environment.setdefault("UNSLOTH_ALLOW_CPU", "1")
     program = (
         "import unsloth.models._custom_dtype as module, os;"
         f"print(repr(os.environ.get({_ENV_KEY!r})))"

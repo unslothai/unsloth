@@ -218,12 +218,13 @@ class _RunServerCaptured(SystemExit):
     "user_flag,expected",
     [(None, None), ("--cloudflare", True), ("--no-cloudflare", False)],
 )
-def test_run_in_venv_passes_cloudflare_to_run_server(tmp_path, monkeypatch, user_flag, expected):
+def test_run_in_venv_passes_cloudflare_to_run_server(monkeypatch, tmp_path, user_flag, expected):
     import types
 
     studio_mod = _studio()
-
-    # The launch gate creates STUDIO_HOME, so use a writable path.
+    # A real directory, not /fake: the launch gate creates STUDIO_HOME and
+    # locks inside it, so an unwritable home now aborts the run before
+    # run_server is ever reached and the flag under test goes unchecked.
     fake_venv = tmp_path / "studio" / "venv" / "unsloth_studio"
     monkeypatch.setattr(sys, "prefix", str(fake_venv))
     monkeypatch.setattr(studio_mod, "STUDIO_HOME", fake_venv.parent)
@@ -321,10 +322,13 @@ def test_run_cloudflare_notice_uses_external_host_policy():
     assert calls == []
 
 
-def test_run_silent_pins_internal_requests_to_the_bound_address(tmp_path, monkeypatch):
+def test_run_silent_pins_internal_requests_to_the_bound_address(monkeypatch, tmp_path):
     import types
 
     studio_mod = _studio()
+    # A real directory, not /fake: the launch gate creates STUDIO_HOME and
+    # locks inside it, so an unwritable home now aborts the run before
+    # run_server is ever reached and the flag under test goes unchecked.
     fake_venv = tmp_path / "studio" / "venv" / "unsloth_studio"
     monkeypatch.setattr(sys, "prefix", str(fake_venv))
     monkeypatch.setattr(studio_mod, "STUDIO_HOME", fake_venv.parent)
@@ -430,10 +434,13 @@ def test_studio_default_rejects_cloudflare_flag_with_subcommand(monkeypatch, fla
 # ── run() tears the server + tunnel down if startup aborts ───────────
 
 
-def test_run_in_venv_shuts_down_on_startup_abort(tmp_path, monkeypatch):
+def test_run_in_venv_shuts_down_on_startup_abort(monkeypatch, tmp_path):
     import types
 
     studio_mod = _studio()
+    # A real directory, not /fake: the launch gate creates STUDIO_HOME and
+    # locks inside it, so an unwritable home now aborts the run before
+    # run_server is ever reached and the flag under test goes unchecked.
     fake_venv = tmp_path / "studio" / "venv" / "unsloth_studio"
     monkeypatch.setattr(sys, "prefix", str(fake_venv))
     monkeypatch.setattr(studio_mod, "STUDIO_HOME", fake_venv.parent)
@@ -483,10 +490,13 @@ def test_run_in_venv_shuts_down_on_startup_abort(tmp_path, monkeypatch):
     assert len(shutdown_calls) == 1, "startup abort must call _graceful_shutdown"
 
 
-def test_run_in_venv_sets_tool_policy_before_server_start(tmp_path, monkeypatch):
+def test_run_in_venv_sets_tool_policy_before_server_start(monkeypatch, tmp_path):
     import types
 
     studio_mod = _studio()
+    # A real directory, not /fake: the launch gate creates STUDIO_HOME and
+    # locks inside it, so an unwritable home now aborts the run before
+    # run_server is ever reached and the flag under test goes unchecked.
     fake_venv = tmp_path / "studio" / "venv" / "unsloth_studio"
     monkeypatch.setattr(sys, "prefix", str(fake_venv))
     monkeypatch.setattr(studio_mod, "STUDIO_HOME", fake_venv.parent)

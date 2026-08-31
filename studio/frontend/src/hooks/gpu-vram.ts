@@ -128,7 +128,7 @@ export interface MemoryCapacityDevice {
 /** Whether this device's memory is a view into host RAM rather than beside it.
  *  The one question capacity cares about; the two flags are how the backend
  *  happens to report it on two platforms. */
-function sharesHostMemory(device: {
+export function sharesHostMemory(device: {
   sharedMemory?: boolean;
   unifiedMemory?: boolean;
 }): boolean {
