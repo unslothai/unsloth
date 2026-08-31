@@ -3697,9 +3697,6 @@ _rocm_tag_from_dpkg() {
     # a different name and versioned 1.x. So on Ubuntu 24.04 with AMD's ROCm 7.2 repo the
     # host carries rocm-core 7.2.1 next to Ubuntu's libhsa-runtime64-1 5.7.1-2build1, and
     # letting both vote makes every healthy host report a disagreement it does not have.
-    # Voting them as peers is the same trap as reading amd-smi's driver version, which
-    # unslothai#8414 already had to remove. Debian ships no rocm-core at all, which is the
-    # host this source exists for, so the fallback still fires exactly where it is needed.
     { dpkg-query -W -f='${Package} ${Status} ${Version}\n' rocm-core libhsa-runtime64-1 2>/dev/null || true; } \
         | awk '
             $4 == "installed" && $5 != "" {
@@ -4214,7 +4211,6 @@ get_radeon_wheel_url() {
     # Only meaningful on Linux. Picks a repo.radeon.com base URL whose listing
     # contains torch wheels. Tries paths like rocm-rel-7.2.1/, rocm-rel-7.2/,
     # rocm-rel-7.1.1/, rocm-rel-7.1/ (AMD publishes both M.m and M.m.p dirs).
-    # the resolved leaf ($1) is a floor, not the answer: it is clipped to a family pytorch publishes and has no patch level, so the host probe wins unless it reads older
     case "$(uname -s)" in Linux) ;; *) echo ""; return ;; esac
 
     _full_ver=""
@@ -4226,7 +4222,6 @@ get_radeon_wheel_url() {
                 | awk '/^rocm[1-9][0-9]*\.[0-9][0-9]*$/ {sub(/^rocm/, ""); print; exit}')
             ;;
     esac
-    # detect a host x.y/x.y.z once, in the historical source order
     _host_ver=$({ command -v amd-smi >/dev/null 2>&1 && \
         amd-smi version 2>/dev/null | awk -F'ROCm version: ' \
             'NF>1{if(match($2,/[0-9]+\.[0-9]+(\.[0-9]+)?/)){print substr($2,RSTART,RLENGTH); ok=1; exit}} END{exit !ok}'; } || \

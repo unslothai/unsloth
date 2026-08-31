@@ -195,10 +195,6 @@ MOCK
     chmod +x "$_MOCK_DIR/amd-smi"
 }
 
-# Each argument is package|status|version. The mock requires production to query
-# rocm-core and Debian's HSA runtime in one dpkg-query invocation, renders the
-# supplied showformat, and keeps known stdout even when one requested package is
-# absent (the real dpkg-query returns nonzero in that case).
 add_dpkg_packages() {
     printf '%s\n' "$@" > "$_MOCK_DIR/.dpkg-entries"
     cat > "$_MOCK_DIR/dpkg-query" <<'MOCK'
@@ -233,8 +229,6 @@ _emit() {
     _package=$1
     _status=$2
     _ver=$3
-    # Status is "<want> <error-flag> <status>": removed but not purged reads
-    # "deinstall ok config-files".
     case "$_status" in installed) _want=install ;; *) _want=deinstall ;; esac
     _out=$(printf '%s' "$_fmt" | sed \
         -e "s|\${Package}|$_package|g" \
@@ -268,8 +262,6 @@ MOCK
     chmod +x "$_MOCK_DIR/dpkg-query"
 }
 
-# $1 = rocm-core version as dpkg reports it (epoch prefixes allowed, e.g. 1:6.2.4-1)
-# $2 = dpkg status word, default "installed".
 add_dpkg_rocm_core() {
     add_dpkg_packages "rocm-core|${2:-installed}|$1"
 }
@@ -322,8 +314,6 @@ run_warnings() {
          _ARCH=x86_64; . '$_FUNC_FILE'; get_torch_index_url" 2>&1 >/dev/null | tr '\n' ' '
 }
 
-# The Radeon repository must inherit the already-resolved generic ROCm leaf;
-# otherwise its legacy first-answer probe rediscovers Debian's hipconfig 5.7.
 run_radeon_url() {
     PATH="$_MOCK_DIR:$_TOOLS_DIR" bash -c \
         'uname() { echo Linux; }; . "$1"; get_radeon_wheel_url "$2"' \
@@ -346,9 +336,6 @@ _BASE="https://download.pytorch.org/whl"
 echo "=== test_rocm_version_source_disagreement ==="
 
 # ── 1. The reported host ────────────────────────────────────────────────────
-# No /opt/rocm/.info/version or Debian rocm-core, hipconfig from the distro's 5.7
-# packaging, and the installed HSA runtime at 6.1. Before the fix hipconfig answered
-# first and this returned cpu.
 reset_sources
 add_hipconfig "5.7.31921-0"
 add_dpkg_hsa_runtime "1:6.1.2-1"
@@ -376,9 +363,6 @@ assert_eq "installed rocm-core outranks a HIGHER distro HSA reading -> rocm6.1" 
     "$_BASE/rocm6.1" "$(run_index)"
 assert_eq "and the outranked HSA reading is not named as a disagreement" "" "$(run_warnings)"
 
-# The real Ubuntu 24.04 + AMD ROCm 7.2 repo shape: AMD's rocm-core beside Ubuntu's own
-# permanently-stale libhsa-runtime64-1. Verified on that host; peer voting made every
-# healthy install print a disagreement warning naming a 5.7 reading that means nothing.
 reset_sources
 add_dpkg_packages \
     "libhsa-runtime64-1|installed|5.7.1-2build1" \
@@ -386,7 +370,6 @@ add_dpkg_packages \
 assert_eq "Ubuntu + AMD repo resolves rocm7.2" "$_BASE/rocm7.2" "$(run_index)"
 assert_eq "Ubuntu + AMD repo warns about nothing" "" "$(run_warnings)"
 
-# The fallback still has to fire where it was added: Debian ships no rocm-core at all.
 reset_sources
 add_hipconfig "5.7.31921-0"
 add_dpkg_hsa_runtime "1:6.1.2-1"
@@ -435,9 +418,6 @@ assert_eq "config-files rocm-core 7.0 on a 6.1 host -> rocm6.1, not rocm7.0" \
     "$_BASE/rocm6.1" "$(run_index)"
 assert_eq "the dead dpkg entry is not even named as a disagreement" "" "$(run_warnings)"
 
-# Debian's HSA package has the identical removed-but-not-purged hazard. It must
-# not outvote the live hipconfig reading, and only the status word differs from
-# the installed HSA case above.
 reset_sources
 add_hipconfig "6.1.40093-0"
 add_dpkg_hsa_runtime "1:7.0.0-1" config-files
@@ -615,7 +595,6 @@ else
         "under 20s" "$((_t1 - _t0))s (outer bound fired)"
 fi
 
-# radeon repo selection keeps the real host release: the generic leaf is clipped and patchless, the repo is not
 reset_sources
 add_version_file "6.5.0-1"
 assert_eq "a ROCm 6.5 host clipped to the rocm6.4 leaf still gets rocm-rel-6.5.0" \
@@ -632,7 +611,6 @@ add_version_file "7.2.1-98"
 assert_eq "a matching-family host still contributes its patch level" \
     "https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2.1/" "$(run_radeon_url rocm7.2)"
 
-# the split debian case the leaf exists for: the probe reads older than the resolver did
 reset_sources
 add_hipconfig "5.7.31921-0"
 assert_eq "an older host probe never overrides the resolved leaf" \

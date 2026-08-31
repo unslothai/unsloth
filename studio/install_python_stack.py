@@ -688,12 +688,7 @@ def _amd_smi_allowed() -> bool:
     return False
 
 
-# Memoized host ROCm version, mirroring _TORCH_RUNTIME_PROBE above. Unlike torch, the
-# host ROCm stack cannot change mid-run, so nothing has to invalidate it after a pip
-# operation; the reset exists for tests. _PROBED distinguishes "not probed yet" from a
-# probed None. Without this, _ensure_rocm_torch() runs twice on Linux (the post-base
-# repair and the final repair), so all five sources are probed twice and the
-# disagreement warning below prints twice where install.sh prints it once.
+# Memoized: _ensure_rocm_torch() runs twice on Linux; the disagreement warning prints once.
 _ROCM_VERSION_PROBE: "tuple[int, int] | None" = None
 _ROCM_VERSION_PROBED: bool = False
 
@@ -784,19 +779,9 @@ def _detect_rocm_version_uncached() -> tuple[int, int] | None:
         except Exception:
             pass
 
-    # Package-managed ROCm can expose GPUs via rocminfo/amd-smi but lack a version
-    # file and hipconfig. Debian/Ubuntu report rocm-core or the packaged HSA
-    # runtime; RPM distros report rocm-core. Matches install.sh so `studio update`
-    # and fresh install choose the same family.
-    #
-    # dpkg-query can still report removed-but-not-purged packages, so only
-    # accept package readings whose status is actually "installed".
-    #
-    # rocm-core wins outright when installed; libhsa-runtime64-1 is a fallback for
-    # distros that ship no rocm-core. See _rocm_tag_from_dpkg in install.sh for why
-    # they are not peers: the HSA package comes from the distro archive and tracks
-    # it rather than the installed ROCm, so on Ubuntu it sits at 5.7.1 beside AMD's
-    # rocm-core 7.2.1 and would report a disagreement on a perfectly healthy host.
+    # Only "installed" counts: dpkg-query still reports removed-but-not-purged packages.
+    # rocm-core wins outright over libhsa-runtime64-1, which comes from the distro archive
+    # and can be older (Ubuntu 5.7.1 beside AMD's rocm-core 7.2.1), so they are not peers.
     dpkg = shutil.which("dpkg-query")
     if dpkg:
         try:
@@ -813,9 +798,8 @@ def _detect_rocm_version_uncached() -> tuple[int, int] | None:
                 text = True,
                 timeout = 5,
             )
-            # dpkg-query returns nonzero when either requested package is absent,
-            # while still printing the other package's installed line. Parse stdout
-            # independently of the process status so the fallback still votes.
+            # dpkg-query exits nonzero when either package is absent but still prints
+            # the other's line, so parse stdout regardless of the return code.
             _dpkg_readings: "dict[str, list[tuple[int, int]]]" = {"rocm-core": [], "hsa": []}
             for line in result.stdout.splitlines():
                 fields = line.split()

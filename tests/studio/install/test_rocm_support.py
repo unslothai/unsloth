@@ -96,9 +96,6 @@ def _extract_sh_function_body(source: str, name: str) -> str:
 
 # A dpkg-query -W stand-in that renders whichever showformat string it is handed,
 # so this tests how production ASKS for versions, not only how it parses answers.
-# It requires rocm-core and Debian's HSA runtime in ONE invocation, emits any
-# configured package states (like real dpkg-query), and returns nonzero when a
-# requested package is absent while retaining the other package's stdout.
 _DPKG_QUERY_STUB = r"""#!/bin/sh
 _entries='__ENTRIES__'
 _fmt=''
@@ -549,11 +546,8 @@ class TestDetectRocmVersion:
                 result = _detect_rocm_version()
                 assert result is None
 
-    # shutil.which is patched to None in the version-file tests below on purpose. The
-    # detector no longer stops at the first answer, so every other source still runs and
-    # an unpatched test reads the DEVELOPER'S machine: a box with ROCm installed fails
-    # these on its real hipconfig or its real dpkg packages, and CI never sees it because
-    # CI has no ROCm at all. Matches test_empty_version_file, which already did this.
+    # which() is patched to None below: the detector no longer stops at the first answer,
+    # so unpatched these read the developer's real ROCm install and CI never sees it fail.
     def test_version_from_file(self, tmp_path):
         """Reads version from /opt/rocm/.info/version."""
         info_dir = tmp_path / ".info"
@@ -825,9 +819,9 @@ class TestDetectRocmVersion:
             with patch("shutil.which", return_value = None):
                 assert _detect_rocm_version() == (6, 1)
                 (info_dir / "version").write_text("7.0.0\n", encoding = "utf-8")
-                assert _detect_rocm_version() == (6, 1)  # memoized
+                assert _detect_rocm_version() == (6, 1)
                 stack_mod._invalidate_rocm_version_probe()
-                assert _detect_rocm_version() == (7, 0)  # re-probed
+                assert _detect_rocm_version() == (7, 0)
 
     def test_hipconfig_multiline_output(self, tmp_path):
         """hipconfig with multi-line output -- should use first line."""
