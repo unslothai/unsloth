@@ -866,6 +866,7 @@ def test_replace_names_acl_recovery_when_access_denied_persists(monkeypatch, tmp
     output = "".join(capsys.readouterr())
     assert "takeown" in output
     assert "icacls" in output
+    assert "elevated PowerShell" in output
     assert str(source) in output
     assert not any("takeown" in line and "icacls" in line for line in output.splitlines()), output
 
@@ -1480,3 +1481,55 @@ def test_a_tree_replaced_under_the_lock_is_still_not_a_match(tmp_path, monkeypat
         is False
     )
     assert recorded == [], "a record was written over another installer's tree"
+
+
+def test_swap_into_place_reports_the_managed_parent_on_destination_denial(
+    monkeypatch, tmp_path, capsys
+):
+    monkeypatch.setattr(M.os, "name", "nt")
+    monkeypatch.setattr(M.time, "sleep", lambda _s: None)
+    extracted = tmp_path / "staging" / "node-v24"
+    extracted.mkdir(parents = True)
+    install_dir = tmp_path / "managed" / "node"
+
+    def destination_denied(src, dst):
+        assert Path(src) == extracted
+        assert Path(dst) == install_dir
+        raise _oserror(5)
+
+    monkeypatch.setattr(M.os, "replace", destination_denied)
+    with pytest.raises(OSError):
+        M._swap_into_place(extracted, install_dir)
+
+    output = "".join(capsys.readouterr())
+    assert f'takeown /F "{extracted}"' in output
+    assert f'takeown /F "{install_dir.parent}"' in output
+    assert "elevated PowerShell" in output
+
+
+def test_swap_into_place_reports_the_managed_parent_when_aside_is_denied(
+    monkeypatch, tmp_path, capsys
+):
+    monkeypatch.setattr(M.os, "name", "nt")
+    monkeypatch.setattr(M.time, "sleep", lambda _s: None)
+    extracted = tmp_path / "staging" / "node-v24"
+    extracted.mkdir(parents = True)
+    install_dir = tmp_path / "managed" / "node"
+    install_dir.mkdir(parents = True)
+
+    def aside_denied(src, dst):
+        assert Path(src) == install_dir
+        assert Path(dst).parent == install_dir.parent
+        raise _oserror(5)
+
+    monkeypatch.setattr(M.os, "replace", aside_denied)
+    with pytest.raises(OSError):
+        M._swap_into_place(extracted, install_dir)
+
+    output = "".join(capsys.readouterr())
+    assert f'takeown /F "{install_dir}" /R /D Y' in output
+    parent_takeown = f'takeown /F "{install_dir.parent}"'
+    assert parent_takeown in output
+    assert not any(
+        parent_takeown in line and " /R " in line for line in output.splitlines()
+    ), output
