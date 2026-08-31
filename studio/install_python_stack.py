@@ -4366,6 +4366,24 @@ def _ensure_rocm_torch() -> None:
         _runtime_gfx, gfx_codes, _physical_gfx, _host_codes = _runtime_gfx_target(
             _inferred_linux_gfx
         )
+        # A miscomputing target has no ROCm route at all, so the whole rest of this
+        # function has to be skipped rather than any one branch of it. _amd_arch_index_url
+        # returns None for such an arch, and the missing-kernel reroute below both prints
+        # that None through _strip_index_url_credentials (AttributeError) and, with that
+        # guarded, would fall through to the generic pytorch.org wheels -- the exact build
+        # the gate exists to remove. install.sh resolves UNSLOTH_TORCH_BACKEND=cpu, so
+        # this function returns at its first line during an install; a standalone
+        # `studio update` reads no backend and reaches here with nothing else to stop it.
+        # Keyed on the SELECTED target rather than the inventory: a mixed host whose good
+        # dGPU is the target keeps ROCm, matching install.sh's every-arch gate, and one
+        # that selected the APU is declined, which install.sh's gate cannot see. The
+        # documented UNSLOTH_TORCH_INDEX_URL pin returns above this block.
+        if _runtime_gfx in _ROCM_MISCOMPUTING_GFX:
+            _safe_print(
+                f"   {_runtime_gfx} computes incorrect results under ROCm "
+                f"(studio/ROCM_RDNA2_APU.md) -- keeping CPU torch.\n"
+            )
+            return
         _strix_gfx = {"gfx1151", "gfx1150", "gfx1152"}
         # Only the Strix reroute has a ROCm-version floor.
         _detected_strix = (

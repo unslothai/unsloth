@@ -6942,6 +6942,52 @@ class TestRocmMiscomputingArchDemotion:
     def test_no_demotion_outside_the_measured_case(self, monkeypatch, label, archs, env, why):
         assert self._demotion_calls(monkeypatch, label, archs, env) == [], why
 
+    @pytest.mark.parametrize(
+        "codes, expect_install",
+        [
+            (["gfx1033"], False),
+            # A mixed host whose selected target is the healthy card keeps its ROCm route.
+            (["gfx1100"], True),
+        ],
+    )
+    def test_ensure_rocm_torch_declines_a_miscomputing_target(
+        self, monkeypatch, codes, expect_install
+    ):
+        """`studio update` run standalone has no UNSLOTH_TORCH_BACKEND to read, so the
+        early `cpu` return in _ensure_rocm_torch does not fire and a gfx1033 host walks
+        into the missing-kernel reroute. gfx1033 is not in _GENERIC_ROCM_WHEEL_GFX but
+        does map to gfx103X-all, so `_leaf` is set while _amd_arch_index_url() returns
+        None by design: the reroute printed that None through
+        _strip_index_url_credentials (AttributeError), and merely guarding the print
+        would drop through to the generic pytorch.org wheels the gate exists to remove.
+        """
+        calls = []
+        monkeypatch.setattr(stack_mod, "IS_WINDOWS", False)
+        monkeypatch.setattr(stack_mod, "IS_MACOS", False)
+        monkeypatch.setattr(stack_mod, "_TORCH_BACKEND", "")
+        monkeypatch.setattr(stack_mod, "_has_usable_nvidia_gpu", lambda: False)
+        monkeypatch.setattr(stack_mod, "_has_rocm_gpu", lambda: True)
+        monkeypatch.setattr(stack_mod, "_detect_amd_gfx_codes", lambda **_kw: list(codes))
+        monkeypatch.setattr(stack_mod, "_kfd_gfx_targets", lambda: [])
+        monkeypatch.setattr(stack_mod, "_infer_linux_amd_gfx_arch", lambda: None)
+        monkeypatch.setattr(stack_mod, "_detect_rocm_version", lambda: (7, 1))
+        monkeypatch.setattr(stack_mod, "pip_install_try", lambda *a, **k: True)
+        monkeypatch.setattr(stack_mod, "pip_install", lambda *a, **k: calls.append((a, k)))
+        for _var in (
+            "UNSLOTH_TORCH_INDEX_URL",
+            "UNSLOTH_TORCH_INDEX_FAMILY",
+            "UNSLOTH_ROCM_GFX_ARCH",
+            "HIP_VISIBLE_DEVICES",
+            "ROCR_VISIBLE_DEVICES",
+            "CUDA_VISIBLE_DEVICES",
+        ):
+            monkeypatch.delenv(_var, raising = False)
+        _probe = MagicMock(returncode = 0, stdout = _MARK + "2.10.0+cpu||\n")
+        with patch("os.path.isdir", return_value = True):
+            with patch("subprocess.run", return_value = _probe):
+                stack_mod._ensure_rocm_torch()  # must not raise
+        assert bool(calls) is expect_install, calls
+
     def test_probe_is_skipped_when_no_rocm_torch_is_installed(self, monkeypatch):
         """The arch probes run subprocesses; they must not run on every ordinary install."""
         monkeypatch.setattr(stack_mod, "IS_WINDOWS", False)

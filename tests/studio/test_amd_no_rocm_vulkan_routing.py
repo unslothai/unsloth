@@ -96,10 +96,9 @@ def _patch_no_nvidia_no_rocm(monkeypatch):
     PATH, and the /proc/driver/nvidia/gpus fallback.
 
     os.access is stubbed alongside them because detect_host() falls back to
-    os.access("/opt/rocm/bin/rocminfo", os.X_OK) when rocminfo is not on PATH, as does
-    _rocm_probe_tool_present() for the visibility-mask guard. A developer or CI machine
-    with ROCm installed but unexported would otherwise run the real probe, set
-    has_rocm=True, and take these cases off the path they exist to cover.
+    os.access("/opt/rocm/bin/rocminfo", os.X_OK) when rocminfo is not on PATH. A
+    developer or CI machine with ROCm installed but unexported would otherwise run the
+    real probe, set has_rocm=True, and take these cases off the path they exist to cover.
     """
     _which = ilp.shutil.which
     monkeypatch.setattr(
@@ -155,34 +154,30 @@ def test_drm_vendor_detection(monkeypatch, tmp_path, vendor_ids, expect_amd, exp
 
 
 @pytest.mark.parametrize(
-    "env, rocm_tool_installed, expect_amd",
+    "env, expect_amd",
     [
-        ({}, False, True),  # the target host: driver-only AMD, no mask
-        ({}, True, True),  # ROCm tools present but the probe found nothing: still AMD
-        # A masked-out AMD GPU on a ROCm host leaves the rocminfo probe empty and looks
-        # exactly like a driver-only box. Vulkan honours no HIP mask, so routing there
-        # would hand llama.cpp the card the caller hid.
-        ({"ROCR_VISIBLE_DEVICES": ""}, True, False),
-        ({"ROCR_VISIBLE_DEVICES": "-1"}, True, False),
-        # Only ROCR_VISIBLE_DEVICES can empty an HSA agent list. HIP_VISIBLE_DEVICES and
-        # its CUDA_VISIBLE_DEVICES alias filter the HIP runtime, which rocminfo is not a
-        # client of, so with either of them set the empty probe is still the honest
-        # answer and the Vulkan bundle is still the right one. Counting them denied it to
-        # any AMD host that merely had rocminfo installed and CUDA_VISIBLE_DEVICES
-        # exported -- a common shell default.
-        ({"HIP_VISIBLE_DEVICES": "-1"}, True, True),
-        ({"CUDA_VISIBLE_DEVICES": ""}, True, True),
-        # Both set: ROCR still decides, so the mask is honoured.
-        ({"CUDA_VISIBLE_DEVICES": "0", "ROCR_VISIBLE_DEVICES": ""}, True, False),
-        # ...and on a host with no ROCm installed at all nothing could have been hidden,
-        # so not even ROCR costs the Steam Deck this branch exists for its Vulkan bundle.
-        ({"CUDA_VISIBLE_DEVICES": "0"}, False, True),
-        ({"ROCR_VISIBLE_DEVICES": ""}, False, True),
+        ({}, True),  # the target host: driver-only AMD, no mask
+        # ROCR_VISIBLE_DEVICES is a request for GPU isolation, and Vulkan honours none of
+        # the HIP masks, so auto-routing there would hand llama.cpp the card that request
+        # hid. Honoured on its own terms: no ROCm inventory tool has to be installed for
+        # the request to be real, and a container setting it over a driver-only image is
+        # the case where none is.
+        ({"ROCR_VISIBLE_DEVICES": ""}, False),
+        ({"ROCR_VISIBLE_DEVICES": "-1"}, False),
+        ({"ROCR_VISIBLE_DEVICES": "0"}, False),
+        # Only ROCR_VISIBLE_DEVICES can empty an HSA agent list, and only it is the Linux
+        # isolation control. HIP_VISIBLE_DEVICES and its CUDA_VISIBLE_DEVICES alias filter
+        # the HIP runtime, which rocminfo is not a client of. Counting them denied the
+        # Vulkan bundle to any AMD host that merely had CUDA_VISIBLE_DEVICES exported --
+        # a common shell default, on exactly the host this widening exists for.
+        ({"HIP_VISIBLE_DEVICES": "-1"}, True),
+        ({"CUDA_VISIBLE_DEVICES": ""}, True),
+        ({"CUDA_VISIBLE_DEVICES": "0"}, True),
+        # Both set: ROCR still decides, so the isolation request is honoured.
+        ({"CUDA_VISIBLE_DEVICES": "0", "ROCR_VISIBLE_DEVICES": ""}, False),
     ],
 )
-def test_amd_visibility_mask_suppresses_auto_vulkan(
-    monkeypatch, tmp_path, env, rocm_tool_installed, expect_amd
-):
+def test_amd_visibility_mask_suppresses_auto_vulkan(monkeypatch, tmp_path, env, expect_amd):
     _patch_drm(monkeypatch, tmp_path, ["0x1002"])
     _patch_no_nvidia_no_rocm(monkeypatch)
     monkeypatch.setattr(ilp.platform, "system", lambda: "Linux")
@@ -190,24 +185,35 @@ def test_amd_visibility_mask_suppresses_auto_vulkan(
         monkeypatch.delenv(_var, raising = False)
     for _var, _val in env.items():
         monkeypatch.setenv(_var, _val)
-    monkeypatch.setattr(ilp, "_rocm_probe_tool_present", lambda: rocm_tool_installed)
     assert ilp.detect_host().has_amd_gpu_without_rocm is expect_amd
 
 
-def test_the_host_stub_also_hides_an_unexported_opt_rocm(monkeypatch):
+def test_the_host_stub_also_hides_an_unexported_opt_rocm(monkeypatch, tmp_path):
     """rocminfo off PATH but present under /opt/rocm must not reach these cases.
 
-    detect_host() and _rocm_probe_tool_present() both fall back to
-    os.access("/opt/rocm/bin/rocminfo", os.X_OK), which shutil.which and os.path.exists
-    do not cover. Simulate that machine: the stub has to answer for it, or every case
-    above silently stops testing the AMD-without-ROCm path on a developer box.
+    detect_host() falls back to os.access("/opt/rocm/bin/rocminfo", os.X_OK) when
+    shutil.which finds nothing, which os.path.exists and os.path.isdir do not cover.
+    Simulate that machine: the stub has to answer for it, or the cases above set
+    has_rocm from the real host, skip the fake DRM scan, and stop testing the
+    AMD-without-ROCm path they exist for.
     """
+    _patch_drm(monkeypatch, tmp_path, ["0x1002"])
+    monkeypatch.setattr(ilp.platform, "system", lambda: "Linux")
+    for _var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.delenv(_var, raising = False)
+    _access = ilp.os.access
     monkeypatch.setattr(
-        ilp.os, "access", lambda p, mode, *a, **k: "rocm" in str(p) and mode == ilp.os.X_OK
+        ilp.os,
+        "access",
+        lambda p, mode, *a, **k: True if "rocm" in str(p) else _access(p, mode, *a, **k),
     )
-    assert ilp._rocm_probe_tool_present() is True
+    assert ilp.os.access("/opt/rocm/bin/rocminfo", ilp.os.X_OK) is True
     _patch_no_nvidia_no_rocm(monkeypatch)
-    assert ilp._rocm_probe_tool_present() is False
+    # The direct assertion, not just the outcome: with the fallback left reachable the
+    # probe below merely fails to EXECUTE a binary this runner does not have, so the
+    # end-to-end result would be green for the wrong reason on most machines.
+    assert ilp.os.access("/opt/rocm/bin/rocminfo", ilp.os.X_OK) is False
+    assert ilp.detect_host().has_amd_gpu_without_rocm is True
 
 
 def test_intel_detection_survives_an_amd_mask(monkeypatch, tmp_path):
@@ -216,7 +222,6 @@ def test_intel_detection_survives_an_amd_mask(monkeypatch, tmp_path):
     _patch_no_nvidia_no_rocm(monkeypatch)
     monkeypatch.setattr(ilp.platform, "system", lambda: "Linux")
     monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "")
-    monkeypatch.setattr(ilp, "_rocm_probe_tool_present", lambda: True)
     host = ilp.detect_host()
     assert host.has_intel_gpu is True
     assert host.has_amd_gpu_without_rocm is False

@@ -2734,31 +2734,26 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
     has_intel_gpu = False
     has_amd_gpu_without_rocm = False
     if not has_usable_nvidia and not has_rocm:
-        # "No usable ROCm" is only provable when nothing could have hidden it.
-        # ROCR_VISIBLE_DEVICES filters the HSA runtime's agent list, so it removes GPUs
-        # from rocminfo's output too, leaving a masked AMD device on a ROCm host
-        # indistinguishable from a driver-only box. Vulkan honours none of the HIP masks
-        # (it selects through GGML_VK_VISIBLE_DEVICES), so auto-routing there would hand
-        # llama.cpp the very GPU the caller hid -- what _should_auto_vulkan_for_amd_windows
-        # already refuses on Windows, and what the has_physical_nvidia gate refuses for
-        # CUDA_VISIBLE_DEVICES. Conjoined with a ROCm probe actually being installed: the
-        # driver-only AMD host this branch exists for ships no rocminfo/amd-smi at all, so
-        # a merely exported CUDA_VISIBLE_DEVICES must not cost it the Vulkan bundle. Intel
-        # is not addressed by HIP masks and keeps its plain detection.
+        # ROCR_VISIBLE_DEVICES set means the caller asked for GPU isolation, and Vulkan
+        # honours none of the HIP masks (it selects through GGML_VK_VISIBLE_DEVICES), so
+        # auto-routing there would hand llama.cpp the very GPU that request hid -- what
+        # _should_auto_vulkan_for_amd_windows already refuses on Windows, and what the
+        # has_physical_nvidia gate refuses for CUDA_VISIBLE_DEVICES. The request is
+        # honoured on its own terms, not only where a ROCm inventory tool happens to be
+        # installed: nobody exports this variable except to steer ROCm, and a container
+        # that sets it over a driver-only image would otherwise be handed the hidden card.
         #
         # ROCR_VISIBLE_DEVICES alone, not the three _hip_visible_device_mask_set() reads.
-        # HIP_VISIBLE_DEVICES and its CUDA_VISIBLE_DEVICES alias filter the HIP runtime's
-        # device list; rocminfo is an HSA tool, not a HIP application, so neither can be
-        # the reason the ROCm inventory came back empty and neither leaves anything
-        # ambiguous to guard against here (AMD's GPU-isolation docs, and the split
-        # guidance to use ROCR_VISIBLE_DEVICES on Linux). Counting them cost the Vulkan
-        # bundle to any AMD host that merely has rocminfo installed and CUDA_VISIBLE_DEVICES
-        # exported, which is a common shell default and exactly the host this widening
-        # exists for. The Windows probe is hipinfo, itself a HIP application, so
-        # _should_auto_vulkan_for_amd_windows keeps reading all three.
-        _amd_hidden_by_mask = (
-            os.environ.get("ROCR_VISIBLE_DEVICES") is not None and _rocm_probe_tool_present()
-        )
+        # It filters the HSA runtime's agent list, so it removes GPUs from rocminfo's own
+        # output; HIP_VISIBLE_DEVICES and its CUDA_VISIBLE_DEVICES alias filter the HIP
+        # runtime's device list, and rocminfo is an HSA tool, not a HIP application (AMD's
+        # GPU-isolation docs, and the split guidance to use ROCR_VISIBLE_DEVICES on Linux
+        # and HIP_VISIBLE_DEVICES on Windows). Counting the other two cost the Vulkan
+        # bundle to any AMD host that merely had CUDA_VISIBLE_DEVICES exported, which is a
+        # common shell default and exactly the host this widening exists for. Windows
+        # keeps reading all three, because its probe is hipinfo, itself a HIP application.
+        # Intel is not addressed by HIP masks and keeps its plain detection.
+        _amd_hidden_by_mask = os.environ.get("ROCR_VISIBLE_DEVICES") is not None
         if is_linux:
             # No early break: both vendors matter, and a laptop can pair an Intel iGPU
             # with an AMD dGPU. This is a handful of sysfs reads.
@@ -7558,17 +7553,6 @@ def _hip_visible_device_mask_set() -> bool:
         os.environ.get(_env) is not None
         for _env in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
     )
-
-
-def _rocm_probe_tool_present() -> bool:
-    """Whether a ROCm inventory probe is installed on this host at all.
-
-    Separates "ROCm is here but reported nothing" from "there is no ROCm": only the first
-    can be an artefact of a visible-device mask. Mirrors the executables detect_host()
-    probes on Linux, /opt/rocm fallback included."""
-    if shutil.which("rocminfo") or shutil.which("amd-smi"):
-        return True
-    return os.access("/opt/rocm/bin/rocminfo", os.X_OK)
 
 
 def _windows_hip_gfx_targets(published_repo: str | None) -> frozenset[str]:
