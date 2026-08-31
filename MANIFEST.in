@@ -4,8 +4,6 @@
 # The only veto that travels inside the sdist, so it holds for the wheel too:
 # `python -m build` rebuilds the wheel from the sdist, where exclude-package-data
 # and packages.find no longer bite (no .git tree for the file finder).
-# tests/security/fixtures embeds a real supply-chain IOC literal on purpose, which
-# got the published sdist flagged by antivirus vendors (discussion #9577).
 prune tests
 prune studio/backend/tests
 prune studio/backend/hub/tests

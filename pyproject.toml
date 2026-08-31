@@ -94,8 +94,7 @@ exclude = [
 
 # Excluding a tests package above is not enough: include-package-data re-ships its
 # files as data of the surviving parent (pypa/setuptools#3260), and only
-# exclude-package-data outranks that. Second layer only -- MANIFEST.in is the veto
-# that also covers the sdist.
+# exclude-package-data outranks that.
 [tool.setuptools.exclude-package-data]
 "studio.backend" = ["tests/*"]
 "studio.backend.hub" = ["tests/*"]
