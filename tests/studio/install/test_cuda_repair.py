@@ -1967,6 +1967,38 @@ class TestAFailedGpuPinIsNotADeliberateCpuChoice:
     def test_a_carried_forward_cpu_record_still_counts_for_cpu(self, monkeypatch):
         assert self._pinned(monkeypatch, "cpu", recorded = ("cpu", True)) is True
 
+    def test_a_gpu_request_this_run_retires_the_old_cpu_record(self, monkeypatch):
+        """The record can only speak for a run that said nothing to contradict it.
+
+        A ROCm pin that settled on CPU is the failed-pin case the arms above refuse to call
+        deliberate, and reviving the old CPU provenance underneath them re-records the venv
+        as pinned CPU anyway: the mismatch is then suppressed for good once the requested
+        GPU works.
+        """
+        assert (
+            self._pinned(
+                monkeypatch,
+                "cpu",
+                url = "https://download.pytorch.org/whl/rocm6.4",
+                recorded = ("cpu", True),
+            )
+            is False
+        )
+        assert (
+            self._pinned(monkeypatch, "cpu", backend = "cuda", recorded = ("cpu", True)) is False
+        )
+
+    def test_a_derived_backend_does_not_retire_the_old_cpu_record(self, monkeypatch):
+        # install.sh marks the backend it resolved, and "cpu" on a GPU-less machine is not a
+        # preference either way, so it contradicts nothing the previous run recorded.
+        monkeypatch.setenv("UNSLOTH_TORCH_BACKEND_SOURCE", "resolved")
+        monkeypatch.setattr(stack_mod, "_TORCH_BACKEND", "cuda")
+        monkeypatch.setattr(stack_mod, "_RECORDED_TORCH_TAG", "cpu")
+        monkeypatch.setattr(stack_mod, "_RECORDED_TORCH_TAG_PINNED", True)
+        for var in ("UNSLOTH_TORCH_INDEX_URL", "UNSLOTH_TORCH_INDEX_FAMILY"):
+            monkeypatch.delenv(var, raising = False)
+        assert stack_mod._expected_torch_flavor_was_pinned("cpu") is True
+
     def test_an_authoritative_url_silences_a_stale_family(self, monkeypatch):
         """install.sh returns on the URL and never reads the family, so a family that
         disagrees is dead. An unknown-family corporate /simple URL names no flavor, and

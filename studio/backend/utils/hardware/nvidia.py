@@ -326,15 +326,19 @@ def _query_gpu_inventory(caller: str) -> Any:
             continue
         # Rejoin in case the GPU name contains commas
         name = parts[1] if len(parts) == 3 else ", ".join(parts[1:-1])
-        try:
-            mem_total_mb = int(parts[-1])
-        except (ValueError, TypeError):
-            continue
+        # A capacity this build of nvidia-smi will not report ("[N/A]", as _parse_smi_value
+        # already recognises) is a missing metric, not a missing card. Dropping the row hid
+        # the GPU from the whole inventory, and on Linux the procfs fallback does not run
+        # either, since that answers for a query that FAILED rather than one that came back
+        # short: the host lost its mismatch and its repair guidance over an unknown size.
+        mem_total_mb = _parse_smi_value(parts[-1])
         rows.append(
             {
                 "index": idx,
                 "name": name,
-                "memory_total_gb": round(mem_total_mb / 1024, 2),
+                "memory_total_gb": round(mem_total_mb / 1024, 2)
+                if mem_total_mb is not None
+                else None,
             }
         )
     return rows

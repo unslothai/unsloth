@@ -3104,9 +3104,35 @@ def _expected_torch_flavor_was_pinned(flavor: str = "") -> bool:
         and _names_it(_TORCH_BACKEND)
     ):
         return True
+    # A record can only speak for a run that said nothing to contradict it. A GPU family
+    # asked for HERE, which settled on CPU because the GPU install failed, is the same
+    # failed-pin case the arms above refuse to call deliberate -- and reviving the old CPU
+    # provenance underneath them re-records the venv as pinned CPU anyway, so the mismatch
+    # is suppressed for good once the requested GPU works. Only families this run NAMED
+    # count: install.sh's derived backend is not a preference, and a mirror URL whose leaf
+    # names no family has contradicted nothing.
+    if flavor and any(
+        family and family != _flavor_tag_family(flavor)
+        for family in _flavor_families_this_run_named()
+    ):
+        return False
     return bool(_RECORDED_TORCH_TAG_PINNED) and _names_it(
         _flavor_tag_family(_RECORDED_TORCH_TAG or "")
     )
+
+
+def _flavor_families_this_run_named() -> tuple[str, ...]:
+    """The torch families the CURRENT run was told to install, in no particular order."""
+    named: list[str] = []
+    pin = _explicit_torch_index_url()
+    if pin is not None:
+        named.append(_index_leaf_flavor_family(_torch_index_leaf(pin)))
+    if (
+        _TORCH_BACKEND in ("cpu", "cuda", "rocm", "xpu")
+        and os.environ.get("UNSLOTH_TORCH_BACKEND_SOURCE", "").strip().lower() != "resolved"
+    ):
+        named.append(_TORCH_BACKEND)
+    return tuple(named)
 
 
 def _expected_torch_index_url(tag: str) -> str:

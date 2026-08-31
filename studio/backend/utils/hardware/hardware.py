@@ -1496,7 +1496,6 @@ def _mismatch_verdict_for_this_host(
     request path, and the blocking pass is what warms the caches that /api/health then
     reads without probing anything itself.
     """
-    global CHAT_ONLY_MISMATCH_VENDORS
     if reason is None:
         reason = torch_build_snapshot()["reason"]
     if reason is None:
@@ -1507,9 +1506,7 @@ def _mismatch_verdict_for_this_host(
     if not establishing:
         return None, None
     # Which vendors said so, for the frozen verdict's own uncertainty test.
-    CHAT_ONLY_MISMATCH_VENDORS = frozenset(
-        device.get("vendor") for device in establishing if device.get("vendor")
-    )
+    _remember_the_vendors_behind_the_mismatch(establishing)
     detail = _reported_torch_label()
     logger.warning(
         "GPUs are present on this host but PyTorch cannot use them (%s%s); "
@@ -1982,6 +1979,14 @@ def _request_hardware_redetection() -> None:
         logger.debug("Could not request hardware re-detection: %s", e)
 
 
+def _remember_the_vendors_behind_the_mismatch(devices: list[Dict[str, Any]]) -> None:
+    """Record which vendors' cards establish the mismatch being reported right now."""
+    global CHAT_ONLY_MISMATCH_VENDORS
+    CHAT_ONLY_MISMATCH_VENDORS = frozenset(
+        device.get("vendor") for device in devices if device.get("vendor")
+    )
+
+
 def _uncertainty_could_hide_the_frozen_mismatch(inventory: Dict[str, Any]) -> bool:
     """Whether an inventory that could not answer might still hold the mismatched card.
 
@@ -2048,9 +2053,16 @@ def current_chat_only_verdict() -> tuple[Optional[str], Optional[str]]:
         # block=False: /api/health and /api/liveness reach here, and the NVIDIA half shells out
         # with a 10 second timeout on exactly the hung-driver host this exists for.
         inventory = get_physical_gpu_inventory(block = False)
-        if build_reason is not None and _devices_that_can_establish_a_mismatch(
-            inventory.get("devices") or []
-        ):
+        establishing = (
+            _devices_that_can_establish_a_mismatch(inventory.get("devices") or [])
+            if build_reason is not None
+            else []
+        )
+        if establishing:
+            # Re-record who says so. The mismatch can MOVE between vendors inside one process
+            # -- swap an AMD eGPU for an NVIDIA one -- and holding the startup answer would
+            # later freeze the verdict on a vendor a refresh has already watched disappear.
+            _remember_the_vendors_behind_the_mismatch(establishing)
             return build_reason, _reported_torch_label(detail)
         if inventory.get("unknown") and _uncertainty_could_hide_the_frozen_mismatch(inventory):
             return reason, detail

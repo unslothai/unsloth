@@ -157,6 +157,25 @@ def cpu_torch_on_an_nvidia_host(monkeypatch):
     _smi(monkeypatch, _TWO_A4000_ROWS)
 
 
+def test_a_card_whose_capacity_is_unreported_is_still_a_card(monkeypatch):
+    """"[N/A]" for memory.total is a missing metric, not a missing GPU.
+
+    Dropping the row took the card out of the whole inventory, and the Linux procfs
+    fallback does not cover it either: that answers for a query that FAILED, not one that
+    came back short. The host lost its mismatch and its repair guidance over a size.
+    """
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
+    _smi(monkeypatch, "0, NVIDIA RTX A4000, [N/A]\n1, NVIDIA RTX A4000, 16376\n")
+
+    inventory = hw.get_physical_gpu_inventory()
+
+    assert [d["name"] for d in inventory["devices"]] == ["NVIDIA RTX A4000"] * 2
+    assert [d["memory_total_gb"] for d in inventory["devices"]] == [None, 15.99]
+    assert inventory["unknown"] is False
+    assert hw._devices_that_can_establish_a_mismatch(inventory["devices"]) == inventory["devices"]
+
+
 def test_the_physical_probe_runs_without_a_cuda_device(cpu_torch_on_an_nvidia_host):
     inventory = hw.get_physical_gpu_inventory()
 
@@ -914,6 +933,46 @@ def test_only_uncertainty_about_the_mismatched_vendor_holds_the_verdict(monkeypa
     # answer rather than saying everyone did.
     _inventory([])
     assert hw.current_chat_only_verdict() == ("torch_cpu_build", "2.11.0+cpu")
+
+
+def test_the_recorded_vendors_follow_the_mismatch_when_it_moves(monkeypatch):
+    """The mismatch can change vendor inside one process: swap an AMD eGPU for an NVIDIA one.
+
+    Holding the startup answer would later freeze the verdict on a vendor a refresh has
+    already watched disappear, which is the same stale-scope bug one level up.
+    """
+    monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "torch_cpu_build")
+    monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", "2.11.0+cpu")
+    monkeypatch.setattr(hw, "CHAT_ONLY_MISMATCH_VENDORS", frozenset({"amd"}))
+    monkeypatch.setattr(hw, "classify_torch_build", lambda **_kw: "torch_cpu_build")
+    monkeypatch.setattr(hw, "_torch_reports_a_usable_accelerator", lambda: False)
+    monkeypatch.setattr(
+        hw,
+        "get_physical_gpu_inventory",
+        lambda **_kw: {
+            "available": True,
+            "devices": [{"vendor": "nvidia", "name": "NVIDIA RTX A4000"}],
+            "unknown": False,
+        },
+    )
+    hw.torch_build_snapshot()
+
+    # Only the reason: the detail is re-read from the live torch, which is this host's.
+    assert hw.current_chat_only_verdict()[0] == "torch_cpu_build"
+    assert hw.CHAT_ONLY_MISMATCH_VENDORS == frozenset({"nvidia"})
+
+    # And the AMD probe going unreadable now proves nothing about the card that is here.
+    monkeypatch.setattr(
+        hw,
+        "get_physical_gpu_inventory",
+        lambda **_kw: {
+            "available": False,
+            "devices": [],
+            "unknown": True,
+            "unanswered": ["amd"],
+        },
+    )
+    assert hw.current_chat_only_verdict() == ("no_gpu", None)
 
 
 def test_the_health_path_never_waits_on_the_gpu_probe(monkeypatch):
