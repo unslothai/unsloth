@@ -346,8 +346,7 @@ class TestItDoesNotClaimTheFitterRuns:
 
     def test_the_command_is_built_after_the_warning(self):
         import inspect
-
         src = inspect.getsource(mod.LlamaCppBackend.load_model)
-        assert src.find("could not enumerate any GPU") < src.find("_fitter_runs = fit_is_effectively_on"), (
-            "if the effective fitter state became available above the warning, re-derive this"
-        )
+        assert src.find("could not enumerate any GPU") < src.find(
+            "_fitter_runs = fit_is_effectively_on"
+        ), "if the effective fitter state became available above the warning, re-derive this"
