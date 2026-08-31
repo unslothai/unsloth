@@ -13,6 +13,10 @@ from routes import inference
 TOOLS = [{"type": "function", "function": {"name": "search_knowledge_base"}}]
 TOOLS_WITH_WEB = TOOLS + [{"type": "function", "function": {"name": "web_search"}}]
 TOOLS_WITH_RESEARCH = TOOLS + [{"type": "function", "function": {"name": "deep_research"}}]
+
+TOOLS_WITH_MCP_BROWSER = TOOLS + [
+    {"type": "function", "function": {"name": "mcp__browser__browser_navigate"}}
+]
 RAG_SCOPE = {"project_id": "p1"}
 
 
@@ -51,6 +55,13 @@ def test_closed_corpus_nudge_is_scoped_to_document_questions():
 
 def test_deep_research_skips_closed_corpus_nudge():
     out = _rag_nudge(nudge = "", tools = TOOLS_WITH_RESEARCH, rag_scope = RAG_SCOPE)
+    assert inference._RAG_GROUNDING_NUDGE in out
+    assert inference._RAG_CLOSED_CORPUS_NUDGE not in out
+    assert inference._RAG_WEB_SEARCH_PRIORITY_NUDGE not in out
+
+
+def test_mcp_browser_skips_closed_corpus_nudge():
+    out = _rag_nudge(nudge = "", tools = TOOLS_WITH_MCP_BROWSER, rag_scope = RAG_SCOPE)
     assert inference._RAG_GROUNDING_NUDGE in out
     assert inference._RAG_CLOSED_CORPUS_NUDGE not in out
     assert inference._RAG_WEB_SEARCH_PRIORITY_NUDGE not in out

@@ -4258,8 +4258,8 @@ _RAG_CLOSED_CORPUS_NUDGE = (
     "documents, answer normally from your own capabilities without searching "
     "the public internet."
 )
-# deep_research reaches the public web; treat it like web_search so a closed-
-# corpus instruction cannot cancel an armed research turn.
+# Built-in tools that reach the public web. MCP schemas use their stable prefix below so
+# an explicitly enabled MCP capability is not contradicted by a closed-corpus instruction.
 _RAG_INTERNET_TOOL_NAMES = frozenset({"web_search", "deep_research"})
 # When both RAG and web_search are enabled (e.g. the Search pill is on), project
 # sources must still win over an automatic web fallback.
@@ -4798,10 +4798,10 @@ async def _apply_rag_nudge(nudge: str, tools: list[dict], *, rag_scope) -> str:
     """Append the RAG grounding nudge to ``nudge`` when the knowledge-base tool
     is active (search_knowledge_base present and a retrieval scope is set).
 
-    When no internet-capable tool is present, adds closed-corpus guidance so
-    the Search pill being off cannot be read as permission to answer document
-    questions from the public web. ``deep_research`` counts as internet-capable
-    so an armed research turn is not told the corpus is closed. When
+    When neither a built-in internet tool nor an MCP schema is present, adds
+    closed-corpus guidance so the Search pill being off cannot be read as permission
+    to answer document questions from the public web. ``deep_research`` and MCP
+    schemas count as internet-capable so enabled tools are not contradicted. When
     ``web_search`` is present and a project scope is set, tells the model not
     to treat web_search as an automatic fallback after an empty document search.
 
@@ -4810,7 +4810,11 @@ async def _apply_rag_nudge(nudge: str, tools: list[dict], *, rag_scope) -> str:
     if "search_knowledge_base" not in tool_names or not rag_scope:
         return nudge
     grounding = _RAG_GROUNDING_NUDGE + await _rag_roster_sentence(rag_scope)
-    has_internet_tool = bool(tool_names & _RAG_INTERNET_TOOL_NAMES)
+    from core.inference.mcp_client import MCP_TOOL_PREFIX
+
+    has_internet_tool = bool(tool_names & _RAG_INTERNET_TOOL_NAMES) or any(
+        isinstance(name, str) and name.startswith(MCP_TOOL_PREFIX) for name in tool_names
+    )
     if not has_internet_tool:
         grounding = grounding + " " + _RAG_CLOSED_CORPUS_NUDGE
     elif "web_search" in tool_names and rag_scope.get("project_id"):
