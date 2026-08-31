@@ -143,10 +143,9 @@ def test_a_rocm_wheel_keeps_the_fast_path(monkeypatch, torch):
 
 @pytest.mark.parametrize("gfx", ["gfx1150", "gfx1151"])
 def test_a_strix_host_on_a_wheel_without_its_kernels_forces_the_pass(monkeypatch, gfx):
-    """The rocm6.4 generation does not carry gfx1150/gfx1151 -- AMD's images date support to
-    7.1 -- and _ensure_rocm_torch already reroutes such a host to the per-arch index on a
-    fresh install. Keeping the fast path here is the preflight declining a repair the repair
-    itself performs, so the reroute was reachable on install and never on update."""
+    """rocm6.4 does not carry gfx1150/gfx1151 (AMD dates support to 7.1), and
+    _ensure_rocm_torch already reroutes such a host on a fresh install. Keeping the fast path
+    is the preflight declining a repair the repair itself performs."""
     _host(monkeypatch, torch = ("2.9.0+rocm6.4", "6.4"), gfx = (gfx,))
     assert _needs_pass() is True
     # A generic tag that does carry them is still not the build Strix wants: the reroute
@@ -182,10 +181,9 @@ def test_an_unreadable_torch_keeps_the_fast_path(monkeypatch, kwargs):
 
 
 def test_a_mixed_arch_host_keeps_the_fast_path_only_while_it_is_ambiguous(monkeypatch):
-    """Being mixed is not being unreadable. Unpinned, probe order and mask order can
-    disagree with nothing to resolve it, so the fast path stands. Pinned,
-    _runtime_gfx_target composes both layers and names a card whose generic wheel can
-    still be the one with no kernels for it."""
+    """Being mixed is not being unreadable. Unpinned, probe and mask order can disagree with
+    nothing to resolve it, so the fast path stands. Pinned, _runtime_gfx_target composes both
+    layers and names a card whose generic wheel can still lack kernels for it."""
     # Ambiguous: amd-smi enumerates in discovery order and a mask indexes HIP order.
     _host(
         monkeypatch,
@@ -256,7 +254,7 @@ def test_a_set_hip_mask_shadows_the_cuda_alias(monkeypatch, cuda):
     """CUDA_VISIBLE_DEVICES is HIP's alias, not a layer under it (_pick_visible_index).
 
     Hiding NVIDIA with CUDA_VISIBLE_DEVICES=-1 while pinning HIP is a real mixed-host
-    pattern; the HIP mask wins, so the GPU is visible and the wheel is repairable.
+    pattern: the HIP mask wins, so the GPU is visible and the wheel repairable.
     """
     _host(
         monkeypatch,
@@ -377,8 +375,8 @@ def _decision(result):
     """The CLI's own account of which input produced its exit code.
 
     Exit 1 alone is five states (no-torch venv, resolved backend, non-ROCm pin, absent or
-    masked AMD host, unreadable torch), so the code cannot say which one it saw. Asserting
-    the line back against the code keeps the diagnostic from drifting off the decision.
+    masked AMD host, unreadable torch), so the code cannot say which it saw. Asserting the
+    line back against the code keeps the diagnostic from drifting.
     """
     stdout = result.stdout.decode(errors = "replace")
     marked = [
@@ -580,10 +578,9 @@ def _rocm_torch(
 ):
     """A host whose torch IS a ROCm build.
 
-    ``family`` is the AMD per-arch family it reads back as; None means unknowable.
-    ``owns_sdk`` is whether torch requires AMD's rocm[libraries] at all, which separates a
-    generic pytorch.org wheel (False, so no family to read) from a per-arch install whose
-    family will not read back (True with family None).
+    ``family`` is the per-arch family it reads back as; None means unknowable.
+    ``owns_sdk`` is whether torch requires AMD's rocm[libraries], separating a generic wheel
+    (False, no family to read) from a per-arch install whose family will not read back.
     """
     _host(monkeypatch, torch = ("2.11.0+rocm7.13.0", "7.13"), **kw)
     _owns = family is not None if owns_sdk is None else owns_sdk
@@ -672,9 +669,8 @@ def test_a_named_arch_resolves_a_host_no_ordinal_can(monkeypatch):
 
 def test_a_rocm_pin_is_not_asked_a_hardware_question(monkeypatch):
     """A pin commits to an index regardless of the visible GPU, which is why every hardware
-    gate above it is skipped. The family question is one of those: asked under a pin it
-    answers for whatever card the probing machine has, which is how the end-to-end CLI case
-    began failing on an AMD box."""
+    gate above it is skipped. Asked under a pin, the family question answers for whatever card
+    the probing machine has -- how the end-to-end CLI case began failing on an AMD box."""
     # The pin names the family torch already carries, so nothing is due for it either.
     _rocm_torch(
         monkeypatch,
@@ -699,9 +695,8 @@ def test_a_rocm_pin_is_not_asked_a_hardware_question(monkeypatch):
 
 def test_a_stale_family_no_index_can_repair_keeps_the_fast_path(monkeypatch):
     """The preflight must not promise a repair the repair declines. gfx1010 has no AMD leaf
-    and no generic kernels, so _ensure_rocm_torch refuses the reinstall on the same
-    routability question; answering True here buys a full dependency pass on every update and
-    never a working torch."""
+    and no generic kernels, so _ensure_rocm_torch refuses on the same routability question,
+    and answering True here buys a dependency pass per update and never a working torch."""
     _rocm_torch(monkeypatch, family = "gfx110x-all", gfx = ("gfx1010",))
     assert _needs_pass() is False
     # An empty leaf is not the test: the datacentre parts have none and the generic index
@@ -712,10 +707,9 @@ def test_a_stale_family_no_index_can_repair_keeps_the_fast_path(monkeypatch):
 
 
 def test_a_mixed_host_gfx906_keeps_the_fast_path(monkeypatch):
-    """gfx906 answers the abstract routability question yes on the generic union, but its one
-    usable route is the rocm6.3 legacy tag, which opens only when gfx906 is the sole detected
-    arch. _ensure_rocm_torch declines the demotion there, so a preflight that asks the
-    abstract question requests a full dependency pass on every update and never a repair."""
+    """gfx906 answers the abstract routability question yes, but its one usable route is the
+    rocm6.3 tag, which opens only when it is the sole detected arch. _ensure_rocm_torch
+    declines the demotion there, so asking the abstract question buys a pass and no repair."""
     _rocm_torch(
         monkeypatch,
         family = "gfx110x-all",

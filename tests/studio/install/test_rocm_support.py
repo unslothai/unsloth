@@ -1506,9 +1506,8 @@ class TestGfx906LegacyReroute:
         with (
             patch.object(stack_mod, "_kfd_gfx_targets", return_value = []),
             patch.object(stack_mod, "_infer_linux_amd_gfx_arch", _named_arch_only),
-            # No AMD per-arch wheel is installed in any of these cases. On the gfx1151
-            # runner both read a real one out of the venv, and the family gates then
-            # answer for a host none of them described.
+            # No per-arch wheel is installed in any of these cases; on the gfx1151 runner
+            # both read a real one out of the venv and answer for a host none described.
             patch.object(stack_mod, "_installed_rocm_wheel_family", return_value = None),
             patch.object(stack_mod, "_torch_requires_rocm_sdk", return_value = False),
         ):
@@ -5740,7 +5739,7 @@ class TestStrixRocm71Override:
             assert len(_said) == 1, _said
             assert "netrc" in _said[0] and "credential" in _said[0], _said
         # A mirror pip CAN authenticate says nothing: userinfo lives in the netloc, which
-        # the join never touches and which pip carries onto every project URL.
+        # the join never touches and pip carries onto every project URL.
         _plain = "https://user:token@mirror.example/whl"
         _quiet = []
         with patch.object(m, "_safe_print", side_effect = _quiet.append):
@@ -5904,9 +5903,8 @@ class TestStrixRocm71Override:
         assert stack_mod._strix_needs_amd_arch_index((7, 14)) is True
         assert stack_mod._strix_needs_amd_arch_index((7, 0)) is True
         assert stack_mod._strix_needs_amd_arch_index((6, 0)) is True
-        # No generic tag resolves below 6.0, so there is no generic wheel to prefer and the
-        # per-arch index -- which needs no host ROCm at all -- is the only route these arches
-        # have. Same answer as an unreadable version, which reads as 0.0 for the same reason.
+        # No generic tag resolves below 6.0, so there is no wheel to prefer and the per-arch
+        # index, needing no host ROCm, is the only route. Same answer as an unreadable version.
         assert stack_mod._strix_needs_amd_arch_index((5, 0)) is True
 
     def test_torch_constraint_updated_for_strix_amd_index(self):
