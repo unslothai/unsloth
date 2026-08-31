@@ -740,7 +740,9 @@ def _version_is_excluded(version: str, exclusion: str) -> bool:
 
 
 def _window_names_one_minor(
-    floor: str | None, ceiling: str | None, cap: str | None = None
+    floor: str | None,
+    ceiling: str | None,
+    cap: str | None = None,
 ) -> bool:
     """True when the window above `floor` cannot leave the minor `floor` is in.
 

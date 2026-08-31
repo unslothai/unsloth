@@ -804,9 +804,12 @@ def test_notebook_validator_bounds_the_minor_with_an_inclusive_cap():
     assert "torchcodec==0.10" in findings[0].message
 
     # A cap that reaches into the next minor still cannot name where it lands.
-    assert nv.rule_inst_004_torchcodec_torch(
-        '!pip install "torchcodec>=0.10,<=0.11"', older, "nb.ipynb", 0
-    ) == []
+    assert (
+        nv.rule_inst_004_torchcodec_torch(
+            '!pip install "torchcodec>=0.10,<=0.11"', older, "nb.ipynb", 0
+        )
+        == []
+    )
 
 
 def test_notebook_validator_applies_exclusions_to_where_it_landed():
@@ -839,17 +842,21 @@ def test_notebook_validator_skips_conditional_invocations_in_rule_003():
     nv = _load_notebook_validator_module()
 
     colab = {"peft": "0.19.1", "torchao": "0.15.0"}
-    assert nv._install_cell_lower_bound(
-        '!pip install foo || pip install "torchao>=0.16.0"', "torchao"
-    ) is None
-    assert [f.rule for f in nv.rule_inst_003_peft_torchao(
-        '!pip install foo || pip install "torchao>=0.16.0"', colab, "nb.ipynb", 0
-    )] == ["R-INST-003"]
+    assert (
+        nv._install_cell_lower_bound('!pip install foo || pip install "torchao>=0.16.0"', "torchao")
+        is None
+    )
+    assert [
+        f.rule
+        for f in nv.rule_inst_003_peft_torchao(
+            '!pip install foo || pip install "torchao>=0.16.0"', colab, "nb.ipynb", 0
+        )
+    ] == ["R-INST-003"]
 
     # Run unconditionally and it does satisfy the floor.
-    assert nv.rule_inst_003_peft_torchao(
-        '!pip install "torchao>=0.16.0"', colab, "nb.ipynb", 0
-    ) == []
+    assert (
+        nv.rule_inst_003_peft_torchao('!pip install "torchao>=0.16.0"', colab, "nb.ipynb", 0) == []
+    )
 
 
 def test_notebook_validator_reads_a_range_as_one_window():
