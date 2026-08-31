@@ -81,15 +81,14 @@ _PYTORCH_MISSING_MESSAGE = (
 _LLAMA_CPP_SCRIPTS_WARNING_EMITTED = False
 
 
-def _multi_gpu_device_map_kwargs(planner_eligible: bool = True) -> dict:
+def _multi_gpu_device_map_kwargs() -> dict:
     """``device_map`` kwargs for sharding a checkpoint across every visible GPU.
 
     unsloth's ``from_pretrained`` defaults to ``device_map="sequential"``, which stacks
     the whole model on GPU0 and OOMs multi-GPU hosts whose other GPUs sit empty (#7053).
     Returns a sharding map only on a real multi-GPU CUDA/ROCm host (mirroring the
     inference loader's ``get_device_map``), else empty so single-GPU, CPU and MLX loads
-    keep the loader default. ``planner_eligible = False`` for the CSM and Whisper
-    branches below, which pass a concrete ``auto_model`` the planner will not plan."""
+    keep the loader default."""
     if _IS_MLX:
         return {}
     try:
@@ -97,15 +96,15 @@ def _multi_gpu_device_map_kwargs(planner_eligible: bool = True) -> dict:
 
         visible = get_parent_visible_gpu_ids()
         if len(visible) > 1:
-            device_map = get_device_map(visible, planner_eligible = planner_eligible)
+            device_map = get_device_map(visible)
         elif not visible:
             # UUID/MIG masks resolve to no numeric ids; get_device_map(None) falls back to the visible count.
-            device_map = get_device_map(None, planner_eligible = planner_eligible)
+            device_map = get_device_map(None)
         else:
             return {}
-        # Both sharding answers `get_device_map` gives. A "balanced"-only whitelist
-        # dropped the map once CUDA began asking for "unsloth".
-        if device_map in ("balanced", "unsloth"):
+        # Every sharding answer `get_device_map` gives. A "balanced"-only whitelist
+        # dropped the map the moment CUDA began asking for a planned one.
+        if device_map in ("balanced", "unsloth", "unsloth_balanced"):
             return {"device_map": device_map}
     except Exception as exc:
         logger.debug(f"multi-GPU device_map resolution failed; using loader default: {exc}")
@@ -492,6 +491,13 @@ class ExportBackend:
             # Skip the Hub when offline so a no-internet export uses the local cache.
             local_files_only = _hf_offline()
 
+            # Shard across every visible GPU instead of stacking on GPU0 (#7053); {} on single-GPU/CPU/MLX.
+            _device_map_kw = (
+                _multi_gpu_device_map_kwargs()
+                if _device_map_override is None
+                else _device_map_override
+            )
+
             # Run the type-detection probes in the forced-offline window (else a gated
             # base 404s); it covers is_vision_model's Hub reads + the transformers-5
             # subprocess, and local_files_only makes detect_audio_type's requests.get skip.
@@ -502,18 +508,6 @@ class ExportBackend:
                 self.is_vision = not self._audio_type and is_vision_model(
                     model_id, hf_token = token, local_files_only = local_files_only
                 )
-
-            # Shard across every visible GPU instead of stacking on GPU0 (#7053); {} on
-            # single-GPU/CPU/MLX. After detection, not before: the CSM and Whisper
-            # branches pass a concrete auto_model the planner declines, and the map they
-            # get depends on which branch this is.
-            _device_map_kw = (
-                _multi_gpu_device_map_kwargs(
-                    planner_eligible = self._audio_type not in ("csm", "whisper"),
-                )
-                if _device_map_override is None
-                else _device_map_override
-            )
 
             if self._audio_type == "csm":
                 from unsloth import FastModel
@@ -663,9 +657,7 @@ class ExportBackend:
                     or _is_cpu_spill_rejection(e)
                     or _is_device_map_infeasible(e)
                 )
-                and _multi_gpu_device_map_kwargs(
-                    planner_eligible = self._audio_type not in ("csm", "whisper")
-                )
+                and _multi_gpu_device_map_kwargs()
             ):
                 # Retry outside this block: the live traceback pins the half-built model's
                 # frames, so an in-block retry inherits the exhausted device.

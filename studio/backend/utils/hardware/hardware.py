@@ -4936,11 +4936,11 @@ def apply_gpu_ids(gpu_ids, backend: Optional[str] = None) -> None:
         logger.info("Applied gpu_ids: CUDA_VISIBLE_DEVICES='%s'", value)
 
 
-def get_device_map(gpu_ids: Optional[list[int]] = None, *, planner_eligible: bool = True) -> str:
+def get_device_map(gpu_ids: Optional[list[int]] = None) -> str:
     """Return the Hugging Face ``device_map`` string for model loading.
 
-    Returns ``"unsloth"`` on CUDA, or ``"balanced"`` on XPU, to shard across
-    GPUs when:
+    Returns ``"unsloth_balanced"`` on CUDA, or ``"balanced"`` on XPU, to shard
+    across GPUs when:
       - ``gpu_ids`` explicitly lists >1 GPU, **or**
       - ``CUDA_VISIBLE_DEVICES``/``ZE_AFFINITY_MASK`` uses non-numeric
         identifiers (UUID/MIG/wildcard) and >1 GPU is visible (fallback:
@@ -4953,16 +4953,20 @@ def get_device_map(gpu_ids: Optional[list[int]] = None, *, planner_eligible: boo
     module lands on the last card, and a 4bit model wholly on a non-zero card
     cannot be trained: ``Accelerator.prepare_model`` refuses it.
 
-    Two cases keep ``"balanced"``, both because the planner would decline and
-    its ``"sequential"`` fallback fills cuda:0 to its whole free budget before
-    touching cuda:1 -- on a 7B in bf16 across 2x16 GiB that is the entire model
-    on cuda:0, against 13/19 for ``balanced``, leaving no room for optimizer
-    state:
+    ``"unsloth_balanced"`` rather than ``"unsloth"``, because the planner
+    declines several shapes -- a full finetune, an explicit ``auto_model`` with
+    no ``_model_mapping``, a Falcon-H1 checkpoint whose bundled quantization
+    config omits the mamba exclusions, and any it adds later -- and its plain
+    fallback is ``"sequential"``, which fills cuda:0 to its whole free budget
+    before touching cuda:1. On a 7B in bf16 across 2x16 GiB that is the whole
+    model on cuda:0 against 13/19 for ``balanced``, with nothing left for
+    optimizer state, which is the opposite of what a caller that selected
+    several cards on their combined capacity asked for. Naming the fallback
+    keeps every declined shape sharded without Studio enumerating a list that
+    belongs to unsloth.
 
-      - XPU, where the planner has no memory budgets at all;
-      - ``planner_eligible = False``, for a full finetune or an explicit
-        ``auto_model`` class with no ``_model_mapping``
-        (``CsmForConditionalGeneration``, ``WhisperForConditionalGeneration``).
+    XPU keeps plain ``"balanced"``: the planner has no memory budgets for
+    non-CUDA backends at all.
 
     Returns ``"sequential"`` (single device) otherwise, including CPU/MLX
     backends.
@@ -4997,9 +5001,7 @@ def get_device_map(gpu_ids: Optional[list[int]] = None, *, planner_eligible: boo
                     multi_gpu = True
 
         if multi_gpu:
-            if device == DeviceType.CUDA and planner_eligible:
-                return "unsloth"
-            return "balanced"
+            return "unsloth_balanced" if device == DeviceType.CUDA else "balanced"
 
     return "sequential"
 

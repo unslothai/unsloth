@@ -982,12 +982,7 @@ class UnslothTrainer:
                         self._update_progress(error = friendly, is_training = False)
                         return False
 
-            # The planner declines a full finetune and an explicit auto_model, and its
-            # "sequential" fallback fills cuda:0 first: wrong shape for a training run.
-            device_map = get_device_map(
-                gpu_ids,
-                planner_eligible = not full_finetuning and self._audio_type not in ("csm", "whisper"),
-            )
+            device_map = get_device_map(gpu_ids)
             logger.info(
                 f"Using device_map='{device_map}' ({get_visible_gpu_count()} GPU(s) visible)"
             )
@@ -1783,7 +1778,7 @@ class UnslothTrainer:
 
         result_dataset = Dataset.from_list(processed_examples)
         logger.info(
-            f"CSM preprocessing complete: {len(result_dataset)} examples " f"({skipped} skipped)\n"
+            f"CSM preprocessing complete: {len(result_dataset)} examples ({skipped} skipped)\n"
         )
         return result_dataset
 
@@ -2034,7 +2029,7 @@ class UnslothTrainer:
 
         result_dataset = Dataset.from_list(processed_examples)
         logger.info(
-            f"SNAC preprocessing complete: {len(result_dataset)} examples " f"({skipped} skipped)\n"
+            f"SNAC preprocessing complete: {len(result_dataset)} examples ({skipped} skipped)\n"
         )
         return result_dataset
 
@@ -2225,8 +2220,7 @@ class UnslothTrainer:
 
         result_dataset = Dataset.from_list(processed_examples)
         logger.info(
-            f"BiCodec preprocessing complete: {len(result_dataset)} examples "
-            f"({skipped} skipped)\n"
+            f"BiCodec preprocessing complete: {len(result_dataset)} examples ({skipped} skipped)\n"
         )
         sample = result_dataset[0]["text"]
         logger.info(f"Sample text (first 200 chars): {sample[:200]}...\n")
@@ -2418,7 +2412,7 @@ class UnslothTrainer:
 
         result_dataset = HFDataset.from_list(processed_examples)
         logger.info(
-            f"DAC preprocessing complete: {len(result_dataset)} examples " f"({skipped} skipped)\n"
+            f"DAC preprocessing complete: {len(result_dataset)} examples ({skipped} skipped)\n"
         )
         sample = result_dataset[0]["text"]
         logger.info(f"Sample text (first 200 chars): {sample[:200]}...\n")
@@ -2792,8 +2786,7 @@ class UnslothTrainer:
                                 self.dataset_snapshot_path
                             )
                             logger.info(
-                                f"Loaded cached dataset for {dataset_source}: "
-                                f"{len(dataset)} rows\n"
+                                f"Loaded cached dataset for {dataset_source}: {len(dataset)} rows\n"
                             )
                         except Exception as error:
                             from hub.utils.dataset_cache import (
@@ -2808,8 +2801,7 @@ class UnslothTrainer:
                                 raise
                             self._update_progress(
                                 status_message = (
-                                    f"Cached dataset unavailable; "
-                                    f"downloading {dataset_source}..."
+                                    f"Cached dataset unavailable; downloading {dataset_source}..."
                                 )
                             )
                             dataset = None

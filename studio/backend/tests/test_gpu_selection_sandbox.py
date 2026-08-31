@@ -330,7 +330,7 @@ class TestGetDeviceMap(unittest.TestCase):
         import utils.hardware.hardware as hw
         with patch.object(hw, "get_device", return_value = hw.DeviceType.CUDA):
             dm = get_device_map(gpu_ids = [0, 1])
-            self.assertEqual(dm, "unsloth")
+            self.assertEqual(dm, "unsloth_balanced")
 
     def test_cpu_returns_sequential(self):
         from utils.hardware.hardware import get_device_map

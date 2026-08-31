@@ -36,11 +36,7 @@ def _export_mod(monkeypatch):
 def _stub_hardware(monkeypatch, visible, device_map):
     hw = sys.modules["utils.hardware"]
     monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: visible, raising = False)
-    # Keyword-accepting, like the real one: a stub that only takes the positional would
-    # raise TypeError into the helper's `except Exception` and read as "no multi-GPU host".
-    monkeypatch.setattr(
-        hw, "get_device_map", lambda ids, planner_eligible = True: device_map, raising = False
-    )
+    monkeypatch.setattr(hw, "get_device_map", lambda ids: device_map, raising = False)
 
 
 # ── _multi_gpu_device_map_kwargs ──
@@ -59,8 +55,8 @@ def test_multi_gpu_cuda_host_passes_the_unsloth_planner_through(monkeypatch):
     single-GPU stacking this file exists to prevent."""
     mod = _export_mod(monkeypatch)
     monkeypatch.setattr(mod, "_IS_MLX", False)
-    _stub_hardware(monkeypatch, [0, 1, 2], "unsloth")
-    assert mod._multi_gpu_device_map_kwargs() == {"device_map": "unsloth"}
+    _stub_hardware(monkeypatch, [0, 1, 2], "unsloth_balanced")
+    assert mod._multi_gpu_device_map_kwargs() == {"device_map": "unsloth_balanced"}
 
 
 def test_single_gpu_host_keeps_loader_default(monkeypatch):
@@ -87,7 +83,7 @@ def test_uuid_mig_mask_falls_back_to_count_detection(monkeypatch):
     monkeypatch.setattr(
         hw,
         "get_device_map",
-        lambda ids, planner_eligible = True: "balanced" if ids is None else "sequential",
+        lambda ids: "balanced" if ids is None else "sequential",
         raising = False,
     )
     assert mod._multi_gpu_device_map_kwargs() == {"device_map": "balanced"}
@@ -99,9 +95,7 @@ def test_no_visible_gpus_keeps_loader_default(monkeypatch):
     monkeypatch.setattr(mod, "_IS_MLX", False)
     hw = sys.modules["utils.hardware"]
     monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: [], raising = False)
-    monkeypatch.setattr(
-        hw, "get_device_map", lambda ids, planner_eligible = True: "sequential", raising = False
-    )
+    monkeypatch.setattr(hw, "get_device_map", lambda ids: "sequential", raising = False)
     assert mod._multi_gpu_device_map_kwargs() == {}
 
 
@@ -144,9 +138,7 @@ def _load_text_checkpoint(monkeypatch, tmp_path, device_map_kwargs):
     monkeypatch.setattr(mod, "is_vision_model", lambda *a, **k: False)
     monkeypatch.setattr(mod, "_hf_offline", lambda *a, **k: False)
     monkeypatch.setattr(mod, "_offline_window_if", lambda flag: contextlib.nullcontext())
-    monkeypatch.setattr(
-        mod, "_multi_gpu_device_map_kwargs", lambda planner_eligible = True: device_map_kwargs
-    )
+    monkeypatch.setattr(mod, "_multi_gpu_device_map_kwargs", lambda: device_map_kwargs)
 
     checkpoint = tmp_path / "checkpoint-100"
     checkpoint.mkdir()
@@ -203,7 +195,7 @@ def test_load_checkpoint_repairs_legacy_cache_identity_without_rewriting_adapter
     monkeypatch.setattr(mod, "is_vision_model", lambda *a, **k: False)
     monkeypatch.setattr(mod, "_hf_offline", lambda *a, **k: False)
     monkeypatch.setattr(mod, "_offline_window_if", lambda flag: contextlib.nullcontext())
-    monkeypatch.setattr(mod, "_multi_gpu_device_map_kwargs", lambda planner_eligible = True: {})
+    monkeypatch.setattr(mod, "_multi_gpu_device_map_kwargs", lambda: {})
 
     backend = mod.ExportBackend.__new__(mod.ExportBackend)
     backend.cleanup_memory = lambda: None
@@ -254,9 +246,7 @@ def _run_spill_loader(monkeypatch, tmp_path, device_map_kwargs):
     monkeypatch.setattr(mod, "is_vision_model", lambda *a, **k: False)
     monkeypatch.setattr(mod, "_hf_offline", lambda *a, **k: False)
     monkeypatch.setattr(mod, "_offline_window_if", lambda flag: contextlib.nullcontext())
-    monkeypatch.setattr(
-        mod, "_multi_gpu_device_map_kwargs", lambda planner_eligible = True: device_map_kwargs
-    )
+    monkeypatch.setattr(mod, "_multi_gpu_device_map_kwargs", lambda: device_map_kwargs)
 
     checkpoint = tmp_path / "checkpoint-100"
     checkpoint.mkdir()
@@ -304,7 +294,7 @@ def test_retry_result_is_kept_even_if_it_also_offloads(monkeypatch, tmp_path):
     monkeypatch.setattr(
         mod,
         "_multi_gpu_device_map_kwargs",
-        lambda planner_eligible = True: {"device_map": "balanced"},
+        lambda: {"device_map": "balanced"},
     )
 
     checkpoint = tmp_path / "checkpoint-100"
@@ -356,7 +346,7 @@ def test_planner_refusal_retries_on_the_single_device_loader(monkeypatch, tmp_pa
     monkeypatch.setattr(mod, "_hf_offline", lambda *a, **k: False)
     monkeypatch.setattr(mod, "_offline_window_if", lambda flag: contextlib.nullcontext())
     monkeypatch.setattr(
-        mod, "_multi_gpu_device_map_kwargs", lambda planner_eligible = True: {"device_map": "unsloth"}
+        mod, "_multi_gpu_device_map_kwargs", lambda: {"device_map": "unsloth_balanced"}
     )
 
     checkpoint = tmp_path / "checkpoint-100"
@@ -367,7 +357,7 @@ def test_planner_refusal_retries_on_the_single_device_loader(monkeypatch, tmp_pa
 
     assert ok, message
     assert len(_RefusesThenLoads.calls) == 2
-    assert _RefusesThenLoads.calls[0]["device_map"] == "unsloth"
+    assert _RefusesThenLoads.calls[0]["device_map"] == "unsloth_balanced"
     assert _RefusesThenLoads.calls[1]["device_map"] == "sequential"
 
 
@@ -390,7 +380,7 @@ def test_an_unrelated_error_is_still_reported_rather_than_retried(monkeypatch, t
     monkeypatch.setattr(mod, "_hf_offline", lambda *a, **k: False)
     monkeypatch.setattr(mod, "_offline_window_if", lambda flag: contextlib.nullcontext())
     monkeypatch.setattr(
-        mod, "_multi_gpu_device_map_kwargs", lambda planner_eligible = True: {"device_map": "unsloth"}
+        mod, "_multi_gpu_device_map_kwargs", lambda: {"device_map": "unsloth_balanced"}
     )
 
     checkpoint = tmp_path / "checkpoint-100"
@@ -424,7 +414,10 @@ def test_the_retry_names_sequential_rather_than_omitting_the_device_map(monkeypa
         def from_pretrained(cls, **kwargs):
             cls.calls.append(kwargs)
             # Stands in for the planner: it refuses whenever it is the one asked to place.
-            if kwargs.get("device_map") in ("unsloth", None) or "device_map" not in kwargs:
+            if (
+                kwargs.get("device_map") in ("unsloth", "unsloth_balanced", None)
+                or "device_map" not in kwargs
+            ):
                 raise DeviceMapInfeasible("needs 7.57 GiB free on cuda:0, has 4.10 GiB")
             return types.SimpleNamespace(
                 hf_device_map = {"model.layers.0": 0}
@@ -436,7 +429,7 @@ def test_the_retry_names_sequential_rather_than_omitting_the_device_map(monkeypa
     monkeypatch.setattr(mod, "_hf_offline", lambda *a, **k: False)
     monkeypatch.setattr(mod, "_offline_window_if", lambda flag: contextlib.nullcontext())
     monkeypatch.setattr(
-        mod, "_multi_gpu_device_map_kwargs", lambda planner_eligible = True: {"device_map": "unsloth"}
+        mod, "_multi_gpu_device_map_kwargs", lambda: {"device_map": "unsloth_balanced"}
     )
 
     checkpoint = tmp_path / "checkpoint-100"
@@ -447,55 +440,5 @@ def test_the_retry_names_sequential_rather_than_omitting_the_device_map(monkeypa
 
     assert ok, message
     assert len(_RefusesAnyPlan.calls) == 2
-    assert _RefusesAnyPlan.calls[0]["device_map"] == "unsloth"
+    assert _RefusesAnyPlan.calls[0]["device_map"] == "unsloth_balanced"
     assert _RefusesAnyPlan.calls[1]["device_map"] == "sequential"
-
-
-# ── the audio export routes, which the planner will not plan ──
-
-
-def test_an_audio_export_keeps_balanced_and_a_text_export_gets_the_planner(monkeypatch):
-    """`load_checkpoint`'s CSM and Whisper branches pass a concrete `auto_model`, so the
-    planner declines and falls back to filling cuda:0. They need the sharding map they
-    had. The flag is what selects it, so both directions are asserted."""
-    mod = _export_mod(monkeypatch)
-    monkeypatch.setattr(mod, "_IS_MLX", False)
-    hw = sys.modules["utils.hardware"]
-    monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: [0, 1], raising = False)
-    monkeypatch.setattr(
-        hw,
-        "get_device_map",
-        lambda ids, planner_eligible = True: "unsloth" if planner_eligible else "balanced",
-        raising = False,
-    )
-    assert mod._multi_gpu_device_map_kwargs() == {"device_map": "unsloth"}
-    assert mod._multi_gpu_device_map_kwargs(planner_eligible = False) == {"device_map": "balanced"}
-
-
-def test_the_map_is_resolved_after_the_audio_type_is_known(monkeypatch, tmp_path):
-    """Ordering, not just the argument: the map used to be built before
-    `detect_audio_type` ran, so the audio branches could not have influenced it however
-    the flag was wired."""
-    mod = _export_mod(monkeypatch)
-    seen = []
-
-    def _kwargs(planner_eligible = True):
-        seen.append(planner_eligible)
-        return {"device_map": "balanced" if not planner_eligible else "unsloth"}
-
-    monkeypatch.setattr(mod, "_multi_gpu_device_map_kwargs", _kwargs)
-    monkeypatch.setattr(mod, "detect_audio_type", lambda *a, **k: "whisper")
-    monkeypatch.setattr(mod, "is_vision_model", lambda *a, **k: False)
-    monkeypatch.setattr(mod, "_hf_offline", lambda *a, **k: False)
-    monkeypatch.setattr(mod, "_offline_window_if", lambda flag: contextlib.nullcontext())
-
-    checkpoint = tmp_path / "checkpoint-100"
-    checkpoint.mkdir()
-    backend = mod.ExportBackend.__new__(mod.ExportBackend)
-    backend.cleanup_memory = lambda: None
-    # The whisper branch imports FastModel locally and will fail on these stubs; the load
-    # itself is not what this asserts. What matters is that by the time the map was
-    # resolved, the audio type was already known.
-    backend.load_checkpoint(str(checkpoint))
-
-    assert seen == [False], f"expected one ineligible resolution, got {seen}"
