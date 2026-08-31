@@ -62,6 +62,7 @@ export type {
 } from "./api/personalization";
 export {
   COMPOSER_INPUT_SELECTOR,
+  isImeComposing,
   isSurfaceBackgrounded,
   isSurfaceInForeground,
   useShortcut,

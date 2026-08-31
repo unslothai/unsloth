@@ -2,7 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
-import { isSurfaceBackgrounded, useShortcut } from "@/features/settings";
+import {
+  isImeComposing,
+  isSurfaceBackgrounded,
+  useShortcut,
+} from "@/features/settings";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 // The 02 arrows, not the 01 pair: 01 is a bare chevron, and these read as arrows everywhere else.
@@ -30,17 +34,14 @@ export function FindInPage({ enabled = true }: { enabled?: boolean }) {
 
   // Not `skipInTextFields`: the chord has to work from the composer, and pressing it inside the
   // find field is how a find bar is asked to start over.
-  useShortcut(
-    "findInPage",
-    () => {
-      // Every modal, not just Settings: Radix marks the shell `aria-hidden`/`inert` for as long as
-      // one is up, so a bar opened behind it is unreachable and its scope unsearchable. Asked at
-      // press time, since `enabled` is read at render and a dialog opening need not cause one.
-      if (isSurfaceBackgrounded(`[${FIND_SCOPE_ATTRIBUTE}]`)) return;
-      requestFocus();
-    },
-    { enabled },
-  );
+  useShortcut("findInPage", requestFocus, {
+    enabled,
+    // Every modal, not just Settings: Radix marks the shell `aria-hidden`/`inert` for as long as one
+    // is up, so a bar opened behind it is unreachable and its scope unsearchable. As `claims` rather
+    // than a return from the handler, because the handler runs after the event has been prevented:
+    // declining there would leave the chord dead, with the browser's own find suppressed as well.
+    claims: () => !isSurfaceBackgrounded(`[${FIND_SCOPE_ATTRIBUTE}]`),
+  });
 
   if (!enabled || !open) return null;
   return <FindBar />;
@@ -80,6 +81,20 @@ function FindBar() {
   const focusToken = useFindInPageStore((state) => state.focusToken);
   const { count, active, truncated, next, previous } = useFindInPage(query);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // Hand focus back to whatever had it. The chord is usually pressed from the composer, and closing
+  // a search should leave the reader able to keep typing. Declared above the focus effect below so
+  // it reads `activeElement` before the field takes it.
+  useEffect(() => {
+    const origin = document.activeElement as HTMLElement | null;
+    return () => {
+      if (!origin?.isConnected || typeof origin.focus !== "function") return;
+      // Only when closing dropped focus on the floor. Anywhere else and the reader moved it.
+      const focused = document.activeElement;
+      if (focused !== null && focused !== document.body) return;
+      origin.focus();
+    };
+  }, []);
 
   // Every press of the chord, not just the one that opened the bar: pressing it again selects what
   // is in the field so the next keystroke replaces the last search.
@@ -121,6 +136,9 @@ function FindBar() {
         onChange={(event) => setQuery(event.target.value)}
         onKeyDown={(event) => {
           if (event.key === "Enter") {
+            // The Enter that commits an IME candidate arrives here too, still flagged as composing.
+            // Taken, it walks to the next match and throws away the word being typed.
+            if (isImeComposing(event.nativeEvent)) return;
             event.preventDefault();
             if (event.shiftKey) previous();
             else next();

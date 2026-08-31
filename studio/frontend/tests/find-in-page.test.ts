@@ -281,6 +281,16 @@ test("content-visibility skipping is not treated as invisibility", () => {
   });
 });
 
+test("an inline SVG is skipped despite reporting a lowercase tag", () => {
+  // Only HTML elements report their tag uppercased. SVG and MathML keep their source casing, so a
+  // Mermaid diagram's `<svg>` answers "svg" and walked past a set spelled in HTML casing, putting
+  // its labels in the index as matches a Range cannot reliably paint.
+  const svg = el("svg", [el("text", [text("mermaid label")])]);
+  const index = buildTextIndex(el("DIV", [svg, el("P", [text("prose")])]));
+  assert.equal(index.text.includes("mermaid"), false);
+  assert.equal(index.text.includes("prose"), true);
+});
+
 test("a boxless wrapper is walked through, not skipped", () => {
   // `display: contents` generates no box, and no box is the first thing `checkVisibility` calls
   // invisible. The shell (sidebar.tsx) and the training page (studio-page.tsx) each wrap their
@@ -639,7 +649,7 @@ test("the rows progressive completion adds are re-anchored, not renumbered", asy
   );
   assert.match(
     engine,
-    /completeProgressiveMounts\(\)\.then\(\(\) => \{[\s\S]*?rebuild\(false, true\);/,
+    /completeProgressiveMounts\([\s\S]*?\.then\(\(\) => \{[\s\S]*?rebuild\(false, true\);/,
   );
   // The one place the ordinal is still kept is the observer's throttled rebuild, which is the
   // append-only case.
@@ -665,6 +675,99 @@ test("Escape closes the bar from the walk buttons, not just the field", async ()
   );
   // And not left behind on the field as well, where it would swallow the bubble first.
   assert.equal(landmark.slice(landmark.indexOf("<input")).includes('"Escape"'), false);
+});
+
+test("only threads this search can read are forced to finish mounting", async () => {
+  // The shell keeps every workspace mounted and marks the off-route ones `inert`. Completing
+  // globally would make a retained conversation mount every row it withheld, on a route where the
+  // walk then skips all of it.
+  const engine = await readFile(
+    new URL(
+      "../src/features/find-in-page/hooks/use-find-in-page.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    engine,
+    /completeProgressiveMounts\(\(viewport\) =>\s*\n?\s*indexReaches\(scope, viewport\)/,
+  );
+  const progressive = await readFile(
+    new URL(
+      "../src/components/assistant-ui/progressive-messages.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  // The loop's exit has to read the filtered set too, or a completer this caller declined holds it
+  // open forever.
+  assert.match(progressive, /if \(wanted\(\)\.length === 0 && \(observed \|\| Date\.now\(\) >= deadline\)\)/);
+});
+
+test("the chord is left to the browser when the scope is behind a modal", async () => {
+  // `useShortcut` prevents the event BEFORE calling the handler, so declining from inside the
+  // handler kills the chord for everyone: no bar, and no native find either.
+  const bar = await readFile(
+    new URL(
+      "../src/features/find-in-page/components/find-in-page.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(bar, /claims: \(\) => !isSurfaceBackgrounded\(/);
+  const shortcut = await readFile(
+    new URL("../src/features/settings/hooks/use-shortcut.ts", import.meta.url),
+    "utf8",
+  );
+  const consume = shortcut.indexOf("event.preventDefault();");
+  assert.ok(consume > 0);
+  assert.ok(shortcut.lastIndexOf("latestRef.current.claims?.()", consume) > 0);
+});
+
+test("the Enter that commits an IME candidate is left alone", async () => {
+  const bar = await readFile(
+    new URL(
+      "../src/features/find-in-page/components/find-in-page.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  // Ahead of preventDefault, or the composition is discarded before the guard is reached.
+  const enter = bar.slice(bar.indexOf('event.key === "Enter"'));
+  const guard = enter.indexOf("isImeComposing(event.nativeEvent)");
+  const prevent = enter.indexOf("event.preventDefault()");
+  assert.ok(guard > 0 && guard < prevent);
+});
+
+test("closing the bar hands focus back to where it came from", async () => {
+  const bar = await readFile(
+    new URL(
+      "../src/features/find-in-page/components/find-in-page.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  // Captured above the effect that focuses the field, or it reads the field it is about to fill.
+  const capture = bar.indexOf("const origin = document.activeElement");
+  const takeFocus = bar.indexOf("input.select();");
+  assert.ok(capture > 0 && capture < takeFocus);
+  assert.match(bar, /origin\.focus\(\);/);
+  // And only when closing dropped focus: the reader having moved it is not an invitation.
+  assert.match(bar, /if \(focused !== null && focused !== document\.body\) return;/);
+});
+
+test("the chat composer is out of the searchable scope", async () => {
+  // Its draft lives in a textarea the index cannot read, so all it leaves find is the pill labels:
+  // a search for "code" or "images" would land on the toolbar rather than the conversation.
+  const thread = await readFile(
+    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
+    "utf8",
+  );
+  const root = thread.slice(thread.indexOf("<ComposerPrimitive.Root"));
+  assert.match(
+    root.slice(0, root.indexOf(">")),
+    /\{\.\.\.\{ \[FIND_SKIP_ATTRIBUTE\]: "" \}\}/,
+  );
 });
 
 test("nothing of the engine is mounted while the bar is closed", async () => {

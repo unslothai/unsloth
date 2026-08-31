@@ -89,6 +89,12 @@ function Conversation({ extra, older }: { extra: string[]; older: string[] }) {
       >
         <p>unsloth inside a skipped subtree</p>
       </div>
+      {/* An inline SVG, as a Mermaid diagram renders. Its tag name is lowercase in an HTML
+          document, which is how it slipped past a skip list spelled in HTML casing. */}
+      <svg viewBox="0 0 200 40" role="img" aria-label="diagram">
+        <title>diagram</title>
+        <text x="0" y="20">unsloth drawn into a diagram</text>
+      </svg>
       {/* Boxless, not hidden: `display: contents` is how the shell and the training page hand a
           grid its children, and `checkVisibility` calls a wrapper with no box invisible. */}
       <div className="contents">

@@ -1627,7 +1627,7 @@ test("auto-repeat only reaches the actions that walk a list", async () => {
     /event\.preventDefault\(\);\n(?:\s*\/\/[^\n]*\n)*\s*if \(event\.repeat && !repeats\) return;/,
   );
   // Off by default, so a new call site is one-shot until it says otherwise.
-  assert.match(hook, /repeats = false,\n\s*\} = options;/);
+  assert.match(hook, /repeats = false,\n(?:\s*\w+,\n)*\s*\} = options;/);
   assert.match(
     hook,
     /\[bindings, enabled, skipInTextFields, textFieldException, repeats\]/,

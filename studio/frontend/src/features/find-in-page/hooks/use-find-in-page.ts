@@ -12,6 +12,7 @@ import { completeProgressiveMounts } from "@/components/assistant-ui/progressive
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   clearHighlights,
+  indexReaches,
   paintHighlights,
   paintWindow,
   rangeForMatch,
@@ -190,8 +191,14 @@ export function useFindInPage(query: string): FindResults {
     // The thread mounts its tail first and widens over the next few frames, so a search against the
     // document as found would miss everything above the fold. This asks for the rest and re-indexes
     // once it has painted; the bar is usable throughout.
+    //
+    // Only the threads this search can read, though. The shell keeps every workspace mounted and
+    // marks the off-route ones `inert`, so asking globally would make a conversation nobody is
+    // looking at mount every row it withheld, to be skipped by the very walk that asked for it.
     let live = true;
-    void completeProgressiveMounts().then(() => {
+    void completeProgressiveMounts((viewport) =>
+      indexReaches(scope, viewport),
+    ).then(() => {
       if (!live) return;
       // From the viewport, not the ordinal: this growth PREPENDS, unlike streaming, so match 3 of
       // the tail is not match 3 of the whole thread. Keeping the number would move the highlight to

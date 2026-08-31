@@ -167,7 +167,10 @@ export function foldChunk(raw: string): string {
 
 /** True when the walk must not descend into this element. */
 export function skipsSubtree(element: FindElementLike): boolean {
-  if (SKIP_TAGS.has(element.tagName)) return true;
+  // Uppercased first: only HTML elements report their tag that way. SVG and MathML keep their source
+  // casing, so an inline `<svg>` answers "svg" and walked straight past this set, putting Mermaid
+  // labels in the index as matches no engine can paint. Already uppercase for everything else.
+  if (SKIP_TAGS.has(element.tagName.toUpperCase())) return true;
   if (element.getAttribute(FIND_SKIP_ATTRIBUTE) !== null) return true;
   // Boolean attributes, so presence is the whole signal. The shell parks an off-route workspace
   // under `inert`; Radix marks the page `aria-hidden` behind a modal.

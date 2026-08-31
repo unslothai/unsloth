@@ -8,6 +8,7 @@ import {
   type FindMatch,
   type FindTextIndex,
   FIND_SCOPE_ATTRIBUTE,
+  FIND_SKIP_ATTRIBUTE,
   endPositionAt,
   startPositionAt,
 } from "./find-text-index.ts";
@@ -71,6 +72,22 @@ export function resolveFindScope(): Element | null {
   if (typeof document === "undefined") return null;
   return (
     document.querySelector(`[${FIND_SCOPE_ATTRIBUTE}]`) ?? document.body ?? null
+  );
+}
+
+/** What the walk will actually read, asked of one element: inside the scope, and under nothing the
+ *  walk turns back at. The shell keeps every workspace mounted and marks the off-route ones `inert`,
+ *  so being in the document is not the same as being searchable. */
+export function indexReaches(
+  scope: Element | null,
+  element: Element | null,
+): boolean {
+  if (scope === null || element === null) return false;
+  if (!scope.contains(element)) return false;
+  return (
+    element.closest(
+      `[aria-hidden="true"], [inert], [${FIND_SKIP_ATTRIBUTE}]`,
+    ) === null
   );
 }
 
