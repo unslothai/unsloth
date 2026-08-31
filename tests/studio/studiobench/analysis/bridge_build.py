@@ -332,7 +332,7 @@ def assert_attribution_build(page: Any) -> dict[str, Any]:
     Catches the staleness failure: a shipping dist left in the directory handed
     to `unsloth studio --frontend <dir>` produces a perfectly healthy Unsloth
     serving the WRONG bundle, with no profiling renderer and therefore a React
-    stage that reads 0.00. `attribution/vite.studiobench.config.ts` defines
+    stage that reads 0.00. `../attribution/vite.studiobench.config.ts` defines
     `__STUDIOBENCH_ATTRIBUTION_BUILD__` for exactly this check.
     """
     marker = page.evaluate("globalThis.__STUDIOBENCH_ATTRIBUTION_BUILD__ === true")
@@ -341,7 +341,8 @@ def assert_attribution_build(page: Any) -> dict[str, Any]:
             "not_the_attribution_build",
             "__STUDIOBENCH_ATTRIBUTION_BUILD__ is not defined in the loaded bundle. The "
             "directory passed to `unsloth studio --frontend` is serving some other dist, most "
-            "likely a stale shipping build. Rebuild with attribution/vite.studiobench.config.ts.",
+            "likely a stale shipping build. Rebuild with "
+            "tests/studio/studiobench/attribution/vite.studiobench.config.ts.",
         )
     return {"attribution_build_verified": True}
 
