@@ -385,9 +385,7 @@ class TestTheToolLoopOpensAtAnEqualShare:
             max_tokens = 128,
         )
         assert getattr(payload, "tools", None) is None
-        cost = _openai_llama_admission_tokens(
-            payload, budget = 4096, capacity = 4, tool_loop = True
-        )
+        cost = _openai_llama_admission_tokens(payload, budget = 4096, capacity = 4, tool_loop = True)
         assert cost == 1024, cost
 
     def test_four_tool_chats_fit_the_cache_at_once(self):
@@ -398,9 +396,7 @@ class TestTheToolLoopOpensAtAnEqualShare:
             enable_tools = True,
             max_tokens = 128,
         )
-        cost = _openai_llama_admission_tokens(
-            payload, budget = 262144, capacity = 4, tool_loop = True
-        )
+        cost = _openai_llama_admission_tokens(payload, budget = 262144, capacity = 4, tool_loop = True)
         assert cost * 4 <= 262144
 
     def test_a_tool_loop_bigger_than_its_share_is_charged_what_it_is(self):
@@ -412,9 +408,7 @@ class TestTheToolLoopOpensAtAnEqualShare:
             enable_tools = True,
             max_tokens = 128,
         )
-        cost = _openai_llama_admission_tokens(
-            payload, budget = 4096, capacity = 4, tool_loop = True
-        )
+        cost = _openai_llama_admission_tokens(payload, budget = 4096, capacity = 4, tool_loop = True)
         assert cost > 1024, cost
         assert cost <= 4096
 

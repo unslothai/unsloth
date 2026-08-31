@@ -501,6 +501,7 @@ class TestToolLoopsOpenAtAShareAndGrow:
     def test_four_tool_requests_run_together(self):
         """The behaviour this change exists for. Under #9392 the second one waited."""
         from types import SimpleNamespace
+
         async def scenario():
             queue = LlamaAdmissionQueue("test")
             payload = SimpleNamespace(
@@ -512,9 +513,7 @@ class TestToolLoopsOpenAtAShareAndGrow:
             cost = self._cost(payload, tool_loop = True)
             leases = []
             for _ in range(4):
-                reservation = await _reserve(
-                    queue, capacity = 4, tokens = cost, budget = 2048
-                )
+                reservation = await _reserve(queue, capacity = 4, tokens = cost, budget = 2048)
                 leases.append(reservation.lease_nowait())
             return leases
 
@@ -525,6 +524,7 @@ class TestToolLoopsOpenAtAShareAndGrow:
         both grow into the same cache: the second growth is refused, and refusing it
         leaves the first exactly as it was."""
         from types import SimpleNamespace
+
         async def scenario():
             queue = LlamaAdmissionQueue("test")
             payload = SimpleNamespace(
@@ -536,9 +536,7 @@ class TestToolLoopsOpenAtAShareAndGrow:
             cost = self._cost(payload, tool_loop = True)
             leases = []
             for _ in range(4):
-                reservation = await _reserve(
-                    queue, capacity = 4, tokens = cost, budget = 2048
-                )
+                reservation = await _reserve(queue, capacity = 4, tokens = cost, budget = 2048)
                 leases.append(reservation.lease_nowait())
             # The cache is exactly full at four shares, so nobody may grow.
             return leases, queue

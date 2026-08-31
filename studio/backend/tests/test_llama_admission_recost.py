@@ -34,7 +34,13 @@ def _reserve(queue, *, capacity, tokens, budget):
     )
 
 
-def _lease(queue, *, capacity = 4, tokens, budget):
+def _lease(
+    queue,
+    *,
+    capacity = 4,
+    tokens,
+    budget,
+):
     """reserve() reads the running loop, so every test here is async."""
     reservation = _reserve(queue, capacity = capacity, tokens = tokens, budget = budget)
     lease = reservation.lease_nowait()

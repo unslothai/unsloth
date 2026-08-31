@@ -20491,6 +20491,7 @@ async def produce_openai_chat_completions(
                     # ends exactly where an ordinary cancel would have.
                     cancel_event = cancel_event,
                 )
+
             # Active tool names gating the bare-rehearsal strip, matching the loop gate.
             _gguf_display_tool_names = _display_tool_name_gate(tools_to_use)
 
