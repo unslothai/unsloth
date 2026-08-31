@@ -89,8 +89,9 @@ export function isPromptCacheTtl(value: unknown): value is "5m" | "1h" {
 }
 
 // Provider types exposing the connection-level "reasoning model" toggle.
-// vLLM's OpenAI-compat endpoint doesn't advertise this per model.
-const REASONING_TOGGLE_PROVIDER_TYPES = new Set(["vllm"]);
+// Neither vLLM's nor Ollama's OpenAI-compat endpoint advertises this per
+// model, so the user says whether the connection serves a reasoning model.
+const REASONING_TOGGLE_PROVIDER_TYPES = new Set(["vllm", "ollama"]);
 
 export function supportsProviderReasoningToggle(
   providerType: string | null | undefined,

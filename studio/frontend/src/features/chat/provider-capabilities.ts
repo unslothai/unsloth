@@ -989,6 +989,11 @@ export interface ExternalReasoningResolveOptions {
 }
 
 // vLLM has no per-model reasoning signal on OpenAI-compat — pin via user toggle.
+// The non-"none" values ollama's /v1/chat/completions accepts for
+// reasoning_effort; the backend's _apply_ollama_reasoning_controls passes each
+// through untranslated and maps Thinking off to "none".
+const OLLAMA_EFFORT_LEVELS = ["low", "medium", "high", "max"] as const;
+
 function resolveConnectionLevelReasoning(
   normalizedProvider: string,
   options: ExternalReasoningResolveOptions | undefined,
@@ -997,6 +1002,15 @@ function resolveConnectionLevelReasoning(
     return withEnableThinkingStyle({
       supportsReasoning: true,
       supportsReasoningOff: true,
+    });
+  }
+  if (normalizedProvider === "ollama" && options?.isReasoningProvider) {
+    // Ollama errors a thinking request at a model that cannot think, so the
+    // ladder only appears on connections the user flagged (#9649).
+    return withReasoningEffortStyle({
+      supportsReasoning: true,
+      supportsReasoningOff: true,
+      reasoningEffortLevels: OLLAMA_EFFORT_LEVELS,
     });
   }
   return null;
