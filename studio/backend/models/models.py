@@ -161,6 +161,7 @@ class GgufVariantDetail(BaseModel):
     )
     size_bytes: int = Field(0, description = "File size in bytes")
     download_size_bytes: int = Field(0, description = "Total bytes needed to download this variant")
+    shard_count: int = Field(0, description = "Part count for a complete canonical split GGUF")
     downloaded: bool = Field(
         False, description = "Whether this variant is already in the local HF cache"
     )
