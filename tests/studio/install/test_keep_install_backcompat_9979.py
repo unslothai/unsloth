@@ -142,7 +142,6 @@ _BACKEND_PAYLOAD = {
     ("windows", "rocm"): ["ggml-hip.dll"],
     ("windows", "vulkan"): ["ggml-vulkan.dll"],
 }
-# Only a published bundle owes the visual server.
 _PUBLISHED_PAYLOAD = {
     "linux": ["llama-diffusion-gemma-visual-server"],
     "windows": ["llama-diffusion-gemma-visual-server.exe"],
@@ -194,9 +193,8 @@ def build_install(
             if path.parent != install_dir
             else (runnable if runnable_root is None else runnable_root)
         )
-        # A real runnable stub: the keep path execs these. The not-ok file is the bad
-        # image case, ENOEXEC on POSIX and a genuine ERROR_BAD_EXE_FORMAT on Windows,
-        # where an empty file is instead a valid do-nothing program.
+        # The keep path execs these. The not-ok file has to be a bad image: ENOEXEC on
+        # POSIX, a non-PE on Windows, where an empty file is a valid do-nothing program.
         if WINDOWS_HOST:
             path.write_bytes(RUNNABLE_STUB if ok else b"not a PE image\n")
         else:
@@ -229,8 +227,7 @@ def build_install(
     return install_dir
 
 
-# The twelve marker shapes, oldest first, as write_prebuilt_metadata wrote them,
-# trimmed to the keys the keep path reads.
+# The shipped marker shapes, oldest first, trimmed to the keys the keep path reads.
 
 S1 = {  # 2026-03-25 #4562: no release_tag, no backend, no asset_sha256
     "requested_tag": "b6099",
@@ -560,14 +557,6 @@ def test_the_stored_backend_choice_reads_the_same_from_every_shape(tmp_path, mar
     assert ILP.persisted_backend_request(install_dir) == expected
 
 
-# ---------------------------------------------------------------------------
-# The [Windows, Linux, WSL, macOS] x [NVIDIA, AMD, CPU-only] product, through the
-# same two deciders. Hosts are simulated by HostInfo, which is what the deciders
-# branch on, so these prove the payload tables and the platform-prefix filtering,
-# not the Windows loader or macOS dyld. WSL gets its own row because "WSL is just
-# Linux here" is the claim worth pinning.
-# ---------------------------------------------------------------------------
-
 ARM64_LINUX = _host(machine = "aarch64", is_x86_64 = False, is_arm64 = True)
 MACOS_X64 = _host(
     system = "Darwin",
@@ -613,7 +602,6 @@ WINDOWS_ROCM = _host(
     rocm_gfx_target = "gfx1151",
 )
 
-# (id, host, marker backend, the payload the tree must carry to be kept)
 MATRIX = [
     ("linux-nvidia", LINUX_NVIDIA, "cuda", "cuda"),
     ("linux-arm64-nvidia", ARM64_LINUX, "cuda", "cuda"),
@@ -755,10 +743,6 @@ def test_an_install_whose_keys_were_backfilled_onto_an_old_marker_is_kept(tmp_pa
     assert ILP._existing_install_runs(install_dir, LINUX) is True
 
 
-# Forwards compatibility through install_prebuilt, so the exit code the setup
-# scripts branch on is what is under test.
-
-
 def _transient_listing_failure(monkeypatch, host = LINUX):
     """Make the release listing fail the way a flaky network does."""
     import urllib.error
@@ -786,7 +770,6 @@ def test_a_marker_from_a_newer_unsloth_refuses_rather_than_keeping(tmp_path, mon
     with pytest.raises(SystemExit) as caught:
         ILP.install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
     assert caught.value.code == ILP.EXIT_ERROR
-    # And the install is left alone for a newer Unsloth to find.
     assert (install_dir / "llama-server").exists()
 
 

@@ -20,7 +20,6 @@ ISOLATED = [
         "tests/test_moe_bnb4bit_per_expert_conversions.py",
         "6 failures under xdist that serial does not produce",
     ),
-    # This test has sub-second wall-clock assertions that fail under CPU contention.
     ("tests/test_hf_xet_fallback.py", "sub-second wall-clock margins under CPU contention"),
     # MLX shims alter sys.modules, so these files each need a fresh process.
     ("tests/test_mlx_neftune_quant_map.py", "the mlx shim un-skips it and the stub then raises"),
@@ -31,7 +30,6 @@ ISOLATED = [
     ),
 ]
 
-# Identify the cloned zoo's parallel pytest command independently of step ordering.
 ZOO_MARKER = "--dist loadfile tests/"
 
 # Deselected because it needs a GPU. It rides whichever command owns its file.
@@ -88,7 +86,6 @@ def test_the_zoo_suite_actually_runs_in_parallel() -> None:
 @pytest.mark.parametrize("path,reason", ISOLATED, ids = lambda v: v.split("/")[-1])
 def test_an_isolated_file_is_ignored_by_the_parallel_run(path: str, reason: str) -> None:
     cmd = _zoo_parallel()
-    # The family glob automatically covers newly added MLX tests.
     covered = f"--ignore={path}" in cmd or (
         path.rsplit("/", 1)[-1].startswith("test_mlx_")
         and "--ignore-glob='tests/test_mlx_*.py'" in cmd

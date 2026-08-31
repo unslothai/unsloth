@@ -5603,7 +5603,6 @@ def test_release_listing_failure_exits_fallback_not_error(tmp_path, monkeypatch,
     assert caught.value.code == INSTALL_LLAMA_PREBUILT.EXIT_FALLBACK
 
 
-# Shared platform payload plus any files required by a named backend.
 _SHARED_PAYLOAD = {
     "linux": [
         "libllama-common.so",
@@ -5619,8 +5618,6 @@ _BACKEND_PAYLOAD = {
     ("windows", "cuda"): ["ggml-cuda.dll"],
     ("linux", "vulkan"): ["libggml-vulkan.so"],
 }
-# Only a published bundle owes this one, which is why the marker's source label has to
-# reach runtime_payload_health_groups.
 _PUBLISHED_PAYLOAD = {"linux": ["llama-diffusion-gemma-visual-server"]}
 
 
@@ -5671,24 +5668,19 @@ def _complete_existing_llama_install(
         elif path.name == "UNSLOTH_PREBUILT_INFO.json":
             path.write_text(json.dumps(marker) + "\n", encoding = "utf-8")
         elif path.name.startswith("llama-"):
-            # The root copy is what _find_llama_server_binary reaches first, and it can
-            # rot alone when symlinking was unavailable.
             ok = (
                 runnable
                 if path.parent != install_dir
                 else (runnable if runnable_root is None else runnable_root)
             )
-            # A runnable stub, not an empty file: the kept-install check execs these, and
-            # a zero-byte file that kept its mode bits is the ENOEXEC case below.
+            # These get exec'd; a zero-byte file that kept its mode bits is ENOEXEC.
             path.write_text("#!/bin/sh\nexit 0\n" if ok else "", encoding = "utf-8")
-            # Match setup.sh's executable reuse gate.
             os.chmod(path, 0o755 if executable else 0o644)
         else:
             path.write_text("", encoding = "utf-8")
             os.chmod(path, 0o755 if executable else 0o644)
     platform = "windows" if windows else "linux"
     if payload:
-        # Complete installs always carry the shared platform payload.
         for name in _SHARED_PAYLOAD[platform]:
             (runtime_dir / name).write_text("", encoding = "utf-8")
         for name in _BACKEND_PAYLOAD.get((platform, backend), ()):
@@ -5994,8 +5986,7 @@ def test_the_probe_gets_the_runtime_line_the_marker_recorded(tmp_path, monkeypat
 
     install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
 
-    # preflight_linux_installed_binaries also builds an env and correctly passes none,
-    # since it only matters on Windows; what is asserted is that the probe kept it.
+    # preflight_linux_installed_binaries also builds an env and correctly passes none.
     assert (
         "cuda-12.4" in seen
     ), f"the kept-install probe built its env without the marker's runtime_line: {seen}"

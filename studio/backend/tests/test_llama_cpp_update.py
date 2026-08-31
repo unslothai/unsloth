@@ -676,8 +676,7 @@ def test_an_update_that_kept_the_existing_install_does_not_claim_a_new_release(
         lambda repo, timeout = 5.0: "b9596-mix-e6f2453",
     )
 
-    # macOS is the reachable case: start_update passes no pin there, so the pinned-tag
-    # mismatch guard that catches this elsewhere does not run.
+    # macOS is the reachable case: no pin is passed there, so the mismatch guard is silent.
     monkeypatch.setattr(upd.sys, "platform", "darwin")
 
     # Exit 0 having changed nothing, which is what the keep path does.

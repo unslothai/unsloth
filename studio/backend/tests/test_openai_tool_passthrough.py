@@ -10314,14 +10314,11 @@ def test_the_two_seed_helpers_agree_on_which_seeds_are_random():
         served = [_choice_seed(seed, i, negative_is_random = True) for i in range(3)]
         assert all((v & 0xFFFFFFFF) == _LLAMA_RANDOM_SEED for v in served), (seed, served)
 
-        # And the cache policy must reach the same verdict for every choice.
         for value in served:
             payload: dict = {}
             _apply_seeded_llama_request(payload, value)
             assert "cache_prompt" not in payload, (seed, value, payload)
 
-    # The converse: a fixed seed stays fixed for every choice, and every choice
-    # turns the cache off.
     for seed in (0, 5, 4294967294):
         served = [_choice_seed(seed, i, negative_is_random = True) for i in range(3)]
         assert all((v & 0xFFFFFFFF) != _LLAMA_RANDOM_SEED for v in served), (seed, served)
