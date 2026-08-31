@@ -20,6 +20,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Link, useRouterState } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { TransportConflictDialog } from "../catalog/transport-conflict-dialog";
 import { RESUMABLE_STATES } from "./download-manager-config";
 import {
   type DownloadRequest,
@@ -139,6 +140,9 @@ function StatusLine({ job }: { job: ManagedDownload }) {
 
 function DownloadRow({ jobKey }: { jobKey: string }) {
   const job = useDownloadManagerStore((state) => state.jobs[jobKey]);
+  const transportConflict = useDownloadManagerStore(
+    (state) => state.conflicts[jobKey]?.info ?? null,
+  );
   if (!job) return null;
   const active = job.state === "running" || job.state === "cancelling";
   const resumable = RESUMABLE_STATES.has(job.state);
@@ -238,6 +242,12 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
           <StatusLine job={job} />
         </div>
       ) : null}
+      <TransportConflictDialog
+        conflict={transportConflict}
+        onCancel={() => downloadManager.cancelConflict(jobKey)}
+        onKeepTransport={() => downloadManager.resumeConflict(jobKey)}
+        onSwitchTransport={() => downloadManager.restartConflict(jobKey)}
+      />
     </li>
   );
 }

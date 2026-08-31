@@ -53,6 +53,14 @@ test("a failed or cancelled row offers Resume in Downloads", () => {
   assert.match(PANEL, /Cancelled\. Partial files kept\./);
 });
 
+test("the global Resume path exposes transport conflict resolution", () => {
+  assert.match(PANEL, /state\.conflicts\[jobKey\]\?\.info/);
+  assert.match(PANEL, /<TransportConflictDialog/);
+  assert.match(PANEL, /downloadManager\.resumeConflict\(jobKey\)/);
+  assert.match(PANEL, /downloadManager\.restartConflict\(jobKey\)/);
+  assert.match(PANEL, /downloadManager\.cancelConflict\(jobKey\)/);
+});
+
 test("failed and cancelled jobs are persisted so a restart can resume them", () => {
   const key = jobKeyOf("model", "org/failed-model", "Q4_K_M");
   const job: ManagedDownload = {
