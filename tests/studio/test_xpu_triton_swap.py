@@ -564,6 +564,7 @@ class TestCpuRepairSeesAnXpuWheel:
         ver,
         cuda = "",
         hip = "",
+        runtime_xpu = "",
     ):
         src = STACK.read_text(encoding = "utf-8")
         start = src.index("def _ensure_cpu_torch() -> None:")
@@ -587,12 +588,30 @@ class TestCpuRepairSeesAnXpuWheel:
 
         return (
             "gpu"
-            if eval(expr, {"re": _re, "_hip": hip, "_cuda": cuda, "_ver": ver.lower()})
+            if eval(
+                expr,
+                {
+                    "re": _re,
+                    "_hip": hip,
+                    "_cuda": cuda,
+                    "_ver": ver.lower(),
+                    # The probe's XPU marker, which the predicate reads as a module global.
+                    # Empty unless a case states otherwise: torch.version has no word for XPU,
+                    # so a wheel is only known to be one through this.
+                    "_TORCH_RUNTIME_XPU": runtime_xpu,
+                },
+            )
             else "cpu"
         )
 
     def test_xpu_wheel_is_a_gpu_build(self):
         assert self._classify("2.9.1+xpu") == "gpu"
+
+    def test_an_untagged_xpu_wheel_is_a_gpu_build_through_the_runtime_marker(self):
+        # A private index serves XPU torch with no +xpu local version, so the tag says
+        # nothing and torch.version stays empty on both fields. The runtime marker is the
+        # only thing left that knows, and a CPU pin must still reinstall over that build.
+        assert self._classify("2.9.1", runtime_xpu = "20250101") == "gpu"
 
     @pytest.mark.parametrize(
         "ver,cuda,hip,want",
