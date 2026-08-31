@@ -196,7 +196,16 @@ def _offload_frozen_module_for_training(
         # Tesla T4 must use float32 and not float16
         new_dtype = torch.float32
 
-    module.modules_to_save.default.to(device = device_type, dtype = new_dtype, non_blocking = True)
+    # `device_type` is a bare type like "cuda", and `.to("cuda")` resolves to the
+    # CURRENT device, which is cuda:0. On a model the loader split across cards
+    # that drags the trainable copy off its own card, and the forward then mixes
+    # devices. Keep the index the copy already has whenever it is on the right
+    # kind of device; a copy still on cpu or meta has no index to keep.
+    target_device = module.modules_to_save.default.weight.device
+    if target_device.type != torch.device(device_type).type:
+        target_device = device_type
+
+    module.modules_to_save.default.to(device = target_device, dtype = new_dtype, non_blocking = True)
     module.modules_to_save.default.requires_grad_(True)
 
     # [TODO] Move old module to CPU - should be disk!
