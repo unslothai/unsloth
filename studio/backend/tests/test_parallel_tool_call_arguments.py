@@ -646,8 +646,7 @@ def test_a_claim_on_a_split_born_card_leaves_every_call_its_own():
     turn.merge_structured([_delta(1, "beta", '{"d":4}', call_id = "tool_call_1")])
 
     reported = [
-        (call.get("card_id") or call["id"], call["function"]["arguments"])
-        for call in turn.calls()
+        (call.get("card_id") or call["id"], call["function"]["arguments"]) for call in turn.calls()
     ]
     assert reported == [
         ("tool_call_0", '{"a":1}'),
