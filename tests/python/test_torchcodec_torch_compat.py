@@ -513,7 +513,9 @@ def test_notebook_validator_resumes_after_an_or_list():
     ends it."""
     nv = _load_notebook_validator_module()
 
-    assert nv._split_chained("!pip install a && pip install b || pip install c ; pip install d") == [
+    assert nv._split_chained(
+        "!pip install a && pip install b || pip install c ; pip install d"
+    ) == [
         "!pip install a ",
         "!pip install b",
         "!pip install d",

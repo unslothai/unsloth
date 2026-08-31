@@ -678,9 +678,7 @@ def _version_is_excluded(version: str, exclusion: str) -> bool:
     return cmp_versions(version, exclusion) == 0
 
 
-def _spec_window(
-    sp: SpecParts,
-) -> tuple[str | None, str | None, str | None, str | None, list[str]]:
+def _spec_window(sp: SpecParts) -> tuple[str | None, str | None, str | None, str | None, list[str]]:
     """`(exact, floor, cap, ceiling, exclusions)` for one requirement.
 
     `cap` is an inclusive `<=`, which names the version pip lands on; `ceiling` is an
