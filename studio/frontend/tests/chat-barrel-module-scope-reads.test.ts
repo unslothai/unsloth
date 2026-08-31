@@ -1467,37 +1467,40 @@ function barrelInitClosure(files: string[]): Set<string> {
  *
  * This list may SHRINK, never grow. A new entry means a new latent blank-page
  * bug, and the assertion below rejects it.
+ *
+ * Keyed by file and name with a COUNT, deliberately not by line: an unrelated
+ * edit higher up the file moves every read below it, and keying on the line
+ * turned that into a red guard on a branch that changed nothing. The count is
+ * what the exception is really about -- how many of these reads a file still
+ * has -- and it holds still while the lines move.
  */
-const KNOWN_DEEP_CYCLE_READS = new Set<string>([
-  "components/assistant-ui/markdown-text.tsx: SEARCH_IMAGE_TAG (line 140)",
-  "components/assistant-ui/markdown-text.tsx: SEARCH_IMAGE_TAG (line 144)",
-  "components/assistant-ui/markdown-text.tsx: SearchImageElement (line 140)",
-  "components/assistant-ui/markdown-text.tsx: unslothDarkTheme (line 110)",
-  "components/assistant-ui/markdown-text.tsx: unslothDarkTheme (line 94)",
-  "components/assistant-ui/markdown-text.tsx: unslothLightTheme (line 109)",
-  "components/assistant-ui/markdown-text.tsx: unslothLightTheme (line 94)",
-  "components/assistant-ui/thread.tsx: CodeExecutionToolUI (line 7094)",
-  "components/assistant-ui/thread.tsx: ImageGenerationToolUI (line 7096)",
-  "components/assistant-ui/thread.tsx: KnowledgeBaseToolUI (line 7090)",
-  "components/assistant-ui/thread.tsx: MarkdownText (line 7111)",
-  "components/assistant-ui/thread.tsx: PythonToolUI (line 7091)",
-  "components/assistant-ui/thread.tsx: Reasoning (line 7112)",
-  "components/assistant-ui/thread.tsx: ReasoningGroup (line 7113)",
-  "components/assistant-ui/thread.tsx: RenderHtmlToolUI (line 7098)",
-  "components/assistant-ui/thread.tsx: Sources (line 7114)",
-  "components/assistant-ui/thread.tsx: TerminalToolUI (line 7092)",
-  "components/assistant-ui/thread.tsx: ToolFallback (line 7099)",
-  "components/assistant-ui/thread.tsx: ToolGroup (line 7115)",
-  "components/assistant-ui/thread.tsx: WebSearchToolUI (line 7088)",
-  "components/ui/sidebar.tsx: SIDEBAR_WIDTH_DEFAULT (line 45)",
-  "features/chat/artifacts/artifact-surface.tsx: unslothDarkTheme (line 37)",
-  "features/chat/artifacts/artifact-surface.tsx: unslothLightTheme (line 37)",
-  "features/chat/attachment-content.ts: MAX_OPEN_DOCUMENT_ARCHIVE_BYTES (line 96)",
-  "features/chat/chat-page.tsx: CONVERSATION_MARKDOWN_FORMAT (line 1157)",
-  "features/chat/chat-page.tsx: CONVERSATION_MARKDOWN_LABEL (line 1156)",
-  "features/chat/presets/preset-load-config.ts: KV_CACHE_DTYPES (line 58)",
-  "features/training/stores/training-config-store.ts: TRAINING_CONFIG_PERSISTENCE_NAME (line 1305)",
-  "features/training/stores/training-config-store.ts: TRAINING_CONFIG_PERSISTENCE_VERSION (line 1306)",
+const KNOWN_DEEP_CYCLE_READS = new Map<string, number>([
+  ["components/assistant-ui/markdown-text.tsx: SEARCH_IMAGE_TAG", 2],
+  ["components/assistant-ui/markdown-text.tsx: SearchImageElement", 1],
+  ["components/assistant-ui/markdown-text.tsx: unslothDarkTheme", 2],
+  ["components/assistant-ui/markdown-text.tsx: unslothLightTheme", 2],
+  ["components/assistant-ui/thread.tsx: CodeExecutionToolUI", 1],
+  ["components/assistant-ui/thread.tsx: ImageGenerationToolUI", 1],
+  ["components/assistant-ui/thread.tsx: KnowledgeBaseToolUI", 1],
+  ["components/assistant-ui/thread.tsx: MarkdownText", 1],
+  ["components/assistant-ui/thread.tsx: PythonToolUI", 1],
+  ["components/assistant-ui/thread.tsx: Reasoning", 1],
+  ["components/assistant-ui/thread.tsx: ReasoningGroup", 1],
+  ["components/assistant-ui/thread.tsx: RenderHtmlToolUI", 1],
+  ["components/assistant-ui/thread.tsx: Sources", 1],
+  ["components/assistant-ui/thread.tsx: TerminalToolUI", 1],
+  ["components/assistant-ui/thread.tsx: ToolFallback", 1],
+  ["components/assistant-ui/thread.tsx: ToolGroup", 1],
+  ["components/assistant-ui/thread.tsx: WebSearchToolUI", 1],
+  ["components/ui/sidebar.tsx: SIDEBAR_WIDTH_DEFAULT", 1],
+  ["features/chat/artifacts/artifact-surface.tsx: unslothDarkTheme", 1],
+  ["features/chat/artifacts/artifact-surface.tsx: unslothLightTheme", 1],
+  ["features/chat/attachment-content.ts: MAX_OPEN_DOCUMENT_ARCHIVE_BYTES", 1],
+  ["features/chat/chat-page.tsx: CONVERSATION_MARKDOWN_FORMAT", 1],
+  ["features/chat/chat-page.tsx: CONVERSATION_MARKDOWN_LABEL", 1],
+  ["features/chat/presets/preset-load-config.ts: KV_CACHE_DTYPES", 1],
+  ["features/training/stores/training-config-store.ts: TRAINING_CONFIG_PERSISTENCE_NAME", 1],
+  ["features/training/stores/training-config-store.ts: TRAINING_CONFIG_PERSISTENCE_VERSION", 1],
 ]);
 
 test("no module-scope read of a chat barrel value", () => {
@@ -1566,7 +1569,7 @@ test("no module-scope read of a chat barrel value", () => {
       return exported === undefined ? carried.size > 0 : carried.has(exported);
     };
   const offenders: string[] = [];
-  const stillPresent = new Set<string>();
+  const seenCounts = new Map<string, number>();
   let importers = 0;
   for (const file of files) {
     const text = sources.get(file) ?? "";
@@ -1609,8 +1612,11 @@ test("no module-scope read of a chat barrel value", () => {
     if (!atRisk.has(file)) continue;
     for (const hit of eagerReads(source, names, { helpers }, namespaceImportNames(source))) {
       const entry = `${path.relative(SRC, file)}: ${hit}`;
-      if (KNOWN_DEEP_CYCLE_READS.has(entry)) {
-        stillPresent.add(entry);
+      // The line is dropped from the key, and only from the key: the offender
+      // message below still says where to look.
+      const key = entry.replace(/ \(line \d+\)/g, "");
+      if (KNOWN_DEEP_CYCLE_READS.has(key)) {
+        seenCounts.set(key, (seenCounts.get(key) ?? 0) + 1);
         continue;
       }
       offenders.push(entry);
@@ -1625,14 +1631,18 @@ test("no module-scope read of a chat barrel value", () => {
       `watchedStorageKeys().\n  ${offenders.join("\n  ")}`,
   );
   // The list may only shrink, and nothing enforced that: an entry that stopped
-  // matching stayed armed, ready to suppress a real regression that later
-  // reappeared at the same file, name and line.
-  const stale = [...KNOWN_DEEP_CYCLE_READS].filter((entry) => !stillPresent.has(entry)).sort();
+  // matching stayed armed, ready to suppress a real regression that reappeared
+  // under the same name later.
+  const drifted = [...KNOWN_DEEP_CYCLE_READS]
+    .map(([key, allowed]) => ({ key, allowed, seen: seenCounts.get(key) ?? 0 }))
+    .filter(({ allowed, seen }) => allowed !== seen)
+    .sort((a, b) => a.key.localeCompare(b.key));
   assert.deepEqual(
-    stale,
+    drifted.map(({ key, allowed, seen }) => `${key} (allowed ${allowed}, found ${seen})`),
     [],
-    `these entries in KNOWN_DEEP_CYCLE_READS no longer match any read, so they ` +
-      `only mask a future regression. Delete them:\n  ${stale.join("\n  ")}`,
+    `KNOWN_DEEP_CYCLE_READS is out of date. A count that dropped is progress: ` +
+      `lower it, or delete the entry at zero, or it stays armed to mask a future ` +
+      `regression. A count that rose is a new latent blank-page bug.`,
   );
   // Anti-vacuity: a barrel rename would otherwise make this pass by finding nothing.
   assert.ok(importers >= 5, `only ${importers} modules import values from ${BARREL}`);
