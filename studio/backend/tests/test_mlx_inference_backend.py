@@ -3364,7 +3364,8 @@ def test_an_mlx_count_prices_the_tools_the_completion_would_render(
     from routes.inference import _apply_rag_nudge, _build_tool_action_nudge
 
     plain = _build_tool_action_nudge(tools = backend.tools, model_name = "mlx/model", full_access = False)
-    assert backend.system == _apply_rag_nudge(plain, backend.tools, rag_scope = None)
+    nudge = asyncio.run(_apply_rag_nudge(plain, backend.tools, rag_scope = None))
+    assert backend.system == nudge
     assert backend.messages[-1]["content"] == "sure  done", "stale markup the completion removes"
 
 

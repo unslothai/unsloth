@@ -11,7 +11,7 @@ import { maxTokensIsTheLimit } from "../src/features/chat/api/generation-length.
 
 // Hoisted: biome's useTopLevelRegex flags a literal recompiled per call.
 const LOCAL_WINDOW_ARGUMENT =
-  /isExternalRequest\s*\n\s*\? null\s*\n\s*: \(runtime\.loadedCustomContextLength \?\?\s*\n\s*runtime\.ggufContextLength \?\?\s*\n\s*\(params\.maxSeqLength \|\| null\)\)/;
+  /isExternalRequest\s*\n\s*\? null\s*\n\s*: \(runtime\.loadedCustomContextLength \?\?\s*\n\s*runtime\.loadedContextLength \?\?\s*\n\s*\(params\.maxSeqLength \|\| null\)\)/;
 // The EDITABLE field must not be what a stop is judged against: the store defines a
 // pending context edit as exactly `customContextLength !== loadedCustomContextLength`.
 const PENDING_FIELD = /: \(runtime\.customContextLength \?\?/;
@@ -83,7 +83,7 @@ test("an unknown context length cannot make a cap the limit", () => {
 
 test("a local model with no GGUF window still reports one", () => {
   // A safetensors or MLX request on the legacy stream path has neither
-  // customContextLength nor ggufContextLength, while params.maxSeqLength IS its
+  // customContextLength nor loadedContextLength, while params.maxSeqLength IS its
   // effective window and is also where the default Max Tokens comes from. Passing
   // null there makes the window infinite below, so every context-length stop is
   // reported as a Max Tokens stop and the user is told to raise a setting that is

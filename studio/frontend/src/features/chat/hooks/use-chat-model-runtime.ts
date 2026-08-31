@@ -89,7 +89,6 @@ import {
   loadedContextForParams,
   mergeBackendRecommendedInference,
   resolveFitMaxSeqLength,
-  retainedContextPin,
   unpinnedLoadContext,
   resolveLoadMaxSeqLength,
   resolveExplicitCtxPin,
@@ -1846,15 +1845,6 @@ export function useChatModelRuntime() {
               !(loadResponse.is_diffusion ?? false)
                 ? committedServerTuningState(loadServerTuning)
                 : clearedServerTuningState();
-            const nativeCtx = loadResponse.is_gguf
-              ? (loadResponse.context_length ?? 131072)
-              : null;
-            const reportedMaxCtx = loadResponse.is_gguf
-              ? (loadResponse.max_context_length ?? null)
-              : null;
-            const reportedNativeCtx = loadResponse.is_gguf
-              ? (loadResponse.native_context_length ?? null)
-              : null;
             // The user's own Context Length (see explicitCtxPin), so an Auto load
             // stays Auto whatever n_ctx the send rules resolved for it. MLX pins the
             // same way, so it is admitted here rather than cleared as a non-GGUF.

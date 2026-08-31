@@ -3301,14 +3301,11 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       return false;
     }
     const autoLoadPin = retainedContextPin({
-      isGguf: candidate.kind === "gguf",
       isMlx: isServedByMlx(
         candidate.kind === "gguf",
         platform.deviceType,
         platform.chatOnlyReason,
       ),
-      gpuMemoryMode: effectiveGpuMemoryMode,
-      gpuLayers: effectiveGpuLayers,
       // What the load asked for, so a pin carried in either field is kept.
       requestedContextLength: fitMaxSeqLength,
     });

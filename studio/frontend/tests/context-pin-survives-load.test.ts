@@ -117,10 +117,11 @@ function sentNCtx(
       ggufVariant: VARIANT,
       isGguf: true,
       customContextLength,
-      ggufContextLength: residentCtx,
+      loadedContextLength: residentCtx,
       currentCheckpoint,
       activeGgufVariant: VARIANT,
-      maxSeqLength: 4096,
+      pinnedMaxSeqLength: null,
+      defaultMaxSeqLength: 4096,
       presetSource,
     }),
   );
@@ -240,9 +241,11 @@ test("a model change does not carry the old pin across", () => {
   assert.match(RUNTIME, /customContextLength: null,\s*\n\s*\}\);/);
   // The applier reads the saved value through the same resolver the batch sizes
   // use, so "remembered" is this model's record and not the store's leftovers.
+  // savedContextPin, not the raw field: a record written before the MLX pin moved
+  // still carries it in maxSeqLength.
   assert.match(
     APPLIER,
-    /remembered: remembered\?\.remembered\s*\n\s*\? \(remembered\.config\.customContextLength \?\? null\)\s*\n\s*: null,/,
+    /remembered: remembered\?\.remembered \? savedContextPin\(remembered\.config\) : null,/,
   );
 });
 
@@ -337,7 +340,7 @@ test("the clamp that stops a manual reload resizing is not a user pin", () => {
   // branch would take that as the NATIVE context. That is the app protecting the
   // load, not the user choosing a length, so the pin is captured BEFORE it.
   const capture = RUNTIME.indexOf("const explicitCtxPin = loadCustomContextLength;");
-  const clamp = RUNTIME.indexOf("loadCustomContextLength = loadGgufContextLength;");
+  const clamp = RUNTIME.indexOf("loadCustomContextLength = loadContextLength;");
   assert.notEqual(capture, -1, "the load no longer captures the user's setting");
   assert.notEqual(clamp, -1);
   assert.ok(
@@ -352,7 +355,7 @@ test("the three in-app writers pin what the user asked for, not what they sent",
   // only when there is one, and the current context otherwise.
   assert.match(
     RUNTIME,
-    /const keepCustomCtx = resolveExplicitCtxPin\(\s*\n\s*loadResponse\.is_gguf \? explicitCtxPin : null,\s*\n\s*\);/,
+    /const keepCustomCtx = resolveExplicitCtxPin\(\s*\n\s*loadResponse\.is_gguf \|\|\s*\n\s*isServedByMlx\([^)]*\)\s*\n\s*\? explicitCtxPin\s*\n\s*: null,\s*\n\s*\);/,
   );
   assert.match(
     RUNTIME,
@@ -366,7 +369,7 @@ test("the three in-app writers pin what the user asked for, not what they sent",
   assert.match(ADAPTER, /loadedCustomContextLength: keepCustomCtx,/);
   assert.match(
     COMPOSER,
-    /const keepCustomCtx = targetIsGguf\s*\n\s*\? resolveExplicitCtxPin\(effectiveCustomContextLength\)\s*\n\s*: null;/,
+    /const keepCustomCtx = targetIsGguf\s*\n\s*\? resolveExplicitCtxPin\(effectiveCustomContextLength\)\s*\n\s*: retainedContextPin\(\{/,
   );
   assert.match(COMPOSER, /customContextLength: keepCustomCtx,/);
   assert.match(COMPOSER, /loadedCustomContextLength: keepCustomCtx,/);
@@ -375,7 +378,7 @@ test("the three in-app writers pin what the user asked for, not what they sent",
   assert.match(COMPOSER, /const effectiveCustomContextLength = ownConfig\.customContextLength;/);
   assert.match(
     ADAPTER,
-    /customContextLength: config\.customContextLength,\s*\n\s*ggufContextLength: null,/,
+    /customContextLength: config\.customContextLength,\s*\n\s*loadedContextLength: null,/,
   );
 });
 

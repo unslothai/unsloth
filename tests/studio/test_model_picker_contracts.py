@@ -1084,9 +1084,9 @@ def test_reset_enabled_for_explicit_context_pin_at_native():
     # An MLX pin is an override like any other, so Reset stays enabled for it, read from
     # whichever field it was saved in.
     assert (
-        "const contextAtDefault = !target.isGguf\n"
-        "    ? savedContextPin(config) == null\n"
-        "    : config.customContextLength == null;" in src
+        "const contextAtDefault = !target.isGguf "
+        "? savedContextPin(config) == null "
+        ": config.customContextLength == null;" in src
     )
     # The old form that ignored an explicit pin equal to native must not return.
     assert (

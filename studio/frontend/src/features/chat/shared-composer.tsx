@@ -111,7 +111,6 @@ import {
   DEFAULT_MAX_SEQ_LENGTH,
   DEFAULT_PER_MODEL_CONFIG,
   isServedByMlx,
-  normalizeMaxSeqLength,
   savedContextPin,
   resolveInitialConfig,
   type PerModelConfig,
@@ -1668,14 +1667,11 @@ export function SharedComposer({
         const keepCustomCtx = targetIsGguf
           ? resolveExplicitCtxPin(effectiveCustomContextLength)
           : retainedContextPin({
-              isGguf: false,
               isMlx: isServedByMlx(
                 targetIsGguf,
                 platform.deviceType,
                 platform.chatOnlyReason,
               ),
-              gpuMemoryMode: "auto",
-              gpuLayers: -1,
               requestedContextLength: compareMaxSeqLength,
             });
         // Slots this compare load committed. Diffusion ignores --parallel, so a

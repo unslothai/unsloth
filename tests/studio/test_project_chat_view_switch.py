@@ -53,7 +53,7 @@ SOURCES = (PROVIDER, STORE, QUEUE)
 BOUND_NAMES = {
     "aui",
     "checkpoint",
-    "ggufContextLength",
+    "loadedContextLength",
     "initialThreadId",
     "isLoading",
     "mainThreadId",
@@ -196,7 +196,7 @@ const state: any = {
   contextUsage: null,
   contextUsageByThreadId: {},
   params: { checkpoint: "", systemPrompt: "", systemVariables: "" },
-  ggufContextLength: null,
+  loadedContextLength: null,
   modelLoading: false,
   runningByThreadId: {},
 };
@@ -449,7 +449,7 @@ function renderThreadNewChatSwitch(props: any): void {
   const isLoading = props.isLoading ?? false;
   // Read through useChatRuntimeStore selectors, so a re-render sees the store as it stands.
   const checkpoint = state.params.checkpoint;
-  const ggufContextLength = state.ggufContextLength;
+  const loadedContextLength = state.loadedContextLength;
   const modelLoading = state.modelLoading;
   const runActive = Object.values(state.runningByThreadId ?? {}).some(Boolean);
   // The stale-switch correction subscribes to it, exactly as ThreadAutoSwitch does.
@@ -462,7 +462,7 @@ function renderThreadNewChatSwitch(props: any): void {
     nonce,
     paused,
     checkpoint,
-    ggufContextLength,
+    loadedContextLength,
     modelLoading,
     runActive,
   };
@@ -594,7 +594,7 @@ def _run(imports: str, body: str) -> dict:
 # A resident GGUF, so the second effect has something it could price. Only the tests about
 # the pause gate need it; everywhere else the bar has nothing to count and stands down.
 LOADED_MODEL = """
-    seed({ params: { checkpoint: "unsloth/gguf-model" }, ggufContextLength: 8192 });
+    seed({ params: { checkpoint: "unsloth/gguf-model" }, loadedContextLength: 8192 });
 """
 
 

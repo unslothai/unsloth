@@ -27164,7 +27164,7 @@ async def _mlx_count_chat_tokens(payload) -> Optional[JSONResponse]:
         # action nudge to the system prompt and strips stale call markup out of replayed
         # assistant turns before it renders. Counting without either prices a prompt that
         # is both short a nudge and long the markup.
-        _nudge = _apply_rag_nudge(
+        _nudge = await _apply_rag_nudge(
             _build_tool_action_nudge(
                 tools = _tools_to_use,
                 model_name = public_model_id(active) or payload.model,

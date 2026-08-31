@@ -365,60 +365,6 @@ export function resolveLoadMaxSeqLength({
   return unpinnedLoadContext(isGgufLoad, isMlx, defaultMaxSeqLength);
 }
 
-/** The context pin to hold after a status refresh reports the resident model, and the
- *  baseline the controls compare it against.
- *
- *  An echoed request answers both: it is the only evidence that a pin was adopted rather
- *  than merely typed or remembered. It still yields to an unapplied edit, since a poll
- *  runs on a timer with no user action behind it.
- *
- *  Without an echo the two part company. While the model is unchanged both keep what they
- *  hold. On a model change the control takes the incoming model's remembered choice and
- *  the baseline takes nothing -- something else may have loaded this model, and claiming
- *  the choice was applied would roll a failed switch back to it.
- */
-export function refreshedContextPin({
-  isGguf,
-  isMlx,
-  gpuMemoryMode,
-  gpuLayers,
-  requestedContextLength,
-  modelChanged,
-  storePin,
-  loadedBaseline,
-  rememberedPin,
-}: {
-  isGguf: boolean;
-  isMlx?: boolean | null;
-  gpuMemoryMode: "auto" | "manual";
-  gpuLayers: number;
-  requestedContextLength: number | null;
-  modelChanged: boolean;
-  storePin: number | null;
-  loadedBaseline: number | null;
-  rememberedPin: number | null;
-}): { pin: number | null; baseline: number | null } {
-  if (isGguf) {
-    const echoed = resolveManualAutoCtxPin(gpuMemoryMode, gpuLayers, requestedContextLength);
-    return { pin: echoed, baseline: echoed };
-  }
-  // Only the two backends that size a window pin in this field. A transformers context
-  // lives in `maxSeqLength`, and adopting it here would leave the record pinned in both,
-  // which loads at a different length depending on which field the reader resolves first.
-  if (!isMlx) {
-    return { pin: null, baseline: null };
-  }
-  if (requestedContextLength != null) {
-    const echoed = requestedContextLength > 0 ? requestedContextLength : null;
-    const editPending = !modelChanged && storePin !== loadedBaseline;
-    return { pin: editPending ? storePin : echoed, baseline: echoed };
-  }
-  if (!modelChanged) {
-    return { pin: storePin, baseline: loadedBaseline };
-  }
-  return { pin: rememberedPin, baseline: null };
-}
-
 /** The context pin to keep for a model that has just loaded, or null if it has none.
  *
  *  The two backends pin for different reasons: llama.cpp's means something only under
@@ -427,25 +373,13 @@ export function refreshedContextPin({
  *  the user's choice.
  */
 export function retainedContextPin({
-  isGguf,
   isMlx,
-  gpuMemoryMode,
-  gpuLayers,
   requestedContextLength,
 }: {
-  isGguf: boolean;
   isMlx?: boolean | null;
-  gpuMemoryMode: "auto" | "manual";
-  gpuLayers: number;
   requestedContextLength: number | null;
 }): number | null {
-  if (isGguf) {
-    return resolveManualAutoCtxPin(gpuMemoryMode, gpuLayers, requestedContextLength);
-  }
-  if (isMlx) {
-    return (requestedContextLength ?? 0) > 0 ? requestedContextLength : null;
-  }
-  return null;
+  return isMlx && (requestedContextLength ?? 0) > 0 ? requestedContextLength : null;
 }
 
 /** The context a preset records, in the one field that replays as a pin.

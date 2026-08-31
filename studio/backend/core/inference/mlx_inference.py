@@ -2432,12 +2432,6 @@ class MLXInferenceBackend:
         reasoning_effort = None,
         preserve_thinking = None,
         continue_final_message = False,
-        presence_penalty = 0.0,
-        seed = None,
-        frequency_penalty = 0.0,
-        logit_bias = None,
-        _adapter_state = None,
-        stop = None,
     ):
         """Render the prompt a vision generation sends, and the target that rendered it.
 
@@ -2556,7 +2550,11 @@ class MLXInferenceBackend:
         preserve_thinking = None,
         continue_final_message = False,
         presence_penalty = 0.0,
+        seed = None,
+        frequency_penalty = 0.0,
+        logit_bias = None,
         _adapter_state = None,
+        stop = None,
     ):
         from mlx_vlm import stream_generate as vlm_stream
 

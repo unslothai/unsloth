@@ -66,26 +66,31 @@ def _outbound_builder() -> str:
 
 def _extras_builder() -> str:
     """buildLocalTokenCountExtras, the tool flags the count sends, and the Auto-inject
-    resolution it shares with the request build."""
-    autoinject = slice_between(
-        read(ADAPTER),
-        "const AUTOINJECT_AUTO_MAX_SIZE_B =",
-        "\n\ntype ThreadRecordReader",
-    ) + slice_between(
-        read(ADAPTER),
-        "function resolveAutoInject(",
-        "\n\n/** Server-side usage data",
-    )
-    size = read(MODEL_SIZE).split("\n", 2)[2]
-    return (
-        size
-        + autoinject
-        + slice_between(
+    resolution it shares with the request build.
+
+    Joined on blank lines, not concatenated: a slice that starts on the previous slice's
+    closing brace is not a declaration _harness_bindings can see, so resolve_dependencies
+    pulls its own copy and node refuses the duplicate.
+    """
+    parts = [
+        read(MODEL_SIZE).split("\n", 2)[2],
+        slice_between(
+            read(ADAPTER),
+            "const AUTOINJECT_AUTO_MAX_SIZE_B =",
+            "\n\ntype ThreadRecordReader",
+        ),
+        slice_between(
+            read(ADAPTER),
+            "function resolveAutoInject(",
+            "\n\n/** Server-side usage data",
+        ),
+        slice_between(
             read(ADAPTER),
             "export async function buildLocalTokenCountExtras(",
             "\n\nasync function resolveUseAdapter(",
-        )
-    )
+        ),
+    ]
+    return "\n\n".join(part.strip("\n") for part in parts) + "\n"
 
 
 def _reasoning_builder() -> str:
