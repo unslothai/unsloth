@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect } from "react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -57,6 +57,17 @@ export function DownloadCard({
   children: ReactNode;
   dialogs?: ReactNode;
 }) {
+  // This card is the only surface that shows the conflict dialog. Staging and
+  // Chat park useRepoDownload on an idle repo id; clearing from that hook
+  // dropped a recorded conflict before Hub could show it. Clear here when the
+  // card unmounts or the bound conflict key changes (repo / variant).
+  useEffect(
+    () => () => {
+      job.cancelConflict();
+    },
+    [job.cancelConflict],
+  );
+
   return (
     <>
       <div className="hub-download-card">

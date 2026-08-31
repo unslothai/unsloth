@@ -119,6 +119,10 @@ export function useRepoDownload(config: RepoDownloadConfig): DownloadJob {
     (state) => state.conflicts[conflictKey]?.info ?? null,
   );
 
+  // Do not cancelConflict on unmount or conflictKey change here. Chat and
+  // Video staging reuse this hook and park it on an idle repo id, which would
+  // wipe a start Hub still needs to show. DownloadCard owns that cleanup.
+
   const requestStartDownload = useCallback(
     async (variant: string | null, expectedBytes: number) => {
       // This surface renders the conflict resolver (transportConflict), so the

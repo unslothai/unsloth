@@ -181,3 +181,17 @@ test("staging an idle repo does not drop a recorded transport conflict", () => {
     /useEffect\(\s*\(\)\s*=>\s*\(\)\s*=>\s*\{[\s\S]*?cancelConflict\(conflictKey\)/,
   );
 });
+
+test("the Hub download card still clears a conflict on unmount or key change", () => {
+  const source = readFileSync(
+    new URL(
+      "../src/features/hub/catalog/download-card.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /useEffect\(\s*\(\)\s*=>\s*\(\)\s*=>\s*\{[\s\S]*?job\.cancelConflict\(\)/,
+  );
+});
