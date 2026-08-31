@@ -861,7 +861,8 @@ _CLOSED_CODE_FENCE = re.compile(
     re.IGNORECASE,
 )
 _CLOSED_MARKUP_ARTIFACT = re.compile(
-    r"(?:<!doctype\b[\s\S]{0,200}?)?<html\b[\s\S]{0,4000}?</html\s*>|<svg\b[\s\S]{0,4000}?</svg\s*>",
+    r"(?:<!doctype\b[\s\S]{0,200}?)?<html\b[^>]{0,200}>[\s\S]{0,4000}?</html\s*>"
+    r"|<svg\b[^>]{0,200}>[\s\S]{0,4000}?</svg\s*>",
     re.IGNORECASE,
 )
 _HAS_ANSWER_ARTIFACT = re.compile(
@@ -870,8 +871,8 @@ _HAS_ANSWER_ARTIFACT = re.compile(
     # must end cleanly, so ``` ```not actually closed ``` does not count.
     r"(?<!`)(?P<bf>`{3,})(?!`)[^\r\n]{0,200}\r?\n[\s\S]{1,4000}?\r?\n[ \t>]*(?P=bf)`*[ \t]*(?:\r?\n|\Z)"
     r"|(?<!~)(?P<tf>~{3,})(?!~)[^\r\n]{0,200}\r?\n[\s\S]{1,4000}?\r?\n[ \t>]*(?P=tf)~*[ \t]*(?:\r?\n|\Z)"
-    r"|(?:<!doctype\b[\s\S]{0,200}?)?<html\b[\s\S]{0,4000}?</html\s*>"
-    r"|<svg\b[\s\S]{0,4000}?</svg\s*>",
+    r"|(?:<!doctype\b[\s\S]{0,200}?)?<html\b[^>]{0,200}>[\s\S]{0,4000}?</html\s*>"
+    r"|<svg\b[^>]{0,200}>[\s\S]{0,4000}?</svg\s*>",
     re.IGNORECASE,
 )
 
@@ -882,6 +883,8 @@ _BLOCKQUOTE_PREFIX = re.compile(r"^[ \t]*(?:[-*+]|\d{1,9}[.)])?[ \t]*(?:>[ \t]?)
 # A language token, the only trailing text that makes an inline run an opener
 # rather than prose: python3, c++, c#, objective-c, ts-node, bash-session.
 _FENCE_INFO_STRING_RE = re.compile(r"[A-Za-z][\w.+#-]*")
+# A fence on a list-marker line is block level, so the prose rules below do not apply.
+_LIST_MARKER_ONLY = re.compile(r"^[ \t]*(?:[-*+]|\d{1,9}[.)])[ \t]+$")
 
 
 def _has_unclosed_code_fence(text: str) -> bool:
@@ -941,17 +944,19 @@ def _has_unclosed_code_fence(text: str) -> bool:
                     active_char, active_len = ch, len(fence)
                     active_quote, active_base = quote_depth, 0
                 continue
-            # CommonMark has no mid-prose fence, but models open one anyway. Only
+            # A list marker is a container, so a fence on that line is block level and
+            # skips the rest. CommonMark has no mid-PROSE fence, but models open one. Only
             # the last run can be it (an earlier one is closed by the later, "the
             # marker is ```python```"), and only a bare info string separates an
             # opener from prose. Bare, after something closed, it is a literal ("wrap
             # it in ```"); before any close, "here is code: ```" still opens.
-            if indented_quote or index != len(runs) - 1:
-                continue
-            if trailing and not _FENCE_INFO_STRING_RE.fullmatch(trailing):
-                continue
-            if not trailing and closed_any:
-                continue
+            if not _LIST_MARKER_ONLY.match(prefix):
+                if indented_quote or index != len(runs) - 1:
+                    continue
+                if trailing and not _FENCE_INFO_STRING_RE.fullmatch(trailing):
+                    continue
+                if not trailing and closed_any:
+                    continue
             active_char, active_len = ch, len(fence)
             # A list marker before the fence IS the container, so its width is the
             # baseline the closer's three columns are measured from.

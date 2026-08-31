@@ -337,6 +337,37 @@ def test_closing_tag_in_prose_does_not_eat_a_fence_closer():
     assert not _would_reprompt(enclosing)
 
 
+def test_markup_opening_tag_must_terminate():
+    """`<html lang='en'` with no `>` never opened a page, so pairing it with a
+    closing tag mentioned later in a plan is not a completed artifact."""
+    samples = [
+        "First, I'll create <html lang='en' and then close it with </html>",
+        "First, I'll draw <svg width='10' and then close with </svg>",
+    ]
+    for text in samples:
+        assert not _has_answer_artifact(text), text
+        assert _would_reprompt(text), text
+    # A real opening tag with attributes is still a page.
+    assert _has_answer_artifact("First, let me show it.\n<html lang='en'><body>hi</body></html>")
+
+
+def test_list_marker_line_opens_a_block_level_fence():
+    """``- ```python linenums=1`` sits in a list container, not in prose, so the
+    prose rules that keep a mid-sentence delimiter from opening do not apply."""
+    unfinished = (
+        "First, let me show it.\n```python\nx=1\n```\n- ```python linenums=1\ndef g(): pass"
+    )
+    assert not _has_answer_artifact(unfinished)
+    assert _would_reprompt(unfinished)
+    assert _has_answer_artifact(
+        "First, let me show it.\n- ```python linenums=1\n  x = 1\n  ```"
+    )
+    # Prose is unchanged: a mid-sentence delimiter with words after it stays prose.
+    assert _has_answer_artifact(
+        "First, let me show it.\n```python\nx=1\n```\nUse ``` for markdown."
+    )
+
+
 def test_markup_closing_tag_tolerates_whitespace():
     """`</html >` is spec-legal, and must count as an artifact AND as a close
     in the balance count."""
