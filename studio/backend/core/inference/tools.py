@@ -2127,6 +2127,29 @@ _AUTO_EXEC_MCP_COMPOUND_RE = re.compile(
     r")(?:[_\-]|$)",
     re.IGNORECASE,
 )
+
+
+@functools.lru_cache(maxsize = 512)
+def mcp_tool_name_runs_code(name: str) -> bool:
+    """True when an MCP tool NAME says it runs commands or code on its server.
+
+    The single owner of that question: ``is_high_risk_tool_call`` uses it to prompt in auto
+    mode, and ``tool_healing._markerless_promotable`` uses it to refuse the bare form, so the
+    two cannot drift. A denylist over an open vocabulary is best-effort by construction (see
+    the ``_mcp_verb_is_known`` fallback below), so it narrows the markerless sink rather than
+    closing it. Cached because the markerless parse asks per streamed chunk.
+    """
+    if not name.startswith(MCP_TOOL_PREFIX):
+        return False
+    tool_name = _CAMEL_CASE_RE.sub("_", name.split("__", 2)[-1])
+    if _AUTO_EXEC_MCP_COMPOUND_RE.search(tool_name):
+        return True
+    reads = bool(_AUTO_READ_MCP_VERB_RE.search(tool_name))
+    return bool(_AUTO_EXEC_MCP_TOOL_RE.search(tool_name)) and not (
+        reads and not _AUTO_EXEC_MCP_VERB_ONLY_RE.search(tool_name)
+    )
+
+
 # The verbs an MCP tool name may carry and still run without a prompt: reads, and
 # ordinary writes that create or edit a record. Destructive, privilege and
 # money-moving verbs are caught by the patterns above before this is consulted.
@@ -6616,11 +6639,7 @@ def is_high_risk_tool_call(name: str, arguments: dict) -> bool:
         # pointed at a sensitive path is a sensitive access. All prompt, while
         # ordinary create/update/delete MCP calls run.
         _reads = bool(_AUTO_READ_MCP_VERB_RE.search(tool_name))
-        if _AUTO_EXEC_MCP_COMPOUND_RE.search(tool_name):
-            return True
-        if _AUTO_EXEC_MCP_TOOL_RE.search(tool_name) and not (
-            _reads and not _AUTO_EXEC_MCP_VERB_ONLY_RE.search(tool_name)
-        ):
+        if mcp_tool_name_runs_code(name):
             return True
         if _AUTO_DESTRUCTIVE_MCP_VERB_RE.search(tool_name):
             return True

@@ -397,7 +397,7 @@ from core.inference.tool_call_parser import (
     strip_llama3_leading_sentinels,
     strip_tool_markup as _shared_strip_tool_markup,
 )
-from core.tool_healing import _markerless_promotable
+from core.tool_healing import EXECUTION_CLASS_TOOL_NAMES, _markerless_promotable
 
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.child_stdio import utf8_child_env
@@ -1629,9 +1629,13 @@ def _is_rehearsal_prefix(stripped: str, active_tools: list[dict]) -> bool:
     than being held. Mirrors the safetensors loop so the split rehearsal is not leaked."""
     if not stripped or any(ch.isspace() for ch in stripped):
         return False
-    names = _gguf_active_tool_names(active_tools)
-    for name in names:
-        if not _markerless_promotable(name, names):
+    for name in _gguf_active_tool_names(active_tools):
+        # Active by construction, so the only gate left is the built-in execution class,
+        # and it must stay an O(1) set test: this loop runs per streamed chunk over the whole
+        # catalog. An execution-capable MCP name is deliberately NOT tested here -- holding it
+        # one extra chunk is harmless, and the real drain decision (_rehearsal_name_start /
+        # _gguf_rehearsal_signal_pos) does ask _markerless_promotable, which does gate it.
+        if name in EXECUTION_CLASS_TOOL_NAMES:
             continue
         if stripped == name or f"{name}[ARGS]".startswith(stripped):
             return True

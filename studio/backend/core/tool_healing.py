@@ -41,6 +41,25 @@ import re
 # structured tool_call. Benign tools keep the bare form.
 EXECUTION_CLASS_TOOL_NAMES = frozenset({"python", "terminal", "edit_file"})
 
+# The same sink reached through MCP: a server tool whose name says it runs commands or code
+# (mcp__local__run_command, mcp__srv__python) executes on the MCP server, outside the local
+# sandbox, and with approval prompts off nothing stands between a quoted string and that
+# call. ``tools.mcp_tool_name_runs_code`` owns the classification (auto mode prompts on the
+# same test); it is imported lazily because tool_healing is a leaf that must stay importable
+# on its own, and cached here so the hot markerless paths pay one dict lookup.
+_MCP_EXEC_PREFIX = "mcp__"
+_mcp_runs_code = None
+
+
+def _mcp_name_runs_code(name) -> bool:
+    global _mcp_runs_code
+    if not isinstance(name, str) or not name.startswith(_MCP_EXEC_PREFIX):
+        return False
+    if _mcp_runs_code is None:
+        from core.inference.tools import mcp_tool_name_runs_code
+        _mcp_runs_code = mcp_tool_name_runs_code
+    return _mcp_runs_code(name)
+
 
 def _markerless_promotable(name, enabled_tool_names) -> bool:
     """True when a *markerless* (bare, unwrapped) call named ``name`` may be promoted.
@@ -48,7 +67,7 @@ def _markerless_promotable(name, enabled_tool_names) -> bool:
     Execution-class names are never promotable from a markerless span -- they must carry
     an unambiguous wrapper. Otherwise the existing enabled-name gate applies: ``None`` keeps
     the name-agnostic behaviour, a set restricts to its members."""
-    if name in EXECUTION_CLASS_TOOL_NAMES:
+    if name in EXECUTION_CLASS_TOOL_NAMES or _mcp_name_runs_code(name):
         return False
     return enabled_tool_names is None or name in enabled_tool_names
 

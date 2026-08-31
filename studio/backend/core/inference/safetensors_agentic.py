@@ -47,6 +47,7 @@ from core.inference.tool_call_parser import (
 )
 
 from core.tool_healing import (
+    EXECUTION_CLASS_TOOL_NAMES,
     _markerless_promotable,
     _THINK_CLOSE_RE,
     _think_spans_outside_tool_markup,
@@ -125,9 +126,13 @@ def _is_rehearsal_prefix(
         if _UNRESTRICTED_REHEARSAL_RE.fullmatch(stripped) is None:
             return False
         return _markerless_promotable(stripped.split("[", 1)[0], None)
-    names = _active_tool_names(active_tools)
-    for name in names:
-        if not _markerless_promotable(name, names):
+    for name in _active_tool_names(active_tools):
+        # Active by construction, so the only gate left is the built-in execution class,
+        # and it must stay an O(1) set test: this loop runs per streamed chunk over the whole
+        # catalog. An execution-capable MCP name is deliberately NOT tested here -- holding it
+        # one extra chunk is harmless, and the real drain decision (_rehearsal_name_start /
+        # _gguf_rehearsal_signal_pos) does ask _markerless_promotable, which does gate it.
+        if name in EXECUTION_CLASS_TOOL_NAMES:
             continue
         if stripped == name or f"{name}[ARGS]".startswith(stripped):
             return True
