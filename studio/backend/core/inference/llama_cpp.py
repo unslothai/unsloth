@@ -901,7 +901,14 @@ def _has_unclosed_code_fence(text: str) -> bool:
     active_base = 0
     closed_any = False
     for raw_line in text.splitlines():
+        # A quote marker four columns in is an indented code line, not a container,
+        # and nothing on it opens a fence. List markers are left alone: at that depth
+        # they are as likely to continue a list this scan cannot see.
+        lead = raw_line[: len(raw_line) - len(raw_line.lstrip(" \t"))]
         quote = _BLOCKQUOTE_PREFIX.match(raw_line)
+        indented_quote = quote is not None and len(lead.expandtabs(4)) > 3
+        if indented_quote:
+            quote = None
         quote_depth = quote.group(0).count(">") if quote else 0
         line = raw_line[quote.end() :] if quote else raw_line
         runs = list(_FENCE_RUN_RE.finditer(line))
@@ -939,7 +946,7 @@ def _has_unclosed_code_fence(text: str) -> bool:
             # marker is ```python```"), and only a bare info string separates an
             # opener from prose. Bare, after something closed, it is a literal ("wrap
             # it in ```"); before any close, "here is code: ```" still opens.
-            if index != len(runs) - 1:
+            if indented_quote or index != len(runs) - 1:
                 continue
             if trailing and not _FENCE_INFO_STRING_RE.fullmatch(trailing):
                 continue
@@ -1026,7 +1033,14 @@ def _text_outside_think(text: str) -> str:
         return segment
 
     _strip_outside_think(text, _collect)
-    return "".join(outside)
+    kept = "".join(outside)
+    if kept == text:
+        # A prefilled reasoning template emits the opening marker itself, so the
+        # generated text carries only the closer and the splitter sees no block.
+        close = text.find("</think>")
+        if close >= 0 and "<think" not in text[:close]:
+            return text[close + len("</think>") :]
+    return kept
 
 
 def _has_answer_artifact(text: str) -> bool:
@@ -29396,10 +29410,18 @@ class LlamaCppBackend:
                         # Thinking rendered as <think> in the CONTENT channel stays
                         # in _visible, and a fence inside one was never shown.
                         _visible_answer = _text_outside_think(_visible).strip()
+                        # Reasoning stands in for the answer only when the loop
+                        # promotes it to visible content; on the Anthropic path it
+                        # stays a thinking block and the user saw nothing.
+                        _reasoning_shown = (
+                            not has_content_tokens
+                            and promote_reasoning_only
+                            and _iter_finish_reason != "length"
+                        )
                         _artifact_text = (
                             _visible_answer
                             if _visible_answer
-                            else (_reasoning if not has_content_tokens else "")
+                            else (_reasoning if _reasoning_shown else "")
                         )
                         # Same for intent: a plan only thought is not one announced.
                         # With nothing outside the block the turn showed nothing, which

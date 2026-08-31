@@ -290,10 +290,12 @@ def test_blockquote_inside_a_list_item_is_one_container():
 
 def test_indented_code_literal_is_not_a_fence_opener():
     """Past 3 columns a delimiter on its own line is an indented code line, so a
-    fence shown as a literal must not reopen after a finished block."""
-    text = "First, let me show it.\n```python\nx = 1\n```\nLiteral:\n\n    ```python"
-    assert _has_answer_artifact(text)
-    assert not _would_reprompt(text)
+    fence shown as a literal must not reopen after a finished block. A quote marker
+    that deep is literal too, since a blockquote cannot start there."""
+    for tail in ("    ```python", "    > ```python"):
+        text = "First, let me show it.\n```python\nx = 1\n```\nLiteral:\n\n" + tail
+        assert _has_answer_artifact(text), tail
+        assert not _would_reprompt(text), tail
 
 
 def test_closer_must_start_its_own_line():
@@ -1001,7 +1003,14 @@ def test_hidden_reasoning_artifact_still_reprompts():
     assert _gate_would_reprompt(content_accum, reasoning_accum, has_content_tokens)
 
 
-def _gate_would_reprompt(content_accum, reasoning_accum, has_content_tokens):
+def _gate_would_reprompt(
+    content_accum,
+    reasoning_accum,
+    has_content_tokens,
+    *,
+    promote_reasoning_only = True,
+    finish_reason = "stop",
+):
     """The re-prompt gate's own derivation of what counts as the visible answer."""
     from core.inference.llama_cpp import _REPROMPT_MAX_CHARS, _text_outside_think
     from core.inference.tool_call_parser import strip_tool_markup
@@ -1011,7 +1020,10 @@ def _gate_would_reprompt(content_accum, reasoning_accum, has_content_tokens):
     reasoning = reasoning_accum.strip()
     stripped = visible if visible else reasoning
     visible_answer = _text_outside_think(visible).strip()
-    artifact_text = visible_answer or (reasoning if not has_content_tokens else "")
+    reasoning_shown = (
+        not has_content_tokens and promote_reasoning_only and finish_reason != "length"
+    )
+    artifact_text = visible_answer or (reasoning if reasoning_shown else "")
     intent_text = visible_answer or stripped
     return bool(
         0 < len(stripped) < _REPROMPT_MAX_CHARS
@@ -1030,6 +1042,27 @@ def test_content_channel_think_block_is_not_an_answer():
     # An answer after ``</think>`` is a real answer and still suppresses it.
     with_answer = "<think>First, let me plan.</think>Here you go.\n```python\nx = 1\n```"
     assert not _gate_would_reprompt(with_answer, "", True)
+
+
+def test_prefilled_reasoning_closes_without_an_opener():
+    """A template that sends the opening ``<think>`` itself leaves only the closer in
+    the generated text, so the answer after it still has to be found."""
+    assert not _gate_would_reprompt(
+        "First, I will search the web.</think>The answer is Paris.", "", True
+    )
+    # Nothing after the closer is still the stall.
+    assert _gate_would_reprompt("First, I will search the web.</think>", "", True)
+
+
+def test_reasoning_artifact_counts_only_when_the_loop_promotes_it():
+    """Reasoning stands in for the answer only when it is promoted to visible
+    content. On the Anthropic path it stays a thinking block and the user saw
+    nothing, so a fence inside it must not suppress the nudge."""
+    reasoning = "First, let me draft it.\n```python\nprint('hi')\n```"
+    assert not _gate_would_reprompt("", reasoning, False, promote_reasoning_only = True)
+    assert _gate_would_reprompt("", reasoning, False, promote_reasoning_only = False)
+    # Promoted but cut off by the window: nothing is yielded, so it is a stall too.
+    assert _gate_would_reprompt("", reasoning, False, finish_reason = "length")
 
 
 def test_intent_inside_a_think_block_is_not_an_announcement():
