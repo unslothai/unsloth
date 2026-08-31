@@ -1703,6 +1703,41 @@ _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS = (
     _OPENAI_LLAMA_ADMISSION_IMAGE_EMBEDDING_CAP + _OPENAI_LLAMA_ADMISSION_IMAGE_WRAPPER_TOKENS
 )
 
+# What to charge a request that names no usable output cap.
+#
+# "Max Tokens: Max" is Studio's default and what almost every chat therefore sends, and
+# it means max_tokens = the whole context window. Priced literally, one chat reserves the
+# entire cache before it has generated a token, so a second is refused however little
+# either actually writes. That is the reservation, not the hardware: measured on a 262144
+# cache, four chats went one at a time at 0.1/2.8/4.6/8.8s to first token with
+# llamacpp:requests_deferred flat at 0, meaning requests 2-4 never reached llama-server.
+#
+# So "Max" is treated as "unstated" rather than as a promise to fill the window, and an
+# unstated cap is charged this. It is an ESTIMATE where the rest of this function is a
+# bound, which is the trade being made: a run that generates more than this is undercharged
+# until something re-costs it (tool loops do, at every round boundary). A plain chat has no
+# round boundary yet, so on a cache that is genuinely full a long uncapped generation can
+# still overrun. Raise this, or name a real Max Tokens, on a deployment where that matters.
+_OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS = _positive_int_or_none(
+    os.environ.get("UNSLOTH_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS")
+) or 1024
+
+
+def _openai_llama_admission_output_allowance(
+    cap: Optional[int], *, budget: int, prompt_tokens: int
+) -> int:
+    """KV to reserve for what a request may still generate.
+
+    A cap at or above the window is not a cap. `_build_passthrough_payload` sends
+    max_tokens = backend_ctx when the client names none, and Studio's own "Max" setting
+    sends the context length outright, so both arrive here as "the whole window" and are
+    indistinguishable from each other. Neither is a statement about how much this request
+    will write, and charging the window for either is what serialises the queue.
+    """
+    if cap is not None and cap < budget:
+        return cap
+    return min(_OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS, max(0, budget - prompt_tokens))
+
 
 def _extra_args_image_max_tokens(extra_args) -> Optional[int]:
     """The ``--image-max-tokens N`` a load passed through, or None. Last wins.
@@ -1919,16 +1954,12 @@ def _openai_llama_admission_tokens(
             getattr(payload, "max_completion_tokens", None),
         )
     )
-    if cap is None:
-        # No cap at all. _build_passthrough_payload then sends max_tokens = backend_ctx,
-        # so generation may run until the window is full, and reserving nothing let short
-        # uncapped prompts hold tiny commitments while each consumed most of the cache.
-        # The honest reservation is the rest of the budget, which does serialise
-        # concurrent uncapped requests. That is the true cost of not naming a cap: the
-        # alternative is admitting two runs that llama.cpp will then kill.
-        output_tokens = max(0, budget - prompt_tokens)
-    else:
-        output_tokens = cap
+    # An absent cap and a cap of the whole window are the same statement, and neither is
+    # a promise to fill the cache. Reserving the rest of the budget for either is what
+    # made concurrency 1 for the default Studio chat.
+    output_tokens = _openai_llama_admission_output_allowance(
+        cap, budget = budget, prompt_tokens = prompt_tokens
+    )
     # A tool loop opens at its own estimate with an equal share as the floor, and re-costs
     # as it grows (generate_chat_completion_with_tools on_conversation_grew ->
     # lease.recost_waiting). The floor keeps re-costing rare: under its share a run never
@@ -2052,11 +2083,13 @@ def _openai_llama_admission_recost(
             message_image_parts = message_image_parts,
             image_tokens = _openai_llama_admission_image_tokens(llama_backend),
         )
-        if output_tokens is None:
-            # No cap named, so generation is bounded only by the window, as the opening
-            # estimate assumes. Charging zero here dropped an uncapped loop to its share
-            # on round zero while its generations could still fill most of the cache.
-            output_tokens = max(0, budget - prompt_tokens)
+        # Priced the same way the opening reservation priced it, including treating a cap
+        # of the whole window as unstated. A re-cost that reads "Max" literally would put
+        # the run back on the whole cache at its first round boundary, undoing at round
+        # zero exactly what the opening estimate stopped doing.
+        output_tokens = _openai_llama_admission_output_allowance(
+            output_tokens, budget = budget, prompt_tokens = prompt_tokens
+        )
         share = max(1, budget // max(1, capacity))
         want = max(1, min(budget, max(share, prompt_tokens + max(0, output_tokens))))
         lease.recost_waiting(

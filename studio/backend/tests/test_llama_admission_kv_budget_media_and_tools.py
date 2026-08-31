@@ -549,35 +549,39 @@ class TestARoundIsCostedTheSameWayTheReservationWas:
         )
 
     def test_round_zero_keeps_an_uncapped_loop_s_output_allowance(self):
-        """No max_tokens and no max_completion_tokens: generation is bounded only by the
-        window, which is why the reservation charges ``budget - prompt``. Flattening the
-        absent cap to zero drops the loop to its share while its generations can still
-        fill most of the cache."""
-        from routes.inference import _effective_openai_max_tokens
+        """No max_tokens and no max_completion_tokens.
+
+        The invariant is that the round-zero re-cost does not SHRINK the lease the
+        opening reservation took: the callback fires before the conversation has grown,
+        so anything it gives back is room llama-server is already using and the next
+        arrival is admitted into it.
+
+        The size of that allowance is a separate question and it changed: an absent cap
+        (and "Max", which is the same statement) is charged
+        ``_OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS`` rather than the rest of the
+        window. What matters here is that BOTH sides price it the same way, which is why
+        this asserts equality rather than a number.
+        """
+        from routes.inference import (
+            _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS,
+            _effective_openai_max_tokens,
+        )
 
         payload = _Payload(
             messages = [{"role": "user", "content": "summarise the news"}],
             enable_tools = True,
         )
         assert _effective_openai_max_tokens(payload) is None
-        opened, committed, queue = self._round_zero(
+        opened, committed, _queue = self._round_zero(
             payload, output_tokens = _effective_openai_max_tokens(payload)
         )
-        assert opened == 4096, opened
+        assert opened < 4096, (
+            f"an uncapped loop still opens on the whole {4096} cache ({opened})"
+        )
+        assert opened <= _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS + 64, opened
         assert (
             committed == opened
         ), f"round zero shrank an uncapped loop from {opened} to {committed}"
-        # And the room it would have released must not admit anyone.
-        import asyncio
-
-        from core.inference.llama_admission import LlamaAdmissionConfig
-
-        async def _newcomer():
-            return queue.reserve(
-                capacity = 4, config = LlamaAdmissionConfig(), tokens = 2000, budget = 4096
-            ).lease_nowait()
-
-        assert asyncio.run(_newcomer()) is None
 
     def test_round_zero_keeps_a_top_level_system_prompt(self):
         """Anthropic keeps `system` and `tools` out of `messages` entirely, so for that

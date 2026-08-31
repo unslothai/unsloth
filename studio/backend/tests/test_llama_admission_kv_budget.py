@@ -341,7 +341,10 @@ class TestTheWholeRenderedPromptIsCounted:
 
     An uncapped request reserved no output allowance even though
     `_build_passthrough_payload` then sends `max_tokens = backend_ctx`, so short
-    prompts held tiny commitments while each generation could fill the cache. And
+    prompts held tiny commitments while each generation could fill the cache. That
+    is now charged as a bounded allowance rather than as the whole window: charging
+    the window fixed the undercount by making the default chat un-runnable
+    concurrently, since "Max" sends the context length and is what Studio ships. And
     the estimate covered only `messages`, while OpenAI tool definitions are
     rendered into the prompt and Anthropic keeps `system` and `tools` separate
     until they are translated.
@@ -360,18 +363,35 @@ class TestTheWholeRenderedPromptIsCounted:
             capacity = capacity,
         )
 
-    def test_an_uncapped_request_reserves_the_rest_of_the_window(self):
+    def test_an_uncapped_request_reserves_a_bounded_allowance(self):
+        """It used to reserve the whole window, on the grounds that generation MAY run
+        that long. It may, but almost none do, and charging the window made the default
+        Studio chat (Max Tokens = Max, which sends the context length) cost the entire
+        cache before writing a token, so a second chat could never start. The reservation
+        is now an allowance, `_OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS`, clamped to
+        what is left."""
         from types import SimpleNamespace
+
+        from routes.inference import _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
+
         payload = SimpleNamespace(
             messages = [{"role": "user", "content": "hi"}],
             max_tokens = None,
             max_completion_tokens = None,
         )
-        # Generation may run until the window is full, so the reservation says so.
-        assert self._cost(payload, budget = 2048) == 2048
+        cost = self._cost(payload, budget = 2048)
+        assert cost < 2048, "an uncapped request still reserves the whole window"
+        assert cost <= _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS + 64
 
     def test_two_uncapped_short_prompts_do_not_both_run(self):
-        """The collision this closes: tiny commitments, cache-filling generations."""
+        """The collision this closes: tiny commitments, cache-filling generations.
+
+        Still true on a 2048 cache, but for a different reason than it used to be: the
+        allowance is no longer the whole window, it is simply that two of them do not fit
+        in 2048. On a cache with room for both they now DO both run, which is the point of
+        the change. What is being pinned here is that the allowance is charged at all; a
+        request charged only for its prompt would let any number of these in.
+        """
         from types import SimpleNamespace
 
         async def scenario():
