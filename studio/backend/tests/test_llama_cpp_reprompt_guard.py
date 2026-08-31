@@ -42,14 +42,12 @@ if _BACKEND_DIR not in sys.path:
 # poison ``sys.modules`` for any later test that does
 # ``from loggers.handlers import ...`` (Python would raise "loggers is
 # not a package" because the stub has no ``__path__``).
-try:  # noqa: E402
-    import loggers  # type: ignore  # real backend package
-except ModuleNotFoundError:
-    _loggers_stub = _types.ModuleType("loggers")
-    _loggers_stub.__path__ = []  # type: ignore[attr-defined]
-    _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
-    sys.modules["loggers"] = _loggers_stub
-
+#
+# structlog is stubbed FIRST because ``loggers.handlers`` imports it: with
+# structlog missing, ``import loggers`` raises for structlog and the real
+# package would be replaced by the stub below, causing exactly the
+# poisoning this guards against. ``exc.name`` is checked for the same
+# reason, so any other transitive gap surfaces instead of being swallowed.
 try:  # noqa: E402
     import structlog  # type: ignore
 except ModuleNotFoundError:
@@ -57,6 +55,16 @@ except ModuleNotFoundError:
     _structlog_stub.__path__ = []  # type: ignore[attr-defined]
     _structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
     sys.modules["structlog"] = _structlog_stub
+
+try:  # noqa: E402
+    import loggers  # type: ignore  # real backend package
+except ModuleNotFoundError as _exc:
+    if (_exc.name or "").split(".")[0] != "loggers":
+        raise
+    _loggers_stub = _types.ModuleType("loggers")
+    _loggers_stub.__path__ = []  # type: ignore[attr-defined]
+    _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
+    sys.modules["loggers"] = _loggers_stub
 
 from core.inference.llama_cpp import (  # noqa: E402
     _HAS_ANSWER_ARTIFACT,
@@ -256,6 +264,22 @@ def test_balanced_inline_fence_span_is_not_an_opener():
     text = "First, let me show it.\n```python\nx = 1\n```\nThe marker is ```python```."
     assert _has_answer_artifact(text)
     assert not _would_reprompt(text)
+
+
+def test_bare_delimiter_in_prose_after_a_closed_block():
+    """``wrap it in ``` `` ends the line, so neither trailing-prose rule
+    catches it. Once a block has closed, a bare delimiter is a literal."""
+    samples = [
+        "First, let me show it.\n```python\nx = 1\n```\nWrap it in ```",
+        "First, let me show it.\n~~~python\nx = 1\n~~~\nOr use ~~~",
+    ]
+    for text in samples:
+        assert _has_answer_artifact(text), text
+        assert not _would_reprompt(text), text
+    # Nothing has closed yet, so the same delimiter still opens a block,
+    # which is what keeps an info-string-less inline opener working.
+    assert _would_reprompt("First, let me show it. Wrap it in ```")
+    assert _has_answer_artifact("First, here is code: ```\nx = 1\n```")
 
 
 def test_markup_closing_tag_tolerates_whitespace():

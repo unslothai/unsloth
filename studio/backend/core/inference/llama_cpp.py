@@ -930,6 +930,7 @@ def _has_unclosed_code_fence(text: str) -> bool:
     active_char: Optional[str] = None
     active_len = 0
     active_quote = 0
+    closed_any = False
     for raw_line in text.splitlines():
         quote = _BLOCKQUOTE_PREFIX.match(raw_line)
         quote_depth = quote.group(0).count(">") if quote else 0
@@ -949,6 +950,11 @@ def _has_unclosed_code_fence(text: str) -> bool:
             # marker is ```python```"), so neither run is a fence.
             if _FENCE_RUN_RE.search(raw_trailing):
                 continue
+            # A bare delimiter ending a prose line once a block has
+            # already closed is a literal ("wrap it in ```"), not the
+            # start of a second block.
+            if not trailing and closed_any and active_char is None:
+                continue
             if raw_trailing and raw_trailing[0] == " " and trailing:
                 continue
             if trailing and (" " in trailing or "\t" in trailing):
@@ -964,6 +970,7 @@ def _has_unclosed_code_fence(text: str) -> bool:
             active_char = None
             active_len = 0
             active_quote = 0
+            closed_any = True
     return active_char is not None
 
 
