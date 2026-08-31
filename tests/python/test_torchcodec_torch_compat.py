@@ -865,19 +865,23 @@ def test_notebook_validator_moves_off_an_exclusive_endpoint():
     nv = _load_notebook_validator_module()
 
     on_the_endpoint = {"torch": "2.11.0+cu128", "torchcodec": "0.8.0"}
-    assert nv._effective_version(
-        '!pip install "torchcodec>0.8.0"', "torchcodec", "0.8.0"
-    ) == (None, True)
-    assert nv.rule_inst_004_torchcodec_torch(
-        '!pip install "torchcodec>0.8.0"', on_the_endpoint, "nb.ipynb", 0
-    ) == []
+    assert nv._effective_version('!pip install "torchcodec>0.8.0"', "torchcodec", "0.8.0") == (
+        None,
+        True,
+    )
+    assert (
+        nv.rule_inst_004_torchcodec_torch(
+            '!pip install "torchcodec>0.8.0"', on_the_endpoint, "nb.ipynb", 0
+        )
+        == []
+    )
 
     # `>=` is satisfied by it, and a lower `>` leaves it alone, so both still report the
     # 0.8 codec against the torch 2.11 row.
     for cell in ('!pip install "torchcodec>=0.8.0"', '!pip install "torchcodec>0.7.0"'):
-        assert len(
-            nv.rule_inst_004_torchcodec_torch(cell, on_the_endpoint, "nb.ipynb", 0)
-        ) == 1, cell
+        assert (
+            len(nv.rule_inst_004_torchcodec_torch(cell, on_the_endpoint, "nb.ipynb", 0)) == 1
+        ), cell
 
 
 def test_only_the_git_ban_reads_conditional_invocations():
@@ -891,9 +895,9 @@ def test_only_the_git_ban_reads_conditional_invocations():
     assert any(f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(cell, "nb.ipynb", 0))
 
     source = (REPO_ROOT / "scripts" / "notebook_validator.py").read_text(encoding = "utf-8")
-    assert source.count("in iter_pip_invocations(install_cell)") == 2, (
-        "only unconditional_pip_invocations itself and R-INST-001 may read the raw iterator"
-    )
+    assert (
+        source.count("in iter_pip_invocations(install_cell)") == 2
+    ), "only unconditional_pip_invocations itself and R-INST-001 may read the raw iterator"
 
 
 def test_notebook_validator_reads_a_range_as_one_window():
