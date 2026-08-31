@@ -87,6 +87,29 @@ test("a documented per-model cap bounds the connection override", () => {
   }
 });
 
+test("legacy OpenAI families clamp below the default Max Tokens", () => {
+  // DEFAULT_INFERENCE_PARAMS asks for 8,192 and both of these cap output at
+  // 4,096. The Responses API rejects an over-limit max_output_tokens instead
+  // of clamping, so an untouched config would fail on the first message.
+  for (const modelId of [
+    "gpt-3.5-turbo",
+    "gpt-3.5-turbo-16k",
+    "gpt-4-turbo",
+    "gpt-4-turbo-preview",
+  ]) {
+    assert.equal(getExternalMaxOutputTokens("openai", modelId), 4096);
+    assert.equal(getExternalMaxOutputTokens("openai", modelId, 8192), 4096);
+  }
+  // Families above the default must not be shadowed by the `gpt-4-turbo` and
+  // `gpt-3.5-turbo` prefixes.
+  for (const modelId of ["gpt-4o", "gpt-4.1", "gpt-4.5-preview"]) {
+    assert.equal(
+      getExternalMaxOutputTokens("openai", modelId),
+      EXTERNAL_MAX_OUTPUT_TOKENS,
+    );
+  }
+});
+
 test("a model with no documented cap takes the connection override", () => {
   // the reported case: a router id no capability row matches pinned at 32,768
   const undocumented: Array<[string, string | null]> = [
