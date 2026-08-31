@@ -518,6 +518,21 @@ def test_lmstudio_inventory_surfaces_a_loose_safetensors_checkpoint(tmp_path):
     ]
 
 
+def test_local_inventories_reject_standalone_safetensors_shards(tmp_path):
+    """A shard suffix proves that no individual file is a complete single-file checkpoint."""
+    from hub.services.models.local_inventory import _scan_custom_folder, _scan_models_dir
+
+    for name in (
+        "model-00001-of-00002.safetensors",
+        "model-00002-of-00002.safetensors",
+    ):
+        _touch(tmp_path / "models" / name)
+        _touch(tmp_path / "custom" / name)
+
+    assert _scan_models_dir(tmp_path / "models") == []
+    assert _scan_custom_folder(tmp_path / "custom") == []
+
+
 def test_custom_inventory_keeps_file_rows_in_a_multi_checkpoint_registration(tmp_path):
     """Reducing a file registration to its parent must not lose it beside another checkpoint."""
     from hub.services.models.local_inventory import _coerce_scan_folder_path, _scan_custom_folder

@@ -71,7 +71,7 @@ test("an explicit family surfaces only unclassified local safetensors", () => {
     isFamilyOverrideLocalCandidate(
       {
         model_format: "gguf",
-        task: "unsupported-diffusion",
+        task: "image-diffusion-unsupported",
         capabilities: { canChat: true, canTrain: false, supportsLora: false },
       },
       true,

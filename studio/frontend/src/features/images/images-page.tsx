@@ -1235,6 +1235,7 @@ export function ImagesPage({
   const [pendingModelDefaults, setPendingModelDefaults] = useState<{
     repoId: string;
     family: string | null;
+    loadSeq: number | null;
     steps: number;
     guidance: number;
   } | null>(null);
@@ -1315,9 +1316,12 @@ export function ImagesPage({
   const [familyOverride, setFamilyOverride] = useState<string>("auto");
   const [cpuOffload, setCpuOffload] = useState(false);
   // The last load descriptor, so "Reapply" can reload the same model with new advanced options without the user re-picking it.
-  const lastLoad = useRef<{ repoId: string; kind: "gguf" | "single_file" | "pipeline"; filename?: string } | null>(
-    null,
-  );
+  const lastLoad = useRef<{
+    repoId: string;
+    kind: "gguf" | "single_file" | "pipeline";
+    filename?: string;
+    family?: string | null;
+  } | null>(null);
   // Render-safe mirror of whether a page-initiated load supplied a complete Reapply target.
   const [canReapply, setCanReapply] = useState(false);
   // Repo id whose defaults were already seeded from a discovered resident model, so we seed once and never clobber a manual edit.
@@ -1458,7 +1462,12 @@ export function ImagesPage({
       const claimedAt = imageFormClaimId();
       pickRecipeSuperseded.current = () => imageFormClaimId() !== claimedAt;
       const recommended = defaultsFor(repoId, override);
-      setPendingModelDefaults({ ...recommended, repoId, family: override });
+      setPendingModelDefaults({
+        ...recommended,
+        repoId,
+        family: override,
+        loadSeq: loadSeq.current + 1,
+      });
       setSteps(recommended.steps);
       setGuidance(recommended.guidance);
       if (revert) {
@@ -2361,15 +2370,17 @@ export function ImagesPage({
       family: status?.family,
       modelKind: status?.model_kind,
     });
-    const explicitFamily = pendingModelDefaults?.family;
+    const loadedFamily = lastLoad.current?.family;
     const familyConfirmed =
-      !explicitFamily ||
-      explicitFamily === "auto" ||
+      !loadedFamily ||
+      loadedFamily === "auto" ||
       (status?.family != null &&
-        familyTokenMatches(explicitFamily, status.family));
+        familyTokenMatches(loadedFamily, status.family));
     const confirmingOwnPick =
       pendingModelDefaults != null &&
+      pendingModelDefaults.loadSeq === loadSeq.current &&
       lastLoad.current?.repoId === repoId &&
+      busy !== "loading" &&
       familyConfirmed;
     if (confirmingOwnPick) {
       const d = defaultsFor(
@@ -2404,7 +2415,11 @@ export function ImagesPage({
     // Set before the recipe decision below: whether Reapply has a target is a separate question
     // from whether the model's defaults should seed the form.
     if (status?.model_kind === "pipeline") {
-      lastLoad.current = { repoId, kind: "pipeline" };
+      lastLoad.current = {
+        repoId,
+        kind: "pipeline",
+        family: status.family,
+      };
     }
     // A stored recipe is the user's own choice, so it outranks the resident model's defaults on
     // the first seed. Later resident changes still seed, as picking a model always has.
@@ -2418,7 +2433,7 @@ export function ImagesPage({
     setPendingModelDefaults(null);
     setSteps(d.steps);
     setGuidance(d.guidance);
-  }, [imagePresets.storedRecipe, pendingModelDefaults, status?.loaded, status?.repo_id, status?.base_repo, status?.family, status?.model_kind]);
+  }, [busy, imagePresets.storedRecipe, pendingModelDefaults, status?.loaded, status?.repo_id, status?.base_repo, status?.family, status?.model_kind]);
 
   // Reseed the Advanced selects from the LOADED build, so they stop being pure local request state.
   // An honored request re-selects itself (a no-op); a declined one snaps to what actually engaged,
@@ -2536,6 +2551,9 @@ export function ImagesPage({
       // stopping anything.
       const startSeq = cancelSeq.current;
       const startLoad = ++loadSeq.current;
+      setPendingModelDefaults((current) =>
+        current ? { ...current, loadSeq: startLoad } : current,
+      );
       // Published now and settled in the finally below, so a cancel waits for the WHOLE path.
       let settleLoad: () => void = () => {};
       const inFlight = new Promise<void>((resolve) => {
@@ -2563,7 +2581,12 @@ export function ImagesPage({
       const bakeLoras = advanced.loras ?? [];
       // Whether THIS load carries the selection into the build, so a quantized load that did not can drop it.
       bakedLorasOnLoad.current = bakeLoras.length > 0;
-      lastLoad.current = { repoId, kind: opts.kind, filename: opts.filename };
+      lastLoad.current = {
+        repoId,
+        kind: opts.kind,
+        filename: opts.filename,
+        family: advanced.family_override,
+      };
       setCanReapply(true);
       // Carry the prior target so the async poll can restore it if the background load fails after starting.
       lastLoadRevert.current = { prev: prevLastLoad };
@@ -3619,7 +3642,12 @@ export function ImagesPage({
             v === "auto"
               ? defaultsFor(recipeRepoId)
               : defaultsFor(recipeRepoId, v);
-          setPendingModelDefaults({ ...d, repoId: recipeRepoId, family: v });
+          setPendingModelDefaults((current) => ({
+            ...d,
+            repoId: recipeRepoId,
+            family: v,
+            loadSeq: current?.loadSeq ?? null,
+          }));
           setSteps(d.steps);
           setGuidance(d.guidance);
         }}

@@ -69,7 +69,9 @@ test("first-load confirmation reconciles optimistic defaults to the resolved fam
   const residentEnd = source.indexOf("// Reseed the Advanced selects", residentStart);
   const residentEffect = source.slice(residentStart, residentEnd);
   assert.match(residentEffect, /pendingModelDefaults/);
+  assert.match(residentEffect, /pendingModelDefaults\.loadSeq === loadSeq\.current/);
   assert.match(residentEffect, /lastLoad\.current\?\.repoId === repoId/);
+  assert.match(residentEffect, /lastLoad\.current\?\.family/);
   assert.match(residentEffect, /pickRecipeSuperseded\.current\?\.\(\)/);
   assert.match(residentEffect, /setSteps\(d\.steps\)/);
   assert.match(residentEffect, /setGuidance\(d\.guidance\)/);

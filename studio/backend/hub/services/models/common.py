@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from pathlib import Path
 from typing import List, Literal, Optional
@@ -645,6 +646,13 @@ def _is_transformers_safetensors_weight_file(path: Path) -> bool:
     return _is_transformers_safetensors_weight_name(path.name)
 
 
+_SAFETENSORS_SHARD_SUFFIX = re.compile(r"-\d+-of-\d+\.safetensors$", re.IGNORECASE)
+
+
+def _is_safetensors_shard_file(path: Path) -> bool:
+    return _SAFETENSORS_SHARD_SUFFIX.search(path.name) is not None
+
+
 def _is_transformers_bin_weight_file(path: Path) -> bool:
     return _is_transformers_bin_weight_name(path.name)
 
@@ -966,6 +974,7 @@ def _classify_local_path(
         and not has_adapter_config
         and not has_adapter_weights
         and not has_checkpoint_weights
+        and not any(_is_safetensors_shard_file(f) for f in safetensors_files)
         and len(safetensors_files) == 1
     )
     trusted_hf_cache_repo = source == "hf_cache" and bool(model_id)

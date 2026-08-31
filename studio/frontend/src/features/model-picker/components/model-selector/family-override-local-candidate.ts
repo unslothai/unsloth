@@ -27,7 +27,8 @@ export function isFamilyOverrideLocalCandidate(
     "wan2.2-t2v-a14b",
   ].includes(family ?? "");
   const recoverableDiffusionGguf =
-    model.model_format === "gguf" && model.task === "unsupported-diffusion";
+    model.model_format === "gguf" &&
+    model.task === "image-diffusion-unsupported";
   const inertSafetensors =
     model.task == null &&
     model.model_format === "safetensors" &&
