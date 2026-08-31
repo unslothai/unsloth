@@ -22,6 +22,8 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import NamedTuple, Optional, Sequence
 
+from core.inference.family_matching import family_token_matches
+
 
 # Runtime->route contract: the /images/generate route matches these messages EXACTLY for a 409 (vs a 500), so both engines raise them verbatim.
 DIFFUSION_NOT_LOADED_MSG = "No diffusion model is loaded."
@@ -156,7 +158,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("int8", "unsloth/FLUX.2-klein-4B-FP8"),
             ("fp8", "unsloth/FLUX.2-klein-4B-FP8"),
         ),
-        aliases = ("flux2-klein", "flux-klein", "klein"),
+        aliases = ("flux2-klein", "flux-klein"),
         # Train the undistilled bases, then preview their adapters on the matching 4-step models.
         # Both vendor ids resolve through the ungated mirrors at fetch time.
         trainable = True,
@@ -457,29 +459,13 @@ def excluded_model_reason(repo_id: str) -> Optional[str]:
 _EDIT_KEYWORDS = ("edit", "kontext", "inpaint", "layered")
 
 
-def _token_regex(token: str) -> str:
-    parts = re.split(r"[-_.]+", token)
-    if len(parts) > 1:
-        inner = r"[-_.]+".join(re.escape(p) for p in parts)
-    else:
-        inner = re.escape(token)
-    return r"(?:^|[-_./\\])" + inner + r"(?:$|[-_./\\])"
-
-
-def _token_in_needle(token: str, needle: str) -> bool:
-    """True when ``token`` appears in ``needle`` as a whole segment (delimited by ``- _ . / \\`` or
-    a boundary), not a raw substring, so 'qwen-image-edit' matches '...-2511' but 'kontext' doesn't
-    match 'kontextual'."""
-    return re.search(_token_regex(token), needle) is not None
-
-
 def _best_family_match(needle: str) -> Optional[DiffusionFamily]:
     """The family whose name/alias is the LONGEST whole-segment token of ``needle`` (longest = most
     specific, so '...qwen-image-edit-2511...' matches 'qwen-image-edit', not 'qwen-image')."""
     best: Optional[tuple[DiffusionFamily, int]] = None
     for fam in _FAMILIES:
         for token in (fam.name, *fam.aliases):
-            if _token_in_needle(token, needle) and (best is None or len(token) > best[1]):
+            if family_token_matches(token, needle) and (best is None or len(token) > best[1]):
                 best = (fam, len(token))
     return best[0] if best else None
 
@@ -504,7 +490,7 @@ def detect_family(repo_id: str, override: Optional[str] = None) -> Optional[Diff
         basename = re.split(r"[/\\]+", needle)[-1]
         matched_tokens = (match.name, *match.aliases)
         if any(
-            _token_in_needle(kw, basename) and not any(kw in tok for tok in matched_tokens)
+            family_token_matches(kw, basename) and not any(kw in tok for tok in matched_tokens)
             for kw in _EDIT_KEYWORDS
         ):
             return None
@@ -583,7 +569,7 @@ def detect_family_by_pipeline_index(path: Optional[str]) -> Optional[DiffusionFa
     basename = re.split(r"[/\\]+", str(path).lower())[-1]
     matched_tokens = (fam.name, *fam.aliases)
     if any(
-        _token_in_needle(kw, basename) and not any(kw in tok for tok in matched_tokens)
+        family_token_matches(kw, basename) and not any(kw in tok for tok in matched_tokens)
         for kw in _EDIT_KEYWORDS
     ):
         return None

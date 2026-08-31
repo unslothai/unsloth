@@ -77,6 +77,18 @@ def test_detect_override_and_unknown():
 
 
 @pytest.mark.parametrize(
+    ("repo_id", "expected"),
+    [
+        ("user/wan2_2_ti2v_5b", "wan2.2-ti2v-5b"),
+        ("user/wan2_2_t2v_a14b", "wan2.2-t2v-a14b"),
+        ("user/hunyuanvideo_1_5_720p_t2v", "hunyuanvideo-1.5-720p"),
+    ],
+)
+def test_detect_video_family_delimiter_flexibility(repo_id, expected):
+    assert detect_video_family(repo_id).name == expected
+
+
+@pytest.mark.parametrize(
     "repo_id",
     [
         "Wan-AI/Wan2.2-TI2V-5B-Diffusers",

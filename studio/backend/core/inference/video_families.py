@@ -21,6 +21,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
+from core.inference.family_matching import family_token_matches
+
 # The request model's ceiling on num_frames, declared HERE so the shape gate and the bound cannot
 # drift: the gate's refusal names the lattice point above the request, and suggesting one the
 # request model would itself reject is a dead end. VideoGenerateRequest imports this for its `le`.
@@ -336,21 +338,6 @@ _FAMILIES: tuple[VideoFamily, ...] = (
 )
 
 
-def _token_regex(token: str) -> str:
-    parts = re.split(r"[-_.]+", token)
-    if len(parts) > 1:
-        inner = r"[-_.]+".join(re.escape(p) for p in parts)
-    else:
-        inner = re.escape(token)
-    return r"(?:^|[-_./\\])" + inner + r"(?:$|[-_./\\])"
-
-
-def _token_in_needle(token: str, needle: str) -> bool:
-    """Whole path/name segment match, as in diffusion_families (a short alias like
-    'ltx' must not match inside an unrelated word)."""
-    return re.search(_token_regex(token), needle) is not None
-
-
 def detect_video_family(repo_id: str, override: Optional[str] = None) -> Optional[VideoFamily]:
     """Resolve a ``VideoFamily`` from a repo id, or an explicit override.
 
@@ -368,7 +355,7 @@ def detect_video_family(repo_id: str, override: Optional[str] = None) -> Optiona
     best: Optional[tuple[VideoFamily, int]] = None
     for fam in _FAMILIES:
         for token in (fam.name, *fam.aliases):
-            if _token_in_needle(token, needle) and (best is None or len(token) > best[1]):
+            if family_token_matches(token, needle) and (best is None or len(token) > best[1]):
                 best = (fam, len(token))
     if best is None:
         return None
