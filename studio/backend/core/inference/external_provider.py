@@ -407,12 +407,7 @@ def _extract_web_search_action(item: dict[str, Any]) -> dict[str, Any]:
     query = action.get("query") if isinstance(action.get("query"), str) else ""
     if not query:
         for source in (action.get("queries"), item.get("queries")):
-            if (
-                isinstance(source, list)
-                and source
-                and isinstance(source[0], str)
-                and source[0]
-            ):
+            if isinstance(source, list) and source and isinstance(source[0], str) and source[0]:
                 query = source[0]
                 break
         if not query and isinstance(item.get("query"), str):
@@ -5392,9 +5387,7 @@ class ExternalProviderClient:
             not _responses_tool_choice_none and not _responses_tool_choice_forced_function
         )
         web_search_enabled_openai = bool(
-            _responses_hosted_builtins_allowed
-            and enabled_tools
-            and "web_search" in enabled_tools
+            _responses_hosted_builtins_allowed and enabled_tools and "web_search" in enabled_tools
         )
 
         if (enabled_tools or responses_user_function_tools) and not _responses_tool_choice_none:
