@@ -9,9 +9,11 @@ OpenAI shipped. Anthropic's ``model_id_denylist`` previously stripped
 every dated id, hiding the canonical names of every pre-4.6 model
 (Opus 4.5, Sonnet 4.5, Haiku 4.5, Opus 4.1, the 4.0 family).
 
-These tests pin the new non-chat denylist (OpenAI) and the empty
-denylist (Anthropic) by walking realistic ``/v1/models`` listings
-through ``PROVIDER_REGISTRY`` and asserting the surviving set.
+These tests pin the new denylist (OpenAI) and the empty denylist
+(Anthropic) by walking realistic ``/v1/models`` listings through
+``PROVIDER_REGISTRY`` and asserting the surviving set. The OpenAI bar is
+"servable on /v1/responses with stream: true", not merely "chat model" --
+Studio has no other OpenAI transport.
 """
 
 from core.inference.providers import PROVIDER_REGISTRY
@@ -30,7 +32,7 @@ def _apply(provider_type: str, candidate_ids: list[str]) -> list[str]:
     return out
 
 
-# ── OpenAI: non-chat denylist drops only non-chat ids ──────────────
+# ── OpenAI: denylist drops what /v1/responses cannot serve ─────────
 
 
 def test_openai_keeps_every_known_chat_family():
@@ -47,20 +49,6 @@ def test_openai_keeps_every_known_chat_family():
         "o3",
         "o3-pro",
         "o3-mini",
-        "o3-deep-research",
-        # `gpt-4o-search-preview` and the mini variant are chat-with-
-        # retrieval models that respond to standard /v1/chat/completions
-        # and absolutely belong in the picker. The previous regex
-        # dropped them as a false positive of `(?:^|-)search`; the
-        # tightened denylist intentionally only catches the standalone
-        # search-api suffix.
-        "gpt-4o-search-preview",
-        "gpt-4o-mini-search-preview",
-        # gpt-audio is chat-completion-capable with streaming. The
-        # `-mini` variant does NOT stream (Realtime API only) and is
-        # asserted dropped in the realtime/audio split test below.
-        "gpt-audio",
-        "gpt-audio-1.5",
         # Hypothetical future families that the old allowlist would have
         # silently dropped -- they MUST surface under the new denylist.
         "gpt-5.6",
@@ -75,42 +63,27 @@ def test_openai_keeps_every_known_chat_family():
     assert surviving == live, surviving
 
 
-def test_openai_audio_and_realtime_families_split_on_streaming_support():
-    # Pin the chat/non-chat split: Studio always sends `stream: true`,
-    # so the picker keeps the audio chat families (gpt-audio* without
-    # -mini, plus gpt-4o-audio-preview*) which stream over
-    # /v1/chat/completions and /v1/responses, but drops the entire
-    # Realtime family (gpt-realtime*, gpt-4o-realtime-preview*,
-    # gpt-4o-mini-realtime-preview*) and gpt-audio-mini, which OpenAI's
-    # model cards mark Streaming: Not supported (Realtime API only,
-    # WebRTC/WebSocket transport).
-    kept = _apply(
+def test_openai_drops_families_that_are_not_on_the_responses_endpoint():
+    # Studio serves every OpenAI turn from /v1/responses, so a model whose
+    # page marks that endpoint Not supported is unusable no matter how
+    # chat-capable it is over /v1/chat/completions. Audio, Realtime,
+    # chat-with-search and o1-mini are all in that bucket.
+    dropped = _apply(
         "openai",
         [
             "gpt-audio",
             "gpt-audio-1.5",
-            "gpt-4o-audio-preview",
-            "gpt-4o-audio-preview-2024-12-17",
-        ],
-    )
-    assert kept == [
-        "gpt-audio",
-        "gpt-audio-1.5",
-        "gpt-4o-audio-preview",
-        # Dated audio-preview snapshot is dropped by the date-suffix rule;
-        # the canonical id above survives.
-    ], kept
-
-    dropped = _apply(
-        "openai",
-        [
             "gpt-audio-mini",
+            "gpt-4o-audio-preview",
+            "gpt-4o-mini-audio-preview",
             "gpt-realtime",
             "gpt-realtime-mini",
             "gpt-realtime-1.5",
-            "gpt-realtime-2",
             "gpt-4o-realtime-preview",
             "gpt-4o-mini-realtime-preview",
+            "gpt-4o-search-preview",
+            "gpt-4o-mini-search-preview",
+            "o1-mini",
             "gpt-4o-transcribe",
             "gpt-4o-mini-transcribe",
         ],
@@ -118,12 +91,19 @@ def test_openai_audio_and_realtime_families_split_on_streaming_support():
     assert dropped == [], dropped
 
 
+def test_openai_drops_deep_research_models():
+    # Deep research rejects a request that carries no data source, and a
+    # default Studio turn sends no tools at all.
+    dropped = _apply(
+        "openai",
+        ["o3-deep-research", "o4-mini-deep-research", "gpt-6-deep-research"],
+    )
+    assert dropped == [], dropped
+
+
 def test_openai_drops_non_chat_ids():
     noise = [
         # Embeddings / TTS / image / moderation / whisper / etc.
-        # gpt-audio (no -mini) and gpt-4o-audio-preview are intentionally
-        # OMITTED from this list -- they DO stream chat. See
-        # test_openai_audio_and_realtime_families_split_on_streaming_support.
         "text-embedding-3-small",
         "text-embedding-3-large",
         "text-embedding-ada-002",
@@ -143,8 +123,7 @@ def test_openai_drops_non_chat_ids():
         "gpt-4o-mini-transcribe",
         "gpt-4o-mini-tts",
         "omni-moderation-latest",
-        # Standalone search API endpoint (distinct from the
-        # `*-search-preview` chat models above).
+        # Standalone search API endpoint.
         "gpt-5-search-api",
         "gpt-5-search-api-2025-10-14",
         # Video generation.
@@ -169,16 +148,7 @@ def test_openai_drops_non_chat_ids():
     assert surviving == [], surviving
 
 
-def test_openai_realtime_translate_variants_are_dropped_but_parent_chat_family_survives():
-    """gpt-audio is chat-capable (streams over /v1/chat/completions)
-    and stays, but the audio-translation variants share the chat
-    picker's transport and would 4xx, so they must be filtered. The
-    full Realtime family (gpt-realtime*, gpt-4o*-realtime-preview*)
-    plus gpt-audio-mini are Realtime-only and dropped by a sibling
-    assertion."""
-    kept = _apply("openai", ["gpt-audio"])
-    assert kept == ["gpt-audio"], kept
-
+def test_openai_realtime_translate_variants_are_dropped():
     dropped = _apply(
         "openai",
         [
@@ -252,28 +222,6 @@ def test_openai_legacy_compact_snapshot_suffixes_are_dropped():
         "gpt-5.5-pro",
         "o3",
     }, kept
-
-
-def test_openai_search_preview_is_kept_search_api_is_dropped():
-    # Pin the search-vs-search-api distinction so a future regex tweak
-    # doesn't silently regress to dropping chat-with-search models.
-    kept = _apply(
-        "openai",
-        [
-            "gpt-4o-search-preview",
-            "gpt-4o-mini-search-preview",
-        ],
-    )
-    assert kept == ["gpt-4o-search-preview", "gpt-4o-mini-search-preview"], kept
-
-    dropped = _apply(
-        "openai",
-        [
-            "gpt-5-search-api",
-            "gpt-5-search-api-2025-10-14",
-        ],
-    )
-    assert dropped == [], dropped
 
 
 def test_openai_legacy_completion_names_only_match_at_id_start():
