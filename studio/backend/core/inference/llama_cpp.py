@@ -897,6 +897,7 @@ def _has_unclosed_code_fence(text: str) -> bool:
     active_char: Optional[str] = None
     active_len = 0
     active_quote = 0
+    active_indent = 0
     closed_any = False
     for raw_line in text.splitlines():
         quote = _BLOCKQUOTE_PREFIX.match(raw_line)
@@ -908,30 +909,34 @@ def _has_unclosed_code_fence(text: str) -> bool:
             trailing = line[m.end() :].strip()
             ch = fence[0]
             prefix = line[: m.start()]
-            # CommonMark allows a fence at most 3 columns of indentation; deeper is
-            # an indented code block, so a delimiter in a fence body stays body.
-            at_line_start = not prefix.strip() and len(prefix.expandtabs(4)) <= 3
+            indent = len(prefix.expandtabs(4))
+            blank_prefix = not prefix.strip()
             if active_char is not None:
-                # CommonMark closes only on a delimiter that starts its own line
-                # and ends it, so "Use three backticks: ```" inside a block is
-                # body text. Everything else here is body too.
+                # CommonMark closes only on a delimiter that starts its own line and
+                # ends it, so "Use three backticks: ```" inside a block is body. The
+                # 3-column allowance is measured from the opener, which stands in for
+                # the list or quote the block sits in, so a closer under `  - ```py`
+                # is not read as an indented code line. Everything else here is body.
                 if (
-                    at_line_start
+                    blank_prefix
+                    and indent <= active_indent + 3
                     and ch == active_char
                     and len(fence) >= active_len
                     and quote_depth == active_quote
                     and not trailing
                 ):
-                    active_char, active_len, active_quote = None, 0, 0
+                    active_char, active_len, active_quote, active_indent = None, 0, 0, 0
                     closed_any = True
                 continue
-            if at_line_start:
-                active_char, active_len, active_quote = ch, len(fence), quote_depth
+            if blank_prefix and indent <= 3:
+                active_char, active_len = ch, len(fence)
+                active_quote, active_indent = quote_depth, indent
                 continue
-            # Inline. Models do open a fence mid-line, but only the last run can
-            # be that opener: an earlier one is closed by the later ("the marker
-            # is ```python```"), and only a bare info string tells an opener from
-            # prose. A bare delimiter once a block has closed is a literal ("wrap
+            # Deeper than 3 columns is an indented code block, and a run mid-prose is
+            # not a fence at all, but models do open one there. Only the last run on
+            # the line can be that opener: an earlier one is closed by the later ("the
+            # marker is ```python```"), and only a bare info string tells an opener
+            # from prose. A bare delimiter once a block has closed is a literal ("wrap
             # it in ```"); before any close, "here is code: ```" still opens.
             if index != len(runs) - 1:
                 continue
@@ -939,7 +944,8 @@ def _has_unclosed_code_fence(text: str) -> bool:
                 continue
             if not trailing and closed_any:
                 continue
-            active_char, active_len, active_quote = ch, len(fence), quote_depth
+            active_char, active_len = ch, len(fence)
+            active_quote, active_indent = quote_depth, indent
     return active_char is not None
 
 

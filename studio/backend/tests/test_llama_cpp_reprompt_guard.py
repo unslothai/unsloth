@@ -263,6 +263,19 @@ def test_fence_body_indented_four_spaces_is_not_a_closer():
     assert _has_answer_artifact("First, let me show:\n```python\nx = 1\n  ```")
 
 
+def test_fence_indentation_is_measured_from_its_opener():
+    """The 3-column allowance is relative to the container the block sits in, and
+    the opener's own offset stands in for it, so a block nested in a list closes at
+    the column its list puts it at."""
+    samples = [
+        "First, let me show it.\n  - ```python\n    x = 1\n    ```",
+        "First, let me show it.\n    - ```python\n      x = 1\n      ```",
+    ]
+    for text in samples:
+        assert _has_answer_artifact(text), text
+        assert not _would_reprompt(text), text
+
+
 def test_closer_must_start_its_own_line():
     """CommonMark closes on a delimiter that starts and ends its line, so a body
     line reading ``Use three backticks: ``` `` is content, not the closer."""
