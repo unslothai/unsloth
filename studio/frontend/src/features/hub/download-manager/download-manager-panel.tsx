@@ -143,6 +143,12 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
   const transportConflict = useDownloadManagerStore(
     (state) => state.conflicts[jobKey]?.info ?? null,
   );
+  useEffect(
+    () => () => {
+      downloadManager.cancelConflict(jobKey);
+    },
+    [jobKey],
+  );
   if (!job) return null;
   const active = job.state === "running" || job.state === "cancelling";
   const resumable = RESUMABLE_STATES.has(job.state);

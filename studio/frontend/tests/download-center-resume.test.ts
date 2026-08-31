@@ -59,6 +59,7 @@ test("the global Resume path exposes transport conflict resolution", () => {
   assert.match(PANEL, /downloadManager\.resumeConflict\(jobKey\)/);
   assert.match(PANEL, /downloadManager\.restartConflict\(jobKey\)/);
   assert.match(PANEL, /downloadManager\.cancelConflict\(jobKey\)/);
+  assert.match(PANEL, /\(\) => \(\) => \{/);
 });
 
 test("failed and cancelled jobs are persisted so a restart can resume them", () => {
