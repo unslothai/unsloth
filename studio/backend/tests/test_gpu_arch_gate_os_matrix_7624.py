@@ -2891,7 +2891,13 @@ class TestTheApuRetryRecomputesThePageLock:
         """The recompute may only ADD the lock: taking the crashed launch's memory
         flags back off would mean scanning for --mlock / --no-mmap, valueless in
         llama.cpp's parser, so the scan drops the argv entry after them -- here the
-        user's own -c 8192."""
+        user's own -c 8192.
+
+        The memory flag itself is gone by then, and deliberately: --no-mmap holds a
+        full host copy whatever the layer placement, so the launch is host-resident
+        and Keep Resident owns the mode from the first attempt. The managed lock
+        replaces the flag rather than joining it, since llama.cpp is last-wins and
+        "--mlock --no-mmap" runs UNLOCKED. Only -c 8192 has to come through."""
         _apply_os(monkeypatch, "linux", is_rocm = True)
         monkeypatch.setattr(
             LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 200000)
@@ -2908,17 +2914,19 @@ class TestTheApuRetryRecomputesThePageLock:
             returncode = 1,
             output = "ROCm error: device kernel image is invalid",
             capture = capture,
-            # --no-mmap is a memory flag apply_model_memory_policy keeps when it
-            # emits the legacy --mlock (this build reports no --load-mode), and
-            # -c 8192 is the entry a valueless-flag scan would eat with it.
+            # --no-mmap is the memory flag the policy supersedes with the legacy
+            # --mlock (this build reports no --load-mode), and -c 8192 is the entry
+            # a valueless-flag scan would eat with it.
             intent_kwargs = {"extra_args": ["--no-mmap", "-c", "8192"]},
         )
         retry = [(cmd, env) for cmd, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"]
         assert retry, [_visibility(e) for _c, e in launches]
         cmd, _env = retry[0]
-        assert "--no-mmap" in cmd, f"a user memory flag was stripped by the recompute: {cmd}"
-        assert cmd[cmd.index("-c") + 1] == "8192", f"the extra after --no-mmap was eaten: {cmd}"
+        assert all(
+            cmd[i + 1] == "8192" for i, token in enumerate(cmd) if token == "-c"
+        ), f"an entry after a valueless flag was eaten: {cmd}"
         assert "--mlock" in cmd, cmd
+        assert "--no-mmap" not in cmd, f"the shadowing flag survives and unlocks the child: {cmd}"
         # The record has to describe the argv actually launched, or the reload
         # comparator fights a child it already agrees with.
         assert capture["backend"]._memory_mlock_applicable is True
