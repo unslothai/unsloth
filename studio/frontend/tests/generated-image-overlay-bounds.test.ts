@@ -27,11 +27,9 @@ test("the preview is bounded by the row it sits in, not by the viewport", async 
   const overlay = await overlaySource();
   assert.notEqual(overlay, "", "GeneratedImageViewportOverlay not found");
 
-  // A vh/px-only cap does not know about the section's bottom offset or the
-  // caption below it, so on viewports under ~900px tall the image renders
-  // taller than its row and overlaps the caption. max-h-full measures the real
-  // leftover height instead -- but it only resolves against a definite one, so
-  // the frame has to be a shrinkable column flex item, not an inline-block.
+  // A vh/px cap ignores the section's bottom offset and the caption, so under
+  // ~900px tall the image covers the caption. max-h-full needs a definite parent
+  // height, which is why the frame is a column flex item and not an inline-block.
   assert.doesNotMatch(overlay, VIEWPORT_CAP);
   assert.match(overlay, ROW_BOUNDS_IMAGE);
 });
@@ -41,9 +39,8 @@ test("only the image frame swallows clicks, so the backdrop stays reachable", as
   const panel = overlay.match(PANEL_CLASSES)?.[0];
   assert.ok(panel, "overlay panel class list not found");
 
-  // The panel is transparent, so any pointer-events-auto on it turns the whole
-  // dimmed area around the image into an inert click target and backdrop
-  // dismissal silently stops working there.
+  // The panel is transparent: pointer-events-auto there silently kills backdrop
+  // dismissal everywhere around the image.
   assert.doesNotMatch(panel, POINTER_EVENTS_AUTO);
   assert.match(overlay, FRAME_OPTS_IN);
 });

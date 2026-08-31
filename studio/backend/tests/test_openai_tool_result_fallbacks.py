@@ -562,10 +562,7 @@ def test_azure_openai_requests_web_search_sources(monkeypatch):
 
 
 def test_custom_base_url_keeps_web_search_but_drops_the_include(monkeypatch):
-    # `include` is an OpenAI enum; a strict Responses server that implements
-    # web_search still 400s the whole request on an unknown value, so only the
-    # tool may reach a custom base. Same gate as prompt_cache_retention /
-    # context_management / shell / image_generation.
+    # A strict Responses server can implement web_search and still 400 on the enum.
     for base_url in (
         "http://127.0.0.1:11434/v1",
         "https://api.openai.com.attacker.com/v1",

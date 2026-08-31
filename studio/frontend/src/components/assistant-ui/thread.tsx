@@ -1915,9 +1915,8 @@ const GeneratedImageViewportOverlay: FC<{
         aria-label="Generated image preview"
       >
         <div className="relative flex min-h-0 w-full max-w-[1100px] flex-1 flex-col items-center justify-center gap-3">
-          {/* Column flex so the frame shrinks to the row and `max-h-full` on the image
-          resolves against a definite height; the frame still hugs the image, which is what
-          keeps the controls on its corner. */}
+          {/* Column flex: the frame shrinks to the row, so `max-h-full` resolves against a
+          definite height while the frame still hugs the image and keeps the controls on it. */}
           <div className="flex min-h-0 max-h-[620px] flex-1 flex-col items-center justify-center">
             <div className="pointer-events-auto relative min-h-0">
               <img

@@ -5389,9 +5389,7 @@ class ExternalProviderClient:
         web_search_enabled_openai = bool(
             _responses_hosted_builtins_allowed and enabled_tools and "web_search" in enabled_tools
         )
-        # The per-call sources/results selectors are an OpenAI-cloud `include` enum, so a
-        # strict Responses server that implements `web_search` still 400s the whole request
-        # on them. Same gate the other cloud-only fields above use.
+        # `include` is an enum: a strict server that has `web_search` still 400s on these.
         web_search_include_openai = web_search_enabled_openai and is_openai_cloud
         _web_search_include = [
             "web_search_call.action.sources",
@@ -6000,9 +5998,7 @@ class ExternalProviderClient:
                                         yield _chunk_with_text(summary_text)
                                         reasoning_emitted = True
                                 elif item.get("type") == "web_search_call":
-                                    # Agentic search also emits open_page and
-                                    # find_in_page actions, which carry a URL and
-                                    # optional pattern instead of a query.
+                                    # open_page / find_in_page carry a url (+ pattern), no query.
                                     item_id = item.get("id", "") or (f"ws_{len(web_search_calls)}")
                                     arguments = _extract_web_search_action(item)
                                     if not arguments.get("query"):
