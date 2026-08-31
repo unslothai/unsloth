@@ -3791,8 +3791,12 @@ def _anthropic_reasoning_args(payload) -> dict:
     if enable_thinking is None:
         # Neither x-unsloth control was sent: fall back to Anthropic's native
         # `thinking` block (and to None when that is absent too, leaving the
-        # model in its load-time default).
-        enable_thinking = payload.resolved_enable_thinking()
+        # model in its load-time default). A ChatCompletionRequest has already
+        # mapped that block onto the boolean and carries no resolver, so the
+        # sampling gate can share this helper.
+        resolver = getattr(payload, "resolved_enable_thinking", None)
+        if resolver is not None:
+            enable_thinking = resolver()
     return {
         "enable_thinking": enable_thinking,
         "reasoning_effort": reasoning_effort,
@@ -19394,15 +19398,11 @@ def _normalize_chat_reasoning_controls(payload) -> None:
         payload.preserve_thinking = nested["preserve_thinking"]
 
 
-def _loaded_reasoning_default(model_id) -> Optional[bool]:
-    """The mode llama-server generates in when a request sends no reasoning controls.
+def _loaded_llama_backend_for(model_id):
+    """The live llama.cpp backend serving ``model_id``, or None.
 
-    Studio pins it at launch (``--chat-template-kwargs {"enable_thinking": ...}``), so a
-    silent request still generates in it, and sampling has to agree: Qwen3.8 thinks by
-    default, and its model card pairs that with presence_penalty 0.0. The Chat UI already
-    seeds itself this way (apply-inference-status-to-store.ts), so without this an API
-    client and the UI disagree on the same loaded model. Only the loaded model's own id
-    qualifies, so a transformers/MLX request is never priced off the llama.cpp launch.
+    The id has to match: a transformers/MLX request must never be answered from the
+    llama.cpp launch state.
     """
     if not model_id:
         return None
@@ -19411,20 +19411,16 @@ def _loaded_reasoning_default(model_id) -> Optional[bool]:
         return None
     if getattr(backend, "model_identifier", None) != model_id:
         return None
-    if not getattr(backend, "supports_reasoning", False):
-        return None
-    if getattr(backend, "reasoning_always_on", False):
-        return True
-    return bool(getattr(backend, "reasoning_default", False))
+    return backend
 
 
-def _normalized_sampling_thinking_mode(payload, model_id = None) -> Optional[bool]:
-    """Three-valued reasoning mode used only to select sampling recommendations.
+def _normalized_sampling_thinking_mode(payload) -> Optional[bool]:
+    """Three-valued reasoning mode read from the request alone.
 
     Precedence: ``enable_thinking``, then effort (``none`` means off), then the
-    Anthropic ``thinking`` block, then the loaded model's launch-time default. The
-    Anthropic block is mapped for chat requests already; the fallback also covers
-    /v1/messages.
+    Anthropic ``thinking`` block. The block is mapped for chat requests already;
+    the fallback also covers /v1/messages. None means the request picked nothing,
+    leaving the mode to the loaded template.
     """
     enable_thinking, reasoning_effort = _resolve_reasoning_controls(
         getattr(payload, "enable_thinking", None),
@@ -19438,7 +19434,28 @@ def _normalized_sampling_thinking_mode(payload, model_id = None) -> Optional[boo
         # No .lower(): resolved_enable_thinking() treats only the exact "disabled"
         # as off, and a case variant must not split sampling from generation.
         return str(thinking_type) != "disabled"
-    return _loaded_reasoning_default(model_id)
+    return None
+
+
+def _sampling_thinking_mode(payload, model_id) -> Optional[bool]:
+    """The mode generation will actually run in, used to pick sampling recommendations.
+
+    Defers to ``_think_parsing_expected``, the same resolver the think-markup gate uses,
+    so sampling cannot disagree with generation: it honors always-on templates that
+    ignore an off control, effort-dial families that map "off" onto a low-but-thinking
+    effort, and -- when the request sends nothing -- the mode Studio launched the model
+    in. That last case is the common one: Qwen3.8 thinks by default, its card pairs that
+    with presence_penalty 0.0, and the Chat UI already seeds itself this way
+    (apply-inference-status-to-store.ts). Without a live backend only the request can
+    speak, so the historical flat preset stands.
+    """
+    backend = _loaded_llama_backend_for(model_id)
+    # _think_parsing_expected defaults its introspection ON so a test double keeps
+    # parsing markup; sampling has to default the other way, or a backend that cannot
+    # answer would silently re-price every request. No introspection, no mode.
+    if backend is None or not getattr(backend, "supports_reasoning", False):
+        return _normalized_sampling_thinking_mode(payload)
+    return _think_parsing_expected(backend, payload)
 
 
 def _fill_recommended_sampling_openai(payload, model_id) -> None:
@@ -19459,7 +19476,7 @@ def _fill_recommended_sampling_openai(payload, model_id) -> None:
     effective = resolve_effective_sampling(
         model_id,
         explicit,
-        thinking_mode = _normalized_sampling_thinking_mode(payload, model_id),
+        thinking_mode = _sampling_thinking_mode(payload, model_id),
     )
     for field, value in effective.items():
         setattr(payload, field, value)
@@ -27778,7 +27795,7 @@ async def anthropic_messages(
             "repetition_penalty": payload.repetition_penalty,
             "presence_penalty": payload.presence_penalty,
         },
-        thinking_mode = _normalized_sampling_thinking_mode(payload, _anthropic_model_id),
+        thinking_mode = _sampling_thinking_mode(payload, _anthropic_model_id),
     )
     temperature = _anthropic_sampling["temperature"]
     top_p = _anthropic_sampling["top_p"]
