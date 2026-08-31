@@ -363,9 +363,9 @@ def test_a_model_load_is_not_counted_as_a_request_in_flight():
 
     monitor = ApiMonitor(max_entries = 16)
     monitor.record_lifecycle(event = "load", model = "unsloth/Qwen3-27B-GGUF", running = True)
-    assert any(
-        e.status == "running" for e in monitor._entries
-    ), "the load must be a running row, or this test proves nothing"
+    assert any(e.status == "running" for e in monitor._entries), (
+        "the load must be a running row, or this test proves nothing"
+    )
     assert monitor.active_count() == 0
 
     # And through the hook itself, against the live singleton, so swapping
@@ -424,3 +424,39 @@ def test_the_count_is_read_under_the_monitors_lock_while_it_mutates():
     assert not reader.is_alive(), "active_count() deadlocked against the writers"
     assert not errors, errors
     assert seen and all(isinstance(v, int) and v >= 0 for v in seen)
+
+
+def test_a_disabled_api_monitor_omits_the_count_rather_than_reporting_zero():
+    """UNSLOTH_STUDIO_DISABLE_API_MONITOR makes the monitor record nothing, so
+    active_count() is a constant 0 -- and 0 is the one value that asserts the slot is
+    held by work Studio already finished. Every live generation would be logged as a
+    leaked slot, which is the precise misreading this field exists to prevent."""
+    from core.inference.api_monitor import ApiMonitor
+
+    disabled = ApiMonitor(max_entries = 8, enabled = False)
+    assert disabled.enabled is False
+    assert disabled.active_count() == 0, "a disabled monitor still counts zero"
+
+    import core.inference.api_monitor as am
+
+    real = am.api_monitor
+    am.api_monitor = disabled
+    try:
+        assert ls._api_monitor_running_count() is None
+    finally:
+        am.api_monitor = real
+    assert ls._api_monitor_running_count() is not None
+
+
+def test_the_count_is_process_wide_and_only_zero_is_conclusive():
+    """The monitor does not record which backend a request went to, so a concurrent
+    external-provider call raises this count without occupying a llama-server slot.
+    Only the zero direction is load bearing, and the comment at the emit site says so
+    rather than claiming the count is per engine."""
+    import inspect
+
+    src = inspect.getsource(ls.LlamaServerStatsLogger._run)
+    assert "process-wide" in src
+    assert "ONE direction" in src
+    hook = inspect.getdoc(ls._api_monitor_running_count) or ""
+    assert "Process-wide" in hook and "not per engine" in hook

@@ -190,9 +190,12 @@ class LlamaServerStatsLogger:
                 }
                 # running=1 with both rates at 0.0 is the whole signature of a wedge,
                 # and it is also what a healthy long prefill looks like. studio_inflight
-                # separates them: 0 with a held slot means llama-server is holding one
-                # for a request we already finished. Omitted, not zeroed, when the
-                # count cannot be read, so a reader never mistakes "unknown" for "none".
+                # separates them in ONE direction: the count is process-wide, so 0 proves
+                # no request of ours is outstanding anywhere and the held slot is
+                # llama-server's alone, while a positive value only bounds the
+                # possibilities -- a concurrent external-provider call raises it without
+                # touching this engine. Omitted, not zeroed, when the count cannot be
+                # read, so a reader never mistakes "unknown" for "none".
                 held = self._studio_inflight()
                 if held is not None:
                     fields["studio_inflight"] = held
@@ -279,12 +282,23 @@ def _api_monitor_running_count():
     model load shows as running but is not an in-flight API request, and counting one
     would answer the opposite of the question this field exists to settle.
 
+    Process-wide, not per engine: the monitor does not record which backend a request
+    went to, so a concurrent external-provider call counts here too. That makes only
+    the zero direction conclusive, which is the direction this field is read in -- see
+    the note on the emit site.
+
     Imported at call time, not module scope: this module is stdlib-only by design
     and is loaded from the llama.cpp backend, which the monitor's package imports
     back. Returns None on any failure so the stats line simply omits the field.
     """
     try:
         from core.inference.api_monitor import api_monitor
+
+        # UNSLOTH_STUDIO_DISABLE_API_MONITOR makes the monitor record nothing, so
+        # active_count() is a constant 0 -- which is the one value that means "the
+        # slot is held by work Studio already finished". Omit rather than assert it.
+        if not api_monitor.enabled:
+            return None
         return api_monitor.active_count()
     except Exception:  # noqa: BLE001 -- diagnostics must never break the poller
         return None
