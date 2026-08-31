@@ -211,12 +211,14 @@ def test_workflow_triggers_on_the_desktop_launch_command(rel):
 
 def _desktop_backend_argv():
     body = re.search(
-        r"fn backend_args\(port: u16\) -> Vec<String> \{(.*?)\n\}",
+        r"fn backend_args\([^)]*\) -> Vec<String> \{(.*?)\n\}",
         PROCESS_RS.read_text(encoding = "utf-8"),
         re.S,
     )
     assert body, "backend_args moved; revisit the trigger list"
-    return re.findall(r'"([^"]+)"', body.group(1))
+    args = re.search(r"let mut args = vec!\[(.*?)\];", body.group(1), re.S)
+    assert args, "backend_args construction moved; revisit the trigger list"
+    return re.findall(r'"([^"]+)"', args.group(1))
 
 
 def _profiler_argv():
