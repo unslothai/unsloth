@@ -692,9 +692,10 @@ def test_notebook_validator_treats_an_open_floor_as_a_floor():
 
     # 0.8 is in the torch 2.9 row, but `>=0.8` can just as easily land on 0.16, so nothing is
     # proven either way and the rule stays quiet.
-    assert nv.rule_inst_004_torchcodec_torch(
-        '!pip install "torchcodec>=0.8"', old_pair, "nb.ipynb", 0
-    ) == []
+    assert (
+        nv.rule_inst_004_torchcodec_torch('!pip install "torchcodec>=0.8"', old_pair, "nb.ipynb", 0)
+        == []
+    )
 
     # Every release above this floor is outside the torch 2.10 row, so it is provable.
     absent = {"torch": "2.10.0+cu128"}
@@ -704,12 +705,20 @@ def test_notebook_validator_treats_an_open_floor_as_a_floor():
     assert len(findings) == 1
 
     # An exact pin in the row is still accepted, and one outside it still reported.
-    assert nv.rule_inst_004_torchcodec_torch(
-        '!pip install "torchcodec==0.8.0"', old_pair, "nb.ipynb", 0
-    ) == []
-    assert len(nv.rule_inst_004_torchcodec_torch(
-        '!pip install "torchcodec==0.11.0"', old_pair, "nb.ipynb", 0
-    )) == 1
+    assert (
+        nv.rule_inst_004_torchcodec_torch(
+            '!pip install "torchcodec==0.8.0"', old_pair, "nb.ipynb", 0
+        )
+        == []
+    )
+    assert (
+        len(
+            nv.rule_inst_004_torchcodec_torch(
+                '!pip install "torchcodec==0.11.0"', old_pair, "nb.ipynb", 0
+            )
+        )
+        == 1
+    )
 
 
 def test_notebook_validator_ignores_a_conditional_pin_when_seeding():
