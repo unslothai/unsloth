@@ -1,0 +1,130 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""The shutdown deadline has to reach the browser, not just the terminal.
+
+`arm_bootstrap_timeout` only fires for an exposed web UI (`--secure`, or an
+external bind), and those are precisely the launches run detached or tunneled,
+where nothing reads stderr. So the one warning Unsloth prints goes to the one
+channel this feature guarantees is unattended, and the UI shows a plain "Failed
+to load auth status." after the fact, when there is no longer a server to ask.
+
+`/api/auth/status` is where the login page already learns it must change the
+password, so it is where the deadline belongs.
+"""
+
+import time
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from auth.bootstrap_timeout import (
+    clear_bootstrap_deadline,
+    record_bootstrap_deadline,
+)
+from routes import auth as auth_routes
+
+
+@pytest.fixture
+def client():
+    app = FastAPI()
+    app.include_router(auth_routes.router, prefix = "/api/auth")
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+@pytest.fixture(autouse = True)
+def _no_leaked_deadline():
+    clear_bootstrap_deadline()
+    yield
+    clear_bootstrap_deadline()
+
+
+def _status(client):
+    response = client.get("/api/auth/status")
+    assert response.status_code == 200
+    return response.json()
+
+
+class TestTheFieldIsPresent:
+    def test_absent_deadline_is_null_not_missing(self, client):
+        """A client that always reads the key must not see undefined on a normal
+        loopback launch, which is the common case."""
+        body = _status(client)
+        assert "bootstrap_deadline_seconds" in body
+        assert body["bootstrap_deadline_seconds"] is None
+
+    def test_an_armed_deadline_is_reported(self, client, monkeypatch):
+        monkeypatch.setattr(
+            auth_routes.storage, "requires_password_change", lambda _username: True
+        )
+        record_bootstrap_deadline(3600)
+        remaining = _status(client)["bootstrap_deadline_seconds"]
+        assert remaining is not None and 3590 <= remaining <= 3600
+
+    def test_it_counts_down_between_calls(self, client, monkeypatch):
+        monkeypatch.setattr(
+            auth_routes.storage, "requires_password_change", lambda _username: True
+        )
+        record_bootstrap_deadline(3600)
+        first = _status(client)["bootstrap_deadline_seconds"]
+        import auth.bootstrap_timeout as bt
+
+        bt._deadline_at = bt._deadline_at - 120
+        second = _status(client)["bootstrap_deadline_seconds"]
+        assert second < first
+
+
+class TestItIsNotReportedWhenItCannotFire:
+    """The deadline shuts down only while the seeded password stands. Reporting
+    a countdown after the password is changed would promise a shutdown that the
+    handler explicitly declines to perform."""
+
+    def test_a_changed_password_reports_no_deadline(self, client, monkeypatch):
+        record_bootstrap_deadline(3600)
+        monkeypatch.setattr(
+            auth_routes.storage, "requires_password_change", lambda _username: False
+        )
+        body = _status(client)
+        assert body["requires_password_change"] is False
+        assert body["bootstrap_deadline_seconds"] is None
+
+    def test_the_timer_being_armed_is_not_enough_on_its_own(self, client, monkeypatch):
+        """Arming happens once at startup and is never disarmed on a password
+        change, so the route cannot infer the answer from the timer alone."""
+        record_bootstrap_deadline(60)
+        monkeypatch.setattr(
+            auth_routes.storage, "requires_password_change", lambda _username: False
+        )
+        assert _status(client)["bootstrap_deadline_seconds"] is None
+        monkeypatch.setattr(
+            auth_routes.storage, "requires_password_change", lambda _username: True
+        )
+        assert _status(client)["bootstrap_deadline_seconds"] is not None
+
+
+class TestTheNumberIsUsable:
+    def test_an_expired_deadline_reads_zero_not_negative(self, client, monkeypatch):
+        """Rendered straight into a countdown, so a negative would print as
+        "shuts down in -12 minutes"."""
+        monkeypatch.setattr(
+            auth_routes.storage, "requires_password_change", lambda _username: True
+        )
+        record_bootstrap_deadline(1)
+        import auth.bootstrap_timeout as bt
+
+        bt._deadline_at = time.monotonic() - 5
+        assert _status(client)["bootstrap_deadline_seconds"] == 0
+
+    def test_the_endpoint_stays_anonymous(self, client, monkeypatch):
+        """No auth header is sent anywhere in this file. The deadline discloses
+        nothing an anonymous caller cannot already read off
+        requires_password_change, which this endpoint has always returned."""
+        monkeypatch.setattr(
+            auth_routes.storage, "requires_password_change", lambda _username: True
+        )
+        record_bootstrap_deadline(3600)
+        response = client.get("/api/auth/status")
+        assert response.status_code == 200
+        assert response.json()["bootstrap_deadline_seconds"] is not None

@@ -18,9 +18,39 @@ key rather than the admin password, and never Colab). Configurable via
 import os
 import sys
 import threading
+import time
+from typing import Optional
 
 BOOTSTRAP_TIMEOUT_ENV_VAR = "UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT"
 DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS = 3600
+
+# When the armed deadline expires, as a monotonic timestamp, or None when nothing
+# is armed. The timer itself is not introspectable, and the browser has no other
+# way to learn that this launch is time-boxed: the warning goes to stderr, which
+# the launches that arm the deadline (--secure, external bind) usually detach.
+_deadline_at: Optional[float] = None
+
+
+def record_bootstrap_deadline(timeout_seconds: int) -> None:
+    global _deadline_at
+    _deadline_at = time.monotonic() + timeout_seconds if timeout_seconds > 0 else None
+
+
+def clear_bootstrap_deadline() -> None:
+    global _deadline_at
+    _deadline_at = None
+
+
+def bootstrap_deadline_remaining_seconds() -> Optional[int]:
+    """Seconds until shutdown, or None when this launch is not time-boxed.
+
+    Floors at 0 rather than going negative: the timer and this clock are read
+    separately, so a caller can land here in the moment between expiry and the
+    shutdown completing.
+    """
+    if _deadline_at is None:
+        return None
+    return max(0, int(round(_deadline_at - time.monotonic())))
 
 
 def bootstrap_timeout_seconds(env = None) -> int:
@@ -134,6 +164,7 @@ def arm_bootstrap_timeout(
     logger = None,
 ) -> "threading.Timer":
     """Start a daemon timer that enforces the deadline. Returns the Timer."""
+    record_bootstrap_deadline(timeout_seconds)
     timer = threading.Timer(
         timeout_seconds,
         enforce_bootstrap_password_deadline,
