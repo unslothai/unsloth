@@ -216,7 +216,14 @@ test("each fit verdict is an info mark that explains itself", () => {
   );
   assert.ok(!PICKERS.includes("Larger than your VRAM and system RAM together"));
   // The training estimator's three words map onto those rather than carrying their own copy.
-  assert.ok(PICKERS.includes("tight: MIGHT_FIT"));
+  // `tight` reaches the badge only from checkVramFit's 75-100% band, a torch estimate that still
+  // fits on the card. Aliasing it to the GGUF copy told those rows they spill into system RAM.
+  assert.ok(PICKERS.includes("tight: DEVICE_TIGHT"));
+  assert.ok(
+    PICKERS.includes(
+      'hint: "Uses nearly all your VRAM, with little headroom for anything else."',
+    ),
+  );
   // Only oom fails to load, so only its hint says so; partial offloads and runs slower.
   assert.ok(
     PICKERS.includes(

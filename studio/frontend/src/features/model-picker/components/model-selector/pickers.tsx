@@ -660,6 +660,13 @@ const OFFLOADS: FitVerdict = {
   tone: ORANGE,
   hint: "Model doesn't fit but still works with offloading. Expect slower inference.",
 };
+/** checkVramFit's 75-100% band, which is the ONLY source of `tight` here: a torch estimate that
+ *  still fits on the card entirely. It has no --fit, so it neither spills nor offloads. */
+const DEVICE_TIGHT: FitVerdict = {
+  label: "Tight fit",
+  tone: AMBER,
+  hint: "Uses nearly all your VRAM, with little headroom for anything else.",
+};
 /** A torch load, which has no --fit to fall back on: the pipeline goes wholly on the device. */
 const WONT_FIT: FitVerdict = {
   label: "Does not fit",
@@ -668,13 +675,13 @@ const WONT_FIT: FitVerdict = {
 };
 
 /** What each fit verdict marks and says, keyed by the Hub's classes so one question has one
- *  vocabulary. `tight` and `exceeds` are the training estimator's words, mapped on rather than
- *  given a second set of colours and copy. `exceeds` is the only one that cannot offload: it
- *  reaches here from a torch pipeline or the QLoRA estimate, never from a GGUF. */
+ *  vocabulary. `tight` and `exceeds` are the training estimator's words and reach here ONLY from a
+ *  torch pipeline or the QLoRA estimate, never from a GGUF, so both describe a load with no --fit
+ *  to fall back on. That is why neither says anything about offloading. */
 const VRAM_VERDICT: Record<GgufFitClass | VramFitStatus, FitVerdict | null> = {
   fits: null,
   marginal: MIGHT_FIT,
-  tight: MIGHT_FIT,
+  tight: DEVICE_TIGHT,
   partial: OFFLOADS,
   ram: {
     label: "RAM fallback",
