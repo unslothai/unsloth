@@ -1715,9 +1715,9 @@ _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS = (
 # generates more is undercharged until something re-costs it, which a tool loop does every
 # round boundary and a plain chat cannot yet, so on a full cache a long uncapped generation
 # can still overrun. Raise this, or name a real Max Tokens, where that matters.
-_OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS = _positive_int_or_none(
-    os.environ.get("UNSLOTH_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS")
-) or 1024
+_OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS = (
+    _positive_int_or_none(os.environ.get("UNSLOTH_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS")) or 1024
+)
 
 
 def _openai_llama_admission_output_allowance(

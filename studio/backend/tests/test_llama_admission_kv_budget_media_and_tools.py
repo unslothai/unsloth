@@ -572,9 +572,7 @@ class TestARoundIsCostedTheSameWayTheReservationWas:
         opened, committed, _queue = self._round_zero(
             payload, output_tokens = _effective_openai_max_tokens(payload)
         )
-        assert opened < 4096, (
-            f"an uncapped loop still opens on the whole {4096} cache ({opened})"
-        )
+        assert opened < 4096, f"an uncapped loop still opens on the whole {4096} cache ({opened})"
         assert opened <= _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS + 64, opened
         assert (
             committed == opened

@@ -13,6 +13,7 @@ at 0.1 / 2.8 / 4.6 / 8.8s with llamacpp:requests_deferred flat at 0: llama-serve
 slots and never saw requests 2 to 4. #10046 fixed the tool-loop half of this; these cover
 the other half, which is every plain chat.
 """
+
 from routes.inference import (
     _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS,
     _openai_llama_admission_output_allowance,
@@ -34,41 +35,41 @@ def _chat(**fields):
 
 class TestWhatCountsAsUnstated:
     def test_a_real_cap_is_charged_as_asked(self):
-        assert _openai_llama_admission_output_allowance(
-            512, budget = 32768, prompt_tokens = 100
-        ) == 512
+        assert _openai_llama_admission_output_allowance(512, budget = 32768, prompt_tokens = 100) == 512
 
     def test_no_cap_is_unstated(self):
-        assert _openai_llama_admission_output_allowance(
-            None, budget = 32768, prompt_tokens = 100
-        ) == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
+        assert (
+            _openai_llama_admission_output_allowance(None, budget = 32768, prompt_tokens = 100)
+            == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
+        )
 
     def test_a_cap_of_the_whole_window_is_unstated(self):
         """This is the "Max" setting, and it is the default."""
-        assert _openai_llama_admission_output_allowance(
-            32768, budget = 32768, prompt_tokens = 100
-        ) == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
+        assert (
+            _openai_llama_admission_output_allowance(32768, budget = 32768, prompt_tokens = 100)
+            == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
+        )
 
     def test_a_cap_above_the_window_is_unstated(self):
-        assert _openai_llama_admission_output_allowance(
-            99999, budget = 32768, prompt_tokens = 100
-        ) == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
+        assert (
+            _openai_llama_admission_output_allowance(99999, budget = 32768, prompt_tokens = 100)
+            == _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
+        )
 
     def test_a_cap_just_under_the_window_is_still_a_cap(self):
         """Only the whole window reads as unstated; asking for nearly all of it is a
         statement, and is charged."""
-        assert _openai_llama_admission_output_allowance(
-            32767, budget = 32768, prompt_tokens = 100
-        ) == 32767
+        assert (
+            _openai_llama_admission_output_allowance(32767, budget = 32768, prompt_tokens = 100)
+            == 32767
+        )
 
     def test_it_never_exceeds_what_is_left(self):
         """On a cache smaller than the allowance, stay inside the budget."""
-        assert _openai_llama_admission_output_allowance(
-            None, budget = 2048, prompt_tokens = 1800
-        ) == 248
-        assert _openai_llama_admission_output_allowance(
-            None, budget = 2048, prompt_tokens = 4000
-        ) == 0
+        assert (
+            _openai_llama_admission_output_allowance(None, budget = 2048, prompt_tokens = 1800) == 248
+        )
+        assert _openai_llama_admission_output_allowance(None, budget = 2048, prompt_tokens = 4000) == 0
 
 
 class TestTheDefaultChatNoLongerTakesTheWholeCache:
@@ -76,9 +77,7 @@ class TestTheDefaultChatNoLongerTakesTheWholeCache:
     CAPACITY = 4
 
     def _cost(self, payload):
-        return _openai_llama_admission_tokens(
-            payload, budget = self.BUDGET, capacity = self.CAPACITY
-        )
+        return _openai_llama_admission_tokens(payload, budget = self.BUDGET, capacity = self.CAPACITY)
 
     def test_max_tokens_max_does_not_reserve_the_budget(self):
         cost = self._cost(_chat(max_tokens = self.BUDGET))
@@ -109,6 +108,6 @@ class TestTheDefaultChatNoLongerTakesTheWholeCache:
 
 class TestNothingChangesWhereThereIsNoBudget:
     def test_an_unknown_budget_still_declines_to_price(self):
-        assert _openai_llama_admission_tokens(
-            _chat(max_tokens = 4096), budget = None, capacity = 4
-        ) is None
+        assert (
+            _openai_llama_admission_tokens(_chat(max_tokens = 4096), budget = None, capacity = 4) is None
+        )
