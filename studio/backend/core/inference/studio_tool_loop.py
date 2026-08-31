@@ -1503,25 +1503,29 @@ async def stream_with_studio_tools(
         for call in calls:
             if cancel_event.is_set():
                 break
+            # Prepared before the budget gate: the decision's replay shape is
+            # the one that guarantees the provider parseable arguments, and an
+            # exhausted call is replayed too.
+            decision = controller.prepare_call(call)
             if not unlimited and remaining <= 0:
                 # Budget spent.
                 for card_line in _unrun_call_card(
                     tool_name = call["function"]["name"],
                     tool_call_id = call.get("card_id") or call.get("stream_id") or call["id"],
-                    arguments = call.get("arguments"),
+                    # The decision's card shape, so arguments that never became
+                    # valid JSON show as {"raw": ...} like every other card,
+                    # not as the internal parsed dict.
+                    arguments = decision.tool_start_payload()["arguments"],
                     result = _TOOL_BUDGET_EXHAUSTED,
                     provenance = _unrun_provenance(call["function"]["name"], round_id),
                 ):
                     yield card_line
                 # The result below has to be replayed with its call: only the call that spent the last slot reaches
                 # assistant_tool_calls further down, so this one would arrive as an orphan role="tool" message and
-                # OpenAI, Anthropic and Gemini all reject that history instead of answering.
-                exhausted_call: dict[str, Any] = {
-                    "id": call["id"],
-                    "type": "function",
-                    # Copied: the normalized call also carries a parsed arguments dict that must not reach the provider
-                    "function": dict(call["function"]),
-                }
+                # OpenAI, Anthropic and Gemini all reject that history instead of answering. The decision builds the
+                # replay: llama-server parses every replayed tool_call's arguments while rendering the template, so a
+                # raw fragment that never became valid JSON must not go back verbatim.
+                exhausted_call = decision.as_assistant_tool_call()
                 exhausted_extra = call.get("extra_content")
                 if isinstance(exhausted_extra, dict) and exhausted_extra:
                     exhausted_call["extra_content"] = exhausted_extra
@@ -1535,9 +1539,8 @@ async def stream_with_studio_tools(
                     }
                 )
                 continue
-            decision = controller.prepare_call(call)
             # The frontend groups a round's reasoning by this id (codexLocalToolRoundId), so every tool card the loop
-            # emits has to carry it, not just the budget-exhausted one built by hand above.
+            # emits has to carry it, including the budget-exhausted card above.
             decision.provenance["round_id"] = round_id
             if not decision.should_execute:
                 completion = controller.record_noop(decision)
