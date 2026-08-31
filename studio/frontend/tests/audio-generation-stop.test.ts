@@ -86,7 +86,20 @@ test("deleting a clip drops the row without waiting on the refresh", () => {
   // the deleted row on screen against an already-revoked object URL.
   assert.match(
     source,
-    /await deleteAudioClip\(id\);[\s\S]*galleryCache\.clips = galleryCache\.clips\.filter\([\s\S]*setClips\(galleryCache\.clips\);/,
+    /const dropClip = useCallback\(\(id: string\) => \{[\s\S]*galleryCache\.clips = galleryCache\.clips\.filter\([\s\S]*setClips\(galleryCache\.clips\);/,
+  );
+  assert.match(
+    source,
+    /await deleteAudioClip\(id\);\s*dropClip\(id\);\s*await refreshGallery\(id\);/,
+  );
+});
+
+test("archiving a clip drops the row the same way a delete does", () => {
+  // Same revoked-object-URL trap: the clip is gone server-side, so a row left up until a refresh
+  // that may fail renders a tile that can no longer play.
+  assert.match(
+    source,
+    /await setAudioClipFlags\(id, \{ archived: true \}\);[\s\S]*?dropClip\(id\);\s*await refreshGallery\(id\);/,
   );
 });
 

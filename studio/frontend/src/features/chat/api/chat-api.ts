@@ -1131,6 +1131,29 @@ export async function getChatMessage(
   return parseJsonOrThrow<MessageRecord>(response);
 }
 
+/** The server owns this message and will reject every save of it.
+ *
+ * Distinct from a transient failure: retrying can never succeed, so callers must stop
+ * rather than back off. Without this the per-chunk autosave treated the rejection as an
+ * anonymous error and re-sent on the next chunk for the whole generation.
+ */
+/** Set by routes/chat_history.py; exposed through the CORS middleware in main.py. */
+const CONFLICT_KIND_HEADER = "X-Unsloth-Conflict-Kind";
+const CONFLICT_KIND_PROTECTED = "protected";
+
+export class ChatMessageProtectedError extends Error {
+  readonly messageId: string;
+  readonly threadId: string;
+
+  constructor(threadId: string, messageId: string, detail?: string) {
+    // Keep the server's wording: a manual edit surfaces this text to the user.
+    super(detail || `Message ${messageId} is server-managed and cannot be edited`);
+    this.name = "ChatMessageProtectedError";
+    this.threadId = threadId;
+    this.messageId = messageId;
+  }
+}
+
 export async function saveChatMessage(
   message: MessageRecord,
   options: { allowGenerationEdit?: boolean; coalesce?: boolean } = {},
@@ -1146,6 +1169,21 @@ export async function saveChatMessage(
       body: JSON.stringify(message),
     },
   );
+  // Two failures share this status: a protected message, where the autosave must stop, and
+  // a thread-id collision, which the caller must see or the message is lost. Only the header
+  // separates them, so anything else (an older backend included) takes the normal error path.
+  if (
+    response.status === 409 &&
+    response.headers?.get(CONFLICT_KIND_HEADER) === CONFLICT_KIND_PROTECTED
+  ) {
+    // Read here, not in parseJsonOrThrow: a body is single-use.
+    const body = await response.json().catch(() => null);
+    throw new ChatMessageProtectedError(
+      message.threadId,
+      message.id,
+      formatApiErrorBody(body) ?? undefined,
+    );
+  }
   const savedMessage = await parseJsonOrThrow<MessageRecord>(response);
   // Coalescing is the streaming autosave's alone, since it lands here per chunk. A manual
   // edit is one deliberate change and publishes at once.

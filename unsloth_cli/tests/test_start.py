@@ -1583,8 +1583,7 @@ def test_connect_claude_as_subagent_preserves_cloud_parent(fake_studio, tmp_path
         "claude",
         "--plugin-dir",
         str(plugin),
-        "--allowedTools",
-        f"{start._CLAUDE_SUBAGENT_TOOL},{start._CLAUDE_SUBAGENT_PLAN_TOOL}",
+        f"--allowedTools={start._CLAUDE_SUBAGENT_TOOL},{start._CLAUDE_SUBAGENT_PLAN_TOOL}",
         "hello",
     ]
     assert "--model" not in command
@@ -5091,7 +5090,20 @@ def test_claude_subagent_allowed_tools_precede_forwarded_delimiter(fake_studio):
     )
     assert result.exit_code == 0, result.output
     command = _launch_command(result.output)
-    assert command.index("--allowedTools") < command.index("--resume")
+    allowed = next(arg for arg in command if arg.startswith("--allowedTools="))
+    assert command.index(allowed) < command.index("--resume")
+
+
+def test_claude_subagent_forwards_positional_prompt(fake_studio):
+    # --allowedTools is variadic: a detached value would consume the prompt.
+    result = CliRunner().invoke(
+        start.start_app,
+        ["claude", "--as-subagent", "--no-launch", "fix the failing test"],
+    )
+    assert result.exit_code == 0, result.output
+    command = _launch_command(result.output)
+    assert command[-1] == "fix the failing test"
+    assert "--allowedTools" not in command
 
 
 def test_opencode_subagent_installs_binary_before_filter_inspection(fake_studio, monkeypatch):
