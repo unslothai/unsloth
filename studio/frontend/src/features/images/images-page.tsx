@@ -1412,9 +1412,13 @@ export function ImagesPage({
     [batchSize, count, guidance, height, negativePrompt, steps, width],
   );
   const imageDefaultRecipe = useMemo<ImageGenerationPresetParams>(() => {
-    const recommended =
-      pendingModelDefaults ??
-      defaultsFor(status?.repo_id ?? status?.base_repo ?? "", status?.family);
+    const residentRecommended = defaultsFor(
+      status?.repo_id ?? status?.base_repo ?? "",
+      status?.family,
+    );
+    const recommended = status?.loaded
+      ? residentRecommended
+      : pendingModelDefaults ?? residentRecommended;
     return {
       negativePrompt: "",
       width: 1024,
@@ -1424,7 +1428,7 @@ export function ImagesPage({
       batchSize: 1,
       runs: 1,
     };
-  }, [pendingModelDefaults, status?.base_repo, status?.family, status?.repo_id]);
+  }, [pendingModelDefaults, status?.base_repo, status?.family, status?.loaded, status?.repo_id]);
   const applyImagePresetParams = useCallback((params: ImageGenerationPresetParams) => {
     setNegativePrompt(params.negativePrompt);
     // Same rule restoreSettings follows: a negative prompt that is in effect has to be visible, or
@@ -2384,7 +2388,7 @@ export function ImagesPage({
       familyConfirmed;
     if (confirmingOwnPick) {
       const d = defaultsFor(
-        status?.repo_id ?? status?.base_repo ?? repoId,
+        pendingModelDefaults.repoId,
         status?.family,
       );
       const superseded = pickRecipeSuperseded.current?.() ?? false;

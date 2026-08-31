@@ -1230,11 +1230,13 @@ function VideoGenerator({
   const presetRepoId = status?.repo_id ?? "";
   const videoDefaultRecipe = useMemo<VideoGenerationPresetParams>(() => {
     const resolution = resolutionPresets[0] ?? [768, 512];
-    const recommended =
-      pendingModelDefaults ??
-      (defaultSteps != null && defaultGuidance != null
+    const residentRecommended =
+      defaultSteps != null && defaultGuidance != null
         ? { steps: defaultSteps, guidance: defaultGuidance }
-        : defaultsFor(presetRepoId));
+        : defaultsFor(presetRepoId);
+    const recommended = status?.loaded
+      ? residentRecommended
+      : pendingModelDefaults ?? residentRecommended;
     const defaultDuration = familyDefaultFrames
       ? durationOptions[
           closestDurationIndex(durationOptions, familyDefaultFrames / fps)

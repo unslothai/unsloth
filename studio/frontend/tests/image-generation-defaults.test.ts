@@ -72,6 +72,11 @@ test("first-load confirmation reconciles optimistic defaults to the resolved fam
   assert.match(residentEffect, /pendingModelDefaults\.loadSeq === loadSeq\.current/);
   assert.match(residentEffect, /lastLoad\.current\?\.repoId === repoId/);
   assert.match(residentEffect, /lastLoad\.current\?\.family/);
+  assert.match(
+    residentEffect,
+    /defaultsFor\(\s*pendingModelDefaults\.repoId,\s*status\?\.family/,
+    "confirmation must retain a direct checkpoint filename for variant defaults",
+  );
   assert.match(residentEffect, /pickRecipeSuperseded\.current\?\.\(\)/);
   assert.match(residentEffect, /setSteps\(d\.steps\)/);
   assert.match(residentEffect, /setGuidance\(d\.guidance\)/);
@@ -82,6 +87,32 @@ test("first-load confirmation reconciles optimistic defaults to the resolved fam
     /setPendingModelDefaults\(null\)/,
     "ready status must stay available for resolved-family reconciliation",
   );
+});
+
+test("the Default preset keeps resident defaults ahead of staged load defaults", () => {
+  for (const page of [
+    "../src/features/images/images-page.tsx",
+    "../src/features/video/video-page.tsx",
+  ]) {
+    const source = readFileSync(new URL(page, import.meta.url), "utf8");
+    const recipeStart = source.indexOf(
+      page.includes("images")
+        ? "const imageDefaultRecipe = useMemo"
+        : "const videoDefaultRecipe = useMemo",
+    );
+    const recipeEnd = source.indexOf(
+      page.includes("images")
+        ? "const applyImagePresetParams"
+        : "const applyVideoPresetParams",
+      recipeStart,
+    );
+    assert.ok(recipeStart >= 0 && recipeEnd > recipeStart);
+    assert.match(
+      source.slice(recipeStart, recipeEnd),
+      /status\?\.loaded\s*\?[\s\S]*:\s*pendingModelDefaults\s*\?\?/,
+      `${page}: resident status must outrank an unapplied Family selection`,
+    );
+  }
 });
 
 test("distinguishes Klein base checkpoints from distilled checkpoints", () => {
@@ -182,7 +213,7 @@ test("the image Default preset keeps the resolved family after load completion",
   const recipe = source.slice(recipeStart, recipeEnd);
   assert.match(
     recipe,
-    /defaultsFor\(status\?\.repo_id \?\? status\?\.base_repo \?\? "", status\?\.family\)/,
+    /defaultsFor\(\s*status\?\.repo_id \?\? status\?\.base_repo \?\? "",\s*status\?\.family/,
   );
   assert.match(recipe, /status\?\.family/);
 });
