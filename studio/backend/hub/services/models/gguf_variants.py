@@ -1249,6 +1249,11 @@ async def get_gguf_variants_answer(
                 from utils.models.model_config import colocated_split_shards
 
                 shards, split_complete = colocated_split_shards(local_target)
+                if split_complete and len(shards) > 1:
+                    try:
+                        size = sum(shard.stat().st_size for shard in shards)
+                    except OSError:
+                        size = 0
 
                 variants = [
                     GgufVariantInfo(

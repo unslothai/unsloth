@@ -14,6 +14,7 @@ export const GGUF_SHARD_SIZE_PRESETS = [
 ] as const;
 
 const GGUF_SHARD_SIZE_RE = /^(\d+)\s*([MG])B?$/i;
+const MAX_PATH_COMPONENT_LENGTH = 255;
 
 export function normalizeGgufShardSize(value: string): string | null {
   const match = GGUF_SHARD_SIZE_RE.exec(value.trim());
@@ -31,7 +32,16 @@ export function ggufShardSaveDirectory(
   baseDirectory: string,
   shardSize: string | null,
 ): string {
-  return shardSize && shardSize !== "0"
-    ? `${baseDirectory}-split-${shardSize}`
-    : baseDirectory;
+  if (!shardSize || shardSize === "0") {
+    return baseDirectory;
+  }
+
+  const suffix = `-split-${shardSize}`;
+  const separator = Math.max(
+    baseDirectory.lastIndexOf("/"),
+    baseDirectory.lastIndexOf("\\"),
+  );
+  const parent = baseDirectory.slice(0, separator + 1);
+  const name = baseDirectory.slice(separator + 1);
+  return `${parent}${name.slice(0, MAX_PATH_COMPONENT_LENGTH - suffix.length)}${suffix}`;
 }

@@ -58,6 +58,22 @@ test("split defaults use a separate save directory", () => {
   assert.equal(ggufShardSaveDirectory("Qwen-GGUF", null), "Qwen-GGUF");
 });
 
+test("split defaults keep the final path component within 255 characters", () => {
+  for (const base of [
+    `models/${"m".repeat(250)}-GGUF`,
+    `C:\\models\\${"m".repeat(250)}-GGUF`,
+  ]) {
+    const directory = ggufShardSaveDirectory(base, "512MB");
+    const separator = Math.max(
+      directory.lastIndexOf("/"),
+      directory.lastIndexOf("\\"),
+    );
+    const component = directory.slice(separator + 1);
+    assert.equal(component.length, 255);
+    assert.equal(component.endsWith("-split-512MB"), true);
+  }
+});
+
 function params(ggufShardSize: string | null) {
   return {
     sourceMode: "model",

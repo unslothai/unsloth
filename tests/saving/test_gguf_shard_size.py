@@ -132,7 +132,7 @@ def test_vlm_split_only_replaces_main_model(tmp_path, monkeypatch):
         return subprocess.CompletedProcess(args, 0, stdout = "ok", stderr = "")
 
     monkeypatch.setattr(save_mod.subprocess, "run", fake_run)
-    output = save_mod._split_vlm_main_gguf(
+    output = save_mod._split_main_gguf(
         [str(main), str(mmproj), str(mtp)],
         "1MB",
         "quantizer",
@@ -160,7 +160,7 @@ def test_vlm_main_below_boundary_stays_single_file(tmp_path, monkeypatch):
         lambda _: pytest.fail("splitter should not be required"),
     )
 
-    output = save_mod._split_vlm_main_gguf([str(main), str(mmproj)], "1MB", "quantizer")
+    output = save_mod._split_main_gguf([str(main), str(mmproj)], "1MB", "quantizer")
 
     assert output == [str(main), str(mmproj)]
 
@@ -178,7 +178,7 @@ def test_vlm_split_failure_keeps_single_file(tmp_path, monkeypatch):
     monkeypatch.setattr(save_mod.subprocess, "run", fail_run)
 
     with pytest.raises(RuntimeError, match = "invalid gguf"):
-        save_mod._split_vlm_main_gguf([str(main), str(mmproj)], "1MB", "quantizer")
+        save_mod._split_main_gguf([str(main), str(mmproj)], "1MB", "quantizer")
     assert main.exists()
     assert mmproj.exists()
 
@@ -196,7 +196,7 @@ def test_vlm_incomplete_split_keeps_single_file(tmp_path, monkeypatch):
     monkeypatch.setattr(save_mod.subprocess, "run", incomplete_run)
 
     with pytest.raises(RuntimeError, match = "incomplete shard set"):
-        save_mod._split_vlm_main_gguf([str(main)], "1MB", "quantizer")
+        save_mod._split_main_gguf([str(main)], "1MB", "quantizer")
     assert main.exists()
 
 
@@ -216,6 +216,6 @@ def test_vlm_split_does_not_overwrite_existing_shards(tmp_path, monkeypatch):
     monkeypatch.setattr(save_mod.subprocess, "run", fake_run)
 
     with pytest.raises(FileExistsError, match = "refusing to overwrite"):
-        save_mod._split_vlm_main_gguf([str(main)], "1MB", "quantizer")
+        save_mod._split_main_gguf([str(main)], "1MB", "quantizer")
     assert main.exists()
     assert existing.read_bytes() == b"existing"

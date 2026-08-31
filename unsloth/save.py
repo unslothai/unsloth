@@ -1953,14 +1953,13 @@ def _find_llama_gguf_split(quantizer_location: str) -> str:
         if os.path.isfile(candidate) and (IS_WINDOWS or os.access(candidate, os.X_OK)):
             return candidate
     raise RuntimeError(
-        "Unsloth: sharding a vision GGUF requires llama-gguf-split so the mmproj "
-        "companion can stay single-file. Upgrade unsloth_zoo and reinstall llama.cpp, "
-        "then retry."
+        "Unsloth: post-conversion GGUF sharding requires llama-gguf-split. "
+        "Upgrade unsloth_zoo and reinstall llama.cpp, then retry."
     )
 
 
-def _split_vlm_main_gguf(initial_files, gguf_shard_size: str, quantizer_location: str):
-    """Split one VLM text GGUF while leaving mmproj and MTP companions untouched."""
+def _split_main_gguf(initial_files, gguf_shard_size: str, quantizer_location: str):
+    """Split one main GGUF while leaving mmproj and MTP companions untouched."""
     max_bytes = _gguf_shard_size_bytes(gguf_shard_size)
     if max_bytes == 0:
         return initial_files
@@ -1968,7 +1967,7 @@ def _split_vlm_main_gguf(initial_files, gguf_shard_size: str, quantizer_location
     main_files = [os.fspath(path) for path in initial_files if not _is_gguf_companion(path)]
     if len(main_files) != 1:
         raise RuntimeError(
-            "Unsloth: expected one unsharded VLM text GGUF before companion-safe "
+            "Unsloth: expected one unsharded main GGUF before companion-safe "
             f"splitting, found {len(main_files)}."
         )
     main_file = main_files[0]
@@ -2103,8 +2102,8 @@ def save_to_gguf(
     `preexisting_weights` is what `model_directory` held before the merge wrote it,
     so reclamation can take only what this export produced. `None` means the caller
     cannot say, and nothing is reclaimed.
-    `gguf_shard_size` applies to final f32, f16 and bf16 converter outputs. Quantized
-    outputs remain single-file. None preserves the historical 50GB converter limit.
+    `gguf_shard_size` applies to final f32, f16 and bf16 outputs. Quantized outputs
+    remain single-file. None preserves the historical 50GB converter limit.
     """
     # print_output True only if UNSLOTH_ENABLE_LOGGING=1
     if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") == "1":
@@ -2303,7 +2302,7 @@ def save_to_gguf(
         and first_conversion in _FULL_PRECISION_GGUF_TYPES
         and first_conversion in quantization_method
     ):
-        initial_files = _split_vlm_main_gguf(
+        initial_files = _split_main_gguf(
             initial_files,
             gguf_shard_size,
             quantizer_location,
@@ -2566,6 +2565,17 @@ def save_to_gguf(
                         all_saved_locations.remove(f)
                 for i, f in enumerate(base_files):
                     all_saved_locations.insert(1 + i, f)
+
+        for quant_method, quantized_file in zip(methods_to_quantize, quantized_files):
+            if quant_method not in _FULL_PRECISION_GGUF_TYPES:
+                continue
+            split_files = _split_main_gguf(
+                [quantized_file],
+                gguf_shard_size,
+                quantizer_location,
+            )
+            index = all_saved_locations.index(quantized_file)
+            all_saved_locations[index : index + 1] = split_files
     else:
         print("Unsloth: GPT-OSS model - skipping additional quantizations")
         want_full_precision = True
