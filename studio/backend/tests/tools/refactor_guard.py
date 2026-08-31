@@ -290,6 +290,13 @@ _ARG_FIXTURES = {
     "first": lambda text: _parser_first_sentinel(text),
     "found": lambda text: max(_parser_first_sentinel(text), 0),
     "out": lambda text: [],
+    # The model-facing notices added for a small window: each takes the tool name first
+    # (which gets the corpus text) and then the result it is appended to.
+    "result": lambda text: text,
+    "last_result": lambda text: text,
+    # A run length, not text. Above _MAX_IDENTICAL_TOOL_RESULTS so the message renders
+    # the plural branch it will really be seen in.
+    "times": lambda text: 3,
     "previous": lambda text: text,
     "markers": lambda text: _tool_healing_build_markers(text),
     "patterns": lambda text: _tool_healing_all_pats(),

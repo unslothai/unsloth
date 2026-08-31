@@ -4,8 +4,8 @@
 import type { ThreadMessage } from "@assistant-ui/react";
 import {
   buildLocalTokenCountExtras,
+  buildLocalTokenCountHistory,
   buildLocalTokenCountReasoning,
-  buildOutboundMessagesForTokenCount,
   findLatestUserAudioBase64,
   findLatestUserVideoBase64,
   messagesContainImage,
@@ -180,6 +180,7 @@ type RefreshOptions =
       threadId?: string;
       /** When true, skip the modelLoading guard (post-load recount). */
       afterModelLoad?: boolean;
+      invalidate?: boolean;
     }
   | undefined;
 
@@ -206,6 +207,8 @@ export async function refreshContextUsage(
     (model: { id: string }) => model.id === checkpoint,
   );
   if (activeModel?.isAudio && !activeModel?.hasAudioInput) return;
+
+  if (options?.invalidate) store.setContextUsage(null);
 
   // Never count while anything is generating: the endpoint refuses, and the recount effect depends
   // on this, so the last run finishing re-fires it. runningByThreadId, not the narrower
@@ -293,7 +296,7 @@ export async function refreshContextUsage(
 
     // undefined, not null: a chat with no persisted thread has no project to resolve from.
     const payloadThreadId = threadId ?? undefined;
-    const outbound = await buildOutboundMessagesForTokenCount(
+    const countHistory = await buildLocalTokenCountHistory(
       runMessages,
       payloadThreadId,
     );
@@ -306,7 +309,7 @@ export async function refreshContextUsage(
     const { input_tokens: inputTokens, model: countedModel } =
       await countChatInputTokens({
         model: capturedCheckpoint,
-        messages: outbound,
+        ...countHistory,
         ...buildLocalTokenCountReasoning(),
         ...countExtras,
       });

@@ -1333,7 +1333,14 @@ def test_stream_completion_timeout_is_absolute_despite_keepalives(monkeypatch):
                 [{"role": "user"}],
                 report_progress = False,
             ),
-            timeout = 1,
+            # A hang guard, not the assertion. What is under test is that the run's own
+            # 0.05s deadline is absolute even though keepalives keep arriving, and that
+            # is what pytest.raises checks; this only stops a regression that never
+            # returns from wedging the suite. At 1s it was the tighter of the two on a
+            # loaded runner, so it fired first and the test failed with TimeoutError
+            # instead of the ReadTimeout it was asserting -- a false failure about the
+            # runner. An actual hang is unbounded, so 30s catches it just as well.
+            timeout = 30,
         )
 
     with pytest.raises(httpx.ReadTimeout):

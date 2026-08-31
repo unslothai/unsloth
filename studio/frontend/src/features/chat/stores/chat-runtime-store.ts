@@ -2,7 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
-import { mirrorHfTokenInto, useHfTokenStore } from "@/features/hub";
+import {
+  mirrorHfTokenInto,
+  useHfTokenStore,
+} from "@/features/hub/stores/hf-token-store";
 import {
   cachedPinnableGpuIndexKind,
   reconcileCachedGpuSelection,
@@ -63,6 +66,12 @@ import {
   normalizeStoredRagAutoInject,
 } from "../utils/mirrored-chat-settings";
 import { retryablePatchAfterFailure } from "../utils/settings-retry";
+import {
+  DEFAULT_AUTO_COMPACT_ENABLED,
+  DEFAULT_COMPACTION_HEADROOM_RATIO,
+  DEFAULT_CONTEXT_POLICY,
+  type LocalContextPolicy,
+} from "../utils/auto-compaction";
 import { preserveThinkingDefaultFromLoad } from "../lib/resolve-preserve-thinking-default";
 import {
   THREAD_SCOPED_PARAM_KEYS,
@@ -81,8 +90,17 @@ import {
 import { shouldAdvanceQueuedSettingsEpoch } from "../utils/queued-settings-epoch";
 import type { MmprojFallbackReason } from "../types/api";
 import type { ResearchWebsitePolicy } from "../types/research";
+import {
+  CHAT_GPU_MEMORY_MODE_KEY,
+  CHAT_SPECULATIVE_TYPE_KEY,
+} from "./chat-runtime-keys";
 import { useExternalProvidersStore } from "./external-providers-store";
 import { PLUS_MENU_PINS_STORAGE_KEY } from "./plus-menu-prefs-store";
+
+export {
+  CHAT_GPU_MEMORY_MODE_KEY,
+  CHAT_SPECULATIVE_TYPE_KEY,
+} from "./chat-runtime-keys";
 
 export const CHAT_REASONING_ENABLED_KEY = "unsloth_chat_reasoning_enabled";
 export const CHAT_TOOLS_ENABLED_KEY = "unsloth_chat_tools_enabled";
@@ -135,9 +153,6 @@ export const CHAT_RAG_AUTOINJECT_MIN_SCORE_KEY =
   "unsloth_chat_rag_autoinject_min_score";
 export const CHAT_RAG_OCR_KEY = "unsloth_chat_rag_ocr_scanned";
 export const CHAT_RAG_CAPTION_KEY = "unsloth_chat_rag_caption_figures";
-export const CHAT_SPECULATIVE_TYPE_KEY = "unsloth_chat_speculative_type";
-export const CHAT_GPU_MEMORY_MODE_KEY = "unsloth_chat_gpu_memory_mode";
-
 // Persist only the model-agnostic intents (auto/ngram/off). The model-specific
 // drafter modes (mtp/mtp+ngram/dspark/dflash) and spec_draft_n_max stay session-only:
 // a persisted choice would silently no-op on a model with no MTP head or no
@@ -2431,6 +2446,7 @@ type ChatRuntimeStore = {
   activePresetSource: ChatPresetSource;
   models: ChatModelRow[];
   loras: ChatLoraSummary[];
+  loraInventorySettled: boolean;
   runningByThreadId: Record<string, boolean>;
   /**
      * The subset of `runningByThreadId` decoding on the local llama-server. Swapping the local
@@ -2609,6 +2625,9 @@ type ChatRuntimeStore = {
   generatingStatus: string | null;
   autoHealToolCalls: boolean;
   nudgeToolCalls: boolean;
+  autoCompactEnabled: boolean;
+  contextPolicy: LocalContextPolicy;
+  compactionHeadroomRatio: number;
   maxToolCallsPerMessage: number;
   toolCallTimeout: number;
   kvCacheDtype: string | null;
@@ -2950,6 +2969,9 @@ type ChatRuntimeStore = {
   clearActiveDiffusionCanvasForThread: (threadId: string | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
   setNudgeToolCalls: (enabled: boolean) => void;
+  setAutoCompactEnabled: (enabled: boolean) => void;
+  setContextPolicy: (policy: LocalContextPolicy) => void;
+  setCompactionHeadroomRatio: (ratio: number) => void;
   setMaxToolCallsPerMessage: (value: number) => void;
   setToolCallTimeout: (value: number) => void;
   setGpuMemoryMode: (mode: "auto" | "manual") => void;
@@ -2994,6 +3016,9 @@ type ScalarSettingKey =
   | "searchImages"
   | "autoHealToolCalls"
   | "nudgeToolCalls"
+  | "autoCompactEnabled"
+  | "contextPolicy"
+  | "compactionHeadroomRatio"
   | "maxToolCallsPerMessage"
   | "toolCallTimeout"
   | "reasoningEnabled"
@@ -3044,6 +3069,9 @@ const SCALAR_SETTING_KEYS = [
   "searchImages",
   "autoHealToolCalls",
   "nudgeToolCalls",
+  "autoCompactEnabled",
+  "contextPolicy",
+  "compactionHeadroomRatio",
   "maxToolCallsPerMessage",
   "toolCallTimeout",
   "reasoningEnabled",
@@ -3692,6 +3720,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   activePresetSource: getPresetSource("Default"),
   models: [],
   loras: [],
+  loraInventorySettled: false,
   runningByThreadId: {},
   localRunByThreadId: {},
   runOwnerByThreadId: {},
@@ -3773,6 +3802,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   activeDiffusionCanvasByThreadId: {},
   autoHealToolCalls: true,
   nudgeToolCalls: true,
+  autoCompactEnabled: DEFAULT_AUTO_COMPACT_ENABLED,
+  contextPolicy: DEFAULT_CONTEXT_POLICY,
+  compactionHeadroomRatio: DEFAULT_COMPACTION_HEADROOM_RATIO,
   maxToolCallsPerMessage: 25,
   toolCallTimeout: 5,
   kvCacheDtype: null,
@@ -4058,7 +4090,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return { activePresetSource };
     }),
   setModels: (models) => set({ models }),
-  setLoras: (loras) => set({ loras }),
+  setLoras: (loras) => set({ loras, loraInventorySettled: true }),
   setThreadRunning: (threadId, running, options) =>
     set((state) => {
       const next = { ...state.runningByThreadId };
@@ -5162,6 +5194,42 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       );
       return {
         nudgeToolCalls,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
+    }),
+  setAutoCompactEnabled: (autoCompactEnabled) =>
+    set((state) => {
+      setScalarSettingVersion(
+        "autoCompactEnabled",
+        autoCompactEnabled,
+        state.autoCompactEnabled,
+      );
+      return {
+        autoCompactEnabled,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
+    }),
+  setContextPolicy: (contextPolicy) =>
+    set((state) => {
+      setScalarSettingVersion(
+        "contextPolicy",
+        contextPolicy,
+        state.contextPolicy,
+      );
+      return {
+        contextPolicy,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
+    }),
+  setCompactionHeadroomRatio: (compactionHeadroomRatio) =>
+    set((state) => {
+      setScalarSettingVersion(
+        "compactionHeadroomRatio",
+        compactionHeadroomRatio,
+        state.compactionHeadroomRatio,
+      );
+      return {
+        compactionHeadroomRatio,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),

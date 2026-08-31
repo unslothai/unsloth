@@ -204,6 +204,8 @@ _TRACKED_PATHS = {
     # The OpenAI-compatible route is on inference_router, mounted at both prefixes.
     "/api/inference/images/generations": DIFFUSION,
     "/v1/images/generations": DIFFUSION,
+    "/api/inference/videos": VIDEO,
+    "/v1/videos": VIDEO,
 }
 
 
@@ -275,6 +277,10 @@ def _video_engine() -> Any:
 
 
 _ENGINES = {DIFFUSION: _diffusion_engine, VIDEO: _video_engine}
+
+
+def engine_if_imported(owner: str) -> Any:
+    return _ENGINES[owner]()
 
 
 def _completed_token(progress: dict[str, Any]) -> Optional[tuple[Any, ...]]:

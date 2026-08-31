@@ -9,6 +9,20 @@
 
 const DEFAULT_STUDIO_PORT = "8888";
 const DEFAULT_AGENT = "claude";
+const SAFE_SHELL_ARG_PATTERN = /^[A-Za-z0-9_./:@%+=,-]+$/;
+
+export type AgentCommandOs = "unix" | "windows";
+
+export const shSingle = (value: string): string =>
+  value.replace(/'/g, "'\\''");
+export const psSingle = (value: string): string => value.replace(/'/g, "''");
+
+export function quoteShellArg(value: string, os: AgentCommandOs): string {
+  if (SAFE_SHELL_ARG_PATTERN.test(value)) {
+    return value;
+  }
+  return os === "windows" ? `'${psSingle(value)}'` : `'${shSingle(value)}'`;
+}
 
 // URL.hostname brackets IPv6 literals (`new URL("http://[::1]:8888").hostname` is
 // "[::1]"), so strip the brackets before matching the bare "::1" loopback rules below.
@@ -39,7 +53,7 @@ export function isLoopbackHost(host: string): boolean {
 export function buildAgentCommand(
   base: string | null | undefined,
   key: string | null | undefined,
-  os: "unix" | "windows",
+  os: AgentCommandOs,
   agent: string = DEFAULT_AGENT,
 ): string {
   const bare = `unsloth start ${agent}`;
@@ -70,4 +84,47 @@ export function buildAgentCommand(
   return os === "windows"
     ? `$env:UNSLOTH_STUDIO_URL="${studioUrl}"; ${cmd}`
     : `UNSLOTH_STUDIO_URL=${studioUrl} ${cmd}`;
+}
+
+export interface AgentShellCommands {
+  primary: string;
+  subagent: string;
+  remoteSetup: string;
+  passThrough: string[];
+  dryRun: string;
+}
+
+const REMOTE_SETUP_COMMANDS: Record<AgentCommandOs, string> = {
+  unix: `export UNSLOTH_STUDIO_URL=https://studio.example.com
+export UNSLOTH_API_KEY=sk-unsloth-...
+unsloth start claude`,
+  windows: `$env:UNSLOTH_STUDIO_URL = "https://studio.example.com"
+$env:UNSLOTH_API_KEY = "sk-unsloth-..."
+unsloth start claude`,
+};
+
+function appendCommand(command: string, args: string): string {
+  return args ? `${command} ${args}` : command;
+}
+
+export function buildAgentShellCommands(
+  base: string | null | undefined,
+  os: AgentCommandOs,
+  agent: string,
+  modelArgs: string,
+): AgentShellCommands {
+  const primaryBase = buildAgentCommand(base, null, os, agent);
+  return {
+    primary: appendCommand(primaryBase, modelArgs),
+    subagent: appendCommand(
+      `${primaryBase} --as-subagent`,
+      modelArgs,
+    ),
+    remoteSetup: REMOTE_SETUP_COMMANDS[os],
+    passThrough: [
+      `${buildAgentCommand(base, null, os, "claude")} --continue`,
+      `${buildAgentCommand(base, null, os, "codex")} --persist resume --last`,
+    ],
+    dryRun: `${buildAgentCommand(base, null, os, "claude")} --no-launch`,
+  };
 }
