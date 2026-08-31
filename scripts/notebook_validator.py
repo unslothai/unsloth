@@ -590,6 +590,22 @@ def _install_cell_lower_bound(install_cell: str, target: str) -> str | None:
     return best
 
 
+def _effective_version(install_cell: str, target: str, resolved: str | None) -> str | None:
+    """`resolved` raised by any explicit lower bound the install cell places on `target`.
+
+    resolved_set() drops `>=` because a bound below the Colab version changes nothing, but
+    one above it does move pip. Raising (never lowering) keeps that the only effect: a
+    floor under the resolved version stays a no-op. Without this R-INST-004's own
+    `torchcodec>=0.12.0` remedy cannot clear the error it is offered for.
+    """
+    lower = _install_cell_lower_bound(install_cell, target)
+    if lower is None:
+        return resolved
+    if resolved is None or cmp_versions(lower, resolved) > 0:
+        return lower
+    return resolved
+
+
 def rule_inst_003_peft_torchao(
     install_cell: str, colab: dict[str, str], file: str, cell_idx: int
 ) -> list[Finding]:
@@ -624,8 +640,8 @@ def rule_inst_004_torchcodec_torch(
 ) -> list[Finding]:
     findings: list[Finding] = []
     res = resolved_set(install_cell, colab)
-    torch_v = res.get("torch")
-    codec_v = res.get("torchcodec")
+    torch_v = _effective_version(install_cell, "torch", res.get("torch"))
+    codec_v = _effective_version(install_cell, "torchcodec", res.get("torchcodec"))
     if not torch_v or not codec_v:
         return findings
     if (

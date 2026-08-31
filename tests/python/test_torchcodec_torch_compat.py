@@ -297,6 +297,43 @@ def test_notebook_validator_allows_abi_stable_pairing():
     assert findings[0].rule == "R-INST-004"
 
 
+# Mirrors the checked-in scripts/data/colab_pip_freeze.gpu.txt rows these cases need.
+# Inline so the daily oracle refresh cannot move the expected verdicts.
+COLAB_TORCH211 = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
+
+
+def test_notebook_validator_accepts_its_own_torchcodec_remedy():
+    """R-INST-004's hint is a `>=` pin, and resolved_set() drops `>=`, so following the
+    hint left the error firing forever. The bound has to reach the ABI check."""
+    nv = _load_notebook_validator_module()
+
+    broken = '!pip install "torch==2.12.0"'
+    assert nv.rule_inst_004_torchcodec_torch(broken, COLAB_TORCH211, "nb.ipynb", 0)
+
+    fixed = '!pip install "torch==2.12.0" "torchcodec>=0.12.0"'
+    assert nv.rule_inst_004_torchcodec_torch(fixed, COLAB_TORCH211, "nb.ipynb", 0) == []
+
+
+def test_notebook_validator_reads_torch_range_pins():
+    """A `torch>=` bound above Colab's torch moves pip while torchcodec stays put, so the
+    pairing the notebook actually gets is the one that must be checked."""
+    nv = _load_notebook_validator_module()
+
+    ranged = '!pip install "torch>=2.12"'
+    findings = nv.rule_inst_004_torchcodec_torch(ranged, COLAB_TORCH211, "nb.ipynb", 0)
+    assert len(findings) == 1
+    assert "torchcodec>=0.12.0" in findings[0].hint
+
+
+def test_notebook_validator_ignores_lower_bounds_under_the_resolved_version():
+    """Raising only: a floor below what is already installed does not change the install,
+    so it must not be mistaken for the resolved version and flagged."""
+    nv = _load_notebook_validator_module()
+
+    for cell in ('!pip install "torchcodec>=0.10"', '!pip install "torch>=2.9"'):
+        assert nv.rule_inst_004_torchcodec_torch(cell, COLAB_TORCH211, "nb.ipynb", 0) == [], cell
+
+
 def test_pyproject_declares_torch211_audio_extra_with_python_gate():
     text = PYPROJECT.read_text(encoding = "utf-8")
     match = re.search(r"^audio-torch211 = \[(.*?)^\]", text, re.MULTILINE | re.DOTALL)
