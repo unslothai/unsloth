@@ -958,9 +958,16 @@ class _Turn:
                 continue
             kept.append((index, call))
         ordered = kept
-        # Provider ids reserved first, so a minted card id never collides.
+        # Provider ids reserved first, so a minted card id never collides. Only
+        # the ones _normalized_call keeps: a call it rejects draws no card, the
+        # client releases the id it had minted for it, and an id held here that
+        # the client has given back puts the two out of step from the next round.
         painted.update(
-            call["id"] for _, call in ordered if isinstance(call.get("id"), str) and call["id"]
+            call["id"]
+            for _, call in ordered
+            if isinstance(call.get("id"), str)
+            and call["id"]
+            and _normalized_call(call) is not None
         )
         for position, (index, call) in enumerate(ordered + [(None, call) for call in self.healed]):
             streamed_id = call.get("id")
@@ -1442,16 +1449,17 @@ async def stream_with_studio_tools(
             # the rest of the response. Close it the way every other unrun call
             # is closed. Structured only: a healed call was never streamed, and
             # the span released just above is what tells the user about that one.
-            for raw_call in turn.by_index.values():
-                truncated_id = raw_call.get("id")
-                function = raw_call.get("function")
-                name = function.get("name") if isinstance(function, dict) else None
-                if not isinstance(truncated_id, str) or not truncated_id:
-                    continue
-                if not isinstance(name, str) or not name:
-                    # Not enough of the call arrived to name a tool, so there is
-                    # no card of ours to close.
-                    continue
+            # Through `calls`, which never executes anything: it is what mints
+            # the card id for a call the provider gave none, and the client drew
+            # its card under that same spelling. Reading the slots directly left
+            # every id-less call out, so the card the deltas painted spun for the
+            # rest of the response. Calls it drops -- nameless, or a fork whose
+            # object never closed -- have no card of ours to close either.
+            for raw_call in turn.calls(used_call_ids, painted_card_ids):
+                truncated_id = (
+                    raw_call.get("card_id") or raw_call.get("stream_id") or raw_call["id"]
+                )
+                name = raw_call["function"]["name"]
                 for card_line in _unrun_call_card(
                     tool_name = name,
                     tool_call_id = truncated_id,
@@ -1474,6 +1482,13 @@ async def stream_with_studio_tools(
             else turn.calls(used_call_ids, painted_card_ids)
         )
         if not calls:
+            # The badge clears between iterations, and this turn is over too.
+            # Without it a turn whose only call was refused never reaches the
+            # empty status below, so the client keeps the card it drew for that
+            # call open and a reprompted call merges into it: an upstream ending
+            # on [DONE] sends no finish_reason either, so there is no other
+            # boundary on this path.
+            yield _status_sse("")
             # No tool this turn. A model that only said what it was about to do
             # gets one nudge to actually do it, the same recovery the local loops
             # give a stalled small model, then the answer stands as written.

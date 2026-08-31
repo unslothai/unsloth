@@ -692,6 +692,23 @@ def test_a_card_ledger_is_append_only_across_rounds():
     assert [call.get("card_id") for call in third.calls(taken, cards)] == ["tool_call_1"]
 
 
+def test_a_rejected_call_reserves_no_card_id():
+    # A provider id on a call that never gets a name draws no card: the client
+    # releases the id it had minted, so holding it here would put the two out of
+    # step from the next round on.
+    taken: set[str] = set()
+    cards: set[str] = set()
+    first = _Turn()
+    first.merge_structured([_delta(0, None, '{"a":1}', call_id = "tool_call_0")])
+    first.merge_structured([_delta(1, "beta", '{"b":2}')])
+    assert [call.get("card_id") for call in first.calls(taken, cards)] == ["tool_call_1"]
+
+    second = _Turn()
+    second.round = 1
+    second.merge_structured([_delta(0, "gamma", '{"c":3}')])
+    assert [call.get("card_id") for call in second.calls(taken, cards)] == ["tool_call_0"]
+
+
 def test_a_stable_id_naming_a_longer_tool_opens_its_own_call():
     # Reading "web_search" as "web" grown gave the id to the completed call.
     turn = _Turn()

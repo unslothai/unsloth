@@ -1141,7 +1141,7 @@ test("a card that never got a name is dropped when the turn ends", () => {
   stream.feed([{ index: 0, function: { arguments: '{"a":1}' } }]);
   assert.equal(stream.parts.length, 1);
   stream.feed([], true);
-  assert.deepEqual(stream.parts, []);
+  assert.equal(stream.parts.length, 0);
 
   stream.feed([{ index: 0, function: { name: "beta", arguments: '{"b":2}' } }]);
   assert.deepEqual(
