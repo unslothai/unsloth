@@ -643,13 +643,10 @@ class ModelMemoryResponse(BaseModel):
     # Whether --mlock is passed on the next load. False when no_ram_reserve
     # vetoes it; the UI surfaces that rather than failing silently.
     mlock_active: bool
-    # Whether page-locking is a thing this launch could do at all. False when the
-    # loaded model is fully offloaded to a discrete GPU: there is no host copy to
-    # pin, so the lock is skipped on purpose and residency is carried by the
-    # idle-unload veto alone. Without this the UI cannot tell "vetoed" from
-    # "nothing to lock", and a user whose model is on the card sees a toggle that
-    # is on, no warning, and no effect. True with nothing loaded, matching
-    # mlock_active's convention of reporting the intent until a launch exists.
+    # False when the loaded model is fully offloaded to a discrete GPU: nothing in
+    # host RAM to pin, so the lock is skipped on purpose and the idle-unload veto
+    # carries residency alone. True with nothing loaded, like mlock_active, which
+    # reports the intent until a launch exists.
     mlock_applicable: bool = True
     # Lets the UI distinguish a full GPU offload from a runner that does not use
     # llama.cpp memory controls. Optional/defaulted for mixed-version clients.

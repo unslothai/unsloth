@@ -9443,10 +9443,9 @@ class LlamaCppBackend:
                         "is_igpu": parts[2] == "1",
                         "total_mib": int(parts[3]) // (1024 * 1024),
                         "name": parts[4].strip() if len(parts) >= 5 else "",
-                        # A row without the column is not an unclassified device: the
-                        # older probe still asked ggml, it just did not report whether
-                        # the answer held. Unknown is reserved for a six-column row
-                        # that says so, or the lock is added for a discrete card.
+                        # A missing column is not an unclassified device: the older
+                        # probe still asked ggml. Unknown only when a six-column row
+                        # says so, or the lock is added for a discrete card.
                         "type_known": parts[5] == "1" if len(parts) == 6 else True,
                     }
                 )
@@ -9498,10 +9497,8 @@ class LlamaCppBackend:
                 "Vulkan GPU memory detected: "
                 + ", ".join(f"VK{idx}={free}MiB" for idx, free, _total in gpus)
             )
-        # Absent means a row from before the column existed, and _vulkan_targets_are_igpus
-        # already reads that as classified. Defaulting to unknown here instead only
-        # dropped the snapshot the RAM guard prices iGPUs with, and sent the lock
-        # decision back through a probe that trusts the same is_igpu anyway.
+        # Absent reads as classified, like _vulkan_targets_are_igpus: unknown here
+        # drops the snapshot the RAM guard prices iGPUs with.
         known_vulkan_igpus = (
             {row["index"] for row in rows if row["is_igpu"]}
             if rows and all(row.get("type_known", True) for row in rows)
@@ -22785,22 +22782,16 @@ class LlamaCppBackend:
                                         requested_load_mode = load_mode,
                                         model_memory_settings = _model_memory_settings,
                                     )
-                                    # Over the rebuilt extras, not the first launch's: this
-                                    # retry hands back whatever that one stripped, so a
-                                    # marker taken from there describes a child that no
-                                    # longer exists. The env scrub does carry over, since
-                                    # the retry runs on the same env.
+                                    # Over the rebuilt extras: this retry hands back what the
+                                    # first launch stripped. The scrub still counts, same env.
                                     _retry_touched = bool(_mem_scrubbed) or _retry_extras != list(
                                         extra_args or []
                                     )
-                                    # Only when the rebuilt policy really has no host copy.
-                                    # Restoring a reserving mode puts one back, and then the
-                                    # lock still has something to act on -- the promotion the
-                                    # initial build makes. Dropping it there leaves an
-                                    # unlocked full copy that can never satisfy "keep
-                                    # resident", so the reload hint and the duplicate-load
-                                    # comparator ask for a relaunch that rebuilds the very
-                                    # same child, on every load.
+                                    # Only when the rebuilt policy really has no host copy:
+                                    # a restored reserving mode puts one back, so the lock
+                                    # still applies, as on the initial build. Dropped there,
+                                    # nothing ever satisfies "keep resident" and every load
+                                    # rebuilds the same child.
                                     if not resolve_effective_memory_state(
                                         [*_retry_load_mode, *_retry_extras],
                                         _fit_load_mode_env_view,

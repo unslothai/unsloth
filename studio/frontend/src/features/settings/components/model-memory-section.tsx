@@ -142,12 +142,8 @@ export function ModelMemorySection() {
     settings?.mlockActive === true && settings.memlockLimitBytes !== null
       ? settings.memlockLimitBytes
       : null;
-  // The loaded model is fully on a discrete GPU, so there is no host copy to
-  // pin and the lock is skipped deliberately. Without this the panel is silent:
-  // the toggle reads on, mlockActive reads false, reloadRequired reads false,
-  // and nothing explains why the setting changed nothing (issue #9549). Not
-  // shown when no-reserve is the only enabled setting or an explicit lock is
-  // active, since either case would make this explanation false.
+  // Not shown when no-reserve is the only setting on, or a lock is already
+  // active: either one would make "there is nothing to pin" false.
   const mlockNotApplicable =
     settings?.mlockSkipReason === "full_gpu_offload" &&
     settings.keepResident === true &&

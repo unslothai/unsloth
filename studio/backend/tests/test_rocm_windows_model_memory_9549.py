@@ -174,9 +174,7 @@ def _policy(monkeypatch, keep_resident, no_ram_reserve, extras, *, host_resident
     )
 
 
-# ----------------------------------------------------------------------------- #
 # The reproduction
-# ----------------------------------------------------------------------------- #
 def test_discrete_windows_full_offload_is_not_host_resident(reporter_host):
     """Two discrete RDNA3 cards are not unified memory, so a full offload puts no
     weights in pageable host RAM and there is nothing for mlock to pin."""
@@ -244,9 +242,7 @@ def test_the_settings_api_reports_satisfied_while_the_toggle_reads_on(reporter_h
         )
 
 
-# ----------------------------------------------------------------------------- #
 # The control: the branch the AMD CI runner exercises for real
-# ----------------------------------------------------------------------------- #
 def test_a_unified_memory_apu_does_lock(apu_host, monkeypatch):
     """On gfx1151 the "VRAM" is system RAM, so a full offload IS host resident and
     the same toggle pair emits the lock. This is the assertion the live gfx1151 run
@@ -264,9 +260,7 @@ def test_no_ram_reserve_wins_over_keep_resident_on_the_apu(apu_host, monkeypatch
     assert managed == []
 
 
-# ----------------------------------------------------------------------------- #
 # #9551 on the same two cards
-# ----------------------------------------------------------------------------- #
 def test_the_displayed_total_is_the_driver_total_untouched(reporter_host):
     """No budget fraction, reserve or headroom is applied to the TOTAL.
 
