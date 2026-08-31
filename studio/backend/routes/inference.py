@@ -4247,20 +4247,21 @@ _RAG_GROUNDING_NUDGE = (
     "your answer on them and cite them. Do not answer from memory when the "
     "attached documents are relevant."
 )
-# When no internet-capable tool is enabled, keep document answers inside the
-# attached corpus. Unrelated questions still use the model's own capabilities.
+# When built-in internet tools are absent, keep document answers grounded without
+# contradicting a different enabled tool that the user explicitly requested.
 _RAG_CLOSED_CORPUS_NUDGE = (
-    "When the user asks about the attached documents, those documents are a "
-    "closed corpus. If that document information is not in "
+    "When the user asks about the attached documents, treat those documents as "
+    "the primary corpus. If that document information is not in "
     "search_knowledge_base results or injected passages, say it is not "
-    "available in the attached documents rather than inventing facts. Do not "
-    "search the public internet. For questions that are not about the attached "
-    "documents, answer normally from your own capabilities without searching "
-    "the public internet."
+    "available in the attached documents rather than inventing facts or "
+    "substituting public-web knowledge. Do not call the unavailable web_search "
+    "tool. If the user explicitly requests another enabled tool, follow that "
+    "request. For questions that are not about the attached documents, answer "
+    "normally from your own capabilities."
 )
-# Built-in tools that reach the public web. MCP schemas use their stable prefix below so
-# an explicitly enabled MCP capability is not contradicted by a closed-corpus instruction.
+# Built-in tools that reach the public web.
 _RAG_INTERNET_TOOL_NAMES = frozenset({"web_search", "deep_research"})
+
 # When both RAG and web_search are enabled (e.g. the Search pill is on), project
 # sources must still win over an automatic web fallback.
 _RAG_WEB_SEARCH_PRIORITY_NUDGE = (
@@ -4798,10 +4799,8 @@ async def _apply_rag_nudge(nudge: str, tools: list[dict], *, rag_scope) -> str:
     """Append the RAG grounding nudge to ``nudge`` when the knowledge-base tool
     is active (search_knowledge_base present and a retrieval scope is set).
 
-    When neither a built-in internet tool nor an MCP schema is present, adds
-    closed-corpus guidance so the Search pill being off cannot be read as permission
-    to answer document questions from the public web. ``deep_research`` and MCP
-    schemas count as internet-capable so enabled tools are not contradicted. When
+    When no built-in internet tool is present, adds guidance against inventing or
+    substituting public-web knowledge while preserving explicitly requested tools. When
     ``web_search`` is present and a project scope is set, tells the model not
     to treat web_search as an automatic fallback after an empty document search.
 
@@ -4810,11 +4809,7 @@ async def _apply_rag_nudge(nudge: str, tools: list[dict], *, rag_scope) -> str:
     if "search_knowledge_base" not in tool_names or not rag_scope:
         return nudge
     grounding = _RAG_GROUNDING_NUDGE + await _rag_roster_sentence(rag_scope)
-    from core.inference.mcp_client import MCP_TOOL_PREFIX
-
-    has_internet_tool = bool(tool_names & _RAG_INTERNET_TOOL_NAMES) or any(
-        isinstance(name, str) and name.startswith(MCP_TOOL_PREFIX) for name in tool_names
-    )
+    has_internet_tool = bool(tool_names & _RAG_INTERNET_TOOL_NAMES)
     if not has_internet_tool:
         grounding = grounding + " " + _RAG_CLOSED_CORPUS_NUDGE
     elif "web_search" in tool_names and rag_scope.get("project_id"):

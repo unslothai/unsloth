@@ -17,6 +17,16 @@ TOOLS_WITH_RESEARCH = TOOLS + [{"type": "function", "function": {"name": "deep_r
 TOOLS_WITH_MCP_BROWSER = TOOLS + [
     {"type": "function", "function": {"name": "mcp__browser__browser_navigate"}}
 ]
+
+TOOLS_WITH_MCP_FILESYSTEM = TOOLS + [
+    {
+        "type": "function",
+        "function": {
+            "name": "mcp__filesystem__read_file",
+            "description": "Read a local file",
+        },
+    }
+]
 RAG_SCOPE = {"project_id": "p1"}
 
 
@@ -60,10 +70,19 @@ def test_deep_research_skips_closed_corpus_nudge():
     assert inference._RAG_WEB_SEARCH_PRIORITY_NUDGE not in out
 
 
-def test_mcp_browser_skips_closed_corpus_nudge():
+def test_closed_corpus_nudge_allows_explicit_mcp_browser_requests():
     out = _rag_nudge(nudge = "", tools = TOOLS_WITH_MCP_BROWSER, rag_scope = RAG_SCOPE)
     assert inference._RAG_GROUNDING_NUDGE in out
-    assert inference._RAG_CLOSED_CORPUS_NUDGE not in out
+    assert inference._RAG_CLOSED_CORPUS_NUDGE in out
+    assert "explicitly requests another enabled tool" in out
+    assert "Do not search the public internet" not in out
+    assert inference._RAG_WEB_SEARCH_PRIORITY_NUDGE not in out
+
+
+def test_non_web_mcp_keeps_closed_corpus_nudge():
+    out = _rag_nudge(nudge = "", tools = TOOLS_WITH_MCP_FILESYSTEM, rag_scope = RAG_SCOPE)
+    assert inference._RAG_GROUNDING_NUDGE in out
+    assert inference._RAG_CLOSED_CORPUS_NUDGE in out
     assert inference._RAG_WEB_SEARCH_PRIORITY_NUDGE not in out
 
 
