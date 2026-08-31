@@ -733,9 +733,14 @@ def _run_llama_phase(
         if backend_request is not None:
             message = f"llama.cpp is now running on {new_backend or backend_request}.{reload_hint}"
         elif kept_existing:
-            # Naming a release that was never fetched sends the user looking for a fix
-            # that shipped in it.
-            message = f"llama.cpp is already up to date on {new_tag}."
+            # The phase only runs when a newer release was offered, so this is a failed
+            # update the installer answered by keeping the tree, not a current install.
+            # Naming the old release either way sends the user looking for a fix that
+            # shipped in the new one.
+            message = (
+                f"llama.cpp could not be updated right now, so the existing {new_tag} "
+                "install was kept. Try again later."
+            )
         else:
             message = f"Updated llama.cpp to {new_tag}.{reload_hint}"
         return {

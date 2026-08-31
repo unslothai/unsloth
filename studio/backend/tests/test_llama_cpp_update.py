@@ -600,7 +600,9 @@ def test_an_update_that_kept_the_existing_install_does_not_claim_a_new_release(
 
     The installer answers a transient failure by keeping the tree on disk and
     exiting 0, so "Updated llama.cpp to <tag>" would name the release the user
-    already had.
+    already had. The phase only starts when a newer release was offered, so
+    reporting the kept release as current would be just as wrong: the update is
+    still pending and the user has to retry.
     """
     install_dir = tmp_path / "llama.cpp"
     binary = _write_install(install_dir, "b9595", release_tag = "b9595-mix-aaaaaaa")
@@ -623,7 +625,9 @@ def test_an_update_that_kept_the_existing_install_does_not_claim_a_new_release(
     assert job["state"] == "success", job
     assert job["to_tag"] == "b9595-mix-aaaaaaa"
     assert "Updated llama.cpp to" not in job["message"], job["message"]
-    assert "already up to date" in job["message"], job["message"]
+    assert "up to date" not in job["message"], job["message"]
+    assert "could not be updated" in job["message"], job["message"]
+    assert "Try again later" in job["message"], job["message"]
 
 
 def _run_start_update_to_completion():
