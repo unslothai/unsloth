@@ -23,6 +23,7 @@ const RECOMMENDED = read(
   "../src/features/model-picker/components/model-selector/recommended-fit.ts",
 );
 const GPU_INFO = read("../src/hooks/use-gpu-info.ts");
+const INSPECTOR = read("../src/features/hub/catalog/model-inspector.tsx");
 const SIDEBAR = read("../src/components/app-sidebar.tsx");
 const CSS = read("../src/index.css");
 
@@ -199,6 +200,33 @@ test("chat and the Hub answer the fit question with one formula", () => {
   assert.ok(
     !PICKERS.includes("inferenceGpu.systemRamAvailableGb"),
     "no expander takes the GGUF backend's RAM directly",
+  );
+  // The custom-folder expander was the one that kept reaching for the raw aggregate: on a media
+  // page it classified against memory the diffusion loader never sees, and it was not even
+  // load-scoped. Every row-level budget in this file now comes from the one chosen source.
+  assert.ok(
+    !PICKERS.includes("inferenceGpu.memoryTotalGb"),
+    "no row takes the GGUF backend's capacity directly",
+  );
+  assert.ok(
+    !PICKERS.includes("budgetKnown={inferenceGpu.budgetKnown}"),
+    "and none takes its probe state either",
+  );
+  assert.equal(
+    PICKERS.split("gpuGb={expanderGpuGb}").length - 1,
+    9,
+    "seven expanders and the two quant rows beside them",
+  );
+  // The Hub card answers llama.cpp's question, so it must not answer it about a diffusion repo:
+  // an oom there would read "still works with offloading" for a load the planner refuses.
+  assert.ok(
+    HUB_CARD.includes(
+      "const showFitInfo = !mediaRuntime && (Boolean(gpuGb) || Boolean(systemRamGb));",
+    ),
+  );
+  assert.match(
+    INSPECTOR,
+    /showMemoryBar=\{!runsOnMediaRuntime\}\n\s*mediaRuntime=\{runsOnMediaRuntime\}/,
   );
   // Parent rows and the fit gate take the same rule as the quant rows under them, or a media row
   // reads as fitting while everything inside it reads as oom.

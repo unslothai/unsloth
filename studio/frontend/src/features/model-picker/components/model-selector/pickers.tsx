@@ -5144,7 +5144,7 @@ export function HubModelPicker({
                 ? undefined
                 : { repoId: entry.repoId, quant: entry.quant }
             }
-            gpuGb={inferenceGpu.memoryTotalGb}
+            gpuGb={expanderGpuGb}
             alignMeta="device"
             selected={isSelected}
             loaded={isLoaded}
@@ -5290,7 +5290,7 @@ export function HubModelPicker({
                     loadId: c.load_id,
                   }
             }
-            gpuGb={inferenceGpu.memoryTotalGb}
+            gpuGb={expanderGpuGb}
             showVision={c.has_vision || sole.hasVision}
             selected={isSelected}
             loaded={rowState.loaded}
@@ -5415,7 +5415,7 @@ export function HubModelPicker({
             onNavigatePastEnd={() => hubModelList.moveFocus(optionKey, "next")}
             gpuGb={expanderGpuGb}
             systemRamGb={expanderRamGb || undefined}
-            budgetKnown={inferenceGpu.budgetKnown}
+            budgetKnown={expanderBudgetGpu.budgetKnown}
             variantActions={{
               onUpdate: (quant, expectedBytes) =>
                 updateGgufVariant(c.repo_id, quant, expectedBytes),
@@ -6305,13 +6305,9 @@ export function HubModelPicker({
                                   onNavigatePastEnd={() =>
                                     hubModelList.moveFocus(optionKey, "next")
                                   }
-                                  gpuGb={
-                                    inferenceGpu.available
-                                      ? inferenceGpu.memoryTotalGb
-                                      : undefined
-                                  }
+                                  gpuGb={expanderGpuGb}
                                   systemRamGb={expanderRamGb || undefined}
-                                  budgetKnown={inferenceGpu.budgetKnown}
+                                  budgetKnown={expanderBudgetGpu.budgetKnown}
                                 />
                               )}
                           </div>
@@ -6450,7 +6446,7 @@ export function HubModelPicker({
                                 }
                                 gpuGb={expanderGpuGb}
                                 systemRamGb={expanderRamGb || undefined}
-                                budgetKnown={inferenceGpu.budgetKnown}
+                                budgetKnown={expanderBudgetGpu.budgetKnown}
                               />
                             )}
                           </div>
@@ -6579,7 +6575,7 @@ export function HubModelPicker({
                                 }
                                 gpuGb={expanderGpuGb}
                                 systemRamGb={expanderRamGb || undefined}
-                                budgetKnown={inferenceGpu.budgetKnown}
+                                budgetKnown={expanderBudgetGpu.budgetKnown}
                               />
                             )}
                           </div>
@@ -6674,7 +6670,7 @@ export function HubModelPicker({
                                 }
                                 gpuGb={expanderGpuGb}
                                 systemRamGb={expanderRamGb || undefined}
-                                budgetKnown={inferenceGpu.budgetKnown}
+                                budgetKnown={expanderBudgetGpu.budgetKnown}
                                 variantActions={{
                                   onDelete: async (quant) => {
                                     await deleteCachedModel(
@@ -6797,7 +6793,7 @@ export function HubModelPicker({
                               }
                               gpuGb={expanderGpuGb}
                               systemRamGb={expanderRamGb || undefined}
-                              budgetKnown={inferenceGpu.budgetKnown}
+                              budgetKnown={expanderBudgetGpu.budgetKnown}
                               variantActions={{
                                 onDelete: async (quant) => {
                                   await deleteCachedModel(
@@ -6911,7 +6907,7 @@ export function HubModelPicker({
                                 }
                                 gpuGb={expanderGpuGb}
                                 systemRamGb={expanderRamGb || undefined}
-                                budgetKnown={inferenceGpu.budgetKnown}
+                                budgetKnown={expanderBudgetGpu.budgetKnown}
                                 variantActions={{
                                   onDelete: async (quant) => {
                                     await deleteCachedModel(

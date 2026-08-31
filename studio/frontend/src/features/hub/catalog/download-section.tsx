@@ -31,6 +31,7 @@ export function DownloadSection({
   onTrain,
   onChange,
   showMemoryBar = true,
+  mediaRuntime = false,
 }: {
   repoId: string;
   isGguf: boolean;
@@ -59,6 +60,7 @@ export function DownloadSection({
   /** False for diffusion / audio / video GGUFs, which do not load through
    *  llama.cpp and so have nothing the KV estimator can say about them. */
   showMemoryBar?: boolean;
+  mediaRuntime?: boolean;
 }) {
   if (isGguf || preferredGgufFile) {
     return (
@@ -80,6 +82,7 @@ export function DownloadSection({
         onEject={onEject}
         onChange={onChange}
         showMemoryBar={showMemoryBar}
+        mediaRuntime={mediaRuntime}
       />
     );
   }

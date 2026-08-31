@@ -570,6 +570,7 @@ export function GgufDownloadCard({
   onEject,
   onChange,
   showMemoryBar = true,
+  mediaRuntime = false,
 }: {
   repoId: string;
   isActive: boolean;
@@ -597,6 +598,11 @@ export function GgufDownloadCard({
    *  weights-only verdict anyway, which is a confident number about the wrong
    *  runtime. The picker suppresses these rows for the same reason. */
   showMemoryBar?: boolean;
+  /** This repo is placed by the diffusion planner, not llama-server. Suppresses the fit badges
+   *  for the same reason it suppresses the memory bar: the budget and the offload rules here are
+   *  llama.cpp's, and an oversized diffusion model gets told it "still works with offloading"
+   *  when on a host pool the planner refuses the load outright. */
+  mediaRuntime?: boolean;
 }) {
   const hfToken = useHfTokenStore((s) => s.token);
   const online = useOnlineStatus();
@@ -773,7 +779,9 @@ export function GgufDownloadCard({
     !downloadingThisVariant &&
     !isLoadingThisModel &&
     !selectedIsActive;
-  const showFitInfo = Boolean(gpuGb) || Boolean(systemRamGb);
+  // No verdict beats a wrong one: a media repo's fit is the diffusion planner's question, and
+  // this card only knows how to answer llama.cpp's. The picker still badges those rows.
+  const showFitInfo = !mediaRuntime && (Boolean(gpuGb) || Boolean(systemRamGb));
   const selectedFit = useMemo(
     () =>
       selected
