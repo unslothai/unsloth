@@ -233,6 +233,7 @@ def create_studio_mcp() -> FastMCP:
         imatrix: bool = False,
         imatrix_path: str | None = None,
         private: bool = False,
+        gguf_shard_size: str | None = None,
     ) -> dict[str, Any]:
         """Export the loaded model to GGUF using Unsloth's existing path validation.
 
@@ -253,6 +254,7 @@ def create_studio_mcp() -> FastMCP:
             imatrix = imatrix,
             imatrix_path = imatrix_path,
             private = private,
+            gguf_shard_size = gguf_shard_size,
         )
         return _dump(await export(request, current_subject = "mcp"))
 
