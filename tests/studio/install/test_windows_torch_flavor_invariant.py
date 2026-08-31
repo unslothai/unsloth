@@ -418,7 +418,8 @@ class TestABrokenTorchForcesItsOwnReinstall:
         clear = _line_of(_SETUP_SRC, "$script:TorchImportDefinitivelyFailed) {")
         guard = _line_of(_SETUP_SRC, "if (-not $SkipPythonDeps) {")
         last = max(
-            number for number, line in enumerate(_SETUP_SRC.splitlines(), start = 1)
+            number
+            for number, line in enumerate(_SETUP_SRC.splitlines(), start = 1)
             if "$script:TorchImportDefinitivelyFailed" in line
         )
         assert clear < guard < last, (
@@ -430,13 +431,15 @@ class TestABrokenTorchForcesItsOwnReinstall:
     def test_every_conditional_force_gate_reads_the_flag(self, force_var):
         # The ROCm arm forces unconditionally, so only these two have a gate to miss.
         assignments = [
-            line for line in _SETUP_SRC.splitlines()
+            line
+            for line in _SETUP_SRC.splitlines()
             if f"{force_var} = " in line and "force-reinstall" in line
         ]
         assert assignments, f"no {force_var} assignment found"
         guards = "\n".join(
-            line for line in _SETUP_SRC.splitlines()
-            if f"{force_var} = @(\"--force-reinstall\")" in line
+            line
+            for line in _SETUP_SRC.splitlines()
+            if f'{force_var} = @("--force-reinstall")' in line
         )
         assert "$script:TorchImportDefinitivelyFailed" in guards, (
             f"{force_var} never forces on a definitively unimportable wheel, so the "
@@ -446,6 +449,6 @@ class TestABrokenTorchForcesItsOwnReinstall:
     def test_the_rocm_arm_needs_no_gate(self):
         rocm = _SETUP_SRC[_SETUP_SRC.index("if ($ROCmIndexUrl) {") :]
         rocm = rocm[: rocm.index("if ($XpuIndexUrl) {")]
-        assert "--force-reinstall" in rocm and "$rocmForce" not in rocm, (
-            "the ROCm arm forces every time, so a broken wheel is already replaced there"
-        )
+        assert (
+            "--force-reinstall" in rocm and "$rocmForce" not in rocm
+        ), "the ROCm arm forces every time, so a broken wheel is already replaced there"
