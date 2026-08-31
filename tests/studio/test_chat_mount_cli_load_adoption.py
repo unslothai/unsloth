@@ -32,6 +32,7 @@ def _source_path(relative_path: str) -> Path:
 
 
 HOOK = _source_path("studio/frontend/src/features/chat/hooks/use-chat-model-runtime.ts")
+CHAT_PAGE = _source_path("studio/frontend/src/features/chat/chat-page.tsx")
 TEMP = WORKDIR / "temp" / "chat_mount_cli_load_adoption"
 OUTGOING = "org/outgoing-A-GGUF"
 INCOMING = "org/incoming-B-GGUF"
@@ -46,12 +47,23 @@ type Scenario = {
   /** What /status answers, as a function of ms since the scenario was set. */
   status: (elapsedMs: number) => any;
   models: any[];
+  /** Per-call listModels() latency, the last entry repeating. Lets a refresh issued
+   *  second answer first, which is what a slower inventory read really does. */
+  listModelsDelays?: number[];
+  /** 1-based /status reads that only end on abort (or after 5s). Indexed rather than
+   *  "from N on" so the reads around the stalled one still answer. */
+  hangStatusReads?: number[];
+  /** /api/models/loras rejects, as one unreadable training output makes it. */
+  listLorasFails?: boolean;
 };
 let SCENARIO: Scenario = { status: () => ({}), models: [] };
 let scenarioStart = 0;
+let listModelsCalls = 0;
 export function setScenario(next: Scenario): void {
   SCENARIO = next;
   scenarioStart = Date.now();
+  listModelsCalls = 0;
+  statusReads = 0;
 }
 
 let STATE: Record<string, any> = {};
@@ -94,12 +106,30 @@ export const useChatRuntimeStore = {
 };
 
 export async function listModels(): Promise<any> {
+  const delays = SCENARIO.listModelsDelays ?? [];
+  const delay = delays[Math.min(listModelsCalls, delays.length - 1)] ?? 0;
+  listModelsCalls += 1;
+  if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
   return { models: SCENARIO.models };
 }
 export async function listLoras(): Promise<any> {
+  if (SCENARIO.listLorasFails) throw new Error("lora scan failed");
   return { loras: [] };
 }
-export async function getInferenceStatus(): Promise<any> {
+let statusReads = 0;
+export async function getInferenceStatus(signal?: AbortSignal): Promise<any> {
+  statusReads += 1;
+  if ((SCENARIO.hangStatusReads ?? []).includes(statusReads)) {
+    EVENTS.push({ kind: "status.hang", signalled: Boolean(signal) });
+    // Bounded so an unfixed source fails on the assertion below rather than hanging.
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(resolve, 5000);
+      signal?.addEventListener("abort", () => {
+        clearTimeout(timer);
+        reject(new Error("aborted"));
+      });
+    });
+  }
   const status = SCENARIO.status(Date.now() - scenarioStart);
   EVENTS.push({ kind: "status", active_model: status.active_model, loading: status.loading });
   return status;
@@ -202,6 +232,8 @@ def _build_harness(run_dir: Path) -> None:
         f"{{{match.group('body')}\n}}\n"
     )
     assert "syncInferenceStatusToStore(options)" in refresh
+    # The handoff owner has to come along, or the wait is registered nowhere.
+    assert "async function refreshAndWaitForServerModel(" in sync
     (run_dir / "harness.ts").write_text(
         "// @ts-nocheck\n" + PREAMBLE + "\n" + poll + "\n" + sync + "\n" + refresh,
         encoding = "utf-8",
@@ -257,6 +289,13 @@ def _run(script_body: str) -> dict:
           gguf_variant: "Q4_K_M",
           loading: [],
         };
+        const IDLE = { active_model: null, model_identifier: null, loading: [] };
+        const STARTING = {
+          active_model: null,
+          model_identifier: null,
+          is_gguf: true,
+          loading: ["%(incoming)s"],
+        };
         /** Mid-replacement until `ms`, then the incoming model is resident. */
         const settlesAfter = (ms) => (elapsed) =>
           elapsed < ms ? REPLACING : SETTLED_ON_INCOMING;
@@ -294,10 +333,11 @@ def _run(script_body: str) -> dict:
     return json.loads(last)
 
 
+# The ChatPage mount effect, argument for argument (chat-page.tsx).
 MOUNT = """
         setStoreState(emptyStore());
         const mount = refresh({
-          includeLoras: true,
+          includeLoras: false,
           signal: new AbortController().signal,
           waitForServerModel: true,
         });
@@ -344,6 +384,86 @@ def test_a_refresh_landing_mid_wait_does_not_end_it_on_the_outgoing_model():
     assert out["residentCheckpoint"] == INCOMING
 
 
+def test_mount_waits_for_a_cli_load_that_starts_after_it():
+    """The case the PR was opened for: the UI opens before `studio run -m` reaches the loader,
+    so the first read is a bare idle server and the load only shows up a poll or two later."""
+    out = _run(
+        """
+        setScenario({
+          models: [{ id: "%(incoming)s" }],
+          status: (elapsed) =>
+            elapsed < 600 ? IDLE : elapsed < 1600 ? STARTING : SETTLED_ON_INCOMING,
+        });
+        """
+        % {"incoming": INCOMING}
+        + MOUNT
+        + "        await mount;\n"
+    )
+    assert out["checkpoint"] == INCOMING
+    assert out["residentCheckpoint"] == INCOMING
+
+
+def test_a_refresh_that_answers_before_the_mount_sync_does_not_end_the_wait():
+    """The wait has to be registered before the sync is issued, not after it returns.
+
+    A refresh issued second can answer first, and inside that window it saw no wait
+    outstanding: it adopted the outgoing model and superseded the mount sync, so the
+    observer started against a checkpoint its loop refuses to poll on.
+    """
+    out = _run(
+        """
+        setScenario({
+          models: [{ id: "%(outgoing)s" }, { id: "%(incoming)s" }],
+          status: settlesAfter(1500),
+          listModelsDelays: [400, 0],
+        });
+        """
+        % {"outgoing": OUTGOING, "incoming": INCOMING}
+        + MOUNT
+        + """
+        await sleep(50);
+        await refresh({ includeLoras: false });
+        await mount;
+        """
+    )
+    assert out["checkpoint"] == INCOMING
+    assert out["residentCheckpoint"] == INCOMING
+
+
+def test_aborting_the_mount_releases_the_wait_even_on_a_stalled_status_read():
+    """Deferring residency while a wait is outstanding only holds if the wait can end.
+
+    The abort signal has to reach the request: checked only around it, an unmount leaves
+    the poll parked on the stalled read and every later refresh deferring behind it.
+    """
+    out = _run(
+        """
+        setScenario({
+          models: [{ id: "%(outgoing)s" }],
+          status: () => REPLACING,
+          // The observer's first poll. The mount sync's read before it and the later
+          // refresh's read after it both answer, so only the wait is parked.
+          hangStatusReads: [2],
+        });
+        setStoreState(emptyStore());
+        const controller = new AbortController();
+        const mount = refresh({
+          includeLoras: false,
+          signal: controller.signal,
+          waitForServerModel: true,
+        });
+        await sleep(300);
+        controller.abort();
+        await sleep(50);
+        await refresh({ includeLoras: false });
+        await mount;
+        """
+        % {"outgoing": OUTGOING}
+    )
+    assert out["checkpoint"] == OUTGOING
+    assert out["residentCheckpoint"] == OUTGOING
+
+
 def test_mount_publishes_the_model_list_while_it_waits():
     """Waiting must not cost the selector its inventory: the picker stays usable during the load."""
     out = _run(
@@ -378,6 +498,36 @@ def test_mount_still_adopts_a_settled_model_with_no_load_in_flight():
     assert out["checkpoint"] == INCOMING
     # One read: the sync's own. A settled status must not cost a second round trip.
     assert [event["kind"] for event in out["events"]].count("status") == 1
+
+
+def test_a_failing_lora_scan_takes_the_model_list_with_it():
+    """Why the mount must not ask for LoRAs: the three reads share one Promise.all, and the
+    LoRA handler rethrows so the inventory settles from its own request. A rejection therefore
+    skips setModels entirely, and the picker offers nothing at all."""
+    out = _run(
+        """
+        setScenario({
+          models: [{ id: "%(outgoing)s" }],
+          status: () => SETTLED_ON_INCOMING,
+          listLorasFails: true,
+        });
+        setStoreState(emptyStore());
+        await refresh({ includeLoras: true });
+        """
+        % {"outgoing": OUTGOING}
+    )
+    assert out["models"] == []
+    assert [event["kind"] for event in out["events"]].count("modelsError") == 1
+
+
+def test_the_mount_refresh_does_not_wait_on_the_lora_inventory():
+    """So the mount reads models and status only. The deferred inventory refresh 1.2s later
+    owns the LoRA list, and its failing is survivable: the picker already has its models."""
+    source = CHAT_PAGE.read_text(encoding = "utf-8")
+    effect = _between(source, "if (getTrainingCompareHandoff()) return;", "}, 1200);")
+    assert re.search(r"void refresh\(\{\s*includeLoras: false,", effect), effect
+    assert "waitForServerModel: !useChatRuntimeStore.getState().params.checkpoint" in effect
+    assert "refreshDeferredModelInventories();" in effect
 
 
 def test_a_refresh_that_is_not_the_mount_waiter_still_publishes_residency():

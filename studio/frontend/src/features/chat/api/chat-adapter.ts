@@ -2911,9 +2911,13 @@ async function waitForSettledServerStatus(options?: {
 
     let status: InferenceStatusResponse | null = null;
     try {
-      status = await getInferenceStatus();
+      // Into the request, not just around it, or a stalled read parks this poll past
+      // the send being cancelled.
+      status = await getInferenceStatus(options?.abortSignal);
       failures = 0;
     } catch {
+      // Cancellation, not a server that cannot answer: it must not become a toast.
+      options?.abortSignal?.throwIfAborted();
       // A failed read is not evidence the server is idle.
       if (++failures >= 2) return { outcome: "status-unavailable" };
     }

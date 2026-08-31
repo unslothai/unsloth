@@ -3792,8 +3792,11 @@ export function ChatPage({
   useEffect(() => {
     if (getTrainingCompareHandoff()) return;
     const controller = new AbortController();
+    // Models and status only: a LoRA scan that hangs or 500s (one unreadable training
+    // output is enough) would take the whole Promise.all with it and leave the picker
+    // with no models at all. The deferred refresh below owns the LoRA inventory.
     void refresh({
-      includeLoras: true,
+      includeLoras: false,
       signal: controller.signal,
       waitForServerModel: !useChatRuntimeStore.getState().params.checkpoint,
     });

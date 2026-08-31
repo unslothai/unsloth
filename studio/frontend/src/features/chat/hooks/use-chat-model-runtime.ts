@@ -213,51 +213,49 @@ const CLI_LOAD_POLL_IDLE_MS = 60_000;
 const CLI_LOAD_POLL_MAX_MS = 600_000;
 
 // The observer polls only while the selection is empty, and every refresh writes that same
-// selection, so which call owns settlement cannot be a per-call argument: an unrelated refresh
-// landing mid-wait would end the wait on the outgoing model. Module-scoped for that reason.
+// selection, so which call owns settlement cannot be a per-call argument: a refresh landing
+// mid-wait would end the wait on the outgoing model. Module-scoped for that reason, and held
+// across the hydrating sync too, since a refresh issued later can still answer first.
 let pendingServerModelWaits = 0;
 
 async function waitForServerModel(signal?: AbortSignal): Promise<void> {
-  pendingServerModelWaits += 1;
-  try {
-    const started = Date.now();
-    let sawLoad = false;
+  const started = Date.now();
+  let sawLoad = false;
 
-    while (
-      !signal?.aborted &&
-      !useChatRuntimeStore.getState().params.checkpoint &&
-      !useChatRuntimeStore.getState().modelLoading
+  while (
+    !signal?.aborted &&
+    !useChatRuntimeStore.getState().params.checkpoint &&
+    !useChatRuntimeStore.getState().modelLoading
+  ) {
+    let status: InferenceStatusResponse | null = null;
+    try {
+      // Into the request, not just around it: an unmount cannot end a wait that is
+      // parked on a stalled fetch, and every refresh defers residency until it does.
+      status = await getInferenceStatus(signal);
+    } catch {
+      // A later poll can recover from a transient status failure.
+    }
+    if (
+      signal?.aborted ||
+      useChatRuntimeStore.getState().params.checkpoint ||
+      useChatRuntimeStore.getState().modelLoading
     ) {
-      let status: InferenceStatusResponse | null = null;
-      try {
-        status = await getInferenceStatus();
-      } catch {
-        // A later poll can recover from a transient status failure.
-      }
-      if (
-        signal?.aborted ||
-        useChatRuntimeStore.getState().params.checkpoint ||
-        useChatRuntimeStore.getState().modelLoading
-      ) {
+      return;
+    }
+
+    if (status) {
+      const loading = (status.loading?.length ?? 0) > 0;
+      sawLoad ||= loading;
+      if (!loading && status.active_model) {
+        await tryAdoptServerActiveModel({ status });
         return;
       }
-
-      if (status) {
-        const loading = (status.loading?.length ?? 0) > 0;
-        sawLoad ||= loading;
-        if (!loading && status.active_model) {
-          await tryAdoptServerActiveModel({ status });
-          return;
-        }
-        if (!loading && sawLoad) return;
-      }
-      const elapsed = Date.now() - started;
-      if (!sawLoad && elapsed >= CLI_LOAD_POLL_IDLE_MS) return;
-      if (elapsed >= CLI_LOAD_POLL_MAX_MS) return;
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      if (!loading && sawLoad) return;
     }
-  } finally {
-    pendingServerModelWaits -= 1;
+    const elapsed = Date.now() - started;
+    if (!sawLoad && elapsed >= CLI_LOAD_POLL_IDLE_MS) return;
+    if (elapsed >= CLI_LOAD_POLL_MAX_MS) return;
+    await new Promise((resolve) => setTimeout(resolve, 500));
   }
 }
 
@@ -450,8 +448,6 @@ async function syncInferenceStatusToStore(options?: {
   preserveIdleUnloaded?: boolean;
   /** A TTS load owns the chat slot even though Chat did not start the load. */
   externalChatSlotLoad?: boolean;
-  /** waitForServerModel runs after this call and owns the settled answer. */
-  waitForServerModel?: boolean;
 }): Promise<void> {
   const signal = options?.signal;
   const includeLoras = options?.includeLoras ?? true;
@@ -499,11 +495,9 @@ async function syncInferenceStatusToStore(options?: {
     const statusLoading = (statusRes.loading?.length ?? 0) > 0;
     // A replacement reports the outgoing model as active and the incoming one as loading.
     // Adopting the outgoing one sets the checkpoint waitForServerModel needs empty, so the
-    // observer -- the one this call is about to start, or one already polling -- would stop
-    // before the incoming model ever lands. Only the observer publishes a settled answer here.
-    if (statusLoading && (options?.waitForServerModel || pendingServerModelWaits > 0)) {
-      return;
-    }
+    // observer would stop before the incoming model ever lands. While one is outstanding it
+    // is the only writer of a settled answer.
+    if (statusLoading && pendingServerModelWaits > 0) return;
 
     const selectedCheckpoint = useChatRuntimeStore.getState().params.checkpoint;
     const isExternalSelectionActive = isExternalModelId(selectedCheckpoint);
@@ -611,6 +605,29 @@ async function syncInferenceStatusToStore(options?: {
     toast.error("Failed to refresh models", {
       description: message,
     });
+  }
+}
+
+/**
+ * The mount handoff: hydrate from status, then observe until the server settles.
+ *
+ * The wait is registered before the sync is even issued. A refresh issued later can
+ * still answer first (this one reads the LoRA inventory, a lifecycle refresh does not),
+ * and one that answered inside that window adopted the outgoing model and superseded
+ * this sync, leaving the observer nothing to poll on.
+ */
+async function refreshAndWaitForServerModel(options?: {
+  signal?: AbortSignal;
+  includeLoras?: boolean;
+  preserveIdleUnloaded?: boolean;
+  externalChatSlotLoad?: boolean;
+}): Promise<void> {
+  pendingServerModelWaits += 1;
+  try {
+    await syncInferenceStatusToStore(options);
+    await waitForServerModel(options?.signal);
+  } finally {
+    pendingServerModelWaits -= 1;
   }
 }
 
@@ -729,10 +746,11 @@ export function useChatModelRuntime() {
       preserveIdleUnloaded?: boolean;
       externalChatSlotLoad?: boolean;
     }) => {
-      await syncInferenceStatusToStore(options);
       if (options?.waitForServerModel) {
-        await waitForServerModel(options.signal);
+        await refreshAndWaitForServerModel(options);
+        return;
       }
+      await syncInferenceStatusToStore(options);
     },
     [],
   );

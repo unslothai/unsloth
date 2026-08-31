@@ -84,21 +84,22 @@ test("the eviction branch is behind the same guard", () => {
   assert.ok(guardAt !== -1 && guardAt < evictionAt);
 });
 
-test("only the caller that hands off to a waiter defers residency during a load", () => {
+test("residency is deferred only while a mount wait is outstanding", () => {
   assert.doesNotMatch(
     SYNC,
     /if \(statusLoading\) return;/,
     "the send waiter and the lifecycle bus own settlement themselves; generic hydration must still publish residency",
   );
-  // Scoped to the mount waiter, which needs the checkpoint empty to poll at all. Its own call
-  // has not started it yet, and a later refresh is a different call, so both are checked.
+  // The mount observer needs the checkpoint empty to poll at all, and every refresh writes
+  // that same checkpoint, so the wait is module-scoped rather than a per-call argument.
   // Behaviour is pinned in tests/studio/test_chat_mount_cli_load_adoption.py.
+  assert.match(SYNC, /if \(statusLoading && pendingServerModelWaits > 0\) return;/);
+  // Registered before the sync is issued: a refresh issued later can answer first, and one
+  // that answered while the count was still zero adopted the outgoing model.
   assert.match(
-    SYNC,
-    /if \(\s*statusLoading &&\s*\(options\?\.waitForServerModel \|\| pendingServerModelWaits > 0\)\s*\) \{/,
+    SOURCE,
+    /pendingServerModelWaits \+= 1;\s*try \{\s*await syncInferenceStatusToStore\(options\);\s*await waitForServerModel\(options\?\.signal\);\s*\} finally \{\s*pendingServerModelWaits -= 1;\s*\}/,
   );
-  assert.match(SOURCE, /pendingServerModelWaits \+= 1;\s*try \{/);
-  assert.match(SOURCE, /\} finally \{\s*pendingServerModelWaits -= 1;\s*\}/);
 });
 
 test("a completed UI load still publishes residency while holding its lease", () => {
@@ -133,4 +134,7 @@ test("the mount observer adopts only a settled model", () => {
     wait,
     /!useChatRuntimeStore\.getState\(\)\.params\.checkpoint &&\s*!useChatRuntimeStore\.getState\(\)\.modelLoading/,
   );
+  // Into the request, not just around it: a stalled read would otherwise outlive the unmount
+  // that aborted it, and hold every later refresh off publishing residency behind it.
+  assert.match(wait, /await getInferenceStatus\(signal\)/);
 });
