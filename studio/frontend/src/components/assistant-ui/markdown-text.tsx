@@ -67,6 +67,7 @@ import {
 } from "./code-fence-defer";
 import { createCodePlugin } from "./code-plugin";
 import { withMathBlockMarker } from "./math-block-marker";
+import { scrubOpenAICitationMarkers } from "./openai-citation-scrub";
 import {
   MarkdownBlockBoundary,
   MarkdownBlockFallbackView,
@@ -632,23 +633,6 @@ const StreamdownBlock = memo((props: BlockProps) => (
 ));
 StreamdownBlock.displayName = "StreamdownBlock";
 const AUDIO_PLAYER_RE = /<audio-player\s+src="([^"]+)"\s*\/>/;
-const OPENAI_CITE_MARKER_RE = /\uE200cite\uE202[^\uE201]*\uE201/g;
-const OPENAI_PUA_ORPHAN_RE = /[\uE200\uE201\uE202]/g;
-
-function scrubOpenAICitationMarkers(text: string): string {
-  if (!text) return text;
-  if (
-    !text.includes("\uE200") &&
-    !text.includes("\uE201") &&
-    !text.includes("\uE202")
-  ) {
-    return text;
-  }
-  return text
-    .replace(OPENAI_CITE_MARKER_RE, "")
-    .replace(OPENAI_PUA_ORPHAN_RE, "");
-}
-
 // Coalesce only token events that arrive before the browser's next paint, as
 // textgen does. There is no time or length throttle. Incremental block parsing
 // bounds the work performed per paint, and completion returns immediately.

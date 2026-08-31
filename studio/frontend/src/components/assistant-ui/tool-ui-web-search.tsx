@@ -124,6 +124,12 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
     ? `https://${bareUrl}`
     : url;
   const safeUrl = isSafeHttpUrl(candidateUrl) ? candidateUrl : "";
+  // OpenAI's hosted open_page / find_in_page calls carry a synthesized label
+  // ("Read: <url>", see external_provider._web_search_card_text) that the link
+  // already says; only they set action_type. The local tool's url mode puts the
+  // fetched page text or its failure diagnostic there, so the link must not
+  // replace it.
+  const resultIsCardLabel = !!safeUrl && !!actionType;
   const displayDomain = (() => {
     if (!safeUrl) return "";
     try {
@@ -256,20 +262,23 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
               </div>
             )}
           </div>
-        ) : safeUrl ? (
-          <a
-            href={safeUrl}
-            target="_blank"
-            rel="noreferrer noopener"
-            className="break-all text-xs text-primary underline-offset-4 hover:underline"
-          >
-            {url}
-          </a>
-        ) : resultText ? (
-          <div>
-            <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
-              {resultText}
-            </pre>
+        ) : safeUrl || resultText ? (
+          <div className="flex flex-col gap-2">
+            {safeUrl ? (
+              <a
+                href={safeUrl}
+                target="_blank"
+                rel="noreferrer noopener"
+                className="break-all text-xs text-primary underline-offset-4 hover:underline"
+              >
+                {url}
+              </a>
+            ) : null}
+            {resultText && !resultIsCardLabel ? (
+              <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
+                {resultText}
+              </pre>
+            ) : null}
           </div>
         ) : null}
       </ToolFallbackContent>
