@@ -274,6 +274,7 @@ def write_manifest(
     steps_total: int = 0,
     package_name: str = "unsloth",
     no_torch: Optional[bool] = None,
+    expected_torch_tag: Optional[str] = None,
 ) -> Optional[Path]:
     """Record a completed install. Never raises: no manifest reads as incomplete,
     which is the safe answer."""
@@ -301,6 +302,11 @@ def write_manifest(
     # exports nothing and would otherwise reinstall torch into a GGUF-only venv.
     if no_torch is not None:
         payload["no_torch"] = bool(no_torch)
+    # The FLAVOR, never the index URL it came from: a pinned index can carry a token in
+    # its userinfo, query or fragment, and this file lives in the venv and is read back
+    # by verify-install, desktop-capabilities and the setup fast path.
+    if expected_torch_tag:
+        payload["expected_torch_tag"] = str(expected_torch_tag).strip().lower()
     path = manifest_path(root)
     try:
         tmp = path.with_suffix(".json.tmp")
@@ -372,6 +378,29 @@ def recorded_no_torch(root: Optional[Path] = None) -> Optional[bool]:
     except OSError:
         pass
     return None
+
+
+def recorded_torch_flavor(root: Optional[Path] = None) -> Optional[str]:
+    """The torch flavor this venv was installed with, or None when unknown.
+
+    None means nothing recorded it: no manifest, or one written before the key
+    existed. Callers must treat None as "unknown" and fall back to their own
+    detection, never as "cpu" -- claiming a flavor nobody selected would let a
+    repair reinstall over a deliberate build.
+
+    There is no marker companion here (unlike no_torch): the manifest is dropped
+    before every dependency pass, so this answers only for the PREVIOUS install,
+    which is exactly the question a repair asks. A run whose own setup script
+    exported the flavor never reaches this.
+    """
+    manifest = read_manifest(root)
+    if manifest is None:
+        return None
+    value = manifest.get("expected_torch_tag")
+    if not isinstance(value, str):
+        return None
+    value = value.strip().lower()
+    return value or None
 
 
 def _parse_requirement_line(line: str) -> Optional[Tuple[str, str, str]]:

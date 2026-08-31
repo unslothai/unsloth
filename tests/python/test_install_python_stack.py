@@ -2371,3 +2371,94 @@ class TestRecordlessDistributionRecovery:
 
         assert excinfo.value.code == 1
         assert len(attempts) == 1, "a failure with nothing to clear must not be retried"
+
+
+class TestExpectedTorchFlavorResolution:
+    """_expected_torch_flavor_tag / _expected_torch_index_url: the two pure inputs to the
+    Windows flavor invariant. The invariant itself is covered in
+    tests/studio/install/test_cuda_repair.py; these pin the resolution ORDER, which is what
+    decides whether a repair fires against the right index or not at all."""
+
+    _KEYS = (
+        "UNSLOTH_EXPECTED_TORCH_TAG",
+        "UNSLOTH_TORCH_INSTALL_INDEX_URL",
+        "UNSLOTH_TORCH_INDEX_URL",
+        "UNSLOTH_TORCH_INDEX_FAMILY",
+    )
+
+    @contextlib.contextmanager
+    def _env(self, **values):
+        """Set the named vars and REMOVE every other one this resolution reads, so an
+        ambient pin on the developer's box cannot change the answer."""
+        with mock.patch.dict(os.environ, {k: v for k, v in values.items() if v is not None}):
+            for key in self._KEYS:
+                if values.get(key) is None:
+                    os.environ.pop(key, None)
+            yield
+
+    def test_the_handover_tag_wins(self):
+        with self._env(UNSLOTH_EXPECTED_TORCH_TAG = "cu124"):
+            with mock.patch.object(ips, "_RECORDED_TORCH_TAG", "cu128"):
+                assert ips._expected_torch_flavor_tag() == "cu124"
+
+    def test_the_handover_tag_is_normalised(self):
+        with self._env(UNSLOTH_EXPECTED_TORCH_TAG = " CU128 "):
+            assert ips._expected_torch_flavor_tag() == "cu128"
+
+    def test_the_manifest_answers_next(self):
+        with self._env():
+            with mock.patch.object(ips, "_RECORDED_TORCH_TAG", "cu128"):
+                assert ips._expected_torch_flavor_tag() == "cu128"
+
+    def test_a_gpuless_host_with_nothing_recorded_says_nothing(self):
+        # Inventing a CUDA expectation from an absent GPU would reinstall CUDA torch
+        # onto a CPU box on every update.
+        with self._env():
+            with (
+                mock.patch.object(ips, "_RECORDED_TORCH_TAG", None),
+                mock.patch.object(ips, "_has_usable_nvidia_gpu", return_value = False),
+            ):
+                assert ips._expected_torch_flavor_tag() == ""
+
+    def test_a_pin_answers_without_probing_the_gpu(self):
+        with self._env(UNSLOTH_TORCH_INDEX_FAMILY = "cu126"):
+            with (
+                mock.patch.object(ips, "_RECORDED_TORCH_TAG", None),
+                mock.patch.object(ips, "_has_usable_nvidia_gpu") as probe,
+            ):
+                assert ips._expected_torch_flavor_tag() == "cu126"
+            probe.assert_not_called()
+
+    def test_a_cpu_pin_resolves_to_cpu_not_to_the_host_gpu(self):
+        with self._env(UNSLOTH_TORCH_INDEX_FAMILY = "cpu"):
+            with mock.patch.object(ips, "_RECORDED_TORCH_TAG", None):
+                assert ips._expected_torch_flavor_tag() == "cpu"
+
+    def test_the_index_url_is_reused_only_for_its_own_family(self):
+        # setup.ps1 hands over the /cpu index alongside a "rocm" tag on AMD Windows, so
+        # repairing from it would install the very CPU wheel the repair exists to remove.
+        with self._env(UNSLOTH_TORCH_INSTALL_INDEX_URL = "https://mirror.local/whl/cu124/"):
+            assert ips._expected_torch_index_url("cu124") == "https://mirror.local/whl/cu124"
+        with self._env(UNSLOTH_TORCH_INSTALL_INDEX_URL = "https://download.pytorch.org/whl/cpu"):
+            assert ips._expected_torch_index_url("cu124") == f"{ips._PYTORCH_WHL_BASE}/cu124"
+
+    def test_a_credentialed_index_survives_intact(self):
+        # Why the URL is forwarded rather than rebuilt: userinfo and a token query are
+        # not reconstructible from a family leaf.
+        url = "https://user:tok@mirror.local/whl/cu128?token=abc"
+        with self._env(UNSLOTH_TORCH_INSTALL_INDEX_URL = url):
+            assert ips._expected_torch_index_url("cu128") == url
+
+    def test_the_pin_supplies_the_index_when_the_setup_script_did_not(self):
+        with self._env(UNSLOTH_TORCH_INDEX_URL = "https://mirror.local/whl/cu126"):
+            assert ips._expected_torch_index_url("cu126") == "https://mirror.local/whl/cu126"
+
+    def test_the_default_index_is_the_pytorch_mirror(self):
+        with self._env():
+            assert ips._expected_torch_index_url("cu124") == f"{ips._PYTORCH_WHL_BASE}/cu124"
+
+    def test_no_index_url_is_ever_persisted_by_the_manifest_write(self):
+        # The manifest lives in the venv, so a token in a pinned URL must not reach it.
+        source = inspect.getsource(ips.install_python_stack)
+        assert "expected_torch_tag = torch_flavor_tag or _RECORDED_TORCH_TAG," in source
+        assert "torch_index_url" not in source

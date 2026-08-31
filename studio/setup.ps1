@@ -1052,7 +1052,9 @@ function Get-RocmPinStaleTags {
 # that answer. Mirrors install.ps1's copy.
 function Invoke-BoundedPythonProbe {
     param([string]$PythonExe, [string]$Code, [int]$TimeoutSec = 30)
-    $result = [pscustomobject]@{ Ok = $false; Output = ""; Error = "" }
+    # TimedOut separates "never answered" from "answered with a failure": both leave Ok
+    # false, only the second says anything about the installation.
+    $result = [pscustomobject]@{ Ok = $false; Output = ""; Error = ""; TimedOut = $false }
     if (-not $PythonExe -or -not $Code) { return $result }
     try {
         $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -1070,6 +1072,7 @@ function Invoke-BoundedPythonProbe {
             # Synthesised, not read back: waiting on the reader tasks of a wedged child would
             # reintroduce the hang this helper exists to bound.
             $result.Error = "python did not answer within $TimeoutSec seconds"
+            $result.TimedOut = $true
             return $result
         }
         $result.Output = $outTask.GetAwaiter().GetResult()
@@ -1229,6 +1232,30 @@ function Test-VenvTorchIsRocm {
         if (-not (Test-Path -LiteralPath $verPy)) { return $false }
         return [bool]((Get-Content -LiteralPath $verPy -TotalCount 40 -ErrorAction Stop) -match "__version__\s*=\s*'[^']*\+(rocm|gfx)")
     } catch { return $false }
+}
+
+# The NVIDIA counterpart of the XPU and ROCm on-disk rescues: a wedged display driver hangs or
+# faults `import torch`, and the chain then fell through to a rebuild with a null tag, deleting a
+# healthy CUDA venv with no rollback copy. Returns the FAMILY, since the stale check needs it.
+function Get-VenvTorchCudaTag {
+    param([string]$VenvPath)
+    if (-not $VenvPath) { return $null }
+    try {
+        $verPy = Join-Path $VenvPath "Lib\site-packages\torch\version.py"
+        if (-not (Test-Path -LiteralPath $verPy)) { return $null }
+        $line = (Get-Content -LiteralPath $verPy -TotalCount 40 -ErrorAction Stop |
+                 Where-Object { $_ -match "__version__\s*=\s*'[^']*\+(cu[0-9]+)" } |
+                 Select-Object -First 1)
+        if (-not $line) { return $null }
+        $m = [regex]::Match($line, "__version__\s*=\s*'[^']*\+(cu[0-9]+)")
+        if ($m.Success) { return $m.Groups[1].Value.ToLowerInvariant() }
+        return $null
+    } catch { return $null }
+}
+
+function Test-VenvTorchIsCuda {
+    param([string]$VenvPath)
+    return [bool](Get-VenvTorchCudaTag -VenvPath $VenvPath)
 }
 
 # Same free disk read, plus the supported range: unsloth/models/_utils.py raises at import for an
@@ -4048,6 +4075,7 @@ $installedTorchTag = $null
 # installer-managed repair below raises it, yet only the block a fresh install never enters
 # assigns it.
 $script:PinChangedForceReinstall = $false
+$script:TorchImportDefinitivelyFailed = $false
 if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode) {
     $VenvPyExe = Join-Path $VenvDir "Scripts\python.exe"
     $installedTorchTag = $null
@@ -4098,6 +4126,18 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
             $installedTorchTag = "rocm"
             substep "PyTorch did not respond but this venv holds a ROCm build -- keeping it." "Yellow"
             substep "If training fails, reboot and update the AMD Adrenalin / HIP SDK driver." "Yellow"
+        } elseif (Test-VenvTorchIsCuda -VenvPath $VenvDir) {
+            # Without this the chain fell through with a NULL tag, so the no-wipe escape
+            # below saw no cu* wheel to preserve. Keep the FAMILY, not a generic "cuda".
+            $installedTorchTag = Get-VenvTorchCudaTag -VenvPath $VenvDir
+            substep "PyTorch did not respond but this venv holds a $installedTorchTag build -- keeping it." "Yellow"
+            substep "If training fails, reboot and update the NVIDIA driver." "Yellow"
+            # A half-written torch also leaves a +cu* version.py behind, and the matched
+            # install below would write a completion manifest over it. Force the reinstall.
+            if ($_verProbe -and -not $_verProbe.TimedOut) {
+                $script:TorchImportDefinitivelyFailed = $true
+                substep "PyTorch failed to import rather than timing out -- reinstalling the same family in place." "Yellow"
+            }
         } else {
             $shouldRebuild = $true
         }
@@ -4286,6 +4326,23 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         substep "install.ps1 keeps a rollback copy of the previous environment until this run succeeds." "DarkGray"
         $script:PinChangedForceReinstall = $true
         $shouldRebuild = $false
+    }
+
+    # A cu* venv is never wiped by a DIRECT update just because nvidia-smi did not answer:
+    # every way that bounded probe comes back empty on a working NVIDIA host collapses
+    # $expectedTorchTag to "cpu", no escape above catches it, and the wipe has no rollback
+    # copy. Narrow on purpose: unpinned only, cu* installed only, and only when the collapse
+    # was for want of an NVIDIA answer. The -and order also keeps the reads legal under
+    # Set-StrictMode, since both are assigned inside `if (-not $shouldRebuild)`.
+    if ($shouldRebuild -and -not $InstallerManagedSetup -and
+        $installedTorchTag -and (Test-CudaFamilyLeaf $installedTorchTag) -and
+        -not $_pinnedIdx -and -not $HasNvidiaSmi -and $expectedTorchTag -eq "cpu") {
+        substep "nvidia-smi did not answer, but this venv holds a $installedTorchTag build -- keeping it." "Yellow"
+        substep "If training runs on CPU, re-run install.ps1: irm https://unsloth.ai/install.ps1 | iex" "Yellow"
+        $shouldRebuild = $false
+        # Keeping the wheel is half the job: the index selection below rescans, sees no
+        # NVIDIA either, and would route the install to the /cpu arm.
+        $script:PreservedInstallerTorchTag = $installedTorchTag
     }
 
     if ($shouldRebuild) {
@@ -4945,7 +5002,13 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
 
 # A torch-index pin change repairs in place: force the dependency pass so the torch install
 # below force-reinstalls from the new pin (else the fast path keeps the old wheel).
-if ($script:PinChangedForceReinstall) { $SkipPythonDeps = $false }
+# A torch that will not import needs the same pass for the same reason, and it is the only
+# thing that can act on it: every --force-reinstall that reads the flag lives INSIDE this
+# block, so on a current core package with a valid manifest the fast path announced a
+# reinstall it then skipped, and setup exited successfully over an unusable wheel.
+if ($script:PinChangedForceReinstall -or $script:TorchImportDefinitivelyFailed) {
+    $SkipPythonDeps = $false
+}
 
 if (-not $SkipPythonDeps) {
 
@@ -5195,6 +5258,10 @@ if ($XpuIndexUrl) {
     if ($installedTorchTag -ne "xpu") { $xpuForce = @("--force-reinstall") }
     # A changed pin repairs in place, so the existing +xpu wheel must be replaced too.
     if ($script:PinChangedForceReinstall) { $xpuForce = @("--force-reinstall") }
+    # And a +xpu wheel that no longer imports: its on-disk tag is still "xpu", so the check
+    # above sees no flavour change and the range is satisfied, which leaves the resolver
+    # holding the broken wheel and the run writing a completion manifest over it.
+    if ($script:TorchImportDefinitivelyFailed) { $xpuForce = @("--force-reinstall") }
     if ($script:UnslothVerbose) {
         Fast-Install @_xpuTrio @xpuForce --index-url $XpuIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
         $torchInstallExit = $LASTEXITCODE
@@ -5232,6 +5299,9 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
     # --force-reinstall on a pin change: a stale +cu / +rocm wheel still satisfies the CPU
     # torch>= range, so uv would keep it and only swap companions.
     if ($script:PinChangedForceReinstall) { $cpuForce = @("--force-reinstall") }
+    # Same for a wheel that no longer imports. Nothing else here distinguishes it: the tag is
+    # rescued from disk and still reads "cpu", so the range is satisfied and it is kept.
+    if ($script:TorchImportDefinitivelyFailed) { $cpuForce = @("--force-reinstall") }
     # A PINNED cpu index installs the bounded trio (parity with _CPU_TORCH_PKG_SPEC): the /cpu
     # index serves newer torch, and _ensure_cpu_torch keeps any CPU build, so a bare trio could
     # land an unsupported version. Unpinned CPU hosts keep the bare trio (pre-pin behavior).
@@ -5269,7 +5339,9 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
     # requirement (PEP 440 ignores the +cuXXX tag), so without it a changed CUDA pin (cu126
     # -> cu128) never applies.
     $cudaForce = @()
-    if ($script:PinChangedForceReinstall) { $cudaForce = @("--force-reinstall") }
+    if ($script:PinChangedForceReinstall -or $script:TorchImportDefinitivelyFailed) {
+        $cudaForce = @("--force-reinstall")
+    }
     # An unknown-leaf custom pin (/simple, /current) routes here with $CuTag as that leaf. Bound
     # the trio like the fresh custom-pin paths so a mirror can't pull an ABI-newer companion
     # against the capped torch. Known cu* leaves keep bare specs.
@@ -5328,6 +5400,33 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
 # already-satisfied bare unsloth/unsloth-zoo. Either way unsloth.exe stays.
 # Duplicate metadata repair is the one pass that DOES reinstall unsloth under
 # SKIP_STUDIO_BASE, so the CLI wraps this script in its launcher transaction.
+
+# ── Publish the torch flavor this run settled on ──
+# so install_python_stack.py can enforce it: its dependency steps resolve torch from PyPI, whose
+# Windows wheel is 2.11.0+cpu, and only install.ps1 -- never on the updater's path -- repaired
+# that. Vocabulary is Get-InstalledTorchTag's; an unknown leaf publishes nothing.
+if (-not $NoTorchMode) {
+    $_expectedLeaf = Get-TorchIndexLeaf $TorchInstallIndexUrl
+    # $ROCmIndexUrl first: on the AMD path $TorchInstallIndexUrl still points at /cpu.
+    $_expectedTag = if ($ROCmIndexUrl) { "rocm" }
+                    elseif (Test-CudaFamilyLeaf $_expectedLeaf) { $_expectedLeaf }
+                    elseif ($_expectedLeaf -eq "cpu" -or $_expectedLeaf -eq "xpu") { $_expectedLeaf }
+                    elseif (Test-PipRocmFamilyLeaf $_expectedLeaf) { "rocm" }
+                    else { $null }
+    # Remove-Item, NOT `= ""`: PowerShell 7.5 took .NET 9's change and KEEPS a name
+    # assigned an empty string. Deleting also stops a value inherited from the caller's
+    # shell surviving a run that decided it cannot name this host's flavor.
+    if ($_expectedTag) {
+        $env:UNSLOTH_EXPECTED_TORCH_TAG = $_expectedTag
+    } else {
+        Remove-Item Env:\UNSLOTH_EXPECTED_TORCH_TAG -ErrorAction SilentlyContinue
+    }
+    if ($TorchInstallIndexUrl) {
+        $env:UNSLOTH_TORCH_INSTALL_INDEX_URL = $TorchInstallIndexUrl
+    } else {
+        Remove-Item Env:\UNSLOTH_TORCH_INSTALL_INDEX_URL -ErrorAction SilentlyContinue
+    }
+}
 
 # Ordered heavy dependency installation -- shared cross-platform script
 substep "running ordered dependency installation..."
