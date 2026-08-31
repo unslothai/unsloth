@@ -19336,6 +19336,19 @@ async def delete_openai_container(
 _REASONING_EFFORT_VALUES = {"none", "minimal", "low", "medium", "high", "max", "xhigh"}
 
 
+def _valid_reasoning_effort(value) -> Optional[str]:
+    """An effort level the templates understand, else None.
+
+    Applied to the typed field too, not just the nested one: ChatCountTokensRequest
+    declares a plain ``Optional[str]``, so without this a typo prices the prompt in
+    thinking mode ("hihg" is not "none") for a request /v1/chat/completions would
+    reject through its Literal.
+    """
+    if isinstance(value, str) and value in _REASONING_EFFORT_VALUES:
+        return value
+    return None
+
+
 def _chat_template_reasoning_kwargs(payload) -> dict:
     """Validated reasoning controls from OpenAI ``extra_body``."""
     extra = getattr(payload, "model_extra", None)
@@ -19346,8 +19359,8 @@ def _chat_template_reasoning_kwargs(payload) -> dict:
     enable_thinking = template_kwargs.get("enable_thinking")
     if isinstance(enable_thinking, bool):
         controls["enable_thinking"] = enable_thinking
-    effort = template_kwargs.get("reasoning_effort")
-    if isinstance(effort, str) and effort in _REASONING_EFFORT_VALUES:
+    effort = _valid_reasoning_effort(template_kwargs.get("reasoning_effort"))
+    if effort is not None:
         controls["reasoning_effort"] = effort
     preserve = template_kwargs.get("preserve_thinking")
     if isinstance(preserve, bool):
@@ -19374,7 +19387,11 @@ def _normalize_chat_reasoning_controls(payload) -> None:
     nested = _chat_template_reasoning_kwargs(payload)
     fields_set = getattr(payload, "model_fields_set", set())
     typed_enable = payload.enable_thinking if "enable_thinking" in fields_set else None
-    typed_effort = payload.reasoning_effort if "reasoning_effort" in fields_set else None
+    typed_effort = (
+        _valid_reasoning_effort(payload.reasoning_effort)
+        if "reasoning_effort" in fields_set
+        else None
+    )
 
     if typed_enable is not None or typed_effort is not None:
         enable_thinking, reasoning_effort = _resolve_reasoning_controls(typed_enable, typed_effort)
@@ -19390,7 +19407,7 @@ def _normalize_chat_reasoning_controls(payload) -> None:
     else:
         # Lowest priority: Anthropic ``thinking``, already mapped onto the boolean.
         enable_thinking = payload.enable_thinking
-        reasoning_effort = payload.reasoning_effort
+        reasoning_effort = _valid_reasoning_effort(payload.reasoning_effort)
 
     payload.enable_thinking = enable_thinking
     payload.reasoning_effort = reasoning_effort
@@ -19450,10 +19467,12 @@ def _sampling_thinking_mode(payload, model_id) -> Optional[bool]:
     speak, so the historical flat preset stands.
     """
     backend = _loaded_llama_backend_for(model_id)
-    # _think_parsing_expected defaults its introspection ON so a test double keeps
-    # parsing markup; sampling has to default the other way, or a backend that cannot
-    # answer would silently re-price every request. No introspection, no mode.
-    if backend is None or not getattr(backend, "supports_reasoning", False):
+    # "Cannot answer" is not the same as "answered no": a backend reporting
+    # supports_reasoning=False has told us this template never reasons, and
+    # _think_parsing_expected turns that into False. Only a backend without the
+    # introspection at all (a test double) leaves the request as the sole source, and
+    # then the historical flat preset stands rather than a silently re-priced request.
+    if backend is None or getattr(backend, "supports_reasoning", None) is None:
         return _normalized_sampling_thinking_mode(payload)
     return _think_parsing_expected(backend, payload)
 

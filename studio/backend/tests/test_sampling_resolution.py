@@ -865,3 +865,60 @@ def test_a_template_that_cannot_disable_is_never_priced_as_non_thinking(
 
     assert payload.temperature == expected_temperature
     assert payload.presence_penalty == expected_presence_penalty
+
+
+@pytest.mark.parametrize("request_kwargs", [{"enable_thinking": True}, {"reasoning_effort": "high"}])
+def test_a_loaded_template_that_cannot_reason_keeps_the_flat_preset(monkeypatch, request_kwargs):
+    """supports_reasoning=False is an answer, not a missing one.
+
+    _request_reasoning_kwargs drops both controls when the template cannot reason, so
+    honoring the request here would price a non-thinking generation on the thinking row.
+    """
+    from core.inference.llama_cpp import LlamaCppBackend
+    from models.inference import ChatCompletionRequest
+    from routes import inference as inference_route
+
+    backend = _loaded_qwen38_backend(
+        supports_reasoning = False,
+        _supports_reasoning = False,
+        _reasoning_always_on = False,
+        _reasoning_style = "enable_thinking",
+        _reasoning_effort_levels = [],
+        _supports_preserve_thinking = False,
+        _architecture = None,
+    )
+    backend._request_reasoning_kwargs = LlamaCppBackend._request_reasoning_kwargs.__get__(backend)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+
+    payload = ChatCompletionRequest(
+        model = "unsloth/Qwen3.8-27B-GGUF",
+        messages = [{"role": "user", "content": "hi"}],
+        **request_kwargs,
+    )
+    inference_route._normalize_chat_reasoning_controls(payload)
+    inference_route._fill_recommended_sampling_openai(payload, "unsloth/Qwen3.8-27B-GGUF")
+
+    assert backend._request_reasoning_kwargs(payload.enable_thinking, payload.reasoning_effort, None) is None
+    assert (payload.temperature, payload.presence_penalty) == (0.7, 1.5)
+
+
+@pytest.mark.parametrize(
+    "effort, expected_thinking",
+    [("hihg", None), ("", None), ("high", True), ("none", False)],
+)
+def test_count_tokens_ignores_an_effort_the_templates_do_not_know(effort, expected_thinking):
+    """ChatCountTokensRequest types effort as a plain str, unlike the chat Literal.
+
+    A typo must not price the prompt in thinking mode for a request that
+    /v1/chat/completions would reject.
+    """
+    from models.inference import ChatCountTokensRequest
+    from routes import inference as inference_route
+
+    payload = ChatCountTokensRequest.model_validate(
+        {"messages": [{"role": "user", "content": "hi"}], "reasoning_effort": effort}
+    )
+    inference_route._normalize_chat_reasoning_controls(payload)
+
+    assert payload.enable_thinking is expected_thinking
+    assert payload.reasoning_effort == (effort if expected_thinking is not None else None)
