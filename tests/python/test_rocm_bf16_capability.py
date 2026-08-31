@@ -1,8 +1,4 @@
-"""gfx10 (RDNA 1/2) reports bf16 support it does not have. See issue 7922.
-
-The gate lives in `unsloth.device_type.arch_lacks_bf16`, which is a pure string check, so
-these run on any host: no GPU, no ROCm torch, no import of the HIP branch itself.
-"""
+"""Regression tests for the gfx10 bf16 gate. See issue 7922."""
 
 from pathlib import Path
 
@@ -16,7 +12,6 @@ GPU_INIT = REPO_ROOT / "unsloth" / "_gpu_init.py"
 MODEL_UTILS = REPO_ROOT / "unsloth" / "models" / "_utils.py"
 
 
-# RDNA 1 is gfx101x, RDNA 2 is gfx103x. Neither has native bf16 arithmetic.
 @pytest.mark.parametrize(
     "arch",
     ["gfx1010", "gfx1012", "gfx1030", "gfx1031", "gfx1032:sramecc-:xnack-", "GFX1036", " gfx1030 "],
@@ -25,8 +20,6 @@ def test_gfx10_lacks_bf16(arch):
     assert arch_lacks_bf16(arch) is True
 
 
-# gfx11 is RDNA 3, gfx12 is RDNA 4, gfx9 is CDNA. All have it, and none may be caught by a
-# prefix match that is one character too short.
 @pytest.mark.parametrize(
     "arch",
     ["gfx1100", "gfx1101", "gfx1151", "gfx1200", "gfx1201", "gfx90a", "gfx942", "gfx908"],
@@ -37,12 +30,12 @@ def test_newer_rdna_and_cdna_keep_bf16(arch):
 
 @pytest.mark.parametrize("arch", ["", None, "unknown"])
 def test_unreadable_arch_does_not_disable_bf16(arch):
-    """A failed probe must not turn bf16 off on a card that has it. torch's answer stands."""
+    """A failed probe must not disable bf16 on a card that has it."""
     assert arch_lacks_bf16(arch) is False
 
 
 def test_gpu_init_gates_on_every_visible_device():
-    """SUPPORTS_BFLOAT16 is process-wide, so one gfx10 in the set has to disable it for all."""
+    """Guards against narrowing the gate back to device 0."""
     source = GPU_INIT.read_text(encoding = "utf-8")
     hip_branch = source.split('elif DEVICE_TYPE == "hip":', 1)[1].split("\nelif ", 1)[0]
     assert "arch_lacks_bf16" in hip_branch

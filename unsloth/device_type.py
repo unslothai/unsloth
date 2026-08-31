@@ -192,17 +192,14 @@ if DEVICE_TYPE == "hip":
 
 
 def arch_lacks_bf16(gcn_arch):
-    """True for gfx10 (RDNA 1 and 2), which has no native bf16 arithmetic.
-
-    torch.cuda.is_bf16_supported() answers True on these anyway, and Triton then picks a bf16
-    dot intrinsic LLVM cannot lower for the target. The process dies before Python sees an
-    exception, so the user gets "training exited unexpectedly" at step 0. See issue 7922.
-    """
+    """gfx10 (RDNA 1/2) has no native bf16, yet torch.cuda.is_bf16_supported() returns True on it:
+    Triton then emits a bf16 dot intrinsic LLVM cannot lower and the process dies with no Python
+    exception. Issue 7922. gfx11 (RDNA 3) does have bf16, so the prefix must stay 5 characters."""
     return str(gcn_arch or "").split(":", 1)[0].strip().lower().startswith("gfx10")
 
 
 def hip_visible_archs():
-    """gcnArchName for every visible HIP device. Empty on any probe failure."""
+    """gcnArchName per visible HIP device; [] on probe failure, which leaves bf16 enabled."""
     try:
         return [
             str(getattr(torch.cuda.get_device_properties(i), "gcnArchName", ""))

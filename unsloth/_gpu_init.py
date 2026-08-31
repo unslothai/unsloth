@@ -349,10 +349,7 @@ elif DEVICE_TYPE == "cuda":
 elif DEVICE_TYPE == "hip":
     old_is_bf16_supported = torch.cuda.is_bf16_supported
 
-    # torch answers True on some RDNA 1/2 cards that have no native bf16 arithmetic, so ask the
-    # arch instead. SUPPORTS_BFLOAT16 is process-wide, which means one gfx10 in the visible set
-    # has to shut it off for every device: a mixed host would otherwise pass the check on the
-    # newer card and still die on the older one.
+    # SUPPORTS_BFLOAT16 is process-wide, so one gfx10 in the visible set must disable it for all.
     SUPPORTS_BFLOAT16 = (
         not any(arch_lacks_bf16(arch) for arch in hip_visible_archs()) and old_is_bf16_supported()
     )
