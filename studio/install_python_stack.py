@@ -3065,11 +3065,15 @@ def _expected_torch_flavor_was_pinned(flavor: str = "") -> bool:
     def _names_it(family: str) -> bool:
         return True if not flavor else family == _flavor_tag_family(flavor)
 
+    # _explicit_torch_index_url() already covers both variables WITH install.sh's
+    # precedence: the URL wins outright and the family is only read when no URL was
+    # supplied. Reading the family separately after that reintroduced the precedence
+    # it exists to enforce, so an authoritative corporate /simple URL, whose leaf names
+    # no family, fell through to a stale ..._FAMILY=cpu and recorded a CPU wheel on a
+    # GPU-less host as deliberately pinned. A later eGPU on that host would then get no
+    # mismatch and no repair.
     pin = _explicit_torch_index_url()
     if pin is not None and _names_it(_index_leaf_flavor_family(_torch_index_leaf(pin))):
-        return True
-    _family_var = os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip()
-    if _family_var and _names_it(_index_leaf_flavor_family(_torch_index_leaf(_family_var))):
         return True
     # install.sh derives UNSLOTH_TORCH_BACKEND from the index it RESOLVED -- "cpu" on any GPU-less
     # machine, asked for or not -- and marks it derived. Only an unmarked value is a preference.
