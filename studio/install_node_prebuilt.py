@@ -714,20 +714,31 @@ def existing_install_usable(install_dir: Path, host: HostInfo) -> bool:
 _ERROR_ACCESS_DENIED = 5
 
 
-def _access_denied_recovery_lines(path: Path) -> list[str]:
+def _access_denied_recovery_lines(paths: tuple[tuple[Path, bool], ...]) -> list[str]:
     """What to print when a rename keeps failing with ``ERROR_ACCESS_DENIED``.
 
     Mirrors the guidance ``install.ps1`` / ``studio/setup.ps1`` already emit for an
     unreadable install tree. The two commands go on their own lines: joined, takeown
     swallows the rest as arguments.
     """
-    return [
-        f"if this was not a scanner, the ACLs on {path} may be unreadable -- "
-        "even icacls/Get-Acl report access denied in that state",
-        "restore access with these two commands, then run the install again:",
-        f'  takeown /F "{path}" /R /D Y',
-        f'  icacls "{path}" /reset /T /C',
+    lines = [
+        "if this was not a scanner, the ACLs on one of these rename paths may be "
+        "unreadable -- even icacls/Get-Acl report access denied in that state",
+        "from an elevated PowerShell, restore access for each affected path, "
+        "then run the install again:",
     ]
+    # A destination parent needs only its own ACL repaired; resetting it recursively
+    # would also rewrite unrelated sibling installs.
+    for path, recursive in dict.fromkeys(paths):
+        takeown_flags = " /R /D Y" if recursive else ""
+        icacls_flags = " /T /C" if recursive else ""
+        lines.extend(
+            (
+                f'  takeown /F "{path}"{takeown_flags}',
+                f'  icacls "{path}" /reset{icacls_flags}',
+            )
+        )
+    return lines
 
 
 def _replace_with_retry(
@@ -735,6 +746,7 @@ def _replace_with_retry(
     dst: Path,
     *,
     attempts: int = 8,
+    access_denied_paths: tuple[tuple[Path, bool], ...] | None = None,
 ) -> None:
     """os.replace, retried against transient Windows sharing violations.
 
@@ -760,7 +772,9 @@ def _replace_with_retry(
             if not transient or attempt == attempts - 1:
                 if transient and winerror == _ERROR_ACCESS_DENIED:
                     log(f"rename still blocked (5) after {attempts} attempts")
-                    for line in _access_denied_recovery_lines(src):
+                    for line in _access_denied_recovery_lines(
+                        access_denied_paths or ((src, True),)
+                    ):
                         log(line)
                 raise
             if winerror == _ERROR_ACCESS_DENIED:
@@ -778,16 +792,28 @@ def _swap_into_place(extracted_root: Path, install_dir: Path) -> None:
     backup: Path | None = None
     if install_dir.exists():
         backup = install_dir.parent / f".{install_dir.name}.old-{os.getpid()}"
-        _replace_with_retry(install_dir, backup)
+        _replace_with_retry(
+            install_dir,
+            backup,
+            access_denied_paths = ((install_dir, True), (install_dir.parent, False)),
+        )
     try:
-        _replace_with_retry(extracted_root, install_dir)
+        _replace_with_retry(
+            extracted_root,
+            install_dir,
+            access_denied_paths = ((extracted_root, True), (install_dir.parent, False)),
+        )
     except OSError:
         # The forward rename retries ~16s, ample time for a scanner to grab the backup too.
         # A plain os.replace would then raise over the original error and leave no
         # install_dir at all, so the rollback gets the same backoff and never masks it.
         if backup is not None and not install_dir.exists():
             try:
-                _replace_with_retry(backup, install_dir)
+                _replace_with_retry(
+                    backup,
+                    install_dir,
+                    access_denied_paths = ((backup, True), (install_dir.parent, False)),
+                )
             except OSError as rollback_exc:
                 log(f"could not restore the previous Node install from {backup}: {rollback_exc}")
         raise

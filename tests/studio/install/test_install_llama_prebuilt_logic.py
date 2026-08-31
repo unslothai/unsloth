@@ -1106,6 +1106,7 @@ def test_replace_with_busy_retry_names_acl_recovery_when_access_denied_persists(
     output = "".join(capsys.readouterr())
     assert "takeown" in output
     assert "icacls" in output
+    assert "elevated PowerShell" in output
     assert str(source) in output, "the recovery has to name the tree that is unreadable"
     # Two commands, two lines. Joined, takeown swallows the rest as arguments --
     # the same trap tests/studio/install/test_setup_denied_install_tree.py guards
@@ -1705,6 +1706,38 @@ def test_activate_install_tree_keeps_existing_install_when_aside_move_hits_busy_
     assert (install_dir / "old.txt").read_text() == "old install\n"
     assert not staging_dir.exists()
     assert not (tmp_path / ".staging").exists()
+
+
+def test_activate_install_tree_does_not_reclassify_reported_acl_denial_as_busy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    (install_dir / "old.txt").write_text("old install\n")
+    staging_dir = create_install_staging_dir(install_dir)
+    (staging_dir / "new.txt").write_text("new install\n")
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "name", "nt")
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", _always_denied(5))
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(
+        PrebuiltFallback,
+        match = "could not be moved aside; previous install left in place",
+    ) as excinfo:
+        activate_install_tree(staging_dir, install_dir, linux_host())
+
+    assert "appears to still be in use" not in str(excinfo.value)
+    output = "".join(capsys.readouterr())
+    assert "elevated PowerShell" in output
+    assert f'takeown /F "{install_dir}" /R /D Y' in output
+    parent_takeown = f'takeown /F "{staging_dir.parent}"'
+    assert parent_takeown in output
+    assert not any(
+        parent_takeown in line and " /R " in line for line in output.splitlines()
+    ), output
+    assert (install_dir / "old.txt").read_text() == "old install\n"
+    assert not staging_dir.exists()
 
 
 def test_activate_install_tree_restores_previous_install_when_failed_move_fails(
