@@ -112,6 +112,7 @@ import {
 import { resolveDiffusionGgufFilename } from "@/lib/diffusion-gguf-filename";
 import { createPickGuard, runGgufRepoPick } from "@/lib/diffusion-gguf-pick";
 import { diffusionRoutePick } from "@/lib/diffusion-route-pick";
+import { familyTokenMatches } from "@/lib/family-token-matching";
 import {
   PRECISION_REFUSAL_TITLE,
   denseTextEncoderBuildLabel,
@@ -1233,6 +1234,7 @@ export function ImagesPage({
   // it. Without this the Default preset would read as "modified" for the whole download.
   const [pendingModelDefaults, setPendingModelDefaults] = useState<{
     repoId: string;
+    family: string | null;
     steps: number;
     guidance: number;
   } | null>(null);
@@ -1456,7 +1458,7 @@ export function ImagesPage({
       const claimedAt = imageFormClaimId();
       pickRecipeSuperseded.current = () => imageFormClaimId() !== claimedAt;
       const recommended = defaultsFor(repoId, override);
-      setPendingModelDefaults({ ...recommended, repoId });
+      setPendingModelDefaults({ ...recommended, repoId, family: override });
       setSteps(recommended.steps);
       setGuidance(recommended.guidance);
       if (revert) {
@@ -2195,8 +2197,8 @@ export function ImagesPage({
         // Load succeeded: the optimistic quant is now the real one, so drop the pending revert.
         quantRevert.current?.commitRecipeClaim?.();
         quantRevert.current = null;
-        // Status owns the recipe from here, so the pick's claim on Default expires with it.
-        setPendingModelDefaults(null);
+        // The resident-seeding effect reconciles optimistic filename defaults with the resolved
+        // family before releasing their claim on Default.
         // lastLoad.current already holds the now-resident pick, so drop its revert too.
         lastLoadRevert.current = null;
         return;
@@ -2359,6 +2361,35 @@ export function ImagesPage({
       family: status?.family,
       modelKind: status?.model_kind,
     });
+    const explicitFamily = pendingModelDefaults?.family;
+    const familyConfirmed =
+      !explicitFamily ||
+      explicitFamily === "auto" ||
+      (status?.family != null &&
+        familyTokenMatches(explicitFamily, status.family));
+    const confirmingOwnPick =
+      pendingModelDefaults != null &&
+      lastLoad.current?.repoId === repoId &&
+      familyConfirmed;
+    if (confirmingOwnPick) {
+      const d = defaultsFor(
+        status?.repo_id ?? status?.base_repo ?? repoId,
+        status?.family,
+      );
+      const superseded = pickRecipeSuperseded.current?.() ?? false;
+      pickRecipeSuperseded.current = null;
+      setPendingModelDefaults(null);
+      if (!superseded) {
+        setSteps(d.steps);
+        setGuidance(d.guidance);
+      }
+      if (quantRevert.current) {
+        quantRevert.current.appliedSteps = d.steps;
+        quantRevert.current.appliedGuidance = d.guidance;
+      }
+      seededResident.current = residentKey;
+      return;
+    }
     if (seededResident.current === residentKey) return;
     // A direct pick already seeded its optimistic recipe. Record the first resolved identity so a
     // later family-only replacement by another client can still reseed this page.
@@ -2387,7 +2418,7 @@ export function ImagesPage({
     setPendingModelDefaults(null);
     setSteps(d.steps);
     setGuidance(d.guidance);
-  }, [imagePresets.storedRecipe, status?.loaded, status?.repo_id, status?.base_repo, status?.family, status?.model_kind]);
+  }, [imagePresets.storedRecipe, pendingModelDefaults, status?.loaded, status?.repo_id, status?.base_repo, status?.family, status?.model_kind]);
 
   // Reseed the Advanced selects from the LOADED build, so they stop being pure local request state.
   // An honored request re-selects itself (a no-op); a declined one snaps to what actually engaged,
@@ -3588,7 +3619,7 @@ export function ImagesPage({
             v === "auto"
               ? defaultsFor(recipeRepoId)
               : defaultsFor(recipeRepoId, v);
-          setPendingModelDefaults({ ...d, repoId: recipeRepoId });
+          setPendingModelDefaults({ ...d, repoId: recipeRepoId, family: v });
           setSteps(d.steps);
           setGuidance(d.guidance);
         }}

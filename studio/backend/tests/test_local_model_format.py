@@ -490,6 +490,34 @@ def test_custom_inventory_surfaces_a_safetensors_file_registered_by_path(tmp_pat
     assert promoted.capabilities.supports_lora is False
 
 
+def test_models_inventory_surfaces_a_loose_safetensors_checkpoint(tmp_path):
+    """The default models root must offer bare checkpoints to an explicit family override."""
+    from hub.services.models.local_inventory import _scan_models_dir
+
+    root = tmp_path / "models"
+    checkpoint = _touch(root / "opaque.safetensors")
+
+    rows = _scan_models_dir(root)
+
+    assert [(Path(row.path), row.model_format, row.task) for row in rows] == [
+        (checkpoint, "safetensors", None)
+    ]
+
+
+def test_lmstudio_inventory_surfaces_a_loose_safetensors_checkpoint(tmp_path):
+    """An LM Studio root may also contain a directly imported diffusion checkpoint."""
+    from hub.services.models.local_inventory import _scan_lmstudio_dir
+
+    root = tmp_path / "lmstudio"
+    checkpoint = _touch(root / "opaque.safetensors")
+
+    rows = _scan_lmstudio_dir(root)
+
+    assert [(Path(row.path), row.model_format, row.task) for row in rows] == [
+        (checkpoint, "safetensors", None)
+    ]
+
+
 def test_custom_inventory_keeps_file_rows_in_a_multi_checkpoint_registration(tmp_path):
     """Reducing a file registration to its parent must not lose it beside another checkpoint."""
     from hub.services.models.local_inventory import _coerce_scan_folder_path, _scan_custom_folder

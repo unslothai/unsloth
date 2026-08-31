@@ -56,6 +56,32 @@ test("resident image default identity includes the resolved family", () => {
   );
 });
 
+test("first-load confirmation reconciles optimistic defaults to the resolved family", () => {
+  assert.deepEqual(defaultsFor("local/FLUX.2_klein_9B", "flux.2-klein"), {
+    steps: 4,
+    guidance: 1,
+  });
+  const source = readFileSync(
+    new URL("../src/features/images/images-page.tsx", import.meta.url),
+    "utf8",
+  );
+  const residentStart = source.indexOf("const residentSeeded = useRef(false)");
+  const residentEnd = source.indexOf("// Reseed the Advanced selects", residentStart);
+  const residentEffect = source.slice(residentStart, residentEnd);
+  assert.match(residentEffect, /pendingModelDefaults/);
+  assert.match(residentEffect, /lastLoad\.current\?\.repoId === repoId/);
+  assert.match(residentEffect, /pickRecipeSuperseded\.current\?\.\(\)/);
+  assert.match(residentEffect, /setSteps\(d\.steps\)/);
+  assert.match(residentEffect, /setGuidance\(d\.guidance\)/);
+  const readyStart = source.indexOf('if (p.phase === "ready")');
+  const readyEnd = source.indexOf('if (p.phase === "error")', readyStart);
+  assert.doesNotMatch(
+    source.slice(readyStart, readyEnd),
+    /setPendingModelDefaults\(null\)/,
+    "ready status must stay available for resolved-family reconciliation",
+  );
+});
+
 test("distinguishes Klein base checkpoints from distilled checkpoints", () => {
   for (const size of ["4B", "9B"]) {
     assert.deepEqual(defaultsFor(`unsloth/FLUX.2-klein-base-${size}`), {

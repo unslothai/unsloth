@@ -93,6 +93,35 @@ _gguf_variant_state_summary = model_common._gguf_variant_state_summary
 _is_diffusers_pipeline_dir = model_common._is_diffusers_pipeline_dir
 
 
+def _is_inert_safetensors(model: LocalModelInfo) -> bool:
+    """Whether an explicit diffusion family is the row's only architecture evidence."""
+    return (
+        model.model_format == "safetensors"
+        and not model.capabilities.can_chat
+        and not model.capabilities.can_train
+        and not model.capabilities.supports_lora
+    )
+
+
+def _classify_standalone_local_weight(
+    path: Path,
+    source: model_common.LocalModelSource,
+    *,
+    model_id: Optional[str] = None,
+    updated_at: Optional[float] = None,
+) -> list[LocalModelInfo]:
+    """Classify a top-level GGUF or deliberately bare safetensors file."""
+    rows = _classify_local_path(
+        path,
+        source,
+        model_id = model_id,
+        updated_at = updated_at,
+    )
+    if path.suffix.lower() == ".safetensors":
+        return [row for row in rows if _is_inert_safetensors(row)]
+    return rows
+
+
 def _http_error(status_code: int, detail: str):
     from fastapi import HTTPException
     return HTTPException(status_code = status_code, detail = detail)
@@ -175,6 +204,7 @@ def _scan_models_dir(
     *,
     limit: int | None = None,
     entry_limit: int | None = None,
+    include_loose_safetensors: bool = True,
 ) -> List[LocalModelInfo]:
     if not models_dir.exists() or not models_dir.is_dir():
         return []
@@ -209,15 +239,18 @@ def _scan_models_dir(
             break
         try:
             is_dir = child.is_dir()
-            is_gguf_file = (
+            is_standalone_weight = (
                 not is_dir
-                and child.suffix.lower() == ".gguf"
+                and (
+                    child.suffix.lower() == ".gguf"
+                    or (include_loose_safetensors and child.suffix.lower() == ".safetensors")
+                )
                 and child.is_file()
                 and not is_appledouble_metadata(child)
             )
-            if not is_dir and not is_gguf_file:
+            if not is_dir and not is_standalone_weight:
                 continue
-            has_model_files = is_gguf_file or _has_immediate_model_signal(child)
+            has_model_files = is_standalone_weight or _has_immediate_model_signal(child)
         except OSError:
             # Skip individual children that are unreadable (permissions, broken
             # symlinks, etc.) rather than failing the entire scan.
@@ -228,10 +261,18 @@ def _scan_models_dir(
             updated_at = child.stat().st_mtime
         except OSError:
             updated_at = None
-        rows = _classify_local_path(
-            child,
-            "models_dir",
-            updated_at = updated_at,
+        rows = (
+            _classify_standalone_local_weight(
+                child,
+                "models_dir",
+                updated_at = updated_at,
+            )
+            if is_standalone_weight
+            else _classify_local_path(
+                child,
+                "models_dir",
+                updated_at = updated_at,
+            )
         )
         if limit is not None:
             rows = rows[: max(0, limit - len(found))]
@@ -441,7 +482,12 @@ def _scan_hf_cache(
     return found
 
 
-def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[LocalModelInfo]:
+def _scan_lmstudio_dir(
+    lm_dir: Path,
+    *,
+    entry_limit: int | None = None,
+    include_loose_safetensors: bool = True,
+) -> List[LocalModelInfo]:
     """Scan an LM Studio models dir (``publisher/model-name`` folders of GGUFs, or top-level standalone GGUFs)."""
     if not lm_dir.exists() or not lm_dir.is_dir():
         return []
@@ -478,7 +524,10 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
         try:
             if not child.is_dir():
                 if (
-                    child.suffix.lower() == ".gguf"
+                    (
+                        child.suffix.lower() == ".gguf"
+                        or (include_loose_safetensors and child.suffix.lower() == ".safetensors")
+                    )
                     and child.is_file()
                     and not is_appledouble_metadata(child)
                 ):
@@ -487,7 +536,7 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
                     except OSError:
                         updated_at = None
                     found.extend(
-                        _classify_local_path(
+                        _classify_standalone_local_weight(
                             child,
                             "lmstudio",
                             updated_at = updated_at,
@@ -545,7 +594,7 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
                         except OSError:
                             updated_at = None
                         found.extend(
-                            _classify_local_path(
+                            _classify_standalone_local_weight(
                                 model_dir,
                                 "lmstudio",
                                 model_id = f"{child.name}/{model_dir.stem}",
@@ -773,14 +822,6 @@ def _scan_custom_folder(
             return True
         return _is_diffusers_pipeline_dir(Path(m.path))
 
-    def _is_inert_safetensors(model: LocalModelInfo) -> bool:
-        return (
-            model.model_format == "safetensors"
-            and not model.capabilities.can_chat
-            and not model.capabilities.can_train
-            and not model.capabilities.supports_lora
-        )
-
     # A registered weight-file path is intentionally stored as its parent directory. Classify
     # loose root payloads one by one so the exact file remains a loadable row even when the same
     # folder holds several checkpoints. The capability gate excludes adapters, Transformers
@@ -816,6 +857,7 @@ def _scan_custom_folder(
                 folder_path,
                 limit = _MAX_MODELS_PER_CUSTOM_FOLDER,
                 entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES,
+                include_loose_safetensors = False,
             )
             + _scan_hf_cache(
                 folder_path,
@@ -825,7 +867,11 @@ def _scan_custom_folder(
                 variant_states = variant_states,
                 active_hub_cache = active_hub_cache,
             )
-            + _scan_lmstudio_dir(folder_path, entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES)
+            + _scan_lmstudio_dir(
+                folder_path,
+                entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES,
+                include_loose_safetensors = False,
+            )
         )
         if _is_supported(m)
         if not any(p in (".studio_links", "ollama_links") for p in Path(m.path).parts)

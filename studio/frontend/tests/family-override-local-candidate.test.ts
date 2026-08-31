@@ -67,6 +67,19 @@ test("an explicit family surfaces only unclassified local safetensors", () => {
     false,
     "the dual-expert Wan pipeline cannot load one checkpoint",
   );
+  assert.equal(
+    isFamilyOverrideLocalCandidate(
+      {
+        model_format: "gguf",
+        task: "unsupported-diffusion",
+        capabilities: { canChat: true, canTrain: false, supportsLora: false },
+      },
+      true,
+      "flux.1",
+    ),
+    true,
+    "an explicit family recovers a GGUF whose diffusion architecture was ambiguous",
+  );
 });
 
 test("image and video family selectors opt all local inventories into the narrow fallback", () => {

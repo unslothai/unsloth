@@ -26,13 +26,17 @@ export function isFamilyOverrideLocalCandidate(
     "h3",
     "wan2.2-t2v-a14b",
   ].includes(family ?? "");
-  return (
-    allowUnknownLocalModels &&
-    supportsSingleFile &&
+  const recoverableDiffusionGguf =
+    model.model_format === "gguf" && model.task === "unsupported-diffusion";
+  const inertSafetensors =
     model.task == null &&
     model.model_format === "safetensors" &&
     model.capabilities?.canChat === false &&
     model.capabilities.canTrain === false &&
-    model.capabilities.supportsLora === false
+    model.capabilities.supportsLora === false;
+  return (
+    allowUnknownLocalModels &&
+    supportsSingleFile &&
+    (recoverableDiffusionGguf || inertSafetensors)
   );
 }
