@@ -363,16 +363,48 @@ def _glue_line_continuations(text: str) -> list[tuple[int, str]]:
     return out
 
 
-# `pip uninstall -y x && pip install x==1` is two commands with two actions. Without the
-# split the regex hands the whole line to the first one, so the reinstall lands in the
-# uninstall's package list.
-_SHELL_CHAIN_RE = re.compile(r"\s*(?:&&|\|\||;)\s*")
-
-
 def _split_chained(line: str) -> list[str]:
-    """One shell line -> one entry per command. Only the first carries the `!`."""
-    head, *rest = _SHELL_CHAIN_RE.split(line)
-    return [head] + [f"!{part}" for part in (p.strip() for p in rest) if part]
+    """One shell line -> one entry per command that certainly runs. Only the first `!`.
+
+    `pip uninstall -y x && pip install x==1` is two commands with two actions; read as one,
+    the regex hands the whole line to the first and the reinstall lands in the uninstall's
+    package list. Scanned rather than split on a pattern because a PEP 508 marker puts a
+    quoted `;` inside a single argument (`"torch==2.12.0; python_version >= '3.10'"`).
+
+    A `||` fallback only runs when the command before it failed, so the chain stops there
+    rather than replaying a branch the shell would have skipped.
+    """
+    out: list[str] = []
+    buf: list[str] = []
+    quote = ""
+    i = 0
+    while i < len(line):
+        ch = line[i]
+        if quote:
+            buf.append(ch)
+            if ch == quote:
+                quote = ""
+            i += 1
+        elif ch in "\"'":
+            quote = ch
+            buf.append(ch)
+            i += 1
+        elif line.startswith("||", i):
+            break
+        elif line.startswith("&&", i):
+            out.append("".join(buf))
+            buf = []
+            i += 2
+        elif ch == ";":
+            out.append("".join(buf))
+            buf = []
+            i += 1
+        else:
+            buf.append(ch)
+            i += 1
+    out.append("".join(buf))
+    head, *rest = out
+    return [head] + [f"!{part}" for part in (piece.strip() for piece in rest) if part]
 
 
 def iter_pip_invocations(install_cell: str) -> Iterator[PipInvocation]:
@@ -608,6 +640,22 @@ def _install_cell_lower_bound(install_cell: str, target: str) -> str | None:
     return best
 
 
+def _compatible_release_ceiling(version: str) -> str | None:
+    """The exclusive ceiling `~=version` implies: `~=2.10.0` allows `<2.11`, `~=2.10` `<3`.
+
+    PEP 440 drops the last component and increments what is then last.
+    """
+    parts = normalise_version(version).split(".")
+    if len(parts) < 2:
+        return None
+    head = parts[:-1]
+    try:
+        head[-1] = str(int(head[-1]) + 1)
+    except ValueError:
+        return None
+    return ".".join(head)
+
+
 def _effective_version(install_cell: str, target: str, resolved: str | None) -> str | None:
     """`resolved` walked forward through the cell's own bounds, in invocation order.
 
@@ -619,10 +667,10 @@ def _effective_version(install_cell: str, target: str, resolved: str | None) -> 
 
     Only `==` names a version. A range bound moves a version that is already known and
     otherwise leaves it unknown, because pip resolves the newest release satisfying the
-    requirement and the bound does not name that. `~=V` counts as the floor V it implies.
-    `<` is out entirely, as resolved_set leaves it out (the answer is the highest release
-    strictly below it), which is also why `~=`'s ceiling is left alone; and a floor on an
-    absent package leaves it absent rather than pinning it to the floor.
+    requirement and the bound does not name that. `~=` is the exception: both of its bounds
+    land the install in one minor, which is the granularity the callers compare on. `<` and
+    `>` stay out, as resolved_set leaves `<` out, because neither names a version pip can
+    install; and a bound on an absent package leaves it absent rather than naming it.
     """
     current = resolved
     for inv in iter_pip_invocations(install_cell):
@@ -638,7 +686,13 @@ def _effective_version(install_cell: str, target: str, resolved: str | None) -> 
                     current = ver
                 elif current is None:
                     continue
-                elif op in (">=", "~=") and cmp_versions(ver, current) > 0:
+                elif op == "~=":
+                    ceiling = _compatible_release_ceiling(ver)
+                    if cmp_versions(ver, current) > 0 or (
+                        ceiling is not None and cmp_versions(current, ceiling) >= 0
+                    ):
+                        current = ver  # pip moves into the window from either side
+                elif op == ">=" and cmp_versions(ver, current) > 0:
                     current = ver
                 elif op == "<=" and cmp_versions(ver, current) < 0:
                     current = ver

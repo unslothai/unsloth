@@ -439,7 +439,7 @@ def test_notebook_validator_splits_chained_shell_commands():
     assert [inv.action for inv in invocations] == ["uninstall", "install"]
     assert [inv.packages for inv in invocations] == [["torchcodec"], ["torchcodec==0.11.1"]]
 
-    for sep in ("&&", ";", "||"):
+    for sep in ("&&", ";"):
         cell = (
             f'!pip uninstall -y torchcodec {sep} pip install "torchcodec==0.11.1"\n'
             '!pip install "torch==2.12.0"'
@@ -452,9 +452,32 @@ def test_notebook_validator_splits_chained_shell_commands():
     )
     assert nv.rule_inst_004_torchcodec_torch(healed, COLAB_TORCH211, "nb.ipynb", 0) == []
 
+    # A `;` inside a PEP 508 marker is one argument, not a separator.
+    marked = '!pip install "torch==2.12.0; python_version >= \'3.10\'"'
+    assert nv._split_chained(marked) == [marked]
+    assert len(nv.rule_inst_004_torchcodec_torch(marked, COLAB_TORCH211, "nb.ipynb", 0)) == 1
+
+
+def test_notebook_validator_skips_the_fallback_side_of_an_or_chain():
+    """`A || B` runs B only when A failed, so replaying both reports a codec the notebook
+    does not have. The left side still counts."""
+    nv = _load_notebook_validator_module()
+
+    fallback = (
+        '!pip install "torchcodec==0.13.0" || pip install "torchcodec==0.11.1"\n'
+        '!pip install "torch==2.12.0"'
+    )
+    assert nv.rule_inst_004_torchcodec_torch(fallback, COLAB_TORCH211, "nb.ipynb", 0) == []
+
+    primary = (
+        '!pip install "torchcodec==0.11.1" || pip install "torchcodec==0.13.0"\n'
+        '!pip install "torch==2.12.0"'
+    )
+    assert len(nv.rule_inst_004_torchcodec_torch(primary, COLAB_TORCH211, "nb.ipynb", 0)) == 1
+
 
 def test_notebook_validator_reads_compatible_release_pins():
-    """`~=2.12.0` is `>=2.12.0` with a ceiling, so its floor moves the baseline."""
+    """`~=2.12.0` implies `>=2.12.0`, so its floor moves the baseline up."""
     nv = _load_notebook_validator_module()
 
     upgraded = '!pip install "torch~=2.12.0"'
@@ -462,16 +485,26 @@ def test_notebook_validator_reads_compatible_release_pins():
     assert len(findings) == 1
     assert "torchcodec>=0.12.0" in findings[0].hint
 
-    # Below the baseline it is a no-op, like any other floor.
-    assert (
-        nv.rule_inst_004_torchcodec_torch(
-            '!pip install "torch~=2.9.0"', COLAB_TORCH211, "nb.ipynb", 0
-        )
-        == []
-    )
-
     remedied = '!pip install "torch==2.12.0" "torchcodec~=0.13.0"'
     assert nv.rule_inst_004_torchcodec_torch(remedied, COLAB_TORCH211, "nb.ipynb", 0) == []
+
+
+def test_notebook_validator_reads_the_compatible_release_ceiling():
+    """`~=` pins a window, so it moves the baseline down as well as up. PEP 440 drops the
+    last component: `~=2.10.0` allows `<2.11`, `~=2.10` allows `<3`."""
+    nv = _load_notebook_validator_module()
+
+    assert nv._compatible_release_ceiling("2.10.0") == "2.11"
+    assert nv._compatible_release_ceiling("2.10") == "3"
+    assert nv._compatible_release_ceiling("2") is None
+
+    # Colab is on torch 2.11, which `~=2.10.0` excludes, so pip drops into the 2.10 line.
+    downgraded = '!pip install "torch~=2.10.0"'
+    assert len(nv.rule_inst_004_torchcodec_torch(downgraded, COLAB_TORCH211, "nb.ipynb", 0)) == 1
+
+    # `~=2.10` admits 2.11, and `~=2.11.0` is already satisfied. Neither moves anything.
+    for cell in ('!pip install "torch~=2.10"', '!pip install "torch~=2.11.0"'):
+        assert nv.rule_inst_004_torchcodec_torch(cell, COLAB_TORCH211, "nb.ipynb", 0) == [], cell
 
 
 def test_select_torchcodec_spec_tracks_torch_minor():
