@@ -113,6 +113,7 @@ def _patch_seeded_admin(monkeypatch, *, requires_change: bool) -> None:
     # tests fake both the seeding no-op and the flag.
     monkeypatch.setattr(auth_storage, "ensure_default_admin", lambda: False)
     monkeypatch.setattr(auth_storage, "requires_password_change", lambda u: requires_change)
+    monkeypatch.setattr(auth_storage, "credential_undelivered", lambda u: False)
 
 
 def test_gate_skips_when_tunnel_off(monkeypatch):
@@ -180,7 +181,11 @@ def test_gate_autogenerates_password_on_tty_console(monkeypatch):
     assert isinstance(password, str) and len(password) >= auth_storage.MIN_PASSWORD_LENGTH
     # Compare-and-set: the write lands only while must_change_password is still 1,
     # so a password chosen elsewhere in the meantime is never overwritten.
-    assert kwargs == {"revoke_refresh_tokens": True, "require_must_change": True}
+    assert kwargs == {
+        "revoke_refresh_tokens": True,
+        "require_must_change": True,
+        "mark_credential_undelivered": True,
+    }
     out = stderr.getvalue()
     assert "auto-generated" in out
     assert admin in out
@@ -461,6 +466,21 @@ def test_one_time_secret_stream_requires_tty(monkeypatch):
     monkeypatch.setattr(sys, "stderr", run._TeeStream(_Stream(isatty = False), log))
     monkeypatch.setattr(sys, "stdout", run._TeeStream(_Stream(isatty = False), log))
     assert run._one_time_secret_stream() is None
+
+
+def test_one_time_secret_stream_falls_back_when_isatty_raises_oserror(monkeypatch):
+    """A detached PTY is unusable, but must not hide a healthy second console."""
+    log = io.StringIO()
+
+    class _DetachedPty(_Stream):
+        def isatty(self):
+            raise OSError(5, "Input/output error")
+
+    tty_out = _Stream(isatty = True)
+    monkeypatch.setattr(sys, "stderr", run._TeeStream(_DetachedPty(isatty = True), log))
+    monkeypatch.setattr(sys, "stdout", run._TeeStream(tty_out, log))
+
+    assert run._one_time_secret_stream() is tty_out
 
 
 def test_gate_fails_closed_when_console_is_redirected_file(monkeypatch):
@@ -947,7 +967,7 @@ def test_gate_fails_closed_when_the_credential_cannot_be_delivered(real_auth_db,
     # (an unhandled OSError aborted startup with an opaque traceback); it fails
     # closed with a secret-free message so the operator knows to run
     # `unsloth studio reset-password`.
-    _seed_real_admin()
+    admin = _seed_real_admin()
     monkeypatch.setattr(sys, "stdin", _Stream(isatty = False))
     monkeypatch.setattr(sys, "stderr", _DyingStream())
     monkeypatch.setattr(sys, "stdout", _DyingStream())
@@ -961,3 +981,10 @@ def test_gate_fails_closed_when_the_credential_cannot_be_delivered(real_auth_db,
     # The message names no credential: it is written through the logger, which the
     # session-log tee persists.
     assert "Password:" not in logged[0]
+    assert auth_storage.credential_undelivered(admin) is True
+    # A retry refuses before touching either dead console because the pending
+    # state committed atomically with the generated password.
+    assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (
+        False,
+        False,
+    )

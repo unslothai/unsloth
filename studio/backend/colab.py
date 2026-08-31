@@ -115,17 +115,37 @@ def _load_colab_login_credentials() -> "tuple[str, str] | None":
     return None
 
 
-def _clear_colab_login_credentials() -> None:
-    """Drop the cached Colab credentials once they no longer authenticate."""
+def _clear_colab_login_credentials() -> bool:
+    """Remove all plaintext from the legacy Colab credential cache.
+
+    Prefer deleting the cache outright, then fall back to truncating it for
+    filesystems where unlink is temporarily unavailable. Return True only after
+    verifying that the path is absent or contains no bytes.
+    """
     path = _colab_login_credentials_path()
     try:
         path.unlink(missing_ok = True)
     except OSError as e:
-        logger.info(f"Could not clear Colab login credentials ({e}).")
+        logger.info(f"Could not delete Colab login credentials ({e}); clearing the file.")
+    try:
+        if not path.exists():
+            return True
+    except OSError:
+        pass
+    try:
+        path.write_text("", encoding = "utf-8")
+    except OSError as e:
+        logger.warning(f"Could not delete or clear Colab login credentials ({e}).")
+        return False
+    try:
+        return path.is_file() and path.stat().st_size == 0
+    except OSError as e:
+        logger.warning(f"Could not verify Colab login credentials were cleared ({e}).")
+        return False
 
 
-def _colab_credentials_still_valid(username: str, password: str) -> bool:
-    """True when *password* still matches the stored admin hash.
+def _colab_credentials_still_valid(username: str, password: str) -> "bool | None":
+    """Return True/False for a proven match/mismatch, or None on validation error.
 
     Guards against redisplaying a cached first-run password after the user has
     changed the admin password through the app, which would print credentials
@@ -136,7 +156,7 @@ def _colab_credentials_still_valid(username: str, password: str) -> bool:
         from auth.hashing import verify_password
     except Exception as e:
         logger.info(f"Could not load auth to validate cached Colab credentials ({e}).")
-        return False
+        return None
     try:
         row = get_user_and_secret(username)
         if not row:
@@ -145,7 +165,11 @@ def _colab_credentials_still_valid(username: str, password: str) -> bool:
         return bool(verify_password(password, salt, pwd_hash))
     except Exception as e:
         logger.info(f"Could not validate cached Colab credentials ({e}).")
-        return False
+        return None
+
+
+class _ColabCredentialHandoffFailed(RuntimeError):
+    """A live credential could not be safely handed to the notebook operator."""
 
 
 def _colab_wants_cloudflare(cloudflare: "bool | None") -> bool:
@@ -189,8 +213,14 @@ def _finalize_colab_admin_password() -> "tuple[str, str] | None":
         username = DEFAULT_ADMIN_USERNAME
         if not requires_password_change(username):
             creds = _load_colab_login_credentials()
-            if creds is not None and _colab_credentials_still_valid(username, creds[1]):
-                return creds
+            if creds is not None:
+                valid = _colab_credentials_still_valid(username, creds[1])
+                if valid is True:
+                    return creds
+                if valid is None:
+                    # A transient validation error is not evidence that this
+                    # recovery credential is stale. Retain it for the next run.
+                    return None
             # The admin password was changed through the app after the first run,
             # so the cached copy is stale; drop it instead of printing dead credentials.
             _clear_colab_login_credentials()
@@ -450,8 +480,26 @@ def _auto_generate_colab_admin_password() -> "str | None":
             # a working password nobody can discover. Showing it once and then
             # removing it keeps the CWE-256 fix and still leaves the user a way in.
             cached = _load_colab_login_credentials()
-            if cached is not None and _colab_credentials_still_valid(*cached):
-                _display_admin_credentials(*cached, final_cached_copy = True)
+            if cached is not None:
+                valid = _colab_credentials_still_valid(*cached)
+                if valid is None:
+                    raise _ColabCredentialHandoffFailed(
+                        "cached admin credentials could not be validated"
+                    )
+                if valid is True:
+                    if not _display_channel_active() or not _display_admin_credentials(
+                        *cached,
+                        final_cached_copy = True,
+                    ):
+                        raise _ColabCredentialHandoffFailed(
+                            "cached admin credentials could not be shown"
+                        )
+                    if not _clear_colab_login_credentials():
+                        raise _ColabCredentialHandoffFailed(
+                            "the live plaintext credential cache could not be removed"
+                        )
+                    return None
+            # A proven-stale credential is safe to discard without displaying.
             _clear_colab_login_credentials()
             return None
         _clear_colab_login_credentials()
@@ -478,6 +526,7 @@ def _auto_generate_colab_admin_password() -> "str | None":
                     generated,
                     revoke_refresh_tokens = True,
                     require_must_change = True,
+                    mark_credential_undelivered = True,
                 )
                 is not None
             )
@@ -490,21 +539,18 @@ def _auto_generate_colab_admin_password() -> "str | None":
             # holds. Ask the stored hash which password actually won.
             logger.warning(f"Admin password commit reported an error ({e}); checking what landed.")
             committed = _colab_credentials_still_valid(DEFAULT_ADMIN_USERNAME, generated)
+            if committed is None:
+                raise _ColabCredentialHandoffFailed(
+                    "the generated admin credential could not be verified after commit"
+                ) from e
         if not committed:
             # Lost the race: a password was set elsewhere, so ours was never
             # written. Never show it -- it would not authenticate.
             logger.info("An admin password was set concurrently; keeping it for the public link.")
             return None
-        # Committed but not yet rendered. Until the caller confirms the card
-        # reached the notebook, this password exists only in memory; the sentinel
-        # keeps a re-run of the cell from publishing under it. Cleared by
-        # start_cloudflare_tunnel once _display_admin_credentials succeeds.
-        try:
-            from auth.storage import mark_credential_undelivered
-            mark_credential_undelivered(DEFAULT_ADMIN_USERNAME)
-        except Exception:
-            pass
         return generated
+    except _ColabCredentialHandoffFailed:
+        raise
     except Exception as e:
         logger.warning(f"Could not auto-generate an admin password for the public link ({e}).")
         return None
@@ -688,7 +734,11 @@ def start_cloudflare_tunnel(port: int) -> "str | None":
             "start(cloudflare=True)."
         )
         return None
-    generated = _auto_generate_colab_admin_password()
+    try:
+        generated = _auto_generate_colab_admin_password()
+    except _ColabCredentialHandoffFailed as e:
+        logger.warning(f"Cloudflare link not started: {e}.")
+        return None
     if generated is not None and not _display_admin_credentials(DEFAULT_ADMIN_USERNAME, generated):
         # The password was rotated and committed, but it could not be surfaced in
         # this notebook (no IPython display channel, or every publish raised). The

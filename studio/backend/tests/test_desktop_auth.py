@@ -1033,6 +1033,86 @@ def test_update_password_clears_desktop_secret():
     assert storage.validate_desktop_secret(raw) is None
 
 
+def test_update_password_marks_credential_undelivered_in_database():
+    seed_user(must_change_password = True)
+
+    changed = storage.update_password(
+        storage.DEFAULT_ADMIN_USERNAME,
+        "generated-public-password",
+        require_must_change = True,
+        mark_credential_undelivered = True,
+    )
+
+    assert changed is not None
+    assert storage.credential_undelivered(storage.DEFAULT_ADMIN_USERNAME) is True
+    conn = storage.get_connection()
+    try:
+        pending = conn.execute(
+            "SELECT value FROM app_secrets WHERE key = ?",
+            (storage._CREDENTIAL_UNDELIVERED_KEY,),
+        ).fetchone()
+        current = conn.execute(
+            "SELECT password_hash FROM auth_user WHERE username = ?",
+            (storage.DEFAULT_ADMIN_USERNAME,),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert pending is not None and current is not None
+    assert pending["value"] == current["password_hash"]
+
+
+def test_ordinary_password_change_clears_pending_delivery_state():
+    seed_user(must_change_password = True)
+    assert storage.update_password(
+        storage.DEFAULT_ADMIN_USERNAME,
+        "generated-public-password",
+        require_must_change = True,
+        mark_credential_undelivered = True,
+    )
+    assert storage.credential_undelivered(storage.DEFAULT_ADMIN_USERNAME) is True
+
+    assert storage.update_password(
+        storage.DEFAULT_ADMIN_USERNAME,
+        "operator-chosen-password",
+    )
+
+    assert storage.credential_undelivered(storage.DEFAULT_ADMIN_USERNAME) is False
+
+
+def test_pending_delivery_write_failure_rolls_back_password_rotation():
+    seed_user(must_change_password = True)
+    before = storage.get_user_and_secret(storage.DEFAULT_ADMIN_USERNAME)
+    assert before is not None
+    conn = storage.get_connection()
+    try:
+        conn.execute(
+            f"""
+            CREATE TRIGGER fail_pending_delivery
+            BEFORE INSERT ON app_secrets
+            WHEN NEW.key = '{storage._CREDENTIAL_UNDELIVERED_KEY}'
+            BEGIN
+                SELECT RAISE(ABORT, 'pending delivery unavailable');
+            END
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    with pytest.raises(sqlite3.IntegrityError, match = "pending delivery unavailable"):
+        storage.update_password(
+            storage.DEFAULT_ADMIN_USERNAME,
+            "must-not-land",
+            require_must_change = True,
+            mark_credential_undelivered = True,
+        )
+
+    after = storage.get_user_and_secret(storage.DEFAULT_ADMIN_USERNAME)
+    assert after is not None
+    assert after == before
+    assert storage.credential_undelivered(storage.DEFAULT_ADMIN_USERNAME) is False
+
+
 def test_update_password_revokes_desktop_secret_in_the_same_transaction(monkeypatch):
     # The desktop secret authenticates as this user WITHOUT the password, so it has
     # to die in the SAME transaction as the rotation. It used to be revoked after

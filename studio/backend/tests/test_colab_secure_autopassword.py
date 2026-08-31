@@ -264,18 +264,31 @@ def test_undelivered_sentinel_clears_on_the_next_password_change(monkeypatch):
 
 
 def test_undelivered_sentinel_ignores_a_hash_it_does_not_match():
-    # A leftover file naming a superseded password must not refuse a launch: it
+    # A leftover marker naming a superseded password must not refuse a launch: it
     # no longer describes the live credential, so it is stale, not a warning.
     admin = _seed_admin(must_change_password = False)
     storage.mark_credential_undelivered(admin)
     assert storage.credential_undelivered(admin) is True
 
     storage.update_password(admin, "operator-chosen-123", revoke_refresh_tokens = True)
-    storage.mark_credential_undelivered(admin)
-    sentinel = Path(storage._undelivered_credential_path())
-    sentinel.write_text("deadbeef" * 8, encoding = "utf-8")
+    conn = storage.get_connection()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO app_secrets (key, value) VALUES (?, ?)",
+            (storage._CREDENTIAL_UNDELIVERED_KEY, "deadbeef" * 8),
+        )
+        conn.commit()
+    finally:
+        conn.close()
     assert storage.credential_undelivered(admin) is False
-    assert sentinel.exists() is False
+    conn = storage.get_connection()
+    try:
+        assert conn.execute(
+            "SELECT 1 FROM app_secrets WHERE key = ?",
+            (storage._CREDENTIAL_UNDELIVERED_KEY,),
+        ).fetchone() is None
+    finally:
+        conn.close()
 
 
 def test_display_channel_active_false_without_a_kernel():
@@ -678,6 +691,108 @@ def test_upgrade_rerun_hands_back_the_cached_credential_before_purging(monkeypat
 
     salt, pwd_hash, _jwt, _mc = storage.get_user_and_secret(admin)
     assert hashing.verify_password(existing, salt, pwd_hash) is True
+
+
+def test_upgrade_rerun_retains_live_cache_and_refuses_tunnel_when_display_fails(monkeypatch):
+    admin = _seed_admin(must_change_password = True)
+    existing = "existing-colab-password-display-failure"
+    assert storage.update_password(admin, existing) is not None
+    colab._store_colab_login_credentials(admin, existing)
+    cache = colab._colab_login_credentials_path()
+    monkeypatch.setattr(colab, "_display_admin_credentials", lambda *a, **k: False)
+
+    import cloudflare_tunnel
+
+    started = {"called": False}
+    monkeypatch.setattr(
+        cloudflare_tunnel,
+        "start_studio_tunnel",
+        lambda port, **_kwargs: started.update(called = True) or "https://example.invalid",
+    )
+
+    assert colab.start_cloudflare_tunnel(8888) is None
+    assert started["called"] is False
+    assert cache.read_text(encoding = "utf-8").splitlines() == [admin, existing]
+
+
+def test_upgrade_rerun_retains_cache_and_refuses_tunnel_on_validation_error(monkeypatch):
+    admin = _seed_admin(must_change_password = True)
+    existing = "existing-colab-password-validation-error"
+    assert storage.update_password(admin, existing) is not None
+    colab._store_colab_login_credentials(admin, existing)
+    cache = colab._colab_login_credentials_path()
+    monkeypatch.setattr(colab, "_colab_credentials_still_valid", lambda *a: None)
+
+    import cloudflare_tunnel
+
+    started = {"called": False}
+    monkeypatch.setattr(
+        cloudflare_tunnel,
+        "start_studio_tunnel",
+        lambda port, **_kwargs: started.update(called = True) or "https://example.invalid",
+    )
+
+    assert colab.start_cloudflare_tunnel(8888) is None
+    assert started["called"] is False
+    assert cache.read_text(encoding = "utf-8").splitlines() == [admin, existing]
+
+
+def test_clear_legacy_cache_truncates_and_verifies_when_unlink_fails(monkeypatch):
+    _seed_admin(must_change_password = False)
+    colab._store_colab_login_credentials("unsloth", "legacy-plaintext-password")
+    cache = colab._colab_login_credentials_path()
+    cache_type = type(cache)
+    real_unlink = cache_type.unlink
+
+    def _unlink(self, *args, **kwargs):
+        if self == cache:
+            raise OSError("unlink denied")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(cache_type, "unlink", _unlink)
+
+    assert colab._clear_colab_login_credentials() is True
+    assert cache.is_file()
+    assert cache.stat().st_size == 0
+
+
+def test_upgrade_rerun_refuses_tunnel_when_live_cache_cannot_be_cleared(monkeypatch):
+    admin = _seed_admin(must_change_password = True)
+    existing = "existing-colab-password-purge-failure"
+    assert storage.update_password(admin, existing) is not None
+    colab._store_colab_login_credentials(admin, existing)
+    cache = colab._colab_login_credentials_path()
+    original = cache.read_text(encoding = "utf-8")
+    cache_type = type(cache)
+    real_unlink = cache_type.unlink
+    real_write_text = cache_type.write_text
+
+    def _unlink(self, *args, **kwargs):
+        if self == cache:
+            raise OSError("unlink denied")
+        return real_unlink(self, *args, **kwargs)
+
+    def _write_text(self, *args, **kwargs):
+        if self == cache:
+            raise OSError("truncate denied")
+        return real_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(cache_type, "unlink", _unlink)
+    monkeypatch.setattr(cache_type, "write_text", _write_text)
+    monkeypatch.setattr(colab, "_display_admin_credentials", lambda *a, **k: True)
+
+    import cloudflare_tunnel
+
+    started = {"called": False}
+    monkeypatch.setattr(
+        cloudflare_tunnel,
+        "start_studio_tunnel",
+        lambda port, **_kwargs: started.update(called = True) or "https://example.invalid",
+    )
+
+    assert colab.start_cloudflare_tunnel(8888) is None
+    assert started["called"] is False
+    assert cache.read_text(encoding = "utf-8") == original
 
 
 def test_upgrade_rerun_purges_a_cached_credential_that_no_longer_works(monkeypatch):

@@ -29,6 +29,10 @@ MIN_PASSWORD_LENGTH = 8
 # change so the credential never lingers on disk.
 _BOOTSTRAP_PW_PATH = DB_PATH.parent / ".bootstrap_password"
 
+# Transactional delivery state for an auto-generated launch password. The value
+# is the password hash committed to auth_user in the same SQLite transaction.
+_CREDENTIAL_UNDELIVERED_KEY = "credential_undelivered_password_hash"
+
 # In-process cache to avoid re-reading the file on every HTML serve.
 _bootstrap_password: Optional[str] = None
 
@@ -212,97 +216,77 @@ def clear_bootstrap_password() -> None:
             print(message, file = sys.stderr, flush = True)
 
 
-def _undelivered_credential_path() -> "os.PathLike[str]":
-    """Path of the undelivered-credential sentinel, resolved from DB_PATH.
-
-    Computed per call rather than cached at import so it follows a relocated
-    DB_PATH (tests, UNSLOTH_STUDIO_HOME) exactly as the auth DB does.
-    """
-    return DB_PATH.parent / ".credential_undelivered"
-
-
 def mark_credential_undelivered(username: str) -> None:
-    """Record that the live admin password was committed but never shown.
+    """Mark the current credential pending delivery.
 
-    Auto-generation commits the new password BEFORE writing it to a console, so a
-    terminal that dies in between leaves a live credential nobody has ever seen.
-    The launch then fails closed -- but on the NEXT launch must_change_password is
-    already 0, so the gate would sail past its checks and publish a Studio that no
-    one, operator included, can log into. This sentinel is what lets the retry see
-    that state and keep failing closed.
-
-    Contents are the committed ``password_hash``: PBKDF2 of a 24-byte urlsafe
-    token, so it is not a credential and grants nothing, but it identifies WHICH
-    password went undelivered. That is what makes the sentinel self-healing --
-    ``unsloth studio reset-password`` (or any later change) rewrites the hash, so
-    the stale sentinel stops matching even if it could not be deleted. A plain
-    existence flag would instead brick every future launch on the one machine
-    where the unlink failed (Windows AV, read-only auth dir).
-
-    Best-effort: the password is already committed, so a write failure must not
-    fail the launch. It only costs the retry its guard, which is exactly today's
-    behaviour, so failing to mark is never worse than not marking at all.
+    New auto-generation code must prefer ``update_password(...,
+    mark_credential_undelivered=True)`` so the password and marker commit
+    atomically. This helper remains for callers that need to mark an already-live
+    credential, but it uses the same database state rather than a fallible sidecar
+    file.
     """
-    record = None
+    conn = get_connection()
     try:
-        record = get_user_and_secret(username)
-    except Exception:
-        record = None
-    if record is None:
+        row = conn.execute(
+            "SELECT password_hash FROM auth_user WHERE username = ?",
+            (username,),
+        ).fetchone()
+        if row is None:
+            conn.rollback()
+            return
+        conn.execute(
+            "INSERT OR REPLACE INTO app_secrets (key, value) VALUES (?, ?)",
+            (_CREDENTIAL_UNDELIVERED_KEY, row["password_hash"]),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def clear_credential_undelivered(conn: Optional[sqlite3.Connection] = None) -> None:
+    """Clear transactional delivery state after the credential is displayed."""
+    if conn is not None:
+        conn.execute("DELETE FROM app_secrets WHERE key = ?", (_CREDENTIAL_UNDELIVERED_KEY,))
         return
-    path = _undelivered_credential_path()
+    conn = get_connection()
     try:
-        ensure_dir(path.parent)
-        path.write_text(record[1], encoding = "utf-8")
-        try:
-            os.chmod(path, 0o600)
-        except OSError:
-            pass
-    except OSError:
-        pass
-
-
-def clear_credential_undelivered() -> None:
-    """Drop the sentinel once the credential has actually reached the operator.
-
-    Best-effort: a surviving file is not a lockout, because
-    ``credential_undelivered`` also requires the recorded hash to still be the
-    live one, and the operator can change the password to clear it.
-    """
-    try:
-        _undelivered_credential_path().unlink(missing_ok = True)
-    except OSError:
-        pass
+        clear_credential_undelivered(conn)
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def credential_undelivered(username: str) -> bool:
     """True when the live admin password is one that was committed but never shown.
 
-    Requires BOTH the sentinel and a hash match, so it answers "is the CURRENT
-    password the undelivered one?" rather than "did a delivery ever fail?". Any
-    later password change makes it False. A sentinel that cannot be read, is
-    empty (a torn write), or names a superseded hash is stale: delete it and
-    report False, which restores the unguarded behaviour rather than refusing a
-    launch we cannot justify refusing.
+    Requires both the pending row and a hash match, so it answers "is the CURRENT
+    password the undelivered one?" rather than "did a delivery ever fail?". The
+    marker is written in the same transaction as an auto-generated password;
+    database errors propagate so a launch cannot fail open on unreadable state.
     """
-    path = _undelivered_credential_path()
+    conn = get_connection()
     try:
-        if not path.is_file():
+        pending = conn.execute(
+            "SELECT value FROM app_secrets WHERE key = ?",
+            (_CREDENTIAL_UNDELIVERED_KEY,),
+        ).fetchone()
+        if pending is None:
             return False
-        recorded = path.read_text(encoding = "utf-8").strip()
-    except OSError:
-        return False
-    if recorded:
-        try:
-            record = get_user_and_secret(username)
-        except Exception:
-            # Cannot read the admin row to compare. Do not delete the sentinel on
-            # a transient DB error, and do not refuse on an unproven match.
-            return False
-        if record is not None and hmac.compare_digest(recorded, record[1]):
+        current = conn.execute(
+            "SELECT password_hash FROM auth_user WHERE username = ?",
+            (username,),
+        ).fetchone()
+        if current is not None and hmac.compare_digest(
+            pending["value"], current["password_hash"]
+        ):
             return True
-    clear_credential_undelivered()
-    return False
+        # A later password change should clear this transactionally. Retain the
+        # self-healing fallback for databases written by an older/mixed process.
+        clear_credential_undelivered(conn)
+        conn.commit()
+        return False
+    finally:
+        conn.close()
 
 
 def _hash_token(token: str) -> str:
@@ -863,6 +847,7 @@ def update_password(
     revoke_refresh_tokens: bool = False,
     expect_password_hash: Optional[str] = None,
     require_must_change: bool = False,
+    mark_credential_undelivered: bool = False,
     preserve_desktop_secret: bool = False,
 ) -> Optional[str]:
     """Update password, clear first-login requirement, rotate JWT secret.
@@ -898,6 +883,13 @@ def update_password(
     I verified is still current" versus "only ever replace a never-set credential"
     -- and the auto-generate callers hold no credential to pass. Collapsing them
     is a follow-up, not a rebase.)
+
+    ``mark_credential_undelivered`` stores the newly committed password hash in
+    ``app_secrets`` before this transaction commits. A launcher can therefore
+    safely rotate first and display second: every other process observes either
+    the old password with no pending marker, or the new password with its matching
+    marker. Ordinary password changes delete any older pending marker in this same
+    transaction.
 
     ``preserve_desktop_secret`` keeps the local desktop credential valid. It is
     for a caller that already authenticated as the desktop app: revoking the
@@ -949,6 +941,13 @@ def update_password(
             clear_desktop_secret(conn)
         if revoke_refresh_tokens:
             conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (username,))
+        if mark_credential_undelivered:
+            conn.execute(
+                "INSERT OR REPLACE INTO app_secrets (key, value) VALUES (?, ?)",
+                (_CREDENTIAL_UNDELIVERED_KEY, pwd_hash),
+            )
+        else:
+            clear_credential_undelivered(conn)
         conn.commit()
         clear_bootstrap_password()
         return jwt_secret

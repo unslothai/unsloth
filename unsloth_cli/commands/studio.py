@@ -148,13 +148,12 @@ def _ensure_studio_env_exported() -> None:
 
 BOOTSTRAP_PASSWORD_FILE = ".bootstrap_password"
 DESKTOP_SECRET_FILE = ".desktop_secret"
-# Mirrors studio/backend/auth/storage.py's sentinel; see the helpers below.
-UNDELIVERED_CREDENTIAL_FILE = ".credential_undelivered"
 DEFAULT_ADMIN_USERNAME = "unsloth"
 DESKTOP_SECRET_PREFIX = "desktop-"
 API_KEY_PBKDF2_SALT_KEY = "api_key_pbkdf2_salt"
 DESKTOP_SECRET_HASH_KEY = "desktop_secret_hash"
 DESKTOP_SECRET_CREATED_AT_KEY = "desktop_secret_created_at"
+CREDENTIAL_UNDELIVERED_PASSWORD_HASH_KEY = "credential_undelivered_password_hash"
 PBKDF2_ITERATIONS = 100_000
 _START_API_KEY_MARKER_ENV = "_UNSLOTH_START_API_KEY_MARKER"
 _CLOUDFLARE_INTENT_ENV = "_UNSLOTH_CLOUDFLARE_INTENT"
@@ -1102,60 +1101,37 @@ def _prompt_streams_interactive() -> bool:
     """The prompt needs a real terminal for input and for the masked echo."""
     try:
         return sys.stdin.isatty() and sys.stderr.isatty()
-    except (AttributeError, ValueError):
+    except (AttributeError, OSError, ValueError):
         return False
 
 
-def _undelivered_credential_path():
-    """Sentinel marking an admin password committed but never shown to anyone.
-
-    CLI mirror of storage.mark_credential_undelivered / credential_undelivered;
-    the two must agree on the filename and on storing the committed
-    password_hash, because either side may write it and the other may read it
-    (the CLI rotates before re-exec'ing the backend).
-    """
-    return STUDIO_HOME / "auth" / UNDELIVERED_CREDENTIAL_FILE
+def _clear_credential_undelivered(conn: sqlite3.Connection) -> None:
+    """Clear the durable delivery guard in its own transaction."""
+    with conn:
+        conn.execute(
+            "DELETE FROM app_secrets WHERE key = ?",
+            (CREDENTIAL_UNDELIVERED_PASSWORD_HASH_KEY,),
+        )
 
 
-def _mark_credential_undelivered(password_hash: str) -> None:
-    """Best-effort: a failure only costs the retry its guard, never the launch."""
-    path = _undelivered_credential_path()
-    try:
-        path.parent.mkdir(parents = True, exist_ok = True)
-        path.write_text(password_hash, encoding = "utf-8")
-        try:
-            os.chmod(path, 0o600)
-        except OSError:
-            pass
-    except OSError:
-        pass
-
-
-def _clear_credential_undelivered() -> None:
-    try:
-        _undelivered_credential_path().unlink(missing_ok = True)
-    except OSError:
-        pass
-
-
-def _credential_undelivered(password_hash: str) -> bool:
+def _credential_undelivered(conn: sqlite3.Connection, password_hash: str) -> bool:
     """True when *password_hash* is the hash of a password that was never shown.
 
     Matching on the hash (not mere existence) is what makes this self-healing:
-    `unsloth studio reset-password` rewrites the row, so the sentinel stops
-    matching even on a machine where the unlink failed. Stale or torn sentinels
-    are removed and reported False rather than refusing a launch unprovably.
+    `unsloth studio reset-password` rewrites the row and atomically clears the
+    pending state. A stale value is removed rather than refusing a launch
+    unprovably.
     """
-    path = _undelivered_credential_path()
-    try:
-        if not path.is_file():
-            return False
-        recorded = path.read_text(encoding = "utf-8").strip()
-    except OSError:
+    row = conn.execute(
+        "SELECT value FROM app_secrets WHERE key = ?",
+        (CREDENTIAL_UNDELIVERED_PASSWORD_HASH_KEY,),
+    ).fetchone()
+    if row is None:
         return False
+    recorded = row[0]
     if recorded and hmac.compare_digest(recorded, password_hash):
         return True
-    _clear_credential_undelivered()
+    _clear_credential_undelivered(conn)
     return False
 
 
@@ -1194,7 +1170,7 @@ def _one_time_secret_console_stream(*, skip = None):
             # treated as non-interactive by the except below.
             if not candidate.isatty():
                 continue
-        except (AttributeError, ValueError):
+        except (AttributeError, OSError, ValueError):
             continue
         return candidate
     return None
@@ -1218,14 +1194,16 @@ def _cli_update_password(
     *,
     revoke_api_keys: bool = False,
     require_must_change: bool = False,
+    mark_credential_undelivered: bool = False,
 ) -> bool:
     """CLI mirror of backend update_password + change-password route effects.
 
     One transaction: rehash, rotate the JWT secret, clear must_change_password,
-    revoke refresh tokens (PR #6651 finding), revoke outstanding one-time link
-    tokens, drop the desktop secret, and (for a reset) the API keys the old
-    credential could have minted. File cleanup happens after commit; a failed
-    unlink must not roll the change back. Returns whether the row was written.
+    persist or clear the undelivered-credential guard, revoke refresh tokens
+    (PR #6651 finding), revoke outstanding one-time link tokens, drop the desktop
+    secret, and (for a reset) the API keys the old credential could have minted.
+    File cleanup happens after commit; a failed unlink must not roll the change
+    back. Returns whether the row was written.
 
     ``require_must_change`` makes it a compare-and-set on must_change_password,
     mirroring backend storage.update_password: an auto-generated launch credential
@@ -1255,6 +1233,16 @@ def _cli_update_password(
         )
         if require_must_change and cursor.rowcount == 0:
             return False
+        if mark_credential_undelivered:
+            conn.execute(
+                "INSERT OR REPLACE INTO app_secrets (key, value) VALUES (?, ?)",
+                (CREDENTIAL_UNDELIVERED_PASSWORD_HASH_KEY, password_hash),
+            )
+        else:
+            conn.execute(
+                "DELETE FROM app_secrets WHERE key = ?",
+                (CREDENTIAL_UNDELIVERED_PASSWORD_HASH_KEY,),
+            )
         conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (username,))
         conn.execute(
             "DELETE FROM app_secrets WHERE key IN (?, ?)",
@@ -1699,7 +1687,7 @@ def _enforce_password_change_before_exposure(
             )
             _strip_seeded_bootstrap_password_or_exit(context = "auth DB row unreadable")
             return
-        if row and _credential_undelivered(row[1]):
+        if row and _credential_undelivered(conn, row[1]):
             # An earlier launch committed an auto-generated password and could not
             # print it, so it refused. must_change_password is 0 now, so the check
             # below would return and let the public child start under a credential
@@ -1764,7 +1752,11 @@ def _enforce_password_change_before_exposure(
                 raise typer.Exit(1)
             generated = secrets.token_urlsafe(24)
             if not _cli_update_password(
-                conn, DEFAULT_ADMIN_USERNAME, generated, require_must_change = True
+                conn,
+                DEFAULT_ADMIN_USERNAME,
+                generated,
+                require_must_change = True,
+                mark_credential_undelivered = True,
             ):
                 # Lost the compare-and-set: a password was set (another Studio tab
                 # finishing /change-password, a concurrent launch) between the
@@ -1776,23 +1768,10 @@ def _enforce_password_change_before_exposure(
             # so a console that died since the preflight must not propagate its
             # write error. Retry the other console, and fail closed with a
             # secret-free message when neither accepts the banner.
-            # Mark BEFORE the banner: between the commit above and a confirmed
-            # write, this password lives only in memory, and the seeded recovery
-            # credential is already gone. Read the committed hash back rather than
-            # recomputing it, so the sentinel matches whatever actually landed.
-            try:
-                committed_row = conn.execute(
-                    "SELECT password_hash FROM auth_user WHERE username = ?",
-                    (DEFAULT_ADMIN_USERNAME,),
-                ).fetchone()
-                if committed_row:
-                    _mark_credential_undelivered(committed_row[0])
-            except (OSError, sqlite3.Error):
-                pass
             if not _deliver_auto_generated_credentials(DEFAULT_ADMIN_USERNAME, generated, out = out):
                 _log_secret_free_delivery_failure()
                 raise typer.Exit(1)
-            _clear_credential_undelivered()
+            _clear_credential_undelivered(conn)
             return
         password_salt, password_hash = row[0], row[1]
 

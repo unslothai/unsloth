@@ -68,13 +68,15 @@ def _install_run_reexec_capture(monkeypatch, *, platform = "linux"):
 
     monkeypatch.setattr(sys, "prefix", "/nonexistent/outer/venv")
     fake_venv = Path("/fake/studio/venv/unsloth_studio")
-    monkeypatch.setattr(studio_mod, "_studio_venv_python", lambda: fake_venv / "bin" / "python")
+    host_is_windows = studio_mod.platform.system() == "Windows"
+    fake_python = fake_venv / ("Scripts/python.exe" if host_is_windows else "bin/python")
+    monkeypatch.setattr(studio_mod, "_studio_venv_python", lambda: fake_python)
     # A built frontend dist is present so the public-launch UI check passes
     # deterministically (independent of whether the repo dist was built).
     monkeypatch.setattr(
         studio_mod, "_find_frontend_dist", lambda: Path("/fake/studio/frontend/dist")
     )
-    fake_bin = fake_venv / "bin" / "unsloth"
+    fake_bin = fake_python.parent / ("unsloth.exe" if host_is_windows else "unsloth")
     real_is_file = Path.is_file
     monkeypatch.setattr(
         Path,

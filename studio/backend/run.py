@@ -2013,7 +2013,7 @@ def _stream_isatty(stream) -> bool:
     """
     try:
         return stream.isatty()
-    except (AttributeError, ValueError):
+    except (AttributeError, OSError, ValueError):
         return False
 
 
@@ -2176,6 +2176,7 @@ def _auto_generate_admin_password(admin_username: str, *, out = None) -> "Option
                 generated,
                 revoke_refresh_tokens = True,
                 require_must_change = True,
+                mark_credential_undelivered = True,
             )
             is not None
         )
@@ -2367,11 +2368,9 @@ def _terminal_password_gate(
         # Delivery is post-commit, so a console that died since the preflight must
         # not propagate: retry the other console, and fail closed with an
         # actionable (secret-free) message when neither accepts the write.
-        # Mark BEFORE the write: from here until delivery is confirmed, the live
-        # password exists only in this process's memory. If the write fails (or
-        # this process dies mid-banner) the sentinel is what stops the next launch
-        # from publishing under a credential that was never seen.
-        _auth_storage.mark_credential_undelivered(_admin)
+        # update_password committed the matching pending-delivery marker in the
+        # SAME transaction as this password. If delivery fails (or this process
+        # dies mid-banner), every later launcher sees that state and refuses.
         if not _deliver_one_time_credential(_admin, generated, out = out):
             logger.error(
                 "The auto-generated Unsloth admin password could not be shown: the "

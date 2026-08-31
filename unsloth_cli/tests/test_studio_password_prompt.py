@@ -179,14 +179,16 @@ def _install_run_reexec(monkeypatch, events):
     studio_mod = _studio()
     monkeypatch.setattr(sys, "prefix", "/nonexistent/outer/venv")
     fake_venv = Path("/fake/studio/venv/unsloth_studio")
-    monkeypatch.setattr(studio_mod, "_studio_venv_python", lambda: fake_venv / "bin" / "python")
+    host_is_windows = studio_mod.platform.system() == "Windows"
+    fake_python = fake_venv / ("Scripts/python.exe" if host_is_windows else "bin/python")
+    monkeypatch.setattr(studio_mod, "_studio_venv_python", lambda: fake_python)
     # A built frontend dist is present by default so the public-launch UI check
     # passes deterministically (independent of whether the repo dist was built);
     # the missing-dist lockout guard has its own dedicated test.
     monkeypatch.setattr(
         studio_mod, "_find_frontend_dist", lambda: Path("/fake/studio/frontend/dist")
     )
-    fake_bin = fake_venv / "bin" / "unsloth"
+    fake_bin = fake_python.parent / ("unsloth.exe" if host_is_windows else "unsloth")
     real_is_file = Path.is_file
     monkeypatch.setattr(
         Path,
@@ -373,6 +375,31 @@ def test_one_time_secret_console_stream_requires_tty(monkeypatch):
     # than write the credential into a retained file/journal.
     monkeypatch.setattr(sys, "stderr", _Stream(tty = False))
     monkeypatch.setattr(sys, "stdout", _Stream(tty = False))
+    assert studio_mod._one_time_secret_console_stream() is None
+
+
+def test_one_time_secret_console_stream_survives_isatty_oserror(monkeypatch):
+    studio_mod = _studio()
+
+    class _BrokenConsole:
+        closed = False
+
+        def write(self, *_a, **_k):
+            pass
+
+        def isatty(self):
+            raise OSError(5, "Input/output error")
+
+    class _LiveConsole(_BrokenConsole):
+        def isatty(self):
+            return True
+
+    broken, live = _BrokenConsole(), _LiveConsole()
+    monkeypatch.setattr(sys, "stderr", broken)
+    monkeypatch.setattr(sys, "stdout", live)
+    assert studio_mod._one_time_secret_console_stream() is live
+
+    monkeypatch.setattr(sys, "stdout", _BrokenConsole())
     assert studio_mod._one_time_secret_console_stream() is None
 
 
@@ -1369,6 +1396,76 @@ def test_cli_update_password_compare_and_set_guard(monkeypatch, tmp_path):
     # No collateral revocation on a rejected write.
     assert remaining_refresh == 1
     assert remaining_keys == 1
+
+
+def test_cli_update_password_marks_undelivered_in_same_transaction(monkeypatch, tmp_path):
+    studio_mod = _studio()
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
+    _seed_auth(studio_mod)
+
+    conn = studio_mod._connect_auth_db()
+    admin = studio_mod.DEFAULT_ADMIN_USERNAME
+    before = conn.execute(
+        "SELECT password_hash FROM auth_user WHERE username = ?", (admin,)
+    ).fetchone()[0]
+    conn.execute(
+        """
+        CREATE TRIGGER reject_undelivered_marker
+        BEFORE INSERT ON app_secrets
+        WHEN NEW.key = 'credential_undelivered_password_hash'
+        BEGIN
+            SELECT RAISE(ABORT, 'marker rejected');
+        END
+        """
+    )
+    conn.commit()
+
+    with pytest.raises(sqlite3.IntegrityError, match = "marker rejected"):
+        studio_mod._cli_update_password(
+            conn,
+            admin,
+            "generated-but-undelivered-1",
+            require_must_change = True,
+            mark_credential_undelivered = True,
+        )
+
+    after = conn.execute(
+        "SELECT password_hash, must_change_password FROM auth_user WHERE username = ?", (admin,)
+    ).fetchone()
+    conn.close()
+    assert after[0] == before
+    assert after[1] == 1
+
+
+def test_cli_update_password_persists_and_clears_undelivered_state(monkeypatch, tmp_path):
+    studio_mod = _studio()
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
+    _seed_auth(studio_mod)
+
+    conn = studio_mod._connect_auth_db()
+    admin = studio_mod.DEFAULT_ADMIN_USERNAME
+    assert studio_mod._cli_update_password(
+        conn,
+        admin,
+        "generated-undelivered-2",
+        require_must_change = True,
+        mark_credential_undelivered = True,
+    )
+    conn.close()
+
+    conn = studio_mod._connect_auth_db()
+    password_hash = conn.execute(
+        "SELECT password_hash FROM auth_user WHERE username = ?", (admin,)
+    ).fetchone()[0]
+    assert studio_mod._credential_undelivered(conn, password_hash) is True
+
+    assert studio_mod._cli_update_password(conn, admin, "operator-chosen-password-3")
+    pending = conn.execute(
+        "SELECT value FROM app_secrets WHERE key = ?",
+        (studio_mod.CREDENTIAL_UNDELIVERED_PASSWORD_HASH_KEY,),
+    ).fetchone()
+    conn.close()
+    assert pending is None
 
 
 def test_connect_auth_db_creates_private_files(monkeypatch, tmp_path):
