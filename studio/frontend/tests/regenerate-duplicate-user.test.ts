@@ -2,29 +2,25 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Reproduction harness for https://github.com/unslothai/unsloth/issues/9984
- *
- * The reported bug: Regenerate inserts a new user row (same parent_id, cloned
- * attachments) instead of reusing the existing user message. This file checks
- * whether assistant-ui's standard Reload path does that, and documents the
- * persistence shape the autosave would write when it does.
+ * Regeneration must reuse the existing user message by id. assistant-ui Reload
+ * starts a run under that user parent; it must not insert a cloned user sibling.
+ * Content-equal user ids are still distinct branches and must not be inferred as
+ * deletes on autosave (stale-tab / intentional identical prompts).
  */
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { MessageRepository } from "@assistant-ui/core/internal";
 import type { ThreadMessage } from "@assistant-ui/react";
-import { dedupeIdenticalUserSiblings } from "../src/features/chat/utils/dedupe-identical-user-siblings.ts";
-import type { MessageRecord } from "../src/features/chat/types.ts";
 
 const priorId = "cOfdER0";
 const userId = "SaKf868";
 
-function mkUser(id: string): ThreadMessage {
+function mkUser(id: string, text = "Good, let me share document v3.1"): ThreadMessage {
   return {
     id,
     role: "user",
-    content: [{ type: "text", text: "Good, let me share document v3.1" }],
+    content: [{ type: "text", text }],
     attachments: [
       {
         type: "document",
@@ -89,76 +85,17 @@ test("assistant-ui Reload adds an assistant sibling only, not a duplicate user",
   );
 });
 
-test("the issue's DB shape is what autosave would persist if a duplicate user were appended", () => {
+test("two user ids that share text stay distinct branches", () => {
   const repo = new MessageRepository();
   repo.addOrUpdateMessage(null, mkAssistant(priorId));
   repo.addOrUpdateMessage(priorId, mkUser(userId));
   repo.addOrUpdateMessage(userId, mkAssistant("a1"));
 
-  // Bug pattern from #9984: a second user sibling under the same parent.
-  const dupId = "oHXbD51";
-  repo.addOrUpdateMessage(priorId, mkUser(dupId));
-  repo.addOrUpdateMessage(dupId, mkAssistant("a2"));
+  const otherId = "oHXbD51";
+  repo.addOrUpdateMessage(priorId, mkUser(otherId));
+  repo.addOrUpdateMessage(otherId, mkAssistant("a2"));
 
   const siblings = userSiblingsUnder(repo, priorId);
   assert.equal(siblings.length, 2);
-  assert.deepEqual(siblings.sort(), [dupId, userId].sort());
-
-  const users = repo
-    .export()
-    .messages.filter(({ message }) => message.role === "user");
-  assert.equal(users.length, 2);
-  assert.ok(
-    users.every(({ parentId }) => parentId === priorId),
-    "both user rows share the same parent_id, matching the issue report",
-  );
-  assert.ok(
-    users.every(
-      ({ message }) =>
-        message.role === "user" && (message.attachments?.length ?? 0) > 0,
-    ),
-    "attachments are cloned onto each duplicate user row",
-  );
-});
-
-test("autosave dedupe collapses the issue's duplicate user siblings before sync", () => {
-  const repo = new MessageRepository();
-  repo.addOrUpdateMessage(null, mkAssistant(priorId));
-  repo.addOrUpdateMessage(priorId, mkUser(userId));
-  repo.addOrUpdateMessage(userId, mkAssistant("a1"));
-
-  const dupId = "oHXbD51";
-  repo.addOrUpdateMessage(priorId, mkUser(dupId));
-  repo.addOrUpdateMessage(dupId, mkAssistant("a2"));
-
-  const toRecord = (
-    parentId: string | null,
-    message: ThreadMessage,
-  ): MessageRecord => ({
-    id: message.id,
-    threadId: "thread-1",
-    parentId,
-    role: message.role,
-    content: message.content,
-    ...(message.role === "user" &&
-      message.attachments &&
-      message.attachments.length > 0 && { attachments: [...message.attachments] }),
-    createdAt: message.createdAt?.getTime?.() ?? Date.now(),
-  });
-
-  const records = repo
-    .export()
-    .messages.map(({ message, parentId }) => toRecord(parentId, message));
-  const { records: deduped, collapsedIds } =
-    dedupeIdenticalUserSiblings(records);
-
-  assert.equal(collapsedIds.length, 1);
-  assert.ok(collapsedIds[0] === userId || collapsedIds[0] === dupId);
-  const survivingUser = deduped.find((record) => record.role === "user");
-  assert.ok(survivingUser);
-  assert.equal(deduped.filter((record) => record.role === "user").length, 1);
-  assert.equal(
-    deduped.find((record) => record.id === "a2")?.parentId,
-    survivingUser.id,
-  );
+  assert.deepEqual(siblings.sort(), [otherId, userId].sort());
 });

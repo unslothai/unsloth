@@ -1923,6 +1923,10 @@ function useStudioRuntimeAdapters(
             }
           }
           // One point read: the model run waits on this write.
+          // Identity is message.id. A regenerate starts the new assistant under
+          // the existing user parent (assistant-ui Reload: startRun({ parentId:
+          // userId })). Reusing another stored user row because the text matches
+          // would collapse a legitimate sibling branch into this one.
           const existingMessage = await getStoredChatMessage(
             remoteId,
             message.id,

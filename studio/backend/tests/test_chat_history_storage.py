@@ -1186,7 +1186,7 @@ def test_replaying_a_clear_does_not_signal_its_research_runs_again(tmp_path, mon
     assert replay == ([], ["src"])
 
 
-def test_sync_chat_messages_collapses_identical_user_siblings(tmp_path, monkeypatch):
+def test_sync_keeps_identical_user_siblings_as_distinct_ids(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread())
     attachment = {
@@ -1220,42 +1220,42 @@ def test_sync_chat_messages_collapses_identical_user_siblings(tmp_path, monkeypa
         "attachments": [{**attachment, "id": "att-2"}],
         "createdAt": 3,
     }
-    assistant = {
-        "id": "assistant-1",
+    assistant_a = {
+        "id": "assistant-a",
+        "threadId": "thread-1",
+        "parentId": "user-a",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "First."}],
+        "createdAt": 4,
+    }
+    assistant_b = {
+        "id": "assistant-b",
         "threadId": "thread-1",
         "parentId": "user-b",
         "role": "assistant",
-        "content": [{"type": "text", "text": "Summary."}],
-        "createdAt": 4,
+        "content": [{"type": "text", "text": "Second."}],
+        "createdAt": 5,
     }
-    studio_db.sync_chat_messages(
+    messages = studio_db.sync_chat_messages(
         "thread-1",
-        [prior, canonical_user, duplicate_user, assistant],
+        [prior, canonical_user, duplicate_user, assistant_a, assistant_b],
         prune_missing = True,
     )
 
-    messages = studio_db.sync_chat_messages(
-        "thread-1",
-        [prior, canonical_user, duplicate_user, assistant],
-    )
-
     by_id = {message["id"]: message for message in messages}
-    assert set(by_id) == {"prior", "user-a", "assistant-1"}
-    assert by_id["assistant-1"]["parentId"] == "user-a"
-    assert studio_db.get_chat_message("thread-1", "user-b") is None
+    assert set(by_id) == {"prior", "user-a", "user-b", "assistant-a", "assistant-b"}
+    assert by_id["assistant-a"]["parentId"] == "user-a"
+    assert by_id["assistant-b"]["parentId"] == "user-b"
 
 
-def test_sync_purges_stored_user_clones_that_differ_only_by_attachment_id(tmp_path, monkeypatch):
+def test_sync_does_not_purge_a_content_identical_user_with_an_active_run(
+    tmp_path, monkeypatch
+):
+    from storage import chat_generation_runs_db as runs_db
+
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread())
-    attachment = {
-        "id": "att-1",
-        "type": "document",
-        "name": "doc.md",
-        "contentType": "text/markdown",
-        "content": [{"type": "text", "text": "[Markdown: doc.md]\nhello"}],
-        "status": {"type": "complete"},
-    }
+    prompt = "Same prompt on two user ids"
     prior = {
         "id": "prior",
         "threadId": "thread-1",
@@ -1264,30 +1264,125 @@ def test_sync_purges_stored_user_clones_that_differ_only_by_attachment_id(tmp_pa
         "content": [{"type": "text", "text": "Hello"}],
         "createdAt": 1,
     }
-    canonical_user = {
+    user_a = {
         "id": "user-a",
         "threadId": "thread-1",
         "parentId": "prior",
         "role": "user",
-        "content": [{"type": "text", "text": "Please review this document."}],
-        "attachments": [attachment],
+        "content": [{"type": "text", "text": prompt}],
         "createdAt": 2,
     }
-    duplicate_user = {
-        **canonical_user,
-        "id": "user-b",
-        "attachments": [{**attachment, "id": "att-2"}],
-        "createdAt": 3,
+    user_b = {**user_a, "id": "user-b", "createdAt": 3}
+    assistant_b = {
+        "id": "assistant-b",
+        "threadId": "thread-1",
+        "parentId": "user-b",
+        "role": "assistant",
+        "content": [],
+        "createdAt": 4,
     }
     studio_db.upsert_chat_message(prior)
-    studio_db.upsert_chat_message(canonical_user)
-    studio_db.upsert_chat_message(duplicate_user)
-    assert {m["id"] for m in studio_db.list_chat_messages("thread-1")} == {
+    studio_db.upsert_chat_message(user_a)
+    studio_db.upsert_chat_message(user_b)
+    studio_db.upsert_chat_message(assistant_b)
+    run, created = runs_db.create_run(
+        run_id = "run-1",
+        owner_subject = "alice",
+        thread_id = "thread-1",
+        user_message_id = "user-b",
+        assistant_message_id = "assistant-b",
+        request_payload = {
+            "model": "local",
+            "messages": [{"role": "user", "content": prompt}],
+        },
+    )
+    assert created is True
+
+    synced = studio_db.sync_chat_messages("thread-1", [prior, user_a])
+    assert {message["id"] for message in synced} >= {
         "prior",
         "user-a",
         "user-b",
+        "assistant-b",
     }
+    assert studio_db.get_chat_message("thread-1", "user-b") is not None
+    assert runs_db.get_run("run-1", "alice") is not None
+    assert run["userMessageId"] == "user-b"
 
-    synced = studio_db.sync_chat_messages("thread-1", [prior, canonical_user])
-    assert {m["id"] for m in synced} == {"prior", "user-a"}
-    assert studio_db.get_chat_message("thread-1", "user-b") is None
+
+def test_sync_repeated_message_id_keeps_last_copy_and_its_child(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    first = {
+        "id": "user-a",
+        "threadId": "thread-1",
+        "parentId": None,
+        "role": "user",
+        "content": [{"type": "text", "text": "first copy"}],
+        "createdAt": 1,
+    }
+    second = {
+        **first,
+        "content": [{"type": "text", "text": "second copy"}],
+        "createdAt": 2,
+    }
+    child = {
+        "id": "assistant-1",
+        "threadId": "thread-1",
+        "parentId": "user-a",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "reply"}],
+        "createdAt": 3,
+    }
+    messages = studio_db.sync_chat_messages("thread-1", [first, second, child])
+    by_id = {message["id"]: message for message in messages}
+    assert set(by_id) == {"user-a", "assistant-1"}
+    assert by_id["user-a"]["content"] == [{"type": "text", "text": "second copy"}]
+    assert by_id["assistant-1"]["parentId"] == "user-a"
+
+
+def test_sync_preserves_non_list_attachments_and_malformed_stored_json(
+    tmp_path, monkeypatch
+):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    user_a = {
+        "id": "user-a",
+        "threadId": "thread-1",
+        "parentId": None,
+        "role": "user",
+        "content": [{"type": "text", "text": "same text"}],
+        "attachments": {"legacy": True, "name": "notes.md"},
+        "createdAt": 1,
+    }
+    user_b = {
+        "id": "user-b",
+        "threadId": "thread-1",
+        "parentId": None,
+        "role": "user",
+        "content": [{"type": "text", "text": "same text"}],
+        "attachments": None,
+        "createdAt": 2,
+    }
+    studio_db.upsert_chat_message(user_a)
+    conn = studio_db.get_connection()
+    try:
+        conn.execute(
+            "UPDATE chat_messages SET attachments_json = ? WHERE id = ?",
+            ("{not-json", "user-a"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    listed = studio_db.get_chat_message("thread-1", "user-a")
+    assert listed is not None
+    assert listed.get("attachments") is None
+
+    synced = studio_db.sync_chat_messages("thread-1", [user_b])
+    assert {message["id"] for message in synced} == {"user-a", "user-b"}
+    assert studio_db.get_chat_message("thread-1", "user-a") is not None
+    restored = studio_db.sync_chat_messages("thread-1", [user_a, user_b])
+    by_id = {message["id"]: message for message in restored}
+    assert by_id["user-a"]["attachments"] == {"legacy": True, "name": "notes.md"}
+    assert by_id["user-b"]["attachments"] is None

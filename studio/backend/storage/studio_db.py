@@ -3538,121 +3538,21 @@ def upsert_chat_message(
         conn.close()
 
 
-def _user_turn_fingerprint(message: dict) -> tuple:
-    parent_id = message.get("parentId")
-    content_json = json.dumps(message.get("content", []), sort_keys = True)
-    attachments = message.get("attachments")
-    if isinstance(attachments, list):
-        normalized = [
-            {key: value for key, value in attachment.items() if key not in {"id", "status"}}
-            for attachment in attachments
-            if isinstance(attachment, dict)
-        ]
-        attachments_json = json.dumps(normalized, sort_keys = True)
-    else:
-        attachments_json = "[]"
-    return parent_id, content_json, attachments_json
+def _unique_messages_by_id(messages: list[dict]) -> list[dict]:
+    """Keep one record per message id. Last occurrence wins.
 
-
-def _dedupe_identical_user_siblings(messages: list[dict]) -> tuple[list[dict], dict[str, str]]:
-    users_by_fingerprint: dict[tuple, list[dict]] = {}
-    for message in messages:
-        if str(message.get("role")) != "user":
-            continue
-        users_by_fingerprint.setdefault(_user_turn_fingerprint(message), []).append(message)
-
-    id_remap: dict[str, str] = {}
-    for group in users_by_fingerprint.values():
-        if len(group) <= 1:
-            continue
-        ordered = sorted(group, key = lambda item: (int(item.get("createdAt", 0)), str(item["id"])))
-        canonical_id = str(ordered[0]["id"])
-        for duplicate in ordered[1:]:
-            id_remap[str(duplicate["id"])] = canonical_id
-
-    if not id_remap:
-        return messages, {}
-
-    def _remap_parent_id(parent_id):
-        current = parent_id
-        seen: set[str] = set()
-        while current is not None and str(current) in id_remap and str(current) not in seen:
-            seen.add(str(current))
-            current = id_remap[str(current)]
-        return current
-
-    deduped: list[dict] = []
+    A repeated id is a payload defect, not a sibling to collapse: identity is the
+    id, so the later copy replaces the earlier one instead of remapping the id onto
+    itself and dropping the row.
+    """
+    by_id: dict[str, dict] = {}
+    order: list[str] = []
     for message in messages:
         message_id = str(message["id"])
-        if message_id in id_remap:
-            continue
-        remapped = dict(message)
-        parent_id = remapped.get("parentId")
-        next_parent_id = _remap_parent_id(parent_id)
-        if next_parent_id != parent_id:
-            remapped["parentId"] = next_parent_id
-        deduped.append(remapped)
-    return deduped, id_remap
-
-
-def _reparent_chat_message_children(
-    conn: sqlite3.Connection, thread_id: str, old_parent_id: str, new_parent_id: str
-) -> None:
-    conn.execute(
-        "UPDATE chat_messages SET parent_id = ? WHERE thread_id = ? AND parent_id = ?",
-        (new_parent_id, thread_id, old_parent_id),
-    )
-
-
-def _delete_chat_messages_by_id(
-    conn: sqlite3.Connection, thread_id: str, message_ids: Iterable[str]
-) -> None:
-    ids = [str(message_id) for message_id in message_ids]
-    for start in range(0, len(ids), _SQLITE_IN_CHUNK_SIZE):
-        chunk = ids[start : start + _SQLITE_IN_CHUNK_SIZE]
-        placeholders = ",".join("?" for _ in chunk)
-        conn.execute(
-            f"DELETE FROM chat_messages WHERE thread_id = ? AND id IN ({placeholders})",
-            (thread_id, *chunk),
-        )
-
-
-def _purge_stored_identical_user_siblings(conn: sqlite3.Connection, thread_id: str) -> list[str]:
-    rows = conn.execute(
-        """
-        SELECT id, parent_id, content_json, attachments_json, created_at
-        FROM chat_messages
-        WHERE thread_id = ? AND role = 'user'
-        """,
-        (thread_id,),
-    ).fetchall()
-    groups: dict[tuple, list] = {}
-    for row in rows:
-        attachments = json.loads(row["attachments_json"]) if row["attachments_json"] else None
-        key = _user_turn_fingerprint(
-            {
-                "parentId": row["parent_id"],
-                "content": json.loads(row["content_json"]) if row["content_json"] else [],
-                "attachments": attachments,
-            }
-        )
-        groups.setdefault(key, []).append(row)
-
-    purged: list[str] = []
-    for group in groups.values():
-        if len(group) <= 1:
-            continue
-        ordered = sorted(group, key = lambda row: (int(row["created_at"]), str(row["id"])))
-        canonical_id = str(ordered[0]["id"])
-        for duplicate in ordered[1:]:
-            duplicate_id = str(duplicate["id"])
-            _reparent_chat_message_children(conn, thread_id, duplicate_id, canonical_id)
-            conn.execute(
-                "DELETE FROM chat_messages WHERE thread_id = ? AND id = ?",
-                (thread_id, duplicate_id),
-            )
-            purged.append(duplicate_id)
-    return purged
+        if message_id not in by_id:
+            order.append(message_id)
+        by_id[message_id] = message
+    return [by_id[message_id] for message_id in order]
 
 
 def sync_chat_messages(
@@ -3676,11 +3576,7 @@ def sync_chat_messages(
             if _references_tombstoned_generation(conn, message)
         }
         messages = [message for message in messages if str(message["id"]) not in tombstoned_ids]
-        messages, collapsed_user_remap = _dedupe_identical_user_siblings(messages)
-        deleted_message_ids = [
-            *deleted_message_ids,
-            *collapsed_user_remap.keys(),
-        ]
+        messages = _unique_messages_by_id(messages)
         # Generation-linked messages are server-managed: keep the record rather than reject the
         # batch on client drift. No _guard_research_messages call here as a result -- these ids
         # never reach it. upsert_chat_message still guards, so the single-message route keeps
@@ -3797,17 +3693,6 @@ def sync_chat_messages(
                 attachments_json,
                 content_json,
             )
-        duplicate_ids_to_delete = {
-            duplicate_id
-            for duplicate_id in collapsed_user_remap
-            if duplicate_id not in research_ids and duplicate_id not in generation_ids
-        }
-        for duplicate_id in sorted(duplicate_ids_to_delete):
-            canonical_id = collapsed_user_remap[duplicate_id]
-            _reparent_chat_message_children(conn, thread_id, duplicate_id, canonical_id)
-        if duplicate_ids_to_delete:
-            _delete_chat_messages_by_id(conn, thread_id, duplicate_ids_to_delete)
-        _purge_stored_identical_user_siblings(conn, thread_id)
         if prune_missing:
             existing_ids = {
                 row["id"]

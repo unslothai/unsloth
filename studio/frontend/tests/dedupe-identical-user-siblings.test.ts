@@ -2,95 +2,151 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { test } from "node:test";
-import { dedupeIdenticalUserSiblings } from "../src/features/chat/utils/dedupe-identical-user-siblings.ts";
-import type { MessageRecord } from "../src/features/chat/types.ts";
+import test from "node:test";
+import { MessageRepository } from "@assistant-ui/core/internal";
+import * as researchSync from "../src/features/chat/utils/research-message-sync.ts";
+import { loadWithStubs } from "./helpers/module-stubs.ts";
 
-const threadId = "thread-1";
-const parentId = "prior-assistant";
+type Exported = {
+  headId: string | null;
+  messages: { parentId: string | null; message: Record<string, unknown> }[];
+};
 
-function userMessage(
+type Module = {
+  syncExportedRepositoryToBackend: (
+    remoteId: string,
+    exp: Exported,
+    options?: { pruneMissing?: boolean; deletedMessageIds?: string[] },
+  ) => Promise<void>;
+};
+
+function message(
   id: string,
-  createdAt: number,
-  attachments?: MessageRecord["attachments"],
-): MessageRecord {
+  role: "user" | "assistant",
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
   return {
     id,
-    threadId,
-    parentId,
-    role: "user",
-    content: [{ type: "text", text: "Please review this document." }],
-    ...(attachments ? { attachments } : {}),
-    createdAt,
+    role,
+    content: [{ type: "text", text: "same prompt" }],
+    createdAt: new Date(1000),
+    status: { type: "complete", reason: "stop" },
+    ...extra,
   };
 }
 
-function assistantMessage(
-  id: string,
-  parent: string,
-  createdAt: number,
-): MessageRecord {
-  return {
-    id,
-    threadId,
-    parentId: parent,
-    role: "assistant",
-    content: [{ type: "text", text: "Summary." }],
-    createdAt,
-  };
-}
-
-test("dedupe collapses identical user siblings and remaps assistant parents", () => {
-  const attachment = [
+test("autosave does not infer deleted ids from identical user siblings", async () => {
+  const synced: {
+    records: Record<string, unknown>[];
+    deletedMessageIds?: string[];
+  }[] = [];
+  const module = loadWithStubs<Module>(
+    new URL(
+      "../src/features/chat/utils/delete-thread-message.ts",
+      import.meta.url,
+    ),
     {
-      id: "att-1",
-      type: "document" as const,
-      name: "doc.md",
-      contentType: "text/markdown",
-      content: [{ type: "text" as const, text: "[Markdown: doc.md]\nhello" }],
-      status: { type: "complete" as const },
+      "@assistant-ui/core/internal": { MessageRepository },
+      "../api/chat-api": {
+        listChatMessages: async () => [],
+      },
+      "./chat-history-storage": {
+        ensureStoredChatThread: async () => {},
+        syncStoredChatMessages: async (
+          _threadId: string,
+          records: Record<string, unknown>[],
+          options: { deletedMessageIds?: string[] } = {},
+        ) => {
+          synced.push({
+            records,
+            deletedMessageIds: options.deletedMessageIds,
+          });
+          return records;
+        },
+      },
+      "./research-message-sync": researchSync,
     },
-  ];
-  const duplicateAttachment = [
-    {
-      ...attachment[0],
-      id: "att-2",
-    },
-  ];
-
-  const canonical = userMessage("user-a", 10, attachment);
-  const duplicate = userMessage("user-b", 20, duplicateAttachment);
-  const firstReply = assistantMessage("assistant-1", "user-b", 30);
-  const secondReply = assistantMessage("assistant-2", "user-b", 40);
-
-  const { records, collapsedIds } = dedupeIdenticalUserSiblings([
-    canonical,
-    duplicate,
-    firstReply,
-    secondReply,
-  ]);
-
-  assert.deepEqual(collapsedIds, ["user-b"]);
-  assert.deepEqual(
-    records.map((record) => record.id),
-    ["user-a", "assistant-1", "assistant-2"],
   );
-  assert.equal(records[1].parentId, "user-a");
-  assert.equal(records[2].parentId, "user-a");
+
+  const exported: Exported = {
+    headId: "a-b",
+    messages: [
+      { parentId: null, message: message("prior", "assistant") },
+      { parentId: "prior", message: message("user-a", "user") },
+      { parentId: "prior", message: message("user-b", "user") },
+      {
+        parentId: "user-a",
+        message: message("a-a", "assistant", {
+          content: [{ type: "text", text: "first" }],
+        }),
+      },
+      {
+        parentId: "user-b",
+        message: message("a-b", "assistant", {
+          content: [{ type: "text", text: "second" }],
+        }),
+      },
+    ],
+  };
+
+  await module.syncExportedRepositoryToBackend("thread-1", exported);
+
+  assert.equal(synced.length, 1);
+  assert.equal(synced[0].deletedMessageIds, undefined);
+  const ids = synced[0].records.map((record) => record.id);
+  assert.deepEqual(ids.sort(), ["a-a", "a-b", "prior", "user-a", "user-b"].sort());
 });
 
-test("dedupe keeps intentional user branches with different content", () => {
-  const first = userMessage("user-a", 10);
-  const second = {
-    ...userMessage("user-b", 20),
-    content: [{ type: "text" as const, text: "Different prompt." }],
+test("a stale tab cannot delete a sibling another tab has made distinct", async () => {
+  const synced: {
+    records: Record<string, unknown>[];
+    deletedMessageIds?: string[];
+  }[] = [];
+  const module = loadWithStubs<Module>(
+    new URL(
+      "../src/features/chat/utils/delete-thread-message.ts",
+      import.meta.url,
+    ),
+    {
+      "@assistant-ui/core/internal": { MessageRepository },
+      "../api/chat-api": {
+        listChatMessages: async () => [],
+      },
+      "./chat-history-storage": {
+        ensureStoredChatThread: async () => {},
+        syncStoredChatMessages: async (
+          _threadId: string,
+          records: Record<string, unknown>[],
+          options: { deletedMessageIds?: string[] } = {},
+        ) => {
+          synced.push({
+            records,
+            deletedMessageIds: options.deletedMessageIds,
+          });
+          return records;
+        },
+      },
+      "./research-message-sync": researchSync,
+    },
+  );
+
+  // Tab A still sees user-b as a content clone. Tab B already edited b's text
+  // server-side. Forwarding b as a deleted id would wipe that distinct branch.
+  const staleTab: Exported = {
+    headId: "user-b",
+    messages: [
+      { parentId: null, message: message("user-a", "user") },
+      { parentId: null, message: message("user-b", "user") },
+    ],
   };
 
-  const { records, collapsedIds } = dedupeIdenticalUserSiblings([
-    first,
-    second,
-  ]);
+  await module.syncExportedRepositoryToBackend("thread-1", staleTab, {
+    deletedMessageIds: [],
+  });
 
-  assert.deepEqual(collapsedIds, []);
-  assert.equal(records.length, 2);
+  assert.equal(synced[0].deletedMessageIds?.length ?? 0, 0);
+  assert.deepEqual(
+    synced[0].records.map((record) => record.id).sort(),
+    ["user-a", "user-b"],
+  );
 });
