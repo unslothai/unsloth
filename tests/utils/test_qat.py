@@ -20,6 +20,10 @@ from torchao.quantization.qat.fake_quantizer import (
     IntxFakeQuantizer,
 )
 
+# Loads a real model per qat_scheme and fake-quantizes it on the accelerator.
+# CI runs it under `-m gpu`.
+pytestmark = pytest.mark.gpu
+
 
 class _CountingFakeQuantizer(torch.nn.Module):
     """Fake quantizer that counts how many times it was called."""

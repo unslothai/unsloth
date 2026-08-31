@@ -4,6 +4,7 @@
 import { ownerOf, repoOf } from "../lib/format";
 import { looksLikeLocalPath } from "../lib/local-path";
 import { isGgufLike } from "../lib/model-identifiers";
+import { normalizeTimestamp } from "./inventory-timestamps";
 import type {
   BackendModelCapabilities,
   LocalModelInfo,
@@ -31,13 +32,6 @@ export function localSourceLabel(source: LocalModelInfo["source"]): string {
     default:
       return "Local model";
   }
-}
-
-export function normalizeTimestamp(value?: number | null): number | null {
-  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
-    return null;
-  }
-  return value < 10_000_000_000 ? value * 1000 : value;
 }
 
 export function formatLocalUpdated(value?: number | null): string {
@@ -167,9 +161,11 @@ export function buildCachedInventoryRow(
     load_cache_path?: string;
     partial?: boolean;
     partial_transport?: string | null;
+    partial_resumable?: boolean;
     has_variant_state?: boolean;
     pipeline_tag?: string | null;
     task?: string | null;
+    audio_type?: string | null;
     single_file?: boolean;
     companion?: boolean;
     tags?: string[];
@@ -222,17 +218,14 @@ export function buildCachedInventoryRow(
     bytes: row.size_bytes,
     cachePath: row.cache_path ?? null,
     loadCachePath: row.load_cache_path ?? null,
-    lastModified:
-      typeof row.last_modified === "number" &&
-      Number.isFinite(row.last_modified) &&
-      row.last_modified > 0
-        ? row.last_modified
-        : null,
+    lastModified: normalizeTimestamp(row.last_modified),
     partial: row.partial ?? false,
     partialTransport: row.partial_transport ?? null,
+    partialResumable: row.partial_resumable === true,
     hasVariantState: row.has_variant_state ?? false,
     pipelineTag: row.pipeline_tag ?? null,
     task: row.task ?? null,
+    audioType: row.audio_type ?? null,
     singleFile: row.single_file ?? false,
     companion: row.companion ?? false,
     tags: row.tags,
@@ -311,9 +304,11 @@ export function buildLocalInventoryRows(
         updatedAt: normalizeTimestamp(model.updated_at),
         partial: model.partial ?? false,
         partialTransport: model.partial_transport ?? null,
+        partialResumable: model.partial_resumable === true,
         activeCache: model.active_cache ?? null,
         pipelineTag: model.pipeline_tag ?? null,
         task: model.task ?? null,
+        audioType: model.audio_type ?? null,
         tags: model.tags,
         libraryName: model.library_name ?? null,
         quantMethod: model.quant_method ?? null,

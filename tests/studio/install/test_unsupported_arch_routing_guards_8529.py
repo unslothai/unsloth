@@ -42,6 +42,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from unsloth_pwsh_runner import run_pwsh
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
@@ -508,7 +509,10 @@ class TestPowerShellMapEvaluated:
             f"}}\n"
             f"if ($archFamilyMap.ContainsKey('gfx1030')) {{ 'CONTROL_OK' }}\n"
         )
-        out = subprocess.run(
+        # run_pwsh, not subprocess.run: the returncode assertion below reads a non-zero exit
+        # as $archFamilyMap failing to evaluate, and a signal-killed interpreter would be
+        # filed as that same map being broken. See tests/_shared/unsloth_pwsh_runner.py.
+        out = run_pwsh(
             ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
             stdout = subprocess.PIPE,
             stderr = subprocess.DEVNULL,
@@ -536,7 +540,10 @@ class TestPowerShellMapEvaluated:
             f"}}\n"
             f"if ($_rocmWheelArches -contains 'gfx1030') {{ 'CONTROL_OK' }}\n"
         )
-        out = subprocess.run(
+        # run_pwsh, not subprocess.run: a crashed interpreter prints nothing, so the
+        # CONTROL_OK check below would see the positive control missing and report
+        # setup.ps1's $_rocmWheelArches as wrong. See tests/_shared/unsloth_pwsh_runner.py.
+        out = run_pwsh(
             ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
             stdout = subprocess.PIPE,
             stderr = subprocess.DEVNULL,
@@ -943,7 +950,10 @@ def _ps_unsupported(path: Path, names):
         f"  Write-Output $hit\n"
         f"}}\n"
     )
-    out = subprocess.run(
+    # run_pwsh, not subprocess.run: this run's stdout is compared line by line against the
+    # Python table, so an interpreter that died mid-list would show up as the PowerShell
+    # name-to-arch rows disagreeing. See tests/_shared/unsloth_pwsh_runner.py.
+    out = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
         stdout = subprocess.PIPE,
         stderr = subprocess.DEVNULL,

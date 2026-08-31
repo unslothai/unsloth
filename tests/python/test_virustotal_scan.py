@@ -1040,7 +1040,7 @@ class TestWorkflowOrdering:
         names = self._publish_steps()
         validate = names.index("Validate versioned release state")
         assert names[validate + 1] == "Generate versioned updater metadata"
-        assert names[validate + 2] == "Publish versioned release assets"
+        assert names[validate + 2] == "Publish release assets"
 
     def test_release_notes_are_written_unconditionally(self):
         # Validation writes the notes; the metadata step consumes that same file
@@ -1069,7 +1069,7 @@ class TestWorkflowOrdering:
         assert "Create versioned release" not in by_name
 
         # Validation runs on every dispatch; only a non-draft run touches the release.
-        for name in ("Publish versioned release assets", "Publish versioned updater metadata"):
+        for name in ("Publish release assets", "Publish versioned updater metadata"):
             assert by_name[name]["if"] == "${{ !inputs.draft }}"
 
     def test_the_scan_step_does_not_swallow_its_own_failure(self):
@@ -1164,7 +1164,7 @@ class TestWorkflowOrdering:
         draft = workflow.get("on", workflow.get(True))["workflow_dispatch"]["inputs"]["draft"]
         assert draft["default"] is True
 
-        upload = self._publish_step_map()["Publish versioned release assets"]
+        upload = self._publish_step_map()["Publish release assets"]
         assert upload["if"] == "${{ !inputs.draft }}"
 
         heading = vt.SUMMARY_HEADING.lower()

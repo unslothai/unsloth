@@ -8,11 +8,105 @@ Path utilities for model and dataset handling
 import os
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Iterable, Optional, TypeVar
 import structlog
 from loggers import get_logger
 
 logger = get_logger(__name__)
+
+# Opening a cloud placeholder for data recalls it. These attributes are available through
+# ``stat_result.st_file_attributes`` on Windows without reading file contents.
+_WINDOWS_CONTENT_RECALL_ATTRIBUTES = (
+    0x00001000  # FILE_ATTRIBUTE_OFFLINE
+    | 0x00040000  # FILE_ATTRIBUTE_RECALL_ON_OPEN
+    | 0x00400000  # FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS
+)
+
+
+def file_contents_available_locally(path, stat_result = None) -> bool:
+    """Whether opening *path* can read data without recalling a cloud placeholder.
+
+    Non-Windows files have no ``st_file_attributes`` and are treated as local. An
+    inaccessible path is not safe to open during inventory discovery.
+    """
+    try:
+        info = stat_result if stat_result is not None else os.stat(path)
+    except OSError:
+        return False
+    attributes = int(getattr(info, "st_file_attributes", 0) or 0)
+    return not bool(attributes & _WINDOWS_CONTENT_RECALL_ATTRIBUTES)
+
+
+# ── macOS Finder metadata companions ───────────────────────────
+# A volume without native xattrs (exFAT, FAT, most SMB and NFS) makes macOS keep a file's xattrs
+# in a "._" companion carrying the same extension, so it answers every name-shaped question the
+# way the real file does and sorts ahead of it. Nothing may be refused for the prefix alone: a
+# user's own "._model.gguf" is a real model, and only the magic bytes settle it.
+
+_MAGIC = b"\x00\x05\x16\x07"
+
+PathLike = TypeVar("PathLike", str, Path)
+
+
+def is_appledouble_name(path: str) -> bool:
+    """A name test only: it decides which files are worth opening, never what one is."""
+    return str(path).replace("\\", "/").rsplit("/", 1)[-1].startswith("._")
+
+
+def has_appledouble_magic(path: Path) -> bool:
+    """The four bytes ``file(1)`` reads to report "AppleDouble encoded Macintosh file"."""
+    try:
+        # Directory scans reach here with whatever the volume holds, and opening a FIFO blocks
+        # until someone writes to it. Only a regular file can carry the magic anyway.
+        if not path.is_file():
+            return False
+        with open(path, "rb") as handle:
+            return handle.read(len(_MAGIC)) == _MAGIC
+    except OSError:
+        return False
+
+
+def is_appledouble_metadata(path: Path) -> bool:
+    """True only for a ``._`` file whose bytes ARE AppleDouble."""
+    path = Path(path)
+    return is_appledouble_name(path.name) and has_appledouble_magic(path)
+
+
+def drop_appledouble_metadata(paths: Iterable[PathLike]) -> list[PathLike]:
+    """*paths* without the entries that are Finder metadata, preserving order and type."""
+    return [p for p in paths if not is_appledouble_metadata(Path(p))]
+
+
+def any_not_appledouble_metadata(paths: Iterable[PathLike]) -> bool:
+    """Whether *paths* holds anything that is not Finder metadata, stopping at the first.
+
+    Callers hand this a live ``glob``, which materializing would walk in full.
+    """
+    return any(not is_appledouble_metadata(Path(p)) for p in paths)
+
+
+def _shadowed_name(path: str) -> str:
+    head, _, name = str(path).replace("\\", "/").rpartition("/")
+    return f"{head}/{name[2:]}" if head else name[2:]
+
+
+def drop_shadowed_appledouble_names(
+    # Optional[...] rather than `| None`: this module has no `from __future__ import
+    # annotations`, so its annotations are evaluated at import, and PEP 604 unions are a
+    # TypeError on the declared 3.9 floor. tests/test_python39_compatibility.py gates it.
+    files: list[str],
+    *,
+    subject_key: Optional[Callable[[str], object]] = None,
+) -> list[str]:
+    """*files* without the ``._`` entries whose subject is present in the same listing.
+
+    For remote listings, which carry no bytes to read, so a sole candidate survives whatever it
+    is called. *subject_key* widens what counts as the subject, for files that come in sets.
+    """
+    key = subject_key or (lambda name: name)
+    present = {key(f.replace("\\", "/")) for f in files}
+    return [f for f in files if not (is_appledouble_name(f) and key(_shadowed_name(f)) in present)]
+
 
 # Per-process cache to avoid repeated cache-dir scans for the same identifier.
 _CACHE_CASE_RESOLUTION_MEMO: dict[str, str] = {}
@@ -65,6 +159,65 @@ def normalize_path(path: str) -> str:
     return path.replace("\\", "/")
 
 
+def wsl_automount_root() -> str:
+    """DrvFs root WSL maps Windows drives under, with a trailing slash.
+
+    Set via ``/etc/wsl.conf`` ``[automount] root``, so hard-coding ``/mnt/``
+    mistranslates drive paths on a host that moved it (``root = /`` puts C: at ``/c/``).
+    """
+    default = "/mnt/"
+    if not _IS_WSL:
+        return default
+    try:
+        import configparser
+
+        parser = configparser.ConfigParser(inline_comment_prefixes = ("#", ";"))
+        parser.read("/etc/wsl.conf", encoding = "utf-8")
+        root = parser.get("automount", "root", fallback = "").strip().strip("\"'")
+    except Exception:
+        return default
+    if not root:
+        return default
+    return root if root.endswith("/") else f"{root}/"
+
+
+_WSL_AUTOMOUNT_ROOT: str = wsl_automount_root()
+
+
+def _looks_windows_shaped(path: str) -> bool:
+    """True for a drive-letter path (``C:\\x``, ``c:/x``) or a UNC path (``\\\\host\\share``)."""
+    if path.startswith("\\\\"):
+        return True
+    return len(path) >= 3 and path[1] == ":" and path[2] in ("\\", "/")
+
+
+def host_normalize_path(path: str) -> str:
+    """Normalize a path this process is about to open, honouring ``[automount] root``.
+
+    Not :func:`normalize_path`: that hard-codes ``/mnt/`` to predict where the model
+    *loader* will look, while a path read from another tool's config is stat-ed here.
+
+    Separators are rewritten only when the path is Windows-shaped, or on Windows itself
+    where a backslash cannot be anything else. Everywhere else, WSL included, a path that
+    names no drive is a POSIX path, and a backslash in it is a legal filename character:
+    rewriting it would silently lose a directory that has one in its name.
+    """
+    if not path:
+        return path
+
+    if _looks_windows_shaped(path):
+        if _IS_WSL and path[1:2] == ":":
+            drive = path[0].lower()
+            rest = path[3:].replace("\\", "/")
+            return f"{_WSL_AUTOMOUNT_ROOT}{drive}/{rest}"
+        return path.replace("\\", "/")
+
+    if os.name == "nt":
+        return path.replace("\\", "/")
+
+    return path
+
+
 def is_local_path(path: str) -> bool:
     """
     Check if path is a local filesystem path vs HuggingFace model identifier.
@@ -114,7 +267,7 @@ def is_model_cached(model_name: str) -> bool:
 
     # Check for model files
     for suffix in [".safetensors", ".bin", ".json"]:
-        if list(cache_path.rglob(f"*{suffix}")):
+        if any_not_appledouble_metadata(cache_path.rglob(f"*{suffix}")):
             return True
 
     return False

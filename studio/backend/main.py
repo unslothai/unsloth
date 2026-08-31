@@ -222,8 +222,14 @@ except (OSError, ValueError):
 if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
     if not os.environ.get("UNSLOTH_STUDIO_HOME"):
         os.environ["UNSLOTH_STUDIO_HOME"] = str(_STUDIO_ROOT_RESOLVED)
+    _MANAGED_LLAMA_CPP_PATH = _STUDIO_ROOT_RESOLVED / "llama.cpp"
     if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
-        os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_STUDIO_ROOT_RESOLVED / "llama.cpp")
+        os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_MANAGED_LLAMA_CPP_PATH)
+    # A CLI/desktop launcher may already have exported Unsloth's own install path.
+    # Classify by the canonical value so that inherited default remains editable.
+    from utils.llama_cpp_path_settings import mark_managed_llama_cpp_path
+
+    mark_managed_llama_cpp_path(_MANAGED_LLAMA_CPP_PATH)
 
 # The studio bundles unsloth_zoo; declare unsloth present (as `import unsloth` does) so its
 # lazy submodule imports and the DiffusionGemma runner don't trip the install guard.
@@ -303,9 +309,11 @@ from routes import (
     openai_codex_auth_router,
     rag_router,
     research_runs_router,
+    chat_generation_runs_router,
     training_history_router,
     training_router,
     video_router,
+    video_openai_router,
     youtube_router,
 )
 from routes.llama import router as llama_router
@@ -600,7 +608,11 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
         start_mlx_autorepair_if_needed()
     except Exception as _mlx_exc:
         import structlog as _structlog
-        _structlog.get_logger(__name__).debug("mlx autorepair skipped: %s", _mlx_exc)
+
+        # Warning, not debug: this decides the MLX verdict on every healthy Apple Silicon
+        # boot, so a half-applied update (new mlx_repair.py over older hardware.py) arrives
+        # here and would silently leave Train/Export greyed out for the session.
+        _structlog.get_logger(__name__).warning("mlx autorepair skipped: %s", _mlx_exc)
 
     if _post_warm_retired(generation):
         return
@@ -659,6 +671,26 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         _lifespan_log.warning("cleanup_orphaned_runs failed at startup: %s", exc)
 
+    try:
+        from storage.chat_generation_runs_db import reconcile_orphaned_runs
+        reconciled_chat_runs = reconcile_orphaned_runs()
+        if reconciled_chat_runs:
+            _lifespan_log.warning(
+                "Marked %s interrupted chat generation run(s) failed after restart.",
+                reconciled_chat_runs,
+            )
+    except Exception as exc:
+        _lifespan_log.warning("chat generation orphan reconciliation failed: %s", exc)
+
+    try:
+        # The boot pass above only settles runs orphaned by the previous process. A run
+        # that wedges while this one keeps serving needs the same reconciliation on an
+        # interval, bounded to runs whose progress lease has expired.
+        from core.inference.chat_generation_runs import start_lease_sweeper
+        start_lease_sweeper(app)
+    except Exception as exc:
+        _lifespan_log.warning("chat generation lease sweeper failed to start: %s", exc)
+
     reap_hub_orphan_workers()
     try:
         from hub.utils.download_manifest import migrate_ordinary_v2_manifests_for_downgrade
@@ -692,6 +724,10 @@ async def lifespan(app: FastAPI):
 
     app.state.research_supervisor = ResearchSupervisor(app)
     app.state.research_supervisor.start()
+
+    from core.inference.chat_generation_runs import ChatGenerationSupervisor
+
+    app.state.chat_generation_supervisor = ChatGenerationSupervisor(app)
 
     # Idle auto-unload loop (no-op unless the OpenAI auto-unload TTL is set).
     from core.inference.llama_keepwarm import idle_unload_loop, sweep_slot_save_dir
@@ -736,7 +772,24 @@ async def lifespan(app: FastAPI):
         "lifespan startup completed in %.1fms",
         (_time.perf_counter() - _lifespan_started) * 1000,
     )
+    # Persist only terminal scalar usage from authenticated third-party API
+    # requests. The monitor itself stays storage-agnostic until the production
+    # lifespan is ready, which keeps imports and unit tests deterministic.
+    from core.inference.api_monitor import api_monitor as _api_monitor
+    from storage.api_usage_db import (
+        acquire_api_usage_writer as _acquire_api_usage_writer,
+        enqueue_api_usage as _enqueue_api_usage,
+        release_api_usage_writer as _release_api_usage_writer,
+    )
+
+    _api_usage_writer_lease = _acquire_api_usage_writer()
+    _api_usage_callback_lease = _api_monitor.acquire_terminal_callback(_enqueue_api_usage)
     yield
+
+    # Remove only this lifespan's callback. A concurrently live sibling keeps
+    # both the monitor sink and the shared serialized writer. The final owner
+    # drains accepted receipts off the event loop before stopping the worker.
+    _api_monitor.release_terminal_callback(_api_usage_callback_lease)
 
     # Before any shutdown await: a warm finishing during one would still read the lifespan as current.
     _stop_post_warm_thread()
@@ -747,6 +800,8 @@ async def lifespan(app: FastAPI):
     _invalidate_detection = getattr(_hw_module, "invalidate_detection", None)
     if _invalidate_detection is not None:
         _invalidate_detection()
+
+    await asyncio.to_thread(_release_api_usage_writer, _api_usage_writer_lease)
 
     from core.inference.openai_codex_auth import shutdown_flows
 
@@ -768,6 +823,10 @@ async def lifespan(app: FastAPI):
     _research_supervisor = getattr(app.state, "research_supervisor", None)
     if _research_supervisor is not None:
         await _research_supervisor.stop()
+
+    _chat_generation_supervisor = getattr(app.state, "chat_generation_supervisor", None)
+    if _chat_generation_supervisor is not None:
+        await _chat_generation_supervisor.stop()
 
     from core.inference.llama_http import aclose as _close_llama_http
 
@@ -794,6 +853,7 @@ app = FastAPI(
     redoc_url = None,
     swagger_ui_oauth2_redirect_url = None,
 )
+app.state.secure = os.environ.get("UNSLOTH_SECURE") == "1"
 
 # The MCP surface is opt-in: it can start GPU jobs and write model artifacts.
 if os.environ.get("UNSLOTH_STUDIO_ENABLE_MCP") == "1":
@@ -965,7 +1025,7 @@ app.add_middleware(SecurityHeadersMiddleware)
 # Swagger UI and ReDoc, on FastAPI's own paths but served entirely from this origin.
 # FastAPI's built-in pages load ~2.3 MB of JavaScript from cdn.jsdelivr.net and start it with
 # an inline script. localStorage is origin-scoped, not path-scoped, so anything running on
-# /docs can read the Studio tokens session.ts keeps there and call the API as that user. The
+# /docs can read the Unsloth tokens session.ts keeps there and call the API as that user. The
 # bundles are vendored under assets/docs_ui (pinned + digest-checked by
 # tests/test_docs_ui_assets.py) and the inline init runs off the same per-response nonce the
 # bootstrap script uses, so script-src stays 'self' and works offline as a bonus.
@@ -1046,13 +1106,15 @@ from utils.upload_limits import (  # noqa: E402
     STT_AUDIO_JSON_MAX_BYTES,
     STT_AUDIO_RAW_MAX_BYTES,
     UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES,
+    VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
+    VIDEO_INPUT_REFERENCE_MAX_BYTES,
     default_request_body_limit_bytes,
     upload_request_limit_bytes,
 )
 
 _BODY_PROTECTED_PREFIXES = (
     # Blanket-protect the whole /v1 surface, like /api/inference: every /v1 POST buffers a JSON
-    # body and none is a multipart passthrough, so one prefix caps them all.
+    # body (the multipart routes are listed as exact passthroughs below), so one prefix caps them all.
     "/v1",
     "/p/",
     "/api/inference",
@@ -1080,6 +1142,10 @@ _STT_MULTIPART_UPLOAD_PATHS = (
     "/v1/audio/transcriptions",
     "/api/inference/audio/transcriptions",
 )
+_VIDEO_MULTIPART_UPLOAD_PATHS = (
+    "/v1/videos",
+    "/api/inference/videos",
+)
 _BODY_UPLOAD_PASSTHROUGH_PREFIXES = (
     *_DATASET_UPLOAD_PASSTHROUGH_PREFIXES,
     _DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX,
@@ -1088,7 +1154,14 @@ _BODY_UPLOAD_PASSTHROUGH_PREFIXES = (
 _BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS = (
     _DIFFUSION_DATASET_UPLOAD_PATH,
     *_STT_MULTIPART_UPLOAD_PATHS,
+    *_VIDEO_MULTIPART_UPLOAD_PATHS,
 )
+# Which of those may arrive with no Content-Length and be counted instead of refused.
+# Deliberately NOT the whole set above: this middleware runs before authentication, and
+# a counted body is a held body, so the dataset path (whose cap is the configurable
+# upload limit, up to 8 GB) and the 25 MB stt paths keep their 411. The videos
+# reference image is bounded at 32 MB, the same order as the default protected cap.
+_CHUNKED_UPLOAD_EXACT_PATHS = _VIDEO_MULTIPART_UPLOAD_PATHS
 
 
 def _get_upload_passthrough_request_max_bytes(path: str) -> int:
@@ -1096,6 +1169,11 @@ def _get_upload_passthrough_request_max_bytes(path: str) -> int:
         return upload_request_limit_bytes(UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES)
     if path.rstrip("/") in _STT_MULTIPART_UPLOAD_PATHS:
         return upload_request_limit_bytes(STT_AUDIO_RAW_MAX_BYTES)
+    if path.rstrip("/") in _VIDEO_MULTIPART_UPLOAD_PATHS:
+        return max(
+            upload_request_limit_bytes(VIDEO_INPUT_REFERENCE_MAX_BYTES),
+            VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
+        )
     # The trailing-slash variant reaches this middleware BEFORE the router's redirect_slashes
     # 307, so it must resolve to the same cap. JSON sub-routes keep extra path components.
     if (
@@ -1114,6 +1192,11 @@ def _get_request_body_max_bytes(path: str) -> int:
     # multipart headroom over the raw stt cap for the openai transcription route on both mounts
     if path.rstrip("/") in _STT_MULTIPART_UPLOAD_PATHS:
         return upload_request_limit_bytes(STT_AUDIO_RAW_MAX_BYTES)
+    if path.rstrip("/") in _VIDEO_MULTIPART_UPLOAD_PATHS:
+        return max(
+            upload_request_limit_bytes(VIDEO_INPUT_REFERENCE_MAX_BYTES),
+            VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
+        )
     return default_request_body_limit_bytes()
 
 
@@ -1163,6 +1246,7 @@ class MaxBodyMiddleware:
         upload_passthrough_prefixes: tuple = (),
         upload_passthrough_max_bytes_getter = None,
         upload_passthrough_exact_paths: tuple = (),
+        chunked_upload_exact_paths: tuple = (),
     ):
         self.app = app
         self.max_bytes_getter = max_bytes_getter
@@ -1172,6 +1256,8 @@ class MaxBodyMiddleware:
         self.upload_passthrough_max_bytes_getter = upload_passthrough_max_bytes_getter
         # Exact path, not prefix: sibling JSON sub-routes must keep the normal (small) body cap.
         self.upload_passthrough_exact_paths = upload_passthrough_exact_paths
+        # The subset of those allowed to omit Content-Length; the rest still get a 411.
+        self.chunked_upload_exact_paths = chunked_upload_exact_paths
 
     def _is_upload_passthrough(self, path: str) -> bool:
         # Exact paths also match their trailing-slash variant (this runs before redirect_slashes).
@@ -1224,14 +1310,16 @@ class MaxBodyMiddleware:
 
         if self._is_upload_passthrough(path):
             upload_max_bytes = self._upload_passthrough_max_bytes(path)
-            if declared is None:
+            if declared is not None:
+                if declared > upload_max_bytes:
+                    await _send_413(send, declared, upload_max_bytes)
+                    return
+                await self.app(scope, receive, send)
+                return
+            if path.rstrip("/") not in self.chunked_upload_exact_paths:
                 await _send_411(send)
                 return
-            if declared > upload_max_bytes:
-                await _send_413(send, declared, upload_max_bytes)
-                return
-            await self.app(scope, receive, send)
-            return
+            max_bytes = upload_max_bytes
 
         if declared is not None and declared > max_bytes:
             await _send_413(send, declared, max_bytes)
@@ -1281,6 +1369,7 @@ app.add_middleware(
     upload_passthrough_prefixes = _BODY_UPLOAD_PASSTHROUGH_PREFIXES,
     upload_passthrough_max_bytes_getter = _get_upload_passthrough_request_max_bytes,
     upload_passthrough_exact_paths = _BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS,
+    chunked_upload_exact_paths = _CHUNKED_UPLOAD_EXACT_PATHS,
 )
 
 # Tracks in-flight inference requests for idle auto-unload; off -> passthrough.
@@ -1327,6 +1416,9 @@ app.add_middleware(
     allow_credentials = True,
     allow_methods = ["*"],
     allow_headers = ["*"],
+    # allow_headers is the REQUEST side; a response header is unreadable to JS unless
+    # exposed, and Studio is cross-origin from tauri://localhost and tunnels.
+    expose_headers = ["X-Unsloth-Conflict-Kind"],
     # is_allowed_origin closes the moment the tunnel URL clears, but a preflight
     # already cached by the browser does not. Measured in WebKit: with Starlette's
     # 600s default, a state-changing request still REACHED the server after remote
@@ -1335,6 +1427,10 @@ app.add_middleware(
     # signal here.
     max_age = 60,
 )
+
+from utils.keyless_api_access import KeylessToolPolicyMiddleware  # noqa: E402
+
+app.add_middleware(KeylessToolPolicyMiddleware)
 
 from utils.remote_access_settings import RemoteAccessStopResponseMiddleware  # noqa: E402
 
@@ -1348,12 +1444,19 @@ app.include_router(training_router, prefix = "/api/train", tags = ["training"])
 app.include_router(models_router, prefix = "/api/models", tags = ["models"])
 app.include_router(chat_history_router, prefix = "/api/chat", tags = ["chat"])
 app.include_router(research_runs_router, prefix = "/api/chat/research-runs", tags = ["research-runs"])
+app.include_router(
+    chat_generation_runs_router,
+    prefix = "/api/inference/chat-runs",
+    tags = ["inference"],
+)
 app.include_router(inference_router, prefix = "/api/inference", tags = ["inference"])
 # Unsloth-only inference endpoints (cancel, etc.) are not on the /v1 OpenAI-compat prefix.
 app.include_router(inference_studio_router, prefix = "/api/inference", tags = ["inference"])
 
-# Studio-only text-to-video endpoints; not exposed on the /v1 OpenAI-compat prefix.
+# Unsloth-only text-to-video endpoints; not exposed on the /v1 OpenAI-compat prefix.
 app.include_router(video_router, prefix = "/api/inference", tags = ["inference"])
+app.include_router(video_openai_router, prefix = "/api/inference", tags = ["inference"])
+app.include_router(video_openai_router, prefix = "/v1", tags = ["openai-compat"])
 
 # OpenAI-compatible: mount the inference router at /v1 for external tools.
 app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])
@@ -1574,6 +1677,50 @@ def _torch_warm_in_progress() -> bool:
     return bool(status["started"] and not status["finished"] and status["alive"])
 
 
+# Modules that expose generation_in_flight(). The three engines answer for the render itself;
+# routes.inference answers for the image-persist tail, which outlives the engine's own marker.
+_MEDIA_BACKEND_MODULES = (
+    "core.inference.video",
+    "core.inference.diffusion",
+    "core.inference.sd_cpp_backend",
+    "routes.inference",
+)
+
+
+def _media_generation_active() -> bool:
+    """Check imported media backends without importing, constructing, or locking them."""
+    for module_name in _MEDIA_BACKEND_MODULES:
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue
+        try:
+            if module.generation_in_flight():
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _inference_active() -> bool:
+    """True while at least one generation is in flight.
+
+    Published so the desktop health watchdog can tell a backend that is busy serving from
+    one that has died: a saturated host can stall the event loop past a probe budget, and
+    killing there ends a response the user is still waiting on.
+
+    A len() under a threading.Lock held only for that read, plus a bool off each resident
+    media backend, so the route stays cheap. Failures report "not busy", the same answer as
+    before this field existed.
+    """
+    try:
+        from state import active_generations
+        if active_generations.count() > 0:
+            return True
+    except Exception:
+        pass
+    return _media_generation_active()
+
+
 @app.get("/api/liveness")
 async def liveness_check():
     """Cheap process liveness for desktop port validation."""
@@ -1599,6 +1746,12 @@ async def liveness_check():
     # detection nor waits on it and the route stays cheap.
     if _torch_warm_in_progress():
         alive["torch_warm_in_progress"] = True
+    # Startup is not the only window where a healthy backend can miss probes: an
+    # oversubscribed host generating on every slot stalls this loop the same way, long
+    # after the warm is over. The watchdog widens its failure budget on this marker
+    # rather than ending a stream that is still producing tokens.
+    if _inference_active():
+        alive["inference_active"] = True
     if _hardware_snapshot() is None:
         alive["hardware_detecting"] = True
         if os.environ.get(DISABLE_ENV_VAR) == "1":
@@ -1641,7 +1794,7 @@ async def health_check(request: Request):
         "desktop_manageability_version": 2,
         "supports_desktop_auth": True,
         "supports_desktop_backend_ownership": True,
-        # Opaque per-install id; launchers reject sibling Studios on the same port.
+        # Opaque per-install id; launchers reject sibling Unsloth instances on the same port.
         "studio_root_id": _studio_root_id(),
         "native_path_leases_supported": native_path_leases_supported(),
         **({"desktop_owner": owner} if (owner := _desktop_owner()) else {}),
@@ -1650,6 +1803,10 @@ async def health_check(request: Request):
     # to have liveness, so the warm marker has to reach it by the same path.
     if _torch_warm_in_progress():
         base["torch_warm_in_progress"] = True
+    # Lockstep with /api/liveness for the same reason: the fallback route has to carry the
+    # busy marker too, or an older backend loses the widened budget.
+    if _inference_active():
+        base["inference_active"] = True
     if snapshot is None:
         # chat_only above is the pre-detection default, not a measurement; clients should re-read.
         base["hardware_detecting"] = True
@@ -1659,13 +1816,15 @@ async def health_check(request: Request):
             # Nothing is detecting until a hardware-dependent operation runs; say so instead of making clients poll.
             base["hardware_detection_deferred"] = True
     auth = request.headers.get("authorization", "")
-    if not auth.lower().startswith("bearer "):
-        return base
+    bearer = auth.split(" ", 1)[1] if auth.lower().startswith("bearer ") else None
     try:
+        from auth.authentication import credentials_for_token
         from auth.authentication import get_current_subject as _gcs
-        from fastapi.security import HTTPAuthorizationCredentials
 
-        creds = HTTPAuthorizationCredentials(scheme = "Bearer", credentials = auth.split(" ", 1)[1])
+        # resolved rather than built, so a scope covering this route answers it in full
+        creds = await credentials_for_token(request, bearer)
+        if creds is None:
+            return base
         # Must await: a bare coroutine is truthy and would skip the auth check
         subject = await _gcs(creds)
     except HTTPException:
@@ -1683,6 +1842,12 @@ async def health_check(request: Request):
 
     platform_map = {"darwin": "mac", "win32": "windows", "linux": "linux"}
     device_type = platform_map.get(sys.platform, sys.platform)
+    # Alongside device_type, not folded into it: "mac" is every Darwin host, and an Intel
+    # Mac with a discrete GPU spills to system RAM like a PC while Apple Silicon has one
+    # pool and nowhere to spill. The UI words its memory warnings from this. Same gate the
+    # Metal context budget uses, and a pure platform check, so a health poll pays nothing.
+    from utils.hardware import is_apple_silicon
+
     authed = {
         **base,
         "version": UNSLOTH_VERSION,
@@ -1703,6 +1868,7 @@ async def health_check(request: Request):
         # cannot come from a different detection pass than the reason beside it.
         authed["chat_only_detail"] = snapshot[2]
         authed["device_type"] = device_type
+        authed["apple_silicon"] = is_apple_silicon()
         # base predates the bearer await; never ship "detecting" beside a measurement.
         authed.pop("hardware_detecting", None)
         # Same for the deferred marker: the client reads it first and would keep the old reason.
@@ -2283,13 +2449,24 @@ def _is_live_cloudflare_frontend_request(scope, app_state) -> bool:
     return bool(expected_host) and request_host == expected_host
 
 
+def _is_remote_frontend_request(scope, app_state) -> bool:
+    """True for a request the desktop backend may answer with its packaged web UI.
+
+    Two ways in, both identified by the connection itself rather than a client
+    header the caller controls: Cloudflare's own edge, or one of the sockets the
+    runtime LAN listener bound (Settings > LAN access).
+    """
+    from lan_access import request_on_lan_listener
+    return _is_live_cloudflare_frontend_request(scope, app_state) or request_on_lan_listener(scope)
+
+
 class _TunnelOnlyFrontend:
     def __init__(self, frontend_app, app_state):
         self.frontend_app = frontend_app
         self.app_state = app_state
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or _is_live_cloudflare_frontend_request(scope, self.app_state):
+        if scope["type"] != "http" or _is_remote_frontend_request(scope, self.app_state):
             await self.frontend_app(scope, receive, send)
             return
         await Response(status_code = 404)(scope, receive, send)
@@ -2301,7 +2478,11 @@ def setup_frontend(
     *,
     tunnel_only: bool = False,
 ):
-    """Mount frontend static files (optional)"""
+    """Mount frontend static files (optional).
+
+    ``tunnel_only`` restricts the mount to remote callers: the Cloudflare edge, or
+    a socket the runtime LAN listener bound. See :func:`_is_remote_frontend_request`.
+    """
     if not build_path.exists():
         return False
 
@@ -2317,7 +2498,7 @@ def setup_frontend(
         app.mount("/assets", assets_app, name = "assets")
 
     def _frontend_request_allowed(request: Request) -> bool:
-        return not tunnel_only or _is_live_cloudflare_frontend_request(request.scope, app.state)
+        return not tunnel_only or _is_remote_frontend_request(request.scope, app.state)
 
     def _build_index_response(request: Request) -> Response:
         content = (build_path / "index.html").read_bytes()

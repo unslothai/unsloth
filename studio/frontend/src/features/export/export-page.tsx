@@ -363,6 +363,19 @@ export function ExportPage() {
     };
   }, []);
 
+  const reloadReadySent = useRef(false);
+  useEffect(() => {
+    if (
+      loadingCheckpoints ||
+      isLoadingLocalModels ||
+      reloadReadySent.current
+    ) {
+      return;
+    }
+    reloadReadySent.current = true;
+    window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+  }, [isLoadingLocalModels, loadingCheckpoints]);
+
   // ---- Derived state ----
   const selectedModelData = useMemo(
     () =>
@@ -1128,7 +1141,7 @@ export function ExportPage() {
                                       No models found
                                     </ComboboxEmpty>
                                   )}
-                                  <ComboboxList className="p-1 !max-h-none !overflow-visible">
+                                  <ComboboxList>
                                     {(id: string) => (
                                       <ComboboxItem
                                         key={id}
@@ -1241,7 +1254,7 @@ export function ExportPage() {
                                     No local models found
                                   </ComboboxEmpty>
                                 )}
-                                <ComboboxList className="p-1 !max-h-none !overflow-visible">
+                                <ComboboxList>
                                   {(id: string) => {
                                     const model = localMetaById.get(id);
                                     const source =

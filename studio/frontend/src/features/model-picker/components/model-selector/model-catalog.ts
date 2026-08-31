@@ -271,14 +271,21 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     artifacts: [bf16Pipeline("Alpha-VLLM/Lumina-Image-2.0", 11, { totalParams: 2609769152 })],
   },
   {
-    // 17B dual-stream 2K-native DiT with a Qwen2.5-VL encoder; the mirror guider components load natively on diffusers 0.39. ~50 GB bf16-resident, so consumer GPUs route to the QuantStack GGUF.
+    // 17B dual-stream 2K-native DiT with a Qwen2.5-VL encoder; the mirror guider components load natively on diffusers 0.39.
+    // bf16 only: this used to carry gguf("QuantStack/HunyuanImage-2.1-GGUF") as the consumer route, and that repo was
+    // unpublished (404 to an authed request, 401 anonymous). An entry the Hub cannot serve is worse than no entry, because
+    // it renders as a one-click download that fails partway through, which is the exact case model-catalog-network-check
+    // exists to find. QuantStack itself is alive and still ships its other GGUF repos, so this is one model withdrawn
+    // rather than a publisher going away. No vetted replacement: unsloth has an FP8 mirror but no GGUF, and the
+    // third-party HunyuanImage GGUF repos on the Hub are a different lineage (calcuis ships "lite" variants), so picking
+    // one is a decision about which weights users download and not a CI fix.
+    // At 24 GB the bf16 still fits the 61.6 GB budget, so the group stays visible; it is the quant ladder that is gone.
     canonicalId: "hunyuanvideo-community/HunyuanImage-2.1-Diffusers",
     displayName: "HunyuanImage 2.1",
     description: "Text-to-image",
     scope: "image",
     artifacts: [
       bf16Pipeline("hunyuanvideo-community/HunyuanImage-2.1-Diffusers", 50, { totalParams: 17425795520 }),
-      gguf("QuantStack/HunyuanImage-2.1-GGUF"),
     ],
   },
   {
@@ -448,7 +455,8 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
 ];
 
 // The Audio page's curated list. tts groups load into the main slot via /api/inference/load
-// (Orpheus is the only family the llama.cpp TTS path also serves as GGUF); stt groups map to
+// (Orpheus is the only family the llama.cpp TTS path also serves as GGUF); native TTS
+// families use their official Transformers/Diffusers interfaces. stt groups map to
 // the dictation sidecar models in stt-model-catalog.ts, so their sizes are informational only.
 export const AUDIO_CATALOG: CatalogGroup[] = [
   {
@@ -489,9 +497,72 @@ export const AUDIO_CATALOG: CatalogGroup[] = [
       bf16Pipeline("unsloth/Llama-OuteTTS-1.0-1B", 4, { label: "Safetensors" }),
     ],
   },
+  {
+    canonicalId: "bosonai/higgs-tts-2-3b-base",
+    displayName: "Higgs TTS 2 3B",
+    description: "Text-to-speech",
+    scope: "audio",
+    task: "tts",
+    artifacts: [
+      bf16Pipeline("bosonai/higgs-tts-2-3b-base", 12, {
+        label: "Safetensors",
+      }),
+    ],
+  },
+  {
+    canonicalId: "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5",
+    displayName: "MOSS TTS Local v1.5",
+    description: "48 kHz stereo text-to-speech",
+    scope: "audio",
+    task: "tts",
+    artifacts: [
+      bf16Pipeline("OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5", 10, {
+        label: "Safetensors",
+      }),
+    ],
+  },
+  {
+    canonicalId: "OpenMOSS-Team/MOSS-TTS-Nano-100M",
+    displayName: "MOSS TTS Nano 100M",
+    description: "CPU-friendly text-to-speech",
+    scope: "audio",
+    task: "tts",
+    artifacts: [
+      bf16Pipeline("OpenMOSS-Team/MOSS-TTS-Nano-100M", 1, {
+        label: "Safetensors",
+      }),
+    ],
+  },
+  {
+    canonicalId: "multimodalart/higgs-audio-v3-tts-4b-transformers",
+    displayName: "Higgs Audio v3 TTS 4B",
+    description: "Text-to-speech",
+    scope: "audio",
+    task: "tts",
+    artifacts: [
+      bf16Pipeline("multimodalart/higgs-audio-v3-tts-4b-transformers", 10, {
+        label: "Safetensors",
+      }),
+    ],
+  },
+  {
+    canonicalId: "MiniMaxAI/MiniMax-Music3",
+    displayName: "MiniMax Music 3",
+    description: "Lyrics-to-music · NVIDIA CUDA",
+    scope: "audio",
+    task: "tts",
+    artifacts: [
+      bf16Pipeline("MiniMaxAI/MiniMax-Music3", 67, {
+        label: "Diffusers",
+        // 67 GB is the repository/download footprint, not resident VRAM. The
+        // publisher's ModularPipeline path loads in BF16 on a 24 GB CUDA GPU.
+        offloadFitTiers: [{ gpuGb: 24, systemRamGb: 0 }],
+      }),
+    ],
+  },
   // Llasa is deliberately absent. It speaks XCodec2 (65,536 <|s_N|> tokens), which is
   // neither in _AUDIO_TOKEN_PATTERNS nor in AudioCodecManager, so a curated row here
-  // loaded and then failed at generation with "not a supported TTS model". Studio can
+  // loaded and then failed at generation with "not a supported TTS model". Unsloth can
   // still TRAIN Llasa (unsloth_Llasa-3B.yaml); this catalog only feeds the Generate
   // picker. Re-add both rows together with an xcodec2 decoder.
   {
