@@ -4,6 +4,7 @@
 """Tests for the OpenAI /v1/chat/completions client-side tool pass-through."""
 
 import os
+import re
 import sys
 import asyncio
 import base64
@@ -160,6 +161,33 @@ class TestFriendlyUpstreamError:
         assert "compile a grammar" in exc.detail
         # An unrelated upstream error still passes through verbatim.
         assert "llama-server error:" in _openai_passthrough_error(500, "disk full").detail
+
+    def test_anthropic_upstream_error_rewords_context_overflow(self):
+        from routes.inference import _anthropic_upstream_error
+
+        raw = (
+            '{"error":{"code":500,"message":"the request exceeds the available context '
+            'size. try increasing the context size or enable context shift",'
+            '"type":"server_error"}}'
+        )
+        msg = _anthropic_upstream_error(raw)
+        assert "prompt is too long" in msg.lower()
+        assert "llama-server error:" not in msg
+
+    def test_anthropic_upstream_error_includes_token_counts_when_known(self):
+        from routes.inference import _anthropic_upstream_error
+
+        msg = _anthropic_upstream_error(
+            "the request (214331 tokens) exceeds the available context size (131072 tokens)"
+        )
+        m = re.search(r"prompt is too long[^0-9]*(\d+)\s*tokens?\s*>\s*(\d+)", msg, re.I)
+        assert m and m.groups() == ("214331", "131072")
+
+    def test_anthropic_upstream_error_leaves_other_failures_alone(self):
+        from routes.inference import _anthropic_upstream_error
+
+        assert _anthropic_upstream_error("disk full") == "llama-server error: disk full"
+        assert "compile a grammar" in _anthropic_upstream_error("failed to parse grammar")
 
 
 # =====================================================================

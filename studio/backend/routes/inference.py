@@ -245,6 +245,11 @@ _LOST_CONNECTION_MSG = (
 )
 
 
+_OVERSIZE_TOKENS_RE = _re.compile(
+    r"request \((\d+) tokens?\) exceeds the available context size \((\d+) tokens?\)"
+)
+
+
 def _friendly_error(exc: Exception) -> str:
     """Extract a user-friendly message from known llama-server errors."""
     if isinstance(exc, httpx.ReadTimeout):
@@ -267,10 +272,7 @@ def _friendly_error(exc: Exception) -> str:
     if isinstance(exc, httpx.RequestError):
         return _LOST_CONNECTION_MSG
     msg = str(exc)
-    m = _re.search(
-        r"request \((\d+) tokens?\) exceeds the available context size \((\d+) tokens?\)",
-        msg,
-    )
+    m = _OVERSIZE_TOKENS_RE.search(msg)
     if m:
         # llama-server knows only the prompt total, so its "shorten the conversation" is
         # wrong for a single oversized turn: let the fit's diagnosis pick the wording.
@@ -314,6 +316,17 @@ def _friendly_upstream_error(text: str) -> str:
             "constraints known to break it, and report the schemas if it still fails."
         )
     return f"llama-server error: {text}"
+
+
+def _anthropic_upstream_error(text: str) -> str:
+    if _classify_llama_generation_error(Exception(text)):
+        m = _OVERSIZE_TOKENS_RE.search(text)
+        counts = f": {m.group(1)} tokens > {m.group(2)} maximum" if m else ""
+        return (
+            f"Prompt is too long{counts}. Shorten the conversation, or increase the "
+            "Context Length in Model settings."
+        )
+    return _friendly_upstream_error(text)
 
 
 def _clamp_finish_reason(value) -> str:
@@ -29436,11 +29449,12 @@ async def _anthropic_passthrough_stream(
                 from core.inference.llama_keepwarm import mark_response_failed
 
                 mark_response_failed(getattr(request, "scope", None))
+                _over = bool(_classify_llama_generation_error(Exception(_err_text)))
                 yield build_anthropic_sse_event(
                     "error",
                     anthropic_error_body(
-                        _friendly_upstream_error(_err_text),
-                        status = resp.status_code,
+                        _anthropic_upstream_error(_err_text),
+                        status = 400 if _over else resp.status_code,
                     ),
                 )
                 return
@@ -29646,9 +29660,11 @@ async def _anthropic_passthrough_non_streaming(
         resp = await _post(body)
 
         if resp.status_code != 200:
+            _err_text = resp.text[:500]
+            _over = bool(_classify_llama_generation_error(Exception(_err_text)))
             raise HTTPException(
-                status_code = resp.status_code,
-                detail = _friendly_upstream_error(resp.text[:500]),
+                status_code = 400 if _over else resp.status_code,
+                detail = _anthropic_upstream_error(_err_text),
             )
 
         data = resp.json()
