@@ -921,6 +921,18 @@ class TestResearchPortMiddleware:
 
 
 class TestFrontendAssets:
+    def test_setup_frontend_records_whether_a_catch_all_exists(self, tmp_path, main_module):
+        """The lifespan reads this to decide whether the engine paths still need their own
+        GET denial: without a catch-all they match on method alone and answer 405."""
+        app = FastAPI()
+        assert not main_module.setup_frontend(app, tmp_path / "missing")
+        assert not getattr(app.state, "frontend_mounted", False)
+
+        (tmp_path / "index.html").write_text("<!doctype html><title>x</title>")
+        mounted = FastAPI()
+        assert main_module.setup_frontend(mounted, tmp_path)
+        assert mounted.state.frontend_mounted is True
+
     def test_desktop_frontend_is_available_only_through_live_tunnel(self, tmp_path, main_module):
         (tmp_path / "index.html").write_text("<!doctype html><title>remote</title>")
         assets = tmp_path / "assets"

@@ -13,6 +13,48 @@ LOADER_ERROR_MARKERS = (
     "undefined symbol:",
 )
 
+# What a fixture reports as the managed backend's version.
+#
+# Not MIN_DESKTOP_BACKEND_VERSION, which is only the right answer for a build made
+# here. The floor is not the only gate: managed_backend_version_stale_reason()
+# compares against expected_backend_version(), which is
+#
+#     option_env!("UNSLOTH_DESKTOP_BACKEND_VERSION").unwrap_or(MIN_DESKTOP_BACKEND_VERSION)
+#
+# and the release workflow stamps that from the same pypi_version as the updater
+# manifest. A build from this repo leaves it unset and accepts the floor; a
+# published one does not. v0.1.804-beta is pinned to backend 2026.8.22 and read
+# the floor as `desktop_backend_version_outdated`, so it ran its bundled installer
+# instead of doing what the test was watching for. Every AppImage lane of the
+# nightly failed on that while the pull_request lane, testing an unstamped build
+# of the same commit, passed.
+#
+# A fixture cannot know what a given release stamped, so it reports a version no
+# build can call outdated. Both comparisons are one-sided, compatible is
+# `>= floor` and outdated is `< expected`, so nothing rejects a version for being
+# too new. It lives here rather than in either test because #10001 fixed only the
+# portability smoke and the model-download E2E kept failing for exactly this.
+FIXTURE_BACKEND_VERSION = "9999.12.31"
+
+
+def assert_fixture_version_clears_floor(repo_root: Path) -> None:
+    """Fail by name if the floor ever catches up with the sentinel.
+
+    Compared on the leading component: a string compare would read "999" as above
+    "9999", which is the one answer this must not get wrong.
+    """
+    source = (repo_root / "studio/src-tauri/src/preflight/version.rs").read_text(encoding = "utf-8")
+    marker = 'MIN_DESKTOP_BACKEND_VERSION: &str = "'
+    start = source.find(marker)
+    if start < 0:
+        raise RuntimeError("Could not read the minimum desktop backend version")
+    start += len(marker)
+    floor = source[start : source.index('"', start)]
+    if int(floor.split(".")[0]) >= int(FIXTURE_BACKEND_VERSION.split(".")[0]):
+        raise RuntimeError(
+            f"fixture version {FIXTURE_BACKEND_VERSION} no longer clears the floor {floor}"
+        )
+
 
 def assert_no_loader_errors(*logs: Path) -> None:
     """Reject mixed host/bundle loader failures even when the UI path succeeds."""
