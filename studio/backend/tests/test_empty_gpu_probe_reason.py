@@ -23,7 +23,12 @@ import pytest
 from core.inference.llama_cpp import LlamaCppBackend
 
 
-def _fake_torch(*, available = True, count = 2, rocm = True):
+def _fake_torch(
+    *,
+    available = True,
+    count = 2,
+    rocm = True,
+):
     cuda = types.SimpleNamespace(
         is_available = lambda: available,
         device_count = lambda: count,
