@@ -440,17 +440,19 @@ def test_untouched_config_values_keep_what_the_caller_set(tmp_path):
 
 
 def test_a_kwarg_neither_side_takes_is_reported_not_swallowed(tmp_path):
-    """`max_seq_length` was the SFTTrainer kwarg every unsloth notebook passed, and
-    trl 0.20 removed it from SFTConfig. It is now on neither the trainer nor the
-    config, so it has to be reported the way an unexpected keyword normally is.
-    Sorted in with the config kwargs it was dropped without a word, and the run
-    trained at the default length instead of the one that was asked for."""
+    """A name neither signature accepts must reach the normal TypeError path.
+
+    Do not use `max_seq_length` as the sentinel: Unsloth's normal generated SFT
+    config intentionally restores that legacy field even when pristine trl removed
+    it, so its presence depends on whether trainer generation ran before this test.
+    """
     Trainer, config_class = _wrapped_recording()
     config = config_class(output_dir = str(tmp_path), report_to = [])
-    assert "max_seq_length" not in {f.name for f in dataclasses.fields(config_class)}
+    unexpected = "definitely_not_a_trainer_or_config_kwarg"
+    assert unexpected not in {f.name for f in dataclasses.fields(config_class)}
 
-    with pytest.raises(TypeError, match = "max_seq_length"):
-        Trainer(model = _Bare(), args = config, max_seq_length = 2048)
+    with pytest.raises(TypeError, match = unexpected):
+        Trainer(model = _Bare(), args = config, **{unexpected: 2048})
 
 
 def test_trainer_kwargs_still_go_to_the_trainer(tmp_path):
