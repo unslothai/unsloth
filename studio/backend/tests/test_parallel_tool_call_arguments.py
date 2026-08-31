@@ -717,9 +717,7 @@ def test_a_nameless_claim_does_not_take_a_valid_call_s_card():
     turn.merge_structured([_delta(0, "alpha", '{"a":1}')])
     turn.merge_structured([_delta(1, None, '{"b":2}', call_id = "tool_call_0")])
 
-    reported = [
-        (call.get("card_id"), call["function"]["name"]) for call in turn.calls()
-    ]
+    reported = [(call.get("card_id"), call["function"]["name"]) for call in turn.calls()]
     assert reported == [("tool_call_0", "alpha")]
 
 
