@@ -12,25 +12,10 @@
 #
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
-"""The single-device block in `_utils.py` forces accelerate into non-distributed mode.
-
-`Accelerator.distributed_type` is a `@property` upstream, so assigning a plain
-function to it binds as a method rather than replacing the value. Accelerate then
-compares a bound method against the enum, e.g.
-
-    if (... and self.verify_device_map(obj)
-            and self.distributed_type != DistributedType.NO ...):
-        raise ValueError("You can't train a model that has been loaded with "
-                         "`device_map='auto'` in any distributed mode. ...")
-
-which is always True, so the guard fires on a single device -- exactly the case the
-block exists to rule out. Reported as #10016 for a single-GPU 4-bit QLoRA run whose
-model legitimately spanned devices.
-
-`import unsloth` needs a CUDA or XPU build (`torch_amp_custom_fwd` is only defined
-on those branches), so these run the real assignment against the real accelerate
-class in a fresh interpreter instead, taking the statement from the source so a
-revert to a bare lambda is caught.
+"""`_utils.py` must patch `Accelerator.distributed_type` with a property, not a bare
+function: a function binds as a method and inverts accelerate's `!= NO` device_map
+guards on a single device (#10016). `import unsloth` needs CUDA or XPU, so these run
+the statement from source in a fresh interpreter, which also catches a revert.
 """
 
 import ast
@@ -48,7 +33,7 @@ accelerate = pytest.importorskip("accelerate")
 
 
 def _patch_statement() -> ast.Assign:
-    """The one assignment `_utils.py` makes to `Accelerator.distributed_type`."""
+    """The one assignment to `Accelerator.distributed_type`; a second would be ambiguous."""
     tree = ast.parse(_UTILS.read_text(encoding = "utf-8"))
     matches = [
         node
@@ -70,7 +55,7 @@ def test_distributed_type_is_replaced_with_a_property():
 
 
 def test_patched_distributed_type_reads_as_no():
-    """The assignment, run for real, has to leave the attribute reading as NO."""
+    """Running the real assignment must leave the attribute reading as NO."""
     statement = ast.unparse(_patch_statement())
     script = textwrap.dedent(
         f"""
