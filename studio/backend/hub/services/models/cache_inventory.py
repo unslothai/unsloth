@@ -34,6 +34,7 @@ from hub.services.models.common import (
     _is_gguf_filename,
     _is_main_gguf_filename,
     _is_mmproj_filename,
+    _is_mtp_drafter_path,
     _is_transformers_safetensors_weight_name,
     _local_inventory_id,
     _local_path_can_chat,
@@ -64,6 +65,11 @@ _REPO_SIZE_POS_TTL = 60.0
 _REPO_SIZE_NEG_TTL = 60.0
 _MODEL_METADATA_TIMEOUT_SECONDS = 5.0
 _repo_size_cache_lock = threading.Lock()
+
+
+class _CachedInventoryScan(NamedTuple):
+    rows: list[dict]
+    confirmed: bool
 
 
 _cached_inventory_flights: dict[
@@ -171,7 +177,11 @@ def _repo_gguf_last_modified(repo_info) -> float:
     latest = 0.0
     for revision in repo_info.revisions:
         for f in cached_repo_files(revision):
-            if _is_main_gguf_filename(_cached_repo_file_name(f)):
+            name = _cached_repo_file_name(f)
+            if _is_main_gguf_filename(name) or (
+                _is_gguf_filename(name)
+                and (_is_mmproj_filename(name) or _is_mtp_drafter_path(name))
+            ):
                 latest = max(latest, _blob_mtime(f))
     return latest
 
@@ -433,8 +443,9 @@ def _cache_inventory_fields(
         capabilities["supports_vision"] = False
         capabilities["can_chat"] = False
     # Same rule for the speech-emitting half of the Audio page. The codec probe in
-    # _local_transformers_can_chat covers uncurated safetensors copies; a GGUF repo ships
-    # no tokenizer_config to probe, so the curated ids answer for those.
+    # _local_transformers_can_chat covers uncurated safetensors copies; native audio
+    # architectures are also passed explicitly. A GGUF repo ships no tokenizer_config
+    # to probe, so the curated ids answer for those.
     if tts_only or is_curated_tts_repo_id(repo_id):
         capabilities["can_chat"] = False
     if hidden_infra:
@@ -467,8 +478,8 @@ def _is_hidden_infra_repo(*values: str | None) -> bool:
     return is_hidden_model(*values)
 
 
-def _cached_row_companion(repo_id: str) -> bool:
-    """Whether this row is an sd.cpp companion mirror (VAE / text encoders, no denoiser).
+def _cached_row_companion(repo_id: str, snapshot: Optional[Path] = None) -> bool:
+    """Whether this row is infrastructure for another load, not a checkpoint.
 
     Same classifier the models API uses. The chat picker is backed by THIS endpoint, so a flag set
     only on the legacy route arrives as undefined here and the filter never fires -- the same trap
@@ -476,7 +487,39 @@ def _cached_row_companion(repo_id: str) -> bool:
     """
     try:
         from core.inference.diffusion_families import sd_cpp_companion_only_repo_ids
-        return (repo_id or "").strip().lower() in sd_cpp_companion_only_repo_ids()
+
+        normalized = (repo_id or "").strip().lower()
+        if normalized in sd_cpp_companion_only_repo_ids():
+            return True
+
+        from core.inference.native_audio import NATIVE_AUDIO_COMPANION_REPOS
+
+        native_companions = {
+            companion.strip().lower()
+            for companions in NATIVE_AUDIO_COMPANION_REPOS.values()
+            for companion in companions
+        }
+        if normalized in native_companions:
+            return True
+
+        # MOSS Local may name a different compatible tokenizer in its processor
+        # config. Classify the codec architecture too, so that dynamically
+        # resolved companion cannot surface as a chat checkpoint after download.
+        config = _read_json_object(snapshot / "config.json") if snapshot is not None else {}
+        model_type = str(config.get("model_type") or "").strip().lower()
+        if model_type in {
+            "moss-audio-tokenizer",
+            "moss-audio-tokenizer-nano",
+            "moss_audio_tokenizer",
+            "speech_tokenizer",
+            "higgs_audio_v2_tokenizer",
+        }:
+            return True
+        architectures = config.get("architectures")
+        return isinstance(architectures, list) and any(
+            str(name) in {"MossAudioTokenizerModel", "HiggsAudioV2TokenizerModel"}
+            for name in architectures
+        )
     except Exception:  # noqa: BLE001 -- a classification failure never hides a row
         return False
 
@@ -694,7 +737,7 @@ def _scan_cached_inventory_snapshot(scanner, expected_epoch: int) -> list[dict]:
     return rows
 
 
-async def _shared_cached_inventory_scan(name: str, scanner) -> list[dict]:
+async def _shared_cached_inventory_scan(name: str, scanner) -> _CachedInventoryScan:
     for _attempt in range(_INVENTORY_SCAN_MAX_ATTEMPTS):
         epoch = hf_cache_scan.hf_cache_scans_epoch()
         try:
@@ -708,7 +751,7 @@ async def _shared_cached_inventory_scan(name: str, scanner) -> list[dict]:
         except _CacheSourceChanged:
             continue
         _last_confirmed_inventory[name] = rows
-        return rows
+        return _CachedInventoryScan(rows, True)
     # Invalidations are arriving faster than the walk completes, so no scan will
     # confirm as current. Answer with the last one that did rather than spin a
     # full cache walk per epoch forever.
@@ -716,14 +759,14 @@ async def _shared_cached_inventory_scan(name: str, scanner) -> list[dict]:
         "Cached %s inventory kept racing cache invalidations; serving the last confirmed scan",
         name,
     )
-    return _last_confirmed_inventory.get(name, [])
+    return _CachedInventoryScan(_last_confirmed_inventory.get(name, []), False)
 
 
 async def list_cached_gguf_response(hf_token: Optional[str] = None):
     """List GGUF repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     try:
-        cached = await _shared_cached_inventory_scan("gguf", _scan_cached_gguf)
-        return {"cached": cached}
+        scan = await _shared_cached_inventory_scan("gguf", _scan_cached_gguf)
+        return {"cached": scan.rows, "scan_confirmed": scan.confirmed}
     except Exception as e:
         from fastapi import HTTPException
         logger.error(
@@ -871,6 +914,9 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
                 # config.json), payload_snapshots came back empty, and every cached diffusion base
                 # pipeline was force-flagged partial and dropped from the On Device lists.
                 ("model_index.json", "has_config"),
+                # Modular Diffusers pipelines use this root manifest instead. Saved or custom
+                # modular snapshots may omit both conventional root manifests.
+                ("modular_model_index.json", "has_config"),
                 ("adapter_config.json", "has_adapter_config"),
             ):
                 try:
@@ -1092,7 +1138,6 @@ def _scan_cached_models(
                 )
                 is_whisper_stt = local_metadata.pop("_hidden_stt", False)
                 tts_audio_type = local_metadata.pop("_tts_audio_type", None)
-                is_tts = tts_audio_type is not None
                 # Scoped to the row's snapshot, so an incomplete newer revision cannot flip can_chat.
                 download_partial = hf_cache_scan.is_snapshot_partial(
                     "model",
@@ -1119,6 +1164,13 @@ def _scan_cached_models(
                 # serves the row and it would reach for the Hub.
                 if not payload.payload_snapshots:
                     snapshot_partial = True
+                try:
+                    from core.inference.native_audio import native_audio_type_from_local_path
+                    native_audio_type = native_audio_type_from_local_path(str(load_snapshot or ""))
+                except Exception:
+                    native_audio_type = None
+                audio_type = native_audio_type or tts_audio_type
+                is_output_audio = audio_type is not None
                 row_task = (
                     "automatic-speech-recognition"
                     if is_whisper_stt
@@ -1126,7 +1178,7 @@ def _scan_cached_models(
                         "text-to-speech"
                         # The probe answers for a repo whose card says nothing, so the
                         # Audio page, which selects by task, still lists it.
-                        if is_tts or local_metadata.get("pipeline_tag") == "text-to-speech"
+                        if is_output_audio or local_metadata.get("pipeline_tag") == "text-to-speech"
                         else _cached_row_task(repo_info, gguf = False, selected = load_snapshot)
                     )
                 )
@@ -1142,7 +1194,7 @@ def _scan_cached_models(
                     "size_bytes": payload.size_bytes,
                     "cache_path": str(repo_info.repo_path),
                     "task": row_task,
-                    "audio_type": tts_audio_type,
+                    "audio_type": audio_type,
                     "partial": snapshot_partial,
                     "partial_transport": (
                         hf_cache_scan.partial_transport_for(
@@ -1172,7 +1224,7 @@ def _scan_cached_models(
                     ),
                     # Listed so tens of GB of companion weights stay visible and deletable, but
                     # flagged so no picker offers a denoiser-less repo as a load.
-                    "companion": _cached_row_companion(repo_id),
+                    "companion": _cached_row_companion(repo_id, load_snapshot),
                     "diffusers": _cached_row_is_diffusers(repo_info, load_snapshot),
                     **local_metadata,
                 }
@@ -1191,9 +1243,14 @@ def _scan_cached_models(
                         hidden_infra = is_hidden_infra,
                         companion = bool(row["companion"]),
                         stt_only = bool(is_whisper_stt),
-                        tts_only = is_tts,
+                        tts_only = is_output_audio,
                     )
                 )
+                # Native backend selection reads the load identity itself. A custom native
+                # fork addressed only by repo id is indistinguishable from an ordinary LLM,
+                # even though this inventory row detected its architecture from the snapshot.
+                if native_audio_type and load_snapshot is not None:
+                    row["load_id"] = str(load_snapshot)
                 if _prefer_cache_row(row, existing):
                     seen_lower[key] = row
                 elif last_modified > existing.get("last_modified", 0.0):
@@ -1216,8 +1273,8 @@ def _scan_cached_models(
 async def list_cached_models_response(hf_token: Optional[str] = None):
     """List non-GGUF model repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     try:
-        cached = await _shared_cached_inventory_scan("models", _scan_cached_models)
-        return {"cached": cached}
+        scan = await _shared_cached_inventory_scan("models", _scan_cached_models)
+        return {"cached": scan.rows, "scan_confirmed": scan.confirmed}
     except Exception as e:
         from fastapi import HTTPException
         logger.error(

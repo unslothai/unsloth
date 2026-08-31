@@ -63,6 +63,7 @@ export {
   defaultCapabilities,
   deleteCachedDataset,
   deleteCachedModel,
+  epochMillisecondsToSeconds,
   fetchInventorySource,
   findCompleteHfCacheLocalRow,
   formatLocalUpdated,
