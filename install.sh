@@ -6029,13 +6029,17 @@ _persist_fish_path_dir() {
     # pass for /opt/uv, and fish reads none of the POSIX files that would otherwise cover it.
     if ! grep -v '^[[:space:]]*#' "$_pfp_file" 2>/dev/null | grep -qxF "fish_add_path '$_pfp_quoted'"; then
         # Same single redirect and same warning-not-failure contract as the POSIX arm.
+        # 2>/dev/null comes FIRST: redirections are applied left to right, so with the
+        # append first the shell's own "Permission denied" for the failed open goes to a
+        # stderr that is still the terminal, printing a raw diagnostic in the one case
+        # this guard exists to handle gracefully.
         if {
             echo "# Added by Unsloth installer"
             echo "fish_add_path '$_pfp_quoted'"
-        } >> "$_pfp_file" 2>/dev/null; then
+        } 2>/dev/null >> "$_pfp_file"; then
             step "path" "added $_pfp_label to PATH in $_pfp_file"
         else
-            step "path" "could not write $_pfp_file -- it is read-only or managed" "$C_WARN"
+            step "path" "could not write $_pfp_file; add $_pfp_label to PATH yourself" "$C_WARN"
             substep "Unsloth is installed and works; only the PATH line is missing."
             substep "Add this to your fish config to get 'unsloth' in new shells:"
             substep "  fish_add_path '$_pfp_quoted'"
@@ -6091,14 +6095,16 @@ _persist_login_path_dir() {
         # path surfaces that exit code as a failed install. A read-only rc is a supported
         # setup (NixOS and home-manager symlink ~/.bashrc read-only into the Nix store;
         # chezmoi, stow and yadm do the same), not a broken machine.
+        # 2>/dev/null first, as in the fish arm: the other order prints the shell's raw
+        # "Permission denied" for the failed open before the redirect can silence it.
         if {
             echo ''
             echo '# Added by Unsloth installer'
             echo "export PATH=\"$_plp_literal:\$PATH\""
-        } >> "$_SHELL_PROFILE" 2>/dev/null; then
+        } 2>/dev/null >> "$_SHELL_PROFILE"; then
             step "path" "added $_plp_label to PATH in $_SHELL_PROFILE"
         else
-            step "path" "could not write $_SHELL_PROFILE -- it is read-only or managed" "$C_WARN"
+            step "path" "could not write $_SHELL_PROFILE; add $_plp_label to PATH yourself" "$C_WARN"
             substep "Unsloth is installed and works; only the PATH line is missing."
             substep "Add this to your shell config to get 'unsloth' in new shells:"
             substep "  export PATH=\"$_plp_literal:\$PATH\""

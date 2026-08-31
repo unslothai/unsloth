@@ -95,13 +95,14 @@ _SH="${BASH:-/bin/bash}"
 # the POSIX arm hands off to fish before it looks at anything else, and a developer running
 # this suite under fish would otherwise silently exercise the wrong arm.
 _run() {  # $1 = rc path
-    ( SHELL=/bin/bash "$_SH" -c "set -e; . '$_HARNESS'; . '$_FN_FILE'; _persist_login_path_dir \"\$HOME/.local/bin\" '\$HOME/.local/bin' '~/.local/bin' '\\.local/bin' '$1'; echo \"RC=\$?\"" 2>&1 )
+    # LC_ALL=C so the raw-diagnostic assertions below can match the shell's own wording.
+    ( LC_ALL=C SHELL=/bin/bash "$_SH" -c "set -e; . '$_HARNESS'; . '$_FN_FILE'; _persist_login_path_dir \"\$HOME/.local/bin\" '\$HOME/.local/bin' '~/.local/bin' '\\.local/bin' '$1'; echo \"RC=\$?\"" 2>&1 )
 }
 
 # The fish arm picks its own file under $HOME, so it is steered by HOME rather than by an
 # argument.
 _run_fish() {  # $1 = HOME
-    ( HOME="$1" SHELL=/usr/bin/fish "$_SH" -c "set -e; . '$_HARNESS'; . '$_FN_FILE'; _persist_login_path_dir \"\$HOME/.local/bin\" '\$HOME/.local/bin' '~/.local/bin' '\\.local/bin'; echo \"RC=\$?\"" 2>&1 )
+    ( LC_ALL=C HOME="$1" SHELL=/usr/bin/fish "$_SH" -c "set -e; . '$_HARNESS'; . '$_FN_FILE'; _persist_login_path_dir \"\$HOME/.local/bin\" '\$HOME/.local/bin' '~/.local/bin' '\\.local/bin'; echo \"RC=\$?\"" 2>&1 )
 }
 
 _TMP=$(mktemp -d)
@@ -149,6 +150,12 @@ else
     assert_contains     "prints the manual line"      "$_out" 'export PATH="$HOME/.local/bin:$PATH"'
     assert_contains     "reassures install is fine"   "$_out" "only the PATH line is missing"
     assert_not_contains "does not claim success"      "$_out" "added ~/.local/bin to PATH in"
+    # The shell prints its own "Permission denied" for a failed open on the CURRENT
+    # stderr, so `>> file 2>/dev/null` silences nothing: the redirections apply left to
+    # right and stderr is still the terminal when the append fails. Only `2>/dev/null`
+    # placed first makes the guard quiet, and a raw diagnostic here is exactly what this
+    # branch exists to replace.
+    assert_not_contains "no raw shell diagnostic"     "$_out" "Permission denied"
     if [ ! -s "$_rc3" ]; then
         echo "  PASS: read-only file left empty (no partial write)"; PASS=$((PASS + 1))
     else
@@ -187,6 +194,7 @@ else
     assert_contains     "prints the manual line"      "$_out" "fish_add_path '$_fro/.local/bin'"
     assert_contains     "reassures install is fine"   "$_out" "only the PATH line is missing"
     assert_not_contains "does not claim success"      "$_out" "added ~/.local/bin to PATH in"
+    assert_not_contains "no raw shell diagnostic"     "$_out" "Permission denied"
 fi
 chmod 0644 "$_frofile" 2>/dev/null || true
 
