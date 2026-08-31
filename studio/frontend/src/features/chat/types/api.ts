@@ -179,6 +179,7 @@ export interface GgufVariantDetail {
   display_label?: string | null;
   size_bytes: number;
   download_size_bytes?: number;
+  shard_count?: number;
   downloaded?: boolean;
   update_available?: boolean;
   /** An interrupted download: some shards are missing, so it cannot load yet. */
@@ -636,6 +637,8 @@ export interface OpenAIChatCompletionsRequest {
   enabled_tools?: string[];
   /** Local models + enable_tools only. */
   mcp_enabled?: boolean;
+  /** The replayed tool calls came from Studio's own local tool loop. */
+  studio_tool_history?: boolean;
   /** Local models + enable_tools only. */
   confirm_tool_calls?: boolean;
   /**
@@ -666,6 +669,10 @@ export interface OpenAIChatCompletionsRequest {
   nudge_tool_calls?: boolean;
   /** Local GGUF overflow policy. Rolling mode preserves the transcript but omits oldest turns. */
   context_overflow?: "error" | "truncate_middle" | "truncate_oldest";
+  /** Override UNSLOTH_CONTEXT_POLICY for this local GGUF request. */
+  context_policy?: "checkpoint" | "rolling";
+  /** Extra share of the prompt budget to drop when a rolling compaction fires. */
+  compaction_headroom_ratio?: number;
   max_tool_calls_per_message?: number;
   tool_call_timeout?: number;
   session_id?: string;
@@ -773,6 +780,10 @@ export interface OpenAIChatChunk {
     // evicted prompt shortens that transcript; without the anchor the replayed count then
     // evicts live turns instead. Carried through untouched, like boundary_messages.
     boundary_anchor?: string;
+    // How much extra trim the fit that set the boundary above used. Replayed against the
+    // request's own ratio: a boundary cut under more headroom than the caller now asks for
+    // is discarded, so lowering the setting hands the history back.
+    boundary_headroom_ratio?: number;
     // Whose message that is: in a tool loop the last one is often a tool result rather
     // than anything the user typed.
     latest_turn_role?: string;

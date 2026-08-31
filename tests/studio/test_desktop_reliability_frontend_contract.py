@@ -141,7 +141,7 @@ def test_desktop_update_keeps_the_in_app_path_on_a_guessed_policy():
     give_up = manual_branch.split("checkDesktopUpdate()", 1)[0]
     # Only a resolved policy may end the check without the in-app updater.
     assert "if (resolved) {" in give_up
-    assert 'setStatus("idle");' in give_up
+    assert 'updateStatus("idle");' in give_up
     assert "await checkDesktopUpdate();" in manual_branch
     # The Rust command self-gates on the real OS, so it is safe to consult first.
     manual_cmd = policy.split("async fn check_desktop_manual_update", 1)[1]

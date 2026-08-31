@@ -17,11 +17,14 @@ from core.inference.tool_loop_controller import (
     ToolLoopController,
     append_deferred_nudges,
     canonical_tool_call_key,
+    coerce_arguments_by_schema,
     coerce_tool_arguments,
     status_for_tool,
     strip_result_for_model,
     tool_event_provenance,
 )
+from core.inference.tool_call_parser import parse_tool_calls_from_text
+from core.inference.tools import ALL_TOOLS, _mcp_specs_for_server
 
 
 def test_append_deferred_nudges_merges_deduped_into_one_message():
@@ -278,3 +281,141 @@ def test_strip_result_for_model_removes_frontend_image_sentinel():
     assert strip_result_for_model('text\n__IMAGES__:{"paths":[]}') == "text"
     assert strip_result_for_model("text __IMAGES__:payload") == "text"
     assert strip_result_for_model("plain text") == "plain text"
+
+
+# --- schema-aware argument typing -------------------------------------------------------
+
+_MCP_SERVER = {"id": "notes", "display_name": "Notes"}
+_MCP_TOOL = {
+    "name": "search",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string"},
+            "limit": {"type": "integer"},
+            "fuzzy": {"type": "boolean"},
+            "tags": {"type": "array", "items": {"type": "string"}},
+            "depth": {"type": ["integer", "null"]},
+        },
+    },
+}
+_MCP_PROPS = _MCP_TOOL["inputSchema"]["properties"]
+_UNCHANGED = object()
+
+
+def _mcp_tool_schemas():
+    return _mcp_specs_for_server(_MCP_SERVER, [_MCP_TOOL])
+
+
+def _coerce_one(key, value, props):
+    return coerce_arguments_by_schema({key: value}, props)[key]
+
+
+@pytest.mark.parametrize(
+    "key, text, expected",
+    [
+        ("fuzzy", " False ", False),
+        ("limit", "25", 25),
+        ("limit", "9007199254740993", 9007199254740993),  # float() would round this
+        ("tags", "('a', 'b')", ["a", "b"]),
+        ("depth", "null", None),
+        ("fuzzy", "null", _UNCHANGED),  # null is not a boolean; None would mean False
+    ],
+)
+def test_a_value_reads_as_the_type_its_schema_declares(key, text, expected):
+    got = _coerce_one(key, text, _MCP_PROPS)
+    want = text if expected is _UNCHANGED else expected
+    # Types too: `False == 0` and `25 == 25.0`, so equality alone would miss a swap.
+    assert got == want and type(got) is type(want)
+    seam = coerce_tool_arguments(
+        json.dumps({key: text}),
+        heal = False,
+        tool_name = "mcp__notes__search",
+        tool_schemas = _mcp_tool_schemas(),
+    )
+    assert seam.arguments[key] == want and seam.healed is False
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        # The walk stops on any keyword it does not follow, whichever one it is.
+        {"type": "boolean", "$ref": "#/$defs/Flag"},
+        # Collapsing a union discards the rest, so it is read only where it is all there is.
+        {"anyOf": [{"type": "boolean"}], "properties": {"x": {"type": "boolean"}}},
+    ],
+)
+def test_a_schema_this_walk_cannot_read_is_left_alone(spec):
+    assert _coerce_one("f", "false", {"f": spec}) == "false"
+    assert _coerce_one("f", "null", {"f": {"anyOf": [spec, {"type": "null"}]}}) == "null"
+    # Falsified so the refusal cannot swallow real schemas: `nullable` spells a type union.
+    annotated = {"type": "boolean", "title": "F", "enum": [False]}
+    assert _coerce_one("f", "false", {"f": annotated}) is False
+    assert _coerce_one("f", "null", {"f": {"type": "boolean", "nullable": True}}) is None
+
+
+@pytest.mark.parametrize(
+    "text, repaired",
+    [
+        ('["a","b"}', ["a", "b"]),  # a closer not matching the innermost opener
+        ('["a","b\\"', ["a", 'b"']),  # an open string ending on an ESCAPED quote
+    ],
+)
+def test_a_malformed_container_is_repaired_only_when_healing(text, repaired):
+    """Rewriting brackets invents structure, which is what the auto-heal opt-out is for."""
+
+    def at_seam(heal):
+        return coerce_tool_arguments(
+            json.dumps({"tags": text}),
+            heal = heal,
+            tool_name = "mcp__notes__search",
+            tool_schemas = _mcp_tool_schemas(),
+        ).arguments["tags"]
+
+    assert at_seam(True) == repaired
+    assert at_seam(False) == text
+
+
+def test_an_mcp_tool_call_parsed_from_xml_arrives_typed():
+    content = (
+        "<function=mcp__notes__search>"
+        "<parameter=query>ship dates</parameter>"
+        "<parameter=limit>25</parameter>"
+        "<parameter=fuzzy>false</parameter>"
+        '<parameter=tags>["a","b"]</parameter>'
+        "<parameter=depth>null</parameter>"
+        "</function>"
+    )
+    calls = parse_tool_calls_from_text(content)
+    decision = ToolLoopController(tools = _mcp_tool_schemas()).prepare_call(calls[0])
+    assert decision.arguments == {
+        "query": "ship dates",
+        "limit": 25,
+        "fuzzy": False,
+        "tags": ["a", "b"],
+        "depth": None,
+    }
+    # The turn replayed to the model carries the typed values too, not the strings.
+    assert decision.as_assistant_tool_call()["function"]["arguments"] == (
+        '{"depth":null,"fuzzy":false,"limit":25,"query":"ship dates","tags":["a","b"]}'
+    )
+
+
+def test_a_declared_type_nested_in_a_container_is_read_too():
+    """`edit_file` declares replace_all inside `edits.items`, so the top level is not enough
+    and text that spells a boolean must survive as text."""
+    edits = (
+        '[{"old_string":"a","new_string":"b","replace_all":"false"},'
+        '{"old_string":"false","new_string":"null","replace_all":"true"}]'
+    )
+    edit_file = next(t for t in ALL_TOOLS if t["function"]["name"] == "edit_file")
+    props = edit_file["function"]["parameters"]["properties"]
+    typed = [
+        {"old_string": "a", "new_string": "b", "replace_all": False},
+        {"old_string": "false", "new_string": "null", "replace_all": True},
+    ]
+    call = {"path": "app.py", "edits": edits}
+    assert coerce_arguments_by_schema(call, props) == {"path": "app.py", "edits": typed}
+    # An already-typed container is descended into too: its elements can still be text.
+    call = {"path": "app.py", "edits": json.loads(edits)}
+    assert coerce_arguments_by_schema(call, props) == {"path": "app.py", "edits": typed}

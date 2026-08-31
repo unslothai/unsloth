@@ -9,6 +9,12 @@ import { ggufVariantsMatch } from "@/features/hub/lib/model-identity";
 type GgufVariantResources = {
   gpuGb?: number;
   systemRamGb?: number;
+  /** The saved VRAM Budget, so the sort ranks against the line the loader will
+   *  actually admit at rather than against the default. */
+  budgetFraction?: number;
+  /** GPUs gpuGb sums, so the sort charges the loader's per-card VRAM reserve as
+   *  many times as the loader does. */
+  gpuCount?: number;
 };
 
 export function ggufVariantDisplayLabel(

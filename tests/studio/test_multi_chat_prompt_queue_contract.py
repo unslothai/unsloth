@@ -297,6 +297,101 @@ def test_composer_only_queues_behind_the_current_chat():
     ), "queue failure notification must not depend on a direct-send reservation"
 
 
+def test_a_send_parked_on_the_settings_gate_queues_if_a_run_started_meanwhile():
+    """The park is not the bug; releasing it into a running thread is.
+
+    A submit that lands while a new chat's settings are pairing is parked with
+    a "Loading this chat's settings" toast. When the gate closes, the release
+    used to call `sendReservedComposer()` for anything that had not asked for
+    the queue with Cmd/Ctrl+Enter -- even when a run had started in the
+    meantime. The runtime refuses a send on a running thread, so the message
+    was neither queued nor sent, and the wait toast had already been dismissed
+    a few lines above: nothing on screen said the prompt was gone.
+
+    Measured, not reasoned about. With the browser under an 8x CDP CPU
+    throttle, so a build box renders like the 4 vCPU machines this shows up
+    on, the app's own trace reads:
+
+        +786 ms  submit -> settingsPending          (parked)
+        +10480   release  text="..." running=true   (gate closed 236 ms later)
+        +10482   release:sendReservedComposer
+
+    and 90 seconds later: one user bubble, one /v1/chat/completions request,
+    the prompt still sitting in the composer, no queue chip, no toast.
+
+    The `forceQueue` branch already re-read `isRunning` for exactly this
+    reason, in a comment that describes the bug in the branch beside it. The
+    rule below is that the run check governs BOTH.
+    """
+    release = _between(
+        THREAD,
+        "// Fire the parked send once indexing clears",
+        "// Drop any queued send + toast on unmount",
+    )
+    code = re.sub(r"//[^\n]*", "", release)
+    assert "const waitForCurrentRun =" in code
+    assert "aui.thread().getState().isRunning" in code, (
+        "the release no longer asks whether a run started while the send was "
+        "parked, so a parked prompt is sent into a streaming thread again"
+    )
+    # A pre-stream reservation is a run that has been accepted and has not
+    # reached isRunning yet. handleSubmit treats it as running; so must this,
+    # or the same prompt is lost in a narrower window.
+    assert "hasPreStreamRunReservation(preStreamThreadIds)" in code
+
+    # The gate on the queue branches, which is the fix itself: an active run
+    # governs the release, not the Cmd/Ctrl+Enter intent.
+    running = code.index("if (waitForCurrentRun) {")
+    branch = code[running : code.index("if (forceQueue && !disableQueue) {")]
+    assert "queueComposerText(true);" in branch, (
+        "the release no longer queues behind the run that started while the "
+        "send was parked, so the prompt goes back to being dropped silently"
+    )
+    # Every refusal handleSubmit makes, made here too. A parked send is the
+    # same submit arriving late, so a branch it does not mirror is a state the
+    # UI forbids being reachable through the settings gate.
+    for rule, why in (
+        (
+            "if (disableQueue) {",
+            "the project new-chat composer can queue again, binding the "
+            "follow-up to a thread that does not exist yet",
+        ),
+        (
+            "Only text prompts can be queued",
+            "a parked send carrying an attachment falls through to a direct "
+            "send while a run is live, which is the collision this branch "
+            "exists to avoid",
+        ),
+    ):
+        assert rule in branch, f"{why} (missing: {rule!r})"
+    assert "sendReservedComposer" not in branch, (
+        "the running branch still reaches a direct send; nothing that cannot "
+        "be queued may be dispatched into a streaming thread"
+    )
+
+    # Research disables input outright -- handleSubmit returns before anything
+    # else and the UI shows Stop research instead of Send.
+    research = code.index("if (isResearchActive) {")
+    assert research < running, (
+        "the research refusal is not ahead of the queue path, so a prompt "
+        "parked before research began starts a turn while it is still active"
+    )
+    assert "isResearchActive," in code, "isResearchActive is missing from the deps"
+    assert "disableQueue," in code, "disableQueue is missing from the effect deps"
+
+    # The draft outlives every path that does not complete. queueComposerText
+    # clears it from its own onStarted callback, so clearing it up front loses
+    # the text whenever the queue does not start -- a null target, an
+    # invalidated start -- and after the composer is replaced it is gone.
+    assert code.index("clearStoredDraft();") > code.index("if (forceQueue && !disableQueue) {"), (
+        "the stored draft is cleared before the queue and refusal paths, so a "
+        "prompt that is neither queued nor sent cannot be recovered"
+    )
+    # Unchanged: with nothing running the chord still queues, and an ordinary
+    # send still sends. A fix that stopped sending would strand that case.
+    assert "sendReservedComposer();" in code
+
+
 def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     target = _between(
         THREAD,

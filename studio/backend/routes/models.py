@@ -20,6 +20,11 @@ from typing import List, NamedTuple, Optional
 from loggers import get_logger
 
 # Dependency-light leaf (PEP 562 package init): no llama.cpp / torch import chain.
+from core.inference.memory_contract import (
+    EMPTY_BREAKDOWN,
+    build_memory_estimate,
+    project_kv_cache_estimate,
+)
 from core.inference.model_ids import display_model_name
 from hub.services.models import catalog_classification as _catalog_classification
 from utils import gguf_archs as _gguf_archs
@@ -980,7 +985,10 @@ def _scan_ollama_dir(ollama_dir: Path, limit: Optional[int] = None) -> List[Loca
                     model_id = f"ollama/{repo_name}:{tag}",
                     display_name = display + suffix,
                     path = gguf_link_path,
-                    source = "custom",
+                    # The frontend groups and labels these rows by this value
+                    # (local-model-options.ts, pickers.tsx); "custom" hid them
+                    # in the generic folder section (#9986).
+                    source = "ollama",
                     updated_at = updated_at,
                 ),
             )
@@ -1025,6 +1033,7 @@ def collect_local_models(
     must already be validated/trusted by the caller.
     """
     from storage.studio_db import list_scan_folders
+    from hub.utils import gguf as gguf_utils
     from utils.models.model_config import detect_gguf_model
 
     sources = sources or _compat_local_inventory_sources()
@@ -1133,6 +1142,7 @@ def collect_local_models(
                     is not None
                 ):
                     custom_models.append(model)
+            custom_models = gguf_utils.dedupe_custom_gguf_rows(custom_models)
             if len(custom_models) < _MAX_MODELS_PER_FOLDER:
                 custom_models += _scan_ollama_dir(
                     folder_path,
@@ -1144,14 +1154,33 @@ def collect_local_models(
             record_scan_failure(str(folder.get("path", folder_path)), e)
             continue
         note_scan_folder_scanned(str(folder.get("path", folder_path)), found = bool(custom_models))
-        local_models += [m.model_copy(update = {"source": "custom"}) for m in custom_models]
+        # Keep an already-attributed source: a registered ~/.ollama/models (or a
+        # folder shadowing the HF cache) must not re-stamp its rows as generic
+        # custom entries. Mirrors _promote_to_custom_source() in
+        # hub/services/models/local_inventory.py.
+        local_models += [
+            m if m.source in ("hf_cache", "ollama") else m.model_copy(update = {"source": "custom"})
+            for m in custom_models
+        ]
 
     # Deduplicate, but always keep custom folder entries (keyed by (id, source)) so they show
     # in the "Custom Folders" UI section even when the model is also in the HF cache.
     deduped: dict[str, LocalModelInfo] = {}
     for model in local_models:
         semantic_id = model.model_id if model.source == "hf_cache" and model.model_id else model.id
-        key = f"{semantic_id}\x00custom" if model.source == "custom" else semantic_id
+        if model.source == "custom":
+            physical_identity = gguf_utils.local_path_physical_identity(model.path)
+            if (
+                model.model_id
+                and model.model_id.startswith("ollama/")
+                and any(
+                    part in (".studio_links", "ollama_links") for part in Path(model.path).parts
+                )
+            ):
+                physical_identity = "\x00".join((model.model_id, physical_identity))
+            key = "\x00".join((physical_identity, model.model_format or "", "custom"))
+        else:
+            key = semantic_id
         existing = deduped.get(key)
         prefer_model = existing is None
         if existing is not None and model.source == existing.source == "hf_cache":
@@ -1164,8 +1193,11 @@ def collect_local_models(
         if prefer_model:
             deduped[key] = model
 
+    deduped_values = list(deduped.values())
+    custom_values = [model for model in deduped_values if model.source == "custom"]
     models = sorted(
-        deduped.values(),
+        [model for model in deduped_values if model.source != "custom"]
+        + gguf_utils.suppress_grouped_gguf_file_rows(custom_values),
         key = lambda item: item.updated_at or 0,
         reverse = True,
     )
@@ -1209,19 +1241,19 @@ async def _shared_compat_local_inventory_scan(
     requested_sources = sources
 
     def classify(models: List[LocalModelInfo]) -> List[LocalModelInfo]:
-        # Tag each model with its task so the Images picker can filter to diffusion.
+        # Tag each model with its task and native-audio type for the model pickers.
         # Inside the shared flight so overlapping callers reuse one classified result
         # instead of each repeating the GGUF header reads.
         classified = []
         for model in models:
-            task = _local_model_task(model)
+            task, audio_type = _catalog_classification._local_model_classification_for_task(
+                model, _local_model_task(model)
+            )
             classified.append(
                 model.model_copy(
                     update = {
                         "task": task,
-                        "audio_type": _catalog_classification._local_model_audio_type(model)
-                        if task == "text-to-speech"
-                        else None,
+                        "audio_type": audio_type,
                     }
                 )
             )
@@ -1270,8 +1302,8 @@ async def _shared_compat_local_inventory_scan(
             return await hf_cache_scan.shared_scan(
                 _compat_local_inventory_flights,
                 key,
-                lambda expected_epoch = epoch, folders = custom_folders, roots = scan_sources: (
-                    collect(expected_epoch, folders, roots)
+                lambda expected_epoch = epoch, folders = custom_folders, roots = scan_sources: collect(
+                    expected_epoch, folders, roots
                 ),
             )
         except _CompatLocalCacheChanged as changed:
@@ -1282,6 +1314,22 @@ async def _shared_compat_local_inventory_scan(
     # the retry path, so there is always one) instead of rescanning forever.
     logger.warning("Compat local inventory kept racing cache invalidations; serving the last scan")
     return await asyncio.to_thread(classify, superseded)
+
+
+async def _invalidate_local_scans() -> None:
+    """Retire the cached local scans after something was deleted from disk.
+
+    Every successful deletion branch has to call this. The /v1/models servability scan is
+    cached against the resolver generation, so a branch that returns without bumping it
+    keeps advertising what was just removed until the catalog TTL expires.
+
+    Off the loop, like the other async invalidation sites in this file: invalidate_index
+    takes the resolver lock, and _index() holds that across a full multi-root filesystem
+    scan, so calling it inline from an async route would stall unrelated requests and
+    in-flight inference streams behind a rebuild.
+    """
+    from core.inference.local_model_resolver import invalidate_index
+    await asyncio.to_thread(invalidate_index)
 
 
 @router.get("/local", response_model = LocalModelListResponse)
@@ -2516,7 +2564,14 @@ async def scan_model_remote_code(
         except Exception:
             _primary_preexisting = True
         requested_scan_target = scan_target
-        requested_security_targets = [requested_scan_target]
+        from core.inference.native_audio import native_audio_security_targets
+
+        try:
+            requested_security_targets = native_audio_security_targets(
+                requested_scan_target, hf_token = hf_token
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code = 400, detail = str(exc)) from exc
         try:
             from utils.models.model_config import get_base_model_from_lora_identifier
 
@@ -3316,6 +3371,7 @@ async def delete_finetuned_model(
                     _prune_empty_parents(target_path, allowed_root)
             except OSError:
                 pass
+            await _invalidate_local_scans()
             logger.info(
                 "Deleted %s GGUF file(s) for exported model at %s variant %s (%0.1f MB freed)",
                 deleted_count,
@@ -3342,6 +3398,7 @@ async def delete_finetuned_model(
 
         _prune_empty_parents(target_path, allowed_root)
 
+        await _invalidate_local_scans()
         logger.info("Deleted fine-tuned model at %s", target_path)
         return {"status": "deleted", "path": str(target_path)}
     except HTTPException:
@@ -3563,6 +3620,7 @@ def _read_native_context_length(repo_id: str, is_local: bool) -> Optional[int]:
     """
     try:
         from utils.models.gguf_metadata import read_gguf_context_length
+        from utils.paths.path_utils import file_contents_available_locally
 
         # Before cache discovery (also filesystem I/O): started after, a slow enumeration would hand the walk a fresh budget.
         deadline = time.monotonic() + _NATIVE_CONTEXT_READ_TIMEOUT_SECONDS
@@ -3582,7 +3640,9 @@ def _read_native_context_length(repo_id: str, is_local: bool) -> Optional[int]:
                 if time.monotonic() >= deadline:
                     logger.debug("native context read for '%s' out of budget", repo_id)
                     return None
-                if _is_mmproj_filename(f.name):
+                if _is_mmproj_filename(f.name) or not file_contents_available_locally(f):
+                    # Opening a cloud placeholder recalls its data. It keeps its variant row,
+                    # but has no context metadata until the file is hydrated.
                     continue
                 n = read_gguf_context_length(str(f))
                 if n:
@@ -4192,6 +4252,12 @@ async def get_kv_cache_estimate(
             planner_total = None
             planner_floor = None
             planner_unsized = False
+            # Bound BEFORE the try, not inside it. Every statement below can
+            # raise into the surrounding `except`, and a name defined only on the
+            # success path then reads as a NameError from the projection after
+            # it -- which this same route has already been bitten by once, in a
+            # guard that silently never ran because of it.
+            _b = None
             try:
                 from routes.inference import (
                     _ESTIMATE_NOT_ON_DISK,
@@ -4293,34 +4359,30 @@ async def get_kv_cache_estimate(
             except Exception as e:
                 logger.debug(f"planner breakdown failed for '{repo_id}' {quant}: {e}")
 
-            return {
-                "kv_bytes": int(kv) if kv else None,
-                "weights_bytes": weights_bytes or None,
-                "native_context": be._context_length,
-                "spec_bytes": int(spec) if spec else None,
-                "n_ctx": int(n_ctx),
-                "projector_bytes": projector or None,
-                # The part of kv_bytes that llama.cpp keeps in host heap rather than
-                # on the card, so a VRAM bar can subtract it. Included in kv_bytes,
-                # not beside it: the field shipped meaning the whole cache and an
-                # existing caller still reads it that way.
-                "kv_checkpoint_bytes": kv_checkpoint or None,
-                # The part of spec_bytes a shorter context cannot reduce.
-                "spec_fixed_bytes": spec_fixed if spec else None,
-                # The load planner's figures. gpu_bytes is the complete footprint
-                # that lands on the card and is what a fit verdict should be drawn
-                # against; the rest are itemized for the caller that wants them.
-                "gpu_bytes": planner_gpu,
-                "compute_bytes": planner_compute,
-                "total_bytes": planner_total,
+            # Shaped through the canonical MemoryEstimate rather than assembled
+            # here, so this route and POST /inference/estimate-memory cannot drift
+            # apart in vocabulary the way they had. The projection is what keeps
+            # this route's own meaning of `weights_bytes` -- the quant file ALONE
+            # -- while the panel's projection keeps its aggregate meaning. The two
+            # sit side by side in core/inference/memory_contract.py, which is the
+            # only place either mapping is written down.
+            #
+            # The terms this route prices ITSELF (the target cache, the
+            # speculative split, the projector, the checkpoint share) are passed
+            # in rather than read off the estimate: the planner has its own
+            # figures for some of them and they are not interchangeable.
+            _estimate = build_memory_estimate(
+                _b if _b is not None else EMPTY_BREAKDOWN,
+                quant_file_bytes = weights_bytes or 0,
+                native_context = be._context_length,
                 # What remains on the card at the shortest context, so a caller
                 # can tell a context-driven overage from one no context fixes.
-                "gpu_floor_bytes": planner_floor,
+                gpu_floor_bytes = planner_floor,
                 # False only when the loader is free to shrink the context. A
                 # caller that softens its verdict for an auto-fitted row has to
                 # stop softening here, or an inherited window over budget reads
                 # as a fit for a launch that will OOM.
-                "context_is_pinned": _context_is_pinned,
+                context_is_pinned = _context_is_pinned,
                 # An inherited LLAMA_ARG_DEVICE confines the child to the cards it
                 # names, and an automatic launch preserves it. The caller's budget
                 # is an aggregate over the whole visible inventory, which then
@@ -4329,11 +4391,34 @@ async def get_kv_cache_estimate(
                 # caller cannot see the environment, so it is reported here.
                 # Any pin at all is enough to say so: the route does not know the
                 # host's inventory, and abstaining is the safe direction.
-                "inherited_device_pin": _inherited_device_pin,
+                inherited_device_pin = _inherited_device_pin,
                 # The planner saw a drafter whose cache it could not size, so its
                 # own total is a floor.
-                "spec_unpriced": spec_unpriced or planner_unsized,
-            }
+                spec_unpriced = spec_unpriced or planner_unsized,
+                # The planner's own figures, kept exactly as this route computed
+                # them above: planner_gpu preserves a real zero, the other two do
+                # not. Passed in rather than assigned onto the model afterwards,
+                # because Pydantic does not validate assignment by default and a
+                # post-construction write puts whatever it is handed straight
+                # onto the wire.
+                gpu_bytes = planner_gpu,
+                compute_bytes = planner_compute,
+                total_bytes = planner_total,
+                n_ctx = int(n_ctx),
+            )
+            return project_kv_cache_estimate(
+                _estimate,
+                kv_bytes = int(kv) if kv else None,
+                spec_bytes = int(spec) if spec else None,
+                # The part of spec_bytes a shorter context cannot reduce.
+                spec_fixed_bytes = spec_fixed if spec else None,
+                projector_bytes = projector or None,
+                # The part of kv_bytes that llama.cpp keeps in host heap rather
+                # than on the card, so a VRAM bar can subtract it. Included in
+                # kv_bytes, not beside it: the field shipped meaning the whole
+                # cache and an existing caller still reads it that way.
+                kv_checkpoint_bytes = kv_checkpoint or None,
+            )
         except Exception as e:
             logger.debug(f"kv-cache-estimate failed for '{repo_id}' {quant}: {e}")
             return null
@@ -4384,6 +4469,7 @@ async def get_gguf_variants(
                     # the row reads as its whole relative path.
                     display_label = getattr(v, "display_label", None),
                     size_bytes = v.size_bytes,
+                    shard_count = int(getattr(v, "shard_count", 0) or 0),
                     download_size_bytes = int(
                         getattr(v, "download_size_bytes", v.size_bytes) or v.size_bytes
                     ),

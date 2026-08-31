@@ -90,7 +90,7 @@ import {
   mergeBackendRecommendedInference,
   resolveFitMaxSeqLength,
   resolveLoadMaxSeqLength,
-  resolveManualAutoCtxPin,
+  resolveExplicitCtxPin,
 } from "../presets/preset-policy";
 import { recordLastLocalModelLoad } from "../utils/last-local-model-load";
 import { loadFallbackNotice } from "../utils/mmproj-fallback";
@@ -421,6 +421,7 @@ function getTransformersUpgradeRequiredMessage(modelName: string): string {
  */
 // Prevent older concurrent status reads from overwriting newer results.
 let syncGeneration = 0;
+let loraSyncGeneration = 0;
 let lastIdleUnloadArmed = false;
 
 async function readIdleUnloadArmed(): Promise<boolean> {
@@ -443,16 +444,37 @@ async function syncInferenceStatusToStore(options?: {
   const signal = options?.signal;
   const includeLoras = options?.includeLoras ?? true;
   const generation = ++syncGeneration;
+  const loraGeneration = includeLoras ? ++loraSyncGeneration : null;
   const superseded = () => generation !== syncGeneration;
+  const loraSuperseded = () =>
+    loraGeneration !== null && loraGeneration !== loraSyncGeneration;
   const { setModels, setLoras, setCheckpoint, setModelsError } =
     useChatRuntimeStore.getState();
   setModelsError(null);
   try {
     const selectedAtStart = useChatRuntimeStore.getState().params.checkpoint;
-    const [listRes, statusRes, lorasRes, idleUnloadArmed] = await Promise.all([
+    const [listRes, statusRes, , idleUnloadArmed] = await Promise.all([
       listModels(),
       getInferenceStatus(),
-      includeLoras ? listLoras() : Promise.resolve(null),
+      // Settled from this request alone. Read out of the aggregate below, a sibling
+      // rejection discarded a good list yet still marked the inventory settled, so a
+      // resident LoRA classified as a base model and pinned a new pair generalized.
+      includeLoras
+        ? listLoras().then(
+            (lorasRes) => {
+              if (!signal?.aborted && !loraSuperseded()) {
+                setLoras(lorasRes.loras.map(toLoraSummary));
+              }
+              return lorasRes;
+            },
+            (error) => {
+              if (!signal?.aborted && !loraSuperseded()) {
+                useChatRuntimeStore.setState({ loraInventorySettled: true });
+              }
+              throw error;
+            },
+          )
+        : Promise.resolve(null),
       options?.preserveIdleUnloaded
         ? readIdleUnloadArmed()
         : Promise.resolve(false),
@@ -461,12 +483,8 @@ async function syncInferenceStatusToStore(options?: {
     if (signal?.aborted || superseded()) return;
 
     setModels(listRes.models.map(toChatModelRow));
-    if (lorasRes) {
-      setLoras(lorasRes.loras.map(toLoraSummary));
-    }
 
-    const selectedCheckpoint =
-      useChatRuntimeStore.getState().params.checkpoint;
+    const selectedCheckpoint = useChatRuntimeStore.getState().params.checkpoint;
     const isExternalSelectionActive = isExternalModelId(selectedCheckpoint);
     const selectionChanged = selectedCheckpoint !== selectedAtStart;
     const statusLoading = (statusRes.loading?.length ?? 0) > 0;
@@ -563,7 +581,9 @@ async function syncInferenceStatusToStore(options?: {
       }
     }
   } catch (error) {
-    // Discard failures from cancelled or superseded reads.
+    // A superseded refresh reports nothing, or a stale failure would raise a
+    // toast about a read whose answer would have been discarded anyway. The LoRA
+    // inventory settles from its own request above, never from a sibling's failure.
     if (signal?.aborted || superseded()) return;
     const message =
       error instanceof Error ? error.message : "Failed to load models";
@@ -1632,6 +1652,12 @@ export function useChatModelRuntime() {
               loadSplitRatio = null;
             }
 
+            // The Context Length the USER set for this load, captured before the
+            // clamp below can stand in for it. This, not the n_ctx that goes on
+            // the wire, is what the completed load pins: several send rules put a
+            // positive n_ctx on the wire with the control on Auto, and a pin read
+            // back out of one of those is a number the user never chose.
+            const explicitCtxPin = loadCustomContextLength;
             // Pinning layers on the SAME model keeps the currently resolved
             // context: with no explicit pin, a manual+pinned reload would send 0,
             // which the backend's --fit off branch treats as the NATIVE context --
@@ -1822,14 +1848,10 @@ export function useChatModelRuntime() {
             const reportedNativeCtx = loadResponse.is_gguf
               ? (loadResponse.native_context_length ?? null)
               : null;
-            // Keep an explicit Manual+Auto context pin (so a later Apply doesn't
-            // revert it to Auto) and retain the user's requested context so
-            // re-open/re-save keeps the intended override, not the backend's
-            // auto-fit context; null stays null.
-            const keepCustomCtx = resolveManualAutoCtxPin(
-              loadGpuMemoryMode,
-              loadGpuLayers,
-              loadCustomContextLength,
+            // The user's own Context Length (see explicitCtxPin), so an Auto load
+            // stays Auto whatever n_ctx the send rules resolved for it.
+            const keepCustomCtx = resolveExplicitCtxPin(
+              loadResponse.is_gguf ? explicitCtxPin : null,
             );
             const reasoningAlwaysOn = loadResponse.reasoning_always_on ?? false;
             const reasoningStyle = loadResponse.reasoning_style ?? "enable_thinking";

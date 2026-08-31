@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Coordinate Windows launches that consume the Tauri-managed Unsloth environment."""
+"""Coordinate launches that consume the Tauri-managed Unsloth environment."""
 
 from __future__ import annotations
 
@@ -19,6 +19,8 @@ from typing import Iterator, Mapping
 _RUNTIME_MUTEX_PREFIX = "Global\\UnslothStudioManagedEnvironment-"
 _PATH_RUNTIME_MUTEX_PREFIX = "Global\\UnslothStudioManagedEnvironmentPath-"
 _RUNTIME_GATE_HANDOFF_ENV = "_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF"
+_RUNTIME_GATE_ACQUIRE_ENV = "_UNSLOTH_STUDIO_RUNTIME_GATE_ACQUIRE"
+_POSIX_RUNTIME_LOCK_FILE = ".studio-runtime.lock"
 
 
 class StudioRuntimeGateBusy(RuntimeError):
@@ -197,11 +199,37 @@ def _current_windows_user_sid() -> str:
 
 
 @contextlib.contextmanager
-def studio_runtime_launch_guard(studio_home: Path, *, inherited: bool = False) -> Iterator[bool]:
-    """Hold the shared Windows launch gate through backend admission."""
+def studio_runtime_launch_guard(
+    studio_home: Path,
+    *,
+    inherited: bool = False,
+    wait: bool = False,
+) -> Iterator[bool]:
+    """Hold the shared launch gate through backend admission."""
 
-    if sys.platform != "win32" or inherited:
+    if inherited and wait:
+        raise ValueError("a runtime gate cannot be inherited and acquired")
+    if inherited:
         yield False
+        return
+
+    if sys.platform != "win32":
+        import fcntl
+
+        studio_home.mkdir(parents = True, exist_ok = True)
+        lock_file = (studio_home / _POSIX_RUNTIME_LOCK_FILE).open("a+b")
+        try:
+            try:
+                flags = fcntl.LOCK_EX if wait else fcntl.LOCK_EX | fcntl.LOCK_NB
+                fcntl.flock(lock_file.fileno(), flags)
+            except BlockingIOError as exc:
+                raise StudioRuntimeGateBusy(str(lock_file.name)) from exc
+            yield True
+        finally:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            finally:
+                lock_file.close()
         return
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
@@ -223,7 +251,8 @@ def studio_runtime_launch_guard(studio_home: Path, *, inherited: bool = False) -
     if not handle:
         raise ctypes.WinError(ctypes.get_last_error())
 
-    wait_result = kernel32.WaitForSingleObject(handle, 0)
+    timeout = 0xFFFFFFFF if wait else 0
+    wait_result = kernel32.WaitForSingleObject(handle, timeout)
     if wait_result not in (0x00000000, 0x00000080):  # WAIT_OBJECT_0, WAIT_ABANDONED
         kernel32.CloseHandle(handle)
         if wait_result == 0x00000102:  # WAIT_TIMEOUT
@@ -370,6 +399,10 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
 
 def consume_runtime_gate_handoff() -> bool:
     return os.environ.pop(_RUNTIME_GATE_HANDOFF_ENV, None) == "1"
+
+
+def consume_runtime_gate_acquire() -> bool:
+    return os.environ.pop(_RUNTIME_GATE_ACQUIRE_ENV, None) == "1"
 
 
 def runtime_gate_child_environment(base: Mapping[str, str] | None = None) -> dict[str, str]:
