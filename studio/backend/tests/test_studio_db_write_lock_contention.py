@@ -13,6 +13,7 @@ poll query, and log levels.
 
 import asyncio
 import hashlib
+import inspect
 import logging
 import sqlite3
 import threading
@@ -34,7 +35,9 @@ def db(tmp_path, monkeypatch):
     monkeypatch.setattr(studio_db, "_schema_ready", False)
     conn = studio_db.get_connection()
     conn.close()
-    return tmp_path / "studio.db"
+    yield tmp_path / "studio.db"
+    # A keeper left open would hold this temp database past the test that made it.
+    studio_db.close_wal_keeper()
 
 
 def _journal_mode(path: Path) -> str:
@@ -753,7 +756,7 @@ def test_wal_keeper_declines_when_the_filesystem_refused_wal(db, caplog):
     assert _journal_mode(db) == "delete"
 
     with caplog.at_level(logging.INFO, logger = studio_db.logger.name):
-        assert studio_db.open_wal_keeper() is None
+        assert studio_db.open_wal_keeper() is False
     assert "not WAL" in caplog.text
 
 
@@ -766,14 +769,13 @@ def test_wal_keeper_holds_the_wal_open_for_short_lived_writers(db):
         assert not wal.exists()
     unkept = _digest(db)
 
-    keeper = studio_db.open_wal_keeper()
-    assert keeper is not None
+    assert studio_db.open_wal_keeper() is True
     for index in range(5):
         _short_lived_write(db, f"kept-{index}")
         assert wal.is_file()
     assert _digest(db) == unkept
 
-    keeper.close()
+    studio_db.close_wal_keeper()
     assert not wal.exists()
     assert _digest(db) != unkept
 
@@ -795,3 +797,19 @@ def _short_lived_write(path: Path, value: str) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def test_the_lifespan_holds_the_keeper_across_every_writer():
+    """A keeper nothing opens saves nothing, and one released early stops saving early.
+
+    Reads the source rather than running the lifespan, which imports the whole stack.
+    Anchored on the awaited call, since the bare name is also in a comment further up.
+    """
+    import main
+
+    source = inspect.getsource(main.lifespan)
+    served = source.index("yield")
+    assert source.index("open_wal_keeper()") < source.index("cleanup_orphaned_runs()") < served
+    assert (
+        served < source.index("await run_lifespan_shutdown(") < source.index("close_wal_keeper()")
+    )

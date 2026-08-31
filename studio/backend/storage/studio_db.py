@@ -1259,10 +1259,17 @@ def get_connection(busy_timeout_seconds: float = _BUSY_TIMEOUT_SECONDS) -> sqlit
     return conn
 
 
-def open_wal_keeper() -> sqlite3.Connection | None:
-    """Open an idle lifespan connection that prevents last-close WAL checkpoints.
+# Every accessor here opens and closes its own connection, so a writer is routinely the last
+# WAL participant, and sqlite checkpoints the WAL back into studio.db on that close. At the
+# durable chat stream's flush cadence that is several rewrites a second (#9934).
+_wal_keeper: sqlite3.Connection | None = None
+_wal_keeper_lock = threading.Lock()
 
-    None when the database is not in WAL mode, which is not a fault: journal_mode=WAL
+
+def open_wal_keeper() -> bool:
+    """Hold this database's WAL open for the process. Returns whether a keeper is engaged.
+
+    False when the database is not in WAL mode, which is not a fault: journal_mode=WAL
     silently declines on filesystems without shared-memory support (network shares, some
     FUSE and container mounts) and is persistent in the file, so this reads what is in
     force. There is no WAL to hold open there, and those installs go without the saving
@@ -1271,18 +1278,36 @@ def open_wal_keeper() -> sqlite3.Connection | None:
     Reading the mode is also what opens the WAL: a connection sqlite has not had to
     engage is not a participant and would keep nothing.
     """
-    conn = get_connection()
+    global _wal_keeper
+    with _wal_keeper_lock:
+        if _wal_keeper is not None:
+            return True
+        conn = get_connection()
+        try:
+            mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        except (sqlite3.Error, TypeError, IndexError) as exc:
+            conn.close()
+            logger.warning("Could not read studio.db journal mode: %s", exc)
+            return False
+        if not isinstance(mode, str) or mode.lower() != "wal":
+            conn.close()
+            logger.info("studio.db is in %s mode, not WAL; WAL keeper not engaged.", mode)
+            return False
+        _wal_keeper = conn
+        return True
+
+
+def close_wal_keeper() -> None:
+    """Release the keeper; last-close checkpointing resumes."""
+    global _wal_keeper
+    with _wal_keeper_lock:
+        conn, _wal_keeper = _wal_keeper, None
+    if conn is None:
+        return
     try:
-        mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
-    except (sqlite3.Error, TypeError, IndexError) as exc:
         conn.close()
-        logger.warning("Could not read studio.db journal mode: %s", exc)
-        return None
-    if not isinstance(mode, str) or mode.lower() != "wal":
-        conn.close()
-        logger.info("studio.db is in %s mode, not WAL; WAL keeper not engaged.", mode)
-        return None
-    return conn
+    except Exception as exc:
+        logger.warning("Could not close the studio.db WAL keeper: %s", exc)
 
 
 def create_run(
