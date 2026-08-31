@@ -2417,12 +2417,46 @@ class TestTheFallbackNameIsOneUnslothResolves(unittest.TestCase):
     A typo, or a rename on the unsloth side, would reach transformers as an unrecognised
     device_map and raise "the value needs to be a device name ... but found X". Read from
     the loader rather than repeated here, so the two cannot drift apart.
+
+    Parsed rather than imported: `import unsloth` needs unsloth_zoo, which the backend
+    test environment does not install, and skipping there would leave the one place the
+    two sides are compared unrun in CI.
     """
 
-    def test_the_cuda_answer_is_a_planned_map_unsloth_accepts(self):
-        from unsloth.models.loader_utils import _PLANNED_DEVICE_MAPS
+    def _planned_device_maps(self):
+        import ast
 
+        source = None
+        here = os.path.dirname(os.path.abspath(__file__))
+        candidate = os.path.join(here, "..", "..", "..", "unsloth", "models", "loader_utils.py")
+        if os.path.exists(candidate):
+            source = open(candidate, encoding = "utf-8").read()
+        else:
+            # An installed Studio: find_spec locates the package without executing it.
+            import importlib.util
+
+            spec = importlib.util.find_spec("unsloth")
+            locations = list(getattr(spec, "submodule_search_locations", None) or [])
+            for location in locations:
+                installed = os.path.join(location, "models", "loader_utils.py")
+                if os.path.exists(installed):
+                    source = open(installed, encoding = "utf-8").read()
+                    break
+        self.assertIsNotNone(source, "loader_utils.py not found; the comparison cannot be made")
+
+        namespace = {}
+        for node in ast.parse(source).body:
+            if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", None) in (
+                "UNSLOTH_DEVICE_MAP",
+                "UNSLOTH_BALANCED_DEVICE_MAP",
+                "_PLANNED_DEVICE_MAPS",
+            ):
+                exec(ast.get_source_segment(source, node), namespace)
+        return namespace["_PLANNED_DEVICE_MAPS"]
+
+    def test_the_cuda_answer_is_a_planned_map_unsloth_accepts(self):
+        planned = self._planned_device_maps()
         with patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA):
             answer = get_device_map([0, 1])
-        self.assertIn(answer, _PLANNED_DEVICE_MAPS)
-        self.assertEqual(_PLANNED_DEVICE_MAPS[answer], "balanced")
+        self.assertIn(answer, planned)
+        self.assertEqual(planned[answer], "balanced")
