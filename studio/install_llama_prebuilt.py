@@ -1174,9 +1174,16 @@ def direct_upstream_release_plan(
         # selector returned 0 attempts and the installer fell back to a
         # source build on every Linux ARM64 host (DGX Spark, Ampere
         # Altra, GitHub-hosted ubuntu-24.04-arm runners, etc.).
-        # Intel (or other non-NVIDIA/non-AMD) GPU: prefer the Vulkan prebuilt,
-        # mirroring the x86_64 branch. Upstream ships bin-ubuntu-vulkan-arm64.
+        # Intel (or other non-NVIDIA/non-AMD) GPU: prefer the Vulkan prebuilt.
+        # Upstream ships bin-ubuntu-vulkan-arm64.
         # No physical NVIDIA: don't reach a CUDA-hidden card through Vulkan.
+        #
+        # Deliberately NOT has_amd_gpu_without_rocm, which the x86_64 branch above does
+        # take: that widening was measured on one machine (a Steam Deck, x86_64), and the
+        # PR claiming it verified 72 routing cells all on x86_64. An ARM64 Linux host with
+        # a discrete AMD GPU and no ROCm would very likely be better off on Vulkan too,
+        # but nobody has run it, so it keeps the CPU archive it gets today. Widen this
+        # once someone has the hardware to measure, not before.
         if host.has_intel_gpu and not host.has_physical_nvidia and not host.has_rocm:
             vulkan_asset = f"llama-{release_tag}-bin-ubuntu-vulkan-arm64.tar.gz"
             vulkan_url = assets.get(vulkan_asset)
