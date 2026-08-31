@@ -493,13 +493,14 @@ _SHARED_NON_RUNTIME_ROOTS = frozenset(
     )
 )
 
-# Siblings the Windows launcher transaction stages beside a recorded file while
-# an update runs. `_move_launcher_aside` renames Scripts/unsloth.exe to
-# .update-stale before setup, so the deep check inside setup.ps1 sees the
-# recorded launcher missing on every healthy update. Absence with one of these
-# beside it is our own doing and recoverable by `_recover_missing_launcher`,
-# which reads exactly these three; absence without one is still damage.
-_INSTALLER_STAGED_SUFFIXES = (".update-stale", ".update-backup", ".deleteme")
+# The one file the Windows launcher transaction moves aside while an update
+# runs. `_move_launcher_aside` renames Scripts/unsloth.exe to .update-stale
+# before setup, so the deep check inside setup.ps1 sees the recorded launcher
+# missing on every healthy update. Nothing else is staged, so nothing else is
+# excused: an exemption that applied to any recorded file would let a stray
+# sibling hide a quarantine anywhere in the tree.
+_STAGED_LAUNCHER_NAME = "unsloth.exe"
+_STAGED_LAUNCHER_SUFFIXES = (".update-stale", ".update-backup", ".deleteme")
 
 # Rewritten in place by our own setup: the size claim is waived, absence is not.
 _INSTALLER_REWRITTEN_NAMES = frozenset(("package-lock.json",))
@@ -510,12 +511,28 @@ _INSTALLER_REGENERATED_TREES = (("studio", "frontend", "dist"),)
 
 
 def _staged_beside(target) -> bool:
-    """Whether an absent recorded file is one an update moved aside a moment ago."""
+    """Whether an absent launcher is one an update moved aside a moment ago.
+
+    The staged copy has to be usable, not merely present: the transaction
+    recovers through `_is_valid_pe`, so an orphaned or truncated sibling is one
+    it would reject too, and treating that as an excuse would leave the launcher
+    missing with the fast path intact. Same two-byte test, deliberately.
+    """
     try:
         path = Path(target)
-        return any(
-            path.with_name(path.name + suffix).exists() for suffix in _INSTALLER_STAGED_SUFFIXES
-        )
+        if path.name != _STAGED_LAUNCHER_NAME:
+            return False
+        for suffix in _STAGED_LAUNCHER_SUFFIXES:
+            staged = path.with_name(path.name + suffix)
+            try:
+                if staged.stat().st_size < 2:
+                    continue
+                with staged.open("rb") as handle:
+                    if handle.read(2) == b"MZ":
+                        return True
+            except OSError:
+                continue
+        return False
     except (OSError, ValueError):
         return False
 

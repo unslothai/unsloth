@@ -645,3 +645,79 @@ def test_an_unrelated_sibling_does_not_excuse_a_missing_file(site_packages):
     launcher = _launcher_case(site_packages)
     launcher.rename(launcher.with_name(launcher.name + ".bak"))
     assert install_manifest.damaged_payload_files(PKG) == ["../Scripts/unsloth.exe is missing"]
+
+
+def test_a_truncated_staged_copy_is_no_excuse(site_packages):
+    """The transaction recovers through `_is_valid_pe`, so a copy it would
+    reject must not suppress detection here either."""
+    launcher = _launcher_case(site_packages)
+    launcher.unlink()
+    (launcher.parent / "unsloth.exe.update-stale").write_text("", encoding = "utf-8")
+    assert install_manifest.damaged_payload_files(PKG) == ["../Scripts/unsloth.exe is missing"]
+
+
+def test_a_staged_copy_that_is_not_a_pe_is_no_excuse(site_packages):
+    launcher = _launcher_case(site_packages)
+    launcher.unlink()
+    (launcher.parent / "unsloth.exe.deleteme").write_text("not a binary", encoding = "utf-8")
+    assert install_manifest.damaged_payload_files(PKG) == ["../Scripts/unsloth.exe is missing"]
+
+
+def test_only_the_launcher_is_ever_excused(site_packages):
+    """Nothing else is staged by the transaction, so nothing else is exempt:
+    a stray sibling must not hide a quarantine elsewhere in the tree."""
+    dist_info, rows = _healthy(site_packages)
+    _record(dist_info, rows)
+    module = site_packages / PKG / "__init__.py"
+    module.rename(module.with_name(module.name + ".update-stale"))
+    assert install_manifest.damaged_payload_files(PKG) == [f"{PKG}/__init__.py is missing"]
+
+
+def _installer_helper_probe() -> str:
+    """The manifest-helper probe exactly as setup.sh runs it."""
+    import re
+
+    repo = Path(__file__).resolve().parents[3]
+    setup = (repo / "studio" / "setup.sh").read_text(encoding = "utf-8")
+    match = re.search(
+        r'if ! "\$VENV_DIR/bin/python" -c "\n(import os, sys\n.*?)" "\$SCRIPT_DIR"', setup, re.S
+    )
+    assert match, "the manifest-helper probe moved; this test is reading the wrong block"
+    return match.group(1)
+
+
+@pytest.mark.parametrize(
+    "contents,expected",
+    [
+        (None, 0),
+        ("def broken(:\n", 1),
+        ("raise RuntimeError('quarantined')\n", 1),
+    ],
+    ids = ["absent-keeps-the-fast-path", "truncated-forces-repair", "raises-forces-repair"],
+)
+def test_an_unimportable_helper_forces_the_dependency_pass(tmp_path, contents, expected):
+    """The helper is the one file whose damage silences every other check.
+
+    Absent stays the old escape: setup.sh is resolved out of the installed
+    studio package, so absence should be impossible, and separating it from an
+    old release here would need a RECORD walk inside the installer. The CLI
+    already reports that case as studio_install_manifest_missing.
+    """
+    import subprocess
+
+    script_dir = tmp_path / "studio"
+    script_dir.mkdir()
+    if contents is not None:
+        (script_dir / "install_manifest.py").write_text(contents, encoding = "utf-8")
+    result = subprocess.run(
+        [sys.executable, "-c", _installer_helper_probe(), str(script_dir)],
+        capture_output = True,
+    )
+    assert result.returncode == expected
+
+
+def test_both_installers_run_the_same_helper_probe():
+    repo = Path(__file__).resolve().parents[3]
+    guard = "sys.exit(1 if os.path.isfile(os.path.join(sys.argv[1], 'install_manifest.py')) else 0)"
+    for name in ("studio/setup.sh", "studio/setup.ps1"):
+        assert guard in (repo / name).read_text(encoding = "utf-8"), name
