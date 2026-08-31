@@ -60,7 +60,14 @@ const startPoll = new Function(
   "INVENTORY_FOLLOW_UP_MS",
   body,
 ) as (
-  window: { setInterval: (fn: () => void, ms: number) => number; clearInterval: (id: number) => void },
+  window: {
+    setInterval: (fn: () => void, ms: number) => number;
+    clearInterval: (id: number) => void;
+    // The follow-up read's timer. This scenario never arms it, but the lifted block
+    // reaches for it through the injected window and the type has to allow that.
+    setTimeout: (fn: () => void, ms: number) => number;
+    clearTimeout: (id: number) => void;
+  },
   date: { now: () => number },
   fetchDeviceType: () => Promise<void>,
   capabilitiesUnknown: boolean,
