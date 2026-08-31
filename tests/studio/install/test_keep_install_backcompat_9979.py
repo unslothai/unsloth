@@ -459,3 +459,252 @@ def test_the_stored_backend_choice_reads_the_same_from_every_shape(tmp_path, mar
     """The keep path gates on this, so old shapes must not read as a pinned choice."""
     install_dir = build_install(tmp_path, marker = marker)
     assert ILP.persisted_backend_request(install_dir) == expected
+
+
+# ---------------------------------------------------------------------------
+# The [Windows, Linux, WSL, macOS] x [NVIDIA, AMD, CPU-only] product.
+#
+# Every cell is exercised through the same two deciders. The host is simulated
+# by HostInfo, which is what the deciders branch on, so these prove the payload
+# tables and the platform-prefix filtering. They do NOT prove Windows loader
+# behaviour or macOS dyld -- nothing on a Linux runner can.
+#
+# WSL is Linux to this code: HostInfo has no WSL field, and the WSL2 ROCDXG
+# special-casing lives in host detection and in setup.sh, upstream of the keep
+# path. It is listed as its own row anyway, and asserted to behave exactly like
+# Linux, because "WSL is just Linux here" is the claim worth pinning.
+# ---------------------------------------------------------------------------
+
+ARM64_LINUX = _host(machine = "aarch64", is_x86_64 = False, is_arm64 = True)
+MACOS_X64 = _host(
+    system = "Darwin", machine = "x86_64",
+    is_windows = False, is_linux = False, is_macos = True,
+    is_x86_64 = True, is_arm64 = False, macos_version = (14, 6),
+)
+WINDOWS_ARM64 = _host(
+    system = "Windows", machine = "ARM64", is_windows = True, is_linux = False,
+    is_x86_64 = False, is_arm64 = True,
+)
+# WSL reports itself as Linux. The ROCm flags are what a WSL2 ROCDXG host carries.
+WSL_ROCM = _host(has_rocm = True, rocm_gfx_target = "gfx1151")
+LINUX_NVIDIA = _host(
+    compute_caps = ["10.0"], has_physical_nvidia = True, has_usable_nvidia = True,
+)
+LINUX_ROCM = _host(has_rocm = True, rocm_gfx_target = "gfx1100")
+WINDOWS_NVIDIA = _host(
+    system = "Windows", machine = "AMD64", is_windows = True, is_linux = False,
+    compute_caps = ["8.9"], has_physical_nvidia = True, has_usable_nvidia = True,
+)
+WINDOWS_ROCM = _host(
+    system = "Windows", machine = "AMD64", is_windows = True, is_linux = False,
+    has_rocm = True, rocm_gfx_target = "gfx1151",
+)
+
+# (id, host, marker backend, the payload the tree must carry to be kept)
+MATRIX = [
+    ("linux-nvidia",      LINUX_NVIDIA,   "cuda",   "cuda"),
+    ("linux-arm64-nvidia", ARM64_LINUX,   "cuda",   "cuda"),
+    ("linux-amd",         LINUX_ROCM,     "rocm",   "rocm"),
+    ("linux-cpu",         LINUX,          "cpu",    None),
+    ("linux-arm64-cpu",   ARM64_LINUX,    "cpu",    None),
+    ("linux-vulkan",      LINUX,          "vulkan", "vulkan"),
+    ("wsl-amd",           WSL_ROCM,       "rocm",   "rocm"),
+    ("wsl-cpu",           WSL_ROCM,       "cpu",    None),
+    ("windows-nvidia",    WINDOWS_NVIDIA, "cuda",   "cuda"),
+    ("windows-amd",       WINDOWS_ROCM,   "rocm",   "rocm"),
+    ("windows-cpu",       WINDOWS,        "cpu",    None),
+    ("windows-arm64-cpu", WINDOWS_ARM64,  "cpu",    None),
+    ("windows-vulkan",    WINDOWS,        "vulkan", "vulkan"),
+    ("macos-arm64",       MACOS,          "metal",  None),
+    ("macos-x64",         MACOS_X64,      "metal",  None),
+]
+
+
+@pytest.mark.parametrize(
+    ("cell", "host", "backend", "payload_backend"), MATRIX, ids = [m[0] for m in MATRIX],
+)
+def test_a_complete_install_is_kept_in_every_os_and_accelerator_cell(
+    tmp_path, cell, host, backend, payload_backend,
+):
+    marker = {**S12, "backend": backend, "asset": f"app-b1-{cell}.tar.gz"}
+    install_dir = build_install(
+        tmp_path, host = host, marker = marker, payload_backend = payload_backend,
+    )
+    assert ILP._kept_install_payload_is_healthy(install_dir, host) is True, cell
+    assert ILP._existing_install_runs(install_dir, host) is True, cell
+
+
+@pytest.mark.parametrize(
+    ("cell", "host", "backend", "payload_backend"), MATRIX, ids = [m[0] for m in MATRIX],
+)
+def test_a_gutted_install_is_refused_in_every_os_and_accelerator_cell(
+    tmp_path, cell, host, backend, payload_backend,
+):
+    """Every cell must fail closed, or the keep path hands back a broken tree."""
+    marker = {**S12, "backend": backend, "asset": f"app-b1-{cell}.tar.gz"}
+    install_dir = build_install(
+        tmp_path, host = host, marker = marker, payload_backend = payload_backend,
+    )
+    runtime_dir = (
+        install_dir / "build" / "bin" / "Release" if host.is_windows
+        else install_dir / "build" / "bin"
+    )
+    (runtime_dir / _SHARED_PAYLOAD[_platform_of(host)][0]).unlink()
+    assert ILP._kept_install_payload_is_healthy(install_dir, host) is False, cell
+
+
+@pytest.mark.parametrize(
+    ("cell", "host", "backend"),
+    [(c, h, b) for c, h, b, p in MATRIX if p is not None],
+    ids = [m[0] for m in MATRIX if m[3] is not None],
+)
+def test_an_accelerator_install_missing_its_own_backend_library_is_refused(
+    tmp_path, cell, host, backend,
+):
+    """The shared payload alone must not be enough for a CUDA/ROCm/Vulkan tree.
+
+    This is the case that matters after a partial extraction or a half-deleted
+    install: everything generic is present and only the accelerator library is
+    gone, so the binaries start and only fail once a model is loaded.
+    """
+    marker = {**S12, "backend": backend, "asset": f"app-b1-{cell}.tar.gz"}
+    install_dir = build_install(
+        tmp_path, host = host, marker = marker, payload_backend = None,
+    )
+    assert ILP._kept_install_payload_is_healthy(install_dir, host) is False, cell
+
+
+def test_wsl_is_treated_exactly_like_linux_by_the_keep_path(tmp_path):
+    """Pin the assumption rather than leaving it implicit.
+
+    HostInfo carries no WSL flag; the WSL2 ROCDXG handling lives in host
+    detection and setup.sh, upstream of here. So a WSL install is judged by the
+    Linux tables, and a ROCm tree needs libggml-hip.so on WSL for the same
+    reason it does on bare metal.
+    """
+    marker = {**S12, "backend": "rocm", "asset": "app-b1-linux-x64-rocm-gfx1151.tar.gz"}
+    for host in (LINUX_ROCM, WSL_ROCM):
+        ok = build_install(
+            tmp_path / f"ok-{host.rocm_gfx_target}", host = host,
+            marker = marker, payload_backend = "rocm",
+        )
+        gutted = build_install(
+            tmp_path / f"gutted-{host.rocm_gfx_target}", host = host,
+            marker = marker, payload_backend = None,
+        )
+        assert ILP._kept_install_payload_is_healthy(ok, host) is True
+        assert ILP._kept_install_payload_is_healthy(gutted, host) is False
+
+
+def test_a_marker_naming_another_platforms_backend_falls_open(tmp_path):
+    """A tree carried between machines must not be judged by the wrong table.
+
+    marker backend "metal" on a Linux host filters to no linux kind at all, so
+    the decider falls back to every kind this platform has. Fail-open is right:
+    the alternative is refusing an install whose payload is actually complete.
+    """
+    marker = {**S12, "backend": "metal", "asset": "app-b1-macos-arm64.tar.gz"}
+    install_dir = build_install(tmp_path, host = LINUX, marker = marker, payload_backend = None)
+    assert ILP.marker_backend(marker) == "metal"
+    assert ILP._kept_install_payload_is_healthy(install_dir, LINUX) is True
+
+
+def test_an_install_whose_keys_were_backfilled_onto_an_old_marker_is_kept(tmp_path):
+    """Real markers are not the clean shapes: sync_marker_selection grafts.
+
+    An install made at S2 and reused since carries an S2 base with backend,
+    supported_sms, ggml_tree and runtime_asset grafted on by the reuse path. No
+    test drove the keep path with one, and the graft is exactly where a reader
+    would expect the shapes to disagree.
+    """
+    grafted = {
+        **S2,
+        "backend": "cuda",
+        "backend_request": "auto",
+        "ggml_tree": "b9415",
+        "supported_sms": ["80", "86"],
+        "runtime_asset": None,
+    }
+    install_dir = build_install(tmp_path, marker = grafted, payload_backend = "cuda")
+    assert ILP._kept_install_payload_is_healthy(install_dir, LINUX) is True
+    assert ILP._existing_install_runs(install_dir, LINUX) is True
+
+
+# ---------------------------------------------------------------------------
+# Forwards compatibility, driven through install_prebuilt so the exit code the
+# setup scripts actually branch on is the thing under test.
+# ---------------------------------------------------------------------------
+
+def _transient_listing_failure(monkeypatch, host = LINUX):
+    """Make the release listing fail the way a flaky network does."""
+    import urllib.error
+
+    def boom(*args, **kwargs):
+        raise urllib.error.URLError("connection reset")
+
+    monkeypatch.setattr(ILP, "_fork_manifest_release_plans", boom)
+    monkeypatch.setattr(ILP, "detect_host", lambda *a, **k: host)
+    monkeypatch.setattr(ILP, "collect_system_report", lambda *a, **k: "report")
+
+
+def test_a_marker_from_a_newer_unsloth_refuses_rather_than_keeping(tmp_path, monkeypatch):
+    """An unreadable backend choice must stop the install, not be answered with the tree.
+
+    A marker written by a newer Unsloth can record a backend this one cannot
+    install. effective_backend_request raises UnknownBackendRequest for that,
+    and the handler exits EXIT_ERROR before the keep branch is reached -- so the
+    keep path cannot quietly hand back a tree while the recorded choice is one
+    this build does not understand. Nothing asserted that ordering.
+    """
+    _transient_listing_failure(monkeypatch)
+    install_dir = build_install(
+        tmp_path,
+        marker = {**S12, "backend": "cuda", "backend_request": "sycl"},
+        payload_backend = "cuda",
+    )
+    with pytest.raises(SystemExit) as caught:
+        ILP.install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+    assert caught.value.code == ILP.EXIT_ERROR
+    # And the install is left alone, so the next run with a newer Unsloth still finds it.
+    assert (install_dir / "llama-server").exists()
+
+
+def test_a_transient_failure_keeps_each_shipped_shape_and_returns_exit_zero(
+    tmp_path, monkeypatch,
+):
+    """End to end: the exit code setup.sh and setup.ps1 branch on, per shape."""
+    _transient_listing_failure(monkeypatch)
+    for name, marker, backend in ALL_SHAPES:
+        install_dir = build_install(
+            tmp_path / name, marker = marker, payload_backend = backend,
+        )
+        # Returns rather than raising SystemExit: main() turns that into exit 0.
+        ILP.install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+        assert (install_dir / "llama-server").exists(), name
+
+
+def test_a_transient_failure_still_falls_back_when_the_tree_is_not_runnable(
+    tmp_path, monkeypatch,
+):
+    """The other half: a broken tree must still reach the source-build fallback.
+
+    Exit 2 is what tells setup.sh it may build from source. If the keep path
+    swallowed this, a user with a half-deleted install would be told everything
+    was fine and would keep the broken tree.
+    """
+    _transient_listing_failure(monkeypatch)
+    install_dir = build_install(tmp_path, marker = S12, payload_backend = None)
+    with pytest.raises(SystemExit) as caught:
+        ILP.install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+    assert caught.value.code == ILP.EXIT_FALLBACK
+
+
+def test_an_explicit_version_request_is_never_answered_with_the_old_install(
+    tmp_path, monkeypatch,
+):
+    """Asking for a specific release and getting the one already there is a lie."""
+    _transient_listing_failure(monkeypatch)
+    install_dir = build_install(tmp_path, marker = S12, payload_backend = "cuda")
+    with pytest.raises(SystemExit) as caught:
+        ILP.install_prebuilt(install_dir, "b9999", "unslothai/llama.cpp", "")
+    assert caught.value.code in (ILP.EXIT_FALLBACK, ILP.EXIT_ERROR)
