@@ -1708,7 +1708,7 @@ def test_activate_install_tree_keeps_existing_install_when_aside_move_hits_busy_
     assert not (tmp_path / ".staging").exists()
 
 
-def test_activate_install_tree_does_not_reclassify_reported_acl_denial_as_busy(
+def test_activate_install_tree_preserves_busy_exit_with_acl_aware_message(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
     install_dir = tmp_path / "llama.cpp"
@@ -1722,12 +1722,13 @@ def test_activate_install_tree_does_not_reclassify_reported_acl_denial_as_busy(
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.time, "sleep", lambda _seconds: None)
 
     with pytest.raises(
-        PrebuiltFallback,
-        match = "could not be moved aside; previous install left in place",
+        BusyInstallConflict,
+        match = "close any running llama.cpp process or security scanner",
     ) as excinfo:
         activate_install_tree(staging_dir, install_dir, linux_host())
 
     assert "appears to still be in use" not in str(excinfo.value)
+    assert "repair unreadable ACLs using the guidance above" in str(excinfo.value)
     output = "".join(capsys.readouterr())
     assert "elevated PowerShell" in output
     assert f'takeown /F "{install_dir}" /R /D Y' in output

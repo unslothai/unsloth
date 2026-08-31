@@ -433,6 +433,34 @@ def test_install_prebuilt_reraises_download_failure_without_existing(tmp_path: P
         M.install_prebuilt(install_dir, channel = "lts", min_major = 24, force = False)
 
 
+def test_install_prebuilt_does_not_hide_reported_acl_denial(tmp_path: Path, monkeypatch):
+    install_dir = tmp_path / "node"
+    install_dir.mkdir()
+    M.write_metadata(install_dir, version = "24.9.0", asset = "old", sha256 = "old")
+    monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
+    monkeypatch.setattr(M, "installed_node_version", lambda d, h: "24.9.0")
+    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
+    monkeypatch.setattr(M, "download_file_verified", lambda url, path, **kw: path.write_bytes(b"zip"))
+
+    def fake_extract(_archive, extract_dir):
+        (extract_dir / "node-v24").mkdir(parents = True)
+
+    def reported_acl_denial(_extracted, _install_dir):
+        exc = _oserror(5)
+        exc._unsloth_acl_recovery_reported = True
+        raise exc
+
+    monkeypatch.setattr(M, "extract_archive", fake_extract)
+    monkeypatch.setattr(M, "_ensure_npm_floor", lambda d, h: None)
+    monkeypatch.setattr(M, "_swap_into_place", reported_acl_denial)
+
+    with pytest.raises(OSError) as excinfo:
+        M.install_prebuilt(install_dir, channel = "pinned", min_major = 24, force = False)
+
+    assert excinfo.value.winerror == 5
+    assert getattr(excinfo.value, "_unsloth_acl_recovery_reported", False) is True
+
+
 # ── Isolation invariant: the installer only writes inside its own install_dir ──
 def test_run_node_pins_npm_prefix_to_install_dir(tmp_path: Path, monkeypatch):
     # Every node/npm call the installer makes redirects npm's global prefix into
@@ -814,9 +842,10 @@ def test_replace_names_acl_recovery_when_access_denied_persists(monkeypatch, tmp
     monkeypatch.setattr(M.time, "sleep", lambda _s: None)
     monkeypatch.setattr(M.os, "replace", lambda s, d: (_ for _ in ()).throw(_oserror(5)))
 
-    with pytest.raises(OSError):
+    with pytest.raises(OSError) as excinfo:
         M._replace_with_retry(source, tmp_path / "node.old", attempts = 3)
 
+    assert getattr(excinfo.value, "_unsloth_acl_recovery_reported", False) is True
     output = "".join(capsys.readouterr())
     assert "takeown" in output
     assert "icacls" in output
@@ -924,8 +953,8 @@ def test_swap_into_place_reports_the_managed_parent_on_destination_denial(
     install_dir = tmp_path / "managed" / "node"
 
     def destination_denied(src, dst):
-        assert Path(src) == extracted
-        assert Path(dst) == install_dir
+        assert src == extracted
+        assert dst == install_dir
         raise _oserror(5)
 
     monkeypatch.setattr(M.os, "replace", destination_denied)
@@ -949,8 +978,8 @@ def test_swap_into_place_reports_the_managed_parent_when_aside_is_denied(
     install_dir.mkdir(parents = True)
 
     def aside_denied(src, dst):
-        assert Path(src) == install_dir
-        assert Path(dst).parent == install_dir.parent
+        assert src == install_dir
+        assert dst.parent == install_dir.parent
         raise _oserror(5)
 
     monkeypatch.setattr(M.os, "replace", aside_denied)

@@ -776,6 +776,7 @@ def _replace_with_retry(
                         access_denied_paths or ((src, True),)
                     ):
                         log(line)
+                    exc._unsloth_acl_recovery_reported = True
                 raise
             if winerror == _ERROR_ACCESS_DENIED:
                 cause = "a scanner may still hold the files, or the ACLs are unreadable"
@@ -927,6 +928,11 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
             # A policy refusal, not a transient failure: fail closed, never keep-existing.
             raise
         except Exception as exc:  # noqa: BLE001
+            # Exhausted access-denied renames already printed actionable ACL recovery.
+            # Do not turn them into a silent success: setup.ps1 only displays this
+            # installer's captured output when the exit code is non-zero.
+            if getattr(exc, "_unsloth_acl_recovery_reported", False):
+                raise
             # Transient download/verify failure: keep an existing usable Node, but
             # never keep a same-version install whose recorded digest is not the pin
             # (the artifact the short-circuit above just rejected). A different usable

@@ -4539,9 +4539,15 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
             # The aside-move never ran, so install_dir still holds the working
             # install; it must not be moved or cleaned up.
             log("existing install could not be moved aside; leaving it in place")
-            if is_busy_lock_error(exc) and not getattr(
-                exc, "_unsloth_acl_recovery_reported", False
-            ):
+            if is_busy_lock_error(exc):
+                if getattr(exc, "_unsloth_acl_recovery_reported", False):
+                    raise BusyInstallConflict(
+                        "staged prebuilt validation passed but the existing install could not be "
+                        "moved aside because Windows denied access; close any running llama.cpp "
+                        "process or security scanner, or repair unreadable ACLs using the guidance "
+                        "above; previous install left in place "
+                        f"({textwrap.shorten(str(exc), width = 200, placeholder = '...')})"
+                    ) from exc
                 raise BusyInstallConflict(
                     "staged prebuilt validation passed but the existing install could not be "
                     "moved aside because llama.cpp appears to still be in use; previous install "
