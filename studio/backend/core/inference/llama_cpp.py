@@ -57,13 +57,14 @@ from core.inference.context_window import (
     compact_completed_tool_arguments,
     compact_executed_call_arguments,
     compact_refused_tool_arguments,
-    estimate_messages_tokens,
+    estimate_message_tokens_without_unpriced_media,
+    estimate_messages_tokens_without_unpriced_media,
     _reply_floor,
     estimate_messages_tokens_conservative,
     estimate_messages_tokens_dense,
     evicted_messages,
     fit_rolling_context,
-    messages_have_media,
+    messages_without_unpriced_media,
     retrieval_budget,
     tool_result_budget,
     turn_is_servable,
@@ -619,6 +620,23 @@ _SPEC_KIND_CAPABILITY: dict[str, str] = {
     "mtp": "supports_mtp",
 }
 
+
+# llama.h: #define LLAMA_DEFAULT_SEED 0xFFFFFFFF
+_LLAMA_RANDOM_SEED = 0xFFFFFFFF
+
+
+def _apply_seeded_llama_request(payload: dict, seed: Optional[int]) -> None:
+    """Disable prompt caching for fixed seeds so repeated requests stay reproducible."""
+    if seed is None:
+        return
+    payload["seed"] = seed
+    # llama.cpp reads the seed as uint32 and LLAMA_DEFAULT_SEED is 0xFFFFFFFF, so -1 and
+    # 4294967295 are the same "pick one at random" and both keep cache reuse. Compared in
+    # that domain rather than against the -1 literal, which the schemas also accept above.
+    if (seed & 0xFFFFFFFF) != _LLAMA_RANDOM_SEED:
+        payload["cache_prompt"] = False
+
+
 _PARAVIRTUAL_DIFFUSION_NO_NGL_ERROR = (
     "This Mac's Metal device is virtualised, where offloaded layers can return "
     "corrupt output, and the installed unsloth_zoo diffusion shim has no --ngl, "
@@ -655,6 +673,11 @@ _GPU_OFFLOAD_MARKERS = (
 )
 _OFFLOADED_LAYERS_RE = re.compile(
     r"offloaded\s+(\d+)\s*/\s*(\d+)\s+layers?\s+to\s+gpu", re.IGNORECASE
+)
+_GPU_MODEL_BUFFER_RE = re.compile(
+    r"\b(?:CUDA|ROCm|ROCM|HIP|SYCL)(\d+)\s+model buffer size\s*=\s*"
+    r"([0-9]+(?:\.[0-9]+)?)\s+MiB\b",
+    re.IGNORECASE,
 )
 _DEVICE_ROW_RE = re.compile(
     r"-\s*(CUDA|ROCm|ROCM|HIP|Metal|Vulkan|SYCL|OpenCL|MUSA|CANN|CPU)\w*\s*:",
@@ -2057,11 +2080,40 @@ def _extract_reasoning_effort_levels(chat_template: str) -> list:
     ]
 
 
+# Headers already described in the log, keyed on identity rather than name so a rebuilt
+# GGUF at the same path is described again. Bounded; a dropped entry only re-logs once.
+_GGUF_METADATA_LOGGED: "dict[tuple, bool]" = {}
+_GGUF_METADATA_LOGGED_MAX = 32
+_GGUF_METADATA_LOGGED_LOCK = threading.Lock()
+
+
+def _note_gguf_metadata_read(gguf_path: str) -> bool:
+    """True the first time this exact file is read, False for repeats.
+
+    Falls open when the file cannot be stat'd: an unidentifiable read is better logged
+    than silently swallowed.
+    """
+    try:
+        st = os.stat(gguf_path)
+        key = (os.path.abspath(gguf_path), st.st_size, st.st_mtime_ns)
+    except Exception:
+        return True
+    with _GGUF_METADATA_LOGGED_LOCK:
+        if key in _GGUF_METADATA_LOGGED:
+            return False
+        _GGUF_METADATA_LOGGED[key] = True
+        while len(_GGUF_METADATA_LOGGED) > _GGUF_METADATA_LOGGED_MAX:
+            # Insertion-ordered, so this drops the oldest.
+            del _GGUF_METADATA_LOGGED[next(iter(_GGUF_METADATA_LOGGED))]
+        return True
+
+
 def detect_reasoning_flags(
     chat_template: Optional[str],
     model_identifier: Optional[str] = None,
     *,
     log_source: Optional[str] = None,
+    log_level: str = "info",
 ) -> dict:
     """Classify a chat template's reasoning and tool-calling capabilities.
 
@@ -2088,6 +2140,9 @@ def detect_reasoning_flags(
         return flags
     tpl = chat_template
     prefix = f"{log_source}: " if log_source else ""
+    # The GGUF sniffer re-derives these several times per request and the lines say the
+    # same thing every time, so it asks for debug after the first read of a file.
+    _log = logger.debug if log_level == "debug" else logger.info
 
     # 'none' is this style's disable sentinel, not an effort level: the off
     # switch is enable_thinking=false, and the Think menu already hides it.
@@ -2117,14 +2172,14 @@ def detect_reasoning_flags(
         flags["supports_reasoning"] = True
         flags["reasoning_style"] = "enable_thinking_effort"
         flags["reasoning_effort_levels"] = effort_levels
-        logger.info(
+        _log(
             f"{prefix}model supports reasoning "
             f"(enable_thinking + reasoning_effort: {effort_levels})"
         )
     elif "enable_thinking" in tpl:
         flags["supports_reasoning"] = True
         flags["reasoning_style"] = "enable_thinking"
-        logger.info(f"{prefix}model supports reasoning (enable_thinking)")
+        _log(f"{prefix}model supports reasoning (enable_thinking)")
     elif "reasoning_effort" in tpl:
         # gpt-oss / Harmony use reasoning_effort
         # ("low" | "medium" | "high"), not a boolean. Inkling maps a wider
@@ -2139,7 +2194,7 @@ def detect_reasoning_flags(
         scanned = _extract_reasoning_effort_levels(tpl)
         if "low" in scanned and "high" in scanned:
             flags["reasoning_effort_levels"] = scanned
-        logger.info(
+        _log(
             f"{prefix}model supports reasoning "
             f"(reasoning_effort: {flags['reasoning_effort_levels'] or 'default levels'})"
         )
@@ -2148,7 +2203,7 @@ def detect_reasoning_flags(
         normalized_id = (model_identifier or "").lower()
         if "deepseek" in normalized_id:
             flags["supports_reasoning"] = True
-            logger.info(f"{prefix}model supports reasoning (DeepSeek thinking)")
+            _log(f"{prefix}model supports reasoning (DeepSeek thinking)")
 
     # Hardcoded <think> tags or reasoning_content in the template mean
     # thinking is always on (no toggle).
@@ -2156,7 +2211,7 @@ def detect_reasoning_flags(
         if ("<think>" in tpl and "</think>" in tpl) or "reasoning_content" in tpl:
             flags["supports_reasoning"] = True
             flags["reasoning_always_on"] = True
-            logger.info(f"{prefix}model always reasons (<think> tags in template)")
+            _log(f"{prefix}model always reasons (<think> tags in template)")
 
     # preserve_thinking: independent kwarg on some Qwen templates that
     # keeps historical <think> blocks in prior assistant turns.
@@ -2166,11 +2221,11 @@ def detect_reasoning_flags(
         # used by Qwen3.6 and Gemma 4. Keep the product override family-scoped:
         # other templates that happen to expose the same kwarg stay off.
         flags["preserve_thinking_default"] = bool(_QWEN38_MODEL_RE.search(model_identifier or ""))
-        logger.info(f"{prefix}model supports preserve_thinking")
+        _log(f"{prefix}model supports preserve_thinking")
 
     if any(marker in tpl for marker in _TOOL_TEMPLATE_MARKERS):
         flags["supports_tools"] = True
-        logger.info(f"{prefix}model supports tool calling")
+        _log(f"{prefix}model supports tool calling")
 
     return flags
 
@@ -3361,7 +3416,248 @@ _CPU_PLACEMENT_PRESENCE_FLAGS = (_MOE_OFFLOAD_FLAGS - _CPU_MOE_COUNT_FLAGS) | fr
 )
 _CPU_PLACEMENT_FLAGS = _MOE_OFFLOAD_FLAGS | frozenset({"-ot", "--override-tensor"})
 _THREAD_OVERRIDE_FLAGS = frozenset({"-t", "--threads"})
+_GENERATION_CPU_AFFINITY_FLAGS = frozenset({"-C", "--cpu-mask", "-Cr", "--cpu-range"})
 _TENSOR_SPLIT_FLAGS = frozenset({"--tensor-split", "-ts"})
+
+
+def _linux_math_core_count(
+    cpu_root: Path = Path("/sys/devices/system/cpu"),
+    logical_cpus: Optional[int] = None,
+    vendor_id: Optional[str] = None,
+    event_source_root: Path = Path("/sys/bus/event_source/devices"),
+    pinnable_cpus: Optional[set[int]] = None,
+    probe_affinity: Optional[bool] = None,
+) -> Optional[int]:
+    """Linux x86 cores useful to llama.cpp's default math pool.
+
+    ``thread_siblings`` mirrors llama.cpp's physical-core count. Intel's hybrid
+    PMU masks identify performance cores on kernels without ``cpu_capacity``;
+    heterogeneous capacity remains the fallback. AMD capacity classes do not
+    trigger llama.cpp's hybrid CPUID branch, so they retain every physical core.
+    """
+    if logical_cpus is not None and logical_cpus < 1:
+        return None
+
+    def cpu_list(path: Path) -> Optional[set[int]]:
+        try:
+            raw = path.read_text(encoding = "utf-8").strip()
+            if not raw:
+                return set()
+            result: set[int] = set()
+            for part in raw.split(","):
+                bounds = [int(value) for value in part.split("-")]
+                if len(bounds) == 1 and bounds[0] >= 0:
+                    result.add(bounds[0])
+                elif len(bounds) == 2 and 0 <= bounds[0] <= bounds[1]:
+                    result.update(range(bounds[0], bounds[1] + 1))
+                else:
+                    return None
+            return result
+        except (OSError, ValueError):
+            return None
+
+    if vendor_id is None:
+        try:
+            vendor_match = re.search(
+                r"^vendor_id\s*:\s*(\S+)",
+                Path("/proc/cpuinfo").read_text(encoding = "utf-8"),
+                flags = re.MULTILINE,
+            )
+            vendor_id = vendor_match.group(1) if vendor_match else ""
+        except OSError:
+            vendor_id = ""
+    siblings: list[str] = []
+    capacities: list[Optional[int]] = []
+    cpu = 0
+    while logical_cpus is None or cpu < logical_cpus:
+        cpu_path = cpu_root / f"cpu{cpu}"
+        try:
+            sibling_set = (
+                (cpu_path / "topology" / "thread_siblings").read_text(encoding = "utf-8").strip()
+            )
+        except OSError:
+            break
+        if not sibling_set:
+            break
+        siblings.append(sibling_set)
+        try:
+            capacities.append(int((cpu_path / "cpu_capacity").read_text(encoding = "utf-8").strip()))
+        except (OSError, ValueError):
+            capacities.append(None)
+        cpu += 1
+    if not siblings:
+        return None
+    online_cpus = cpu_list(cpu_root / "online")
+    active_siblings = {
+        sibling_set
+        for cpu, sibling_set in enumerate(siblings)
+        if not online_cpus or cpu in online_cpus
+    }
+    if not active_siblings:
+        return None
+    physical_count = len(active_siblings)
+    if vendor_id == "GenuineIntel":
+        native_count = len(online_cpus) if online_cpus else len(siblings)
+
+        def hybrid_math_count(performance_cpus: set[int]) -> int:
+            should_probe = pinnable_cpus is None and (
+                cpu_root == Path("/sys/devices/system/cpu")
+                if probe_affinity is None
+                else probe_affinity
+            )
+
+            def count(pin_cpus: bool) -> int:
+                result = 0
+                cpu = 0
+                while cpu < native_count:
+                    if online_cpus and cpu not in online_cpus:
+                        return physical_count
+                    if pinnable_cpus is not None and cpu not in pinnable_cpus:
+                        return physical_count
+                    if pin_cpus:
+                        try:
+                            os.sched_setaffinity(0, {cpu})
+                        except OSError:
+                            return physical_count
+                    if cpu not in performance_cpus:
+                        cpu += 1
+                        continue
+                    result += 1
+                    cpu += 2
+                return result or physical_count
+
+            if not should_probe:
+                return count(False)
+            if not hasattr(os, "sched_getaffinity") or not hasattr(os, "sched_setaffinity"):
+                return physical_count
+
+            answer = [physical_count]
+
+            def probe() -> None:
+                try:
+                    saved_affinity = os.sched_getaffinity(0)
+                except OSError:
+                    return
+                try:
+                    answer[0] = count(True)
+                finally:
+                    try:
+                        os.sched_setaffinity(0, saved_affinity)
+                    except OSError:
+                        pass
+
+            worker = threading.Thread(target = probe)
+            try:
+                worker.start()
+                worker.join()
+            except RuntimeError:
+                return physical_count
+            return answer[0]
+
+        core_mask = cpu_list(event_source_root / "cpu_core" / "cpus")
+        atom_path = event_source_root / "cpu_atom"
+        lowpower_path = event_source_root / "cpu_lowpower"
+        hybrid_pmu = atom_path.exists() or lowpower_path.exists()
+        if core_mask:
+            return hybrid_math_count(core_mask)
+        if hybrid_pmu:
+            atom_mask = cpu_list(atom_path / "cpus") or cpu_list(lowpower_path / "cpus")
+            if core_mask == set() and atom_mask:
+                return physical_count
+            return 1
+        active_capacities = [
+            capacity
+            for cpu, capacity in enumerate(capacities)
+            if not online_cpus or cpu in online_cpus
+        ]
+        if (
+            all(capacity is not None for capacity in active_capacities)
+            and len(set(active_capacities)) > 1
+        ):
+            fastest = max(capacity for capacity in active_capacities if capacity is not None)
+            return hybrid_math_count(
+                {
+                    cpu
+                    for cpu, capacity in enumerate(capacities)
+                    if (not online_cpus or cpu in online_cpus) and capacity == fastest
+                }
+            )
+    return physical_count
+
+
+def _spilled_decode_threads(
+    n_threads: Optional[int] = None, extra_args: Optional[Iterable[str]] = None
+) -> Optional[int]:
+    """How many threads the spilled-decode cost model should price.
+
+    A positive override follows the launched command's managed-flag, then
+    pass-through precedence. An inherited ``LLAMA_ARG_THREADS`` is ignored here
+    because Studio removes it before spawn whenever argv has no thread flag; if
+    argv does have one, that later flag wins. Explicit SMT oversubscription and
+    explicit or inherited CPU affinity cannot be represented by this
+    physical-core model, so those settings return ``None`` and the caller declines.
+    Otherwise llama.cpp sizes its pool from
+    ``common_cpu_get_num_math``, which counts physical cores
+    and skips SMT siblings and efficiency cores. ``os.cpu_count()`` counts every
+    hyperthread, so on a 6-core / 12-thread desktop it told the cost model the
+    host had twice the cores the child would ever use, and the generation
+    penalty came out about half of what a spill really costs there.
+
+    Linux x86 reads the same sibling topology as llama.cpp and uses the kernel's
+    capacity classes for hybrid CPUs. psutil is the cross-platform fallback. If
+    neither can answer, match llama.cpp's last resort: keep up to four logical
+    CPUs, otherwise halve them, and use four when no logical count is available.
+    """
+    requested: Optional[int] = None
+    if n_threads is not None and n_threads > 0:
+        requested = int(n_threads)
+    args = [str(arg) for arg in extra_args] if extra_args else []
+    if any(arg.partition("=")[0] in _GENERATION_CPU_AFFINITY_FLAGS for arg in args):
+        return None
+    for i, arg in enumerate(args):
+        name, _, inline = arg.partition("=")
+        if name not in _THREAD_OVERRIDE_FLAGS:
+            continue
+        value = inline if inline else (args[i + 1] if i + 1 < len(args) else "")
+        try:
+            requested = int(value.strip())
+        except (TypeError, ValueError):
+            continue
+    physical: Optional[int] = None
+    logical: Optional[int] = None
+    affinity_count: Optional[int] = None
+    if sys.platform.startswith("linux"):
+        if hasattr(os, "sched_getaffinity"):
+            try:
+                affinity_count = len(os.sched_getaffinity(0))
+            except OSError:
+                pass
+        if os.uname().machine.lower() in ("x86_64", "amd64"):
+            physical = _linux_math_core_count()
+    try:
+        import psutil
+
+        answer = psutil.cpu_count(logical = True)
+        if answer and answer > 0:
+            logical = int(answer)
+        if physical is None:
+            answer = psutil.cpu_count(logical = False)
+            if answer and answer > 0:
+                physical = int(answer)
+    except Exception:
+        pass
+    if logical is None:
+        logical = os.cpu_count()
+    if affinity_count is not None and logical is not None and affinity_count < logical:
+        return None
+    if physical is None:
+        physical = logical if logical and logical <= 4 else (logical // 2 if logical else 4)
+    if requested is None:
+        return physical
+    actual = requested if requested > 0 else (logical or os.cpu_count() or physical)
+    if actual > physical:
+        return None
+    return max(1, actual)
 
 
 def _strip_flag_pairs(args: Iterable[str], flags: frozenset[str]) -> list[str]:
@@ -3922,6 +4218,34 @@ def _paravirtual_mmproj_pinnable(server_caps: Mapping[str, object]) -> bool:
         server_caps.get("supports_no_mmproj_offload")
         or not _paravirtual_probe_answered(server_caps)
     )
+
+
+def _idle_slot_clearing_active(cmd: Sequence[str], *, supports_cache_ram: bool) -> bool:
+    """True when *cmd* leaves llama-server clearing idle slots' KV.
+
+    ``--cache-idle-slots`` defaults ON but requires cache-ram, and ``--cache-ram 0``
+    force-disables it (``server-context.cpp``). So the starting point is the BINARY, not
+    the command line: a server old enough to lack ``--cache-ram`` never had idle-slot
+    clearing either, while a server that has it clears by default at 8192 MiB. An absent
+    flag means that default is in force, not that clearing is off -- the common case,
+    since Studio only emits ``--cache-ram`` when something asked it to.
+
+    Last-wins, matching llama.cpp's own argument handling.
+    """
+    enabled = bool(supports_cache_ram)
+    for i, arg in enumerate(cmd):
+        if arg == "--cache-ram":
+            # A missing or unreadable value reads as no clearing, not as the default: the
+            # conservative answer costs a re-cost, the other hands out resident cells.
+            try:
+                enabled = int(cmd[i + 1]) > 0
+            except (IndexError, TypeError, ValueError):
+                enabled = False
+        elif arg == "--cache-idle-slots":
+            enabled = True
+        elif arg == "--no-cache-idle-slots":
+            enabled = False
+    return enabled
 
 
 def _mmproj_env_is_audio_only(path: Optional[str]) -> bool:
@@ -4699,8 +5023,12 @@ def _extra_args_tensor_split(
     if raw is None:
         return None
     try:
-        parts = [float(p) for p in re.split(r"[,/]+", raw) if p.strip()]
-    except ValueError:
+        parts = [
+            struct.unpack("=f", struct.pack("=f", float(p)))[0]
+            for p in re.split(r"[,/]+", raw)
+            if p.strip()
+        ]
+    except (OverflowError, ValueError):
         return None
     # isfinite, not just >= 0: float() takes "nan"/"inf", and NaN passes BOTH the
     # other tests (every comparison against NaN is false, sum() of a NaN list is
@@ -4708,6 +5036,14 @@ def _extra_args_tensor_split(
     # OverflowError with nothing catching it, aborting a load llama.cpp itself
     # merely degenerates on. Rejecting here routes it to the unparseable decline.
     if not parts or any(not math.isfinite(p) or p < 0 for p in parts) or sum(parts) <= 0:
+        return None
+    try:
+        running = 0.0
+        for part in parts:
+            running = struct.unpack("=f", struct.pack("=f", running + part))[0]
+    except OverflowError:
+        return None
+    if not math.isfinite(running):
         return None
     return parts
 
@@ -5249,6 +5585,16 @@ class CountAborted(Exception):
 _PROC_ROOT = "/proc"
 
 
+def _metal_capable_host() -> bool:
+    """Apple Silicon, where an empty CUDA/HIP probe still means GPU offload. Not
+    ``darwin``: auto_detect_backend resolves an Intel Mac to CPU, which wants the line."""
+    try:
+        from utils.hardware import is_apple_silicon
+        return bool(is_apple_silicon())
+    except Exception:  # noqa: BLE001 -- a diagnostic must not break a load
+        return sys.platform == "darwin"
+
+
 class LlamaCppBackend:
     """Manages a llama-server subprocess for GGUF model inference.
 
@@ -5376,6 +5722,7 @@ class LlamaCppBackend:
         self._requested_spec_draft_cache_type: Optional[str] = None
         self._requested_ctx_checkpoints: Optional[int] = None
         self._requested_cache_ram: Optional[int] = None
+        self._idle_slot_clearing_active: bool = False
         self._chat_template: Optional[str] = None
         self._markup_tokens: list = []
         self._markup_profile = None
@@ -5413,6 +5760,11 @@ class LlamaCppBackend:
         self._arch_gate_forced_cpu: bool = False
         # User-picked physical GPU indices (None = automatic selection).
         self._gpu_ids: Optional[List[int]] = None
+        # Physical GPU ids in the exact ordinal order exposed to the current
+        # llama-server child.  Automatic placement deliberately leaves
+        # ``_gpu_ids`` unset, so reclaim accounting must not infer this mapping
+        # from status state after a fit/arch gate narrowed the child mask.
+        self._child_gpu_physical_ids: Optional[tuple[int, ...]] = None
         # RAW requested GPU pin, before the fit narrowed it. self._gpu_ids records the
         # EFFECTIVE (fit-narrowed) pin for /status; dedupe compares this raw value so a
         # [0, 1] narrowed to [0] and re-sent as [0, 1] still matches (#7239).
@@ -5586,6 +5938,34 @@ class LlamaCppBackend:
     def is_active(self) -> bool:
         """True if a llama-server process exists (loading or loaded)."""
         return self._process is not None
+
+    def reclaimable_gpu_memory_gb(self) -> Optional[dict[int, float]]:
+        """Stable GPU model buffers the disposable llama-server will release.
+
+        The startup log sizes only resident model buffers, so this is a
+        conservative lower bound: KV/compute buffers remain charged.  Unlike a
+        live process-memory sample, the value cannot race a short generation
+        that grows or clears its cache between the free-memory and owner reads.
+        """
+        process = self._process
+        if process is None or process.poll() is not None:
+            return None
+        physical_ids = list(getattr(self, "_child_gpu_physical_ids", None) or ())
+        if not physical_ids:
+            return None
+        reported: dict[int, float] = {}
+        for line in list(self._stdout_lines):
+            match = _GPU_MODEL_BUFFER_RE.search(line)
+            if match is None:
+                continue
+            ordinal = int(match.group(1))
+            if ordinal >= len(physical_ids):
+                return None
+            physical = int(physical_ids[ordinal])
+            reported[physical] = reported.get(physical, 0.0) + float(match.group(2)) / 1024.0
+        if self._process is not process or process.poll() is not None:
+            return None
+        return reported or None
 
     @property
     def base_url(self) -> str:
@@ -5794,6 +6174,17 @@ class LlamaCppBackend:
         return self._requested_cache_ram
 
     @property
+    def idle_slot_clearing_active(self) -> bool:
+        """Whether an idle slot's KV cells actually come back on this server.
+
+        Under ``--kv-unified`` an idle slot keeps its cells until ``prompt_clear()``,
+        which llama-server runs only under ``--cache-idle-slots``. False means releasing
+        a slot frees nothing, so nothing may be handed to another caller on the strength
+        of it. False until a load has spawned, which is the safe answer.
+        """
+        return self._idle_slot_clearing_active
+
+    @property
     def max_context_length(self) -> Optional[int]:
         """Return the largest context that fits on this hardware at load time.
 
@@ -5826,6 +6217,7 @@ class LlamaCppBackend:
         self._requested_spec_draft_cache_type = None
         self._requested_ctx_checkpoints = None
         self._requested_cache_ram = None
+        self._idle_slot_clearing_active = False
 
     @staticmethod
     def _read_rss_bytes(pid: int) -> Optional[int]:
@@ -7405,7 +7797,16 @@ class LlamaCppBackend:
             logger.debug("Failed to set ROCm visibility env vars for child: %s", e)
 
     @staticmethod
-    def _pin_visible_gpu_order_for_split(env: dict) -> None:
+    def _unmasked_child_gpu_physical_ids() -> Optional[tuple[int, ...]]:
+        from utils.hardware import get_parent_visible_gpu_ids
+
+        parent_gpu_ids = get_parent_visible_gpu_ids()
+        if len(parent_gpu_ids) == 1:
+            return (int(parent_gpu_ids[0]),)
+        return None
+
+    @staticmethod
+    def _pin_visible_gpu_order_for_split(env: dict) -> Optional[tuple[int, ...]]:
         """Pin the child's GPU enumeration to the picker's order for a manual
         ``--tensor-split`` across the whole visible set. CUDA's default
         FASTEST_FIRST enumeration applies the shares to the wrong cards on
@@ -7422,7 +7823,7 @@ class LlamaCppBackend:
         env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
         inherited = LlamaCppBackend._resolve_visible_physical_ids()
         if not inherited:
-            return
+            return None
         order = None
         try:
             from utils.hardware import get_backend_visible_gpu_info
@@ -7450,6 +7851,7 @@ class LlamaCppBackend:
         LlamaCppBackend._emit_child_gpu_visibility(
             env, ",".join(str(i) for i in order), prefer_rocr = prefer_rocr
         )
+        return tuple(int(i) for i in order)
 
     @staticmethod
     def _vulkan_targets_are_igpus(binary: Optional[str], gpu_indices = None) -> bool:
@@ -7684,6 +8086,77 @@ class LlamaCppBackend:
             return unified
         except Exception:
             return set()
+
+    @staticmethod
+    def _rocm_selected_pool_mib(gpu_indices = None) -> Optional[int]:
+        """Return selected ROCm APUs' combined carve-out in MiB.
+
+        Return ``None`` unless every requested device is present, readable, and a
+        unified-memory APU. The ggml setting is process-wide, so mixed selections
+        fail closed.
+        """
+        try:
+            import torch
+
+            if not LlamaCppBackend._torch_is_rocm(torch):
+                return None
+            if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
+                return None
+            from core.training.worker import _rocm_classify_unified_memory
+
+            wanted = None if gpu_indices is None else set(gpu_indices)
+            physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
+            total_mib = 0
+            seen: set[int] = set()
+            for ordinal in range(torch.cuda.device_count()):
+                pid = (
+                    physical_ids[ordinal]
+                    if physical_ids is not None and ordinal < len(physical_ids)
+                    else ordinal
+                )
+                if wanted is not None and pid not in wanted:
+                    continue
+                try:
+                    props = torch.cuda.get_device_properties(ordinal)
+                    _arch, is_unified = _rocm_classify_unified_memory(props)
+                except Exception:
+                    return None
+                if not is_unified:
+                    return None
+                total = int(getattr(props, "total_memory", 0) or 0)
+                if total <= 0:
+                    return None
+                total_mib += total // (1024 * 1024)
+                seen.add(pid)
+            if not seen or (wanted is not None and seen != wanted):
+                return None
+            return total_mib
+        except Exception:
+            return None
+
+    @staticmethod
+    def _unified_memory_would_help(gpu_indices = None) -> bool:
+        """Whether managed allocation is the larger pool for the selected APUs.
+
+        On HIP it draws host RAM instead of the selected APUs' carve-outs, so the
+        decision is a direct comparison of the two pools. Available host RAM against
+        the carve-out's TOTAL is deliberate: a carve-out another process is holding
+        is not credited back to the host side, because the two pools fail
+        differently. Over-asking the carve-out returns hipErrorOutOfMemory and the
+        load fails cleanly, while over-asking host RAM is the OOM kill this gate
+        exists to stop, so both halves of the asymmetry lean toward the pool a miss
+        is recoverable in. Missing data and mixed-device selections fail closed.
+        """
+        try:
+            pool_mib = LlamaCppBackend._rocm_selected_pool_mib(gpu_indices)
+            if not pool_mib:
+                return False
+            host_mib = LlamaCppBackend._available_system_memory_mib()
+            if not host_mib:
+                return False
+            return int(host_mib) > int(pool_mib)
+        except Exception:
+            return False
 
     @staticmethod
     def _rocm_arch_by_physical_id() -> dict[int, str]:
@@ -8680,6 +9153,63 @@ class LlamaCppBackend:
         except Exception as e:
             logger.debug(f"amd-smi GPU probe failed: {e}")
             return []
+
+    @staticmethod
+    def _explain_empty_gpu_probe(binary: Optional[str] = None) -> str:
+        """Why ``_get_gpu_memory`` came back empty, as one short phrase.
+
+        Six unrelated causes share that one empty list -- no torch, no usable device, a
+        stale visibility mask, the #7624 arch gate, amd-smi declining, or no GPU at all --
+        and they need different fixes. No ``mem_get_info`` call, so this never creates the
+        HIP context the amd-smi branch avoids. Never raises, never returns "".
+        """
+        try:
+            binary = binary or LlamaCppBackend._find_llama_server_binary()
+            if _metal_capable_host():
+                # Same check as the load site: an Intel Mac wants its real reason.
+                return "this probe reads CUDA and HIP only; Apple Silicon offloads through Metal"
+            if LlamaCppBackend._is_vulkan_backend(binary):
+                return "the Vulkan probe reported no device"
+
+            masks = []
+            for var in (
+                "CUDA_VISIBLE_DEVICES",
+                "HIP_VISIBLE_DEVICES",
+                "ROCR_VISIBLE_DEVICES",
+                "GPU_DEVICE_ORDINAL",
+            ):
+                raw = os.environ.get(var)
+                if raw is not None:
+                    masks.append(f"{var}={raw!r}" if raw.strip() else f"{var} is empty")
+            mask_note = f" ({', '.join(masks)})" if masks else ""
+
+            try:
+                import torch
+            except Exception:  # noqa: BLE001
+                return f"torch is not importable, so no GPU could be enumerated{mask_note}"
+            if not hasattr(torch, "cuda") or not torch.cuda.is_available():
+                return f"torch reports no usable CUDA or HIP device{mask_note}"
+            # Counting devices does not create a context; reading their memory would.
+            count = torch.cuda.device_count()
+            if not count:
+                return f"torch enumerated 0 devices{mask_note}"
+
+            if LlamaCppBackend._torch_is_rocm(torch):
+                coverage = LlamaCppBackend._installed_llama_gfx_archs(binary)
+                if coverage:
+                    present = sorted(set(LlamaCppBackend._rocm_arch_by_physical_id().values()))
+                    if present and not (set(present) & set(coverage)):
+                        return (
+                            f"the installed llama.cpp build covers {sorted(coverage)} but this "
+                            f"host has {present}, so the arch gate dropped every device"
+                        )
+                return (
+                    f"torch sees {count} ROCm device(s) but the probe returned none, so "
+                    f"amd-smi and the torch fallback both declined{mask_note}"
+                )
+            return f"torch sees {count} device(s) but the probe returned none{mask_note}"
+        except Exception as e:  # noqa: BLE001 -- diagnostics must not break a load
+            return f"the reason could not be determined ({type(e).__name__})"
 
     @staticmethod
     def _get_gpu_memory(
@@ -12462,15 +12992,23 @@ class LlamaCppBackend:
             # architecture" rather than "the read stopped early" -- what the preflight needs.
             self._gguf_header_parsed = kv_complete
 
+            # Ten call sites reach this, each via its own throwaway probe, and one
+            # estimate-memory POST walks the header 3-5 times: 140 of 296 log lines
+            # over a 20s four-tab session. The facts are identical every time, so only
+            # the first read of a given file says them out loud.
+            first_read = _note_gguf_metadata_read(gguf_path)
+            level = "info" if first_read else "debug"
+            log_at = logger.info if first_read else logger.debug
             if self._context_length:
-                logger.info(f"GGUF metadata: context_length={self._context_length}")
+                log_at(f"GGUF metadata: context_length={self._context_length}")
             if self._chat_template:
-                logger.info(f"GGUF metadata: chat_template={len(self._chat_template)} chars")
+                log_at(f"GGUF metadata: chat_template={len(self._chat_template)} chars")
                 # Detect thinking/reasoning support from chat template.
                 flags = detect_reasoning_flags(
                     self._chat_template,
                     self._model_identifier,
                     log_source = "GGUF metadata",
+                    log_level = level,
                 )
                 self._supports_reasoning = flags["supports_reasoning"]
                 self._reasoning_style = flags["reasoning_style"]
@@ -12778,6 +13316,7 @@ class LlamaCppBackend:
         self._requested_spec_draft_cache_type = None
         self._requested_ctx_checkpoints = None
         self._requested_cache_ram = None
+        self._idle_slot_clearing_active = False
         self._flash_attn_enabled = True
         self._effective_cache_types = ("f16", "f16")
         self._requested_cache_types = ("f16", "f16")
@@ -16647,7 +17186,9 @@ class LlamaCppBackend:
                 out[ki] = "<redacted>"
         return out
 
-    def _start_llama_process(self, cmd: list[str], env: dict) -> None:
+    def _start_llama_process(
+        self, cmd: list[str], env: dict, *, child_gpu_physical_ids: Optional[tuple[int, ...]]
+    ) -> None:
         """Spawn llama-server from cmd and start draining its output.
 
         Caller holds self._lock. Resets the stdout buffer, opens a fresh
@@ -16659,6 +17200,7 @@ class LlamaCppBackend:
         # stored a Popen handle here, drop that orphan before we overwrite
         # the reference. See issue #5161.
         self._kill_process()
+        self._child_gpu_physical_ids = child_gpu_physical_ids
 
         self._stdout_lines = []
         # Tee llama-server output to a dedicated log file so a post-mortem
@@ -17756,6 +18298,7 @@ class LlamaCppBackend:
                 # UnboundLocalError on the path that reaches it most often.
                 _spill_inputs: Optional[dict] = None
                 total_by_idx: dict[int, int] = {}
+                _gpu_mem: list[tuple[int, int, int]] = []
                 model_size = None  # set in the fit try; used by the APU RAM guard
                 # "none" once the fit proves the load needs no demand paging, else None
                 # for llama.cpp's own default. Bound before the try like the verdict
@@ -19834,6 +20377,7 @@ class LlamaCppBackend:
                         # total, so it can spill the MINIMUM set of blocks.
                         "model_path": model_path,
                         "n_ctx": effective_ctx,
+                        "n_threads": n_threads,
                         # The slot count the KV and recurrent state were PRICED at.
                         # A pass-through --parallel is appended after Unsloth's own
                         # and wins, and both caches scale with it.
@@ -19868,6 +20412,21 @@ class LlamaCppBackend:
                         # --fit flag state, not "does it fit": off means this subset provably fits.
                         f"GPUs free: {gpus}, selected: {gpu_indices}, --fit: {'on' if use_fit else 'off'}"
                     )
+                    if (
+                        not gpus
+                        and not _detected_gpus
+                        and not gpu_ids
+                        and not _arch_gate_forced_cpu
+                        and not _metal_capable_host()
+                    ):
+                        # Claims no placement: llama.cpp enumerates devices itself.
+                        # _detected_gpus, not gpus: Manual modes empty gpus on purpose.
+                        # gpu_ids is pinned for the child below; the arch gate warns better.
+                        logger.warning(
+                            "Studio could not enumerate any GPU, so this load was planned "
+                            "without device information: %s",
+                            LlamaCppBackend._explain_empty_gpu_probe(binary),
+                        )
                     # The planner ran to completion over a real device list and
                     # left --fit on, i.e. it could not prove the model fits. THAT
                     # is a partial-placement verdict. Set last, so any early
@@ -21511,10 +22070,9 @@ class LlamaCppBackend:
                     if not threads_overridden:
                         env.setdefault("OMP_NUM_THREADS", "2")
 
-                # AMD unified-memory APUs (gfx1150/gfx1151): let llama.cpp use shared
-                # system RAM. Not on Vulkan (nor DC below): gpu_indices are ggml
-                # ordinals, not CUDA/ROCm ids. Ownership-tracked, so the arch-crash
-                # retry withdraws it only when THIS launch set it.
+                # Managed allocations trade ROCm APU carve-out capacity for host RAM.
+                # Vulkan indices are not ROCm ids. Track ownership so later retries
+                # preserve inherited values.
                 _unified_env_applied = False
                 _unified_opt_out = self._unified_memory_opted_out(env)
                 if _unified_opt_out:
@@ -21524,10 +22082,13 @@ class LlamaCppBackend:
                         logger.info(
                             "Unified memory opted out: unset GGML_CUDA_ENABLE_UNIFIED_MEMORY"
                         )
-                elif not is_vulkan_backend and self._amd_apu_wants_unified_memory(gpu_indices):
+                elif not is_vulkan_backend and self._unified_memory_would_help(gpu_indices):
                     _unified_env_applied = "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
                     env.setdefault("GGML_CUDA_ENABLE_UNIFIED_MEMORY", "1")
-                    logger.info("AMD unified-memory APU: set GGML_CUDA_ENABLE_UNIFIED_MEMORY=1")
+                    logger.info(
+                        "AMD unified-memory APU whose carve-out is smaller than host "
+                        "RAM: set GGML_CUDA_ENABLE_UNIFIED_MEMORY=1"
+                    )
 
                 # DC NVIDIA GPUs: FP32 accum (+ P2P / launch queues for multi-GPU).
                 # See _apply_datacenter_env; opt out with UNSLOTH_DISABLE_DC_TUNING=1.
@@ -21555,6 +22116,10 @@ class LlamaCppBackend:
                     and not is_vulkan_backend
                     and not self._zero_offload_keeps_gpu_visible(cmd, env)
                 )
+                _child_gpu_physical_ids: Optional[tuple[int, ...]] = None
+                if not is_vulkan_backend and _gpu_mem:
+                    _child_gpu_physical_ids = self._unmasked_child_gpu_physical_ids()
+
                 # The CUDA SM gate goes here, where the child's GPU visibility is
                 # finally known: both arms below write CUDA_VISIBLE_DEVICES=-1, so no
                 # kernel image loads and the abort this pre-empts cannot happen.
@@ -21573,6 +22138,7 @@ class LlamaCppBackend:
                 # None there, so this branch writes the mask.
                 if _cpu_only_zero_offload or _arch_gate_forced_cpu:
                     self._emit_child_gpu_visibility(env, "-1")
+                    _child_gpu_physical_ids = ()
                     # Manual mode admits tensor parallelism on the FULL device count,
                     # which still counts the dropped cards, so --split-mode tensor can
                     # reach a child that sees none. llama_prepare_model_devices then
@@ -21616,6 +22182,7 @@ class LlamaCppBackend:
                     self._emit_child_gpu_visibility(
                         env, ",".join(str(i) for i in gpu_indices), prefer_rocr = True
                     )
+                    _child_gpu_physical_ids = tuple(int(i) for i in gpu_indices)
                     _launch_pinned_ids = list(gpu_indices)
                 elif not is_vulkan_backend and not gpu_ids:
                     # Nothing above pinned the child. Two shapes land here and the gate
@@ -21670,24 +22237,33 @@ class LlamaCppBackend:
                         # mode or ratio, and the mask re-indexes the survivors
                         # under both.
                         self._clear_split_placement_env(env)
-                        # GGML_CUDA_ENABLE_UNIFIED_MEMORY was decided against
-                        # gpu_indices, None here, so an uncovered APU anywhere on the
-                        # host turned it on -- and this narrowing hands the child only
-                        # discrete cards, where _amd_apu_wants_unified_memory's docstring
-                        # calls it harmful. Same withdrawal and ownership check as the
-                        # arch-crash retry: only the value THIS launch set.
-                        if _unified_env_applied and not self._amd_apu_wants_unified_memory(
-                            _survivors
-                        ):
+                        # The setting is process-wide, so recompute it after changing
+                        # the selected devices. Ownership protects inherited values.
+                        _survivors_gain_unified = self._unified_memory_would_help(_survivors)
+                        if _unified_env_applied and not _survivors_gain_unified:
                             env.pop("GGML_CUDA_ENABLE_UNIFIED_MEMORY", None)
                             _unified_env_applied = False
                             logger.info(
-                                "Arch gate narrowed the launch to discrete GPU(s); "
-                                "dropped GGML_CUDA_ENABLE_UNIFIED_MEMORY."
+                                "Arch gate narrowed the launch onto GPU(s) the "
+                                "unified-memory swap cannot help; dropped "
+                                "GGML_CUDA_ENABLE_UNIFIED_MEMORY."
+                            )
+                        elif (
+                            _survivors_gain_unified
+                            and not _unified_opt_out
+                            and "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
+                        ):
+                            env["GGML_CUDA_ENABLE_UNIFIED_MEMORY"] = "1"
+                            _unified_env_applied = True
+                            logger.info(
+                                "Arch gate narrowed the launch onto a unified-memory "
+                                "APU whose carve-out is smaller than host RAM; set "
+                                "GGML_CUDA_ENABLE_UNIFIED_MEMORY=1."
                             )
                         self._emit_child_gpu_visibility(
                             env, ",".join(str(i) for i in _survivors), prefer_rocr = True
                         )
+                        _child_gpu_physical_ids = tuple(int(i) for i in _survivors)
                         # Narrower than any pin above, so it replaces it.
                         _launch_pinned_ids = list(_survivors)
                     elif manual_tensor_split_emitted:
@@ -21695,7 +22271,7 @@ class LlamaCppBackend:
                         # no mask above): the UI built --tensor-split in ascending
                         # physical/PCI order, so pin the child's enumeration to match.
                         # The whole visible set stays in use, only its order is fixed.
-                        self._pin_visible_gpu_order_for_split(env)
+                        _child_gpu_physical_ids = self._pin_visible_gpu_order_for_split(env)
 
                 _child_has_no_gpu = (
                     # each names a device present but unusable, so it owns the empty pool
@@ -21886,6 +22462,7 @@ class LlamaCppBackend:
                         # have stored before we overwrite the reference (#5161).
                         # Also reaps the crashed first attempt on the retry pass.
                         self._kill_process()
+                        self._child_gpu_physical_ids = _child_gpu_physical_ids
 
                         self._stdout_lines = []
                         # Tee llama-server output to a dedicated log file so a
@@ -21919,6 +22496,12 @@ class LlamaCppBackend:
                             logger.debug(f"Could not open llama-server log file: {e}")
                             self._llama_log_path = None
                         _last_spawn_cmd = list(run_cmd)
+                        # Read off the argv actually spawned rather than the intent, so
+                        # every emitter is covered by construction.
+                        self._idle_slot_clearing_active = _idle_slot_clearing_active(
+                            run_cmd,
+                            supports_cache_ram = bool(server_caps.get("supports_cache_ram")),
+                        )
                         self._process = subprocess.Popen(
                             run_cmd,
                             stdout = subprocess.PIPE,
@@ -22496,7 +23079,10 @@ class LlamaCppBackend:
                         gpu_indices, [i for i, _free in _detected_gpus]
                     )
                     if _remaining:
+                        # APU presence controls the RAM guard; relative pool sizes
+                        # determine whether managed allocations help.
                         _retry_wants_unified = self._amd_apu_wants_unified_memory(_remaining)
+                        _retry_unified_helps = self._unified_memory_would_help(_remaining)
                         # Everything recorded so far priced the CRASHED selection, and
                         # that placement is gone: the canonical #7624 shape pins the APU
                         # whose shared-pool "free memory" outranked the dGPU, warns that
@@ -22557,27 +23143,30 @@ class LlamaCppBackend:
                         # the value this launch set. Both directions: a markerless
                         # mixed host can as easily crash on the dGPU and land on the
                         # APU, which needs it.
-                        if _unified_env_applied and not _retry_wants_unified:
+                        if _unified_env_applied and not _retry_unified_helps:
                             env.pop("GGML_CUDA_ENABLE_UNIFIED_MEMORY", None)
                             _unified_env_applied = False
                             logger.info(
-                                "Arch-crash retry targets discrete GPU(s); dropped "
+                                "Arch-crash retry targets GPU(s) the unified-memory "
+                                "swap cannot help; dropped "
                                 "GGML_CUDA_ENABLE_UNIFIED_MEMORY for the respawn."
                             )
                         elif (
-                            _retry_wants_unified
+                            _retry_unified_helps
                             and not _unified_opt_out  # the opt-out outlives the respawn
                             and "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
                         ):
                             env["GGML_CUDA_ENABLE_UNIFIED_MEMORY"] = "1"
                             _unified_env_applied = True
                             logger.info(
-                                "Arch-crash retry targets a unified-memory APU; set "
+                                "Arch-crash retry targets a unified-memory APU whose "
+                                "carve-out is smaller than host RAM; set "
                                 "GGML_CUDA_ENABLE_UNIFIED_MEMORY=1 for the respawn."
                             )
                         self._emit_child_gpu_visibility(
                             env, ",".join(str(i) for i in _remaining), prefer_rocr = True
                         )
+                        _child_gpu_physical_ids = tuple(int(i) for i in _remaining)
                         # Same for the inherited env twins of the flags dropped
                         # below: the new mask re-indexes the survivors under them.
                         self._clear_split_placement_env(env)
@@ -23123,7 +23712,11 @@ class LlamaCppBackend:
                             _last_spawn_cmd = list(cmd)
                             self._is_vision = False
                             self._mmproj_has_audio = False
-                            self._start_llama_process(cmd, env)
+                            self._start_llama_process(
+                                cmd,
+                                env,
+                                child_gpu_physical_ids = _child_gpu_physical_ids,
+                            )
                             if self._wait_for_health(timeout = 600.0, cancelled = _load_cancelled):
                                 healthy = True
                                 # The child that serves this session never read the
@@ -24363,6 +24956,7 @@ class LlamaCppBackend:
         # Cleared before the early return, not in the finally below, so a stale split never
         # outlives its runner even when there was no process to kill.
         self._diffusion_requested_ngl = None
+        self._child_gpu_physical_ids = None
         if self._process is None:
             return
         # Not every _process is a Popen: tests stand one in to mean "a server is
@@ -25155,8 +25749,7 @@ class LlamaCppBackend:
                     len(kept),
                 )
                 return None
-            _scale = max(split_weights) if split_weights else 1
-            split_weights = [int(round(p * _scale)) for p in _ts[: len(kept)]]
+            split_weights = _ts[: len(kept)]
         if not vram_per_device:
             return None
         avail_mib = self._available_system_memory_mib()
@@ -25239,6 +25832,14 @@ class LlamaCppBackend:
             return None
         extra_gpu_bytes += sidecar_bytes
 
+        decode_threads = _spilled_decode_threads(
+            inputs.get("n_threads"),
+            extra_args,
+        )
+        if decode_threads is None:
+            logger.debug("Tensor spill: declined, decode CPU settings cannot be priced")
+            return None
+
         return plan_placement(
             layout,
             vram_per_device,
@@ -25249,9 +25850,15 @@ class LlamaCppBackend:
             opts = PlanOptions(
                 overhead_bytes_per_device = (
                     int(inputs.get("soft_overhead") or 0)
-                    + self._PIPELINE_PER_DEVICE_OVERHEAD_MIB * 1024 * 1024
                     + int(inputs.get("ctx_compute_per_device") or 0)
                 ),
+                # Charged for the devices AFTER the first, matching every other
+                # use of this constant in this file (:18664, :18922, and the
+                # `n > 1` guards at :18761 and :19186). Added to the flat
+                # per-device term it also came off device 0, which withheld a GiB
+                # of a single card that no split was ever going to allocate --
+                # phantom deficit the planner covered by spilling real blocks.
+                pipeline_overhead_bytes = self._PIPELINE_PER_DEVICE_OVERHEAD_MIB * 1024 * 1024,
                 # Module-level, unlike the line above, so not reachable through self.
                 host_ram_headroom_bytes = _HOST_RAM_HEADROOM_MIB * 1024 * 1024,
                 # -nkvo is not a reason to decline: it moves the cache and the
@@ -25267,7 +25874,7 @@ class LlamaCppBackend:
                 # GPU only at batch >= 32, and decode is batch 1), so the penalty
                 # tracks core count. Read the real one, not a default.
                 host = HostProfile(
-                    threads = os.cpu_count() or 1,
+                    threads = decode_threads,
                     # Wired, not defaulted. On a unified-memory APU the credited
                     # "VRAM" IS system RAM, so an -ot spill frees no device memory
                     # and only buys the CPU backend's slower read path. The planner
@@ -26706,11 +27313,7 @@ class LlamaCppBackend:
             if max_tokens is not None
             else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR)
         )
-        if (
-            context_overflow == "truncate_oldest"
-            and self._effective_context_length
-            and not messages_have_media(openai_messages)
-        ):
+        if context_overflow == "truncate_oldest" and self._effective_context_length:
             try:
                 _before_fit = openai_messages
                 # One value for both the boundary read and the fit: a boundary the fit
@@ -26732,7 +27335,9 @@ class LlamaCppBackend:
                     context_length = self._effective_context_length,
                     max_tokens = payload["max_tokens"],
                     count_tokens = lambda fitted: self.count_chat_tokens(
-                        neutralize_control_markup_in_messages(fitted, None, self.markup_profile),
+                        neutralize_control_markup_in_messages(
+                            messages_without_unpriced_media(fitted), None, self.markup_profile
+                        ),
                         None,
                         None,
                         strict = True,
@@ -26740,6 +27345,7 @@ class LlamaCppBackend:
                         continue_final_message = continue_final_message,
                         should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
                     ),
+                    estimate_message = estimate_message_tokens_without_unpriced_media,
                     reserve_tokens = _conversation_recall_reserve(thread_id),
                     sticky_dropped = _sticky,
                     sticky_is_checkpoint = _sticky_is_checkpoint,
@@ -26769,7 +27375,9 @@ class LlamaCppBackend:
                         ),
                         count_tokens = lambda fitted: self.count_chat_tokens(
                             neutralize_control_markup_in_messages(
-                                fitted, None, self.markup_profile
+                                messages_without_unpriced_media(fitted),
+                                None,
+                                self.markup_profile,
                             ),
                             None,
                             None,
@@ -26807,8 +27415,7 @@ class LlamaCppBackend:
                 logger.warning("Could not preflight the rolling context window: %s", exc)
         if stop:
             payload["stop"] = stop
-        if seed is not None:
-            payload["seed"] = seed
+        _apply_seeded_llama_request(payload, seed)
         payload["stream_options"] = {"include_usage": True}
 
         url = f"{self.base_url}/v1/chat/completions"
@@ -27054,6 +27661,14 @@ class LlamaCppBackend:
         context_policy: Optional[str] = None,
         compaction_headroom_ratio: Optional[float] = None,
         tool_choice: Any = None,
+        # Appended, never inserted: no bare `*` here, so every parameter is
+        # positional-or-keyword and inserting one rebinds later positional arguments.
+        #
+        # Called at the top of every round with the conversation as it now stands, so KV
+        # admission can charge what this run occupies rather than its opening estimate.
+        # MAY BLOCK: recost_waiting waits for cache room. Safe at the top of a round,
+        # where the previous round's request has completed.
+        on_conversation_grew: Optional[Callable[[list], None]] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -27419,8 +28034,6 @@ class LlamaCppBackend:
             """
             if context_overflow != "truncate_oldest" or not self._effective_context_length:
                 return None
-            if messages_have_media(candidate):
-                return None
             try:
                 _fitted, _truncation = _fit_with_instruction_pins(
                     list(candidate),
@@ -27434,7 +28047,9 @@ class LlamaCppBackend:
                     ),
                     count_tokens = lambda fitted: self.count_chat_tokens(
                         neutralize_control_markup_in_messages(
-                            fitted, _markup_cache, self.markup_profile
+                            messages_without_unpriced_media(fitted),
+                            _markup_cache,
+                            self.markup_profile,
                         ),
                         None,
                         tools,
@@ -27442,6 +28057,7 @@ class LlamaCppBackend:
                         chat_template_kwargs = reasoning_kw,
                         continue_final_message = continue_flag,
                     ),
+                    estimate_message = estimate_message_tokens_without_unpriced_media,
                     anchor_ids = _rolling_anchor_ids,
                 )
             except Exception:
@@ -27476,7 +28092,9 @@ class LlamaCppBackend:
             try:
                 _tokens = self.count_chat_tokens(
                     neutralize_control_markup_in_messages(
-                        candidate, _markup_cache, self.markup_profile
+                        messages_without_unpriced_media(candidate),
+                        _markup_cache,
+                        self.markup_profile,
                     ),
                     None,
                     tools,
@@ -27526,6 +28144,13 @@ class LlamaCppBackend:
         iteration = -1
         while True:
             iteration += 1
+            # Here rather than at each append: six sites grow the conversation and all of
+            # them pass through this one point before the cache must hold the result.
+            if on_conversation_grew is not None:
+                try:
+                    on_conversation_grew(conversation)
+                except Exception:  # accounting must never break a run in progress
+                    logger.debug("tool loop recost failed", exc_info = True)
             if iteration >= max_tool_iterations + _extra + _continuation_credits:
                 break
             if cancel_event is not None and cancel_event.is_set():
@@ -27597,11 +28222,7 @@ class LlamaCppBackend:
             )
             _preflight_context_length = None
             _preflight_succeeded = False
-            if (
-                context_overflow == "truncate_oldest"
-                and self._effective_context_length
-                and not messages_have_media(conversation)
-            ):
+            if context_overflow == "truncate_oldest" and self._effective_context_length:
                 _preflight_context_length = self._effective_context_length
                 try:
                     _before_fit = conversation
@@ -27627,7 +28248,9 @@ class LlamaCppBackend:
                         max_tokens = _iteration_max_tokens,
                         count_tokens = lambda fitted: self.count_chat_tokens(
                             neutralize_control_markup_in_messages(
-                                fitted, _markup_cache, self.markup_profile
+                                messages_without_unpriced_media(fitted),
+                                _markup_cache,
+                                self.markup_profile,
                             ),
                             None,
                             safe_tools,
@@ -27638,6 +28261,7 @@ class LlamaCppBackend:
                             ),
                             should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
                         ),
+                        estimate_message = estimate_message_tokens_without_unpriced_media,
                         anchor_ids = _rolling_anchor_ids,
                         keeps_boundary = _keeps_compaction_boundary(thread_id),
                         can_reset = _iteration_can_reset,
@@ -27653,7 +28277,7 @@ class LlamaCppBackend:
                         # messages, priced by the fit with the catalogue and template.
                         _prompt_token_offset = int(
                             truncation.get("prompt_tokens_after") or 0
-                        ) - estimate_messages_tokens(conversation)
+                        ) - estimate_messages_tokens_without_unpriced_media(conversation)
                     if truncation:
                         _recalled = _archive_and_recall(
                             conversation,
@@ -27683,7 +28307,9 @@ class LlamaCppBackend:
                             ),
                             count_tokens = lambda fitted: self.count_chat_tokens(
                                 neutralize_control_markup_in_messages(
-                                    fitted, _markup_cache, self.markup_profile
+                                    messages_without_unpriced_media(fitted),
+                                    _markup_cache,
+                                    self.markup_profile,
                                 ),
                                 None,
                                 safe_tools,
@@ -27766,8 +28392,7 @@ class LlamaCppBackend:
                 _continuation_max_tokens = None
             if stop:
                 payload["stop"] = stop
-            if seed is not None:
-                payload["seed"] = seed
+            _apply_seeded_llama_request(payload, seed)
 
             _respawn_truncations: list[dict] = []
 
@@ -27792,7 +28417,9 @@ class LlamaCppBackend:
                         max_tokens = _iteration_max_tokens,
                         count_tokens = lambda fitted: self.count_chat_tokens(
                             neutralize_control_markup_in_messages(
-                                fitted, _markup_cache, self.markup_profile
+                                messages_without_unpriced_media(fitted),
+                                _markup_cache,
+                                self.markup_profile,
                             ),
                             None,
                             safe_tools,
@@ -27803,6 +28430,7 @@ class LlamaCppBackend:
                             ),
                             should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
                         ),
+                        estimate_message = estimate_message_tokens_without_unpriced_media,
                         anchor_ids = _rolling_anchor_ids,
                         keeps_boundary = _keeps_compaction_boundary(thread_id),
                         can_reset = _can_reset_epoch(
@@ -27920,11 +28548,18 @@ class LlamaCppBackend:
                     _reply_target = prompt_budget(
                         self._effective_context_length, _iteration_max_tokens
                     )
-                    if estimate_messages_tokens_dense(conversation) > 0.7 * _reply_target:
+                    if (
+                        estimate_messages_tokens_dense(
+                            messages_without_unpriced_media(conversation)
+                        )
+                        > 0.7 * _reply_target
+                    ):
                         try:
                             _prompt_now = self.count_chat_tokens(
                                 neutralize_control_markup_in_messages(
-                                    conversation, _markup_cache, self.markup_profile
+                                    messages_without_unpriced_media(conversation),
+                                    _markup_cache,
+                                    self.markup_profile,
                                 ),
                                 None,
                                 safe_tools,
@@ -29272,7 +29907,12 @@ class LlamaCppBackend:
                         # the write lands before the next request is rejected. Erring
                         # high here only costs an extra count; erring low costs the
                         # whole gate.
-                        if estimate_messages_tokens_conservative(conversation) > 0.7 * _room_target:
+                        if (
+                            estimate_messages_tokens_conservative(
+                                messages_without_unpriced_media(conversation)
+                            )
+                            > 0.7 * _room_target
+                        ):
                             # Priced with a STAND-IN tool message for the call about to
                             # run, not on the conversation as it stands. A chat template
                             # renders an assistant turn's `tool_calls` only once a `tool`
@@ -29298,7 +29938,9 @@ class LlamaCppBackend:
                                 try:
                                     _turn_tokens = self.count_chat_tokens(
                                         neutralize_control_markup_in_messages(
-                                            [*conversation, _probe_message],
+                                            messages_without_unpriced_media(
+                                                [*conversation, _probe_message]
+                                            ),
                                             _markup_cache,
                                             self.markup_profile,
                                         ),
@@ -29355,7 +29997,9 @@ class LlamaCppBackend:
                                     try:
                                         _after_tokens = self.count_chat_tokens(
                                             neutralize_control_markup_in_messages(
-                                                _as_if_run, _markup_cache, self.markup_profile
+                                                messages_without_unpriced_media(_as_if_run),
+                                                _markup_cache,
+                                                self.markup_profile,
                                             ),
                                             None,
                                             safe_tools,
@@ -29554,7 +30198,9 @@ class LlamaCppBackend:
                                 try:
                                     _exact_prompt_tokens = self.count_chat_tokens(
                                         neutralize_control_markup_in_messages(
-                                            [*conversation, _size_probe],
+                                            messages_without_unpriced_media(
+                                                [*conversation, _size_probe]
+                                            ),
                                             _markup_cache,
                                             self.markup_profile,
                                         ),
@@ -29584,7 +30230,9 @@ class LlamaCppBackend:
                                     if _compact_after_execution and _compacted_turn_tokens
                                     else _exact_prompt_tokens
                                     if _exact_prompt_tokens is not None
-                                    else estimate_messages_tokens_dense(conversation)
+                                    else estimate_messages_tokens_dense(
+                                        messages_without_unpriced_media(conversation)
+                                    )
                                     + (
                                         _prompt_token_offset
                                         if _prompt_token_offset is not None
@@ -29671,7 +30319,9 @@ class LlamaCppBackend:
                                                 # is handed to the result.
                                                 _spent_after = self.count_chat_tokens(
                                                     neutralize_control_markup_in_messages(
-                                                        [*conversation, _size_probe],
+                                                        messages_without_unpriced_media(
+                                                            [*conversation, _size_probe]
+                                                        ),
                                                         _markup_cache,
                                                         self.markup_profile,
                                                     ),
@@ -30042,11 +30692,7 @@ class LlamaCppBackend:
         )
         _final_preflight_context_length = None
         _final_preflight_succeeded = False
-        if (
-            context_overflow == "truncate_oldest"
-            and self._effective_context_length
-            and not messages_have_media(conversation)
-        ):
+        if context_overflow == "truncate_oldest" and self._effective_context_length:
             _final_preflight_context_length = self._effective_context_length
             try:
                 _before_final_fit = conversation
@@ -30074,13 +30720,16 @@ class LlamaCppBackend:
                     context_length = self._effective_context_length,
                     max_tokens = _final_max_tokens,
                     count_tokens = lambda fitted: self.count_chat_tokens(
-                        neutralize_control_markup_in_messages(fitted, None, self.markup_profile),
+                        neutralize_control_markup_in_messages(
+                            messages_without_unpriced_media(fitted), None, self.markup_profile
+                        ),
                         None,
                         None,
                         strict = True,
                         chat_template_kwargs = _reasoning_kw,
                         should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
                     ),
+                    estimate_message = estimate_message_tokens_without_unpriced_media,
                     anchor_ids = _rolling_anchor_ids,
                     keeps_boundary = _keeps_compaction_boundary(thread_id),
                     can_reset = _final_can_reset,
@@ -30113,7 +30762,9 @@ class LlamaCppBackend:
                         ),
                         count_tokens = lambda fitted: self.count_chat_tokens(
                             neutralize_control_markup_in_messages(
-                                fitted, None, self.markup_profile
+                                messages_without_unpriced_media(fitted),
+                                None,
+                                self.markup_profile,
                             ),
                             None,
                             None,
@@ -30146,6 +30797,18 @@ class LlamaCppBackend:
             except Exception as exc:
                 logger.warning("Could not preflight the rolling context window: %s", exc)
 
+        # The loop's callback fires at the TOP of a round, so the breaks leading here (the
+        # tool-iteration cap, a controller turning tools off) leave the assistant turn,
+        # its tool results and any nudge appended after the last re-cost -- making this
+        # final pass the largest request of the run and the one the pool never heard
+        # about. Here rather than at the breaks: the recall above can rebind
+        # `conversation`, and every path reaches this point with the list about to be sent.
+        if on_conversation_grew is not None:
+            try:
+                on_conversation_grew(conversation)
+            except Exception:  # accounting must never break a run in progress
+                logger.debug("tool loop final recost failed", exc_info = True)
+
         stream_payload = {
             "messages": neutralize_control_markup_in_messages(
                 conversation, None, self.markup_profile
@@ -30166,8 +30829,7 @@ class LlamaCppBackend:
         stream_payload["max_tokens"] = _final_max_tokens
         if stop:
             stream_payload["stop"] = stop
-        if seed is not None:
-            stream_payload["seed"] = seed
+        _apply_seeded_llama_request(stream_payload, seed)
         stream_payload["stream_options"] = {"include_usage": True}
 
         if perf_callback is not None:
@@ -30196,13 +30858,16 @@ class LlamaCppBackend:
                     context_length = self._effective_context_length,
                     max_tokens = max_tokens,
                     count_tokens = lambda fitted: self.count_chat_tokens(
-                        neutralize_control_markup_in_messages(fitted, None, self.markup_profile),
+                        neutralize_control_markup_in_messages(
+                            messages_without_unpriced_media(fitted), None, self.markup_profile
+                        ),
                         None,
                         None,
                         strict = True,
                         chat_template_kwargs = _reasoning_kw,
                         should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
                     ),
+                    estimate_message = estimate_message_tokens_without_unpriced_media,
                     anchor_ids = _rolling_anchor_ids,
                     keeps_boundary = _keeps_compaction_boundary(thread_id),
                     can_reset = _can_reset_epoch(
@@ -30314,7 +30979,7 @@ class LlamaCppBackend:
                 return True
             try:
                 _tokens = self.count_chat_tokens(
-                    candidate_messages,
+                    messages_without_unpriced_media(candidate_messages),
                     None,
                     None,
                     strict = True,

@@ -4,6 +4,16 @@
 import type { FormatFilter } from "./recommended-fit";
 import type { ModelSelectorChangeMeta } from "./types";
 
+const NATIVE_AUDIO_TYPES = new Set([
+  "higgs_tts2",
+  "moss_tts_local",
+  "moss_tts_nano",
+  "higgs_tts3",
+  "minimax_music3",
+]);
+
+const TTS_CODECS = new Set(["snac", "csm", "bicodec", "dac"]);
+
 export type CommunityModelPolicy = "none" | "search-only" | "recommended";
 
 export function shouldDiscoverCommunityModels(
@@ -16,6 +26,28 @@ export function shouldRecommendCommunityModels(
   policy: CommunityModelPolicy,
 ): boolean {
   return policy === "recommended";
+}
+
+/** Maps detected audio runtime types to the media tag used by Chat routing. */
+export function audioPipelineTagFor(
+  audioType?: string | null,
+  isLocalCheckpoint = false,
+  isLora = false,
+): string | undefined {
+  if (!audioType) return undefined;
+  if (audioType === "whisper")
+    return isLocalCheckpoint ? undefined : "automatic-speech-recognition";
+  if (isLora && NATIVE_AUDIO_TYPES.has(audioType)) return undefined;
+  return TTS_CODECS.has(audioType) || NATIVE_AUDIO_TYPES.has(audioType)
+    ? "text-to-speech"
+    : undefined;
+}
+
+export function nativeAudioCheckpointIsLoadable(
+  audioType?: string | null,
+  exportType?: string | null,
+): boolean {
+  return !audioType || !NATIVE_AUDIO_TYPES.has(audioType) || exportType === "merged";
 }
 
 /** Community ASR runs through the Transformers Whisper sidecar. Curated GGUF/MTMD
@@ -52,6 +84,8 @@ export function communityAudioRowIsRunnable({
       return false;
     return evidence.some((value) => value.includes("whisper"));
   }
+
+  if (audioType && NATIVE_AUDIO_TYPES.has(audioType)) return true;
 
   // The main-slot TTS backend decodes only the four codec families below.
   // Hub's text-to-speech tag also covers Bark, VITS, SpeechT5, and many other
@@ -186,13 +220,25 @@ export function macTtsHubRowIsRunnable({
   isTts,
   isGguf,
   hasRunnableGgufSibling,
+  audioType,
 }: {
   isMac: boolean;
   isTts: boolean;
   isGguf: boolean;
   hasRunnableGgufSibling: boolean;
+  audioType?: string | null;
 }): boolean {
-  return !isMac || !isTts || isGguf || hasRunnableGgufSibling;
+  return (
+    !isMac ||
+    !isTts ||
+    isGguf ||
+    hasRunnableGgufSibling ||
+    Boolean(
+      audioType &&
+      NATIVE_AUDIO_TYPES.has(audioType) &&
+      audioType !== "minimax_music3",
+    )
+  );
 }
 
 export function taskCatalogFormatMatches(

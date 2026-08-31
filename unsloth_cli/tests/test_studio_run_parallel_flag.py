@@ -833,12 +833,17 @@ def test_studio_default_exposes_parallel_option():
 
 
 @pytest.mark.parametrize("value", [1, 4, 8, 64])
-def test_in_venv_path_passes_parallel_to_run_server(monkeypatch, value, stub_tool_policy_state):
+def test_in_venv_path_passes_parallel_to_run_server(
+    monkeypatch, tmp_path, value, stub_tool_policy_state
+):
     """In-venv path must forward --parallel to
     run_server(llama_parallel_slots=N), not the old hardcoded 4."""
     studio_mod = _load_run_command()
 
-    fake_venv = Path("/fake/studio/venv/unsloth_studio")
+    # A real directory, not /fake: the launch gate creates STUDIO_HOME and
+    # locks inside it, so an unwritable home now aborts the run before
+    # run_server is ever reached and the flag under test goes unchecked.
+    fake_venv = tmp_path / "studio" / "venv" / "unsloth_studio"
     monkeypatch.setattr(sys, "prefix", str(fake_venv))
     # Pin STUDIO_HOME so sys.prefix.startswith() picks the in-venv branch.
     monkeypatch.setattr(studio_mod, "STUDIO_HOME", fake_venv.parent)
@@ -927,12 +932,15 @@ def test_secure_api_only_is_refused_before_any_reexec(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("extra,expected", [(["--api-only"], True), ([], False)])
 def test_in_venv_path_passes_api_only_to_run_server(
-    monkeypatch, extra, expected, stub_tool_policy_state
+    monkeypatch, tmp_path, extra, expected, stub_tool_policy_state
 ):
     """In-venv path must forward --api-only to run_server(api_only=...)."""
     studio_mod = _load_run_command()
 
-    fake_venv = Path("/fake/studio/venv/unsloth_studio")
+    # A real directory, not /fake: the launch gate creates STUDIO_HOME and
+    # locks inside it, so an unwritable home now aborts the run before
+    # run_server is ever reached and the flag under test goes unchecked.
+    fake_venv = tmp_path / "studio" / "venv" / "unsloth_studio"
     monkeypatch.setattr(sys, "prefix", str(fake_venv))
     monkeypatch.setattr(studio_mod, "STUDIO_HOME", fake_venv.parent)
 

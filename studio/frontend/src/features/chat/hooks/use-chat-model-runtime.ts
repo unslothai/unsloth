@@ -383,6 +383,7 @@ function getTransformersUpgradeRequiredMessage(modelName: string): string {
 // last and re-pin the model the newer one had just seen released, leaving chat
 // claiming a model that 400s on send until the load finally settled.
 let syncGeneration = 0;
+let loraSyncGeneration = 0;
 let lastIdleUnloadArmed = false;
 
 async function readIdleUnloadArmed(): Promise<boolean> {
@@ -404,15 +405,36 @@ async function syncInferenceStatusToStore(options?: {
   const includeLoras = options?.includeLoras ?? true;
   // Last issued wins: it read the freshest status, whichever answers first.
   const generation = ++syncGeneration;
+  const loraGeneration = includeLoras ? ++loraSyncGeneration : null;
   const superseded = () => generation !== syncGeneration;
+  const loraSuperseded = () =>
+    loraGeneration !== null && loraGeneration !== loraSyncGeneration;
   const { setModels, setLoras, setCheckpoint, setModelsError } =
     useChatRuntimeStore.getState();
   setModelsError(null);
   try {
-    const [listRes, statusRes, lorasRes, idleUnloadArmed] = await Promise.all([
+    const [listRes, statusRes, , idleUnloadArmed] = await Promise.all([
       listModels(),
       getInferenceStatus(),
-      includeLoras ? listLoras() : Promise.resolve(null),
+      // Settled from this request alone. Read out of the aggregate below, a sibling
+      // rejection discarded a good list yet still marked the inventory settled, so a
+      // resident LoRA classified as a base model and pinned a new pair generalized.
+      includeLoras
+        ? listLoras().then(
+            (lorasRes) => {
+              if (!signal?.aborted && !loraSuperseded()) {
+                setLoras(lorasRes.loras.map(toLoraSummary));
+              }
+              return lorasRes;
+            },
+            (error) => {
+              if (!signal?.aborted && !loraSuperseded()) {
+                useChatRuntimeStore.setState({ loraInventorySettled: true });
+              }
+              throw error;
+            },
+          )
+        : Promise.resolve(null),
       options?.preserveIdleUnloaded
         ? readIdleUnloadArmed()
         : Promise.resolve(false),
@@ -425,9 +447,6 @@ async function syncInferenceStatusToStore(options?: {
     if (signal?.aborted || superseded()) return;
 
     setModels(listRes.models.map(toChatModelRow));
-    if (lorasRes) {
-      setLoras(lorasRes.loras.map(toLoraSummary));
-    }
 
     const selectedCheckpoint = useChatRuntimeStore.getState().params.checkpoint;
     const isExternalSelectionActive = isExternalModelId(selectedCheckpoint);
@@ -515,7 +534,8 @@ async function syncInferenceStatusToStore(options?: {
     }
   } catch (error) {
     // A superseded refresh reports nothing, or a stale failure would raise a
-    // toast about a read whose answer would have been discarded anyway.
+    // toast about a read whose answer would have been discarded anyway. The LoRA
+    // inventory settles from its own request above, never from a sibling's failure.
     if (signal?.aborted || superseded()) return;
     const message =
       error instanceof Error ? error.message : "Failed to load models";

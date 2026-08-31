@@ -76,6 +76,16 @@ on:
       - 'scripts/scan_packages.py'
       - 'scripts/scan_packages_baseline.json'
       - 'tests/security/**'
+      # The production code the security suites protect. Without these, a PR touching
+      # only `loader_utils.py` skipped this job entirely - the always-running light
+      # workflow ignores those three suites - so the tests ran for the first time on
+      # the push event, after the regression had already merged.
+      - 'unsloth/models/loader_utils.py'
+      - 'unsloth/models/mapper.py'
+      - 'unsloth/models/_custom_dtype.py'
+      - 'unsloth/models/loader.py'
+      - 'unsloth/models/vision.py'
+      - 'unsloth/models/_utils.py'
       - '.github/workflows/security-audit.yml'
   push:
     branches: [main]
