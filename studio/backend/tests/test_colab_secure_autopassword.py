@@ -349,8 +349,7 @@ def test_transient_marker_clear_retries_before_opening_tunnel(monkeypatch):
     monkeypatch.setattr(
         cloudflare_tunnel,
         "start_studio_tunnel",
-        lambda port, **_kwargs: started.update(called = True)
-        or "https://example.trycloudflare.com",
+        lambda port, **_kwargs: started.update(called = True) or "https://example.trycloudflare.com",
     )
 
     assert colab.start_cloudflare_tunnel(8888) == "https://example.trycloudflare.com"
@@ -379,8 +378,7 @@ def test_marker_clear_exhaustion_retains_guard_and_keeps_tunnel_closed(monkeypat
     monkeypatch.setattr(
         cloudflare_tunnel,
         "start_studio_tunnel",
-        lambda port, **_kwargs: started.update(called = True)
-        or "https://example.trycloudflare.com",
+        lambda port, **_kwargs: started.update(called = True) or "https://example.trycloudflare.com",
     )
 
     assert colab.start_cloudflare_tunnel(8888) is None
