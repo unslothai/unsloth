@@ -558,8 +558,7 @@ def test_notebook_validator_merges_repeated_requirements_in_one_command():
 
 
 TORCHCODEC_WHEEL = (
-    "https://download.pytorch.org/whl/"
-    "torchcodec-0.13.0-cp312-cp312-manylinux_2_28_x86_64.whl"
+    "https://download.pytorch.org/whl/torchcodec-0.13.0-cp312-cp312-manylinux_2_28_x86_64.whl"
 )
 
 
