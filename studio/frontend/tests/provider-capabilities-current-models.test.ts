@@ -89,10 +89,20 @@ test("the gpt-5.1 and gpt-5.2 ladders drop minimal for none", () => {
     assert.equal(caps.supportsReasoningOff, true, model);
     assert.deepEqual([...caps.reasoningEffortLevels], levels, model);
   }
-  // The Codex tuning drops minimal without gaining none.
-  const codex = getExternalReasoningCapabilities("openai", "gpt-5-codex");
-  assert.equal(codex.supportsReasoningOff, false);
-  assert.deepEqual([...codex.reasoningEffortLevels], ["low", "medium", "high"]);
+  // The Codex tunings keep reasoning mandatory: no minimal, and no none on
+  // the 5.1 line. Only codex-max has xhigh, so it must sort ahead of the
+  // plain codex prefix.
+  const codexLadders: Array<[string, readonly string[]]> = [
+    ["gpt-5-codex", ["low", "medium", "high"]],
+    ["gpt-5.1-codex", ["low", "medium", "high"]],
+    ["gpt-5.1-codex-mini", ["low", "medium", "high"]],
+    ["gpt-5.1-codex-max", ["low", "medium", "high", "xhigh"]],
+  ];
+  for (const [model, levels] of codexLadders) {
+    const caps = getExternalReasoningCapabilities("openai", model);
+    assert.equal(caps.supportsReasoningOff, false, model);
+    assert.deepEqual([...caps.reasoningEffortLevels], levels, model);
+  }
   // Bare gpt-5 keeps the old ladder, so the splits must not swallow it.
   const five = getExternalReasoningCapabilities("openai", "gpt-5");
   assert.equal(five.supportsReasoningOff, false);

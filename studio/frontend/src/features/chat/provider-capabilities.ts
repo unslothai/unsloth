@@ -836,6 +836,20 @@ const OPENAI_REASONING_MODELS = [
     supportsOff: true,
     levels: ["none", "low", "medium", "high", "xhigh"],
   },
+  // The 5.1 Codex tuning kept reasoning mandatory: `none` returns
+  // "'none' is not supported with the 'gpt-5.1-codex' model. Supported values
+  // are: 'low', 'medium', 'high'" (openai/codex#6647). `xhigh` arrived with
+  // codex-max. `-max` goes first or the plain codex prefix swallows it.
+  {
+    prefixes: ["gpt-5.1-codex-max"],
+    supportsOff: false,
+    levels: ["low", "medium", "high", "xhigh"],
+  },
+  {
+    prefixes: ["gpt-5.1-codex"],
+    supportsOff: false,
+    levels: ["low", "medium", "high"],
+  },
   {
     prefixes: ["gpt-5.1"],
     supportsOff: true,
