@@ -559,7 +559,44 @@ def damaged_payload_files(
     aims it at another venv. Never raises, and an environment it cannot read or
     finish reading is reported undamaged, since guessing the other way would
     repair a healthy venv on every run.
+
+    The deadline inside the walk bounds many slow stats, but nothing inside a
+    process can bound one that never returns, and a wedged mount or a filesystem
+    filter can hang a single `stat` outright. Neither installer wraps its call in
+    a timeout, so that is run on a daemon thread and abandoned: the interpreter
+    does not wait for one at exit, measured at 1.04s to exit with a thread parked
+    forever in a syscall. `budget_seconds = 0` means no bound at all, for the
+    installer, which has already committed to a full pass.
     """
+    if budget_seconds <= 0:
+        return _scan_payload_files(package_name, limit, 0.0, companion_names, scan_paths)
+
+    import threading
+
+    done: List[List[str]] = []
+
+    def scan() -> None:
+        done.append(
+            _scan_payload_files(package_name, limit, budget_seconds, companion_names, scan_paths)
+        )
+
+    worker = threading.Thread(target = scan, daemon = True)
+    worker.start()
+    # The deadline in the walk is the ordinary way out, and it reports what it
+    # found; this margin only decides how long to wait for a call that is never
+    # coming back, and past it the answer is undamaged.
+    worker.join(budget_seconds + 1.0)
+    return done[0] if done else []
+
+
+def _scan_payload_files(
+    package_name: str,
+    limit: int,
+    budget_seconds: float,
+    companion_names: Sequence[str],
+    scan_paths: Optional[Sequence[str]],
+) -> List[str]:
+    """The walk itself. Bounded between calls only; see `damaged_payload_files`."""
     import csv
     import io
     import stat

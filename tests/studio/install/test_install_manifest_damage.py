@@ -13,6 +13,8 @@ import io
 import json
 import os
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -564,3 +566,45 @@ def test_ambiguous_metadata_still_reports_its_own_reason(tmp_path, monkeypatch, 
     monkeypatch.setattr(install_manifest, "installed_versions", lambda name: [VER, "2.0"])
     state = install_manifest.verify_install(root = tmp_path, req_root = req_root, deep = True)
     assert state["reason"] == "studio_install_metadata_conflict"
+
+
+def test_a_stat_that_never_returns_does_not_wedge_setup(site_packages, monkeypatch):
+    """Nothing inside a process can bound a syscall that never comes back.
+
+    Neither installer wraps its `verify_install(deep = True)` call in a timeout,
+    so an unbounded walk would hand a wedged mount the ability to hang setup.
+    """
+    import threading
+
+    dist_info, rows = _healthy(site_packages)
+    _record(dist_info, rows)
+    released = threading.Event()
+    monkeypatch.setattr(Path, "stat", lambda self, *a, **k: released.wait())
+    try:
+        started = time.monotonic()
+        assert install_manifest.damaged_payload_files(PKG, budget_seconds = 0.5) == []
+        assert time.monotonic() - started < 5.0
+    finally:
+        # The worker is a daemon, but this keeps it from outliving the test.
+        released.set()
+
+
+def test_an_unbounded_scan_stays_on_this_thread(site_packages, monkeypatch):
+    """`budget_seconds = 0` is the installer, which has committed to a full pass
+    and must get the real answer however long the tree takes."""
+    dist_info, rows = _healthy(site_packages)
+    _record(dist_info, rows)
+    (site_packages / PKG / "__init__.py").unlink()
+    caller = threading.get_ident()
+    seen = {}
+    real = install_manifest._scan_payload_files
+
+    def record(*args, **kwargs):
+        seen["thread"] = threading.get_ident()
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(install_manifest, "_scan_payload_files", record)
+    assert install_manifest.damaged_payload_files(PKG, budget_seconds = 0.0) == [
+        f"{PKG}/__init__.py is missing"
+    ]
+    assert seen["thread"] == caller
