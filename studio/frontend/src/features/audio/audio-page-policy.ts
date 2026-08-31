@@ -11,6 +11,54 @@ export type AudioBusy =
   | "transcribing"
   | null;
 
+export type AudioGenerationPhase =
+  | "preparing"
+  | "generating"
+  | "stopping"
+  | "finishing"
+  | null;
+
+export type AudioGenerationPresentation = {
+  status: string;
+  actionLabel: string;
+  canStop: boolean;
+};
+
+/** Project request-lifetime phases into truthful UI copy. Audio generation has no
+ * browser-visible numeric progress, so these labels never imply a fraction or ETA. */
+export function audioGenerationPresentation(
+  phase: AudioGenerationPhase,
+): AudioGenerationPresentation | null {
+  switch (phase) {
+    case "preparing":
+      return {
+        status: "Preparing audio…",
+        actionLabel: "Preparing…",
+        canStop: false,
+      };
+    case "generating":
+      return {
+        status: "Generating audio…",
+        actionLabel: "Stop",
+        canStop: true,
+      };
+    case "stopping":
+      return {
+        status: "Stopping audio…",
+        actionLabel: "Stopping…",
+        canStop: false,
+      };
+    case "finishing":
+      return {
+        status: "Finishing audio…",
+        actionLabel: "Finishing…",
+        canStop: false,
+      };
+    case null:
+      return null;
+  }
+}
+
 export type AudioPickTask = "tts" | "stt" | null;
 export type AudioCreateMode = "speak" | "transcribe";
 export type SttEngine = "transformers" | "gguf" | "mtmd";
@@ -185,8 +233,15 @@ export function resolveAudioPickTask(
 
 /** Generation can be cancelled as part of a mode transition. Model lifecycle
  * and transcription operations must settle before their controls disappear. */
-export function canTransitionAudioMode(busy: AudioBusy): boolean {
-  return busy === null || busy === "generating";
+export function canTransitionAudioMode(
+  busy: AudioBusy,
+  generationPhase: AudioGenerationPhase = busy === "generating"
+    ? "generating"
+    : null,
+): boolean {
+  return (
+    busy === null || (busy === "generating" && generationPhase === "generating")
+  );
 }
 
 /** A managed TTS completion owns auto-load only while the same staging generation is
