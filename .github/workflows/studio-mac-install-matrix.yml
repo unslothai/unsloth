@@ -1,0 +1,157 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Proves Unsloth's llama.cpp install loads on every supported macOS. The heavy
+# app smokes stay single-OS; this matrix covers the OS-version dimension cheaply
+# (install.sh + binary-load assert). Regression guard for the macOS-version
+# selection in studio/install_llama_prebuilt.py.
+
+name: Mac Unsloth Install Matrix CI
+
+on:
+  pull_request:
+    paths:
+      - 'studio/install_llama_prebuilt.py'
+      - 'studio/setup.sh'
+      - 'install.sh'
+      - '.github/scripts/assert-llama-loads.sh'
+      - '.github/workflows/studio-mac-install-matrix.yml'
+      # The install step in this workflow is `uses:` on that composite action,
+      # so an edit to the action changes what this workflow actually runs.
+      - '.github/actions/install-unsloth-local/action.yml'
+      # The dist cache moved out of install-unsloth-local so the Windows jobs could
+      # share one definition of its key; a change to it still has to re-run the jobs
+      # that depend on it.
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
+      # Reached transitively by the install this workflow asserts on:
+      # install.sh selects studio/setup.sh, which runs install_python_stack.py
+      # (setup.sh:1444), and install_llama_prebuilt.py imports prebuilt_core
+      # (install_llama_prebuilt.py:55).
+      #
+      # Deliberately NOT studio/backend/requirements/** or pyproject.toml, which
+      # install_python_stack.py also consumes: generic install breakage on macOS is
+      # clean-machine-install-ci's job and it lists both on either trigger with 7
+      # macOS legs. Duplicating them here would re-spend the slots this filter saves.
+      - 'studio/install_python_stack.py'
+      - 'studio/prebuilt_core.py'
+      # install_python_stack.py imports this; interrupted-install-ci.yml already
+      # lists it for the same reason.
+      - 'studio/install_manifest.py'
+  push:
+    branches: [main]
+    # Same list as the PR filter. Without it this workflow ran on EVERY commit to
+    # main: a README-only commit fired all four unfiltered macOS workflows, seven
+    # macOS legs, against an account-wide cap of five concurrent macOS jobs. The
+    # post-merge backstop is unchanged, because a commit that cannot touch what
+    # this workflow tests has nothing here to back up.
+    # clean-machine-install-ci.yml and mlx-ci.yml already do exactly this.
+    paths:
+      - 'studio/install_llama_prebuilt.py'
+      - 'studio/setup.sh'
+      - 'install.sh'
+      - '.github/scripts/assert-llama-loads.sh'
+      - '.github/workflows/studio-mac-install-matrix.yml'
+      # The install step in this workflow is `uses:` on that composite action,
+      # so an edit to the action changes what this workflow actually runs.
+      - '.github/actions/install-unsloth-local/action.yml'
+      # The dist cache moved out of install-unsloth-local so the Windows jobs could
+      # share one definition of its key; a change to it still has to re-run the jobs
+      # that depend on it.
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
+      # Reached transitively by the install this workflow asserts on:
+      # install.sh selects studio/setup.sh, which runs install_python_stack.py
+      # (setup.sh:1444), and install_llama_prebuilt.py imports prebuilt_core
+      # (install_llama_prebuilt.py:55).
+      #
+      # Deliberately NOT studio/backend/requirements/** or pyproject.toml, which
+      # install_python_stack.py also consumes: generic install breakage on macOS is
+      # clean-machine-install-ci's job and it lists both on either trigger with 7
+      # macOS legs. Duplicating them here would re-spend the slots this filter saves.
+      - 'studio/install_python_stack.py'
+      - 'studio/prebuilt_core.py'
+      # install_python_stack.py imports this; interrupted-install-ci.yml already
+      # lists it for the same reason.
+      - 'studio/install_manifest.py'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  # Latest-only on a PR branch. On main this does less than it reads like: it stops
+  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
+  # the moment a newer one is queued, so a merge burst still leaves only the tip.
+  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  install-load:
+    name: Install + load (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # This matrix used to exclude macos-14 as redundant: the job is
+          # install.sh --local --no-torch followed by assert-llama-loads.sh, and
+          # that pair already ran on macos-14 in studio-mac-ui-smoke,
+          # studio-mac-inference-smoke and clean-machine-install-ci.
+          #
+          # The macos-14 retirement (brownouts from 2026-10-05, removed
+          # 2026-11-02) moved those workflows to macos-15, so the same
+          # redundancy argument appeared to transfer to the macos-15 leg here.
+          # It does not, because of one path: this workflow lists its OWN file
+          # in its `paths:` filter, and none of those three workflows does.
+          # A PR touching only .github/workflows/studio-mac-install-matrix.yml
+          # therefore starts this workflow and nothing else, so dropping the
+          # macos-15 leg would leave changes to this file with no macOS 15 ARM
+          # run at all. macos-26 and the Intel legs would still fire, but they
+          # are different OS versions and, for the Intel pair, a different
+          # architecture. The leg stays.
+          #
+          # Keep this in mind before "deduplicating" it again: the redundancy
+          # holds for the four content paths above it and NOT for the self
+          # path, so the leg is only redundant most of the time.
+          - os: macos-15        # Apple Silicon, macOS 15 Sequoia
+            experimental: false
+          - os: macos-26        # Apple Silicon, macOS 26 Tahoe
+            experimental: false
+          - os: macos-15-intel  # Intel x86_64, macOS 15 (informational)
+            experimental: true
+          - os: macos-26-intel  # Intel x86_64, macOS 26 (last Intel macOS)
+            experimental: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Install Unsloth (--local, --no-torch)
+        uses: ./.github/actions/install-unsloth-local
+        with:
+          gh-token: ${{ secrets.GITHUB_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+
+      - name: Assert llama.cpp loads on this macOS
+        run: bash .github/scripts/assert-llama-loads.sh
+
+      - name: Upload install log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: mac-install-matrix-${{ matrix.os }}-log
+          path: logs/install.log
+          retention-days: 7

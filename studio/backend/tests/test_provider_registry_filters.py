@@ -264,10 +264,7 @@ def test_openai_search_preview_is_kept_search_api_is_dropped():
             "gpt-4o-mini-search-preview",
         ],
     )
-    assert kept == [
-        "gpt-4o-search-preview",
-        "gpt-4o-mini-search-preview",
-    ], kept
+    assert kept == ["gpt-4o-search-preview", "gpt-4o-mini-search-preview"], kept
 
     dropped = _apply(
         "openai",

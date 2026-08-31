@@ -1,11 +1,29 @@
-import { useCallback, useRef, useState } from "react";
-import { CloudUploadIcon, Cancel01Icon, Loading03Icon, CheckmarkCircle02Icon, Alert02Icon } from "@hugeicons/core-free-icons";
+import { useCallback, useEffect, useRef } from "react";
+import { consumeNativePathToken, useNativeFileDrop } from "@/features/native-intents";
+import {
+  CloudUploadIcon,
+  Cancel01Icon,
+  CheckmarkCircle02Icon,
+  Alert02Icon,
+} from "@hugeicons/core-free-icons";
+import { Spinner } from "@/components/ui/spinner";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { uploadUnstructuredFile, removeUnstructuredFile } from "../../api";
+import {
+  UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES,
+  UNSTRUCTURED_RECIPE_UPLOAD_MAX_LABEL,
+  UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_BYTES,
+  UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_LABEL,
+} from "./upload-limits";
 
 const ACCEPTED_EXTENSIONS = [".txt", ".pdf", ".docx", ".md"];
-const MAX_FILE_SIZE = 50 * 1024 * 1024;
-const MAX_TOTAL_SIZE = 100 * 1024 * 1024;
+
+/** One queued upload: browser bytes, or a desktop drop the backend redeems. */
+type UploadCandidate = {
+  name: string;
+  size: number;
+  source: File | { token: string };
+};
 
 type FileEntry = {
   id: string;
@@ -19,7 +37,9 @@ type FileEntry = {
 type UnstructuredDropZoneProps = {
   blockId: string;
   files: FileEntry[];
-  onFilesChange: (files: FileEntry[] | ((prev: FileEntry[]) => FileEntry[])) => void;
+  onFilesChange: (
+    files: FileEntry[] | ((prev: FileEntry[]) => FileEntry[]),
+  ) => void;
   disabled?: boolean;
 };
 
@@ -42,16 +62,24 @@ export function UnstructuredDropZone({
 }: UnstructuredDropZoneProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const filesRef = useRef(files);
-  filesRef.current = files;
-  const [isDragOver, setIsDragOver] = useState(false);
+  const blockIdRef = useRef(blockId);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    filesRef.current = files;
+    blockIdRef.current = blockId;
+  }, [files, blockId]);
+  useEffect(() => () => {
+    mountedRef.current = false;
+  }, []);
 
   const totalSize = files.reduce((sum, f) => sum + f.size, 0);
 
-  const handleFiles = useCallback(
-    async (newFiles: File[]) => {
-      const valid = newFiles.filter((f) => {
+  const uploadCandidates = useCallback(
+    async (candidates: UploadCandidate[]) => {
+      const valid = candidates.filter((f) => {
         if (!isValidExtension(f.name)) return false;
-        if (f.size > MAX_FILE_SIZE) return false;
+        if (f.size > UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES) return false;
         return true;
       });
 
@@ -59,7 +87,8 @@ export function UnstructuredDropZone({
 
       const addedSize = valid.reduce((s, f) => s + f.size, 0);
       const currentTotal = filesRef.current.reduce((sum, f) => sum + f.size, 0);
-      if (currentTotal + addedSize > MAX_TOTAL_SIZE) return;
+      if (currentTotal + addedSize > UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_BYTES)
+        return;
 
       const entries: FileEntry[] = valid.map((f) => ({
         id: "",
@@ -72,18 +101,27 @@ export function UnstructuredDropZone({
       onFilesChange((prev) => [...prev, ...entries]);
 
       for (let i = 0; i < valid.length; i++) {
-        const file = valid[i];
+        const candidate = valid[i];
         const entry = entries[i];
         let updatedId = "";
         let updatedStatus: FileEntry["status"] = "error";
         let updatedError: string | undefined;
         try {
-          const existingIds = filesRef.current.filter((f) => f.id).map((f) => f.id);
+          // Leases are short-lived, so mint one per upload, not at drop time.
+          const source =
+            candidate.source instanceof File
+              ? candidate.source
+              : {
+                  nativePathLease: (
+                    await consumeNativePathToken(candidate.source.token, "attach")
+                  ).nativePathLease,
+                  name: candidate.name,
+                  size: candidate.size,
+                };
           const result = await uploadUnstructuredFile(
-            file,
+            source,
             blockId,
             entry.abortController?.signal,
-            existingIds,
           );
           updatedId = result.file_id;
           updatedStatus = result.status === "ok" ? "ok" : "error";
@@ -98,14 +136,30 @@ export function UnstructuredDropZone({
         onFilesChange((prev) =>
           prev.map((f) =>
             f === entry
-              ? { ...f, id: updatedId, status: updatedStatus, error: updatedError }
+              ? {
+                  ...f,
+                  id: updatedId,
+                  status: updatedStatus,
+                  error: updatedError,
+                }
               : f,
           ),
         );
       }
-
     },
     [blockId, onFilesChange],
+  );
+
+  const handleFiles = useCallback(
+    (newFiles: File[]) =>
+      uploadCandidates(
+        newFiles.map((file) => ({
+          name: file.name,
+          size: file.size,
+          source: file,
+        })),
+      ),
+    [uploadCandidates],
   );
 
   const deletedIdsRef = useRef(new Set<string>());
@@ -116,35 +170,54 @@ export function UnstructuredDropZone({
       if (entry.status === "uploading" && entry.abortController) {
         entry.abortController.abort();
       }
-      if (entry.id && entry.status === "ok" && !deletedIdsRef.current.has(entry.id)) {
-        deletedIdsRef.current.add(entry.id);
-        void removeUnstructuredFile(blockId, entry.id).catch(() => {});
-      }
+      const needsServerRemove =
+        entry.id &&
+        entry.status === "ok" &&
+        !deletedIdsRef.current.has(entry.id);
       onFilesChange((prev) => prev.filter((_, i) => i !== index));
+      if (!needsServerRemove) return;
+      deletedIdsRef.current.add(entry.id);
+      removeUnstructuredFile(blockId, entry.id).catch(() => {
+        // Skip if the drop zone unmounted or its block changed: the id no
+        // longer belongs here and restoring would leak it into another block.
+        if (!mountedRef.current || blockIdRef.current !== blockId) return;
+        // Still exists server-side (counts toward quota); restore it at its
+        // original position.
+        deletedIdsRef.current.delete(entry.id);
+        onFilesChange((prev) => {
+          const next = [...prev];
+          next.splice(Math.min(index, next.length), 0, {
+            id: entry.id,
+            name: entry.name,
+            size: entry.size,
+            status: "ok",
+            error: "Remove failed — try again",
+          });
+          return next;
+        });
+      });
     },
     [blockId, onFilesChange],
   );
 
-  const handleDrop = useCallback(
-    (e: React.DragEvent) => {
-      e.preventDefault();
-      setIsDragOver(false);
-      if (disabled) return;
-      const dropped = Array.from(e.dataTransfer.files);
-      handleFiles(dropped);
-    },
-    [disabled, handleFiles],
-  );
-
-  const handleDragOver = useCallback(
-    (e: React.DragEvent) => {
-      e.preventDefault();
-      if (!disabled) setIsDragOver(true);
-    },
-    [disabled],
-  );
-
-  const handleDragLeave = useCallback(() => setIsDragOver(false), []);
+  // Tauri suppresses webview drop events, so the plain `onDrop` this zone
+  // carried was dead on desktop (#9036).
+  const { ref: dropRef, dragging: isDragOver, dragHandlers } = useNativeFileDrop({
+    onFiles: handleFiles,
+    // A seed corpus can run to hundreds of MB, so the backend redeems the
+    // signed path itself rather than routing bytes through the webview.
+    onNativeIntents: (intents) =>
+      uploadCandidates(
+        intents.map((intent) => ({
+          name: intent.path.displayLabel,
+          size: intent.path.sizeBytes ?? 0,
+          source: { token: intent.path.token },
+        })),
+      ),
+    accept: ACCEPTED_EXTENSIONS.join(","),
+    disabled,
+    disabledReason: "This block is busy. Try the drop again in a moment.",
+  });
 
   const handleClick = useCallback(() => {
     if (!disabled) inputRef.current?.click();
@@ -164,22 +237,28 @@ export function UnstructuredDropZone({
   return (
     <div className="space-y-2">
       <div
-        className={`nodrag flex cursor-pointer flex-col items-center justify-center rounded-md border-2 border-dashed px-4 py-6 text-center transition-colors ${
+        // Stays hit-testable while disabled: pointer-events-none hides it from
+        // elementFromPoint, so a native drop misses this target and falls
+        // through to the window instead of saying the block is busy.
+        className={`nodrag flex flex-col items-center justify-center rounded-md border-2 border-dashed px-4 py-6 text-center transition-colors ${
           isDragOver
-            ? "border-primary bg-primary/5"
+            ? "border-ring-strong bg-primary/5"
             : "border-muted-foreground/25 hover:border-muted-foreground/50"
-        } ${disabled ? "pointer-events-none opacity-50" : ""}`}
-        onDrop={handleDrop}
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
+        } ${disabled ? "cursor-default opacity-50" : "cursor-pointer"}`}
+        ref={dropRef}
+        {...dragHandlers}
         onClick={handleClick}
       >
-        <HugeiconsIcon icon={CloudUploadIcon} className="text-muted-foreground mb-2 size-8" />
+        <HugeiconsIcon
+          icon={CloudUploadIcon}
+          className="text-muted-foreground mb-2 size-8"
+        />
         <p className="text-muted-foreground text-sm">
           Drop files here or click to browse
         </p>
         <p className="text-muted-foreground/60 mt-1 text-xs">
-          PDF, DOCX, TXT, MD - up to 50MB each, 100MB total
+          PDF, DOCX, TXT, MD - up to {UNSTRUCTURED_RECIPE_UPLOAD_MAX_LABEL}{" "}
+          each, {UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_LABEL} total
         </p>
       </div>
 
@@ -200,15 +279,24 @@ export function UnstructuredDropZone({
               className="flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm"
             >
               {entry.status === "uploading" && (
-                <HugeiconsIcon icon={Loading03Icon} className="text-muted-foreground size-4 animate-spin" />
+                <Spinner className="text-muted-foreground size-4" />
               )}
               {entry.status === "ok" && (
-                <HugeiconsIcon icon={CheckmarkCircle02Icon} className="size-4 text-green-500" />
+                <HugeiconsIcon
+                  icon={CheckmarkCircle02Icon}
+                  className="size-4 text-green-500"
+                />
               )}
               {entry.status === "error" && (
-                <HugeiconsIcon icon={Alert02Icon} className="size-4 text-red-500" />
+                <HugeiconsIcon
+                  icon={Alert02Icon}
+                  className="size-4 text-red-500"
+                />
               )}
-              <span className="flex-1 truncate">{entry.name}</span>
+              {/* Queued local upload, so keep the name out of the snapshot. */}
+              <span data-reload-snapshot-sensitive className="flex-1 truncate">
+                {entry.name}
+              </span>
               <span className="text-muted-foreground text-xs">
                 {formatSize(entry.size)}
               </span>
@@ -228,8 +316,14 @@ export function UnstructuredDropZone({
             </div>
           ))}
           <div className="text-muted-foreground flex justify-between px-1 text-xs">
-            <span>{successFiles.length} file{successFiles.length !== 1 ? "s" : ""} uploaded</span>
-            <span>{formatSize(totalSize)} / 100MB</span>
+            <span>
+              {successFiles.length} file{successFiles.length !== 1 ? "s" : ""}{" "}
+              uploaded
+            </span>
+            <span>
+              {formatSize(totalSize)} /{" "}
+              {UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_LABEL}
+            </span>
           </div>
         </div>
       )}

@@ -41,7 +41,7 @@ function formatSourceMessage(execution: RecipeExecutionRecord): string {
       typeof source.retry_after_sec === "number" && source.retry_after_sec > 0
         ? ` Waiting ~${formatMetricValue(source.retry_after_sec)}s.`
         : "";
-    return `Waiting for GitHub rate limit. Studio will resume automatically.${wait}`;
+    return `Waiting for GitHub rate limit. Unsloth will resume automatically.${wait}`;
   }
   return source.message ?? "Crawling GitHub source.";
 }

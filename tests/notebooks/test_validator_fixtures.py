@@ -1,22 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""
-Golden-fixture tests for scripts/notebook_validator.py.
+"""Golden-fixture tests for scripts/notebook_validator.py: each reconstructs a broken install cell from an unslothai/notebooks PR and asserts the matching rule fires (and falls silent after the fix).
 
-Each test reconstructs the broken-state install cell that one of the
-referenced unslothai/notebooks PRs fixed, and asserts the matching rule
-fires. The fixed-state tests prove the rule falls silent after the fix.
-
-Cross-references:
-  PR #258  -> R-INST-003  (peft/torchao floor)
-  PR #260  -> R-EXC-001   (DONT_UPDATE_EXCEPTIONS coverage; covered by
-                            an integration test pointing at a real
-                            notebooks checkout)
-  PR #261a -> R-INST-004  (torch/torchcodec ABI)
-  PR #261b -> R-INST-005  (transformers --no-deps + tokenizers window)
-  PR #264  -> R-INST-005  (same class as #261b)
-  PR #221  -> R-INST-001  (forbid git+ HEAD installs)
-  51b1462  -> R-DRIFT-001 (drift; integration-tested separately)
+Cross-references: PR #258->R-INST-003, #260->R-EXC-001, #261a->R-INST-004,
+#261b/#264->R-INST-005, #221->R-INST-001, 51b1462->R-DRIFT-001.
 """
 
 from __future__ import annotations
@@ -32,9 +19,7 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 
 import notebook_validator as nv  # noqa: E402
 
-# Snapshot of Colab GPU pip-freeze that recreates the bug environments
-# below. Real CI uses scripts/data/colab_pip_freeze.gpu.txt; tests use a
-# small inline subset so the unit cases are hermetic.
+# Inline subset of Colab GPU pip-freeze recreating the bug environments (CI uses scripts/data/colab_pip_freeze.gpu.txt).
 COLAB_2026_05 = {
     "torch": "2.10.0+cu128",
     "torchao": "0.10.0",
@@ -129,13 +114,11 @@ def test_r_inst_004_silent_when_torch_2_7_with_torchcodec_0_5():
 
 
 def test_r_inst_005_fires_no_deps_transformers_55_without_tokenizers_pin(monkeypatch):
-    """PR #264: --no-deps transformers==5.5.0 leaves Colab tokenizers in
-    place; if Colab ever ships tokenizers > 0.23.0 this breaks."""
+    """PR #264: --no-deps transformers==5.5.0 leaves Colab tokenizers in place; breaks if Colab ships tokenizers > 0.23.0."""
     cell = """%%capture
 !pip install --no-deps transformers==5.5.0
 """
-    # Fake a Colab snapshot where tokenizers has just bumped past the window
-    # transformers 5.5.0 supports.
+    # Colab snapshot where tokenizers bumped past transformers 5.5.0's window.
     colab = dict(COLAB_2026_05, tokenizers = "0.23.5")
 
     def fake_meta(name, version):
@@ -168,9 +151,7 @@ def test_r_inst_005_silent_when_no_deps_pins_tokenizers(monkeypatch):
 
 
 def test_r_inst_005_silent_without_no_deps(monkeypatch):
-    """If --no-deps is absent, pip resolves tokenizers transitively; the
-    rule must NOT fire (this is the false-positive case from notebooks like
-    Whisper.ipynb that pin transformers but rely on pip's resolver)."""
+    """Without --no-deps, pip resolves tokenizers transitively; rule must NOT fire (false-positive case from e.g. Whisper.ipynb)."""
     cell = """%%capture
 !pip install transformers==4.51.3
 """
@@ -243,14 +224,23 @@ def test_environment_classifier(path, expected):
 # ---------- Integration: walk the live notebooks repo (skipped if absent) -- #
 
 
-def _live_notebooks_dir() -> Path | None:
-    candidates = [
-        Path(__file__).resolve().parents[3] / "notebooks",  # workspace sibling
-        Path("/mnt/disks/unslothai/ubuntu/workspace_12/notebooks"),
-    ]
+def _live_notebooks_dir(candidates: list[Path] | None = None) -> Path | None:
+    if candidates is None:
+        candidates = [
+            Path(__file__).resolve().parents[3] / "notebooks",  # workspace sibling
+            Path("/mnt/disks/unslothai/ubuntu/workspace_12/notebooks"),
+        ]
     for p in candidates:
-        if (p / "update_all_notebooks.py").is_file():
-            return p
+        # is_file() only swallows ENOENT/ENOTDIR; an unreadable candidate raises
+        # EACCES on Python <= 3.13 (3.14 suppresses it, gh-101357). These are
+        # absolute paths outside the repo, so on a shared machine one can belong
+        # to another user. The skipif decorators below call this at import time,
+        # so a raise here aborts collection of the whole file.
+        try:
+            if (p / "update_all_notebooks.py").is_file():
+                return p
+        except OSError:
+            continue
     return None
 
 
@@ -259,9 +249,7 @@ def _live_notebooks_dir() -> Path | None:
     reason = "unslothai/notebooks not cloned at sibling path",
 )
 def test_exceptions_passes_on_head():
-    """L1.2 must be silent on the live HEAD of unslothai/notebooks. If this
-    test fires, either DONT_UPDATE_EXCEPTIONS gained a notebook missing a
-    policy clause (real bug) or the policy clause set is stale."""
+    """L1.2 must be silent on live unslothai/notebooks HEAD; a fire means a DONT_UPDATE_EXCEPTIONS notebook lost its policy clause or the clause set is stale."""
     findings = nv.rule_l12_exceptions_coverage(_live_notebooks_dir())
     assert findings == [], findings
 
@@ -271,8 +259,7 @@ def test_exceptions_passes_on_head():
     reason = "unslothai/notebooks not cloned at sibling path",
 )
 def test_lint_smoke_no_module_errors():
-    """The lint subcommand should walk every nb/kaggle without crashing.
-    (We accept findings -- those are the validator doing its job.)"""
+    """The lint subcommand walks every nb/kaggle without crashing (findings are fine)."""
     import subprocess
 
     rc = subprocess.run(
@@ -292,3 +279,32 @@ def test_lint_smoke_no_module_errors():
     )
     # rc=0 means clean, rc=1 means findings reported, rc=2 means crash.
     assert rc.returncode in (0, 1), rc.stderr[-2000:]
+
+
+def test_live_notebooks_dir_skips_an_unreadable_candidate(tmp_path):
+    """An unreadable candidate must read as absent rather than raise.
+
+    The skipif decorators above call ``_live_notebooks_dir`` at import time, so an
+    uncaught EACCES there aborts collection of this whole file, taking the entire
+    Repo tests (CPU) job with it. The candidates are absolute paths outside the repo,
+    so on a shared machine one of them can belong to another user.
+    """
+    blocked_parent = tmp_path / "blocked"
+    blocked = blocked_parent / "notebooks"
+    blocked.mkdir(parents = True)
+    (blocked / "update_all_notebooks.py").write_text("")
+    readable = tmp_path / "readable" / "notebooks"
+    readable.mkdir(parents = True)
+    (readable / "update_all_notebooks.py").write_text("")
+
+    blocked_parent.chmod(0o000)
+    try:
+        try:
+            (blocked / "update_all_notebooks.py").is_file()
+        except OSError:
+            pass
+        else:
+            pytest.skip("filesystem does not enforce the permission (root?)")
+        assert _live_notebooks_dir([blocked, readable]) == readable
+    finally:
+        blocked_parent.chmod(0o755)

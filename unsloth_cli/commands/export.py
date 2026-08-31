@@ -6,6 +6,8 @@ from typing import Optional
 
 import typer
 
+from unsloth_cli._studio_deps import studio_backend_imports
+
 
 EXPORT_FORMATS = ["merged-16bit", "merged-4bit", "gguf", "lora"]
 GGUF_QUANTS = ["q4_k_m", "q5_k_m", "q8_0", "f16"]
@@ -17,7 +19,8 @@ def list_checkpoints(
     ),
 ):
     """List checkpoints detected in the outputs directory."""
-    from studio.backend.core.export import ExportBackend
+    with studio_backend_imports("unsloth list-checkpoints"):
+        from studio.backend.core.export import ExportBackend
 
     backend = ExportBackend()
     checkpoints = backend.scan_checkpoints(outputs_dir = str(outputs_dir))
@@ -56,9 +59,7 @@ def export(
     hf_token: Optional[str] = typer.Option(
         None, "--hf-token", envvar = "HF_TOKEN", help = "HuggingFace token."
     ),
-    private: bool = typer.Option(
-        False, "--private", help = "Make the HuggingFace repo private."
-    ),
+    private: bool = typer.Option(False, "--private", help = "Make the HuggingFace repo private."),
     max_seq_length: int = typer.Option(2048, "--max-seq-length"),
     load_in_4bit: bool = typer.Option(True, "--load-in-4bit/--no-load-in-4bit"),
 ):
@@ -74,7 +75,8 @@ def export(
         typer.echo("Error: --repo-id required when using --push-to-hub", err = True)
         raise typer.Exit(code = 2)
 
-    from studio.backend.core.export import ExportBackend
+    with studio_backend_imports("unsloth export"):
+        from studio.backend.core.export import ExportBackend
 
     backend = ExportBackend()
 
@@ -116,6 +118,7 @@ def export(
             push_to_hub = push_to_hub,
             repo_id = repo_id,
             hf_token = hf_token,
+            private = private,
         )
     elif format == "lora":
         success, message, output_path = backend.export_lora_adapter(

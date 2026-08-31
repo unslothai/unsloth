@@ -12,10 +12,10 @@ function detectTauri(): boolean {
 }
 
 const isTauri = detectTauri()
-const isViteDev = import.meta.env.DEV
 
-if (isTauri && !isViteDev) {
-  apiBase = 'http://127.0.0.1:8888'
+if (isTauri) {
+  // never connects; real port arrives via server-port
+  apiBase = 'http://127.0.0.1:0'
 }
 
 const initialApiBase = apiBase
