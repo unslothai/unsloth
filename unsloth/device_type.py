@@ -202,14 +202,23 @@ def arch_lacks_bf16(gcn_arch):
 
 
 def hip_visible_archs():
-    """gcnArchName for every visible HIP device. Empty on any probe failure."""
+    """gcnArchName for every visible HIP device.
+
+    Guarded per device: one unreadable device must not discard the others'
+    readings, or the gfx10 beside it keeps bf16 and dies in Triton (#7922).
+    Empty only when the device count itself is unreadable.
+    """
     try:
-        return [
-            str(getattr(torch.cuda.get_device_properties(i), "gcnArchName", ""))
-            for i in range(torch.cuda.device_count())
-        ]
+        count = torch.cuda.device_count()
     except Exception:
         return []
+    archs = []
+    for i in range(count):
+        try:
+            archs.append(str(getattr(torch.cuda.get_device_properties(i), "gcnArchName", "")))
+        except Exception:
+            continue
+    return archs
 
 
 def resolve_hip_gpu_stats_name(gpu_stats):

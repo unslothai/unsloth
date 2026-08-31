@@ -41,6 +41,43 @@ def test_unreadable_arch_does_not_disable_bf16(arch):
     assert arch_lacks_bf16(arch) is False
 
 
+def test_one_unreadable_device_keeps_the_others(monkeypatch):
+    """One wedged device must not discard the gfx10 reading beside it, or that card
+    keeps bf16 and the #7922 crash comes back. Only an unreadable device COUNT
+    empties the list, and torch's own answer then stands."""
+    import types
+
+    import unsloth.device_type as dt
+
+    if not hasattr(dt, "torch"):
+        pytest.skip("device_type stub or MLX host; the real HIP probe is not loaded")
+
+    class _Props:
+        gcnArchName = "gfx1032"
+
+    def _props(i):
+        if i == 1:
+            raise RuntimeError("device wedged")
+        return _Props()
+
+    monkeypatch.setattr(
+        dt, "torch",
+        types.SimpleNamespace(
+            cuda = types.SimpleNamespace(device_count = lambda: 2, get_device_properties = _props)
+        ),
+    )
+    assert dt.hip_visible_archs() == ["gfx1032"]
+
+    def _count_raises():
+        raise RuntimeError("no HIP runtime")
+
+    monkeypatch.setattr(
+        dt, "torch",
+        types.SimpleNamespace(cuda = types.SimpleNamespace(device_count = _count_raises)),
+    )
+    assert dt.hip_visible_archs() == []
+
+
 def test_gpu_init_gates_on_every_visible_device():
     """SUPPORTS_BFLOAT16 is process-wide, so one gfx10 in the set has to disable it for all."""
     source = GPU_INIT.read_text(encoding = "utf-8")
