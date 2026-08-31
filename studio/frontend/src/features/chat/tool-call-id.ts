@@ -24,6 +24,48 @@ export interface StreamedToolCallPart {
 }
 
 /**
+ * The id for a card drawn from a delta the provider gave no id to.
+ *
+ * The slot's own `tool_call_<index>` when that is free, then the lowest
+ * `tool_call_<n>` that is not. `_mint_streamed_card_id` in the backend loop
+ * walks the same deltas in the same order under the same rule, so it lands on
+ * the same spelling and its `tool_start` and `tool_end` reach the card this
+ * stream already drew rather than opening a second one beside it.
+ *
+ * `reserved` holds the ids the provider itself sent, so a provider that spells
+ * one `tool_call_0` keeps it. No colon, because a replayed id has to satisfy
+ * `^[a-zA-Z0-9_-]+$`.
+ */
+export function mintStreamedToolCallId(
+  parts: StreamedToolCallPart[],
+  deltaIndex: number | undefined,
+  reserved: Set<string>,
+): string {
+  const isTaken = (candidate: string) =>
+    reserved.has(candidate) || parts.some((part) => part.toolCallId === candidate);
+  const preferred = deltaIndex === undefined ? "" : `tool_call_${deltaIndex}`;
+  if (preferred && !isTaken(preferred)) return preferred;
+  let position = 0;
+  while (isTaken(`tool_call_${position}`)) position += 1;
+  return `tool_call_${position}`;
+}
+
+/**
+ * Let a card drawn by the deltas answer to its own id.
+ *
+ * Without this `resolveToolCallPartId` mints `<backend id>:<uuid>` the first
+ * time the backend names an id-less call, `tool_start` finds no card under
+ * that and pushes one, and the turn ends holding two cards and persisting two
+ * tool-call parts for every call the stream drew.
+ */
+export function bindStreamedToolCallCard(
+  ids: Map<string, string>,
+  partId: string,
+): void {
+  if (!ids.has(partId)) ids.set(partId, partId);
+}
+
+/**
  * Newest part holding `deltaIndex`, or -1. `unownedOnly` restricts the match to
  * a slot no provider id has claimed yet.
  */

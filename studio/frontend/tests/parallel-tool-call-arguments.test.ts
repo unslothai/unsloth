@@ -21,7 +21,12 @@ import {
   splitTopLevelJsonObjects,
   toolCallReplayArguments,
 } from "../src/features/chat/tool-call-arguments.ts";
-import { findStreamedToolCallPartIndex } from "../src/features/chat/tool-call-id.ts";
+import {
+  bindStreamedToolCallCard,
+  findStreamedToolCallPartIndex,
+  mintStreamedToolCallId,
+  resolveToolCallPartId,
+} from "../src/features/chat/tool-call-id.ts";
 
 // ---------------------------------------------------------------------------
 // A. The scanner
@@ -174,7 +179,7 @@ function liftBetween(what: string, from: string, to: string): string {
 function liftSplitHelpers(): string {
   const lifted = liftBetween(
     "split helpers",
-    "let splitToolCallSeq = 0;",
+    "// Ids already spoken for this response",
     "// Raw tool_args accumulator per card",
   );
   assert.ok(
@@ -222,10 +227,20 @@ interface LoopPart {
   extra_content?: unknown;
 }
 
-/** The lifted loop, with the locals it closes over supplied by hand. */
-function makeStream(): {
+/**
+ * The lifted loop, with the locals it closes over supplied by hand.
+ *
+ * `mintPartIds` picks which `resolveToolPartId` the loop closes over. The
+ * accumulation tests want the identity, because they assert which call an id
+ * lands on and the spelling is noise. The card tests want the shipped mint,
+ * `<backend id>:<uuid>`, because whether the backend's id finds the card the
+ * deltas drew is the whole question there, and under the identity every id
+ * finds one whether or not the two halves ever agreed.
+ */
+function makeStream(mintPartIds = false): {
   feed: (batch: DeltaCall[], finished?: boolean) => boolean;
   parts: LoopPart[];
+  resolveToolPartId: (backendId: string) => string;
 } {
   const body = `
     const toolCallParts = [];
@@ -234,12 +249,16 @@ function makeStream(): {
     const cumulativeText = "";
     let streamedChars = 0;
     ${liftSplitHelpers()}
-    const resolveToolPartId = (backendId) => {
-      const seen = toolPartIdByBackendId.get(backendId);
-      if (seen) return seen;
-      toolPartIdByBackendId.set(backendId, backendId);
-      return backendId;
-    };
+    let mintedPartIds = 0;
+    const resolveToolPartId = (backendId) =>
+      resolveToolCallPartId(
+        toolPartIdByBackendId,
+        backendId,
+        undefined,
+        toolCallParts[toolCallParts.length - 1]?.toolCallId ?? "",
+        () =>
+          mintPartIds ? backendId + ":uuid-" + (mintedPartIds += 1) : backendId,
+      );
     let addedToolCall = false;
     let replayStateChanged = false;
     // The chunk the lifted loop reads finish_reason off, so the provider-turn
@@ -252,23 +271,30 @@ function makeStream(): {
       ${liftDeltaLoop()}
       return addedToolCall;
     }
-    return { feed, parts: toolCallParts };
+    return { feed, parts: toolCallParts, resolveToolPartId };
   `;
-  const js = ts.transpileModule(body, {
+  const js = ts.transpileModule(`const mintPartIds = ${mintPartIds};` + body, {
     compilerOptions: { target: ts.ScriptTarget.ES2022 },
   }).outputText;
   return new Function(
     "splitTopLevelJsonObjects",
     "createBoundaryScan",
     "findStreamedToolCallPartIndex",
+    "mintStreamedToolCallId",
+    "bindStreamedToolCallCard",
+    "resolveToolCallPartId",
     js,
   )(
     splitTopLevelJsonObjects,
     createBoundaryScan,
     findStreamedToolCallPartIndex,
+    mintStreamedToolCallId,
+    bindStreamedToolCallCard,
+    resolveToolCallPartId,
   ) as {
     feed: (batch: DeltaCall[], finished?: boolean) => boolean;
     parts: LoopPart[];
+    resolveToolPartId: (backendId: string) => string;
   };
 }
 
@@ -463,7 +489,7 @@ test("a late id claims the call still being written, never a closed one", () => 
     parts.map((p) => [p.toolCallId, p.argsText]),
     [
       ["tool_call_0", '{"a":1}'],
-      ["tool_call_0_1", '{"b":2}'],
+      ["tool_call_1", '{"b":2}'],
       ["call_c", '{"c":3}'],
     ],
   );
@@ -516,7 +542,7 @@ test("a late id opens its own call when every call in the slot has closed", () =
     parts.map((p) => [p.toolCallId, p.argsText]),
     [
       ["tool_call_0", '{"a":1}'],
-      ["tool_call_0_1", '{"b":2}'],
+      ["tool_call_1", '{"b":2}'],
       ["call_c", '{"c":3}'],
     ],
   );
@@ -1158,5 +1184,108 @@ test("a second call that differs anywhere still opens its own", () => {
       ["tool_call_0", '{"a":1}'],
       ["call_b", '{"a":2}'],
     ],
+  );
+});
+
+// ---------------------------------------------------------------------------
+// E. The card the deltas drew
+// ---------------------------------------------------------------------------
+
+test("an id-less card answers to the id the backend mints for it", () => {
+  // The backend mints tool_call_<n> for a call the provider gave no id to and
+  // addresses tool_start and tool_end there. Without the binding,
+  // resolveToolPartId mints "<id>:<uuid>", tool_start finds no card under that
+  // and pushes one, and #9807's four calls end the turn holding eight cards.
+  const stream = makeStream(true);
+  for (const url of ["a", "b", "c", "d"]) {
+    stream.feed([{ index: 0, function: { name: "fetch", arguments: `{"url":"${url}"}` } }]);
+  }
+
+  assert.deepEqual(
+    stream.parts.map((p) => p.toolCallId),
+    ["tool_call_0", "tool_call_1", "tool_call_2", "tool_call_3"],
+  );
+
+  const painted = stream.parts.length;
+  for (const backendId of ["tool_call_0", "tool_call_1", "tool_call_2", "tool_call_3"]) {
+    const partId = stream.resolveToolPartId(backendId);
+    assert.equal(partId, backendId, `${backendId} did not resolve to its own card`);
+    assert.ok(
+      stream.parts.some((p) => p.toolCallId === partId),
+      `${backendId} found no card to update`,
+    );
+  }
+  assert.equal(stream.parts.length, painted, "a backend event opened a second card");
+});
+
+test("a call the provider named still resolves through the minted part id", () => {
+  // Unchanged for every stream that carries ids: the card is keyed on the
+  // run-unique "<id>:<uuid>" the resolver mints, exactly as before.
+  const stream = makeStream(true);
+  stream.feed([{ id: "call_a", index: 0, function: { name: "alpha", arguments: '{"a":1}' } }]);
+
+  const partId = stream.resolveToolPartId("call_a");
+  assert.match(partId, /^call_a:uuid-\d+$/);
+  assert.deepEqual(
+    stream.parts.map((p) => p.toolCallId),
+    [partId],
+  );
+});
+
+test("a provider id spelled tool_call_0 keeps its own card", () => {
+  // tool_call_<n> is not reserved to Unsloth. A provider using that spelling
+  // must not have the card taken from it by the id-less call beside it.
+  const stream = makeStream(true);
+  stream.feed([
+    { id: "tool_call_0", index: 0, function: { name: "alpha", arguments: '{"a":1}' } },
+  ]);
+  stream.feed([{ index: 1, function: { name: "beta", arguments: '{"b":2}' } }]);
+
+  const ids = stream.parts.map((p) => p.toolCallId);
+  assert.equal(new Set(ids).size, ids.length, "two cards share one id");
+  assert.ok(!ids.includes("tool_call_0"), "the minted id took the provider's spelling");
+});
+
+test("several calls opened by one delta each get their own card id", () => {
+  // A slot can arrive already holding several calls in one fragment. The cards
+  // are minted before any of them joins the parts array, so the ids have to be
+  // reserved as they are handed out or all three collide.
+  const stream = makeStream(true);
+  stream.feed([
+    { index: 0, function: { name: "fetch", arguments: '{"a":1}{"b":2}{"c":3}' } },
+  ]);
+
+  const ids = stream.parts.map((p) => p.toolCallId);
+  assert.deepEqual(ids, ["tool_call_0", "tool_call_1", "tool_call_2"]);
+  assert.equal(new Set(ids).size, 3);
+});
+
+// ---------------------------------------------------------------------------
+// F. Legacy threads whose marker lost its argument text
+// ---------------------------------------------------------------------------
+
+test("the marker is recognised even with no argument text beside it", () => {
+  // Threads written before argsText was kept, and threads rebuilt by the
+  // importer, carry { _raw } with nothing to compare it to. Replaying it sends
+  // a parameter no tool declares and the provider rejects the whole request.
+  const glued = '{"url":"https://example.com/1"}{"query":"search"}';
+  assert.equal(toolCallReplayArguments(undefined, { _raw: glued }), "{}");
+  assert.equal(toolCallReplayArguments("", { _raw: glued }), "{}");
+});
+
+test("a tool that really takes a _raw parameter keeps it either way", () => {
+  // _raw is not reserved and an MCP server's schema is its own. Held text that
+  // is not a run of whole JSON objects is an argument, not the corruption.
+  assert.equal(
+    toolCallReplayArguments('{"_raw":"hello"}', { _raw: "hello" }),
+    '{"_raw":"hello"}',
+  );
+  assert.equal(
+    toolCallReplayArguments(undefined, { _raw: "hello" }),
+    '{"_raw":"hello"}',
+  );
+  assert.equal(
+    toolCallReplayArguments(undefined, { _raw: '{"one":1}' }),
+    '{"_raw":"{\\"one\\":1}"}',
   );
 });

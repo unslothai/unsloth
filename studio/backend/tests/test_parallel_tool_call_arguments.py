@@ -685,3 +685,84 @@ def test_a_second_call_that_differs_anywhere_still_opens_its_own():
 
     reported = [(call["id"], call["function"]["arguments"]) for call in turn.calls()]
     assert reported == [("call_0_0", '{"a":1}'), ("call_b", '{"a":2}')]
+
+
+# ------------------------------------------------------------------- card ids
+
+
+def test_an_id_less_call_carries_the_card_id_the_client_painted():
+    # The client draws a card the moment the delta arrives, keyed on an id it
+    # mints itself because the provider sent none. Without a card id here, the
+    # tool_start that follows is addressed to call_0_0, finds no card under
+    # that, and pushes a second one: eight cards for the four calls in #9807.
+    turn = _Turn()
+    for url in ("a", "b", "c", "d"):
+        turn.merge_structured([_delta(0, "fetch", '{"url":"%s"}' % url)])
+
+    reported = [(call["id"], call.get("card_id")) for call in turn.calls()]
+    assert reported == [
+        ("call_0_0", "tool_call_0"),
+        ("call_0_1", "tool_call_1"),
+        ("call_0_2", "tool_call_2"),
+        ("call_0_3", "tool_call_3"),
+    ]
+
+
+def test_the_conversation_id_is_not_the_card_id():
+    # The card id is for the events the client draws with. What is stored and
+    # replayed upstream stays call_<round>_<position>, so a thread written
+    # before this still resolves its results to its calls.
+    turn = _Turn()
+    turn.merge_structured([_delta(0, "alpha", '{"a":1}')])
+
+    call = turn.calls()[0]
+    assert call["id"] == "call_0_0"
+    assert call["card_id"] == "tool_call_0"
+
+
+def test_a_call_the_provider_named_gets_no_card_id():
+    # An id on the wire is already the card's id on both sides, so minting a
+    # second spelling for it would be the very mismatch this exists to close.
+    turn = _Turn()
+    turn.merge_structured([_delta(0, "alpha", '{"a":1}', call_id = "call_a")])
+
+    call = turn.calls()[0]
+    assert call["id"] == "call_a"
+    assert "card_id" not in call
+
+
+def test_a_second_round_keeps_numbering_where_the_first_stopped():
+    # One list of cards spans the whole response, so restarting at tool_call_0
+    # would address the second round's events to the first round's cards.
+    first = _Turn()
+    first.merge_structured([_delta(0, "alpha", '{"a":1}')])
+    painted: set[str] = set()
+    taken: set[str] = set()
+    assert [call["card_id"] for call in first.calls(taken, painted)] == ["tool_call_0"]
+
+    second = _Turn()
+    second.round = 1
+    second.merge_structured([_delta(0, "beta", '{"b":2}')])
+    assert [call["card_id"] for call in second.calls(taken, painted)] == ["tool_call_1"]
+
+
+def test_a_provider_id_in_the_minted_namespace_is_not_handed_out_twice():
+    # tool_call_<n> is not reserved to Unsloth, and a provider that spells one
+    # of its own ids that way keeps it: the card it already owns must not be
+    # taken from it by the call streamed beside it.
+    turn = _Turn()
+    turn.merge_structured([_delta(0, "alpha", '{"a":1}', call_id = "tool_call_0")])
+    turn.merge_structured([_delta(1, "beta", '{"b":2}')])
+
+    reported = [(call["id"], call.get("card_id")) for call in turn.calls()]
+    assert reported == [("tool_call_0", None), ("call_0_1", "tool_call_1")]
+
+
+def test_a_slot_that_opens_late_keeps_its_own_index():
+    # The first call at index 3 is tool_call_3 on the client, because the slot
+    # names the card before any split has happened. Numbering from zero here
+    # would address it to a card that does not exist.
+    turn = _Turn()
+    turn.merge_structured([_delta(3, "alpha", '{"a":1}')])
+
+    assert [call.get("card_id") for call in turn.calls()] == ["tool_call_3"]

@@ -112,7 +112,9 @@ import {
   toolCallReplayArguments,
 } from "../tool-call-arguments";
 import {
+  bindStreamedToolCallCard,
   findStreamedToolCallPartIndex,
+  mintStreamedToolCallId,
   resolveToolCallPartId,
 } from "../tool-call-id";
 
@@ -5281,7 +5283,12 @@ export function createOpenAIStreamAdapter(
       // An id for a call the stream never gave one: a slot that turned out to
       // hold several parallel calls (issue #9807). Counted, not random, so a
       // rerun of the same stream reads the same way in a log.
-      let splitToolCallSeq = 0;
+      // Ids already spoken for this response: the ones the provider sent, and
+      // the ones minted for cards drawn from a delta that carried none. A card
+      // is minted before its part joins `toolCallParts`, so without holding
+      // them here a batch that opens three calls at once mints one id three
+      // times and the three cards collect each other's results.
+      const reservedToolCallIds = new Set<string>();
       // A name that arrived at a slot whose object had closed, waiting for the
       // arguments that say which call it names, and the metadata that arrived
       // with it: Gemini stows the thought signature for the call being
@@ -5383,14 +5390,11 @@ export function createOpenAIStreamAdapter(
         }
         return scan.feed(text);
       };
-      const mintSplitToolCallId = (deltaIndex: number | undefined): string => {
-        let candidate = "";
-        do {
-          splitToolCallSeq += 1;
-          // No colon: a replayed id has to satisfy ^[a-zA-Z0-9_-]+$.
-          candidate = `tool_call_${deltaIndex ?? "x"}_${splitToolCallSeq}`;
-        } while (toolCallParts.some((p) => p.toolCallId === candidate));
-        return candidate;
+      const mintStreamedCardId = (deltaIndex: number | undefined): string =>
+        mintStreamedToolCallId(toolCallParts, deltaIndex, reservedToolCallIds);
+      const paintStreamedCard = (partId: string): void => {
+        reservedToolCallIds.add(partId);
+        bindStreamedToolCallCard(toolPartIdByBackendId, partId);
       };
       /**
        * Parts for the calls after the first, in a slot holding several. Nothing
@@ -5411,7 +5415,8 @@ export function createOpenAIStreamAdapter(
           } catch {
             segmentArgs = { _raw: segment } as ToolCallMessagePart["args"];
           }
-          const bornId = mintSplitToolCallId(deltaIndex);
+          const bornId = mintStreamedCardId(deltaIndex);
+          paintStreamedCard(bornId);
           if (!codexRoundToolCallIds.includes(bornId)) {
             codexRoundToolCallIds.push(bornId);
           }
@@ -7114,6 +7119,9 @@ export function createOpenAIStreamAdapter(
                   const stablePartId = stableId
                     ? resolveToolPartId(stableId)
                     : undefined;
+                  // Reserved before any card id is minted, so a provider that
+                  // happens to spell an id `tool_call_0` keeps it to itself.
+                  if (stableId) reservedToolCallIds.add(stableId);
                   // match by resolved id when the fragment carries one, else by
                   // index slot; streams that send neither get a minted
                   // tool_call_<n> id.
@@ -7347,18 +7355,10 @@ export function createOpenAIStreamAdapter(
                       addedToolCall = true;
                     }
                   } else {
-                    let callId =
+                    const callId =
                       stablePartId ||
-                      `tool_call_${idx ?? toolCallParts.length}`;
-                    if (
-                      !stablePartId &&
-                      toolCallParts.some((p) => p.toolCallId === callId)
-                    ) {
-                      // The slot's own id is taken: this index already opened a
-                      // call and has closed it. Two cards under one id collect
-                      // each other's results.
-                      callId = mintSplitToolCallId(idx);
-                    }
+                      mintStreamedCardId(idx ?? toolCallParts.length);
+                    if (!stablePartId) paintStreamedCard(callId);
 
                     if (!codexRoundToolCallIds.includes(callId)) {
                       codexRoundToolCallIds.push(callId);

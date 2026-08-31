@@ -226,6 +226,30 @@ def _chunk_payload(line: str) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
+def _mint_streamed_card_id(taken: set[str], index: Any) -> str:
+    """The id the client painted this call's card under.
+
+    A call the provider gave no id to still needs one, and the client minted
+    its own the moment the delta arrived: ``tool_call_<delta index>`` for the
+    first call in a slot, then the lowest free ``tool_call_<n>`` for each call
+    split out of it. Both halves walk the same deltas in the same order, so
+    reproducing that rule here lands on the same spelling, and ``tool_start``
+    and ``tool_end`` reach the card the stream already drew instead of pushing
+    a second one beside it.
+
+    This is a card id and never a conversation id: what is stored and replayed
+    upstream stays ``call_<round>_<position>``, so threads written before this
+    keep resolving.
+    """
+    preferred = f"tool_call_{index}" if isinstance(index, int) and not isinstance(index, bool) else ""
+    if preferred and preferred not in taken:
+        return preferred
+    position = 0
+    while f"tool_call_{position}" in taken:
+        position += 1
+    return f"tool_call_{position}"
+
+
 def _normalized_call(call: dict[str, Any], fallback_id: str = "") -> dict[str, Any] | None:
     call_id = call.get("id")
     function = call.get("function")
@@ -973,7 +997,7 @@ class _Turn:
             return "", None
         return parked, extra
 
-    def _announced_but_unopened(self) -> list[tuple[int, dict[str, Any]]]:
+    def _announced_but_unopened(self) -> list[tuple[int, Any, dict[str, Any]]]:
         """Calls a name announced that no argument fragment ever opened.
 
         A tool that takes no parameters can be announced and then simply end,
@@ -987,7 +1011,7 @@ class _Turn:
         Read rather than flushed, so a later argument fragment that does open
         the call still opens it, and this stops reporting it.
         """
-        out: list[tuple[int, dict[str, Any]]] = []
+        out: list[tuple[int, Any, dict[str, Any]]] = []
         for index in sorted(self.pending_name_by_index):
             name = self.pending_name_by_index[index]
             if not name:
@@ -1012,7 +1036,9 @@ class _Turn:
             extra = self.pending_extra_by_index.get(index)
             if extra:
                 call["extra_content"] = dict(extra)
-            out.append((self.pending_seq_by_index.get(index, self.seq_counter), call))
+            out.append(
+                (self.pending_seq_by_index.get(index, self.seq_counter), index, call)
+            )
         return out
 
     def _call_is_finished(self, key: Any) -> bool:
@@ -1034,15 +1060,25 @@ class _Turn:
         self.seq_counter += 1
         return self.seq_counter
 
-    def calls(self, taken: set[str] | None = None) -> list[dict[str, Any]]:
+    def calls(
+        self,
+        taken: set[str] | None = None,
+        cards: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """Every call this turn produced, with ids unique across the whole run.
 
         ``taken`` carries the ids already used by earlier turns. A provider that
         restarts its numbering each turn, and the healer (which always mints
         call_0 first), would otherwise put two different results under one id in
         the conversation replayed upstream.
+
+        ``cards`` carries the card ids already handed out. The client keeps one
+        list of cards for the whole response, so a second round has to keep
+        counting rather than start again at ``tool_call_0`` and reopen the first
+        round's cards.
         """
         seen: set[str] = taken if taken is not None else set()
+        painted: set[str] = cards if cards is not None else set()
         out: list[dict[str, Any]] = []
         # Ordered by when the stream announced each call, so one announced
         # second is not run third because another index opened in between. Keyed
@@ -1050,15 +1086,39 @@ class _Turn:
         # a tie raises rather than sorts, and the sort is stable, so a shared
         # number keeps the order the calls were found in.
         numbered = [
-            (self.seq_by_key.get(key, position), self.by_index[key])
+            (
+                self.seq_by_key.get(key, position),
+                key[0] if isinstance(key, tuple) else key,
+                self.by_index[key],
+            )
             for position, key in enumerate(self.order)
             if self._call_is_finished(key)
         ] + self._announced_but_unopened()
-        ordered = [call for _, call in sorted(numbered, key = lambda pair: pair[0])]
-        for position, call in enumerate(ordered + list(self.healed)):
+        ordered = [
+            (index, call)
+            for _, index, call in sorted(numbered, key = lambda triple: triple[0])
+        ]
+        # A provider id the stream did carry is reserved, so a minted card id
+        # can never collide with one the client is already keying a card on.
+        painted.update(
+            call["id"]
+            for _, call in ordered
+            if isinstance(call.get("id"), str) and call["id"]
+        )
+        for position, (index, call) in enumerate(
+            ordered + [(None, call) for call in self.healed]
+        ):
+            streamed_id = call.get("id")
             normalized = _normalized_call(call, fallback_id = f"call_{self.round}_{position}")
             if normalized is None:
                 continue
+            if not (isinstance(streamed_id, str) and streamed_id):
+                # No id on the wire, so the client minted one and drew a card
+                # under it. Mint the same one here and address the card events
+                # to it; the conversation id above is untouched.
+                card_id = _mint_streamed_card_id(painted, index)
+                painted.add(card_id)
+                normalized["card_id"] = card_id
             if normalized["id"] in seen:
                 # The client keyed the card it painted on the id the provider
                 # streamed, so keep that one for the events aimed at the card.
@@ -1328,6 +1388,10 @@ async def stream_with_studio_tools(
     last_reprompt_text = ""
     provider_turns = 0
     used_call_ids: set[str] = _replayed_call_ids(conversation)
+    # Card ids handed out so far in this response. The client keeps one list of
+    # cards across every round, so the numbering has to keep going rather than
+    # restart and reopen a card an earlier round already closed.
+    painted_card_ids: set[str] = set()
     spent_budget_passes = 0
     fruitless_turns = 0
     # One provider call per possible execution, plus headroom for the no-op,
@@ -1551,7 +1615,11 @@ async def stream_with_studio_tools(
         # so the scraped web text in its prompts cannot reach python or terminal,
         # so a naive or compromised endpoint echoing a call back must not be able
         # to execute it here.
-        calls = [] if (truncated or tool_choice == "none") else turn.calls(used_call_ids)
+        calls = (
+            []
+            if (truncated or tool_choice == "none")
+            else turn.calls(used_call_ids, painted_card_ids)
+        )
         if not calls:
             # No tool this turn. A model that only said what it was about to do
             # gets one nudge to actually do it, the same recovery the local loops
@@ -1612,7 +1680,7 @@ async def stream_with_studio_tools(
                 # execute: the cap is a safety limit, not a hint to the provider.
                 for card_line in _unrun_call_card(
                     tool_name = call["function"]["name"],
-                    tool_call_id = call.get("stream_id") or call["id"],
+                    tool_call_id = call.get("card_id") or call.get("stream_id") or call["id"],
                     arguments = call.get("arguments"),
                     result = _TOOL_BUDGET_EXHAUSTED,
                     provenance = _unrun_provenance(call["function"]["name"], round_id),
@@ -1667,7 +1735,9 @@ async def stream_with_studio_tools(
                     continue
                 for card_line in _unrun_call_card(
                     tool_name = decision.tool_name,
-                    tool_call_id = call.get("stream_id") or decision.tool_call_id,
+                    tool_call_id = (
+                        call.get("card_id") or call.get("stream_id") or decision.tool_call_id
+                    ),
                     arguments = decision.arguments,
                     result = _TOOL_SKIPPED.get(decision.action, "Unsloth did not run this call."),
                     provenance = decision.provenance,
@@ -1685,6 +1755,11 @@ async def stream_with_studio_tools(
             name = decision.tool_name
             arguments = decision.arguments
             call_id = decision.tool_call_id
+            # What the conversation replays and what the card is addressed to
+            # are the same id for a call the provider named, and differ only
+            # for one it did not: the client drew that card under an id it
+            # minted itself, and an event sent to any other id opens a second.
+            card_id = decision.card_id
             needs_confirmation = (
                 confirm_tool_calls and not bypass_permissions and permission_mode != "off"
             )
@@ -1744,7 +1819,7 @@ async def stream_with_studio_tools(
                     {
                         "type": "tool_end",
                         "tool_name": name,
-                        "tool_call_id": call_id,
+                        "tool_call_id": card_id,
                         "result": TOOL_REJECTED_MESSAGE,
                         "provenance": decision.provenance,
                     }
@@ -1803,7 +1878,7 @@ async def stream_with_studio_tools(
             tool_stream = stream_tool_execution(
                 _invoke,
                 tool_name = name,
-                tool_call_id = call_id,
+                tool_call_id = card_id,
                 cancel_event = cancel_event,
             )
             outcome: dict[str, Any] = {}
