@@ -664,11 +664,14 @@ def test_notebook_validator_will_not_name_an_exclusive_floor():
     nv = _load_notebook_validator_module()
 
     for cell in ('!pip install "torch>2.12"', '!pip install "torch>2.11.999"'):
-        assert nv._effective_version(cell, "torch", "2.11.0+cu128") is None, cell
+        assert nv._effective_version(cell, "torch", "2.11.0+cu128") == (None, True), cell
         assert nv.rule_inst_004_torchcodec_torch(cell, COLAB_TORCH211, "nb.ipynb", 0) == [], cell
 
     # `>=` still names its endpoint, which is what the earlier rounds rest on.
-    assert nv._effective_version('!pip install "torch>=2.12"', "torch", "2.11.0+cu128") == "2.12"
+    assert nv._effective_version('!pip install "torch>=2.12"', "torch", "2.11.0+cu128") == (
+        "2.12",
+        False,
+    )
     assert (
         len(
             nv.rule_inst_004_torchcodec_torch(
@@ -677,6 +680,58 @@ def test_notebook_validator_will_not_name_an_exclusive_floor():
         )
         == 1
     )
+
+
+def test_notebook_validator_treats_an_open_floor_as_a_floor():
+    """pip takes the newest release above an open `>=`, so the floor is a lower bound and not
+    the answer. It is enough for the ABI check, where everything above it gives the same
+    answer, and not enough for the table, where it does not."""
+    nv = _load_notebook_validator_module()
+
+    old_pair = {"torch": "2.9.0+cu128", "torchcodec": "0.7.0+cu128"}
+
+    # 0.8 is in the torch 2.9 row, but `>=0.8` can just as easily land on 0.16, so nothing is
+    # proven either way and the rule stays quiet.
+    assert nv.rule_inst_004_torchcodec_torch(
+        '!pip install "torchcodec>=0.8"', old_pair, "nb.ipynb", 0
+    ) == []
+
+    # Every release above this floor is outside the torch 2.10 row, so it is provable.
+    absent = {"torch": "2.10.0+cu128"}
+    findings = nv.rule_inst_004_torchcodec_torch(
+        '!pip install "torch==2.10.0" "torchcodec>=0.12.0"', absent, "nb.ipynb", 0
+    )
+    assert len(findings) == 1
+
+    # An exact pin in the row is still accepted, and one outside it still reported.
+    assert nv.rule_inst_004_torchcodec_torch(
+        '!pip install "torchcodec==0.8.0"', old_pair, "nb.ipynb", 0
+    ) == []
+    assert len(nv.rule_inst_004_torchcodec_torch(
+        '!pip install "torchcodec==0.11.0"', old_pair, "nb.ipynb", 0
+    )) == 1
+
+
+def test_notebook_validator_ignores_a_conditional_pin_when_seeding():
+    """resolved_set seeds the replay, so it has to skip the `||` fallback as well or the
+    conditional pin comes back in through the seed."""
+    nv = _load_notebook_validator_module()
+
+    cell = '!pip install foo || pip install "torch==2.12.0"'
+    assert nv.resolved_set(cell, COLAB_TORCH211)["torch"] == "2.11.0+cu128"
+    assert nv.rule_inst_004_torchcodec_torch(cell, COLAB_TORCH211, "nb.ipynb", 0) == []
+
+
+def test_notebook_validator_pads_release_segments_when_excluding():
+    """PEP 440 pads the release segment, so `!=0.11` rules out an installed `0.11.0`."""
+    nv = _load_notebook_validator_module()
+
+    assert nv._version_is_excluded("0.11.0+cu128", "0.11")
+    assert nv._version_is_excluded("0.11", "0.11.0")
+    assert not nv._version_is_excluded("0.11.1", "0.11")
+
+    cell = '!pip install "torch==2.12" "torchcodec!=0.11"'
+    assert nv.rule_inst_004_torchcodec_torch(cell, COLAB_TORCH211, "nb.ipynb", 0) == []
 
 
 def test_notebook_validator_reads_a_range_as_one_window():

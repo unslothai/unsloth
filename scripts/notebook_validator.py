@@ -560,6 +560,8 @@ def resolved_set(install_cell: str, colab: dict[str, str]) -> dict[str, str]:
     pinned: set[str] = set()
     upper_bounds: dict[str, str] = {}
     for inv in iter_pip_invocations(install_cell):
+        if inv.conditional:
+            continue  # the fallback side of an `||` runs only when the left side failed
         for raw in inv.packages:
             sp = parse_spec(raw)
             if sp is None:
@@ -709,7 +711,11 @@ def _version_is_excluded(version: str, exclusion: str) -> bool:
     if wanted and wanted[-1] == "*":
         wanted = wanted[:-1]
         return normalise_version(version).split(".")[: len(wanted)] == wanted
-    return cmp_versions(version, exclusion) == 0
+    # PEP 440 pads the release segment, so `!=0.11` rules out an installed `0.11.0`.
+    left = [int(part) for part in re.findall(r"\d+", normalise_version(version))]
+    right = [int(part) for part in re.findall(r"\d+", normalise_version(exclusion))]
+    width = max(len(left), len(right))
+    return left + [0] * (width - len(left)) == right + [0] * (width - len(right))
 
 
 def _window_names_one_minor(floor: str | None, ceiling: str | None) -> bool:
@@ -759,7 +765,9 @@ def _spec_window(
     return exact, floor, cap, ceiling, exclusions, floor_excludes_itself
 
 
-def _effective_version(install_cell: str, target: str, resolved: str | None) -> str | None:
+def _effective_version(
+    install_cell: str, target: str, resolved: str | None
+) -> tuple[str | None, bool]:
     """`resolved` walked forward through the cell's own requirements, in invocation order.
 
     resolved_set() drops every bound but `==` and `<=`, and applies those all at once at the
@@ -775,9 +783,16 @@ def _effective_version(install_cell: str, target: str, resolved: str | None) -> 
     A `>` floor names the one version pip will not install, so it too only moves the version
     when a ceiling pins the minor. Anything that cannot say where the install lands clears the
     version rather than keeping a stale one, and a bound on an absent package leaves it
-    absent.
+    absent, unless the requirement carries a floor, which at least says it is installed and
+    how low it can be.
+
+    Returns `(version, exact)`. An open floor moves the version up but does not name it: pip
+    takes the newest release above it, so `>=0.8` can land anywhere from 0.8 upwards. That
+    comes back inexact, and the caller may only use it where every version at or above it
+    gives the same answer.
     """
     current = resolved
+    exact_known = True
     for inv in iter_pip_invocations(install_cell):
         if inv.conditional:
             continue  # runs only when the command before it failed
@@ -806,18 +821,27 @@ def _effective_version(install_cell: str, target: str, resolved: str | None) -> 
         # Where an install lands when it has to move, or None when nothing names it.
         landing = floor if _window_names_one_minor(floor, ceiling) else None
         if exact is not None:
-            current = exact
+            current, exact_known = exact, True
         elif current is None:
-            continue  # nothing to move, and a bound does not name a version
+            # Absent, so the install puts it there. A floor is all that can be said about
+            # where; without one there is nothing to say at all.
+            if floor is not None and not exclusive_floor:
+                current, exact_known = floor, landing is not None
+            continue
         elif any(_version_is_excluded(current, ver) for ver in exclusions):
-            current = landing  # pip cannot keep what is installed
+            current, exact_known = landing, True  # pip cannot keep what is installed
         elif floor is not None and cmp_versions(floor, current) > 0:
-            current = landing if exclusive_floor else floor
+            if landing is not None:
+                current, exact_known = landing, True  # the window pins the minor
+            elif exclusive_floor:
+                current, exact_known = None, True  # nothing names where it went
+            else:
+                current, exact_known = floor, False  # at least the floor, possibly newer
         elif cap is not None and cmp_versions(current, cap) > 0:
-            current = cap  # `<=V` allows V, so V is what pip picks
+            current, exact_known = cap, True  # `<=V` allows V, so V is what pip picks
         elif ceiling is not None and cmp_versions(current, ceiling) >= 0:
-            current = landing
-    return current
+            current, exact_known = landing, True
+    return current, exact_known if current is not None else True
 
 
 def rule_inst_003_peft_torchao(
@@ -854,10 +878,12 @@ def rule_inst_004_torchcodec_torch(
 ) -> list[Finding]:
     findings: list[Finding] = []
     res = resolved_set(install_cell, colab)
-    torch_v = _effective_version(install_cell, "torch", res.get("torch"))
-    codec_v = _effective_version(install_cell, "torchcodec", res.get("torchcodec"))
+    torch_v, torch_exact = _effective_version(install_cell, "torch", res.get("torch"))
+    codec_v, codec_exact = _effective_version(install_cell, "torchcodec", res.get("torchcodec"))
     if not torch_v or not codec_v:
         return findings
+    # An inexact version is a floor: everything at or above it is possible. That is enough for
+    # the ABI check, which only asks whether both sides clear a floor of their own.
     if (
         cmp_versions(torch_v, TORCHCODEC_ABI_STABLE_TORCH) >= 0
         and cmp_versions(codec_v, TORCHCODEC_ABI_STABLE_CODEC) >= 0
@@ -869,6 +895,8 @@ def rule_inst_004_torchcodec_torch(
     if allowed is None:
         if cmp_versions(torch_v, TORCHCODEC_ABI_STABLE_TORCH) < 0:
             return findings  # torch older than the table — don't flag
+        if not codec_exact and cmp_versions(c_minor, TORCHCODEC_ABI_STABLE_CODEC) < 0:
+            return findings  # a newer codec above this floor would be ABI-stable and fine
         # Past the ABI floor with a pre-0.12 codec: locked to an older torch minor.
         findings.append(
             Finding(
@@ -880,6 +908,12 @@ def rule_inst_004_torchcodec_torch(
                 hint = f"pin `torchcodec>={TORCHCODEC_ABI_STABLE_CODEC}.0` (the ABI-stable line, which targets torch >={TORCHCODEC_ABI_STABLE_TORCH})",
             )
         )
+        return findings
+    if not torch_exact:
+        # The row that applies depends on which torch this floor resolves to.
+        return findings
+    if not codec_exact and cmp_versions(c_minor, sorted(allowed)[-1]) <= 0:
+        # Some release at or above the floor is in the row, so nothing is proven.
         return findings
     if c_minor not in allowed:
         findings.append(
