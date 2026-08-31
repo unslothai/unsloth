@@ -228,9 +228,16 @@ const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
                 </span>
                 <CodeExecutionResultOutput result={result} />
               </div>
-            ) : (
+            ) : status?.type === "complete" ? (
               <p className="text-xs italic text-muted-foreground">
                 Command completed with no output.
+              </p>
+            ) : (
+              // Cancelled, or the stream dropped before a result: the trigger
+              // already says incomplete, and claiming completion here would
+              // contradict it.
+              <p className="text-xs italic text-muted-foreground">
+                No output was reported.
               </p>
             )}
           </div>

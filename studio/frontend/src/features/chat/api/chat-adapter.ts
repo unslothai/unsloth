@@ -764,8 +764,10 @@ function parseSourcesFromResult(raw: string): {
     metadata?: { description: string };
   }[] = [];
   for (const block of blocks) {
-    const titleMatch = block.match(/Title:\s*(.+)/);
-    const urlMatch = block.match(/URL:\s*(.+)/);
+    // Line anchored, like the card's parser: these carry page-controlled text,
+    // and an unanchored `URL:` would match one embedded mid-line.
+    const titleMatch = block.match(/^Title:\s*(.+)$/m);
+    const urlMatch = block.match(/^URL:\s*(.+)$/m);
     const snippetMatch = block.match(/Snippet:\s*(.+)/);
     if (titleMatch && urlMatch) {
       // Drop blocks whose ``URL:`` is not safe http(s); provider/tool
@@ -7303,6 +7305,17 @@ export function createOpenAIStreamAdapter(
           // An image-bearing result is an object; citations live on `.text`.
           return parseSourcesFromResult(searchResultText(tc.result));
         });
+        // Every card now carries its own sources, and the last one is also
+        // overwritten with the run's aggregate, so a URL found by two searches
+        // arrives twice. `id` is the url, so that is a duplicate React key.
+        const seenSourceUrls = new Set<string>();
+        const dedupedSourceParts = sourceParts.filter((part) => {
+          if (seenSourceUrls.has(part.url)) {
+            return false;
+          }
+          seenSourceUrls.add(part.url);
+          return true;
+        });
 
         const meta = serverMetadata;
         const finalTokenCount =
@@ -7486,7 +7499,7 @@ export function createOpenAIStreamAdapter(
         yield {
           content: [
             ...buildAssistantContent(mergeContinuation(cumulativeText, { final: true })),
-            ...sourceParts,
+            ...dedupedSourceParts,
             ...documentCitationParts,
           ],
           metadata: {

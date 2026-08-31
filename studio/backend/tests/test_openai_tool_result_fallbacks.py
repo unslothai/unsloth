@@ -829,3 +829,53 @@ def test_a_url_carrying_whitespace_is_dropped_rather_than_emitted(monkeypatch):
     ends = [e for e in _tool_events(lines) if e["type"] == "tool_end"]
     assert "phish.example" not in ends[0]["result"]
     assert ends[0]["result"] == "Title: A\nURL: https://ok.example/a"
+
+
+def test_bundled_empty_output_list_counts_as_a_report(monkeypatch):
+    # `output: []` on the done event IS a report, so the card must read as a
+    # silent success and not as a command that never reported.
+    sse_events = [
+        {
+            "type": "response.output_item.done",
+            "item": {
+                "type": "shell_call",
+                "id": "sc_bundled",
+                "action": {"commands": ["true"]},
+                "output": [],
+            },
+        },
+        {"type": "response.completed", "response": {"output": []}},
+    ]
+    lines = _drive_stream(sse_events, ["code_execution"], monkeypatch)
+    ends = [e for e in _tool_events(lines) if e["type"] == "tool_end"]
+    assert len(ends) == 1
+    assert ends[0]["result"] == ""
+
+
+def test_a_later_output_event_still_wins_over_a_bundled_empty_list(monkeypatch):
+    # Recording the empty list must not finalize the call, or the real output
+    # arriving next would be dropped.
+    sse_events = [
+        {
+            "type": "response.output_item.done",
+            "item": {
+                "type": "shell_call",
+                "id": "sc_late",
+                "action": {"commands": ["echo hi"]},
+                "output": [],
+            },
+        },
+        {
+            "type": "response.output_item.done",
+            "item": {
+                "type": "shell_call_output",
+                "call_id": "sc_late",
+                "output": [{"stdout": "hi\n", "outcome": {"type": "exit", "exit_code": 0}}],
+            },
+        },
+        {"type": "response.completed", "response": {"output": []}},
+    ]
+    lines = _drive_stream(sse_events, ["code_execution"], monkeypatch)
+    ends = [e for e in _tool_events(lines) if e["type"] == "tool_end"]
+    assert len(ends) == 1
+    assert "hi" in ends[0]["result"]

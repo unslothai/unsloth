@@ -431,6 +431,19 @@ def _extract_web_search_action(item: dict[str, Any]) -> dict[str, Any]:
 # claim the command reported; they differ in why the stream stopped asking.
 _SHELL_TRUNCATED_NOTE = "(response truncated before the command reported)"
 _SHELL_NO_REPORT_NOTE = "(no output reported for this command)"
+
+
+def _shell_flush_result(state: dict[str, Any], formatter: Any, note: str) -> str:
+    """Finalise an orphan shell card. `output` stays None until an output field
+    is seen, so an empty list means the command reported nothing (a real silent
+    success) while None means it never reported at all."""
+    reported = state.get("output")
+    text = formatter(reported or [])
+    if text or reported is not None:
+        return text
+    return note
+
+
 # An entry carrying any of these reported something, even if every value is empty.
 # Only a shape with none of them is unknown enough to dump verbatim.
 _SHELL_OUTPUT_KEYS = frozenset({"stdout", "stderr", "text", "content", "outcome"})
@@ -6095,10 +6108,14 @@ class ExternalProviderClient:
                                         }
                                     )
                                     # Fallback: output may be bundled on the
-                                    # shell_call done event itself.
+                                    # shell_call done event itself. An empty list is
+                                    # still a report, so record it -- but do not
+                                    # finalize on one, or a shell_call_output that
+                                    # follows would be dropped.
                                     embedded_output = item.get("output")
-                                    if isinstance(embedded_output, list) and embedded_output:
+                                    if isinstance(embedded_output, list):
                                         shell_calls[item_id]["output"] = embedded_output
+                                    if embedded_output and isinstance(embedded_output, list):
                                         shell_calls[item_id]["tool_end_emitted"] = True
                                         yield _emit_tool_event(
                                             {
@@ -6308,10 +6325,11 @@ class ExternalProviderClient:
                                         {
                                             "type": "tool_end",
                                             "tool_call_id": sc_id,
-                                            "result": _format_shell_output(
-                                                sc_state.get("output") or []
-                                            )
-                                            or _SHELL_NO_REPORT_NOTE,
+                                            "result": _shell_flush_result(
+                                                sc_state,
+                                                _format_shell_output,
+                                                _SHELL_NO_REPORT_NOTE,
+                                            ),
                                         }
                                     )
                                     sc_state["tool_end_emitted"] = True
@@ -6410,10 +6428,11 @@ class ExternalProviderClient:
                                         {
                                             "type": "tool_end",
                                             "tool_call_id": sc_id,
-                                            "result": _format_shell_output(
-                                                sc_state.get("output") or []
-                                            )
-                                            or _SHELL_TRUNCATED_NOTE,
+                                            "result": _shell_flush_result(
+                                                sc_state,
+                                                _format_shell_output,
+                                                _SHELL_TRUNCATED_NOTE,
+                                            ),
                                         }
                                     )
                                     sc_state["tool_end_emitted"] = True

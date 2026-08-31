@@ -76,3 +76,39 @@ test("a URL embedded mid-line cannot become the source pill's href", () => {
   assert.equal(good.match(re("RE_URL"))?.[1], "https://a.example");
   assert.equal(good.match(re("RE_TITLE"))?.[1], "A");
 });
+
+test("the Sources group cannot receive the same url twice", () => {
+  // Every web_search card now carries its own sources and the last one is also
+  // overwritten with the run's aggregate, so a url found by two searches arrives
+  // twice. `id` is the url, so an undeduped list means duplicate React keys.
+  const adapter = readFileSync(
+    fileURLToPath(
+      new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
+    ),
+    "utf8",
+  );
+  assert.match(adapter, /const seenSourceUrls = new Set<string>\(\);/);
+  assert.match(adapter, /\.\.\.dedupedSourceParts,/);
+  assert.doesNotMatch(adapter, /\.\.\.sourceParts,/);
+  // and the adapter's own copy of the block parser is anchored like the card's
+  assert.match(adapter, /block\.match\(\/\^Title:\\s\*\(\.\+\)\$\/m\)/);
+  assert.match(adapter, /block\.match\(\/\^URL:\\s\*\(\.\+\)\$\/m\)/);
+});
+
+test("the no-output message is only claimed on a completed call", () => {
+  const card = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../src/components/assistant-ui/tool-ui-code-execution.tsx",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  );
+  // A cancelled call leaves status incomplete with no result; claiming
+  // completion there contradicts the card's own trigger.
+  assert.match(
+    card,
+    /status\?\.type === "complete" \? \(\s*<p[^>]*>\s*Command completed with no output\./,
+  );
+});
