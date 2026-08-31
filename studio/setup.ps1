@@ -2951,6 +2951,15 @@ function Format-CudaToolkitDir {
     return $Root.TrimEnd('\') + '\'
 }
 
+function Format-CudaToolkitRootForCmake {
+    param([Parameter(Mandatory = $true)][string]$Root)
+    if ([string]::IsNullOrWhiteSpace($Root)) { return $Root }
+    # Windows PowerShell 5.1 misquotes native arguments whose final character is
+    # a backslash. CMake accepts forward slashes on Windows, including the
+    # terminal separator required by the generated CUDA/MSBuild integration.
+    return (Format-CudaToolkitDir $Root).Replace('\', '/')
+}
+
 function Resolve-CudaToolkit {
     param([switch]$RequireOrExit)
 # Toolkit major must be <= the driver's max CUDA major (nvidia-smi "CUDA Version: X.Y");
@@ -6750,7 +6759,7 @@ if ($LocalLlamaCppLinked) {
                 }
                 substep "NVCC_PREPEND_FLAGS = $env:NVCC_PREPEND_FLAGS"
                 # Trailing slash: cmake may forward this into MSBuild CUDA paths.
-                $CudaToolkitRootForCmake = Format-CudaToolkitDir $CudaToolkitRoot
+                $CudaToolkitRootForCmake = Format-CudaToolkitRootForCmake $CudaToolkitRoot
                 $CmakeArgs += "-DCUDAToolkit_ROOT=$CudaToolkitRootForCmake"
                 $CmakeArgs += "-DCUDA_TOOLKIT_ROOT_DIR=$CudaToolkitRootForCmake"
                 $CmakeArgs += "-DCMAKE_CUDA_COMPILER=$NvccPath"
