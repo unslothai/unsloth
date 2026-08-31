@@ -19384,8 +19384,7 @@ def _normalize_chat_reasoning_controls(payload) -> None:
             nested.get("enable_thinking"), nested.get("reasoning_effort")
         )
     else:
-        # ChatCompletionRequest may already have mapped Anthropic ``thinking``
-        # onto the boolean. It is the lowest-priority compatibility form.
+        # Lowest priority: Anthropic ``thinking``, already mapped onto the boolean.
         enable_thinking = payload.enable_thinking
         reasoning_effort = payload.reasoning_effort
 
@@ -19398,10 +19397,9 @@ def _normalize_chat_reasoning_controls(payload) -> None:
 def _normalized_sampling_thinking_mode(payload) -> Optional[bool]:
     """Three-valued reasoning mode used only to select sampling recommendations.
 
-    Internal ``enable_thinking`` has highest request-level precedence, then the
-    OpenAI reasoning-effort convention (``none`` means off), then Anthropic's
-    native ``thinking`` block. ChatCompletionRequest already maps the last form
-    onto ``enable_thinking``; retaining the fallback also covers /v1/messages.
+    Precedence: ``enable_thinking``, then effort (``none`` means off), then the
+    Anthropic ``thinking`` block. The last is mapped for chat requests already;
+    the fallback also covers /v1/messages.
     """
     enable_thinking, reasoning_effort = _resolve_reasoning_controls(
         getattr(payload, "enable_thinking", None),
@@ -19412,10 +19410,8 @@ def _normalized_sampling_thinking_mode(payload) -> Optional[bool]:
     thinking = getattr(payload, "thinking", None)
     thinking_type = getattr(thinking, "type", None)
     if thinking_type is not None:
-        # AnthropicThinkingConfig.type is a plain str so unknown Anthropic tiers
-        # stay servable, and resolved_enable_thinking() treats only the exact
-        # "disabled" as off. Match it, or a case variant generates in thinking
-        # mode while sampling picks the non-thinking preset.
+        # No .lower(): resolved_enable_thinking() treats only the exact "disabled"
+        # as off, and a case variant must not split sampling from generation.
         return str(thinking_type) != "disabled"
     return None
 
@@ -19808,8 +19804,7 @@ async def produce_openai_chat_completions(
     llama_backend = get_llama_cpp_backend()
     using_gguf = llama_backend.is_loaded
 
-    # OpenAI-SDK clients send template controls via ``extra_body``. Lift the
-    # recognized reasoning fields before sampling and generation resolve them.
+    # Lift ``extra_body`` template controls before sampling and generation read them.
     _normalize_chat_reasoning_controls(payload)
 
     # ── Determine which backend is active ─────────────────────
@@ -25534,14 +25529,9 @@ def _build_chat_request(
     if payload.parallel_tool_calls is not None:
         chat_kwargs["parallel_tool_calls"] = payload.parallel_tool_calls
 
-    # ``chat_template_kwargs`` (e.g. ``{"enable_thinking": true}``) arrives via
-    # the Responses extra-body: ResponsesRequest has ``extra="allow"``, so the
-    # OpenAI SDK's ``extra_body`` spread lands the dict in ``model_extra``. The
-    # downstream Chat Completions paths consume the typed ``enable_thinking``
-    # field -- the non-streaming path lifts it in ``openai_chat_completions``
-    # only when it is still ``None``, and the streaming pass-through reads
-    # ``payload.enable_thinking`` directly -- so lift it here, mirroring that
-    # handler, to cover both Responses paths.
+    # ``chat_template_kwargs`` arrives in ``model_extra`` (ResponsesRequest is
+    # ``extra="allow"``), but both Chat Completions paths read the typed fields,
+    # so lift it here to cover streaming and non-streaming alike.
     explicit_enable_thinking = False
     _extra = getattr(payload, "model_extra", None)
     if isinstance(_extra, dict):

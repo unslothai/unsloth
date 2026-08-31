@@ -40,12 +40,8 @@ export function resolveQwenThinkingParams(
 }
 
 /**
- * Apply Qwen3-family recommended sampling parameters when the Think toggle
- * changes. Qwen3.8 uses its model-card thinking row; Qwen3.5, Qwen3.6 and the
- * non-thinking modes keep their existing presence-penalty recommendation.
- *
- * Used by both the thread assistant UI and the shared chat composer so the
- * two call sites stay in sync.
+ * Apply Qwen3-family recommended sampling when the Think toggle changes.
+ * Shared by the thread assistant UI and the chat composer so both stay in sync.
  */
 export function applyQwenThinkingParams(thinkingOn: boolean): void {
   const store = useChatRuntimeStore.getState();

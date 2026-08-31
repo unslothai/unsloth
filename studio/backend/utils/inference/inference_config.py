@@ -109,10 +109,9 @@ def load_inference_config(
     """Load inference params for a model.
 
     Priority: model-specific YAML, then family defaults (inference_defaults.json),
-    then default.yaml. When ``thinking_mode`` is explicitly true or false, an
-    optional mode-specific block at the same priority tier overrides that tier's
-    flat values. An absent mode keeps the historical flat resolution unchanged.
-    Returns a dict of temperature/top_p/top_k/min_p/etc.
+    then default.yaml. An explicitly true/false ``thinking_mode`` lets a tier's
+    optional ``sampling_modes`` block override that tier's flat values; ``None``
+    keeps the historical flat resolution. Returns temperature/top_p/top_k/etc.
     """
     model_defaults = load_model_defaults(model_identifier)
 
@@ -143,8 +142,6 @@ def load_inference_config(
 
     def _get_param(key, hardcoded_default):
         if has_own_yaml:
-            # Model-specific mode + flat values win, then the family mode + flat
-            # values fill gaps, then default.yaml.
             val = model_mode_params.get(key)
             if val is not None and isinstance(val, (int, float)):
                 return val
@@ -157,8 +154,6 @@ def load_inference_config(
                 return family_params[key]
             return default_inference.get(key, hardcoded_default)
         else:
-            # No model-specific YAML: the selected family mode wins over its
-            # historical flat values, then default.yaml.
             if key in family_mode_params:
                 return family_mode_params[key]
             if key in family_params:
@@ -268,9 +263,8 @@ def _recommended_sampling(model_id: str, thinking_mode: Optional[bool] = None) -
     if not model_id:
         return {}
     try:
-        # Keep the historical one-argument call for the absent-mode path. Besides
-        # making the compatibility promise explicit, this keeps lightweight callers
-        # that patch the loader with a one-argument test double working unchanged.
+        # One-argument call when no mode is selected: callers that patch the loader
+        # with a one-argument test double keep working.
         cfg = (
             load_inference_config(model_id)
             if thinking_mode is None
@@ -306,8 +300,8 @@ def resolve_effective_sampling(
     schema default, so a raw proxy body (``/v1/completions``) keeps llama-server's own
     default for that field rather than being forced onto this schema's value.
 
-    ``thinking_mode`` is deliberately three-valued: True and False select optional
-    per-mode model recommendations, while None preserves the historical flat preset.
+    ``thinking_mode`` is three-valued: True/False select the per-mode recommendation,
+    None preserves the historical flat preset.
     """
     recommended = _recommended_sampling(model_id or "", thinking_mode)
     effective: Dict[str, Any] = {}

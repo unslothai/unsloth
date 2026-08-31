@@ -111,9 +111,8 @@ def test_thinking_overrides_enable_thinking_when_both_provided():
 def test_thinking_mapping_ignores_an_explicitly_null_enable_thinking():
     """A client that serializes every optional field must not change precedence.
 
-    pydantic records an explicit ``null`` in ``model_fields_set``, so without the
-    discard the derived value reads as a typed override and the route drops a
-    higher-priority nested control that the omitted form honors.
+    pydantic records an explicit ``null`` as set, so without the discard the
+    derived value reads as a typed override and outranks the nested controls.
     """
     req = ChatCompletionRequest.model_validate(
         {

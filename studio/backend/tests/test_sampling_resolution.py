@@ -344,9 +344,8 @@ def test_chat_route_lifts_harness_template_kwargs_before_sampling(
 ):
     """Exercise the DeepSeek Harness request shape through the real chat route.
 
-    The client sends ``chat_template_kwargs`` as an OpenAI extra-body field. The
-    route must lift it onto the typed request before mode-specific sampling is
-    filled; testing those two helpers separately would not pin that ordering.
+    The route must lift the extra-body ``chat_template_kwargs`` before filling
+    mode-specific sampling; testing the two helpers apart would not pin that order.
     """
     import asyncio
     from types import SimpleNamespace
@@ -632,10 +631,9 @@ def test_fill_recommended_sampling_completions_operator_pin(monkeypatch):
 def test_anthropic_sampling_mode_matches_the_generation_resolver(thinking_type):
     """Sampling and generation must read the same sentinel.
 
-    AnthropicThinkingConfig.type is a plain str so unreleased Anthropic tiers stay
-    servable, and resolved_enable_thinking() treats only the exact "disabled" as
-    off. Lowercasing in the sampling helper made a case variant generate in
-    thinking mode while sampling picked the non-thinking preset.
+    resolved_enable_thinking() treats only the exact "disabled" as off, so
+    lowercasing here made a case variant generate in thinking mode while sampling
+    picked the non-thinking preset.
     """
     from models.inference import AnthropicMessagesRequest
     from routes.inference import _normalized_sampling_thinking_mode
