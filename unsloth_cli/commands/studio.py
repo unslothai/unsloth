@@ -1183,8 +1183,8 @@ def _clear_credential_undelivered(conn: sqlite3.Connection) -> None:
         )
 
 
-def _credential_undelivered(conn: sqlite3.Connection, password_hash: str) -> bool:
-    """True when *password_hash* is the hash of a password that was never shown.
+def _credential_undelivered(conn: sqlite3.Connection) -> bool:
+    """True when the current password's hash belongs to a password never shown.
 
     Matching on the hash (not mere existence) is what makes this self-healing:
     `unsloth studio reset-password` rewrites the row and atomically clears the
@@ -1192,15 +1192,27 @@ def _credential_undelivered(conn: sqlite3.Connection, password_hash: str) -> boo
     unprovably.
     """
     row = conn.execute(
-        "SELECT value FROM app_secrets WHERE key = ?",
-        (CREDENTIAL_UNDELIVERED_PASSWORD_HASH_KEY,),
+        """
+        SELECT s.value,
+               (SELECT password_hash FROM auth_user WHERE username = ?)
+        FROM app_secrets AS s
+        WHERE s.key = ?
+        """,
+        (DEFAULT_ADMIN_USERNAME, CREDENTIAL_UNDELIVERED_PASSWORD_HASH_KEY),
     ).fetchone()
     if row is None:
         return False
-    recorded = row[0]
-    if recorded and hmac.compare_digest(recorded, password_hash):
+    recorded, current_hash = row
+    if recorded and current_hash and hmac.compare_digest(recorded, current_hash):
         return True
-    _clear_credential_undelivered(conn)
+    # Delete only the stale value we observed. A concurrent launcher may replace
+    # it after the SELECT; an unconditional delete would erase that launcher's
+    # valid pending-delivery guard.
+    with conn:
+        conn.execute(
+            "DELETE FROM app_secrets WHERE key = ? AND value = ?",
+            (CREDENTIAL_UNDELIVERED_PASSWORD_HASH_KEY, recorded),
+        )
     return False
 
 
@@ -1764,7 +1776,7 @@ def _enforce_password_change_before_exposure(
             )
             _strip_seeded_bootstrap_password_or_exit(context = "auth DB row unreadable")
             return
-        if row and _credential_undelivered(conn, row[1]):
+        if row and _credential_undelivered(conn):
             # An earlier launch committed an auto-generated password and could not
             # print it, so it refused. must_change_password is 0 now, so the check
             # below would return and let the public child start under a credential
@@ -1844,7 +1856,7 @@ def _enforce_password_change_before_exposure(
                     "SELECT password_hash FROM auth_user WHERE username = ?",
                     (DEFAULT_ADMIN_USERNAME,),
                 ).fetchone()
-                if winner and _credential_undelivered(conn, winner[0]):
+                if winner and _credential_undelivered(conn):
                     # A concurrent launcher won the CAS but has not delivered its
                     # generated credential yet. Launching now would publish the
                     # account before that operator has received the password. A

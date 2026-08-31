@@ -1780,11 +1780,64 @@ def test_autogeneration_cas_loser_checks_winners_delivery_state(
     assert _password_works(studio_mod, "concurrent-winning-password")
     conn = studio_mod._connect_auth_db()
     try:
+        assert studio_mod._credential_undelivered(conn) is winner_pending
+    finally:
+        conn.close()
+
+
+def test_initial_marker_check_uses_current_password_hash(monkeypatch, tmp_path):
+    # A concurrent launcher can replace the password and write its pending-
+    # delivery marker after this process reads the auth row. The marker check
+    # must compare against the current row, not that caller-cached hash.
+    studio_mod = _studio()
+    _install_prompt_env(monkeypatch, tmp_path, interactive = False)
+    _seed_auth(studio_mod)
+    real_update = studio_mod._cli_update_password
+    real_credential_undelivered = studio_mod._credential_undelivered
+    raced = []
+
+    def _race_before_marker_read(conn):
+        if not raced:
+            raced.append(True)
+            winner_conn = studio_mod._connect_auth_db()
+            try:
+                assert real_update(
+                    winner_conn,
+                    studio_mod.DEFAULT_ADMIN_USERNAME,
+                    "concurrent-winning-password",
+                    require_must_change = True,
+                    mark_credential_undelivered = True,
+                )
+            finally:
+                winner_conn.close()
+        return real_credential_undelivered(conn)
+
+    monkeypatch.setattr(
+        studio_mod,
+        "_credential_undelivered",
+        _race_before_marker_read,
+    )
+
+    with pytest.raises(studio_mod.typer.Exit):
+        studio_mod._enforce_password_change_before_exposure(
+            cloudflare = None,
+            host = "127.0.0.1",
+            secure = True,
+            api_only = False,
+        )
+
+    assert raced == [True]
+    conn = studio_mod._connect_auth_db()
+    try:
+        marker = conn.execute(
+            "SELECT value FROM app_secrets WHERE key = ?",
+            (studio_mod.CREDENTIAL_UNDELIVERED_PASSWORD_HASH_KEY,),
+        ).fetchone()
         current_hash = conn.execute(
             "SELECT password_hash FROM auth_user WHERE username = ?",
             (studio_mod.DEFAULT_ADMIN_USERNAME,),
         ).fetchone()[0]
-        assert studio_mod._credential_undelivered(conn, current_hash) is winner_pending
+        assert marker == (current_hash,)
     finally:
         conn.close()
 
@@ -1845,10 +1898,7 @@ def test_cli_update_password_persists_and_clears_undelivered_state(monkeypatch, 
     conn.close()
 
     conn = studio_mod._connect_auth_db()
-    password_hash = conn.execute(
-        "SELECT password_hash FROM auth_user WHERE username = ?", (admin,)
-    ).fetchone()[0]
-    assert studio_mod._credential_undelivered(conn, password_hash) is True
+    assert studio_mod._credential_undelivered(conn) is True
 
     assert studio_mod._cli_update_password(conn, admin, "operator-chosen-password-3")
     pending = conn.execute(

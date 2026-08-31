@@ -2362,6 +2362,19 @@ def _terminal_password_gate(
         return False, False
     requires_change = _auth_storage.requires_password_change(_admin)
     if not requires_change:
+        # A concurrent headless launcher can commit its generated password and
+        # pending-delivery marker between the first marker read above and this
+        # password-state read. Recheck after observing the changed password: a
+        # user-selected password clears the marker atomically, while an
+        # auto-generated one keeps it until its banner succeeds.
+        if _auth_storage.credential_undelivered(_admin):
+            logger.error(
+                "Refusing to publish Unsloth: another launch auto-generated the "
+                "admin password but has not confirmed that it was displayed. Retry "
+                "after that launch completes, or reset the credential with `unsloth "
+                "studio reset-password`."
+            )
+            return False, False
         return True, False
 
     if not should_prompt_password_change(

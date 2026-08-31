@@ -898,6 +898,36 @@ def test_auto_generate_returns_none_when_the_compare_and_set_loses(real_auth_db,
     assert run._auto_generate_admin_password(admin) is None
 
 
+def test_gate_rechecks_delivery_marker_after_password_state_race(real_auth_db, monkeypatch):
+    # Another headless launcher can commit its generated password and pending-
+    # delivery marker after this gate's first marker read but before its password
+    # state read. The already-set fast path must observe that marker and refuse.
+    admin = _seed_real_admin()
+    real_requires_password_change = auth_storage.requires_password_change
+
+    def _race_with_winning_launcher(username):
+        assert auth_storage.update_password(
+            username,
+            "concurrent-generated-password",
+            revoke_refresh_tokens = True,
+            require_must_change = True,
+            mark_credential_undelivered = True,
+        )
+        return real_requires_password_change(username)
+
+    monkeypatch.setattr(
+        auth_storage,
+        "requires_password_change",
+        _race_with_winning_launcher,
+    )
+
+    assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (
+        False,
+        False,
+    )
+    assert auth_storage.credential_undelivered(admin) is True
+
+
 def test_gate_surfaces_the_password_when_post_commit_cleanup_raises(real_auth_db, monkeypatch):
     # End to end on the direct `python run.py --secure` path: the gate must still
     # proceed and print the live credential instead of aborting after the rotation.
