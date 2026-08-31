@@ -977,6 +977,23 @@ def _looks_like_real_artifact(text: str) -> bool:
     return False
 
 
+def _strip_markup_around_fences(text: str) -> str:
+    """Drop complete <html>/<svg> blocks without touching any complete fence.
+
+    A plain substitution matches from an opening tag inside a fence to a closing
+    one in the prose after it, taking the fence's own closer with it, which then
+    reads as an unfinished block:
+    ``` ```html\\n<html>\\n``` \\nClose it with </html>.```
+    """
+    out, pos = [], 0
+    for m in _CLOSED_CODE_FENCE.finditer(text):
+        out.append(_CLOSED_MARKUP_ARTIFACT.sub("", text[pos : m.start()]))
+        out.append(m.group(0))
+        pos = m.end()
+    out.append(_CLOSED_MARKUP_ARTIFACT.sub("", text[pos:]))
+    return "".join(out)
+
+
 def _has_answer_artifact(text: str) -> bool:
     """True if ``text`` looks like a completed answer artifact.
 
@@ -986,9 +1003,8 @@ def _has_answer_artifact(text: str) -> bool:
     # Strip closed artifacts first: a `html = '<html>'` literal in a finished
     # snippet, or backticks inside finished HTML, are content, not open state.
     text_without_closed_fences = _CLOSED_CODE_FENCE.sub("", text)
-    text_without_closed_markup = _CLOSED_MARKUP_ARTIFACT.sub("", text)
     text_without_both = _CLOSED_MARKUP_ARTIFACT.sub("", text_without_closed_fences)
-    if _has_unclosed_code_fence(text_without_closed_markup):
+    if _has_unclosed_code_fence(_strip_markup_around_fences(text)):
         return False
     # Only meaningful before any artifact lands: afterwards, prose mentioning
     # a bare <html> tag is common and would unbalance the count.

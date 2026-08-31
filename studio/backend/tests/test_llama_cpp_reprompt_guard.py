@@ -253,6 +253,24 @@ def test_bare_delimiter_in_prose_after_a_closed_block():
     assert _has_answer_artifact("First, here is code: ```\nx = 1\n```")
 
 
+def test_closing_tag_in_prose_does_not_eat_a_fence_closer():
+    """Removing complete markup must not span a fence: an opening tag inside a
+    block paired with a closing one in the prose after it took the fence's own
+    closer with it, leaving a finished answer looking unfinished."""
+    samples = [
+        "First, let me show it.\n```html\n<html>\n```\nClose it with </html>.",
+        "First, let me show it.\n```xml\n<svg>\n```\nEnd it with </svg>.",
+    ]
+    for text in samples:
+        assert _has_answer_artifact(text), text
+        assert not _would_reprompt(text), text
+    # Markup outside any fence is still stripped, so backticks inside a
+    # finished page do not read as fence delimiters.
+    assert _has_answer_artifact(
+        "First, let me show it.\n<html><body><script>const s = `hi`;</script></body></html>"
+    )
+
+
 def test_markup_closing_tag_tolerates_whitespace():
     """`</html >` is spec-legal, and must count as an artifact AND as a close
     in the balance count."""
