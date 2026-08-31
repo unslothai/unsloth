@@ -3,7 +3,7 @@
 
 """Disk-backed persistence for generated TTS audio clips.
 
-Each clip is a pair under ``studio_root()/audio``: ``{id}.wav`` holds the bytes and
+Each clip is a pair under ``workspace_root()/audio``: ``{id}.wav`` holds the bytes and
 ``{id}.json`` the recipe (a WAV has no portable text chunk). A lone file is not a
 valid record. Dumb storage: the route owns the schema, this reads, writes and sorts.
 """
@@ -20,7 +20,7 @@ from typing import Any, Optional
 
 from core.inference import gallery_flags
 from loggers import get_logger
-from utils.paths import ensure_dir, studio_root
+from utils.paths import ensure_dir, workspace_root
 
 logger = get_logger(__name__)
 
@@ -29,7 +29,7 @@ _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 
 def gallery_dir() -> Path:
-    return ensure_dir(studio_root() / "audio")
+    return ensure_dir(workspace_root() / "audio")
 
 
 def save(wav_bytes: bytes, meta: dict[str, Any]) -> dict[str, Any]:

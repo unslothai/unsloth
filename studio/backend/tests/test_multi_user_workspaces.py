@@ -91,6 +91,150 @@ def test_workspace_roots_keep_legacy_layout_and_isolate_other_accounts(
         reset_workspace_subject(bob)
 
 
+def test_runtime_artifacts_and_oauth_tokens_follow_the_authenticated_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from core.inference import (
+        audio_gallery,
+        image_gallery,
+        mcp_client,
+        search_images,
+        tools,
+        video_gallery,
+    )
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sandboxes"))
+    monkeypatch.setattr(mcp_client, "_oauth_token_store", None)
+    locations: dict[str, set[Path]] = {}
+
+    for subject in ("alice", "bob"):
+        token = _bind(subject)
+        try:
+            root = workspace_root().resolve()
+            store = mcp_client._oauth_store()
+            paths = {
+                image_gallery.gallery_dir().resolve(),
+                audio_gallery.gallery_dir().resolve(),
+                video_gallery.gallery_dir().resolve(),
+                search_images._cache_dir().resolve(),
+                Path(tools.sandbox_root()).resolve(),
+                Path(tools._orphan_records_dir()).resolve(),
+                Path(tools._spill_records_dir()).resolve(),
+                Path(store._data_directory).resolve(),
+            }
+            assert all(path.is_relative_to(root) for path in paths if "sandboxes" not in path.parts)
+            assert Path(tools.sandbox_root()).is_relative_to(
+                (tmp_path / "sandboxes" / "workspaces").resolve()
+            )
+            locations[subject] = paths
+        finally:
+            reset_workspace_subject(token)
+
+    assert locations["alice"].isdisjoint(locations["bob"])
+
+    owner = _bind("unsloth")
+    try:
+        assert image_gallery.gallery_dir() == studio_root() / "images"
+        assert Path(tools.sandbox_root()) == tmp_path / "sandboxes"
+    finally:
+        reset_workspace_subject(owner)
+
+
+def test_managed_accounts_cannot_browse_or_register_host_folders(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from fastapi import HTTPException
+    from hub.services.models import folder_browser as hub_folder_browser
+    from hub.storage import scan_folders as hub_scan_folders
+    from routes import models as model_routes
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    external = tmp_path / "external-models"
+    external.mkdir()
+    owner_private_model = studio_root() / "owner-private-model.gguf"
+    owner_private_model.parent.mkdir(parents = True)
+    owner_private_model.write_bytes(b"owner")
+
+    alice = _bind("alice")
+    try:
+        private_root = workspace_root()
+        private_models = private_root / "models"
+        private_models.mkdir(parents = True)
+        private_model = private_models / "alice.gguf"
+        private_model.write_bytes(b"alice")
+        roots = {
+            path.resolve()
+            for path in model_routes._build_browse_allowlist(
+                media_roots = [external],
+                drive_roots = [],
+            )
+        }
+        assert private_root.resolve() in roots
+        assert studio_root().resolve() not in roots
+        assert external.resolve() not in roots
+        assert Path.home().resolve() not in roots
+        assert Path(model_routes._normalize_browse_request_path(None)) == private_root
+        with pytest.raises(HTTPException) as exc_info:
+            model_routes._resolve_browse_target(str(studio_root()), list(roots))
+        assert exc_info.value.status_code == 403
+        assert model_routes._is_sizable_local_path(str(private_model))
+        assert not model_routes._is_sizable_local_path(str(owner_private_model))
+
+        hub_roots = {
+            path.resolve()
+            for path in hub_folder_browser._build_browse_allowlist(
+                media_roots = [external],
+                drive_roots = [],
+            )
+        }
+        assert private_root.resolve() in hub_roots
+        assert studio_root().resolve() not in hub_roots
+        assert external.resolve() not in hub_roots
+
+        with pytest.raises(ValueError, match = "inside their workspace"):
+            studio_db.add_scan_folder_with_status(str(external))
+        with pytest.raises(ValueError, match = "inside their workspace"):
+            hub_scan_folders.add_scan_folder_with_status(str(external))
+        assert studio_db.add_scan_folder_with_status(str(private_models))[0]["path"] == str(
+            private_models.resolve()
+        )
+
+        # A row left by an older build is ignored rather than becoming an
+        # allowlist escape after upgrade.
+        conn = studio_db.get_connection()
+        try:
+            conn.execute(
+                "INSERT INTO scan_folders (path, created_at) VALUES (?, ?)",
+                (str(external.resolve()), datetime.now(timezone.utc).isoformat()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        assert [folder["path"] for folder in studio_db.list_scan_folders()] == [
+            str(private_models.resolve())
+        ]
+    finally:
+        reset_workspace_subject(alice)
+
+    owner = _bind("unsloth")
+    try:
+        roots = {
+            path.resolve()
+            for path in model_routes._build_browse_allowlist(
+                media_roots = [external],
+                drive_roots = [],
+            )
+        }
+        assert studio_root().resolve() in roots
+        assert external.resolve() in roots
+        assert Path.home().resolve() in roots
+        assert Path(model_routes._normalize_browse_request_path(None)) == Path.home()
+        assert model_routes._is_sizable_local_path(str(owner_private_model))
+    finally:
+        reset_workspace_subject(owner)
+
+
 def test_same_thread_id_and_settings_are_private_per_account(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

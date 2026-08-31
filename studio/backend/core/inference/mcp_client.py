@@ -40,6 +40,7 @@ FAILED_PROBE_COOLOFF_SECONDS = 60.0
 OAUTH_FAILED_PROBE_COOLOFF_SECONDS = 300.0
 
 _oauth_token_store = None
+_oauth_token_store_lock = threading.Lock()
 
 
 def is_stdio(address: str) -> bool:
@@ -234,19 +235,28 @@ def parse_server_headers(server: dict) -> Optional[dict]:
 
 def _oauth_store():
     global _oauth_token_store
-    if _oauth_token_store is None:
-        from key_value.aio._utils.sanitization import AlwaysHashStrategy
-        from key_value.aio.stores.filetree import FileTreeStore
-        from utils.paths.storage_roots import ensure_dir, studio_root
+    from key_value.aio._utils.sanitization import AlwaysHashStrategy
+    from key_value.aio.stores.filetree import FileTreeStore
+    from utils.paths.storage_roots import ensure_dir, workspace_root
 
-        # Hash keys/collections — fastmcp uses raw URLs as keys, and FileTreeStore
-        # would treat the "://" as nested directories.
-        _oauth_token_store = FileTreeStore(
-            data_directory = ensure_dir(studio_root() / "mcp-oauth-tokens"),
-            key_sanitization_strategy = AlwaysHashStrategy(),
-            collection_sanitization_strategy = AlwaysHashStrategy(),
-        )
-    return _oauth_token_store
+    directory = ensure_dir(workspace_root() / "mcp-oauth-tokens")
+    key = os.path.normcase(os.path.realpath(str(directory)))
+    with _oauth_token_store_lock:
+        # Keep the historical single-cache variable so tests and hot reloads can
+        # clear it, but key it by workspace. A caller retains the returned store,
+        # so another account replacing this cache cannot redirect an in-flight OAuth flow.
+        if _oauth_token_store is None or _oauth_token_store[0] != key:
+            # Hash keys/collections — fastmcp uses raw URLs as keys, and FileTreeStore
+            # would treat the "://" as nested directories.
+            _oauth_token_store = (
+                key,
+                FileTreeStore(
+                    data_directory = directory,
+                    key_sanitization_strategy = AlwaysHashStrategy(),
+                    collection_sanitization_strategy = AlwaysHashStrategy(),
+                ),
+            )
+        return _oauth_token_store[1]
 
 
 async def clear_oauth_tokens_async(url: str) -> None:

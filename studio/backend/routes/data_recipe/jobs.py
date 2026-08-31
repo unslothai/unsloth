@@ -279,6 +279,7 @@ def _inject_local_providers(
     recipe: dict[str, Any],
     request: Request,
     expect_gen: Optional[str] = None,
+    username: str = "unsloth",
 ) -> Optional[int]:
     """Mutate recipe in-place: point is_local providers at this server and mint
     a short-lived internal sk-unsloth-* key for workflow auth.
@@ -331,7 +332,7 @@ def _inject_local_providers(
         # the caller revokes it when the job terminates.
         expires_at = (datetime.now(timezone.utc) + timedelta(hours = 24)).isoformat()
         token, row = storage.create_api_key(
-            username = "unsloth",
+            username = username,
             name = "data-recipe workflow",
             expires_at = expires_at,
             internal = True,
@@ -436,7 +437,12 @@ def create_job(
             ) from exc
 
     try:
-        internal_api_key_id = _inject_local_providers(recipe, request, credential[1])
+        internal_api_key_id = _inject_local_providers(
+            recipe,
+            request,
+            expect_gen = credential[1],
+            username = credential[0],
+        )
     except CredentialRotated as exc:
         # A reset-password landed after this request authenticated; the workflow key
         # is refused, so answer like any other revoked credential rather than 500.

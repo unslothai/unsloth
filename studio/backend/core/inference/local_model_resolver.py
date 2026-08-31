@@ -373,6 +373,8 @@ def _local_servable_entry(
     workspace_subject: str | None = None,
 ) -> Optional[_LocalGgufEntry]:
     """Entry for whichever backend can serve *info* from disk, GGUF first."""
+    if workspace_subject is None:
+        return _local_gguf_entry(loader_id, info) or _local_weights_entry(loader_id, info)
     return _local_gguf_entry(
         loader_id,
         info,
@@ -531,10 +533,14 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
             continue
         # Advertise a client-facing alias, not an absolute filesystem path.
         loader_id = _advertised_loader_id(info)
-        entry = _local_servable_entry(
-            loader_id,
-            info,
-            workspace_subject = workspace_subject,
+        entry = (
+            _local_servable_entry(loader_id, info)
+            if workspace_subject is None
+            else _local_servable_entry(
+                loader_id,
+                info,
+                workspace_subject = workspace_subject,
+            )
         )
         if entry is None:
             continue

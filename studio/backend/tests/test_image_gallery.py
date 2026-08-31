@@ -21,8 +21,8 @@ from PIL import Image  # noqa: E402
 
 @pytest.fixture(autouse = True)
 def _tmp_gallery(monkeypatch, tmp_path):
-    # Point the gallery at a throwaway root instead of ~/.unsloth/studio.
-    monkeypatch.setattr(gallery, "studio_root", lambda: tmp_path)
+    # Point the active account's gallery at a throwaway workspace.
+    monkeypatch.setattr(gallery, "workspace_root", lambda: tmp_path)
 
 
 def _img(color = (10, 20, 30)):

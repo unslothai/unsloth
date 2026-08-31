@@ -86,6 +86,7 @@ test("owner account UX and per-account chat workspaces are isolated", async ({
   page,
   request,
 }) => {
+  test.setTimeout(60_000);
   test.skip(!ownerBootstrapPassword, "STUDIO_E2E_ADMIN_PASSWORD is required");
   if (evidenceDir) await mkdir(evidenceDir, { recursive: true });
 
@@ -161,13 +162,22 @@ test("owner account UX and per-account chat workspaces are isolated", async ({
   await accountsDialog
     .getByRole("button", { name: "Account actions for alice" })
     .click();
+  if (evidenceDir) {
+    await accountCreator.page.screenshot({
+      path: path.join(evidenceDir, "02a-account-actions-menu.png"),
+    });
+  }
   await accountCreator.page
     .getByRole("menuitem", { name: "Generate new setup code" })
     .click();
-  await accountCreator.page
-    .getByRole("alertdialog")
-    .getByRole("button", { name: "Generate code" })
-    .click();
+  const regenerateDialog = accountCreator.page.getByRole("alertdialog");
+  await expect(regenerateDialog).toContainText("alice");
+  if (evidenceDir) {
+    await regenerateDialog.screenshot({
+      path: path.join(evidenceDir, "02b-regenerate-code-confirmation.png"),
+    });
+  }
+  await regenerateDialog.getByRole("button", { name: "Generate code" }).click();
   const regeneratedAlice = (await (
     await regenerateAliceResponse
   ).json()) as CreatedAccount;
@@ -291,7 +301,6 @@ test("owner account UX and per-account chat workspaces are isolated", async ({
       path: path.join(evidenceDir, "04-owner-accounts.png"),
     });
   }
-  await ownerBrowser.context.close();
 
   const aliceBrowser = await loginInBrowser(browser, "alice", alicePassword);
   await expect(
@@ -342,4 +351,21 @@ test("owner account UX and per-account chat workspaces are isolated", async ({
     );
   }
   await bobBrowser.context.close();
+
+  await ownerBrowser.page.bringToFront();
+  const finalAccountsDialog = ownerBrowser.page.getByRole("dialog");
+  await finalAccountsDialog
+    .getByRole("button", { name: "Account actions for bob" })
+    .click();
+  await ownerBrowser.page.getByRole("menuitem", { name: "Delete account" }).click();
+  const deleteDialog = ownerBrowser.page.getByRole("alertdialog");
+  await expect(deleteDialog).toContainText("bob");
+  if (evidenceDir) {
+    await deleteDialog.screenshot({
+      path: path.join(evidenceDir, "07-delete-account-confirmation.png"),
+    });
+  }
+  await deleteDialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(deleteDialog).toHaveCount(0);
+  await ownerBrowser.context.close();
 });

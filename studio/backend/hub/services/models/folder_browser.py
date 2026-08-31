@@ -19,6 +19,7 @@ from hub.utils.paths import (
     outputs_root,
     studio_root,
     well_known_model_dirs,
+    workspace_root,
 )
 from utils.paths.external_media import (
     linux_run_media_mount_roots,
@@ -34,14 +35,21 @@ logger = get_logger(__name__)
 def _build_browse_allowlist(
     media_roots: Optional[list[Path]] = None, drive_roots: Optional[list[Path]] = None
 ) -> list[Path]:
-    """Root directories the browser may walk (also seeds the suggestion chips): HOME, resolved HF cache dirs, Unsloth outputs/exports/root, registered scan folders, and well-known local-LLM dirs. Each is added only if it resolves to a real directory so the sandbox has no dead boundary.
+    """Root directories the browser may walk (also seeds suggestion chips).
+
+    The owner keeps host HOME/removable-drive access. Managed accounts receive
+    only their private workspace plus shared model/cache roots. Each is added
+    only if it resolves to a real directory so the sandbox has no dead boundary.
 
     *media_roots* / *drive_roots* let the caller pass already-probed
     removable-media and Windows drive roots so they aren't scanned again (a
     disconnected mapped drive can make each probe slow); probed here when ``None``."""
     from hub.storage.scan_folders import list_scan_folders
 
+    from utils.workspace_context import LEGACY_WORKSPACE_SUBJECT, current_workspace_subject
+
     candidates: list[Path] = []
+    owner_workspace = current_workspace_subject() == LEGACY_WORKSPACE_SUBJECT
 
     def _add(p: Optional[Path | str]) -> None:
         if p is None:
@@ -54,15 +62,17 @@ def _build_browse_allowlist(
         if _safe_is_dir(resolved):
             candidates.append(resolved)
 
-    _add(Path.home())
+    if owner_workspace:
+        _add(Path.home())
     if media_roots is None:
         media_roots = [*linux_run_media_mount_roots(), *macos_volume_roots()]
     if drive_roots is None:
         drive_roots = windows_drive_roots()
-    for p in media_roots:
-        _add(p)
-    for p in drive_roots:
-        _add(p)
+    if owner_workspace:
+        for p in media_roots:
+            _add(p)
+        for p in drive_roots:
+            _add(p)
     _add(_resolve_hf_cache_dir())
     try:
         from utils.hf_cache_settings import known_hf_cache_homes
@@ -79,7 +89,10 @@ def _build_browse_allowlist(
     except Exception:  # noqa: BLE001 -- best-effort
         pass
     try:
-        _add(studio_root())
+        private_root = studio_root() if owner_workspace else workspace_root()
+        if not owner_workspace:
+            private_root.mkdir(parents = True, exist_ok = True)
+        _add(private_root)
         _add(outputs_root())
         _add(exports_root())
     except Exception as exc:  # noqa: BLE001 -- best-effort
@@ -88,7 +101,15 @@ def _build_browse_allowlist(
         for folder in list_scan_folders():
             p = folder.get("path")
             if p:
-                _add(p)
+                candidate = Path(p)
+                if owner_workspace:
+                    _add(candidate)
+                else:
+                    try:
+                        candidate.resolve().relative_to(workspace_root().resolve())
+                    except (OSError, RuntimeError, ValueError):
+                        continue
+                    _add(candidate)
     except Exception as exc:  # noqa: BLE001 -- best-effort
         logger.debug("browse-folders: could not load scan folders: %s", exc)
     try:

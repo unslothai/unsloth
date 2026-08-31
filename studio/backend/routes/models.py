@@ -1355,8 +1355,8 @@ async def list_local_models(
     if _safe_is_dir(hf_default):
         allowed_roots.append(hf_default)
     try:
-        from utils.paths import studio_root, outputs_root
-        allowed_roots.extend([studio_root(), outputs_root()])
+        from utils.paths import outputs_root, workspace_root
+        allowed_roots.extend([workspace_root(), outputs_root()])
     except Exception:
         pass
 
@@ -1690,10 +1690,9 @@ def _build_browse_allowlist(
     """Return the root directories the folder browser may walk.
 
     The same list seeds the sidebar suggestion chips, so chip targets are
-    always reachable. Roots: HOME, resolved HF cache dirs, Unsloth's
-    outputs/exports/studio root, registered scan folders, and well-known
-    local-LLM dirs (LM Studio, Ollama, ``~/models``); each added only if
-    it resolves to a real directory.
+    always reachable. The owner keeps host HOME/removable-drive access. Managed
+    accounts receive only their private workspace plus shared model/cache roots.
+    Each root is added only if it resolves to a real directory.
 
     *media_roots* / *drive_roots* let the caller pass already-probed
     removable-media and Windows drive roots so they aren't scanned again (a
@@ -1707,7 +1706,10 @@ def _build_browse_allowlist(
     from utils.paths import external_media
     from storage.studio_db import list_scan_folders
 
+    from utils.workspace_context import LEGACY_WORKSPACE_SUBJECT, current_workspace_subject
+
     candidates: list[Path] = []
+    owner_workspace = current_workspace_subject() == LEGACY_WORKSPACE_SUBJECT
 
     def _add(p: Optional[Path]) -> None:
         if p is None:
@@ -1719,7 +1721,8 @@ def _build_browse_allowlist(
         if _safe_is_dir(resolved):
             candidates.append(resolved)
 
-    _add(Path.home())
+    if owner_workspace:
+        _add(Path.home())
     if media_roots is None:
         media_roots = [
             *external_media.linux_run_media_mount_roots(),
@@ -1727,10 +1730,11 @@ def _build_browse_allowlist(
         ]
     if drive_roots is None:
         drive_roots = external_media.windows_drive_roots()
-    for p in media_roots:
-        _add(p)
-    for p in drive_roots:
-        _add(p)
+    if owner_workspace:
+        for p in media_roots:
+            _add(p)
+        for p in drive_roots:
+            _add(p)
     _add(_resolve_hf_cache_dir())
     try:
         _add(hf_default_cache_dir())
@@ -1745,9 +1749,13 @@ def _build_browse_allowlist(
             exports_root,
             outputs_root,
             studio_root,
+            workspace_root,
         )
 
-        _add(studio_root())
+        private_root = studio_root() if owner_workspace else workspace_root()
+        if not owner_workspace:
+            private_root.mkdir(parents = True, exist_ok = True)
+        _add(private_root)
         _add(outputs_root())
         _add(exports_root())
     except Exception as exc:  # noqa: BLE001 -- best-effort
@@ -1756,7 +1764,15 @@ def _build_browse_allowlist(
         for folder in list_scan_folders():
             p = folder.get("path")
             if p:
-                _add(Path(p))
+                candidate = Path(p)
+                if owner_workspace:
+                    _add(candidate)
+                else:
+                    try:
+                        candidate.resolve().relative_to(workspace_root().resolve())
+                    except (OSError, RuntimeError, ValueError):
+                        continue
+                    _add(candidate)
     except Exception as exc:  # noqa: BLE001 -- best-effort
         logger.debug("browse-folders: could not load scan folders: %s", exc)
     try:
@@ -1821,7 +1837,15 @@ def _is_path_inside_allowlist(target: Path, allowed_roots: list[Path]) -> bool:
 def _normalize_browse_request_path(path: Optional[str]) -> str:
     """Normalize the browse request path lexically, without touching the FS."""
     if path is None or not path.strip():
-        return os.path.normpath(str(Path.home()))
+        from utils.paths import workspace_root
+        from utils.workspace_context import LEGACY_WORKSPACE_SUBJECT, current_workspace_subject
+
+        default_root = (
+            Path.home()
+            if current_workspace_subject() == LEGACY_WORKSPACE_SUBJECT
+            else workspace_root()
+        )
+        return os.path.normpath(str(default_root))
 
     expanded = os.path.expanduser(path.strip())
     if not os.path.isabs(expanded):
@@ -1924,7 +1948,7 @@ def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Pa
                     detail = (
                         "Path is not in the browseable allowlist. Register it via "
                         "POST /api/models/scan-folders first, or pick a directory "
-                        "under your home folder."
+                        "inside your available workspace or model folders."
                     ),
                 )
             if contains_sensitive_path_component(str(resolved_child)):
@@ -1962,7 +1986,7 @@ def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Pa
         detail = (
             "Path is not in the browseable allowlist. Register it via "
             "POST /api/models/scan-folders first, or pick a directory "
-            "under your home folder."
+            "inside your available workspace or model folders."
         ),
     )
 
@@ -1975,8 +1999,8 @@ def browse_folders(
     path: Optional[str] = Query(
         None,
         description = (
-            "Directory to list. If omitted, defaults to the current user's "
-            "home directory. Tilde (`~`) and relative paths are expanded. "
+            "Directory to list. If omitted, defaults to the owner's home directory "
+            "or a managed account's private workspace. Tilde (`~`) and relative paths are expanded. "
             "Must resolve inside the allowlist of browseable roots (HOME, "
             "HF cache, Unsloth dirs, registered scan folders, well-known "
             "model dirs)."
@@ -5512,14 +5536,14 @@ def _is_sizable_local_path(model: str) -> bool:
     inside a root can't point the sizer outside it. A user-controlled path thus
     can't trigger a scan of an arbitrary dir.
     """
-    from utils.paths import outputs_root, exports_root, studio_root
+    from utils.paths import exports_root, outputs_root, workspace_root
     from utils.paths.storage_roots import cache_root
 
     def _lexical(p: str) -> str:
         # Lexical only (no filesystem read); normpath collapses '..'.
         return os.path.normpath(os.path.abspath(os.path.expanduser(p)))
 
-    raw_roots = [studio_root(), outputs_root(), exports_root(), cache_root()]
+    raw_roots = [workspace_root(), outputs_root(), exports_root(), cache_root()]
     roots = []
     for root in raw_roots:
         try:

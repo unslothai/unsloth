@@ -3,7 +3,7 @@
 
 """Disk-backed persistence for generated images.
 
-Each image is a PNG under ``studio_root()/images`` with its full recipe embedded as PNG text
+Each image is a PNG under ``workspace_root()/images`` with its full recipe embedded as PNG text
 chunks: a structured ``unsloth`` JSON blob (the source of truth) plus an Automatic1111-style
 ``parameters`` string for interop. So a downloaded PNG carries its own settings.
 
@@ -24,7 +24,7 @@ from typing import Any, Optional
 
 from core.inference import gallery_flags
 from loggers import get_logger
-from utils.paths import ensure_dir, studio_root
+from utils.paths import ensure_dir, workspace_root
 
 logger = get_logger(__name__)
 
@@ -35,7 +35,7 @@ _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 
 def gallery_dir() -> Path:
-    return ensure_dir(studio_root() / "images")
+    return ensure_dir(workspace_root() / "images")
 
 
 def _params_text(meta: dict[str, Any]) -> str:

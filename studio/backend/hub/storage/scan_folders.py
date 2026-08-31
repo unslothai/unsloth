@@ -21,6 +21,7 @@ from utils.paths.scan_folder_health import is_readable_dir
 from utils.paths.sensitive import (
     contains_sensitive_path_component as _shared_contains_sensitive_path_component,
 )
+from utils.paths.storage_roots import workspace_root
 
 
 _schema_lock = threading.Lock()
@@ -117,7 +118,18 @@ def list_scan_folders() -> list[dict]:
         rows = conn.execute(
             "SELECT id, path, created_at FROM scan_folders ORDER BY created_at"
         ).fetchall()
-        return [dict(row) for row in rows]
+        folders = [dict(row) for row in rows]
+        from utils.workspace_context import LEGACY_WORKSPACE_SUBJECT, current_workspace_subject
+
+        if current_workspace_subject() == LEGACY_WORKSPACE_SUBJECT:
+            return folders
+        private_root = os.path.normcase(os.path.realpath(str(workspace_root())))
+        return [
+            folder
+            for folder in folders
+            if (resolved := os.path.normcase(os.path.realpath(str(folder["path"])))) == private_root
+            or resolved.startswith(private_root + os.sep)
+        ]
     finally:
         conn.close()
 
@@ -138,6 +150,14 @@ def add_scan_folder_with_status(path: str) -> tuple[dict, bool]:
         raise ValueError("The filesystem root cannot be registered")
     if _contains_sensitive_path_component(normalized):
         raise ValueError("Credential or configuration directories are not allowed")
+
+    from utils.workspace_context import LEGACY_WORKSPACE_SUBJECT, current_workspace_subject
+
+    if current_workspace_subject() != LEGACY_WORKSPACE_SUBJECT:
+        private_root = os.path.normcase(os.path.realpath(str(workspace_root())))
+        candidate = os.path.normcase(normalized)
+        if candidate != private_root and not candidate.startswith(private_root + os.sep):
+            raise ValueError("Managed accounts can only register folders inside their workspace")
 
     is_win = platform.system() == "Windows"
     check = os.path.normcase(normalized) if is_win else normalized
