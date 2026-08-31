@@ -27020,7 +27020,9 @@ async def _mlx_count_chat_tokens(payload) -> Optional[JSONResponse]:
     it is called rather than restated; the admission conditions themselves are restated,
     so they have to be kept in step with the completion above.
     """
-    backend = get_inference_backend()
+    # Off the loop: building the singleton runs the torch import, and a token count is
+    # not worth stalling login and the health probe behind it.
+    backend = await asyncio.to_thread(get_inference_backend)
     active = getattr(backend, "active_model_name", None)
     if not active:
         return None
