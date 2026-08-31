@@ -38,6 +38,8 @@ declare global {
       setModal: (open: boolean) => void;
       /** Swap the scroller from the scope to an outer container, as non-chat routes do. */
       setOuterScroll: (outer: boolean) => void;
+      /** Insert older messages ABOVE the thread, the way progressive completion does. */
+      prepend: (count: number) => void;
     };
   }
 }
@@ -51,9 +53,20 @@ const PARAGRAPHS = [
   "A long conversation is where find-in-page earns its keep, so this harness paints one that does not fit on a screen.",
 ];
 
-function Conversation({ extra }: { extra: string[] }) {
+function Conversation({ extra, older }: { extra: string[]; older: string[] }) {
   return (
     <div className="mx-auto flex max-w-2xl flex-col gap-4 px-6 py-10">
+      {/* Rows the progressive window withheld, arriving ABOVE everything already indexed. */}
+      {older.map((text, i) => (
+        <div
+          // biome-ignore lint/suspicious/noArrayIndexKey: append-only list
+          key={`older-${i}`}
+          data-older=""
+          className="rounded-xl border border-border bg-card p-4 text-card-foreground text-sm"
+        >
+          <p>{text}</p>
+        </div>
+      ))}
       {Array.from({ length: 40 }, (_, i) => (
         <div
           // biome-ignore lint/suspicious/noArrayIndexKey: fixed-length static filler
@@ -76,6 +89,11 @@ function Conversation({ extra }: { extra: string[] }) {
       >
         <p>unsloth inside a skipped subtree</p>
       </div>
+      {/* Boxless, not hidden: `display: contents` is how the shell and the training page hand a
+          grid its children, and `checkVisibility` calls a wrapper with no box invisible. */}
+      <div className="contents">
+        <p>unsloth inside a display contents wrapper</p>
+      </div>
       {extra.map((text, i) => (
         <div
           // biome-ignore lint/suspicious/noArrayIndexKey: append-only list
@@ -92,6 +110,7 @@ function Conversation({ extra }: { extra: string[] }) {
 
 function Harness() {
   const [streamed, setStreamed] = useState<string[]>([]);
+  const [older, setOlder] = useState<string[]>([]);
   const [modal, setModal] = useState(false);
   const [outerScroll, setOuterScroll] = useState(false);
   const scrollerRef = useRef<HTMLDivElement>(null);
@@ -122,6 +141,13 @@ function Harness() {
       stream,
       setModal,
       setOuterScroll,
+      prepend: (count) =>
+        setOlder(
+          Array.from(
+            { length: count },
+            (_, i) => `An older message about unsloth, number ${i + 1}.`,
+          ),
+        ),
       // What one flatten of a conversation costs, against the same function the bar calls.
       timeIndex: () => {
         const scope = scopeRef.current;
@@ -179,7 +205,7 @@ function Harness() {
             ref={outerScroll ? undefined : scrollerRef}
             className={outerScroll ? "" : "min-h-0 flex-1 overflow-y-auto"}
           >
-            <Conversation extra={streamed} />
+            <Conversation extra={streamed} older={older} />
           </div>
           {/* A workspace parked off-route, as `__root.tsx` parks one. Never counted. */}
           <div hidden={true} inert={true}>

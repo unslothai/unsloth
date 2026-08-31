@@ -183,13 +183,28 @@ export function skipsSubtree(element: FindElementLike): boolean {
   // README (hub.css) and of a maths-bearing thread from the index. Nothing would put it back
   // either: scrolling renders the subtree without mutating the DOM, so the observer never fires.
   // Opacity is off too, so a message still fading in stays findable.
-  return (
+  if (
     element.checkVisibility?.({
       contentVisibilityAuto: false,
       opacityProperty: false,
       visibilityProperty: true,
-    }) === false
-  );
+    }) !== false
+  ) {
+    return false;
+  }
+  // `display: contents` generates no box, and no box is the first thing `checkVisibility` calls
+  // invisible, so a wrapper whose children are all on screen answers false. The shell uses one
+  // (sidebar.tsx) and so does the training page (studio-page.tsx), which between them is most of
+  // what there is to search. A real box is what makes an element hidden rather than absent.
+  return computedDisplay(element) !== "contents";
+}
+
+/** `display` as resolved, or null off the DOM. Only asked on the hidden path, so it is rare. */
+function computedDisplay(element: FindElementLike): string | null {
+  const view = globalThis as unknown as {
+    getComputedStyle?: (element: FindElementLike) => { display?: string };
+  };
+  return view.getComputedStyle?.(element).display ?? null;
 }
 
 /**

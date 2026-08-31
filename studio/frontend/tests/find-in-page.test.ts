@@ -281,6 +281,37 @@ test("content-visibility skipping is not treated as invisibility", () => {
   });
 });
 
+test("a boxless wrapper is walked through, not skipped", () => {
+  // `display: contents` generates no box, and no box is the first thing `checkVisibility` calls
+  // invisible. The shell (sidebar.tsx) and the training page (studio-page.tsx) each wrap their
+  // content in one, so reading that answer as hidden empties the index for most of the app.
+  const wrapper = {
+    ...el("DIV", [el("P", [text("training")])]),
+    checkVisibility: () => false,
+  };
+  const collapsed = {
+    ...el("DIV", [el("P", [text("offscreen")])]),
+    checkVisibility: () => false,
+  };
+  const display = new Map<unknown, string>([
+    [wrapper, "contents"],
+    [collapsed, "none"],
+  ]);
+  const view = globalThis as { getComputedStyle?: unknown };
+  const saved = view.getComputedStyle;
+  view.getComputedStyle = (element: unknown) => ({
+    display: display.get(element) ?? "block",
+  });
+  try {
+    const index = buildTextIndex(el("DIV", [wrapper, collapsed]));
+    assert.equal(index.text.includes("training"), true);
+    // A wrapper with a box that says invisible is still hidden.
+    assert.equal(index.text.includes("offscreen"), false);
+  } finally {
+    view.getComputedStyle = saved;
+  }
+});
+
 test("a query spanning whitespace matches the phrase as it renders", () => {
   // HTML collapses runs of whitespace, so a markdown paragraph soft-wrapped mid-sentence renders
   // as one line while its text node still holds the newline.
@@ -592,6 +623,48 @@ test("the observer watches the attributes a workspace switch flips", async () =>
   // And not the whole attribute stream: `class` changes on every hover.
   assert.equal(/attributes: true,\s*\n\s*attributeFilter/.test(engine), true);
   assert.equal(engine.includes('attributeFilter: ["class"'), false);
+});
+
+test("the rows progressive completion adds are re-anchored, not renumbered", async () => {
+  // Streaming APPENDS, so keeping the ordinal is right there. Progressive completion PREPENDS the
+  // older half of a thread, and match 3 of the tail is not match 3 of the whole conversation:
+  // keeping the number moves the highlight to an older match off screen, and the next step from
+  // there walks the reader backwards.
+  const engine = await readFile(
+    new URL(
+      "../src/features/find-in-page/hooks/use-find-in-page.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    engine,
+    /completeProgressiveMounts\(\)\.then\(\(\) => \{[\s\S]*?rebuild\(false, true\);/,
+  );
+  // The one place the ordinal is still kept is the observer's throttled rebuild, which is the
+  // append-only case.
+  assert.equal((engine.match(/rebuild\(false, false\)/g) ?? []).length, 1);
+});
+
+test("Escape closes the bar from the walk buttons, not just the field", async () => {
+  const bar = await readFile(
+    new URL(
+      "../src/features/find-in-page/components/find-in-page.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  // On the landmark, so it catches Escape bubbling from all four controls. On the field alone, a
+  // keyboard user who tabs to a button and presses Escape leaves the bar open and hands the key to
+  // the window listener, where bare Escape declines a pending tool request.
+  const landmark = bar.slice(bar.indexOf('role="search"'));
+  const beforeField = landmark.slice(0, landmark.indexOf("<input"));
+  assert.match(
+    beforeField,
+    /if \(event\.key !== "Escape"\) return;[\s\S]*?event\.preventDefault\(\);[\s\S]*?event\.stopPropagation\(\);[\s\S]*?close\(\);/,
+  );
+  // And not left behind on the field as well, where it would swallow the bubble first.
+  assert.equal(landmark.slice(landmark.indexOf("<input")).includes('"Escape"'), false);
 });
 
 test("nothing of the engine is mounted while the bar is closed", async () => {

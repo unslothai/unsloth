@@ -102,6 +102,16 @@ function FindBar() {
       data-find-skip=""
       role="search"
       aria-label={t("shell.find.label")}
+      // On the bar, not the field: Escape has to close from the walk and close buttons too. Tab
+      // moves to one of those, and there Escape is not typing, so the bare-Escape decline would
+      // take it and answer a tool request instead. Stopped as well as prevented, which keeps the
+      // native event from reaching the window listener the shortcuts are on.
+      onKeyDown={(event) => {
+        if (event.key !== "Escape") return;
+        event.preventDefault();
+        event.stopPropagation();
+        close();
+      }}
       className="find-bar-surface fixed top-[calc(var(--studio-content-top-inset,0px)+3.5rem)] right-4 z-50 flex h-13 max-w-[calc(100vw-2rem)] items-center gap-1 rounded-full pr-4 pl-5"
     >
       <input
@@ -110,14 +120,6 @@ function FindBar() {
         value={query}
         onChange={(event) => setQuery(event.target.value)}
         onKeyDown={(event) => {
-          if (event.key === "Escape") {
-            // Stopped as well as prevented: bare Escape also declines a tool request, and closing
-            // a search must not answer a prompt still on screen.
-            event.preventDefault();
-            event.stopPropagation();
-            close();
-            return;
-          }
           if (event.key === "Enter") {
             event.preventDefault();
             if (event.shiftKey) previous();

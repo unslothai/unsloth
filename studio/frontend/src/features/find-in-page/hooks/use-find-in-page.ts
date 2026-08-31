@@ -193,7 +193,10 @@ export function useFindInPage(query: string): FindResults {
     let live = true;
     void completeProgressiveMounts().then(() => {
       if (!live) return;
-      rebuild(false, queryRef.current.length === 0);
+      // From the viewport, not the ordinal: this growth PREPENDS, unlike streaming, so match 3 of
+      // the tail is not match 3 of the whole thread. Keeping the number would move the highlight to
+      // an older match off screen and send the next step backwards.
+      rebuild(false, true);
     });
 
     let observer: MutationObserver | null = null;
