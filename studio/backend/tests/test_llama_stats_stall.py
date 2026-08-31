@@ -487,9 +487,9 @@ def test_a_direct_llama_call_is_counted_even_though_it_opens_no_monitor_row():
         assert ls._api_monitor_running_count() == 0
         with inf._direct_llama_request():
             assert inf._direct_llama_inflight_count() == 1
-            assert ls._api_monitor_running_count() == 1, (
-                "a direct llama call must not read as an idle Studio"
-            )
+            assert (
+                ls._api_monitor_running_count() == 1
+            ), "a direct llama call must not read as an idle Studio"
         assert ls._api_monitor_running_count() == 0
     finally:
         am.api_monitor = real
