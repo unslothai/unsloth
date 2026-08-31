@@ -936,6 +936,26 @@ def test_begin_load_resolves_family_from_filename_only(monkeypatch):
     assert b._loading is not None and b._loading.repo_id == "/models/gguf-store"
 
 
+def test_begin_load_threads_the_raw_family_override_to_the_native_worker(monkeypatch):
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    started = threading.Event()
+    seen = {}
+
+    def _capture(**kwargs):
+        seen.update(kwargs)
+        started.set()
+
+    monkeypatch.setattr(b, "_run_load", _capture)
+    b.begin_load(
+        "/models/opaque-checkpoint",
+        gguf_filename = "opaque-Q4_K_M.gguf",
+        family_override = "zimage",
+    )
+    assert started.wait(5)
+    assert seen["family_override"] == "zimage"
+    assert seen["fam"].name == "z-image"
+
+
 def test_each_load_owns_its_cancel_event(monkeypatch):
     # Same contract as the diffusers backend: unload() cancels the running asset pull by setting the event that worker holds and
     # drops _loading. A clear() of one shared event would un-cancel it; a fresh Event per load leaves the superseded worker cancelled.
@@ -1400,6 +1420,7 @@ def _run_server_load(
     fam_name = "z-image",
     device = "cpu",
     gguf_filename = "z.gguf",
+    family_override = None,
 ):
     fam = detect_family(fam_name)
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/x/sd-server")
@@ -1428,6 +1449,7 @@ def _run_server_load(
         gguf_filename = gguf_filename,
         base = fam.base_repo,
         fam = fam,
+        family_override = family_override,
         hf_token = None,
         _load_token = 1,
     )
@@ -1448,6 +1470,17 @@ def test_server_status_reports_selected_gguf_quant(monkeypatch):
     servers: list = []
     _run_server_load(monkeypatch, b, servers, gguf_filename = "z-image-turbo-Q8_0.gguf")
     assert b.status()["gguf_variant"] == "Q8_0"
+
+
+def test_server_status_preserves_an_explicit_family_override(monkeypatch):
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers, family_override = "zimage")
+    resolved = b.status()["resolved"]["family_override"]
+    assert resolved["requested"] == "zimage"
+    assert resolved["value"] == "z-image"
+    assert resolved["source"] == "explicit"
+    assert resolved["status"] == "applied"
 
 
 def test_server_generate_uses_one_request_for_whole_batch(monkeypatch):

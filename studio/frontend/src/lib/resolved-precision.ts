@@ -178,6 +178,23 @@ export function resolvedSelectValue<T extends string>(
 }
 
 /**
+ * Reseed a selector whose option vocabulary contains canonical backend values, not every accepted
+ * request alias. Auto stays Auto; an explicit alias maps from the value that actually loaded.
+ */
+export function resolvedCanonicalSelectValue<T extends string>(
+  resolved: ResolvedControl | undefined | null,
+  toOption: (value: string) => T | null,
+): T | null {
+  if (!resolved) return null;
+  if (resolved.source === "auto") return toOption("auto");
+  const source = resolved.value;
+  if (source === undefined) return null;
+  if (source === null) return toOption("none");
+  if (typeof source === "boolean") return toOption(source ? "on" : "none");
+  return toOption(String(source));
+}
+
+/**
  * The key the pages run their Advanced-reseed effect on: the LOAD-TIME half of the resolved record.
  *
  * NOT the whole record serialized. The backend rewrites entries of it at GENERATION time -- the

@@ -121,6 +121,7 @@ import {
   isPrecisionRefusal,
   memoryRecipeValue,
   resolvedBadge,
+  resolvedCanonicalSelectValue,
   resolvedSeedKey,
   resolvedSelectValue,
 } from "@/lib/resolved-precision";
@@ -2401,7 +2402,7 @@ export function ImagesPage({
       ) ?? null,
     );
     if (attention) setAttentionBackend(attention);
-    const famOverride = resolvedSelectValue(record.family_override, (v) =>
+    const famOverride = resolvedCanonicalSelectValue(record.family_override, (v) =>
       ([
         "auto",
         "flux.1",

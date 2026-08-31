@@ -879,6 +879,9 @@ class _SdState:
     # The FLUX.2 inner_dim this load read out of the checkpoint's own header, when it could. Kept
     # so the delete guard reconstructs the SAME encoder pick without re-probing under the lock.
     flux2_inner_dim: Optional[int] = None
+    # Raw request spelling (including aliases) retained so status can distinguish Auto from an
+    # explicit family choice while reporting the canonical family that actually loaded.
+    family_override: Optional[str] = None
     # The managed tree's recorded accelerator when this load chose its binary. The one-shot path
     # re-resolves sd-cli per image, so without this it would silently adopt an install that landed
     # between images even when that install is for a DIFFERENT accelerator, while ``device`` and
@@ -1343,6 +1346,7 @@ class SdCppDiffusionBackend:
                 gguf_filename = gguf_filename,
                 base = base,
                 fam = fam,
+                family_override = family_override,
                 hf_token = hf_token,
                 cpu_offload = cpu_offload,
                 memory_mode = memory_mode,
@@ -1362,6 +1366,7 @@ class SdCppDiffusionBackend:
         gguf_filename: str,
         base: str,
         fam: DiffusionFamily,
+        family_override: Optional[str] = None,
         hf_token: Optional[str],
         # Cache-only when set: every Hub call below is either skipped or told to resolve from disk,
         # so a load nobody asked for cannot pull bytes. See begin_load for what it does not cover.
@@ -1731,6 +1736,7 @@ class SdCppDiffusionBackend:
                     hf_token = hf_token,
                     gguf_filename = gguf_filename,
                     flux2_inner_dim = inner_dim,
+                    family_override = family_override,
                     # Only the one-shot path needs to carry it: it re-resolves sd-cli per image,
                     # long after this decision, and has nothing else to check the answer against.
                     sd_accelerator = engine_accelerator if mode == "oneshot" else None,
@@ -2767,8 +2773,10 @@ class SdCppDiffusionBackend:
                 "supports_lora": False,
                 "supports_controlnet": False,
                 "workflows": [],
+                "resolved": None,
             }
         from core.inference import diffusion_lora
+        from core.inference.diffusion_auto_policy import build_resolved_record
         from hub.utils.gguf import extract_quant_token
 
         return {
@@ -2808,6 +2816,15 @@ class SdCppDiffusionBackend:
             "native_mode": state.mode,
             # Native supports txt2img only; advertise it so the UI doesn't disable the Create tab.
             "workflows": ["txt2img"],
+            "resolved": build_resolved_record(
+                {
+                    "family_override": (
+                        state.family_override,
+                        state.family.name,
+                        "requested" if state.family_override else "auto-detected",
+                    )
+                }
+            ),
         }
 
 

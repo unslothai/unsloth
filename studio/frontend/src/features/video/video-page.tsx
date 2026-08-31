@@ -122,6 +122,7 @@ import {
   formatResolvedValue,
   isPrecisionRefusal,
   resolvedBadge,
+  resolvedCanonicalSelectValue,
   resolvedSeedKey,
   resolvedSelectValue,
 } from "@/lib/resolved-precision";
@@ -1526,7 +1527,7 @@ function VideoGenerator({
       ) ?? null,
     );
     if (attention) setAttentionBackend(attention);
-    const famOverride = resolvedSelectValue(record.family_override, (v) =>
+    const famOverride = resolvedCanonicalSelectValue(record.family_override, (v) =>
       ([
         "auto",
         "minimax-h3",

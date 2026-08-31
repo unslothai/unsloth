@@ -7,6 +7,13 @@ import test from "node:test";
 
 import { isFamilyOverrideLocalCandidate } from "../src/features/model-picker/components/model-selector/family-override-local-candidate.ts";
 
+const CANONICAL_FAMILY_RESEED =
+  /resolvedCanonicalSelectValue\(record\.family_override/;
+const FAMILY_OVERRIDE_INVENTORY_ESCAPE =
+  /row\.capabilities\.canChat \|\|\s*studioPageForTask\(row\.task\) !== undefined \|\|\s*isFamilyOverrideInventoryCandidate\(row\)/;
+const BARE_CHECKPOINT_CAPABILITY_SIGNATURE =
+  /row\.modelFormat === "safetensors"[\s\S]*row\.task == null[\s\S]*!row\.capabilities\.canChat[\s\S]*!row\.capabilities\.canTrain[\s\S]*!row\.capabilities\.supportsLora/;
+
 test("an explicit family surfaces only unclassified local safetensors", () => {
   const opaqueSafetensors = { model_format: "safetensors", task: null };
   assert.equal(isFamilyOverrideLocalCandidate(opaqueSafetensors, true), true);
@@ -41,6 +48,11 @@ test("image and video family selectors opt all local inventories into the narrow
       source,
       /allowUnknownLocalModels=\{familyOverride !== "auto"\}/,
     );
+    assert.match(
+      source,
+      CANONICAL_FAMILY_RESEED,
+      "family aliases must reseed from the canonical family that actually loaded",
+    );
   }
 
   const picker = readFileSync(
@@ -70,4 +82,14 @@ test("image and video family selectors opt all local inventories into the narrow
     "utf8",
   );
   assert.match(inventory, /capabilities: row\.capabilities/);
+  assert.match(
+    inventory,
+    FAMILY_OVERRIDE_INVENTORY_ESCAPE,
+    "the shared inventory must preserve the narrow architecture-less row for a later explicit family override",
+  );
+  assert.match(
+    inventory,
+    BARE_CHECKPOINT_CAPABILITY_SIGNATURE,
+    "only the backend's deliberately non-chat bare-checkpoint capability signature may bypass the inventory guard",
+  );
 });

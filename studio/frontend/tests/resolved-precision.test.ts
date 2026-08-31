@@ -10,6 +10,7 @@ import {
   isPrecisionRefusal,
   isResolvedHonored,
   resolvedBadge,
+  resolvedCanonicalSelectValue,
   resolvedSeedKey,
   resolvedSelectValue,
 } from "../src/lib/resolved-precision.ts";
@@ -204,6 +205,55 @@ test("the Precision select seeds from the loaded build", () => {
   );
   // Nothing resolved: keep whatever the user has typed.
   assert.equal(resolvedSelectValue(null, toQuantOption), null);
+});
+
+test("family aliases reseed from the canonical family that actually loaded", () => {
+  const imageFamilies = ["auto", "flux.1", "z-image", "sdxl"] as const;
+  const videoFamilies = ["auto", "minimax-h3", "ltx-2"] as const;
+  const toImageFamily = (v: string) =>
+    imageFamilies.find((o) => o === v) ?? null;
+  const toVideoFamily = (v: string) =>
+    videoFamilies.find((o) => o === v) ?? null;
+
+  assert.equal(
+    resolvedCanonicalSelectValue(
+      {
+        value: "z-image",
+        requested: "zimage",
+        source: "explicit",
+        status: "applied",
+        reason: "",
+      },
+      toImageFamily,
+    ),
+    "z-image",
+  );
+  assert.equal(
+    resolvedCanonicalSelectValue(
+      {
+        value: "ltx-2",
+        requested: "ltx2",
+        source: "explicit",
+        status: "applied",
+        reason: "",
+      },
+      toVideoFamily,
+    ),
+    "ltx-2",
+  );
+  assert.equal(
+    resolvedCanonicalSelectValue(
+      {
+        value: "z-image",
+        requested: null,
+        source: "auto",
+        status: "applied",
+        reason: "",
+      },
+      toImageFamily,
+    ),
+    "auto",
+  );
 });
 
 test("the Attention select maps the dispatcher's own name back to its option", () => {

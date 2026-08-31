@@ -29,6 +29,19 @@ function isCompleteCachedRow(row: CachedInventoryRow): boolean {
   return !row.partial && !row.liveDownload;
 }
 
+function isFamilyOverrideInventoryCandidate(row: LocalInventoryRow): boolean {
+  // The backend gives an architecture-less, single-file checkpoint this deliberately inert
+  // capability signature. Preserve only that row through the shared inventory: chat still rejects
+  // it later, while Images/Video may admit it after the user explicitly chooses a family.
+  return (
+    row.modelFormat === "safetensors" &&
+    row.task == null &&
+    !row.capabilities.canChat &&
+    !row.capabilities.canTrain &&
+    !row.capabilities.supportsLora
+  );
+}
+
 function toCachedGgufRepo(row: CachedInventoryRow): CachedGgufRepo {
   return {
     repo_id: row.repoId,
@@ -141,10 +154,13 @@ export function useChatPickerInventory(
           (row) =>
             PICKER_LOCAL_SOURCES.has(row.source) &&
             // Skip non-chat rows (a folder with only config.json classifies "unknown" -> canChat false); selecting one would load a weightless path.
-            // toLocalModelInfo drops capabilities, so this is the only place the guard can live. A row the backend classified as a generation task is
-            // exempt: canChat is about the chat loader, and dropping it here hid every on-device diffusion model from the pickers that CAN load it.
+            // A row the backend classified as a generation task is exempt: canChat is about the
+            // chat loader, and dropping it here hid every on-device diffusion model from the
+            // pickers that CAN load it. The narrow inert signature is retained for an explicit
+            // image/video family override; the downstream chat guard still excludes it.
             (row.capabilities.canChat ||
-              studioPageForTask(row.task) !== undefined) &&
+              studioPageForTask(row.task) !== undefined ||
+              isFamilyOverrideInventoryCandidate(row)) &&
             (!isHiddenModelId(row.modelId, row.repoId, row.path) ||
               allowedHiddenModelIdMatches(
                 options.allowedHiddenModelIds,
