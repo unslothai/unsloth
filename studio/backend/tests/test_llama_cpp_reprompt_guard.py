@@ -974,9 +974,10 @@ def _gate_would_reprompt(content_accum, reasoning_accum, has_content_tokens):
     stripped = visible if visible else reasoning
     visible_answer = _text_outside_think(visible).strip()
     artifact_text = visible_answer or (reasoning if not has_content_tokens else "")
+    intent_text = visible_answer or stripped
     return bool(
         0 < len(stripped) < _REPROMPT_MAX_CHARS
-        and _INTENT_SIGNAL.search(stripped)
+        and _INTENT_SIGNAL.search(intent_text)
         and not (artifact_text and _has_answer_artifact(artifact_text))
     )
 
@@ -991,3 +992,15 @@ def test_content_channel_think_block_is_not_an_answer():
     # An answer after ``</think>`` is a real answer and still suppresses it.
     with_answer = "<think>First, let me plan.</think>Here you go.\n```python\nx = 1\n```"
     assert not _gate_would_reprompt(with_answer, "", True)
+
+
+def test_intent_inside_a_think_block_is_not_an_announcement():
+    """A plan the model only thought is not one it told the user about, so a plain
+    answer after ``</think>`` must stand even with no code or markup in it."""
+    assert not _gate_would_reprompt(
+        "<think>First, I will search the web.</think>The answer is Paris.", "", True
+    )
+    # With nothing outside the block the turn showed nothing, which IS the stall.
+    assert _gate_would_reprompt("<think>First, I will search the web.</think>", "", True)
+    # No think block: the plan is on screen and still earns the nudge.
+    assert _gate_would_reprompt("First, I will search the web.", "", True)

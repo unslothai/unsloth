@@ -29393,6 +29393,13 @@ class LlamaCppBackend:
                             if _visible_answer
                             else (_reasoning if not has_content_tokens else "")
                         )
+                        # Classified on the answer for the same reason. A plan the model
+                        # only thought is not one it announced, so "<think>I will search
+                        # </think>The answer is Paris." is finished, not a stall. With
+                        # nothing outside the block the turn showed nothing and the whole
+                        # text is the stall. _stripped stays intact: it is what gets
+                        # replayed as the assistant turn and compared for a repeat.
+                        _intent_text = _visible_answer if _visible_answer else _stripped
 
                         # ── Continue an answer the window cut in half ──
                         # The sibling case below is a turn that showed NOTHING. This one
@@ -29662,7 +29669,7 @@ class LlamaCppBackend:
                             and not _render_html_already_done_intent
                             and _reprompt_used < _reprompt_cap
                             and not _is_reprompt_repeat(_stripped, _last_reprompt_text)
-                            and _is_short_intent_without_action(_stripped)
+                            and _is_short_intent_without_action(_intent_text)
                             and not (_artifact_text and _has_answer_artifact(_artifact_text))
                         ):
                             _reprompt_count += 1
