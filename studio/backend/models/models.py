@@ -220,7 +220,7 @@ class LocalModelInfo(BaseModel):
     id: str = Field(..., description = "Identifier to use for loading/training")
     display_name: str = Field(..., description = "Display label")
     path: str = Field(..., description = "Local path where model data was discovered")
-    source: Literal["models_dir", "hf_cache", "lmstudio", "custom"] = Field(
+    source: Literal["models_dir", "hf_cache", "lmstudio", "ollama", "custom"] = Field(
         ...,
         description = "Discovery source",
     )

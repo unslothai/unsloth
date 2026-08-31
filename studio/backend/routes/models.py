@@ -985,7 +985,10 @@ def _scan_ollama_dir(ollama_dir: Path, limit: Optional[int] = None) -> List[Loca
                     model_id = f"ollama/{repo_name}:{tag}",
                     display_name = display + suffix,
                     path = gguf_link_path,
-                    source = "custom",
+                    # The frontend groups and labels these rows by this value
+                    # (local-model-options.ts, pickers.tsx); "custom" hid them
+                    # in the generic folder section (#9986).
+                    source = "ollama",
                     updated_at = updated_at,
                 ),
             )
@@ -1151,7 +1154,14 @@ def collect_local_models(
             record_scan_failure(str(folder.get("path", folder_path)), e)
             continue
         note_scan_folder_scanned(str(folder.get("path", folder_path)), found = bool(custom_models))
-        local_models += [m.model_copy(update = {"source": "custom"}) for m in custom_models]
+        # Keep an already-attributed source: a registered ~/.ollama/models (or a
+        # folder shadowing the HF cache) must not re-stamp its rows as generic
+        # custom entries. Mirrors _promote_to_custom_source() in
+        # hub/services/models/local_inventory.py.
+        local_models += [
+            m if m.source in ("hf_cache", "ollama") else m.model_copy(update = {"source": "custom"})
+            for m in custom_models
+        ]
 
     # Deduplicate, but always keep custom folder entries (keyed by (id, source)) so they show
     # in the "Custom Folders" UI section even when the model is also in the HF cache.
