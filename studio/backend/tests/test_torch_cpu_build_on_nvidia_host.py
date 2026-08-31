@@ -96,6 +96,7 @@ def _smi(
     simulating a machine with no cards has to simulate the kernel driver's absence too.
     The fallback's own tests set it back.
     """
+
     def _run(*_args, **_kwargs):
         # `raises` is how an ABSENT binary is spelled: FileNotFoundError is an answer
         # (every AMD, Intel and CPU host), while a nonzero exit is a probe that failed.
