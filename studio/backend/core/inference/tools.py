@@ -11156,6 +11156,7 @@ def build_conversation_recall(
     logger.info("Conversation recall: %d earlier passage(s) for %r", len(sources), query[:80])
     return built
 
+
 def rag_autoinject_reaches_retrieval(
     conversation: list[dict], rag_scope: dict | None
 ) -> tuple[bool, bool]:

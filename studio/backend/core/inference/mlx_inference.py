@@ -1457,6 +1457,7 @@ def _mlx_sampling_processors(
         processors.append(_make_mlx_frequency_penalty_processor(float(frequency_penalty)))
     return processors or None
 
+
 # The families the mlx_vlm releases from before should_add_special_tokens existed inlined into
 # their generation path: their chat template emits the special markers, so tokenization must not
 # add them again. Deliberately not the current helper's list, which also carries laguna -- laguna

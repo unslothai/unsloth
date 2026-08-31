@@ -219,6 +219,7 @@ def _summed_tool_loop_stats(total, turn):
         summed["timings"] = timings
     return summed
 
+
 def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
     """The parent's view of a model the worker holds.
 

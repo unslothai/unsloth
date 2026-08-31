@@ -3220,6 +3220,7 @@ def test_rng_capture_stays_quiet_when_the_state_cannot_be_read(monkeypatch):
     assert mlx_inference._mlx_rng_key_words() is None
     assert warnings == []
 
+
 # Spellings nobody enumerated: Llama 3.1 carries the second beside its scaled window, and
 # mlx-lm's Kimi Linear the third.
 @pytest.mark.parametrize("name", ["n_ctx", "original_max_position_embeddings", "model_max_length"])
@@ -3566,7 +3567,6 @@ def test_the_bound_is_checked_on_a_real_cache_at_the_size_that_was_asked_for():
     assert _kv_window_enforced(SimpleNamespace(), False, 4096) is None  # unreadable
     # The VLM branch reaches mlx-vlm's factory and unwraps the language tower.
     assert _kv_window_enforced(SimpleNamespace(language_model = honours), True, 4096) is True
-
 
 
 def test_the_probe_reads_a_cache_shape_without_needing_the_mlx_wheels(monkeypatch):

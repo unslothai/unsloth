@@ -164,14 +164,29 @@ _NOT_A_REAL_CELL = (
 EXPECTED: dict[tuple[str, str], Expectation] = {
     # --- Windows -----------------------------------------------------------------
     ("windows", "nvidia"): Expectation(
-        "CUDA", False, False, False, None, real = True,
+        "CUDA",
+        False,
+        False,
+        False,
+        None,
+        real = True,
     ),
     ("windows", "amd"): Expectation(
-        "CUDA", True, False, False, None, real = True,
+        "CUDA",
+        True,
+        False,
+        False,
+        None,
+        real = True,
         note = "ROCm reuses torch.cuda over HIP; DeviceType stays CUDA, IS_ROCM flips.",
     ),
     ("windows", "cpu"): Expectation(
-        "CPU", False, False, False, "no_gpu", real = True,
+        "CPU",
+        False,
+        False,
+        False,
+        "no_gpu",
+        real = True,
         note = "MLX stack present and healthy, and still CPU: the gate requires Darwin.",
     ),
     # --- Linux -------------------------------------------------------------------
@@ -180,20 +195,42 @@ EXPECTED: dict[tuple[str, str], Expectation] = {
     ("linux", "cpu"): Expectation("CPU", False, False, False, "no_gpu", real = True),
     # --- WSL (indistinguishable from Linux; see the dedicated tests) --------------
     ("wsl", "nvidia"): Expectation(
-        "CUDA", False, False, False, None, real = True,
+        "CUDA",
+        False,
+        False,
+        False,
+        None,
+        real = True,
         note = "sys.platform is 'linux'; nothing in utils/hardware reads a WSL marker.",
     ),
     ("wsl", "amd"): Expectation("CUDA", True, False, False, None, real = True),
     ("wsl", "cpu"): Expectation("CPU", False, False, False, "no_gpu", real = True),
     # --- macOS -------------------------------------------------------------------
     ("macos", "nvidia"): Expectation(
-        "CUDA", False, False, False, None, real = False, note = _NOT_A_REAL_CELL,
+        "CUDA",
+        False,
+        False,
+        False,
+        None,
+        real = False,
+        note = _NOT_A_REAL_CELL,
     ),
     ("macos", "amd"): Expectation(
-        "CUDA", True, False, False, None, real = False, note = _NOT_A_REAL_CELL,
+        "CUDA",
+        True,
+        False,
+        False,
+        None,
+        real = False,
+        note = _NOT_A_REAL_CELL,
     ),
     ("macos", "cpu"): Expectation(
-        "MLX", False, True, True, None, real = True,
+        "MLX",
+        False,
+        True,
+        True,
+        None,
+        real = True,
         note = "The one cell that serves MLX: Darwin + arm64, no CUDA/XPU, healthy stack.",
     ),
 }
@@ -219,7 +256,13 @@ def spoof_cell(monkeypatch, spoof_hardware):
     for the ``import torch`` inside the detector.
     """
 
-    def _apply(os_key: str, vendor: str, *, machine: str | None = None, mlx: bool = True):
+    def _apply(
+        os_key: str,
+        vendor: str,
+        *,
+        machine: str | None = None,
+        mlx: bool = True,
+    ):
         machine = machine or _MACHINE[os_key]
         _, system_name = _OS_MATRIX._OS_CELLS[os_key]
         # A test that presents two cells (the linux/wsl comparison) would otherwise build
@@ -275,13 +318,11 @@ def test_detected_device_per_cell(os_key, vendor, spoof_cell):
     expected = EXPECTED[(os_key, vendor)]
     hw = spoof_cell(os_key, vendor)
     device = hw.detect_hardware()
-    assert device == getattr(hw.DeviceType, expected.device), (
-        f"{os_key}/{vendor}: expected {expected.device}, got {device!r}. {expected.note}"
-    )
+    assert device == getattr(
+        hw.DeviceType, expected.device
+    ), f"{os_key}/{vendor}: expected {expected.device}, got {device!r}. {expected.note}"
     assert hw.IS_ROCM is expected.is_rocm, f"{os_key}/{vendor}: IS_ROCM"
-    assert hw.CHAT_ONLY_REASON == expected.chat_only_reason, (
-        f"{os_key}/{vendor}: chat-only reason"
-    )
+    assert hw.CHAT_ONLY_REASON == expected.chat_only_reason, f"{os_key}/{vendor}: chat-only reason"
 
 
 # ======================================================================================
@@ -319,8 +360,7 @@ def test_worker_selects_mlx_on_device_type_alone():
         if not isinstance(node, ast.If):
             continue
         constructed = any(
-            isinstance(inner, ast.Call)
-            and getattr(inner.func, "id", None) == "MLXInferenceBackend"
+            isinstance(inner, ast.Call) and getattr(inner.func, "id", None) == "MLXInferenceBackend"
             for inner in ast.walk(node)
         )
         if constructed:
@@ -487,13 +527,9 @@ def test_wsl_is_indistinguishable_from_linux_in_the_detector():
     # And the one string that IS a Windows-only lookup, named so this test cannot be read
     # as claiming the package never mentions Microsoft.
     assert "Microsoft" in _code_without_comments(HARDWARE_PACKAGE / "hardware.py")
-    assert "_WINDOWS_DIRECTX_KEY" in (HARDWARE_PACKAGE / "hardware.py").read_text(
-        encoding = "utf-8"
-    )
+    assert "_WINDOWS_DIRECTX_KEY" in (HARDWARE_PACKAGE / "hardware.py").read_text(encoding = "utf-8")
     # And the llama.cpp side, which does, so this stays an accurate statement of scope.
-    llama_cpp = (STUDIO_BACKEND / "core" / "inference" / "llama_cpp.py").read_text(
-        encoding = "utf-8"
-    )
+    llama_cpp = (STUDIO_BACKEND / "core" / "inference" / "llama_cpp.py").read_text(encoding = "utf-8")
     assert "_wsl_system_rocm_lib_dirs" in llama_cpp
 
 
