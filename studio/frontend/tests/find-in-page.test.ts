@@ -263,6 +263,13 @@ test("the paint window is capped and always holds the active match", () => {
   }
 });
 
+/** The body of one CSS rule, for the tests that pin the bar to the composer. */
+function cssRule(css: string, selector: string): string {
+  const at = css.indexOf(`${selector} {`);
+  assert.notEqual(at, -1, `${selector} is gone`);
+  return css.slice(at, css.indexOf("}", at));
+}
+
 // --- the wiring --------------------------------------------------------------------------------
 
 test("the stylesheet paints the two highlights the code registers", async () => {
@@ -299,58 +306,52 @@ test("the bar keeps itself out of the region it searches", async () => {
   assert.match(engine, /FIND_SKIP_ATTRIBUTE/);
 });
 
-test("light mode is the chatbox's own background and shadow", async () => {
-  const css = await readFile(
-    new URL("../src/index.css", import.meta.url),
-    "utf8",
-  );
-  const rule = (selector: string) => {
-    const at = css.indexOf(`${selector} {`);
-    assert.notEqual(at, -1, `${selector} is gone`);
-    return css.slice(at, css.indexOf("}", at));
-  };
-  // The composer is the reference, not a copied pair of values: if it ever restyles, this fails
-  // rather than leaving one floating panel a shade off from the one below it.
-  const composer = rule(".unsloth-composer-surface");
+test("light mode is the chatbox's background, under a slightly heavier shadow", async () => {
+  const css = await readFile(new URL("../src/index.css", import.meta.url), "utf8");
+  const composer = cssRule(css, ".unsloth-composer-surface");
+  const bar = cssRule(css, ".find-bar-surface");
+
+  // The composer is the reference, not a copied colour: if it restyles, this fails rather than
+  // leaving the one floating panel a shade off from the one below it.
   const background = /background-color:\s*(#[0-9a-f]{6});/i.exec(composer);
-  const shadow = /box-shadow:\s*([^;]+);/.exec(composer);
-  assert.ok(background && shadow);
-  const bar = rule(".find-bar-surface");
+  assert.ok(background);
   assert.match(bar, new RegExp(`background-color:\\s*${background[1]};`, "i"));
-  assert.match(
-    bar,
-    new RegExp(
-      `box-shadow:\\s*${shadow[1].replace(/[().*+?[\]\\^$|]/g, "\\$&")};`,
-    ),
-  );
+
+  // The shadow is the composer's, a touch larger and darker, because that one sits at the bottom
+  // of the page with nothing under it and this one floats over content.
+  const shape = (rule: string) => {
+    const hit =
+      /box-shadow:\s*0 (\d+)px (\d+)px -\d+px rgba\(0, 0, 0, ([\d.]+)\);/.exec(rule);
+    assert.ok(hit, "box-shadow is not in the shape this test reads");
+    return { y: Number(hit[1]), blur: Number(hit[2]), alpha: Number(hit[3]) };
+  };
+  const from = shape(composer);
+  const to = shape(bar);
+  assert.ok(to.blur > from.blur, `blur ${to.blur} is not larger than ${from.blur}`);
+  assert.ok(to.alpha > from.alpha, `alpha ${to.alpha} is not darker than ${from.alpha}`);
+  // Slightly. A drop shadow twice the composer's would read as a different material.
+  assert.ok(to.blur <= from.blur * 1.5, `blur ${to.blur} is more than slightly larger`);
+  assert.ok(to.alpha <= from.alpha * 1.5, `alpha ${to.alpha} is more than slightly darker`);
+  assert.ok(to.y >= from.y);
 });
 
 test("dark mode sits above the cards it floats over", async () => {
-  const css = await readFile(
-    new URL("../src/index.css", import.meta.url),
-    "utf8",
-  );
+  const css = await readFile(new URL("../src/index.css", import.meta.url), "utf8");
   const value = (selector: string, property: string) => {
-    const at = css.indexOf(`${selector} {`);
-    assert.notEqual(at, -1, `${selector} is gone`);
-    const body = css.slice(at, css.indexOf("}", at));
-    const hit = new RegExp(`${property}:\\s*([^;]+);`).exec(body);
+    const hit = new RegExp(`${property}:\\s*([^;]+);`).exec(cssRule(css, selector));
     assert.ok(hit, `${selector} has no ${property}`);
     return hit[1].trim();
   };
   const grey = (hex: string) => Number.parseInt(hex.slice(1, 3), 16);
   // The thread's message cards are `--card`. A bar at that value dissolves into whatever scrolls
-  // under it, so it sits one step above -- and below `--accent`, which is where the hover goes.
+  // under it, so it sits above them, and below `--border`, past which it reads as an edge.
   const bar = grey(value(".dark .find-bar-surface", "background-color"));
   const card = grey(value(".dark", "--card"));
-  const accent = grey(value(".dark", "--accent"));
+  const border = grey(value(".dark", "--border"));
   assert.ok(bar > card, `bar ${bar} is not lighter than --card ${card}`);
-  assert.ok(bar < accent, `bar ${bar} leaves no room under --accent ${accent}`);
+  assert.ok(bar < border, `bar ${bar} is not darker than --border ${border}`);
   // And a halo in the page background, not a dark edge around a borderless panel.
-  assert.match(
-    value(".dark .find-bar-surface", "box-shadow"),
-    /var\(--background\)/,
-  );
+  assert.match(value(".dark .find-bar-surface", "box-shadow"), /var\(--background\)/);
 });
 
 test("the bar has no border, and its buttons have a hover that shows", async () => {

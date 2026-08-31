@@ -3485,11 +3485,13 @@ html[data-chat-font] .aui-root {
    around a panel that has given up its border. */
 .find-bar-surface {
 	background-color: #ffffff;
-	/* Kept in step with .unsloth-composer-surface by tests/find-in-page.test.ts. */
-	box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+	/* The composer's shadow, a touch larger and darker: that one sits at the
+	   bottom of the page with nothing under it, this one floats over content.
+	   Kept in step by tests/find-in-page.test.ts. */
+	box-shadow: 0 3px 10px -2px rgba(0, 0, 0, 0.2);
 }
 
 .dark .find-bar-surface {
-	background-color: #272727;
+	background-color: #2c2c2c;
 	box-shadow: 0 4px 20px 6px var(--background);
 }
