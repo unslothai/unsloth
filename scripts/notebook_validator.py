@@ -393,13 +393,15 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
     rather than dropped: it can still run, and the rules that must see every install path
     (R-INST-001 and the git+ ban above all) have to keep seeing it. Only the effective-version
     replay skips them. The tail ends at an `&&` or a `;`, since the lists are left-associative
-    and `(A || B) && C` runs C when A succeeded. An unquoted `#` that starts a word comments
-    out the rest of the line, so scanning stops there.
+    and `(A || B) && C` runs C when A succeeded, but an operator inside a `(` or `{` group
+    belongs to the group rather than to the enclosing list and does not end the tail. An
+    unquoted `#` that starts a word comments out the rest of the line, so scanning stops.
     """
     out: list[tuple[str, bool]] = []
     buf: list[str] = []
     quote = ""
-    conditional = False
+    conditional = False  # inside the conditional tail of an and-or list
+    depth = 0  # open ( or { : an operator inside a group does not end the enclosing list
     i = 0
 
     def flush() -> None:
@@ -430,13 +432,21 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             i += 2
         elif line.startswith("&&", i):
             flush()
-            conditional = False  # left-associative: (A || B) && C runs C when A succeeded
+            if depth == 0:
+                # Left-associative: (A || B) && C runs C when A succeeded. Inside a group the
+                # whole group is still the fallback, so the flag has to survive.
+                conditional = False
             i += 2
         elif ch == ";":
             flush()
-            conditional = False
+            if depth == 0:
+                conditional = False
             i += 1
         else:
+            if ch in "({":
+                depth += 1
+            elif ch in ")}":
+                depth = max(0, depth - 1)
             buf.append(ch)
             i += 1
     flush()
