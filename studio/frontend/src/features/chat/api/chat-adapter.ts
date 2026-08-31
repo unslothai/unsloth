@@ -5278,9 +5278,7 @@ export function createOpenAIStreamAdapter(
         textCursor?: number;
         _delta_index?: number;
         _has_stable_id?: boolean;
-        // Opened by a delta that named a tool and carried no `arguments` field
-        // at all. A tool that takes none sends an empty string, so this marks
-        // the announcement of a call whose arguments have not started.
+        // No `arguments` field at all; a zero-parameter tool sends """".
         _announced_only?: boolean;
         _resend_suspect?: boolean;
         _superseded?: boolean;
@@ -5290,37 +5288,25 @@ export function createOpenAIStreamAdapter(
       };
       // Tool call parts, cumulative; result lands on tool_end.
       const toolCallParts: PositionedToolCallPart[] = [];
-      // An id for a call the stream never gave one: a slot that turned out to
-      // hold several parallel calls (issue #9807). Counted, not random, so a
+      // An id for a call the stream gave none (issue #9807). Counted, so a
       // rerun of the same stream reads the same way in a log.
-      // Ids already spoken for this response: the ones the provider sent, and
-      // the ones minted for cards drawn from a delta that carried none. A card
-      // is minted before its part joins `toolCallParts`, so without holding
-      // them here a batch that opens three calls at once mints one id three
-      // times and the three cards collect each other's results.
+      // A card is minted before its part joins `toolCallParts`, so without
+      // this a batch opening three calls mints one id three times.
       const reservedToolCallIds = new Set<string>();
-      // Resumable boundary scan per card, so an argument streamed in many
-      // fragments is scanned once rather than once per fragment.
       const boundaryScans = new Map<
         string,
         ReturnType<typeof createBoundaryScan>
       >();
-      // extra_content is typed `unknown` because it is whatever the provider
-      // hung off the call, so merging two of them has to check first.
       const isPlainRecord = (v: unknown): v is Record<string, unknown> =>
         typeof v === "object" && v !== null && !Array.isArray(v);
-      // Cards forked off a slot whose last object had not closed. The backend
-      // holds the same ones in open_tail_keys: a stream stopping after
+      // Forks whose last object never closed, the backend's open_tail_keys.
       // `{"a":1}{` is not marked truncated, so the lone brace would persist as
-      // a card nothing can complete. Kept while the turn runs, since later
-      // id-less fragments are written to it.
+      // a card nothing completes. Kept while the turn runs, to be written to.
       const openTailIds = new Set<string>();
       const endProviderTurn = (): boolean => {
         let changed = false;
-        // Same test as _call_is_finished, and on the arguments alone: the
-        // backend holds the fork back whether or not a later fragment stamped
-        // an id on it, so a card kept for the id would be one no tool_start or
-        // tool_end can ever reach.
+        // _call_is_finished, on the arguments alone: the backend holds the
+        // fork back whatever id reached it.
         for (const tailId of openTailIds) {
           const at = toolCallParts.findIndex((p) => p.toolCallId === tailId);
           if (at === -1) continue;
@@ -5331,11 +5317,9 @@ export function createOpenAIStreamAdapter(
           releaseStreamedCard(part.toolCallId);
           changed = true;
         }
-        // An announcement another call took over, and a name that only ever
-        // looked like the closed call's resent, were never calls of their own,
-        // and a card for one is a card no tool will ever run. A lone
-        // announcement the provider opened itself stays: a tool that takes no
-        // parameters is announced exactly that way and does run.
+        // An announcement another call took over, and a name that only looked
+        // like the closed call's resent, were never calls. A lone announcement
+        // the provider opened stays: a zero-parameter tool looks like that.
         for (let at = toolCallParts.length - 1; at >= 0; at -= 1) {
           const part = toolCallParts[at] as PositionedToolCallPart;
           if (
@@ -5345,9 +5329,8 @@ export function createOpenAIStreamAdapter(
             part.argsText
           )
             continue;
-          // Its metadata still belongs to this turn -- Gemini stows a thought
-          // signature there and the native translator rejects a replay without
-          // one -- so it goes to the call the announcement was mistaken for.
+          // Its metadata goes to the call it was mistaken for: Gemini stows a
+          // thought signature there and rejects a replay without one.
           const previous = toolCallParts[at - 1] as
             | PositionedToolCallPart
             | undefined;
@@ -5362,10 +5345,8 @@ export function createOpenAIStreamAdapter(
           changed = true;
         }
         openTailIds.clear();
-        // A round's cards belong to that round. The next one opens at index 0
-        // again, and without this a name fragment it sends continues the call
-        // this round left open at that index, so "B" then "C" across the
-        // boundary named one call "BC" and neither tool ran.
+        // The next round opens at index 0 again, and without this "B" then
+        // "C" across the boundary named one call "BC".
         for (let at = 0; at < toolCallParts.length; at += 1) {
           const part = toolCallParts[at] as PositionedToolCallPart;
           if (part._delta_index === undefined) continue;
@@ -5393,11 +5374,8 @@ export function createOpenAIStreamAdapter(
       // the model is still WRITING them, and the partial parse below feeds the
       // card's args so the code renders live.
       const liveArgsTextById = new Map<string, string>();
-      // A card that is dropped gives its id back. The backend never reserved
-      // it -- the call it stood for is filtered out of `calls` -- so holding it
-      // here makes the next round's mint skip a number the backend then reuses,
-      // and the tool_start addressed to it draws a second card beside the one
-      // the deltas already painted.
+      // A dropped card gives its id back: the backend never reserved it, so
+      // holding it makes the next round's mint skip a number it then reuses.
       const releaseStreamedCard = (partId: string): void => {
         reservedToolCallIds.delete(partId);
         toolPartIdByBackendId.delete(partId);
@@ -5405,10 +5383,8 @@ export function createOpenAIStreamAdapter(
         openTailIds.delete(partId);
         liveArgsTextById.delete(partId);
       };
-      // A provider id can be spelled like a minted one. The backend reserves
-      // every id the provider sent before it mints any, so the id-less call
-      // moves aside; the client mints while the response is still arriving and
-      // can only move it aside once the claim lands.
+      // The backend reserves provider ids before it mints; the client can
+      // only move a card aside once the claim lands.
       const renameStreamedCard = (from: string, to: string): void => {
         reservedToolCallIds.delete(from);
         toolPartIdByBackendId.delete(from);
@@ -5424,9 +5400,8 @@ export function createOpenAIStreamAdapter(
         paintStreamedCard(to);
       };
       /**
-       * Parts for the calls after the first, in a slot holding several. Nothing
-       * per-call is copied across: no result, no provenance, and the thought
-       * signature goes only to the call this delta closes, the last one.
+       * Parts for the calls after the first in a slot holding several. Nothing
+       * per-call is copied: the thought signature goes only to the last.
        */
       const bornSplitToolCalls = (
         extraSegments: string[],
@@ -5457,10 +5432,7 @@ export function createOpenAIStreamAdapter(
             ...(isLast && extraContent !== undefined
               ? { extra_content: extraContent }
               : {}),
-            // Every segment but the last is spoken for, so a late id cannot
-            // reach back past the newest call in the slot. The last stays
-            // claimable even when closed: a provider bundling several calls
-            // into one delta can stamp that one's real id in a delta of its own.
+            // All but the last are spoken for; the last stays claimable.
             ...(isLast ? {} : { _has_stable_id: true }),
             ...(deltaIndex !== undefined ? { _delta_index: deltaIndex } : {}),
           };
@@ -6444,11 +6416,8 @@ export function createOpenAIStreamAdapter(
                 chunk as unknown as { _toolStatus?: string }
               )._toolStatus;
               if (toolStatusText !== undefined) {
-                // The empty status between iterations, the one boundary every
-                // round has. A round whose calls were all rejected as disabled
-                // emits no tool card, and a [DONE] or EOF upstream sends no
-                // finish_reason, so without it the next round's first name
-                // fragment continues whatever this one left open at index 0.
+                // The one boundary every round has: only-disabled rounds emit
+                // no card and a [DONE] upstream sends no finish_reason.
                 if (!toolStatusText) {
                   endProviderTurn();
                 }
@@ -6536,15 +6505,9 @@ export function createOpenAIStreamAdapter(
                 chunk as unknown as { _toolEvent?: Record<string, unknown> }
               )._toolEvent;
               if (toolEvent !== undefined) {
-                // One of Unsloth's own tool events ends the provider turn that
-                // asked for it. finish_reason alone is not enough: a [DONE] or
-                // EOF upstream never sends one, and the next request restarts
-                // the delta indices. Before the queue below is read, so this
-                // turn's announcements reach it.
-                //
-                // A hosted tool runs INSIDE the turn, though, and
-                // note_hosted_tool_event leaves the _Turn open. Hosted events
-                // ride a whole chat.completion.chunk, `choices` and all;
+                // Unsloth's own tool events end the turn that asked for them;
+                // finish_reason alone is not enough. A hosted tool runs INSIDE
+                // the turn and rides a whole chunk, `choices` and all, where
                 // Unsloth's are bare {"type": "tool_start"} frames.
                 if (!chunk.choices) {
                   endProviderTurn();
@@ -7156,9 +7119,7 @@ export function createOpenAIStreamAdapter(
                     typeof call.index === "number" ? call.index : undefined;
                   const stableId = call.id;
                   // The chunk is cast, not validated, and llama-server has
-                  // shipped `arguments` as a decoded object rather than the
-                  // string the API specifies. Reading it as a string aborted the
-                  // adapter; the backend guards the same way with isinstance.
+                  // shipped `arguments` as a decoded object.
                   const deltaArgs =
                     typeof call.function?.arguments === "string"
                       ? call.function.arguments
@@ -7167,12 +7128,9 @@ export function createOpenAIStreamAdapter(
                   // tool_start/tool_end events. Resolve the backend id now so all three
                   // event shapes update one run-unique card instead of leaving the raw
                   // provisional card beside a second execution card.
-                  // Before resolving: an id-less call drawn earlier answers to
-                  // its own minted id, so a provider claiming that spelling
-                  // would resolve onto that card and this call would be merged
-                  // into it, name and arguments both. Move the minted card to
-                  // the next free id, which is where the backend's
-                  // reserve-then-mint order puts it too.
+                  // Before resolving: a provider claiming a minted spelling
+                  // would resolve onto that card and merge the two calls. The
+                  // backend's reserve-then-mint order lands on the same pair.
                   if (stableId && !toolCallParts.some((part) => part.toolCallId === stableId && part._has_stable_id)) {
                     const clash = toolCallParts.findIndex(
                       (part) => part.toolCallId === stableId,
@@ -7203,10 +7161,9 @@ export function createOpenAIStreamAdapter(
                     existingIndex === -1
                       ? undefined
                       : toolCallParts[existingIndex];
-                  // A closed object takes no more content, so a delta bringing
-                  // a name or arguments to a slot holding one whole object opens
-                  // the next parallel call. Splitting the text catches that only
-                  // once the arguments land, too late for a name or a late id.
+                  // A closed object takes no more content, so a name or
+                  // arguments reaching it open the next call. Splitting the
+                  // text alone is too late for a name or an id.
                   const slotIsClosed = (() => {
                     if (!matched?.argsText) return false;
                     const held = scanArgsText(
@@ -7215,69 +7172,44 @@ export function createOpenAIStreamAdapter(
                     );
                     return held.complete.length > 0 && !held.tail;
                   })();
-                  // An id names its call, so a fragment repeating the id this
-                  // part already holds continues it however complete its
-                  // arguments look. llama-server grows the name across deltas,
-                  // and opening a call there gives two cards one id.
+                  // A fragment repeating the id this part holds continues it
+                  // however complete the arguments look.
                   const namesThisCall =
                     !!stablePartId && matched?.toolCallId === stablePartId;
-                  // Whitespace after a closing brace says nothing about another
-                  // call, and a next call opens with the "{" of its own
-                  // arguments. Cutting on anything else would turn a stray
-                  // scalar suffix into a second call and run the tool twice.
+                  // A next call opens with its own "{"; cutting on anything
+                  // else runs the tool twice on a stray scalar suffix.
                   const bringsArgs = deltaArgs.trim().startsWith("{");
                   const closedSlot = slotIsClosed && !namesThisCall;
-                  // A name reaching a closed slot cannot be read yet: a second
-                  // call to the same tool announces itself exactly as
-                  // llama-server resends a name it is growing. An id names its
-                  // call outright, so one naming a DIFFERENT call opens the next
-                  // even before its arguments arrive. On its own, or repeating
-                  // the held name, it is that call's id stamped late, and
-                  // forking there strands the finished card under a provisional
-                  // id beside an empty second one.
+                  // An id naming a DIFFERENT call opens the next even before
+                  // its arguments arrive; alone it is that call's, stamped late.
                   const idNamesAnotherCall =
                     !!stablePartId &&
                     !!call.function?.name &&
                     !!matched?.toolName &&
-                    // Not a prefix test: an id is strong evidence of its own
-                    // call, and a catalog holding both "web" and "web_search"
-                    // would have the second claim the first. Only the same
-                    // name, or none, reads as that call's id arriving late.
+                    // Not a prefix test: a catalog holds both "web" and
+                    // "web_search".
                     call.function.name !== matched.toolName;
-                  // A snapshot-style provider repeats the finished call
-                  // verbatim once it has an id for it. Same name and
-                  // byte-identical arguments, on a card with no id of its own,
-                  // is that call arriving to be claimed; a second card runs a
-                  // side-effecting tool twice. Exact repeats only, so parallel
-                  // calls differing anywhere still open separately.
+                  // A snapshot provider repeats the finished call verbatim
+                  // once it has an id. Exact repeats only, so parallel calls
+                  // differing anywhere still open separately.
                   const resendsThisCall =
                     !!stablePartId &&
                     !!matched &&
                     !matched._has_stable_id &&
                     call.function?.name === matched.toolName &&
                     deltaArgs === matched.argsText;
-                  // A name arriving at a closed slot announces the next call.
-                  // A name grows across deltas only while it is being streamed,
-                  // which is before the arguments, so once the object has closed
-                  // there is nothing for a fragment to extend and a name can
-                  // only mean the next call. Testing for a shared prefix instead
-                  // read "web" after "web_search" as that call's name resent and
-                  // swallowed the second call. Without any of this, the reported
-                  // stream delivered one character per delta merges two calls'
-                  // names into "web_fetchweb_search", which matches no tool.
-                  // The same name is that call's, resent: llama-server repeats
-                  // it on every delta and vLLM has repeated the whole name too,
-                  // so opening a call there would run one request twice.
+                  // A name at a closed slot announces the next call: names
+                  // grow before the arguments, so nothing is left to extend. A
+                  // shared prefix is no proof ("web" after "web_search" is a
+                  // second call), but the SAME name is that call's, resent, and
+                  // llama-server and vLLM both resend it.
                   const namesNextCall =
                     !!call.function?.name &&
                     !!matched?.toolName &&
                     call.function.name !== matched.toolName;
-                  // A slot holding only an announcement has no object to
-                  // close, so the rule above cannot reach it. A DIFFERENT name
-                  // arriving there with an object of its own is the next call:
-                  // a name still growing arrives on its own, before any
-                  // arguments. Without this the announcement's name and the
-                  // next call's glue into "A_longB", which matches no tool.
+                  // An announcement has no object to close, so the rule above
+                  // cannot reach it. A different name bringing an object is the
+                  // next call; gluing gave "A_longB", which matches no tool.
                   const announcesOverAnnouncement =
                     ((matched as PositionedToolCallPart | undefined)
                       ?._announced_only === true ||
@@ -7309,43 +7241,35 @@ export function createOpenAIStreamAdapter(
                     argsFragment.length + (call.function?.name?.length ?? 0);
                   if (existing) {
                     const prevName = existing.toolName ?? "";
-                    // Two provider dialects, and picking either alone breaks
-                    // the other. llama-server re-sends the whole name as it
-                    // grows ("web" then "web_search"), so appending yields
-                    // "webweb_search"; OpenAI streams it in fragments ("web"
-                    // then "_search"), so assigning yields "_search". Either
-                    // way the call is named something no tool declares and
-                    // never runs. Same rule the backend accumulator uses.
+                    // Two dialects, and either alone breaks the other:
+                    // llama-server resends the whole name as it grows, OpenAI
+                    // streams it in fragments. Same rule as the backend.
                     const nameFragment = call.function?.name ?? "";
-                    // Not once this card's object has closed AND it already
-                    // has a name: the rule above has opened the next call, and
-                    // renaming a finished card would put arguments validated
-                    // against one tool's schema under another tool's name.
-                    // Naming a card that has none is not a rename, and some
-                    // servers send the arguments first and the name later.
+                    // Never once the object has closed AND a name is set: that
+                    // would put one tool's arguments under another's name.
+                    // Naming a card that has none is not a rename, and servers
+                    // do send the arguments first.
                     const nextName =
                       !nameFragment || (closedSlot && prevName)
                         ? prevName
                         : nameFragment.startsWith(prevName)
                           ? nameFragment
                           : prevName + nameFragment;
-                    // A snapshot repeated to carry the id says nothing new
-                    // about the arguments; appending it would give the card
-                    // `{"a":1}{"a":1}` and split it back into two calls.
+                    // A snapshot repeated to carry the id adds nothing;
+                    // appending gives `{"a":1}{"a":1}` and splits it in two.
                     const merged = resendsThisCall
                       ? (existing.argsText ?? "")
                       : (existing.argsText ?? "") + argsFragment;
-                    // A call's arguments are one JSON object, so a slot holding
-                    // two is holding two calls: the stream reused this index,
-                    // which is how vLLM's id-less deltas glue `{"url":"a"}` and
+                    // A slot holding two objects is holding two calls: this is
+                    // how vLLM's id-less deltas glue `{"url":"a"}` and
                     // `{"url":"b"}` into one unparsable string (issue #9807).
                     // Cut on the object boundary, since the same tool twice has
                     // no name to cut on; a delta with an id addresses its own.
                     const split = stablePartId
                       ? { complete: [], tail: "" }
                       : scanArgsText(existing.toolCallId, merged);
-                    // Whether the last segment is still being written decides
-                    // who may go on writing to it.
+                    // Whether the last segment is still open decides who may
+                    // go on writing to it.
                     const splitTailIsOpen = split.tail.length > 0;
                     const segments = splitTailIsOpen
                       ? [...split.complete, split.tail]
@@ -7369,9 +7293,9 @@ export function createOpenAIStreamAdapter(
                     }
                     const prevExtra = (existing as PositionedToolCallPart)
                       .extra_content;
-                    // Merged, not replaced: a signature announced with the name
-                    // and one arriving with the arguments are different fields
-                    // of one call, and dropping either fails replay.
+                    // Merged, not replaced: a signature announced with the
+                    // name and one arriving with the arguments are different
+                    // fields of one call.
                     const incomingExtra =
                       isPlainRecord(prevExtra) && isPlainRecord(call.extra_content)
                         ? { ...prevExtra, ...call.extra_content }
@@ -7400,16 +7324,12 @@ export function createOpenAIStreamAdapter(
                           ? { extra_content: prevExtra }
                           : {}),
                       ...(idx !== undefined ? { _delta_index: idx } : {}),
-                      // Any arguments field, empty string included, means the
-                      // call has started: a tool that takes no parameters
-                      // sends exactly that, and the card has to survive the
-                      // turn boundary sweep.
+                      // Any arguments field, "" included, means the call has
+                      // started, so the card survives the boundary sweep.
                       _announced_only:
                         (existing as PositionedToolCallPart)._announced_only ===
                           true && call.function?.arguments === undefined,
-                      // Cleared the moment the slot accumulates anything: a
-                      // name that turned out to carry its own arguments was
-                      // never a resend.
+                      // A name that brought its own arguments was no resend.
                       _resend_suspect:
                         (existing as PositionedToolCallPart)._resend_suspect ===
                           true && !slotText,
@@ -7421,30 +7341,24 @@ export function createOpenAIStreamAdapter(
                       openTailIds.add(stablePartId);
                     }
                     if (isSplit) {
-                      // The slot keeps one segment rather than the whole string
-                      // it accumulated, so the resumable scan no longer
-                      // describes what it was reading.
+                      // The slot keeps one segment, not the whole string, so
+                      // the resumable scan no longer describes it.
                       boundaryScans.delete(existing.toolCallId);
                       boundaryScans.delete(updated.toolCallId);
-                      // Appended, not inserted beside the slot, so a call the
-                      // stream opened third reads third whichever index it
-                      // reused. Where the branch below puts one, too.
-                      // This delta's own metadata, not the merge: the merge
-                      // exists to keep a signature announced with the name
-                      // beside one arriving with the arguments, and both of
-                      // those belong to the call the slot was already holding.
-                      // Carried onto a born call it puts one call's signature
-                      // on another, and Gemini validates the signature against
-                      // the functionCall part it is returned on.
+                      // Appended, not inserted beside the slot, so a call
+                      // opened third reads third whichever index it reused.
+                      // This delta's own metadata, not the merge: the merged
+                      // fields belong to the call the slot was holding, and
+                      // Gemini validates a signature against the functionCall
+                      // part it was returned on.
                       const born = bornSplitToolCalls(
                         segments.slice(1),
                         nextName,
                         idx,
                         call.extra_content,
                       );
-                      // The last one is the object still being written, if one
-                      // is: kept so later fragments have somewhere to go, and
-                      // dropped at the end of the turn if it never closed.
+                      // The last is the object still being written, if one is:
+                      // kept for later fragments, dropped if it never closes.
                       if (splitTailIsOpen && born.length > 0) {
                         openTailIds.add(born[born.length - 1].toolCallId);
                       }
@@ -7461,9 +7375,8 @@ export function createOpenAIStreamAdapter(
                     if (!codexRoundToolCallIds.includes(callId)) {
                       codexRoundToolCallIds.push(callId);
                     }
-                    // A slot can arrive already holding several calls in one
-                    // fragment: vLLM bundles them into a single delta when the
-                    // model writes them in one pass. Same boundary as above.
+                    // vLLM bundles several calls into one delta when the model
+                    // writes them in one pass. Same boundary as above.
                     const freshSplit = stablePartId
                       ? { complete: [], tail: "" }
                       : splitTopLevelJsonObjects(argsFragment);
@@ -7474,15 +7387,11 @@ export function createOpenAIStreamAdapter(
                     const freshIsSplit = freshSegments.length > 1;
                     const nameFragment = call.function?.name ?? "";
                     const heldName = matched?.toolName ?? "";
-                    // An id-less provider reusing the index for another call
-                    // to the same tool can leave the repeated name out, the
-                    // first delta having given it. A blank name is no tool at
-                    // all, and the card would name nothing the backend runs.
+                    // A second call to the same tool can arrive with no name,
+                    // the first delta having given it; blank names nothing.
                     const freshName = nameFragment || heldName;
-                    // When this delta opened several calls the metadata it
-                    // carried belongs to the call it closes, which is the last
-                    // one. _fork_glued_arguments divides them the same way, and
-                    // a misplaced signature fails replay.
+                    // Across several calls the metadata belongs to the one
+                    // this delta closes, the last. Same as the backend.
                     const freshOwnExtra = freshIsSplit
                       ? undefined
                       : call.extra_content;
@@ -7519,21 +7428,13 @@ export function createOpenAIStreamAdapter(
                       ...(call.function?.arguments === undefined && freshName
                         ? { _announced_only: true }
                         : {}),
-                      // Whether this card is a fork's guess or a slot the
-                      // provider opened itself. An announcement the provider
-                      // opened is a call it means to make, most likely to a
-                      // tool that takes no parameters; one a fork invented has
-                      // no such standing, and if nothing fills it there is
-                      // nothing to run.
+                      // A fork's guess, or a slot the provider opened itself.
+                      // Only the provider's own announcement runs unfilled.
                       ...(matched ? { _from_fork: true } : {}),
-                      // A name that extends the name of the call this fork
-                      // just left behind is most likely that call's, resent.
-                      // It still opens a card, because a catalog holding both
-                      // "web" and "web_search" makes the prefix no proof
-                      // either way, but the card gives way rather than gluing
-                      // if another name brings the object: "alpha_long" then
-                      // "beta" was shown as "alpha_longbeta", which matches no
-                      // tool, and is dropped if nothing ever fills it.
+                      // A name extending the one this fork left behind is most
+                      // likely it, resent. It still opens a card (the prefix is
+                      // no proof) but gives way rather than gluing
+                      // "alpha_longbeta".
                       ...(freshName &&
                       heldName &&
                       freshName !== heldName &&
@@ -7558,14 +7459,11 @@ export function createOpenAIStreamAdapter(
                     addedToolCall = true;
                   }
                 }
-                // After this chunk's deltas, not before them: a provider can
-                // put finish_reason on the same chunk as the turn's last
-                // name-only delta, and closing the turn first would let that
-                // call cross into the next one.
+                // After this chunk's deltas: a provider can put finish_reason
+                // on the same chunk as the turn's last name-only delta.
                 if (chunk.choices?.[0]?.finish_reason) {
-                  // Ending the turn drops a call announced but never opened
-                  // and a fork whose object never closed, so the publish below
-                  // has to see it rather than wait for the pacing gate.
+                  // Ending the turn drops cards, so the publish below has to
+                  // see it rather than wait for the pacing gate.
                   replayStateChanged ||= endProviderTurn();
                 }
                 if (

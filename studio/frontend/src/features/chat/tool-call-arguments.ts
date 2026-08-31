@@ -12,17 +12,13 @@ function isSingleJsonObject(text: string): boolean {
 }
 
 /**
- * One streaming slot's accumulated argument text, cut into the top-level JSON
- * objects it holds: `complete` are the ones that closed, `tail` is the one
- * still being written.
+ * One slot's accumulated argument text, cut into the top-level JSON objects it
+ * holds: `complete` closed, `tail` is still being written.
  *
- * A call's `function.arguments` is one JSON object, so a second top-level `{`
- * means the stream reused this slot for a second parallel call, which is what
- * turns two calls into the unparsable `{"url":"a"}{"url":"b"}`.
- *
- * Text that is not a run of whole objects (top-level array or scalar, trailing
- * junk, an unbalanced brace) comes back whole in `tail` with `complete` empty,
- * so a stream this was never meant for is left alone.
+ * A second top-level `{` means the stream reused the slot for a second parallel
+ * call, which is what turns two calls into `{"url":"a"}{"url":"b"}`. Text that
+ * is not a run of whole objects comes back whole in `tail`, so a stream this
+ * was never meant for is left alone.
  */
 export function splitTopLevelJsonObjects(text: string): {
   complete: string[];
@@ -38,16 +34,14 @@ export function splitTopLevelJsonObjects(text: string): {
   for (let i = 0; i < text.length; i += 1) {
     const ch = text[i];
     if (inString) {
-      // A backslash escapes one character, so a run of them toggles rather
-      // than accumulates and `\\"` really does end the string.
+      // A backslash escapes one character, so a run of them toggles.
       if (escaped) escaped = false;
       else if (ch === "\\") escaped = true;
       else if (ch === '"') inString = false;
       continue;
     }
     if (depth === 0) {
-      // Between objects only whitespace, "\r\n" as readily as "\n". Anything
-      // else, a quote included, means this is not a run of objects at all.
+      // Between objects only whitespace, "\r\n" as readily as "\n".
       if (ch === "{") {
         depth = 1;
         start = i;
@@ -68,8 +62,7 @@ export function splitTopLevelJsonObjects(text: string): {
         try {
           JSON.parse(segment);
         } catch {
-          // Balanced but invalid, so the brace count was a coincidence and
-          // cutting here would invent a call the model never made.
+          // Balanced but invalid: cutting here would invent a call.
           return unsplit;
         }
         complete.push(segment);
@@ -87,15 +80,10 @@ export function splitTopLevelJsonObjects(text: string): {
 /**
  * `splitTopLevelJsonObjects` over a string that only ever grows.
  *
- * One call's arguments arrive as many small fragments, and rescanning the whole
- * accumulation per fragment makes streaming one argument of length N cost
- * O(N^2): a 20 KB argument delivered a character at a time took about a second
- * and a half on the thread that also paints the stream. The scan resumes where
- * it stopped instead, so the same argument costs one pass in total.
- *
- * `feed` must be given the same string extended, never a rewritten one. A split
- * rewrites a slot's `argsText`, so the caller drops the scan for the parts it
- * touches and lets the next fragment start a fresh one.
+ * Rescanning per fragment is O(N^2), and a 20 KB argument sent a character at a
+ * time took about a second and a half on the thread that paints the stream.
+ * `feed` takes the same string extended, never a rewritten one, so a caller
+ * that splits a slot drops its scan.
  */
 export function createBoundaryScan(): {
   feed: (text: string) => { complete: string[]; tail: string };
@@ -105,8 +93,7 @@ export function createBoundaryScan(): {
   let inString = false;
   let escaped = false;
   let scanned = 0;
-  // Junk at depth 0 or a segment that does not parse makes the whole string
-  // unsplittable, and appending to it can never make it splittable again.
+  // Once unsplittable, appending can never make it splittable again.
   let unsplittable = false;
   const complete: string[] = [];
 
@@ -168,9 +155,8 @@ export function createBoundaryScan(): {
  * in the thread, and strict chat templates reject the whole request rather than
  * one call, so it falls back to the structured args the part already carries.
  *
- * `{ _raw }` is the adapter's own marker for text it could not parse, not a
- * parameter any tool declares, so threads stored before arguments were split
- * per call replay as `{}` rather than as a blob.
+ * `{ _raw }` is the adapter's marker for text it could not parse, so a thread
+ * carrying one replays as `{}` rather than as the blob.
  */
 export function toolCallReplayArguments(
   argsText: string | undefined,

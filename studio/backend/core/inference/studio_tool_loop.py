@@ -227,19 +227,11 @@ def _chunk_payload(line: str) -> dict[str, Any] | None:
 
 
 def _mint_streamed_card_id(taken: set[str], index: Any) -> str:
-    """The id the client painted this call's card under.
+    """The id the client painted an id-less call's card under.
 
-    A call the provider gave no id to still needs one, and the client minted
-    its own the moment the delta arrived: ``tool_call_<delta index>`` for the
-    first call in a slot, then the lowest free ``tool_call_<n>`` for each call
-    split out of it. Both halves walk the same deltas in the same order, so
-    reproducing that rule here lands on the same spelling, and ``tool_start``
-    and ``tool_end`` reach the card the stream already drew instead of pushing
-    a second one beside it.
-
-    This is a card id and never a conversation id: what is stored and replayed
-    upstream stays ``call_<round>_<position>``, so threads written before this
-    keep resolving.
+    ``tool_call_<delta index>``, else the lowest free ``tool_call_<n>``: the
+    client's rule, reproduced so tool_start and tool_end reach the card the
+    stream drew. A card id only; the replayed id stays ``call_<round>_<pos>``.
     """
     preferred = (
         f"tool_call_{index}" if isinstance(index, int) and not isinstance(index, bool) else ""
@@ -378,27 +370,17 @@ class ToolLoopPolicy:
 
 
 def _reject_json_constant(name: str) -> Any:
-    """Refuse ``NaN`` / ``Infinity``, which ``json.loads`` takes and JSON does not.
-
-    ``JSON.parse`` has no such literals, so leaving them accepted here lets the
-    two scanners cut the same text in different places: the backend would run
-    two calls where the frontend shows one.
-    """
+    """Refuse ``NaN`` / ``Infinity``: ``json.loads`` takes them, ``JSON.parse`` does not."""
     raise ValueError(f"{name} is not JSON")
 
 
 def _split_top_level_json_objects(text: str) -> tuple[list[str], str]:
     """The top-level JSON objects in ``text``, and any object still unfinished.
 
-    A call's ``function.arguments`` is one JSON object, so a second top-level
-    ``{`` means one index slot took a second parallel call. Text that is not a
-    run of whole objects (top-level array or scalar, trailing junk, unbalanced
-    brace) comes back whole as the tail, so a stream this was never meant for
-    is left alone.
-
-    Mirrors ``splitTopLevelJsonObjects`` in
-    ``studio/frontend/src/features/chat/tool-call-arguments.ts``: the two see
-    the same deltas and have to agree on where a call ends.
+    A second top-level ``{`` means one slot took a second parallel call. Text
+    that is not a run of whole objects comes back whole, so a stream this was
+    never meant for is left alone. Must agree with
+    ``splitTopLevelJsonObjects`` in ``chat/tool-call-arguments.ts``.
     """
     unsplit: tuple[list[str], str] = ([], text)
     complete: list[str] = []
@@ -439,23 +421,14 @@ def _split_top_level_json_objects(text: str) -> tuple[list[str], str]:
                     json.loads(
                         segment,
                         parse_constant = _reject_json_constant,
-                        # Validation only, so the numbers are never read: keeping
-                        # them as text sidesteps the 4300-digit cap on int
-                        # conversion, which JSON.parse does not have and which
-                        # would otherwise make the two disagree on where a call
-                        # ends over a literal that fits in an ordinary payload.
+                        # As text: JSON.parse has no 4300-digit int cap.
                         parse_int = str,
                     )
                 except (ValueError, TypeError):
-                    # Balanced but invalid, so the brace count was a
-                    # coincidence and cutting here would invent a call.
+                    # Balanced but invalid: cutting here would invent a call.
                     return unsplit
                 except RecursionError:
-                    # Deeply nested but valid JSON blows the interpreter's stack
-                    # instead of failing to decode, and RecursionError is not a
-                    # ValueError. Uncaught it escapes the loop mid-stream, so
-                    # the segment counts as unsplittable and _normalized_call
-                    # downgrades it to _raw as it always has.
+                    # Valid but too deep to decode, and not a ValueError.
                     return unsplit
                 complete.append(segment)
                 start = -1
@@ -467,15 +440,9 @@ def _split_top_level_json_objects(text: str) -> tuple[list[str], str]:
 class _BoundaryScan:
     """``_split_top_level_json_objects`` over a string that only ever grows.
 
-    One call's arguments arrive as many small fragments, and rescanning the
-    whole accumulation per fragment makes streaming one argument of length N
-    cost O(N^2): a 10 KB argument delivered a character at a time took about
-    five seconds, which stalls the response. The scan resumes where it stopped
-    instead, so the same argument costs one pass in total.
-
-    ``feed`` must be given the same string extended, never a rewritten one --
-    a fork rewrites a slot's arguments, so ``_Turn`` drops the scan for the
-    keys it touches and lets the next fragment start a fresh one.
+    Rescanning per fragment is O(N^2); resuming is one pass. ``feed`` takes the
+    same string extended, never a rewritten one, so ``_Turn`` drops the scan
+    for any key a fork rewrites.
     """
 
     depth: int = 0
@@ -484,8 +451,7 @@ class _BoundaryScan:
     escaped: bool = False
     scanned: int = 0
     complete: list[str] = field(default_factory = list)
-    # Junk at depth 0 or a segment that does not parse makes the whole string
-    # unsplittable, and appending to it can never make it splittable again.
+    # Once unsplittable, appending can never make it splittable again.
     unsplittable: bool = False
 
     def feed(self, text: str) -> tuple[list[str], str]:
@@ -552,14 +518,12 @@ class _Turn:
     split_seq: int = 0
     seq_by_key: dict[Any, int] = field(default_factory = dict)
     seq_counter: int = 0
-    # Which call each id names, so a fragment repeating an id reaches its own
-    # call even when a later call at that index is the one currently open.
+    # Which call each id names: a fragment repeating one returns to its call.
     key_by_call_id: dict[str, Any] = field(default_factory = dict)
     # Resumable boundary scan per call, keyed the same as ``by_index``.
     scan_by_key: dict[Any, _BoundaryScan] = field(default_factory = dict)
-    # Split-born calls whose object had not closed when they were forked off.
-    # Reported only once it does: a stream cut short after "{\"a\":1}{" would
-    # otherwise run the tool a second time on half an argument.
+    # Forks whose object never closed: reported only once it does, or a stream
+    # cut short after '{"a":1}{' runs the tool again on half an argument.
     open_tail_keys: set[Any] = field(default_factory = set)
     round: int = 0
     healed: list[dict[str, Any]] = field(default_factory = list)
@@ -679,11 +643,8 @@ class _Turn:
             # belong to the newer call.
             key: Any = self.open_key_by_index.get(index, index)
             if isinstance(call_id, str) and call_id:
-                # An id beats the latest-index mapping, which only places
-                # fragments carrying no id: a fragment repeating an id returns
-                # to the call wearing it wherever that call now sits. Matching
-                # the open call instead renamed a newer one and gave it a second
-                # copy of the id.
+                # An id beats the latest-index mapping: a fragment repeating
+                # one returns to its own call wherever that call now sits.
                 owner = self.key_by_call_id.get(call_id)
                 if owner is not None:
                     key = owner
@@ -708,10 +669,8 @@ class _Turn:
             # a closing brace belongs to the object just closed, and forking on
             # a stray scalar suffix would run the tool twice.
             # An id names a call outright, so one naming a DIFFERENT call opens
-            # the next even before its arguments arrive. On its own, or
-            # repeating the name the slot holds, it is that call's id stamped
-            # late, and forking there strands the finished call under its
-            # provisional id beside an empty second one.
+            # the next even before its arguments arrive. Alone, or repeating
+            # the slot's name, it is that call's id stamped late.
             held_name_now = held["function"]["name"] if held is not None else ""
             id_names_another_call = bool(
                 isinstance(call_id, str)
@@ -719,19 +678,12 @@ class _Turn:
                 and isinstance(new_name, str)
                 and new_name
                 and held_name_now
-                # Not a prefix test: an id is strong evidence of its own call,
-                # and a catalog holding both "web" and "web_search" would have
-                # the second claim the first and glue their arguments together.
-                # Only the same name, or none, reads as that call's id arriving
-                # late.
+                # Not a prefix test: a catalog holds both "web" and
+                # "web_search", so only the same name reads as the same call.
                 and new_name != held_name_now
             )
-            # A snapshot-style provider repeats the finished call verbatim once
-            # it has an id for it. Same name and byte-identical arguments, with
-            # an id the slot does not hold yet, is that call arriving to be
-            # claimed; opening a second runs a side-effecting tool twice. Exact
-            # repeats of an id-less call only, so parallel calls differing
-            # anywhere still both run.
+            # A snapshot provider repeats the finished call verbatim once it
+            # has an id. Exact repeats only, so a second call still opens.
             resends_this_call = bool(
                 held is not None
                 and isinstance(call_id, str)
@@ -742,22 +694,15 @@ class _Turn:
                 and isinstance(new_arguments, str)
                 and new_arguments == held["function"]["arguments"]
             )
-            # A name arriving at a slot whose object has closed announces the
-            # next call. A name grows across deltas only while it is being
-            # streamed, which is before the arguments, so once the object has
-            # closed there is nothing left for a fragment to extend and the
-            # only thing a name can mean is the next call. Testing for a shared
-            # prefix instead read "web" after "web_search" as that call's name
-            # resent and swallowed the second call. Without any of this, the
-            # reported stream delivered one character per delta merges two
-            # calls' names into "web_fetchweb_search", which matches no tool.
+            # A name at a closed slot announces the next call: names grow
+            # before the arguments, so nothing is left to extend. A shared
+            # prefix is no proof ("web" after "web_search" is a second call).
             names_next_call = bool(
                 isinstance(new_name, str)
                 and new_name
                 and held_name_now
-                # The same name is that call's, resent: llama-server repeats it
-                # on every delta and vLLM has repeated the whole name too, so
-                # forking there would run one request twice.
+                # The same name is that call's, resent: llama-server and vLLM
+                # both repeat it, and forking runs one request twice.
                 and new_name != held_name_now
             )
             opens_next_call = (
@@ -765,12 +710,9 @@ class _Turn:
                 or id_names_another_call
                 or names_next_call
             ) and not resends_this_call
-            # A slot holding only an announcement has no object to close, so
-            # the rule above cannot reach it. A DIFFERENT name arriving there
-            # with an object of its own is the next call: a name still growing
-            # arrives on its own, before any arguments. Without this the
-            # announcement's name and the next call's glue into "A_longB",
-            # which matches no tool and silently never runs.
+            # An announcement has no object to close, so the rule above cannot
+            # reach it. A different name bringing an object is the next call;
+            # gluing gave "A_longB", which matches no tool.
             announces_over_announcement = (
                 held is not None
                 and (held.get("announced_only") is True or held.get("resend_suspect") is True)
@@ -781,10 +723,8 @@ class _Turn:
                 and isinstance(new_arguments, str)
                 and new_arguments.strip().startswith("{")
             )
-            # An id names its call, so a fragment repeating the id this slot
-            # already holds continues it however complete its arguments look --
-            # llama-server grows the name across deltas, and forking there gives
-            # two calls one id, with the arguments on the abandoned name.
+            # A fragment repeating the id this slot holds continues it however
+            # complete the arguments look, or two calls end up with one id.
             names_this_call = (
                 held is not None
                 and isinstance(call_id, str)
@@ -798,45 +738,29 @@ class _Turn:
             extra = raw_call.get("extra_content")
             if (slot_is_closed and opens_next_call) or announces_over_announcement:
                 if announces_over_announcement and held is not None:
-                    # Another call took this slot over while it still held only
-                    # its name, so the announcement was never a call of its own.
+                    # Taken over while it held only its name.
                     held["superseded"] = True
                 self.split_seq += 1
                 key = (index, "_split", self.split_seq)
             self.last_index = index
             self.open_key_by_index[index] = key
             if key not in self.by_index:
-                # An id-less provider reusing the index for another call to the
-                # same tool can leave the repeated name out, the first delta
-                # having given it. An empty name is no tool, so _normalized_call
-                # drops the call and the user is one result short; the call this
-                # slot just closed is the only name it can mean.
+                # A second call to the same tool can arrive with no name, the
+                # first delta having given it. Nameless is dropped, so inherit.
                 opening_name = new_name if isinstance(new_name, str) and new_name else held_name_now
                 self.by_index[key] = {
                     "id": "",
                     "type": "function",
                     "function": {"name": opening_name, "arguments": ""},
-                    # A name with no `arguments` field at all is a call the
-                    # stream said it was about to make. A tool that takes no
-                    # parameters sends an empty string rather than no field, so
-                    # this marks only the announcement, and `calls` drops one
-                    # still empty when the turn ends. Kept, it would run a tool
-                    # the model never actually asked for.
+                    # A name with no `arguments` field is an announcement; a
+                    # zero-parameter tool sends "" rather than no field.
                     "announced_only": new_arguments is None and bool(opening_name),
-                    # Whether this slot is a fork's guess or a slot the
-                    # provider opened itself. An announcement the provider
-                    # opened is a call it means to make, most likely to a tool
-                    # that takes no parameters; one a fork invented has no
-                    # such standing, and if nothing ever fills it there is
-                    # nothing to run.
+                    # A fork's guess, or a slot the provider opened itself.
+                    # Only the provider's own announcement runs unfilled.
                     "from_fork": held is not None,
-                    # A name that extends the name of the call this fork just
-                    # left behind is most likely that call's, resent. It still
-                    # opens a slot, because a catalog holding both "web" and
-                    # "web_search" makes the prefix no proof either way, but
-                    # the slot gives way rather than gluing if another name
-                    # brings the object: "alpha_long" then "beta" was reported
-                    # as "alpha_longbeta", which matches no tool.
+                    # A name extending the one this fork left behind is most
+                    # likely it, resent. It still opens a slot (the prefix is no
+                    # proof) but gives way rather than gluing "alpha_longbeta".
                     "resend_suspect": bool(
                         opening_name
                         and held_name_now
@@ -854,8 +778,7 @@ class _Turn:
             if isinstance(call_id, str) and call_id:
                 current["id"] = call_id
                 self.key_by_call_id.setdefault(call_id, key)
-            # What the slot carried before this delta, so a fork below can hand
-            # this delta's metadata to the call it actually closes.
+            # So a fork below can hand this delta's metadata to its own call.
             extra_before = current.get("extra_content")
             if isinstance(extra, dict) and extra:
                 # Gemini 3 stows this call's thoughtSignature here, and the
@@ -874,12 +797,10 @@ class _Turn:
                 # else continues it.
                 fragment = function.get("name")
                 name_before = current["function"]["name"]
-                # Not once this call's object has closed AND it already has a
-                # name: the rule above has forked the next call, and rewriting
-                # a finished call's name would put arguments validated against
-                # one tool's schema under another tool's name. Naming a call
-                # that has none is not a rename, and some servers do send the
-                # arguments first and the name only in a later chunk.
+                # Never once the object has closed AND a name is set: that
+                # would put one tool's arguments under another's name. Naming a
+                # call that has none is not a rename, and servers do send the
+                # arguments first.
                 if isinstance(fragment, str) and fragment and not (slot_is_closed and name_before):
                     if fragment.startswith(name_before):
                         current["function"]["name"] = fragment
@@ -888,10 +809,9 @@ class _Turn:
                 if isinstance(function.get("arguments"), str) and not resends_this_call:
                     current["function"]["arguments"] += function["arguments"]
                     if not (isinstance(call_id, str) and call_id):
-                        # The id fork above cannot see this one: an id-less
-                        # stream has no ids to differ, so appending glued two
-                        # calls into one unparseable blob that then rides into
-                        # the next request verbatim (issue #9807).
+                        # The id fork cannot see this: an id-less stream has no
+                        # ids to differ on, so appending glued two calls into
+                        # one unparsable blob (issue #9807).
                         self._fork_glued_arguments(
                             index,
                             key,
@@ -932,21 +852,15 @@ class _Turn:
         # Below rewrites this slot's arguments rather than extending them, so
         # the resumable scan no longer describes the string it was reading.
         self.scan_by_key.pop(key, None)
-        # The slot keeps the object it opened with, under the name and id it
-        # had. Nothing per-call rides along: extra_content carries this call's
-        # thoughtSignature, and two calls claiming it is a rejected turn.
+        # The slot keeps its first object, name and id. Nothing per-call rides
+        # along: two calls claiming one thoughtSignature is a rejected turn.
         current["function"]["arguments"] = segments[0]
-        # A name arriving with this delta names the calls it opened, so the slot
-        # goes back to its own. Without this the two dialects above merge them:
-        # "alpha" then "gamma" at one index becomes "alphagamma", matching no
-        # enabled tool and silently never running.
+        # A name on this delta names the calls it opened, so the slot keeps its
+        # own: merging gave "alphagamma", which matches no enabled tool.
         born_name = incoming_name or name_before
         current["function"]["name"] = name_before or born_name
-        # The metadata this delta carried belongs to the call this delta closes,
-        # which is the last one, not to the object the slot already held. Gemini
-        # checks the opaque signature against the exact call it is replayed on,
-        # so leaving it here gets the follow-up rejected. Same placement as the
-        # frontend split.
+        # This delta's metadata belongs to the call it closes, the last one:
+        # Gemini checks the signature against the call it is replayed on.
         if incoming_extra is not None:
             if extra_before:
                 current["extra_content"] = extra_before
@@ -968,7 +882,7 @@ class _Turn:
             open_key = born_key
         if incoming_extra is not None:
             self.by_index[open_key]["extra_content"] = dict(incoming_extra)
-        # Later id-less fragments continue the last call, finished or not.
+        # Later id-less fragments continue the last call.
         self.open_key_by_index[index] = open_key
 
     def _call_is_finished(self, key: Any) -> bool:
@@ -1010,11 +924,8 @@ class _Turn:
         seen: set[str] = taken if taken is not None else set()
         painted: set[str] = cards if cards is not None else set()
         out: list[dict[str, Any]] = []
-        # Ordered by when the stream announced each call, so one announced
-        # second is not run third because another index opened in between. Keyed
-        # on the sequence number alone: comparing the calls themselves to break
-        # a tie raises rather than sorts, and the sort is stable, so a shared
-        # number keeps the order the calls were found in.
+        # Announcement order, so an index opening in between cannot reorder
+        # them. On the sequence number alone: comparing calls raises.
         numbered = [
             (
                 self.seq_by_key.get(key, position),
@@ -1027,14 +938,11 @@ class _Turn:
         ordered = [
             (index, call) for _, index, call in sorted(numbered, key = lambda triple: triple[0])
         ]
-        # An announcement another call took over, and a name that only ever
-        # looked like the closed call's resent, were never calls of their own.
-        # A lone announcement the provider opened itself is kept: a tool that
-        # takes no parameters is announced exactly that way and does have to
-        # run. Its
-        # metadata still belongs to this turn -- Gemini stows a thought
-        # signature there and the native translator rejects a replay without
-        # one -- so it goes to the call the announcement was mistaken for.
+        # An announcement another call took over, and a name that only looked
+        # like the closed call's resent, were never calls. A lone announcement
+        # the provider opened is kept (a zero-parameter tool looks like that).
+        # Its metadata goes to the call it was mistaken for: Gemini stows a
+        # thought signature there and rejects a replay without one.
         kept: list[tuple[Any, dict[str, Any]]] = []
         for index, call in ordered:
             never_ran = not call["function"]["arguments"]
@@ -1050,8 +958,7 @@ class _Turn:
                 continue
             kept.append((index, call))
         ordered = kept
-        # A provider id the stream did carry is reserved, so a minted card id
-        # can never collide with one the client is already keying a card on.
+        # Provider ids reserved first, so a minted card id never collides.
         painted.update(
             call["id"] for _, call in ordered if isinstance(call.get("id"), str) and call["id"]
         )
@@ -1061,9 +968,8 @@ class _Turn:
             if normalized is None:
                 continue
             if not (isinstance(streamed_id, str) and streamed_id):
-                # No id on the wire, so the client minted one and drew a card
-                # under it. Mint the same one here and address the card events
-                # to it; the conversation id above is untouched.
+                # No id on the wire: mint the client's spelling for the card
+                # events. The conversation id above is untouched.
                 card_id = _mint_streamed_card_id(painted, index)
                 painted.add(card_id)
                 normalized["card_id"] = card_id
@@ -1336,9 +1242,8 @@ async def stream_with_studio_tools(
     last_reprompt_text = ""
     provider_turns = 0
     used_call_ids: set[str] = _replayed_call_ids(conversation)
-    # Card ids handed out so far in this response. The client keeps one list of
-    # cards across every round, so the numbering has to keep going rather than
-    # restart and reopen a card an earlier round already closed.
+    # Card ids handed out this response. The client keeps one list across all
+    # rounds, so the numbering carries rather than reopening an earlier card.
     painted_card_ids: set[str] = set()
     spent_budget_passes = 0
     fruitless_turns = 0
@@ -1703,10 +1608,8 @@ async def stream_with_studio_tools(
             name = decision.tool_name
             arguments = decision.arguments
             call_id = decision.tool_call_id
-            # What the conversation replays and what the card is addressed to
-            # are the same id for a call the provider named, and differ only
-            # for one it did not: the client drew that card under an id it
-            # minted itself, and an event sent to any other id opens a second.
+            # Same id for a call the provider named; for one it did not, the
+            # card answers to the id the client minted.
             card_id = decision.card_id
             needs_confirmation = (
                 confirm_tool_calls and not bypass_permissions and permission_mode != "off"

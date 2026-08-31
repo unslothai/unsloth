@@ -178,9 +178,6 @@ def test_a_name_arriving_in_fragments_is_unaffected():
 
 
 def test_a_name_only_delta_does_not_rename_the_finished_call():
-    # The name arrives before its arguments, so the accumulated text is still
-    # one whole object and there is nothing to fork on yet. Merging it into the
-    # finished call gives "alphabeta", which matches no enabled tool.
     turn = _Turn()
     turn.merge_structured([_delta(0, "alpha", '{"a":1}')])
     turn.merge_structured([_delta(0, "beta", "")])
@@ -209,10 +206,6 @@ def test_an_id_after_a_closed_fork_opens_a_third_call():
 
 
 def test_nesting_deep_enough_to_exhaust_the_stack_is_unsplittable():
-    # json.loads raises RecursionError, which is a RuntimeError and not a
-    # ValueError. Uncaught it escapes the streaming loop mid-response, so the
-    # segment counts as unsplittable and _normalized_call downgrades it as
-    # it always has.
     payload = '{"x":' * 20000 + "null" + "}" * 20000
     assert _split_top_level_json_objects(payload) == ([], payload)
 
@@ -222,9 +215,7 @@ def test_nesting_deep_enough_to_exhaust_the_stack_is_unsplittable():
 
 
 def test_a_fragment_repeating_the_slots_id_continues_that_call():
-    # llama-server grows the name across deltas. An id names its call, so
-    # forking here would give two calls one id, with the arguments stranded on
-    # the abandoned name and the grown one running empty.
+    # llama-server grows the name across deltas; forking gives two calls one id.
     turn = _Turn()
     turn.merge_structured([_delta(0, "web", '{"q":"x"}', call_id = "call_a")])
     turn.merge_structured([_delta(0, "web_search", "", call_id = "call_a")])
@@ -247,9 +238,8 @@ def test_whitespace_chunked_after_a_closing_brace_is_not_a_new_call():
 
 
 def test_the_metadata_a_delta_carries_goes_to_the_call_it_closes():
-    # Gemini checks the opaque signature against the exact call it is replayed
-    # on, so it belongs to the last object this delta closed, not to the one
-    # the slot already held. Same placement as the frontend split.
+    # It belongs to the last object this delta closed, which is what Gemini
+    # validates the signature against.
     turn = _Turn()
     turn.merge_structured([_delta(0, "alpha", '{"a":')])
     turn.merge_structured(
@@ -263,9 +253,7 @@ def test_the_metadata_a_delta_carries_goes_to_the_call_it_closes():
 
 
 def test_nonstandard_numeric_constants_are_not_object_boundaries():
-    # json.loads takes NaN and Infinity; JSON.parse does not. Accepting them
-    # here would cut text the frontend leaves whole, so the backend would run
-    # two calls where the UI shows one.
+    # json.loads takes NaN and Infinity; JSON.parse does not.
     assert _split_top_level_json_objects('{"a":NaN}{"b":2}') == ([], '{"a":NaN}{"b":2}')
     assert _split_top_level_json_objects('{"a":Infinity}{"b":2}') == (
         [],
@@ -279,10 +267,7 @@ def test_nonstandard_numeric_constants_are_not_object_boundaries():
 
 
 def test_an_opening_delta_after_a_closed_call_does_not_claim_it():
-    # The conventional opening delta carries the id and the name with empty
-    # arguments. Landing it on the finished call would put that call's id on it,
-    # so the arguments delta that follows would match and glue on, losing the
-    # call the delta was announcing.
+    # Landing the opening delta on the finished call glues what follows.
     turn = _Turn()
     turn.merge_structured([_delta(0, "alpha", '{"a":1}')])
     turn.merge_structured([_delta(0, "beta", "", call_id = "call_b")])
@@ -295,10 +280,7 @@ def test_an_opening_delta_after_a_closed_call_does_not_claim_it():
 
 
 def test_a_name_held_for_the_next_call_grows_across_deltas():
-    # Both dialects the accumulator reconciles reach the held name too: OpenAI
-    # streams "web" then "_search", llama-server resends "web" then
-    # "web_search". Last-write-wins would open the call as "_search", which
-    # matches no enabled tool and silently never runs.
+    # OpenAI streams "web" then "_search"; llama-server resends the whole.
     for fragments in (("web", "_search"), ("web", "web_search")):
         turn = _Turn()
         turn.merge_structured([_delta(0, "alpha", '{"a":1}')])
@@ -310,10 +292,7 @@ def test_a_name_held_for_the_next_call_grows_across_deltas():
 
 
 def test_whitespace_carrying_the_repeated_name_is_not_the_next_call():
-    # A provider that repeats the name on every delta and chunks the trailing
-    # whitespace separately is still writing to the call that closed, so its
-    # name is that call's resent. Parking it merged the two names into
-    # "alphabeta", which matches no enabled tool and silently never runs.
+    # The name is that call's, resent; parking it gave "alphabeta".
     turn = _Turn()
     turn.merge_structured([_delta(0, "alpha", '{"a":1}')])
     turn.merge_structured([_delta(0, "alpha", " ")])
@@ -323,9 +302,8 @@ def test_whitespace_carrying_the_repeated_name_is_not_the_next_call():
 
 
 def test_a_repeated_id_reaches_its_own_call_across_a_later_split():
-    # An id-less call opening after a stable-id call leaves the index pointing
-    # at the newer one. Matching the repeated id against only that call renamed
-    # it, gave it a second copy of the id and stranded the growth fragment.
+    # The index points at the newer call, so matching a repeated id there
+    # renamed it and gave it a second copy of the id.
     turn = _Turn()
     turn.merge_structured([_delta(0, "alpha", '{"a":1}', call_id = "call_a")])
     turn.merge_structured([_delta(0, "beta", '{"b":')])
@@ -338,10 +316,8 @@ def test_a_repeated_id_reaches_its_own_call_across_a_later_split():
 
 
 def test_metadata_announced_with_a_name_waits_for_that_call():
-    # Gemini stows the thoughtSignature for the call being announced, so a
-    # name-only delta carrying one describes the next call, not the closed one.
-    # Left behind it gives the closed call another call's signature and the new
-    # call none, and native replay rejects both.
+    # The signature is for the call being announced, and native replay rejects
+    # a call wearing another's.
     turn = _Turn()
     turn.merge_structured([_delta(0, "alpha", '{"a":1}')])
     turn.merge_structured(
@@ -356,9 +332,7 @@ def test_metadata_announced_with_a_name_waits_for_that_call():
 
 
 def test_the_resumable_scan_agrees_with_scanning_from_the_start():
-    # The accumulator resumes the boundary scan instead of restarting it, which
-    # is only safe while the two give the same answer for every string and every
-    # set of chunk boundaries.
+    # Only safe while it answers as restarting does, for every chunking.
     import random
 
     from core.inference.studio_tool_loop import _BoundaryScan
@@ -377,10 +351,8 @@ def test_the_resumable_scan_agrees_with_scanning_from_the_start():
 
 
 def test_one_argument_streamed_a_character_at_a_time_stays_linear():
-    # Rescanning the whole accumulation per fragment made a 10 KB argument cost
-    # seconds, which stalls the response for any tool that takes code or file
-    # content. Generous bound: this asserts the quadratic term is gone, not a
-    # particular machine's speed.
+    # Rescanning per fragment made a 10 KB argument cost seconds. The bound is
+    # generous: the quadratic term is asserted, not a machine's speed.
     import time
 
     payload = '{"code":"' + "x" * 20000 + '"}'
@@ -424,12 +396,9 @@ def test_a_call_announced_by_name_only_is_still_reported():
 
 
 def test_a_name_resent_or_grown_after_a_call_closed_invents_nothing():
-    # Indistinguishable from a second no-argument call to the same tool, so the
-    # conservative reading is the one that does not run a tool twice. A grown
-    # name opens a slot rather than being parked, since a catalog holding both
-    # "web" and "web_search" makes the shared prefix no proof either way, so
-    # the slot is there mid-stream; it never received arguments of its own, so
-    # `calls` does not report it and no tool runs for it.
+    # Indistinguishable from a second no-argument call to the same tool, so
+    # take the reading that does not run a tool twice. A grown name opens a
+    # slot (the prefix is no proof) but `calls` drops it unfilled.
     for resent in ("alpha", "alpha_long"):
         turn = _Turn()
         turn.merge_structured([_delta(0, "alpha", '{"a":1}')])
@@ -442,9 +411,7 @@ def test_a_name_resent_or_grown_after_a_call_closed_invents_nothing():
 
 
 def test_a_pending_call_runs_where_the_stream_announced_it():
-    # The loop spends its budget down this list in order, so a call announced
-    # second must not run third: a finite budget would run the later call and
-    # reject the earlier one.
+    # The budget is spent down this list in order.
     turn = _Turn()
     turn.merge_structured([_delta(0, "A", '{"a":1}')])
     turn.merge_structured([_delta(0, "B", "")])
@@ -455,9 +422,8 @@ def test_a_pending_call_runs_where_the_stream_announced_it():
 
 
 def test_a_fragment_that_does_not_open_an_object_does_not_open_a_call():
-    # A next call begins with the "{" of its own arguments object. Forking on
-    # any non-whitespace text cut where the scanner deliberately leaves the text
-    # whole, so a stray scalar suffix ran the tool a second time.
+    # A next call begins with its own "{"; forking on anything else made a
+    # stray scalar suffix run the tool twice.
     turn = _Turn()
     turn.merge_structured([_delta(0, "q", '{"query":"a"}')])
     turn.merge_structured([_delta(0, "q", '"b"')])
@@ -467,10 +433,8 @@ def test_a_fragment_that_does_not_open_an_object_does_not_open_a_call():
 
 
 def test_an_integer_too_long_to_convert_is_still_a_boundary():
-    # json.loads raises ValueError past the 4300-digit cap on int conversion,
-    # where JSON.parse does not, and a 4301-digit literal is about 4 KB and fits
-    # in an ordinary payload. Validation never reads the numbers, so keeping
-    # them as text keeps the two scanners cutting in the same place.
+    # json.loads raises past the 4300-digit int cap where JSON.parse does not,
+    # and 4301 digits is 4 KB. Validation never reads them, so keep them text.
     big = '{"a":' + "1" * 4301 + "}"
     assert _split_top_level_json_objects(big + '{"b":2}') == ([big, '{"b":2}'], "")
 
@@ -494,9 +458,7 @@ def test_two_calls_announced_at_once_do_not_break_the_sort():
 
 
 def test_a_pending_call_keeps_its_place_when_it_later_opens():
-    # The call takes the moment it was announced at, not the moment its
-    # arguments arrived, so a finite budget cannot run the later call and
-    # reject the earlier one.
+    # A call takes the moment it was announced at.
     turn = _Turn()
     turn.merge_structured([_delta(0, "A", '{"a":1}')])
     turn.merge_structured([_delta(0, "B", "")])
@@ -509,10 +471,8 @@ def test_a_pending_call_keeps_its_place_when_it_later_opens():
 
 
 def test_a_resent_name_does_not_rename_the_call_it_closed():
-    # A parked name that extends the closed call's own is most likely that
-    # call's name resent, so a delta that names its call outright wins: seeding
-    # "alpha_long" and merging "beta" onto it gave "alpha_longbeta", which
-    # matches no enabled tool and never runs.
+    # A name extending the closed call's is most likely it, resent, so a delta
+    # naming its own call wins: merging gave "alpha_longbeta".
     turn = _Turn()
     turn.merge_structured([_delta(0, "alpha", '{"a":1}')])
     turn.merge_structured([_delta(0, "alpha_long", "")])
@@ -536,9 +496,7 @@ def test_a_resent_name_does_not_rename_the_call_it_closed():
 
 
 def test_metadata_on_a_resent_name_stays_with_the_closed_call():
-    # The metadata was announced alongside the name, so once that name is read
-    # as the closed call's resent, the metadata is the closed call's too.
-    # Handing it to the new call leaves one wearing another's signature.
+    # Once the name is read as the closed call's, so is the metadata.
     turn = _Turn()
     turn.merge_structured([_delta(0, "alpha", '{"a":1}') | {"extra_content": {"own": "A"}}])
     turn.merge_structured([_delta(0, "alpha_long", None) | {"extra_content": {"resent": 1}}])
@@ -551,10 +509,8 @@ def test_metadata_on_a_resent_name_stays_with_the_closed_call():
 
 
 def test_a_discarded_resend_does_not_lend_its_place_to_the_next_call():
-    # The moment belongs to the announcement. Once the parked name is read as
-    # the closed call's resent, the call that opens here was not announced
-    # then, so keeping that moment would run it ahead of a call the stream
-    # really did open first, and a finite budget would reject the earlier one.
+    # The moment belongs to the announcement, and a name read as a resent
+    # announced nothing, so the call that opens takes its own arrival.
     turn = _Turn()
     turn.merge_structured([_delta(0, "A", '{"a":1}')])
     turn.merge_structured([_delta(0, "A_long", None)])
@@ -573,10 +529,7 @@ def test_a_discarded_resend_does_not_lend_its_place_to_the_next_call():
 
 
 def test_an_id_stamped_after_the_object_closed_claims_that_call():
-    # A provider that opens id-less and stamps the real id on a later delta.
-    # Reading the id as proof of another call left the finished call under a
-    # minted id, and when the delta repeated the name it ran a second empty
-    # invocation of the tool.
+    # Reading the late id as another call left the finished one minted.
     for late in ({}, {"name": "alpha"}):
         turn = _Turn()
         turn.merge_structured([_delta(0, "alpha", '{"a":1}')])
@@ -597,11 +550,9 @@ def test_an_id_stamped_after_the_object_closed_claims_that_call():
 
 
 def test_a_new_name_arriving_with_whitespace_opens_its_own_call():
-    # A name sharing no prefix with the closed call's is a different tool, so
-    # it opens the next call rather than renaming the finished one, which left
-    # the closed call named "alphabeta" and the new one unnamed so neither ran.
-    # The whitespace rides the announcing delta, so it lands on the new call's
-    # arguments; leading whitespace is valid JSON, so both still parse.
+    # A different name opens the next call rather than renaming the finished
+    # one, which gave "alphabeta" and an unnamed second call. The whitespace
+    # rides the announcing delta and is valid JSON, so both still parse.
     turn = _Turn()
     turn.merge_structured([_delta(0, "alpha", '{"a":1}')])
     turn.merge_structured([_delta(0, "beta", " ")])
@@ -619,9 +570,8 @@ def test_a_new_name_arriving_with_whitespace_opens_its_own_call():
 
 
 def test_metadata_on_a_resent_name_reaches_the_closed_call():
-    # No call is invented for a name read as the closed call's resent, so
-    # metadata announced on that delta has nowhere else to go. Dropping it cost
-    # the call its thought signature, and the provider rejects the replay.
+    # A name read as a resent invents no call, so its metadata has nowhere
+    # else to go.
     turn = _Turn()
     turn.merge_structured([_delta(0, "alpha", '{"a":1}') | {"extra_content": {"own": "A"}}])
     turn.merge_structured([_delta(0, "alpha_long", None) | {"extra_content": {"sig": "S"}}])
@@ -636,10 +586,8 @@ def test_metadata_on_a_resent_name_reaches_the_closed_call():
 
 
 def test_a_catalog_holding_both_web_and_web_search_splits_either_way_round():
-    # Both names are in Studio's own catalog, and neither order can be read as
-    # one name growing: a shared prefix is no evidence when the tools really
-    # are called that. Reading it as evidence swallowed the second
-    # announcement, and the call it announced never ran.
+    # Both are in Studio's own catalog, so a shared prefix is no evidence
+    # either way; reading it as evidence swallowed the second announcement.
     for first, second in (("web_search", "web"), ("web", "web_search")):
         turn = _Turn()
         turn.merge_structured([_delta(0, first, '{"a":1}')])
@@ -650,15 +598,12 @@ def test_a_catalog_holding_both_web_and_web_search_splits_either_way_round():
 
 
 def test_a_name_bringing_an_object_over_an_announcement_is_the_next_call():
-    # An announcement holds a slot with no arguments, which the closed-object
-    # rule cannot reach, so the next call's name grew into it: "alpha_longbeta"
-    # and "zetabeta" match no enabled tool and silently never ran.
+    # An announcement has no object to close, so the next name grew into it.
     for announced in ("alpha_long", "zeta"):
         turn = _Turn()
         turn.merge_structured([_delta(0, "alpha", '{"a":1}')])
-        # No `arguments` field at all, which is how a call announces itself;
-        # an empty string means the call has started, and a name after one is
-        # the fragment dialect that really does continue it.
+        # No `arguments` field: an empty string means the call has started,
+        # and a name after one is the fragment dialect.
         turn.merge_structured([_delta(0, announced, None)])
         turn.merge_structured([_delta(0, "beta", '{"b":2}')])
 
@@ -666,10 +611,7 @@ def test_a_name_bringing_an_object_over_an_announcement_is_the_next_call():
 
 
 def test_an_unfinished_fork_does_not_reserve_a_card_id():
-    # The client releases the card it drew for the fork this turn filters out,
-    # so the next round has to land on the number the client will mint. Holding
-    # one side's id back moves the two out of step and the tool_start draws a
-    # second card beside the one the deltas painted.
+    # The client releases the card it drew for the fork this turn filters out.
     taken: set[str] = set()
     cards: set[str] = set()
     first = _Turn()
@@ -683,9 +625,8 @@ def test_an_unfinished_fork_does_not_reserve_a_card_id():
 
 
 def test_a_provider_claiming_a_minted_id_displaces_the_id_less_call():
-    # Every id the provider sent is reserved before any card id is minted, so
-    # the id-less call moves to tool_call_1 and the claim keeps tool_call_0.
-    # The client reaches the same pair by displacing once the claim lands.
+    # Provider ids are reserved before any card id is minted, so the id-less
+    # call moves aside. The client displaces once the claim lands.
     turn = _Turn()
     turn.merge_structured([_delta(0, "alpha", '{"a":1}')])
     turn.merge_structured([_delta(1, "beta", '{"b":2}', call_id = "tool_call_0")])
@@ -697,9 +638,7 @@ def test_a_provider_claiming_a_minted_id_displaces_the_id_less_call():
 
 
 def test_a_stable_id_naming_a_longer_tool_opens_its_own_call():
-    # A catalog can hold both "web" and "web_search". Reading the second name as
-    # a growth of the first gave the id to the completed call, and the arguments
-    # that followed glued onto it, losing the second intent entirely.
+    # Reading "web_search" as "web" grown gave the id to the completed call.
     turn = _Turn()
     turn.merge_structured([_delta(0, "web", '{"a":1}')])
     turn.merge_structured([_delta(0, "web_search", "", call_id = "call_b")])
@@ -713,10 +652,8 @@ def test_a_stable_id_naming_a_longer_tool_opens_its_own_call():
 
 
 def test_an_unfinished_split_tail_is_not_reported_as_a_call():
-    # Only "length" and "content_filter" mark a turn truncated, so a stream that
-    # stops after the start of a second object looks complete. Running the tool
-    # again on that lone brace is worse than dropping a call the model never
-    # finished writing.
+    # Nothing marks this truncated, and running the tool on half an argument
+    # is the worse failure.
     turn = _Turn()
     turn.merge_structured([_delta(0, "alpha", '{"a":1}{')])
 
@@ -730,9 +667,7 @@ def test_an_unfinished_split_tail_is_not_reported_as_a_call():
 
 
 def test_a_second_call_to_the_same_tool_keeps_that_tools_name():
-    # The provider named the tool once and reused the index for the next call
-    # with arguments alone. An empty name is no tool at all, so the call was
-    # dropped by _normalized_call and the user was one result short.
+    # The index is reused with arguments alone, and nameless calls are dropped.
     turn = _Turn()
     turn.merge_structured([_delta(0, "alpha", '{"a":1}')])
     turn.merge_structured([_delta(0, None, '{"a":2}')])
@@ -741,9 +676,7 @@ def test_a_second_call_to_the_same_tool_keeps_that_tools_name():
 
 
 def test_a_snapshot_repeated_to_carry_the_id_claims_the_call():
-    # Snapshot-style servers resend the whole call rather than fragments of it,
-    # so the id arrives on a verbatim repeat. Opening a second call there runs a
-    # side-effecting tool twice.
+    # The id arrives on a verbatim repeat; a second call runs the tool twice.
     turn = _Turn()
     turn.merge_structured([_delta(0, "alpha", '{"a":1}')])
     turn.merge_structured([_delta(0, "alpha", '{"a":1}', call_id = "call_a")])
@@ -770,10 +703,8 @@ def test_a_second_call_that_differs_anywhere_still_opens_its_own():
 
 
 def test_an_id_less_call_carries_the_card_id_the_client_painted():
-    # The client draws a card the moment the delta arrives, keyed on an id it
-    # mints itself because the provider sent none. Without a card id here, the
-    # tool_start that follows is addressed to call_0_0, finds no card under
-    # that, and pushes a second one: eight cards for the four calls in #9807.
+    # Without the id the client minted, tool_start finds no card: eight cards
+    # for the four calls in #9807.
     turn = _Turn()
     for url in ("a", "b", "c", "d"):
         turn.merge_structured([_delta(0, "fetch", '{"url":"%s"}' % url)])
@@ -788,9 +719,8 @@ def test_an_id_less_call_carries_the_card_id_the_client_painted():
 
 
 def test_the_conversation_id_is_not_the_card_id():
-    # The card id is for the events the client draws with. What is stored and
-    # replayed upstream stays call_<round>_<position>, so a thread written
-    # before this still resolves its results to its calls.
+    # What is stored and replayed stays call_<round>_<position>, so a thread
+    # written before this still resolves.
     turn = _Turn()
     turn.merge_structured([_delta(0, "alpha", '{"a":1}')])
 
@@ -826,9 +756,7 @@ def test_a_second_round_keeps_numbering_where_the_first_stopped():
 
 
 def test_a_provider_id_in_the_minted_namespace_is_not_handed_out_twice():
-    # tool_call_<n> is not reserved to Unsloth, and a provider that spells one
-    # of its own ids that way keeps it: the card it already owns must not be
-    # taken from it by the call streamed beside it.
+    # tool_call_<n> is not reserved to Unsloth.
     turn = _Turn()
     turn.merge_structured([_delta(0, "alpha", '{"a":1}', call_id = "tool_call_0")])
     turn.merge_structured([_delta(1, "beta", '{"b":2}')])
@@ -838,9 +766,7 @@ def test_a_provider_id_in_the_minted_namespace_is_not_handed_out_twice():
 
 
 def test_a_slot_that_opens_late_keeps_its_own_index():
-    # The first call at index 3 is tool_call_3 on the client, because the slot
-    # names the card before any split has happened. Numbering from zero here
-    # would address it to a card that does not exist.
+    # The slot names the card before any split has happened.
     turn = _Turn()
     turn.merge_structured([_delta(3, "alpha", '{"a":1}')])
 
