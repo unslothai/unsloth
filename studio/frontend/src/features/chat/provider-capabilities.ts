@@ -813,11 +813,6 @@ const OPENAI_REASONING_MODELS = [
     levels: ["none", "low", "medium", "high", "xhigh"],
   },
   {
-    prefixes: ["gpt-5.3-chat-latest"],
-    supportsOff: false,
-    levels: ["medium"],
-  },
-  {
     prefixes: ["gpt-5.3-codex"],
     supportsOff: true,
     levels: ["none", "low", "medium", "high", "xhigh"],
@@ -865,8 +860,16 @@ const OPENAI_REASONING_MODELS = [
   },
 ] as const;
 
+/** The ChatGPT-tuned aliases (`gpt-5.1-chat-latest`, Azure's `gpt-5-chat`).
+ * They are non-reasoning, so `reasoning.effort` fails the whole turn with
+ * "Unsupported parameter: 'reasoning.effort' is not supported with this model".
+ * Matched by suffix rather than enumerated because the prefix table below keys
+ * on family, and a family prefix silently swallows its own `-chat` variant. */
+const OPENAI_NON_REASONING_CHAT_ALIAS = /-chat(?:-latest)?$/;
+
 function resolveOpenAIReasoningEffortCapabilities(modelId: string): ReasoningCaps {
   const normalized = modelId.trim().toLowerCase();
+  if (OPENAI_NON_REASONING_CHAT_ALIAS.test(normalized)) return NO_REASONING_CAPS;
   const matched = OPENAI_REASONING_MODELS.find((entry) =>
     matchesModelPrefix(normalized, entry.prefixes),
   );
