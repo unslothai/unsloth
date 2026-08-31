@@ -158,10 +158,12 @@ def estimate_messages_tokens_upper_bound(messages: list[dict]) -> int:
     spent, where over-pricing throws away room. It is wrong for one handing out room it
     then fills exactly: there the undercount is cache nobody accounted for.
 
-    A byte-level BPE merges bytes into tokens and never splits one, so a token per
-    character is a bound rather than a rate, and it holds for text no sample here
-    predicted. It costs about 4x on English prose, so it belongs only where being wrong
-    means overflowing the cache, and where being pessimistic costs a shorter answer.
+    A byte-level BPE merges bytes into tokens and never splits one, so a token per BYTE
+    is a bound rather than a rate, and it holds for text no sample here predicted. Bytes
+    and not characters: a code point with no merge falls back to one token per UTF-8
+    byte, and an emoji is four of them. It costs about 4x on English prose, so it belongs
+    only where being wrong means overflowing the cache, and where being pessimistic costs
+    a shorter answer.
     """
     total = 0
     for message in messages:
@@ -170,7 +172,7 @@ def estimate_messages_tokens_upper_bound(messages: list[dict]) -> int:
         except Exception:
             total += 1
             continue
-        total += max(1, len(text))
+        total += max(1, len(text.encode("utf-8")))
     return total
 
 

@@ -83,6 +83,17 @@ def _cap_with_injection(
     return None if resolved is None else resolved.max_tokens
 
 
+def _headroom(share = SHARE):
+    """The part of a share the resolver leaves for the rendered chat template."""
+    return max(
+        routes_inference._OPENAI_LLAMA_UNCAPPED_MIN_SHARE_HEADROOM_TOKENS,
+        share // routes_inference._OPENAI_LLAMA_UNCAPPED_SHARE_HEADROOM_DIVISOR,
+    )
+
+
+HEADROOM = _headroom()
+
+
 def _charged(payload):
     """What the cap is sized against: a bound, not the rate admission charges."""
     return routes_inference._openai_llama_admission_prompt_tokens(payload, strict = True)
@@ -104,7 +115,7 @@ def _run(coro):
 class TestTheResolvedCap:
     def test_an_uncapped_request_is_sized_to_its_slots_share(self):
         payload = _uncapped()
-        assert _cap(payload) == SHARE - _charged(payload)
+        assert _cap(payload) == SHARE - HEADROOM - _charged(payload)
 
     def test_a_single_slot_server_is_left_alone(self):
         """Its share IS the whole cache, so there is nothing to unserialise."""
@@ -136,7 +147,8 @@ class TestTheResolvedCap:
         minimum = routes_inference._OPENAI_LLAMA_UNCAPPED_MIN_OUTPUT_TOKENS
         for room, expected in ((minimum, minimum), (minimum - 1, None)):
             payload = _uncapped()
-            backend = _backend(context_length = (_charged(payload) + room) * SLOTS)
+            share = _charged(payload) + room + _headroom(0)
+            backend = _backend(context_length = share * SLOTS)
             assert _cap(payload, backend) == expected
 
     def test_a_shape_with_no_messages_is_left_alone(self):
@@ -165,13 +177,13 @@ class TestPromptInjectedAfterTheSizing:
 
     def test_the_injection_comes_out_of_the_cap(self):
         payload = _uncapped()
-        assert _cap_with_injection(payload, 40) == SHARE - _charged(payload) - 40
+        assert _cap_with_injection(payload, 40) == SHARE - HEADROOM - _charged(payload) - 40
 
     def test_the_slot_still_holds_one_share(self):
         """What llama-server is actually asked for -- injected prompt plus the cap --
         stays inside the share, so N of them still fit the cache."""
         payload = _uncapped()
-        assert _charged(payload) + 40 + _cap_with_injection(payload, 40) == SHARE
+        assert _charged(payload) + 40 + _cap_with_injection(payload, 40) == SHARE - HEADROOM
 
     def test_the_reservation_covers_the_injection_too(self):
         """Charging the cap alone would leave admission reserving less than the request
@@ -179,12 +191,12 @@ class TestPromptInjectedAfterTheSizing:
         payload = _uncapped()
         resolved = _resolve(payload, injected = 40)
         payload.max_tokens = resolved.max_tokens
-        assert _cost(payload, resolved.extra_prompt_tokens) == SHARE
+        assert _cost(payload, resolved.extra_prompt_tokens) == SHARE - HEADROOM
 
     def test_an_injection_that_eats_the_answer_is_left_alone(self):
         """Same floor as any other prompt that fills the share."""
         payload = _uncapped()
-        assert _cap_with_injection(payload, SHARE - _charged(payload)) is None
+        assert _cap_with_injection(payload, SHARE - HEADROOM - _charged(payload)) is None
 
     def test_the_date_prompt_is_priced_when_it_is_on(self, monkeypatch):
         monkeypatch.setattr(
@@ -210,7 +222,7 @@ class TestDenseText:
         payload = _uncapped([{"role": "user", "content": "a1b2c3d4" * 256}])
         dense = routes_inference._openai_llama_admission_prompt_tokens(payload)
         assert _charged(payload) > dense * 2
-        assert _cap(payload) == SHARE - _charged(payload)
+        assert _cap(payload) == SHARE - HEADROOM - _charged(payload)
 
     def test_the_reservation_still_lands_on_a_share(self):
         """Admission prices the payload at the dense rate, so the difference has to be
@@ -218,12 +230,37 @@ class TestDenseText:
         payload = _uncapped([{"role": "user", "content": "a1b2c3d4" * 256}])
         resolved = _resolve(payload)
         payload.max_tokens = resolved.max_tokens
-        assert _cost(payload, resolved.extra_prompt_tokens) == SHARE
+        assert _cost(payload, resolved.extra_prompt_tokens) == SHARE - HEADROOM
 
     def test_a_blob_that_fills_the_share_keeps_the_whole_window(self):
         """Pessimism costs an answer, never the cache: past the floor the request is
         simply left with the default it always had."""
         payload = _uncapped([{"role": "user", "content": "a1b2c3d4" * (SHARE // 4)}])
+        assert _cap(payload) is None
+
+
+class TestWhatTheShareDoesNotHold:
+    """Prompt that reaches llama-server without appearing in the payload estimate."""
+
+    def test_a_multibyte_character_is_charged_its_bytes(self):
+        """A code point with no merge falls back to a token per UTF-8 byte, so counting
+        characters would not be the bound the cap is sized against."""
+        payload = _uncapped([{"role": "user", "content": "\U0001f600" * 64}])
+        ascii_payload = _uncapped([{"role": "user", "content": "x" * 64}])
+        assert _charged(payload) > _charged(ascii_payload) * 3
+
+    def test_the_headroom_is_left_unspent(self):
+        """The rendered chat template is prompt no estimate of the messages can see."""
+        payload = _uncapped()
+        resolved = _resolve(payload)
+        assert SHARE - (_charged(payload) + resolved.max_tokens) == HEADROOM
+
+    def test_a_request_carrying_tools_is_left_alone(self):
+        """The non-streaming passthrough re-sends a tools request under one lease, with
+        the first answer and a nudge appended and the same cap, so a share-sized cap
+        would let one lease hold nearly two shares."""
+        payload = _uncapped()
+        payload.tools = [{"type": "function", "function": {"name": "get_weather"}}]
         assert _cap(payload) is None
 
 
@@ -234,7 +271,7 @@ class TestTheReservationItProduces:
         payload = _uncapped()
         resolved = _resolve(payload)
         payload.max_tokens = resolved.max_tokens
-        assert _cost(payload, resolved.extra_prompt_tokens) == SHARE
+        assert _cost(payload, resolved.extra_prompt_tokens) == SHARE - HEADROOM
 
     def test_the_unresolved_reservation_was_the_whole_cache(self):
         """The regression itself, for contrast: uncapped, one request owns everything."""

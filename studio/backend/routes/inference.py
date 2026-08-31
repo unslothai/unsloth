@@ -2015,6 +2015,13 @@ def _openai_llama_admission_tokens(
 # a couple of tokens. Only the SIZE of an omitted cap is at stake: a request that names
 # its own cap never reaches here.
 _OPENAI_LLAMA_UNCAPPED_MIN_OUTPUT_TOKENS = 256
+# Part of a share left unfilled, for prompt that is neither in the payload nor injected
+# by a route: llama-server stores the RENDERED chat template, whose fixed text no
+# estimate of the messages can see. Proportional because that text scales with the
+# conversation, floored because a small share still renders a preamble. A template large
+# enough to outgrow this is a `chat_template_override`, which is the operator's to size.
+_OPENAI_LLAMA_UNCAPPED_SHARE_HEADROOM_DIVISOR = 16
+_OPENAI_LLAMA_UNCAPPED_MIN_SHARE_HEADROOM_TOKENS = 128
 
 
 class _UncappedMaxTokens(NamedTuple):
@@ -2043,9 +2050,9 @@ def _openai_llama_uncapped_max_tokens(
 
     Resolving the omitted cap to the slot's share of the cache makes that reservation
     honest rather than pessimistic, and it is the same number on both sides: generation
-    is capped at ``share - prompt``, so the reservation lands on ``share`` and
-    ``--parallel N`` really serves N such requests at once. Nothing is admitted that the
-    cache cannot hold, so the overcommit #9392 closed stays closed.
+    is capped at ``share - prompt - headroom``, so the reservation lands inside ``share``
+    and ``--parallel N`` really serves N such requests at once. Nothing is admitted that
+    the cache cannot hold, so the overcommit #9392 closed stays closed.
 
     The share covers the prompt as well as the output because that is what a slot holds,
     and it is what llama.cpp gives a slot itself when the cache is split N ways instead
@@ -2071,13 +2078,22 @@ def _openai_llama_uncapped_max_tokens(
 
     None means "leave it unset", the behaviour every request had before this: one slot
     (whose share is the whole cache), an unreadable cache size, admission or token
-    accounting turned off, or a prompt that leaves less than a usable answer inside a
-    share. None of those serialise anything that this could unserialise.
+    accounting turned off, a request carrying tools, or a prompt that leaves less than a
+    usable answer inside a share. None of those serialise anything that this could
+    unserialise.
     """
     config = llama_admission_config_from_env()
     # Slot-only admission does not charge tokens, so an uncapped request costs a slot
     # like any other and capping it here would only shorten answers.
     if not config.enabled or not config.kv_budget:
+        return None
+    # A tools request can be SENT TWICE under one lease: the non-streaming passthrough
+    # retries a malformed tool call with the first answer and a nudge appended
+    # (`_nudge_retry_messages`), at the same cap, so a share-sized cap would let one
+    # lease hold nearly two shares. These are not #9955's clients anyway -- browser
+    # translation and a plain SDK call send no tools -- so they keep the whole-window
+    # reservation they have always had rather than being made to fit a share twice.
+    if getattr(payload, "tools", None):
         return None
     capacity = _openai_llama_admission_capacity(request, llama_backend)
     if capacity <= 1:
@@ -2095,7 +2111,11 @@ def _openai_llama_uncapped_max_tokens(
     if prompt_tokens is None:
         return None
     prompt_tokens += max(0, injected_prompt_tokens)
-    output_tokens = share - prompt_tokens
+    headroom = max(
+        _OPENAI_LLAMA_UNCAPPED_MIN_SHARE_HEADROOM_TOKENS,
+        share // _OPENAI_LLAMA_UNCAPPED_SHARE_HEADROOM_DIVISOR,
+    )
+    output_tokens = share - prompt_tokens - headroom
     if output_tokens < _OPENAI_LLAMA_UNCAPPED_MIN_OUTPUT_TOKENS:
         return None
     priced = _openai_llama_admission_prompt_tokens(payload, image_tokens = image_tokens)
