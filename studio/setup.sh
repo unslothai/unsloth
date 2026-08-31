@@ -1854,7 +1854,7 @@ _PKG_NAME="${STUDIO_PACKAGE_NAME:-unsloth}"
 # printing sitecustomize or .pth hook out of the caller's exact compares: -I
 # implies -E/-P/-s only, so site hooks still run.
 _PKG_PROBE_PY="
-import csv, importlib.machinery, importlib.metadata, importlib.util, json, os, re, stat, sys, sysconfig
+import csv, importlib.machinery, importlib.metadata, importlib.util, io, json, os, re, stat, sys, sysconfig
 from pathlib import PurePosixPath
 from urllib.parse import urlparse
 from urllib.request import url2pathname
@@ -1862,6 +1862,13 @@ _paths = [p for p in dict.fromkeys([sysconfig.get_path('purelib'), sysconfig.get
 _norm = lambda s: re.sub('[-_.]+', '-', (s or '').lower())
 _shared = frozenset(('test', 'tests', 'doc', 'docs', 'example', 'examples', 'benchmark', 'benchmarks', 'sample', 'samples', 'scripts'))
 _rewritten = frozenset(('package-lock.json',))
+# Trees our own setup regenerates wholesale. setup.sh/setup.ps1 run vite
+# build inside the installed tree, and vite empties dist/ and rewrites
+# every asset under a fresh content hash, so the recorded names are gone
+# by design. Unlike package-lock.json this is not a size waiver: the old
+# hashed files are DELETED, which trips the missing-file branch that no
+# size allowlist can reach. Skipped as a subtree, like _shared roots.
+_regen = (('studio', 'frontend', 'dist'),)
 # Which DISTRIBUTIONS claim each path, as (normalized name, version). Both halves
 # are needed and they answer different questions: a recorded SIZE is ambiguous only
 # when a different PACKAGE claims the path (two dist-infos of the same package are
@@ -1900,7 +1907,7 @@ for x in importlib.metadata.distributions(path=_paths):
     if _norm(name) == _norm(sys.argv[1]):
         cands.append((x, record))
     try:
-        for r in csv.reader((record or '').splitlines()):
+        for r in csv.reader(io.StringIO(record or '', newline='')):
             rel = r[0] if r else ''
             if not rel or rel.endswith('/'):
                 continue
@@ -2079,7 +2086,7 @@ def _verdict(d, d_record):
     _badrow = False
     if not _edit:
         try:
-            for r in csv.reader((d_record or '').splitlines()):
+            for r in csv.reader(io.StringIO(d_record or '', newline='')):
                 if r:
                     # accumulated, not overwritten: a short row anywhere is a truncated
                     # write, and a later well-formed row must not erase the evidence
@@ -2095,6 +2102,8 @@ def _verdict(d, d_record):
                 if f.is_absolute() or '..' in f.parts:
                     continue
                 if len(f.parts) > 1 and f.parts[0] in _shared:
+                    continue
+                if any(f.parts[:len(_p)] == _p for _p in _regen):
                     continue
                 rows.append((f, (r[2] if len(r) > 2 else '').strip(),
                              os.path.normcase(str(d.locate_file(f)))))
@@ -2147,15 +2156,24 @@ def _verdict(d, d_record):
                         _toks = _mod.replace('.', ' ').split()
                         if _toks:
                             _pth_mods.add(_toks[0])
-        _shim = _real = 0
+        _shim = _real = _edmark = 0
         for _f, _fsz, _fk in rows:
-            if _f.suffix == '.pth' or _f.name.startswith(('__editable__', '_editable_')):
+            if _f.name.startswith(('__editable__', '_editable_')):
                 _shim += 1
+                _edmark += 1
             elif len(_f.parts) == 1 and _f.stem in _pth_mods:
+                _shim += 1
+                _edmark += 1
+            elif _f.suffix == '.pth':
                 _shim += 1
             else:
                 _real += 1
-        if _shim and not _real:
+        # A payload that is only shims is the damage signal ONLY for an
+        # editable: a dispatch wheel whose entire payload is one .pth that
+        # extends sys.path is a normal, healthy shape (nvidia-cutlass-dsl
+        # ships exactly that), and condemning it fails setup on a working
+        # install. Require a finder or an __editable__ marker to say so.
+        if _shim and not _real and (_edmark or _durl):
             damaged = True
     if not damaged:
         for f, sz, key in rows:
