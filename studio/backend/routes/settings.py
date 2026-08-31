@@ -11,7 +11,7 @@ from typing import Any, Literal, Optional, get_args
 from urllib.parse import unquote, urlsplit
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, ValidationError, field_validator
 
 from auth.authentication import (
     authenticated_via_api_key,
@@ -127,7 +127,10 @@ from utils.current_date_prompt_settings import (
 )
 from utils.lan_access_settings import (
     lan_access_status,
+
+    save_lan_access_port,
     set_lan_access_auto_start,
+
     start_lan_access,
     stop_lan_access,
 )
@@ -2996,12 +2999,20 @@ class LanAccessAutoStartPayload(BaseModel):
     enabled: StrictBool
 
 
+
+class LanAccessPortPayload(BaseModel):
+    port: Optional[StrictInt] = Field(ge = 1, le = 65535)
+
+
 class LanAccessResponse(BaseModel):
     state: Literal["off", "online", "error"]
     urls: list[str] = []
     public_urls: list[str] = []
     error: Optional[str] = None
     auto_start: bool
+
+    configured_port: Optional[int] = None
+    active_port: Optional[int] = None
     managed_by: Optional[Literal["launch", "settings"]] = None
     can_start: bool
     can_stop: bool
@@ -3071,6 +3082,26 @@ def update_lan_access_auto_start(
         payload.enabled,
     )
     return _lan_access_response(request)
+
+
+
+@router.put("/lan-access/port", response_model = LanAccessResponse)
+def update_lan_access_port(
+    request: Request,
+    payload: LanAccessPortPayload,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> LanAccessResponse:
+    try:
+        response = LanAccessResponse(**save_lan_access_port(request.app, payload.port))
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    logger.info(
+        "settings.lan_access_port_updated subject=%s port=%s",
+        current_subject,
+        payload.port if payload.port is not None else "automatic",
+    )
+    return response
 
 
 @router.get("/preview-sharing", response_model = PreviewSharingResponse)
