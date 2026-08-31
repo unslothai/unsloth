@@ -525,6 +525,38 @@ def test_notebook_validator_resumes_after_an_or_list():
     assert len(nv.rule_inst_004_torchcodec_torch(cell, COLAB_TORCH211, "nb.ipynb", 0)) == 1
 
 
+def test_notebook_validator_respects_escaped_separators():
+    """A backslash-escaped `;` is part of the argument, the way shlex reads it in
+    parse_pip_line. Split on it and the fragment ends in a backslash and parses as nothing."""
+    nv = _load_notebook_validator_module()
+
+    escaped = "!pip install torch==2.12.0\;\\ python_version\\ \\>\\=\\ \\'3.10\\'"
+    assert nv._split_chained(escaped) == [escaped]
+    assert [inv.packages for inv in nv.iter_pip_invocations(escaped)] == [
+        ["torch==2.12.0; python_version >= '3.10'"]
+    ]
+    assert len(nv.rule_inst_004_torchcodec_torch(escaped, COLAB_TORCH211, "nb.ipynb", 0)) == 1
+
+
+def test_notebook_validator_merges_repeated_requirements_in_one_command():
+    """pip intersects a project named twice in one command, so the bounds are one window.
+    Applied one argument at a time the floor lands first and the ceiling then clears it."""
+    nv = _load_notebook_validator_module()
+
+    split_window = '!pip install "torchcodec>=0.10" "torchcodec<0.11"'
+    findings = nv.rule_inst_004_torchcodec_torch(split_window, COLAB_TORCH211, "nb.ipynb", 0)
+    assert len(findings) == 1
+    assert "torchcodec==0.10" in findings[0].message
+
+    # Same answer as the comma spelling, which is the point.
+    comma = '!pip install "torchcodec>=0.10,<0.11"'
+    assert nv.rule_inst_004_torchcodec_torch(comma, COLAB_TORCH211, "nb.ipynb", 0) == findings
+
+    # A window the baseline already sits in is still a no-op.
+    wide = '!pip install "torchcodec>=0.10" "torchcodec<0.12"'
+    assert nv.rule_inst_004_torchcodec_torch(wide, COLAB_TORCH211, "nb.ipynb", 0) == []
+
+
 def test_notebook_validator_replays_exclusions():
     """`!=` rules out what is installed, so keeping it reports a version pip cannot leave in
     place. Without a floor to fall back on the pairing is unknown, not stale."""

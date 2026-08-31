@@ -373,7 +373,9 @@ def _split_chained(line: str) -> list[str]:
 
     A `||` fallback runs only when the command before it failed, so everything up to the end
     of that and-or list is dropped; a `;` starts a new list and parsing resumes. An unquoted
-    `#` that starts a word comments out the rest of the line, so scanning stops there.
+    `#` that starts a word comments out the rest of the line, so scanning stops there. A
+    backslash escapes the next character outside single quotes, matching the shlex pass in
+    parse_pip_line, so `\\;` stays inside the argument.
     """
     out: list[str] = []
     buf: list[str] = []
@@ -389,7 +391,12 @@ def _split_chained(line: str) -> list[str]:
 
     while i < len(line):
         ch = line[i]
-        if quote:
+        if ch == "\\" and quote != "'" and i + 1 < len(line):
+            if not skipping:
+                buf.append(ch)
+                buf.append(line[i + 1])
+            i += 2  # an escaped separator is part of the argument, as shlex reads it
+        elif quote:
             buf.append(ch)
             if ch == quote:
                 quote = ""
@@ -678,7 +685,9 @@ def _version_is_excluded(version: str, exclusion: str) -> bool:
     return cmp_versions(version, exclusion) == 0
 
 
-def _spec_window(sp: SpecParts) -> tuple[str | None, str | None, str | None, str | None, list[str]]:
+def _spec_window(
+    pins: list[tuple[str, str]],
+) -> tuple[str | None, str | None, str | None, str | None, list[str]]:
     """`(exact, floor, cap, ceiling, exclusions)` for one requirement.
 
     `cap` is an inclusive `<=`, which names the version pip lands on; `ceiling` is an
@@ -688,7 +697,7 @@ def _spec_window(sp: SpecParts) -> tuple[str | None, str | None, str | None, str
     """
     exact = floor = cap = ceiling = None
     exclusions: list[str] = []
-    for op, ver in sp.pins:
+    for op, ver in pins:
         if op == "==":
             exact = ver
         elif op == "!=":
@@ -727,26 +736,34 @@ def _effective_version(install_cell: str, target: str, resolved: str | None) -> 
     """
     current = resolved
     for inv in iter_pip_invocations(install_cell):
+        # One command names a project once as far as pip is concerned: it intersects repeated
+        # arguments into a single requirement, so they have to be one window here too.
+        pins: list[tuple[str, str]] = []
+        named = False
         for raw in inv.packages:
             sp = parse_spec(raw)
             if sp is None or sp.name != target:
                 continue
-            if inv.action == "uninstall":
-                current = None  # removed; a later install can put it back
-                continue
-            exact, floor, cap, ceiling, exclusions = _spec_window(sp)
-            if exact is not None:
-                current = exact
-            elif current is None:
-                continue  # nothing to move, and a bound does not name a version
-            elif any(_version_is_excluded(current, ver) for ver in exclusions):
-                current = floor  # pip cannot keep it; only the floor names where it goes
-            elif floor is not None and cmp_versions(floor, current) > 0:
-                current = floor
-            elif cap is not None and cmp_versions(current, cap) > 0:
-                current = cap  # `<=V` allows V, so V is what pip picks
-            elif ceiling is not None and cmp_versions(current, ceiling) >= 0:
-                current = floor  # None when the window is open below: unresolved
+            named = True
+            pins.extend(sp.pins)
+        if not named:
+            continue
+        if inv.action == "uninstall":
+            current = None  # removed; a later install can put it back
+            continue
+        exact, floor, cap, ceiling, exclusions = _spec_window(pins)
+        if exact is not None:
+            current = exact
+        elif current is None:
+            continue  # nothing to move, and a bound does not name a version
+        elif any(_version_is_excluded(current, ver) for ver in exclusions):
+            current = floor  # pip cannot keep it; only the floor names where it goes
+        elif floor is not None and cmp_versions(floor, current) > 0:
+            current = floor
+        elif cap is not None and cmp_versions(current, cap) > 0:
+            current = cap  # `<=V` allows V, so V is what pip picks
+        elif ceiling is not None and cmp_versions(current, ceiling) >= 0:
+            current = floor  # None when the window is open below: unresolved
     return current
 
 
