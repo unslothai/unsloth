@@ -80,6 +80,7 @@ from core.inference.mcp_client import (
 from storage import mcp_servers_db
 
 from loggers import get_logger
+from utils.workspace_context import workspace_thread
 
 logger = get_logger(__name__)
 
@@ -10829,7 +10830,11 @@ def _search_knowledge_base_with_budget(
             release_slot()
 
     try:
-        threading.Thread(target = search, name = "rag-tool-search", daemon = True).start()
+        workspace_thread(
+            target = search,
+            name = "rag-tool-search",
+            daemon = True,
+        ).start()
     except Exception:
         release_slot()
         raise

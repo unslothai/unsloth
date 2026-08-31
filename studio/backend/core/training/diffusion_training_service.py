@@ -52,6 +52,12 @@ def _finite_or_none(value: Any) -> Optional[float]:
 
 
 def _run_diffusion_child(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
+    subject = config.get("subject")
+    if isinstance(subject, str) and subject:
+        from utils.workspace_context import set_workspace_subject
+
+        set_workspace_subject(subject)
+
     # Fresh spawned interpreter: re-apply the OS-trust-store injection, inside
     # the secret scrub and before the trainer imports diffusers.
     from utils.native_tls import activate_native_tls
@@ -106,9 +112,9 @@ def _llm_training_active() -> bool:
 # ── persisted run history ──────────────────────────────────────────────────────
 # Every terminal run is recorded as one JSON file (summary + scrubbed config + metric logs) for the Train tab's history. JSON, not the LLM sqlite, so diffusion runs stay off the LLM Runs page.
 def _runs_dir() -> Path:
-    from utils.paths.storage_roots import studio_root
+    from utils.paths.storage_roots import workspace_root
 
-    d = studio_root() / "runs" / "diffusion"
+    d = workspace_root() / "runs" / "diffusion"
     d.mkdir(parents = True, exist_ok = True)
     return d
 
@@ -461,6 +467,7 @@ class DiffusionTrainingService:
         self._state: dict[str, Any] = _idle_state()
         # The active job's start config, scrubbed of secrets, kept for the run record.
         self._config: dict[str, Any] = {}
+        self._active_workspace_subject: str | None = None
 
     # ── lifecycle ────────────────────────────────────────────────────────────
     def is_active(self) -> bool:
@@ -468,6 +475,13 @@ class DiffusionTrainingService:
             if self._reserved:
                 return True
             return self._proc is not None and self._proc.is_alive()
+
+    def owns_workspace(self, subject: str | None = None) -> bool:
+        from utils.workspace_context import current_workspace_subject
+
+        requested = subject or current_workspace_subject()
+        with self._lock:
+            return self._active_workspace_subject in (None, requested)
 
     def reserve(self) -> None:
         """Mark a diffusion-training start as in flight so the image/video load guards (which
@@ -576,6 +590,9 @@ class DiffusionTrainingService:
         from .diffusion_train_common import train_recipe_overrides
 
         normalized_cfg = _config_from_dict(config).normalized()
+        from utils.workspace_context import current_workspace_subject
+
+        workspace_subject = str(config.get("subject") or current_workspace_subject())
 
         # Join a finished job's pump OUTSIDE the lock: its final state writes take this lock, so joining under it would stall the start and let the stale pump overwrite the new state.
         with self._lock:
@@ -591,6 +608,7 @@ class DiffusionTrainingService:
                 raise RuntimeError("A diffusion training job is already running.")
 
             job_id = uuid.uuid4().hex
+            self._active_workspace_subject = workspace_subject
             self._discard_requested = False
             self._own_checkpoints = []
             self._child_cleared_own = False
@@ -640,10 +658,17 @@ class DiffusionTrainingService:
             # trainer applies the same table in the child, which the record is not written from,
             # so without this Previous runs described a recipe (cropping, flipping, min-SNR
             # weighting) that no step of the run ever used.
-            self._config = {k: v for k, v in dict(config).items() if k != "hf_token"}
+            self._config = {
+                k: v for k, v in dict(config).items() if k not in {"hf_token", "subject"}
+            }
             self._config.update(train_recipe_overrides(normalized_cfg))
-            self._pump = threading.Thread(
-                target = self._pump_loop, args = (event_queue, self._proc), daemon = True
+            from utils.workspace_context import workspace_thread
+
+            self._pump = workspace_thread(
+                target = self._pump_loop,
+                subject = workspace_subject,
+                args = (event_queue, self._proc),
+                daemon = True,
             )
             self._pump.start()
             return job_id
@@ -653,7 +678,12 @@ class DiffusionTrainingService:
         a partial adapter (``save=True``, the default) or discards the run (``save=False``,
         matching the LLM trainer's cancel). Returns True if a stop was signalled, False if
         nothing was running."""
+        from utils.workspace_context import current_workspace_subject
+
+        requested = current_workspace_subject()
         with self._lock:
+            if self._active_workspace_subject not in (None, requested):
+                return False
             if self._proc is None or not self._proc.is_alive() or self._stop_queue is None:
                 return False
             if self._stop_signalled:
@@ -683,7 +713,12 @@ class DiffusionTrainingService:
             return True
 
     def status(self) -> dict[str, Any]:
+        from utils.workspace_context import current_workspace_subject
+
+        requested = current_workspace_subject()
         with self._lock:
+            if self._active_workspace_subject not in (None, requested):
+                return _idle_state()
             snap = dict(self._state)
             # Keep ``active`` honest even if the process died between events.
             snap["active"] = self._proc is not None and self._proc.is_alive()

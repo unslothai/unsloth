@@ -3666,6 +3666,16 @@ def _recorded_local_base(model_name) -> "tuple[str | None, bool]":
         return None, True
 
 
+def _bind_worker_workspace(config: dict):
+    """Bind spawn-only workspace metadata before the worker resolves any paths."""
+    subject = config.get("subject")
+    if not isinstance(subject, str) or not subject:
+        return None
+    from utils.workspace_context import set_workspace_subject
+
+    return set_workspace_subject(subject)
+
+
 def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
     """Subprocess entrypoint. Fresh Python — no stale module state.
 
@@ -3674,6 +3684,10 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         stop_queue: mp.Queue for stop commands from the parent.
         config: Training config dict with all parameters.
     """
+    # A spawn starts with the legacy ContextVar default. Bind the account before
+    # any dynamic output/cache/database path is resolved.
+    _bind_worker_workspace(config)
+
     # Off on Linux (forked map() workers deadlock); on spawn platforms map() is in-process.
     os.environ["TOKENIZERS_PARALLELISM"] = (
         "true" if sys.platform in ("win32", "darwin") else "false"

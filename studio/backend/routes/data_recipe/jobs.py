@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Annotated, Any, Optional
 from urllib.parse import urlparse
 
@@ -36,6 +37,7 @@ from models.data_recipe import (
     RecipePayload,
 )
 from utils.utils import safe_error_detail, safe_curated_detail, log_and_http_error
+from utils.paths import recipe_datasets_root
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -495,6 +497,15 @@ def _revoke_internal_api_key_safe(key_id: int) -> None:
         pass
 
 
+def _workspace_artifact_path(raw_path: str) -> str:
+    """Resolve a recipe artifact without crossing the caller's workspace."""
+    root = recipe_datasets_root().resolve()
+    candidate = Path(raw_path).expanduser().resolve()
+    if not candidate.is_relative_to(root):
+        raise HTTPException(status_code = 404, detail = "dataset not found")
+    return str(candidate)
+
+
 @router.get("/jobs/{job_id}/status")
 def job_status(job_id: str):
     mgr = get_job_manager()
@@ -586,6 +597,7 @@ def publish_job_dataset(job_id: str, payload: PublishDatasetRequest):
             status_code = 400,
             detail = "This execution does not have publishable dataset artifacts.",
         )
+    artifact_path = _workspace_artifact_path(artifact_path)
 
     try:
         url = publish_recipe_dataset(

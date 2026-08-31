@@ -90,6 +90,11 @@ test("owner account UX and per-account chat workspaces are isolated", async ({
   await accountsDialog.getByLabel("Username").fill("alice");
   await accountsDialog.getByLabel("Temporary password").fill(aliceTemporaryPassword);
   expect(await accountsDialog.locator("form").evaluate((form) => form.checkValidity())).toBe(true);
+  if (evidenceDir) {
+    await accountCreator.page.screenshot({
+      path: path.join(evidenceDir, "02-account-creation-ready.png"),
+    });
+  }
   const createAliceResponse = accountCreator.page.waitForResponse(
     (response) =>
       response.url().endsWith("/api/auth/users") && response.request().method() === "POST",
@@ -110,6 +115,11 @@ test("owner account UX and per-account chat workspaces are isolated", async ({
   await expect(
     firstLoginPage.getByRole("heading", { name: "Setup your account", exact: true }),
   ).toBeVisible();
+  if (evidenceDir) {
+    await firstLoginPage.screenshot({
+      path: path.join(evidenceDir, "03-first-login-password-reset.png"),
+    });
+  }
   await firstLoginContext.close();
 
   const createdBob = await request.post(`${baseURL}/api/auth/users`, {
@@ -166,7 +176,7 @@ test("owner account UX and per-account chat workspaces are isolated", async ({
   await expect(ownerBrowser.page.getByText("alice", { exact: true })).toBeVisible();
   await expect(ownerBrowser.page.getByText("bob", { exact: true })).toBeVisible();
   if (evidenceDir) {
-    await ownerBrowser.page.screenshot({ path: path.join(evidenceDir, "02-owner-accounts.png") });
+    await ownerBrowser.page.screenshot({ path: path.join(evidenceDir, "04-owner-accounts.png") });
   }
   await ownerBrowser.context.close();
 
@@ -174,7 +184,7 @@ test("owner account UX and per-account chat workspaces are isolated", async ({
   await expect(aliceBrowser.page.getByTestId("current-account-username")).toHaveText("@alice");
   await expect(aliceBrowser.page.getByText(aliceThread.title, { exact: true })).toBeVisible();
   if (evidenceDir) {
-    await aliceBrowser.page.screenshot({ path: path.join(evidenceDir, "03-alice-workspace.png") });
+    await aliceBrowser.page.screenshot({ path: path.join(evidenceDir, "05-alice-workspace.png") });
   }
   await aliceBrowser.context.close();
 
@@ -183,7 +193,7 @@ test("owner account UX and per-account chat workspaces are isolated", async ({
   await expect(bobBrowser.page.getByText(aliceThread.title, { exact: true })).toHaveCount(0);
   await expect(bobBrowser.page.getByText("No chats yet", { exact: true })).toBeVisible();
   if (evidenceDir) {
-    await bobBrowser.page.screenshot({ path: path.join(evidenceDir, "04-bob-workspace.png") });
+    await bobBrowser.page.screenshot({ path: path.join(evidenceDir, "06-bob-workspace.png") });
     await writeFile(
       path.join(evidenceDir, "facts.json"),
       `${JSON.stringify(

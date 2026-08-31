@@ -5,7 +5,10 @@ from __future__ import annotations
 
 import secrets
 import sqlite3
+import threading
+from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -16,14 +19,21 @@ from auth.authentication import get_current_subject
 from routes import auth as auth_routes
 from routes import chat_history as chat_history_routes
 from storage import studio_db
+from storage.api_usage_db import ApiUsageReceipt, ApiUsageWriter
 from utils.paths import (
     assets_root,
     project_workspaces_root,
     studio_db_path,
     studio_root,
+    workspace_root,
 )
 from utils.paths.storage_roots import cache_root
-from utils.workspace_context import reset_workspace_subject, set_workspace_subject
+from utils.workspace_context import (
+    current_workspace_subject,
+    reset_workspace_subject,
+    set_workspace_subject,
+    workspace_thread,
+)
 
 
 def _bind(subject: str):
@@ -112,6 +122,189 @@ def test_same_thread_id_and_settings_are_private_per_account(
         reset_workspace_subject(alice_again)
 
 
+def test_background_threads_keep_the_workspace_that_started_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    barrier = threading.Barrier(3)
+
+    def write(subject: str, title: str) -> None:
+        token = _bind(subject)
+        try:
+            worker = workspace_thread(
+                target = lambda: (
+                    barrier.wait(),
+                    studio_db.upsert_chat_thread(_thread(title)),
+                )
+            )
+        finally:
+            reset_workspace_subject(token)
+        worker.start()
+        workers.append(worker)
+
+    workers: list[threading.Thread] = []
+    write("alice", "Alice background")
+    write("bob", "Bob background")
+    barrier.wait()
+    for worker in workers:
+        worker.join(timeout = 5)
+        assert not worker.is_alive()
+
+    assert current_workspace_subject() == "unsloth"
+    for subject, expected in (("alice", "Alice background"), ("bob", "Bob background")):
+        token = _bind(subject)
+        try:
+            assert studio_db.get_chat_thread("same-client-id")["title"] == expected
+        finally:
+            reset_workspace_subject(token)
+    assert studio_db.get_chat_thread("same-client-id") is None
+
+
+def test_api_usage_writer_routes_each_receipt_to_its_account_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    now = int(datetime.now(timezone.utc).timestamp() * 1000)
+    writer = ApiUsageWriter()
+
+    for subject in ("alice", "bob"):
+        assert writer.submit(
+            ApiUsageReceipt(
+                id = f"{subject}-usage",
+                subject = subject,
+                endpoint = "/v1/chat/completions",
+                model = "test-model",
+                status = "completed",
+                prompt_tokens = 2,
+                completion_tokens = 3,
+                total_tokens = 5,
+                created_at = now,
+            )
+        )
+    assert writer.stop()
+
+    for subject in ("alice", "bob"):
+        token = _bind(subject)
+        try:
+            conn = studio_db.get_connection()
+            try:
+                rows = conn.execute(
+                    "SELECT id, subject FROM api_usage_events ORDER BY id"
+                ).fetchall()
+            finally:
+                conn.close()
+            assert [(row["id"], row["subject"]) for row in rows] == [
+                (f"{subject}-usage", subject)
+            ]
+        finally:
+            reset_workspace_subject(token)
+
+    owner_conn = studio_db.get_connection()
+    try:
+        assert owner_conn.execute("SELECT COUNT(*) FROM api_usage_events").fetchone()[0] == 0
+    finally:
+        owner_conn.close()
+
+
+def test_training_spawn_metadata_selects_managed_user_output_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from core.training.worker import _bind_worker_workspace
+    from utils.paths import outputs_root
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    token = _bind_worker_workspace({"subject": "alice"})
+    assert token is not None
+    try:
+        assert outputs_root().is_relative_to(studio_root() / "workspaces")
+        assert outputs_root() != studio_root() / "outputs"
+    finally:
+        reset_workspace_subject(token)
+
+
+def test_data_recipe_job_state_is_hidden_from_other_accounts():
+    from core.data_recipe.jobs.manager import JobManager
+
+    manager = JobManager()
+    manager._job = SimpleNamespace(job_id = "alice-job")
+    manager._workspace_subject = "alice"
+
+    alice = _bind("alice")
+    try:
+        assert manager.owns_workspace()
+        assert manager.get_current_job_id() == "alice-job"
+    finally:
+        reset_workspace_subject(alice)
+
+    bob = _bind("bob")
+    try:
+        assert not manager.owns_workspace()
+        assert manager.get_current_job_id() is None
+        assert manager.get_status("alice-job") is None
+        assert manager.get_analysis("alice-job") is None
+        assert manager.get_dataset("alice-job", limit = 20) is None
+        assert manager.subscribe("alice-job") is None
+        assert manager.cancel("alice-job") is False
+    finally:
+        reset_workspace_subject(bob)
+
+
+def test_data_recipe_publish_path_cannot_cross_workspaces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from fastapi import HTTPException
+    from routes.data_recipe.jobs import _workspace_artifact_path
+    from utils.paths import recipe_datasets_root
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    alice = _bind("alice")
+    try:
+        alice_artifact = recipe_datasets_root() / "alice-job"
+        alice_artifact.mkdir(parents = True)
+        assert _workspace_artifact_path(str(alice_artifact)) == str(alice_artifact.resolve())
+    finally:
+        reset_workspace_subject(alice)
+
+    bob = _bind("bob")
+    try:
+        with pytest.raises(HTTPException) as exc_info:
+            _workspace_artifact_path(str(alice_artifact))
+        assert exc_info.value.status_code == 404
+        assert exc_info.value.detail == "dataset not found"
+    finally:
+        reset_workspace_subject(bob)
+
+
+def test_private_local_model_index_entries_are_hidden_from_other_accounts():
+    from core.inference.local_model_resolver import _LocalGgufEntry, _resolve_from_index
+
+    entry = _LocalGgufEntry(
+        loader_id = "private/model",
+        load_path = "/private/alice/model.gguf",
+        variants = (),
+        workspace_subject = "alice",
+    )
+    index = {"private/model": entry}
+
+    alice = _bind("alice")
+    try:
+        assert _resolve_from_index("private/model", index) == (
+            "/private/alice/model.gguf",
+            None,
+            "private/model",
+        )
+    finally:
+        reset_workspace_subject(alice)
+
+    bob = _bind("bob")
+    try:
+        assert _resolve_from_index("private/model", index) is None
+    finally:
+        reset_workspace_subject(bob)
+
+
 def test_legacy_unsloth_account_is_promoted_once_during_role_migration(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -195,6 +388,107 @@ def test_standard_account_cannot_manage_users(account_client):
         "/api/auth/users",
         json = {"username": "bob", "password": "temporary-password"},
     ).status_code == 403
+
+
+def test_only_owner_can_change_installation_wide_server_access(account_client):
+    from fastapi import HTTPException
+    from routes.settings import _require_install_admin
+
+    _client, _app = account_client
+    auth_storage.create_managed_user("alice", "temporary-password")
+
+    assert _require_install_admin("unsloth") == "unsloth"
+    with pytest.raises(HTTPException) as exc_info:
+        _require_install_admin("alice")
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "Only the installation owner can change server access."
+
+
+def test_real_tokens_enforce_roles_and_deletion_revokes_sessions_but_keeps_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    monkeypatch.setattr(auth_storage, "DB_PATH", tmp_path / "auth" / "auth.db")
+    monkeypatch.setattr(
+        auth_storage,
+        "_BOOTSTRAP_PW_PATH",
+        tmp_path / "auth" / ".bootstrap_password",
+    )
+    auth_storage.create_initial_user(
+        "unsloth",
+        "owner-password",
+        secrets.token_urlsafe(64),
+        is_admin = True,
+    )
+    app = FastAPI()
+    app.include_router(auth_routes.router, prefix = "/api/auth")
+
+    with TestClient(app) as client:
+        owner_login = client.post(
+            "/api/auth/login",
+            json = {"username": "unsloth", "password": "owner-password"},
+        )
+        assert owner_login.status_code == 200
+        owner_headers = {
+            "Authorization": f"Bearer {owner_login.json()['access_token']}"
+        }
+        assert client.post(
+            "/api/auth/users",
+            headers = owner_headers,
+            json = {"username": "alice", "password": "temporary-password"},
+        ).status_code == 201
+
+        first_login = client.post(
+            "/api/auth/login",
+            json = {"username": "alice", "password": "temporary-password"},
+        )
+        assert first_login.status_code == 200
+        first_headers = {
+            "Authorization": f"Bearer {first_login.json()['access_token']}"
+        }
+        changed = client.post(
+            "/api/auth/change-password",
+            headers = first_headers,
+            json = {
+                "current_password": "temporary-password",
+                "new_password": "alice-permanent-password",
+            },
+        )
+        assert changed.status_code == 200
+        alice_tokens = changed.json()
+        alice_headers = {
+            "Authorization": f"Bearer {alice_tokens['access_token']}"
+        }
+        assert client.get("/api/auth/me", headers = alice_headers).status_code == 200
+        assert client.get("/api/auth/users", headers = alice_headers).status_code == 403
+
+        token = _bind("alice")
+        try:
+            original_workspace = workspace_root()
+            original_workspace.mkdir(parents = True, exist_ok = True)
+            marker = original_workspace / "retained-after-account-delete.txt"
+            marker.write_text("private data", encoding = "utf-8")
+        finally:
+            reset_workspace_subject(token)
+
+        assert client.delete("/api/auth/users/alice", headers = owner_headers).status_code == 204
+        assert client.get("/api/auth/me", headers = alice_headers).status_code == 401
+        assert client.post(
+            "/api/auth/refresh",
+            json = {"refresh_token": alice_tokens["refresh_token"]},
+        ).status_code == 401
+
+        assert client.post(
+            "/api/auth/users",
+            headers = owner_headers,
+            json = {"username": "alice", "password": "replacement-password"},
+        ).status_code == 201
+        token = _bind("alice")
+        try:
+            assert workspace_root() == original_workspace
+            assert marker.read_text(encoding = "utf-8") == "private data"
+        finally:
+            reset_workspace_subject(token)
 
 
 def test_authenticated_chat_routes_select_the_token_subject_workspace(

@@ -46,6 +46,7 @@ class ExportOrchestrator:
         self._resp_queue: Any = None
         # Serializes export ops so concurrent HTTP requests can't interleave commands.
         self._lock = threading.Lock()
+        self._workspace_lock = threading.RLock()
 
         # Local state mirrors (updated from subprocess responses).
         self.current_checkpoint: Optional[str] = None
@@ -75,6 +76,7 @@ class ExportOrchestrator:
         self._op_seq: int = 0
         self._active_op_kind: Optional[str] = None
         self._last_op: Optional[Dict[str, Any]] = None
+        self._workspace_subject: Optional[str] = None
 
         atexit.register(self._cleanup)
         logger.info("ExportOrchestrator initialized (subprocess mode)")
@@ -180,31 +182,49 @@ class ExportOrchestrator:
 
         Returns True if a live subprocess was terminated, False if none ran.
         """
-        self._cancel_requested = True
-        proc = self._proc
-        if proc is None or not proc.is_alive():
-            return False
-        logger.info(
-            "Export cancel requested: terminating export subprocess (pid=%s)",
-            proc.pid,
-        )
-        try:
-            proc.terminate()
-            proc.join(timeout = 5)
-        except Exception:
-            pass
-        if proc.is_alive():
-            logger.warning("Export subprocess survived terminate, killing")
+        with self._workspace_guard():
+            if not self.owns_workspace():
+                return False
+            self._cancel_requested = True
+            proc = self._proc
+            if proc is None or not proc.is_alive():
+                return False
+            logger.info(
+                "Export cancel requested: terminating export subprocess (pid=%s)",
+                proc.pid,
+            )
             try:
-                proc.kill()
-                proc.join(timeout = 3)
+                proc.terminate()
+                proc.join(timeout = 5)
             except Exception:
                 pass
-        return True
+            if proc.is_alive():
+                logger.warning("Export subprocess survived terminate, killing")
+                try:
+                    proc.kill()
+                    proc.join(timeout = 3)
+                except Exception:
+                    pass
+            return True
 
     # ------------------------------------------------------------------
     # Subprocess lifecycle
     # ------------------------------------------------------------------
+
+    def _workspace_guard(self) -> threading.RLock:
+        """Return the ownership lock, lazily for lightweight legacy test doubles."""
+        lock = getattr(self, "_workspace_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._workspace_lock = lock
+        return lock
+
+    def owns_workspace(self, subject: Optional[str] = None) -> bool:
+        from utils.workspace_context import current_workspace_subject
+
+        requested = subject or current_workspace_subject()
+        with self._workspace_guard():
+            return getattr(self, "_workspace_subject", None) in (None, requested)
 
     def _spawn_subprocess(self, config: dict) -> None:
         """Spawn a new export subprocess."""
@@ -443,7 +463,16 @@ class ExportOrchestrator:
             "hf_token": hf_token,
         }
 
-        with self._lock:
+        with self._lock, self._workspace_guard():
+            workspace_subject = subject
+            if workspace_subject is None:
+                from utils.workspace_context import current_workspace_subject
+
+                workspace_subject = current_workspace_subject()
+            if self._export_active and not self.owns_workspace(workspace_subject):
+                return False, "Export resources are currently in use by another account."
+            self._workspace_subject = workspace_subject
+            sub_config["subject"] = workspace_subject
             # Fresh log buffer so the UI sees only this run's output.
             self.clear_logs()
             self._cancel_requested = False
@@ -623,6 +652,8 @@ class ExportOrchestrator:
         dir the worker wrote to (None if it only pushed to Hub or failed pre-write).
         """
         with self._lock:
+            if not self.owns_workspace():
+                return False, "No checkpoint is loaded for this account.", None
             if not self._ensure_subprocess_alive():
                 return (
                     False,
@@ -674,6 +705,8 @@ class ExportOrchestrator:
     def cleanup_memory(self) -> bool:
         """Cleanup export-related models from memory."""
         with self._lock:
+            if not self.owns_workspace():
+                return False
             if not self._ensure_subprocess_alive():
                 self.current_checkpoint = None
                 self.is_vision = False

@@ -23,6 +23,7 @@ export function AccountsTab() {
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -82,15 +83,23 @@ export function AccountsTab() {
   }
 
   async function remove(usernameToDelete: string) {
-    if (!window.confirm(`Delete ${usernameToDelete}'s login? Workspace files will be retained.`)) {
+    if (
+      !window.confirm(
+        `Delete ${usernameToDelete}'s login? Workspace files will be retained. ` +
+          `Creating ${usernameToDelete} again will restore access to those files.`,
+      )
+    ) {
       return;
     }
+    setDeleting(usernameToDelete);
     setError(null);
     try {
       await deleteAccount(usernameToDelete);
       await load();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Failed to delete account");
+    } finally {
+      setDeleting(null);
     }
   }
 
@@ -192,10 +201,20 @@ export function AccountsTab() {
                       type="button"
                       variant="ghost"
                       size="icon"
-                      aria-label={`Delete ${account.username}`}
+                      aria-label={
+                        deleting === account.username
+                          ? `Deleting ${account.username}`
+                          : `Delete ${account.username}`
+                      }
+                      aria-busy={deleting === account.username}
+                      disabled={deleting !== null}
                       onClick={() => void remove(account.username)}
                     >
-                      <Trash2 className="size-4 text-muted-foreground" />
+                      {deleting === account.username ? (
+                        <span className="text-xs text-muted-foreground">…</span>
+                      ) : (
+                        <Trash2 className="size-4 text-muted-foreground" />
+                      )}
                     </Button>
                   )}
                 </div>

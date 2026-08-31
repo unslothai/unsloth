@@ -2,9 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useT } from "@/i18n";
-import { KeylessApiAccessSection } from "../components/keyless-api-access-section";
-import { LanAccessSection } from "../components/lan-access-section";
-import { RemoteAccessSection } from "../components/remote-access-section";
+import { OwnerServerAccessSections } from "../components/owner-server-access-sections";
 
 /** Reaching Unsloth from another device, without the API token list in the way. */
 export function RemoteLanTab() {
@@ -28,11 +26,7 @@ export function RemoteLanTab() {
         </p>
       </header>
 
-      <RemoteAccessSection />
-
-      <LanAccessSection />
-
-      <KeylessApiAccessSection />
+      <OwnerServerAccessSections />
     </div>
   );
 }

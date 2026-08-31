@@ -37,6 +37,7 @@ from utils.native_path_leases import (
 )
 from utils.paths import is_local_path, outputs_root
 from utils.utils import canonical_model_repo_id
+from utils.workspace_context import current_workspace_subject, workspace_thread
 
 logger = get_logger(__name__)
 
@@ -866,12 +867,12 @@ class _MLXTrainerAdapter:
             status_message = "Initializing MLX training...",
         )
 
-        self.training_thread = threading.Thread(
+        self.training_thread = workspace_thread(
             target = self._run_training_thread,
             args = (config, event_queue, stop_queue),
             daemon = True,
         )
-        self._pump_thread = threading.Thread(
+        self._pump_thread = workspace_thread(
             target = self._pump_events,
             args = (event_queue, self.training_thread),
             daemon = True,
@@ -1138,6 +1139,10 @@ class TrainingBackend:
         self._output_dir: Optional[str] = None
         self._resume_source_run_id: Optional[str] = None
         self._terminal_finalize_payload: Optional[dict] = None
+        # Raw threads do not inherit ContextVars. Every job-owned pump/watchdog
+        # is pinned to the account that started the job so DB and output helpers
+        # cannot silently fall back to the legacy owner workspace.
+        self._active_workspace_subject: str = current_workspace_subject()
 
         self._metric_buffer: list[dict] = []
         self._run_finalized: bool = False
@@ -1156,6 +1161,11 @@ class TrainingBackend:
         logger.info("TrainingBackend initialized (subprocess mode)")
 
     # --- Public API (called by routes/training.py) ---
+
+    def owns_workspace(self, subject: str) -> bool:
+        """Whether the retained job/status state belongs to ``subject``."""
+        with self._lock:
+            return self._active_workspace_subject == subject
 
     def reserve_start_request(
         self, start_request_id: str, job_id: str
@@ -1605,6 +1615,9 @@ class TrainingBackend:
             ):
                 logger.warning("Training subprocess already running")
                 return False
+            self._active_workspace_subject = str(
+                kwargs.get("subject") or current_workspace_subject()
+            )
 
         # Join prior pump thread — refuse to start if it won't die
         if self._pump_thread is not None and self._pump_thread.is_alive():
@@ -1839,7 +1852,11 @@ class TrainingBackend:
                 return False
 
             # Assign handles and start the pump under the lock, else a poll sees a live _proc with no pump.
-            new_pump = threading.Thread(target = self._pump_loop, daemon = True)
+            new_pump = workspace_thread(
+                target = self._pump_loop,
+                subject = self._active_workspace_subject,
+                daemon = True,
+            )
             with self._lock:
                 self._pump_running = False
                 self._event_queue = event_queue
@@ -2020,8 +2037,9 @@ class TrainingBackend:
                 and self._stop_watchdog_proc is proc
             ):
                 return
-            watchdog = threading.Thread(
+            watchdog = workspace_thread(
                 target = self._stop_watchdog_loop,
+                subject = self._active_workspace_subject,
                 args = (proc, cancel, self.current_job_id),
                 kwargs = {"grace_s": grace_s, "terminal_seen": terminal_seen},
                 name = f"stop-watchdog-{self.current_job_id or 'unknown'}",
@@ -2452,7 +2470,11 @@ class TrainingBackend:
                 logger.info(
                     "Training subprocess respawned with Xet disabled (pid=%s)", new_proc.pid
                 )
-                new_pump = threading.Thread(target = self._pump_loop, daemon = True)
+                new_pump = workspace_thread(
+                    target = self._pump_loop,
+                    subject = self._active_workspace_subject,
+                    daemon = True,
+                )
                 with self._lock:
                     self._in_model_load = False
                     self._event_queue = event_queue
@@ -2488,7 +2510,11 @@ class TrainingBackend:
                 "Training event pump thread died while the worker is still running; "
                 "restarting it so progress updates resume."
             )
-            new_pump = threading.Thread(target = self._pump_loop, daemon = True)
+            new_pump = workspace_thread(
+                target = self._pump_loop,
+                subject = self._active_workspace_subject,
+                daemon = True,
+            )
             self._pump_thread = new_pump
             # Start under the lock so a concurrent _ensure_pump_alive can't spawn yet another pump.
             new_pump.start()

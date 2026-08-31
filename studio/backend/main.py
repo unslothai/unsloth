@@ -566,6 +566,16 @@ def _post_warm_retired(generation: Optional[int]) -> bool:
     return True
 
 
+def _known_workspace_subjects() -> list[str]:
+    """Existing account workspaces, always including the legacy owner layout."""
+    from auth.storage import list_users
+    from utils.workspace_context import LEGACY_WORKSPACE_SUBJECT
+
+    subjects = {LEGACY_WORKSPACE_SUBJECT}
+    subjects.update(account["username"] for account in list_users())
+    return sorted(subjects)
+
+
 def _start_linked_folder_auto_sync(generation: Optional[int]) -> None:
     # A real lifespan worker carries a generation; direct calls without one are tests.
     if generation is None:
@@ -573,11 +583,16 @@ def _start_linked_folder_auto_sync(generation: Optional[int]) -> None:
     try:
         from core.rag.folder_sync import start_auto_sync
         from storage.studio_db import get_chat_project
-        start_auto_sync(
-            admission_lock = _post_warm_lock,
-            admit = lambda: _post_warm_generation == generation,
-            project_exists = lambda project_id: get_chat_project(project_id) is not None,
-        )
+        from utils.workspace_context import run_in_workspace
+
+        for subject in _known_workspace_subjects():
+            run_in_workspace(
+                subject,
+                start_auto_sync,
+                admission_lock = _post_warm_lock,
+                admit = lambda: _post_warm_generation == generation,
+                project_exists = lambda project_id: get_chat_project(project_id) is not None,
+            )
     except Exception as exc:
         import structlog as _structlog
         _structlog.get_logger(__name__).warning(
@@ -683,22 +698,34 @@ async def lifespan(app: FastAPI):
         _lifespan_log.warning("studio.db WAL keeper failed at startup: %s", exc)
 
     # Reap workers/runs orphaned by a previous crash before new work starts.
-    try:
-        from storage.studio_db import cleanup_orphaned_runs
-        cleanup_orphaned_runs()
-    except Exception as exc:
-        _lifespan_log.warning("cleanup_orphaned_runs failed at startup: %s", exc)
+    from utils.workspace_context import run_in_workspace
 
-    try:
-        from storage.chat_generation_runs_db import reconcile_orphaned_runs
-        reconciled_chat_runs = reconcile_orphaned_runs()
-        if reconciled_chat_runs:
+    for _subject in _known_workspace_subjects():
+        try:
+            from storage.studio_db import cleanup_orphaned_runs
+            run_in_workspace(_subject, cleanup_orphaned_runs)
+        except Exception as exc:
             _lifespan_log.warning(
-                "Marked %s interrupted chat generation run(s) failed after restart.",
-                reconciled_chat_runs,
+                "cleanup_orphaned_runs failed at startup for %s: %s",
+                _subject,
+                exc,
             )
-    except Exception as exc:
-        _lifespan_log.warning("chat generation orphan reconciliation failed: %s", exc)
+
+        try:
+            from storage.chat_generation_runs_db import reconcile_orphaned_runs
+            reconciled_chat_runs = run_in_workspace(_subject, reconcile_orphaned_runs)
+            if reconciled_chat_runs:
+                _lifespan_log.warning(
+                    "Marked %s interrupted chat generation run(s) failed after restart for %s.",
+                    reconciled_chat_runs,
+                    _subject,
+                )
+        except Exception as exc:
+            _lifespan_log.warning(
+                "chat generation orphan reconciliation failed for %s: %s",
+                _subject,
+                exc,
+            )
 
     try:
         # The boot pass above only settles runs orphaned by the previous process. A run
@@ -729,11 +756,16 @@ async def lifespan(app: FastAPI):
     app.state.llama_cpp_freshness = None
     _start_llama_cpp_probes_if_enabled(app)
 
-    try:
-        from storage.rag_db import reconcile_orphaned_ingestion_jobs
-        reconcile_orphaned_ingestion_jobs()
-    except Exception as exc:
-        _lifespan_log.warning("reconcile_orphaned_ingestion_jobs failed at startup: %s", exc)
+    for _subject in _known_workspace_subjects():
+        try:
+            from storage.rag_db import reconcile_orphaned_ingestion_jobs
+            run_in_workspace(_subject, reconcile_orphaned_ingestion_jobs)
+        except Exception as exc:
+            _lifespan_log.warning(
+                "reconcile_orphaned_ingestion_jobs failed at startup for %s: %s",
+                _subject,
+                exc,
+            )
 
     # Embeddings stay cold until ingestion or retrieval actually requests vectors.
     _start_helper_precache_if_enabled()

@@ -262,6 +262,20 @@ def _run_active(backend) -> bool:
     return backend.is_training_active() and not _run_finished(backend)
 
 
+def _training_workspace_owned(backend, subject: str) -> bool:
+    check = getattr(backend, "owns_workspace", None)
+    return bool(check(subject)) if callable(check) else True
+
+
+def _idle_training_status() -> TrainingStatus:
+    return TrainingStatus(
+        job_id = "",
+        phase = "idle",
+        is_training_running = False,
+        message = "Ready to train",
+    )
+
+
 def _validate_local_dataset_paths(paths: list[str], label: str = "Local dataset") -> list[str]:
     """Resolve and validate a list of local dataset paths. Returns validated absolute paths."""
     validated = []
@@ -1070,6 +1084,8 @@ async def get_training_start_request(
     current_subject: str = Depends(get_current_subject),
 ):
     backend = get_training_backend()
+    if not _training_workspace_owned(backend, current_subject):
+        raise HTTPException(status_code = 404, detail = "Training start request not found")
     record = backend.get_start_request(start_request_id)
     if record is None:
         raise HTTPException(status_code = 404, detail = "Training start request not found")
@@ -1098,6 +1114,8 @@ async def acknowledge_training_start_request(
     current_subject: str = Depends(get_current_subject),
 ):
     backend = get_training_backend()
+    if not _training_workspace_owned(backend, current_subject):
+        raise HTTPException(status_code = 404, detail = "Training start request not found")
     if not backend.acknowledge_start_request(start_request_id):
         raise HTTPException(
             status_code = 409,
@@ -1120,6 +1138,8 @@ async def cancel_training_start_request(
     current_subject: str = Depends(get_current_subject),
 ):
     backend = get_training_backend()
+    if not _training_workspace_owned(backend, current_subject):
+        raise HTTPException(status_code = 404, detail = "Training start request not found")
     try:
         outcome, record = await asyncio.to_thread(
             backend.cancel_start_request,
@@ -1168,6 +1188,19 @@ async def start_training(
     try:
         logger.info(f"Starting training job with model: {request.model_name}")
         backend = get_training_backend()
+        if (
+            await asyncio.to_thread(backend.is_training_active)
+            and not _training_workspace_owned(backend, current_subject)
+        ):
+            return TrainingJobResponse(
+                job_id = "",
+                status = "error",
+                message = (
+                    "Training resources are currently in use by another account. "
+                    "Wait for that run to finish before starting a new one."
+                ),
+                error = "Training resources busy",
+            )
         job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:8]}"
         if request.start_request_id:
             # A retry of an id that already resolved replays its stored outcome even when the
@@ -1777,6 +1810,10 @@ async def stop_training(
     """
     try:
         backend = get_training_backend()
+        if not _training_workspace_owned(backend, current_subject):
+            return TrainingStopResponse(
+                status = "idle", message = "No training job is currently running"
+            )
         outcome = await asyncio.to_thread(
             _stop_training_if_active,
             backend,
@@ -1818,6 +1855,8 @@ async def reset_training(
     """Reset training state so the user can return to configuration."""
     try:
         backend = get_training_backend()
+        if not _training_workspace_owned(backend, current_subject):
+            return {"status": "ok"}
         result = await asyncio.to_thread(
             backend.reset_training_state,
             expected_job_id = body.expected_job_id if body is not None else None,
@@ -2001,6 +2040,8 @@ async def get_training_status(current_subject: str = Depends(get_current_subject
     """
     try:
         backend = get_training_backend()
+        if not _training_workspace_owned(backend, current_subject):
+            return _idle_training_status()
         for _ in range(3):
             identity_before = _training_status_identity(backend)
             is_active = await asyncio.to_thread(_run_active, backend)
@@ -2032,6 +2073,8 @@ async def get_training_metrics(
     """
     try:
         backend = get_training_backend()
+        if not _training_workspace_owned(backend, current_subject):
+            raise HTTPException(status_code = 404, detail = "Training job not found")
         job_id = getattr(backend, "current_job_id", "") or ""
         if getattr(backend, "_new_job_spawn_id", None) is not None or (
             expected_job_id is not None and expected_job_id != job_id
@@ -2095,6 +2138,10 @@ async def stream_training_progress(
       - Named `event:` types (progress, heartbeat, complete, error).
       - Reads `Last-Event-ID` on reconnect to replay missed steps.
     """
+    backend_for_workspace = get_training_backend()
+    if not _training_workspace_owned(backend_for_workspace, current_subject):
+        raise HTTPException(status_code = 404, detail = "Training job not found")
+
     last_event_id = request.headers.get("last-event-id")
     resume_from_step: Optional[int] = None
     if last_event_id is not None:
@@ -2750,6 +2797,7 @@ async def start_diffusion_training(
 
     # Resolve + contain the dataset and output paths BEFORE spawning: the trainer subprocess would otherwise resolve them relative to its own cwd.
     config = body.model_dump()
+    config["subject"] = current_subject
     try:
         from utils.paths import outputs_root, resolve_output_dir
 
@@ -2901,6 +2949,19 @@ async def start_diffusion_training(
     # only at service.start(), so a concurrent upload/delete could mutate the dataset meanwhile.
     reserved = False
     try:
+        owns_workspace = getattr(service, "owns_workspace", None)
+        if (
+            service.is_active()
+            and callable(owns_workspace)
+            and not owns_workspace(current_subject)
+        ):
+            raise HTTPException(
+                status_code = 409,
+                detail = (
+                    "Training resources are currently in use by another account. "
+                    "Wait for that run to finish before starting a new one."
+                ),
+            )
         service.reserve()
         reserved = True
         # Fail closed on clips BEFORE that discovery, which cannot see them: clip-only it

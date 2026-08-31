@@ -11,6 +11,11 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from storage import rag_db
+from utils.workspace_context import (
+    current_workspace_subject,
+    run_in_workspace,
+    workspace_thread,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +25,7 @@ FOLDER_SYNC = "folder_sync"
 _OWNER_ID = str(uuid.uuid4())
 _LEASE_SECONDS = 30
 _HEARTBEAT_SECONDS = 5
-_active: set[tuple[str, str]] = set()
+_active: set[tuple[str, str, str]] = set()
 _lock = threading.Lock()
 _wake = threading.Event()
 _thread: threading.Thread | None = None
@@ -74,22 +79,24 @@ def activate(kind: str, job_id: str) -> None:
     """Renew a committed claim until the local worker releases it."""
     global _thread
     with _lock:
-        _active.add((kind, job_id))
+        subject = current_workspace_subject()
+        _active.add((subject, kind, job_id))
         if _thread is None or not _thread.is_alive():
             try:
-                _thread = threading.Thread(target = _heartbeat, daemon = True)
+                _thread = workspace_thread(target = _heartbeat, daemon = True)
                 _thread.start()
             except Exception:
                 _thread = None
-                _active.discard((kind, job_id))
+                _active.discard((subject, kind, job_id))
                 raise
     _wake.set()
 
 
 def release(kind: str, job_id: str) -> None:
     """Stop renewal and remove this process's persisted claim."""
+    subject = current_workspace_subject()
     with _lock:
-        _active.discard((kind, job_id))
+        _active.discard((subject, kind, job_id))
     try:
         conn = rag_db.get_connection()
         try:
@@ -104,6 +111,21 @@ def release(kind: str, job_id: str) -> None:
         logger.warning("failed to release RAG job lease", exc_info = True)
 
 
+def _renew_workspace(active: tuple[tuple[str, str], ...]) -> None:
+    conn = rag_db.get_connection()
+    try:
+        deadline = _deadline()
+        for kind, job_id in active:
+            conn.execute(
+                "UPDATE rag_job_leases SET expires_at=? "
+                "WHERE kind=? AND job_id=? AND owner_id=?",
+                (deadline, kind, job_id, _OWNER_ID),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _heartbeat() -> None:
     while True:
         with _lock:
@@ -113,18 +135,18 @@ def _heartbeat() -> None:
             _wake.clear()
             continue
         try:
-            conn = rag_db.get_connection()
-            try:
-                deadline = _deadline()
-                for kind, job_id in active:
-                    conn.execute(
-                        "UPDATE rag_job_leases SET expires_at=? "
-                        "WHERE kind=? AND job_id=? AND owner_id=?",
-                        (deadline, kind, job_id, _OWNER_ID),
+            by_subject: dict[str, list[tuple[str, str]]] = {}
+            for subject, kind, job_id in active:
+                by_subject.setdefault(subject, []).append((kind, job_id))
+            for subject, workspace_jobs in by_subject.items():
+                try:
+                    run_in_workspace(subject, _renew_workspace, tuple(workspace_jobs))
+                except Exception:
+                    logger.warning(
+                        "failed to renew RAG job leases for workspace %s",
+                        subject,
+                        exc_info = True,
                     )
-                conn.commit()
-            finally:
-                conn.close()
         except Exception:
             logger.warning("failed to renew RAG job leases", exc_info = True)
         _wake.wait(_HEARTBEAT_SECONDS)

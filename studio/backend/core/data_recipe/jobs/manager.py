@@ -28,6 +28,7 @@ from .constants import (
 from .parse import apply_update, coerce_event, parse_log_message
 from .types import Job
 from loggers import get_logger
+from utils.workspace_context import current_workspace_subject
 
 logger = get_logger(__name__)
 
@@ -124,6 +125,19 @@ class JobManager:
         self._subs: list[queue.Queue] = []
         self._pump_thread: threading.Thread | None = None
         self._seq: int = 0
+        self._workspace_subject: str | None = None
+
+    def _workspace_owned_locked(self) -> bool:
+        return getattr(self, "_workspace_subject", None) in {
+            None,
+            current_workspace_subject(),
+        }
+
+    def owns_workspace(self, subject: str | None = None) -> bool:
+        """Whether the visible job belongs to this authenticated workspace."""
+        expected = subject or current_workspace_subject()
+        with self._lock:
+            return getattr(self, "_workspace_subject", None) in {None, expected}
 
     def start(
         self,
@@ -155,6 +169,7 @@ class JobManager:
                 raise RuntimeError("job already running")
 
             job_id = uuid.uuid4().hex
+            self._workspace_subject = current_workspace_subject()
             self._job = Job(job_id = job_id, status = "pending", started_at = time.time())
             self._job.progress_columns_total = llm_column_count
             self._job.source_progress_estimated_total = _github_source_estimated_total(recipe)
@@ -205,7 +220,11 @@ class JobManager:
     def cancel(self, job_id: str) -> bool:
         """Hard stop. We terminate the subprocess. Quick + reliable."""
         with self._lock:
-            if self._job is None or self._job.job_id != job_id:
+            if (
+                not self._workspace_owned_locked()
+                or self._job is None
+                or self._job.job_id != job_id
+            ):
                 return False
             if self._proc is None or not self._proc.is_alive():
                 return True
@@ -220,7 +239,11 @@ class JobManager:
     def get_status(self, job_id: str) -> dict | None:
         """UI-friendly structured snapshot; an alternative to SSE."""
         with self._lock:
-            if self._job is None or self._job.job_id != job_id:
+            if (
+                not self._workspace_owned_locked()
+                or self._job is None
+                or self._job.job_id != job_id
+            ):
                 return None
             job = self._job
             return {
@@ -288,12 +311,18 @@ class JobManager:
     def get_current_job_id(self) -> str | None:
         """Return current job_id (or None)."""
         with self._lock:
-            return None if self._job is None else self._job.job_id
+            if not self._workspace_owned_locked() or self._job is None:
+                return None
+            return self._job.job_id
 
     def get_analysis(self, job_id: str) -> dict | None:
         """Final profiling output (only after job completes)."""
         with self._lock:
-            if self._job is None or self._job.job_id != job_id:
+            if (
+                not self._workspace_owned_locked()
+                or self._job is None
+                or self._job.job_id != job_id
+            ):
                 return None
             return self._job.analysis
 
@@ -306,7 +335,11 @@ class JobManager:
     ) -> dict[str, Any] | None:
         """Load dataset page (offset + limit) and include total rows."""
         with self._lock:
-            if self._job is None or self._job.job_id != job_id:
+            if (
+                not self._workspace_owned_locked()
+                or self._job is None
+                or self._job.job_id != job_id
+            ):
                 return None
             in_memory_dataset = self._job.dataset
             artifact_path = self._job.artifact_path
@@ -404,7 +437,11 @@ class JobManager:
     ) -> Subscription | None:
         """SSE subscribe: get replay buffer + live events stream."""
         with self._lock:
-            if self._job is None or self._job.job_id != job_id:
+            if (
+                not self._workspace_owned_locked()
+                or self._job is None
+                or self._job.job_id != job_id
+            ):
                 return None
             q: queue.Queue = queue.Queue(maxsize = 2000)
             self._subs.append(q)

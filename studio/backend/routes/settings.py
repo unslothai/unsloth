@@ -2924,6 +2924,20 @@ def _require_ui_session(via_api_key: bool = Depends(authenticated_via_api_key)) 
         raise HTTPException(status_code = 403, detail = "Remote access requires a UI session.")
 
 
+def _require_install_admin(
+    current_subject: str = Depends(get_current_subject),
+) -> str:
+    """Protect controls that change exposure for the whole Studio process."""
+    from auth import storage
+
+    if not storage.is_admin(current_subject):
+        raise HTTPException(
+            status_code = 403,
+            detail = "Only the installation owner can change server access.",
+        )
+    return current_subject
+
+
 def _remote_access_response(request: Request) -> RemoteAccessResponse:
     return RemoteAccessResponse(**remote_access_status(request.app.state))
 
@@ -2931,7 +2945,7 @@ def _remote_access_response(request: Request) -> RemoteAccessResponse:
 @router.get("/remote-access", response_model = RemoteAccessResponse)
 def get_remote_access(
     request: Request,
-    current_subject: str = Depends(get_current_subject),
+    current_subject: str = Depends(_require_install_admin),
     _ui_session: None = Depends(_require_ui_session),
 ) -> RemoteAccessResponse:
     return _remote_access_response(request)
@@ -2940,7 +2954,7 @@ def get_remote_access(
 @router.post("/remote-access/start", response_model = RemoteAccessResponse)
 def start_remote_access_route(
     request: Request,
-    current_subject: str = Depends(get_current_subject),
+    current_subject: str = Depends(_require_install_admin),
     _ui_session: None = Depends(_require_ui_session),
 ) -> RemoteAccessResponse:
     try:
@@ -2954,7 +2968,7 @@ def start_remote_access_route(
 @router.post("/remote-access/stop", response_model = RemoteAccessResponse)
 def stop_remote_access_route(
     request: Request,
-    current_subject: str = Depends(get_current_subject),
+    current_subject: str = Depends(_require_install_admin),
     _ui_session: None = Depends(_require_ui_session),
 ) -> RemoteAccessResponse:
     try:
@@ -2978,7 +2992,7 @@ def stop_remote_access_route(
 def update_remote_access_auto_start(
     request: Request,
     payload: RemoteAccessAutoStartPayload,
-    current_subject: str = Depends(get_current_subject),
+    current_subject: str = Depends(_require_install_admin),
     _ui_session: None = Depends(_require_ui_session),
 ) -> RemoteAccessResponse:
     if bool(getattr(request.app.state, "remote_access_is_colab", False)):
@@ -3021,7 +3035,7 @@ def _lan_access_response(request: Request) -> LanAccessResponse:
 @router.get("/lan-access", response_model = LanAccessResponse)
 def get_lan_access(
     request: Request,
-    current_subject: str = Depends(get_current_subject),
+    current_subject: str = Depends(_require_install_admin),
     _ui_session: None = Depends(_require_ui_session),
 ) -> LanAccessResponse:
     return _lan_access_response(request)
@@ -3030,7 +3044,7 @@ def get_lan_access(
 @router.post("/lan-access/start", response_model = LanAccessResponse)
 def start_lan_access_route(
     request: Request,
-    current_subject: str = Depends(get_current_subject),
+    current_subject: str = Depends(_require_install_admin),
     _ui_session: None = Depends(_require_ui_session),
 ) -> LanAccessResponse:
     try:
@@ -3044,7 +3058,7 @@ def start_lan_access_route(
 @router.post("/lan-access/stop", response_model = LanAccessResponse)
 def stop_lan_access_route(
     request: Request,
-    current_subject: str = Depends(get_current_subject),
+    current_subject: str = Depends(_require_install_admin),
     _ui_session: None = Depends(_require_ui_session),
 ) -> LanAccessResponse:
     try:
@@ -3059,7 +3073,7 @@ def stop_lan_access_route(
 def update_lan_access_auto_start(
     request: Request,
     payload: LanAccessAutoStartPayload,
-    current_subject: str = Depends(get_current_subject),
+    current_subject: str = Depends(_require_install_admin),
     _ui_session: None = Depends(_require_ui_session),
 ) -> LanAccessResponse:
     if bool(getattr(request.app.state, "lan_access_is_colab", False)):
@@ -3153,7 +3167,7 @@ def _keyless_api_access_response(request: Request) -> KeylessApiAccessResponse:
 @router.get("/keyless-api-access", response_model = KeylessApiAccessResponse)
 def get_keyless_api_access(
     request: Request,
-    current_subject: str = Depends(get_current_subject),
+    current_subject: str = Depends(_require_install_admin),
     _ui_session: None = Depends(_require_ui_session_for_keyless),
 ) -> KeylessApiAccessResponse:
     return _keyless_api_access_response(request)
@@ -3163,7 +3177,7 @@ def get_keyless_api_access(
 def update_keyless_api_access(
     request: Request,
     payload: KeylessApiAccessPayload,
-    current_subject: str = Depends(get_current_subject),
+    current_subject: str = Depends(_require_install_admin),
     _ui_session: None = Depends(_require_ui_session_for_keyless),
 ) -> KeylessApiAccessResponse:
     """Choose which routes are served without an API key, and whether tools come too."""

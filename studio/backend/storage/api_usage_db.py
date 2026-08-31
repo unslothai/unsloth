@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from storage.studio_db import get_connection, is_sqlite_busy_error
+from utils.workspace_context import run_in_workspace
 
 
 # Kept aligned with the API monitor's defensive upper bound. The storage layer
@@ -235,7 +236,12 @@ class ApiUsageWriter:
                 busy_failures = 0
                 while True:
                     try:
-                        self._sink(item)  # type: ignore[arg-type]
+                        receipt = item  # type: ignore[assignment]
+                        run_in_workspace(
+                            receipt.subject,
+                            self._sink,
+                            receipt,
+                        )
                         break
                     except sqlite3.OperationalError as exc:
                         if not _is_busy_error(exc):

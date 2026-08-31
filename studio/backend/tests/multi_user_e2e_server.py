@@ -45,6 +45,22 @@ app.include_router(auth.router, prefix = "/api/auth")
 app.include_router(chat_history.router, prefix = "/api/chat")
 
 
+@app.get("/api/models/list")
+def empty_model_list():
+    """Keep the focused browser harness visually honest without loading the ML graph."""
+    return {"models": [], "default_models": []}
+
+
+@app.get("/api/inference/status")
+def idle_inference_status():
+    return {
+        "active_model": None,
+        "is_vision": False,
+        "loading": [],
+        "loaded": [],
+    }
+
+
 @app.get("/{requested_path:path}")
 def serve_frontend(requested_path: str):
     """Serve built assets when present and index.html for client-side routes."""
