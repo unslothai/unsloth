@@ -20,6 +20,7 @@ import types
 
 import pytest
 
+from core.inference import llama_cpp as mod
 from core.inference.llama_cpp import LlamaCppBackend
 
 
@@ -79,7 +80,17 @@ def _load_site_guard() -> str:
     while start >= 0 and not lines[start].lstrip().startswith("if "):
         start -= 1
     assert start >= 0, "no enclosing if statement"
-    return textwrap.dedent("\n".join(lines[start : hit + 1]))
+    # Forward to the END of the block, not just to the marker line. Stopping at the
+    # marker cut the message's own continuation literal out of the extract, so a mutant
+    # that rewrote it went undetected -- the test read a line that had not changed.
+    base = len(lines[start]) - len(lines[start].lstrip())
+    end = hit
+    while end + 1 < len(lines):
+        nxt = lines[end + 1]
+        if nxt.strip() and (len(nxt) - len(nxt.lstrip())) <= base:
+            break
+        end += 1
+    return textwrap.dedent("\n".join(lines[start : end + 1]))
 
 
 class TestItNamesTheCause:
@@ -210,6 +221,7 @@ class TestMacOSIsNotACpuVerdict:
     @pytest.mark.parametrize("torch_state", ["absent", "no_cuda", "rocm_like"])
     def test_the_reason_names_metal_rather_than_blaming_torch(self, monkeypatch, torch_state):
         _clear_masks(monkeypatch)
+        monkeypatch.setattr(mod, "_metal_capable_host", lambda: True)
         monkeypatch.setattr(sys, "platform", "darwin")
         monkeypatch.setitem(
             sys.modules,
@@ -269,7 +281,7 @@ class TestItDoesNotAssertTheLaunchOutcome:
             line for line in _load_site_guard().splitlines() if not line.lstrip().startswith("#")
         )
         assert "could not enumerate any GPU" in body
-        for claim in ("will run on the CPU", "live in system RAM"):
+        for claim in ("will run on the CPU", "live in system RAM", "left placement to"):
             assert claim not in body, f"the message must not assert {claim!r}"
 
     def test_an_explicit_gpu_pick_is_excluded(self):
@@ -287,3 +299,55 @@ class TestItDoesNotAssertTheLaunchOutcome:
         restore = src.find("gpu_indices = sorted(gpu_ids)")
         assert warn != -1 and restore != -1
         assert warn < restore, "if the pin moved above the warning, re-derive this guard"
+
+
+class TestIntelMacGetsItsRealReason:
+    """The load site warns on an Intel Mac, since auto_detect_backend resolves it to CPU.
+    The explainer has to agree: a blanket Darwin branch would answer "macOS offloads
+    through Metal" on a host that offloads through nothing."""
+
+    def test_an_intel_mac_does_not_get_the_metal_answer(self, monkeypatch):
+        _clear_masks(monkeypatch)
+        monkeypatch.setattr(mod, "_metal_capable_host", lambda: False)
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.setitem(sys.modules, "torch", _fake_torch(available = False))
+        msg = LlamaCppBackend._explain_empty_gpu_probe()
+        assert "Metal" not in msg, "an Intel Mac is not offloading to Metal"
+        assert "no usable CUDA or HIP" in msg
+
+    def test_apple_silicon_still_gets_it(self, monkeypatch):
+        _clear_masks(monkeypatch)
+        monkeypatch.setattr(mod, "_metal_capable_host", lambda: True)
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.setitem(sys.modules, "torch", _fake_torch(available = False))
+        assert "Metal" in LlamaCppBackend._explain_empty_gpu_probe()
+
+    def test_the_explainer_and_the_load_site_use_the_same_check(self):
+        """Two different notions of "is this Mac fine" is how they drifted apart."""
+        import inspect
+
+        src = inspect.getsource(mod.LlamaCppBackend._explain_empty_gpu_probe)
+        assert "_metal_capable_host()" in src
+        assert 'sys.platform == "darwin"' not in src
+        assert "_metal_capable_host()" in _load_site_guard()
+
+
+class TestItDoesNotClaimTheFitterRuns:
+    """use_fit is the internal default, read before extra_args are appended to the
+    command; a last-wins ``--fit off`` there wins. The later code asks
+    fit_is_effectively_on for exactly this distinction, and cmd does not exist yet at
+    the warning, so the message must not mention the fitter at all."""
+
+    def test_the_message_does_not_mention_fit(self):
+        body = "\n".join(
+            line for line in _load_site_guard().splitlines() if not line.lstrip().startswith("#")
+        )
+        assert "--fit" not in body
+
+    def test_the_command_is_built_after_the_warning(self):
+        import inspect
+
+        src = inspect.getsource(mod.LlamaCppBackend.load_model)
+        assert src.find("could not enumerate any GPU") < src.find("_fitter_runs = fit_is_effectively_on"), (
+            "if the effective fitter state became available above the warning, re-derive this"
+        )

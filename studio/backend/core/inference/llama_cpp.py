@@ -8994,10 +8994,12 @@ class LlamaCppBackend:
         """
         try:
             binary = binary or LlamaCppBackend._find_llama_server_binary()
-            if sys.platform == "darwin":
-                # Not a CPU verdict: this probe only ever sees CUDA and HIP, so it is
-                # empty on every Mac, and an Apple Silicon one still offloads to Metal.
-                return "this probe reads CUDA and HIP only; macOS offloads through Metal"
+            if _metal_capable_host():
+                # Not a CPU verdict: the probe reads CUDA and HIP, so it is empty on
+                # every Mac, and an Apple Silicon one still offloads to Metal. Same
+                # check as the load site, so an Intel Mac -- which auto_detect_backend
+                # resolves to CPU -- falls through and gets its real reason instead.
+                return "this probe reads CUDA and HIP only; Apple Silicon offloads through Metal"
             if LlamaCppBackend._is_vulkan_backend(binary):
                 return "the Vulkan probe reported no device"
 
@@ -20240,11 +20242,13 @@ class LlamaCppBackend:
                         and not _arch_gate_forced_cpu
                         and not _metal_capable_host()
                     ):
-                        # States what this process observed, and stops there. It does
-                        # NOT say the model will run on the CPU: llama.cpp enumerates
-                        # devices itself and still gets --fit on, so it can place on a
-                        # GPU this probe never saw. An explicit gpu_ids pick is pinned
-                        # for the child further below, which is why it is excluded too.
+                        # States what this process observed, and stops there. It says
+                        # nothing about where the model ends up or what runs it: llama.cpp
+                        # enumerates devices itself, and whether the fitter runs is not
+                        # known here either, since a last-wins --fit off in extra_args is
+                        # appended to the command much further down (the later code asks
+                        # fit_is_effectively_on for exactly that reason). An explicit
+                        # gpu_ids pick is pinned for the child below, so it is excluded.
                         #
                         # _detected_gpus, not gpus: both Manual modes empty `gpus` on
                         # purpose to stand the planner down, and the GPU is fully used
@@ -20256,8 +20260,8 @@ class LlamaCppBackend:
                         # this line (auto_detect_backend picks Metal on is_apple_silicon
                         # and falls back to CPU otherwise).
                         logger.warning(
-                            "Studio could not enumerate any GPU, so it planned this load "
-                            "blind and left placement to llama.cpp --fit: %s",
+                            "Studio could not enumerate any GPU, so this load was planned "
+                            "without device information: %s",
                             LlamaCppBackend._explain_empty_gpu_probe(binary),
                         )
                     # The planner ran to completion over a real device list and
