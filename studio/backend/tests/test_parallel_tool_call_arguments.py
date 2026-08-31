@@ -727,9 +727,7 @@ def test_a_repeated_names_metadata_waits_for_the_call_it_announced():
     # the closed call's and left the new call unsigned, and Gemini validates a
     # signature against the call it is replayed on.
     turn = _Turn()
-    turn.merge_structured(
-        [_delta(0, "lookup", '{"q":"a"}') | {"extra_content": {"sig": "A"}}]
-    )
+    turn.merge_structured([_delta(0, "lookup", '{"q":"a"}') | {"extra_content": {"sig": "A"}}])
     turn.merge_structured([_delta(0, "lookup", None) | {"extra_content": {"sig": "B"}}])
     turn.merge_structured([_delta(0, None, '{"q":"b"}')])
 
@@ -740,9 +738,7 @@ def test_a_repeated_names_metadata_waits_for_the_call_it_announced():
 
     # No object followed, so the repeated name really was that call's resent.
     kept = _Turn()
-    kept.merge_structured(
-        [_delta(0, "lookup", '{"q":"a"}') | {"extra_content": {"own": 1}}]
-    )
+    kept.merge_structured([_delta(0, "lookup", '{"q":"a"}') | {"extra_content": {"own": 1}}])
     kept.merge_structured([_delta(0, "lookup", None) | {"extra_content": {"sig": "B"}}])
     assert kept.calls()[0]["extra_content"] == {"own": 1, "sig": "B"}
 
