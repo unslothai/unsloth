@@ -363,11 +363,24 @@ def _glue_line_continuations(text: str) -> list[tuple[int, str]]:
     return out
 
 
+# `pip uninstall -y x && pip install x==1` is two commands with two actions. Without the
+# split the regex hands the whole line to the first one, so the reinstall lands in the
+# uninstall's package list.
+_SHELL_CHAIN_RE = re.compile(r"\s*(?:&&|\|\||;)\s*")
+
+
+def _split_chained(line: str) -> list[str]:
+    """One shell line -> one entry per command. Only the first carries the `!`."""
+    head, *rest = _SHELL_CHAIN_RE.split(line)
+    return [head] + [f"!{part}" for part in (p.strip() for p in rest) if part]
+
+
 def iter_pip_invocations(install_cell: str) -> Iterator[PipInvocation]:
     for line_no, line in _glue_line_continuations(install_cell):
-        inv = parse_pip_line(line, line_no)
-        if inv is not None:
-            yield inv
+        for command in _split_chained(line):
+            inv = parse_pip_line(command, line_no)
+            if inv is not None:
+                yield inv
 
 
 # Spec parsing: only what we need (no full PEP 440).
@@ -606,8 +619,9 @@ def _effective_version(install_cell: str, target: str, resolved: str | None) -> 
 
     Only `==` names a version. A range bound moves a version that is already known and
     otherwise leaves it unknown, because pip resolves the newest release satisfying the
-    requirement and the bound does not name that. So `<` is out entirely, as resolved_set
-    leaves it out (the answer is the highest release strictly below it), and a floor on an
+    requirement and the bound does not name that. `~=V` counts as the floor V it implies.
+    `<` is out entirely, as resolved_set leaves it out (the answer is the highest release
+    strictly below it), which is also why `~=`'s ceiling is left alone; and a floor on an
     absent package leaves it absent rather than pinning it to the floor.
     """
     current = resolved
@@ -624,7 +638,7 @@ def _effective_version(install_cell: str, target: str, resolved: str | None) -> 
                     current = ver
                 elif current is None:
                     continue
-                elif op == ">=" and cmp_versions(ver, current) > 0:
+                elif op in (">=", "~=") and cmp_versions(ver, current) > 0:
                     current = ver
                 elif op == "<=" and cmp_versions(ver, current) < 0:
                     current = ver

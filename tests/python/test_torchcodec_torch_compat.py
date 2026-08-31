@@ -428,6 +428,49 @@ def test_notebook_validator_keeps_an_absent_package_unknown():
     assert len(nv.rule_inst_004_torchcodec_torch(exact, {}, "nb.ipynb", 0)) == 1
 
 
+def test_notebook_validator_splits_chained_shell_commands():
+    """`pip uninstall x && pip install x==V` is two actions on one line. Read as one, the
+    reinstall lands in the uninstall's package list and the pairing disappears."""
+    nv = _load_notebook_validator_module()
+
+    invocations = list(
+        nv.iter_pip_invocations('!pip uninstall -y torchcodec && pip install "torchcodec==0.11.1"')
+    )
+    assert [inv.action for inv in invocations] == ["uninstall", "install"]
+    assert [inv.packages for inv in invocations] == [["torchcodec"], ["torchcodec==0.11.1"]]
+
+    for sep in ("&&", ";", "||"):
+        cell = (
+            f'!pip uninstall -y torchcodec {sep} pip install "torchcodec==0.11.1"\n'
+            '!pip install "torch==2.12.0"'
+        )
+        assert len(nv.rule_inst_004_torchcodec_torch(cell, COLAB_TORCH211, "nb.ipynb", 0)) == 1, sep
+
+    healed = (
+        '!pip uninstall -y torchcodec && pip install "torchcodec==0.13.0"\n'
+        '!pip install "torch==2.12.0"'
+    )
+    assert nv.rule_inst_004_torchcodec_torch(healed, COLAB_TORCH211, "nb.ipynb", 0) == []
+
+
+def test_notebook_validator_reads_compatible_release_pins():
+    """`~=2.12.0` is `>=2.12.0` with a ceiling, so its floor moves the baseline."""
+    nv = _load_notebook_validator_module()
+
+    upgraded = '!pip install "torch~=2.12.0"'
+    findings = nv.rule_inst_004_torchcodec_torch(upgraded, COLAB_TORCH211, "nb.ipynb", 0)
+    assert len(findings) == 1
+    assert "torchcodec>=0.12.0" in findings[0].hint
+
+    # Below the baseline it is a no-op, like any other floor.
+    assert nv.rule_inst_004_torchcodec_torch(
+        '!pip install "torch~=2.9.0"', COLAB_TORCH211, "nb.ipynb", 0
+    ) == []
+
+    remedied = '!pip install "torch==2.12.0" "torchcodec~=0.13.0"'
+    assert nv.rule_inst_004_torchcodec_torch(remedied, COLAB_TORCH211, "nb.ipynb", 0) == []
+
+
 def test_select_torchcodec_spec_tracks_torch_minor():
     ips = _load_install_python_stack()
     assert ips._select_torchcodec_spec("2.11.0+cu128") == "torchcodec>=0.11.0,<0.12.0"
