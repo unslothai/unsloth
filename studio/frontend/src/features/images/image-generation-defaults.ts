@@ -4,6 +4,21 @@
 // Generation defaults when the model is unrecognised. Also seeds the Create sliders.
 export const DEFAULT_GEN = { steps: 9, guidance: 0 };
 
+/** Stable identity for defaults seeded from a model already resident in another client. */
+export function residentImageDefaultsSeedKey(input: {
+  repoId: string;
+  baseRepo?: string | null;
+  family?: string | null;
+  modelKind?: string | null;
+}): string {
+  return JSON.stringify([
+    input.repoId,
+    input.baseRepo ?? null,
+    input.family ?? null,
+    input.modelKind ?? null,
+  ]);
+}
+
 const MODEL_DEFAULTS: Array<{
   match: string;
   family: string;

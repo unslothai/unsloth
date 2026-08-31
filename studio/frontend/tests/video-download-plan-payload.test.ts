@@ -18,6 +18,15 @@ const source = readFileSync(
   fileURLToPath(new URL("../src/features/video/video-page.tsx", import.meta.url)),
   "utf8",
 );
+const familyRoutingSource = readFileSync(
+  fileURLToPath(
+    new URL(
+      "../src/features/video/video-generation-defaults.ts",
+      import.meta.url,
+    ),
+  ),
+  "utf8",
+);
 
 test("the video download plan is asked with the selected precision", () => {
   const call = source.slice(
@@ -108,14 +117,14 @@ test("a routed H3 pipeline pick asks for the task instead of loading a default",
   );
   assert.ok(routeEffect.includes("setPendingH3Load({"));
   // One predicate, so the two entry points cannot drift apart again.
-  assert.ok(source.includes("function isH3PipelinePick("));
+  assert.ok(familyRoutingSource.includes("function isH3PipelinePick("));
   assert.ok(source.includes("isH3PipelinePick(id, spec.kind, familyOverride)"));
   assert.ok(
     source.includes('isH3PipelinePick(id, "pipeline", familyOverride)'),
   );
-  const predicate = source.slice(
-    source.indexOf("function isH3PipelinePick("),
-    source.indexOf("type PickRevert"),
+  const predicate = familyRoutingSource.slice(
+    familyRoutingSource.indexOf("function isH3PipelinePick("),
+    familyRoutingSource.indexOf("const MODEL_DEFAULTS"),
   );
   assert.ok(
     predicate.includes('familyTokenMatches("minimax-h3", familyOverride)'),

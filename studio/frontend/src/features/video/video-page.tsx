@@ -115,7 +115,6 @@ import { cn } from "@/lib/utils";
 import { resolveDiffusionGgufFilename } from "@/lib/diffusion-gguf-filename";
 import { createPickGuard, runGgufRepoPick } from "@/lib/diffusion-gguf-pick";
 import { diffusionRoutePick } from "@/lib/diffusion-route-pick";
-import { familyTokenMatches } from "@/lib/family-token-matching";
 import {
   PRECISION_REFUSAL_TITLE,
   denseTextEncoderBuildLabel,
@@ -151,6 +150,7 @@ import { ReferenceImageEditor } from "./reference-image-editor";
 import { type ReferenceMedia, ReferenceMediaPicker } from "./reference-picker";
 import {
   VIDEO_DEFAULT_GEN,
+  isH3PipelinePick,
   videoDefaultsFor as defaultsFor,
 } from "./video-generation-defaults";
 import {
@@ -763,33 +763,6 @@ type PendingH3Load = {
   source: ModelSelectorChangeMeta["source"];
   token: number;
 };
-
-/** Whether a pick is the H3 base pipeline, whose denoiser partition the user must choose.
- *  Shared by both entry points: a chat-picker pick arrives as ?model= and reaches loadOrStage
- *  without passing through handleModelSelect, so checking it in one place staged the default
- *  fl2va partition, tens of GB, with no way to ask for References.
- *
- *  An on-device copy counts. The same pipeline added as a directory reaches the generic
- *  local-pipeline branch, which a Hub-id equality test never recognises, so an omitted h3_task
- *  pinned it to fl2va and its transformer_ref partition was unreachable even with the weights
- *  sitting on disk. Matched on the final path segment, the same way a local checkpoint's family
- *  is read off its filename elsewhere. */
-function isH3PipelinePick(
-  repoId: string,
-  kind: VideoLoadOptions["kind"],
-  familyOverride?: string | null,
-): boolean {
-  if (kind !== "pipeline") return false;
-  if (
-    familyOverride &&
-    (familyTokenMatches("minimax-h3", familyOverride) ||
-      familyOverride.toLowerCase() === "h3")
-  ) {
-    return true;
-  }
-  const leaf = repoId.replace(/\\/g, "/").replace(/\/+$/, "").split("/").at(-1) ?? repoId;
-  return familyTokenMatches("minimax-h3", leaf);
-}
 
 // What a pick optimistically replaced, so a load that never takes can put all of it back. The quant
 // label and the generation recipe move together at pick time, so they have to roll back together too.

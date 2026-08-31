@@ -131,7 +131,11 @@ import {
 } from "@/lib/diffusion-route-search";
 import { toast } from "@/lib/toast";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
-import { DEFAULT_GEN, defaultsFor } from "./image-generation-defaults";
+import {
+  DEFAULT_GEN,
+  defaultsFor,
+  residentImageDefaultsSeedKey,
+} from "./image-generation-defaults";
 
 import {
   type ControlNetSpecInput,
@@ -2349,9 +2353,20 @@ export function ImagesPage({
   useEffect(() => {
     const repoId = status?.loaded ? status.repo_id : null;
     if (!repoId) return;
-    if (lastLoad.current) return;
-    if (seededResident.current === repoId) return;
-    seededResident.current = repoId;
+    const residentKey = residentImageDefaultsSeedKey({
+      repoId,
+      baseRepo: status?.base_repo,
+      family: status?.family,
+      modelKind: status?.model_kind,
+    });
+    if (seededResident.current === residentKey) return;
+    // A direct pick already seeded its optimistic recipe. Record the first resolved identity so a
+    // later family-only replacement by another client can still reseed this page.
+    if (lastLoad.current && seededResident.current === null) {
+      seededResident.current = residentKey;
+      return;
+    }
+    seededResident.current = residentKey;
     // Wire Reapply to the resident model too, so an advanced-option reload works without
     // re-picking. Only a full pipeline is reloadable by repo id alone; a resident GGUF/single_file
     // carries no checkpoint filename, so leave the target null for those and the button hidden.

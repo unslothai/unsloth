@@ -461,7 +461,7 @@ def test_custom_inventory_classifies_an_opaque_single_file_safetensors_checkpoin
     rows = _scan_custom_folder(root)
 
     assert [(Path(row.path), row.model_format, row.task) for row in rows] == [
-        (checkpoint, "safetensors", None)
+        (checkpoint / "portrait.safetensors", "safetensors", None)
     ]
     assert rows[0].capabilities.can_chat is False
     assert rows[0].capabilities.can_train is False
@@ -504,6 +504,22 @@ def test_custom_inventory_keeps_file_rows_in_a_multi_checkpoint_registration(tmp
         selected,
         sibling,
     }
+
+
+def test_custom_inventory_preserves_classified_models_before_loose_root_candidates(tmp_path):
+    """Override-only checkpoints must not consume the cap ahead of usable pipelines."""
+    from hub.services.models import local_inventory
+
+    root = tmp_path / "custom"
+    for index in range(local_inventory._MAX_MODELS_PER_CUSTOM_FOLDER):
+        _touch(root / f"opaque-{index:03d}.safetensors")
+    pipeline = root / "configured-pipeline"
+    _touch(pipeline / "model_index.json")
+
+    rows = local_inventory._scan_custom_folder(root)
+
+    assert Path(rows[0].path) == pipeline
+    assert len(rows) == local_inventory._MAX_MODELS_PER_CUSTOM_FOLDER
 
 
 def test_custom_inventory_does_not_detach_weights_from_parent_config(tmp_path):

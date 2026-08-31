@@ -29,15 +29,18 @@ test("image-edit and H3 workflow gates use the shared matcher", () => {
   );
   assert.match(picker, /return familyTokenMatches\(keyword, id\)/);
 
-  const video = readFileSync(
-    new URL("../src/features/video/video-page.tsx", import.meta.url),
+  const videoRouting = readFileSync(
+    new URL(
+      "../src/features/video/video-generation-defaults.ts",
+      import.meta.url,
+    ),
     "utf8",
   );
-  const start = video.indexOf("function isH3PipelinePick(");
-  const end = video.indexOf("type PickRevert", start);
+  const start = videoRouting.indexOf("function isH3PipelinePick(");
+  const end = videoRouting.indexOf("const MODEL_DEFAULTS", start);
   assert.ok(start >= 0 && end > start);
   assert.match(
-    video.slice(start, end),
-    /repoId\.replace\(\/\\\\\/g, "\/"\).*familyTokenMatches\("minimax-h3", leaf\)/s,
+    videoRouting.slice(start, end),
+    /familyTokenMatches\("minimax-h3", leaf\)/,
   );
 });

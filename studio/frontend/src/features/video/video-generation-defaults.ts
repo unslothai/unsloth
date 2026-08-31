@@ -1,7 +1,30 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { familyTokenMatches } from "../../lib/family-token-matching.ts";
+
 export const VIDEO_DEFAULT_GEN = { steps: 8, guidance: 1 };
+
+/** Whether a pipeline pick needs MiniMax H3's FL2VA/Ref2VA workflow selector. */
+export function isH3PipelinePick(
+  repoId: string,
+  kind: "gguf" | "single_file" | "pipeline",
+  familyOverride?: string | null,
+): boolean {
+  if (kind !== "pipeline") return false;
+  if (familyOverride && familyOverride !== "auto") {
+    return (
+      familyTokenMatches("minimax-h3", familyOverride) ||
+      familyOverride.toLowerCase() === "h3"
+    );
+  }
+  const leaf = repoId
+    .replace(/\\/g, "/")
+    .replace(/\/+$/, "")
+    .split("/")
+    .at(-1) ?? repoId;
+  return familyTokenMatches("minimax-h3", leaf);
+}
 
 // Per-model generation defaults, matched by repository substring from most specific to broadest.
 const MODEL_DEFAULTS: Array<{

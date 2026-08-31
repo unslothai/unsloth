@@ -807,7 +807,9 @@ def _scan_custom_folder(
                 if _is_inert_safetensors(model)
             )
 
-    generic = root_candidates + [
+    # Preserve architecture-classified rows first. Override-only loose checkpoints may use only
+    # the remaining inventory capacity and must never displace a runnable pipeline/model.
+    generic = [
         m
         for m in (
             _scan_models_dir(
@@ -827,7 +829,7 @@ def _scan_custom_folder(
         )
         if _is_supported(m)
         if not any(p in (".studio_links", "ollama_links") for p in Path(m.path).parts)
-    ]
+    ] + root_candidates
     selectable = []
     for model in generic:
         if model.model_format != "gguf" or model.partial:

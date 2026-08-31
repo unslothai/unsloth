@@ -992,10 +992,23 @@ def _classify_local_path(
             )
         else:
             size_bytes = _sum_file_sizes(f for f in files if _is_checkpoint_weight_file(f))
+        # A bare checkpoint directory is only a container around one loadable file. Local media
+        # pages route exact .safetensors paths through from_single_file; keeping the directory as
+        # the load id incorrectly sends it through the Diffusers pipeline loader instead.
+        exact_checkpoint = (
+            safetensors_files[0]
+            if is_bare_single_file_safetensors and scan_path.is_dir() and source != "hf_cache"
+            else None
+        )
+        exact_load_path = (
+            load_path / exact_checkpoint.relative_to(scan_path)
+            if exact_checkpoint is not None
+            else load_path
+        )
         rows.append(
             _local_model_info(
-                scan_path = scan_path,
-                load_path = load_path,
+                scan_path = exact_checkpoint or scan_path,
+                load_path = exact_load_path,
                 source = source,
                 model_format = model_format,
                 display_name = display_name,

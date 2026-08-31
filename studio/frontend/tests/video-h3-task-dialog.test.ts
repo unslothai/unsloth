@@ -22,6 +22,15 @@ const source = readFileSync(
   fileURLToPath(new URL("../src/features/video/video-page.tsx", import.meta.url)),
   "utf8",
 );
+const familyRoutingSource = readFileSync(
+  fileURLToPath(
+    new URL(
+      "../src/features/video/video-generation-defaults.ts",
+      import.meta.url,
+    ),
+  ),
+  "utf8",
+);
 
 test("only a non-hub pick skips the plan, so a cached hub pick still gets one", () => {
   // The bypass is keyed on the pick's SOURCE. A curated artifact already on disk is still
@@ -41,14 +50,14 @@ test("only a non-hub pick skips the plan, so a cached hub pick still gets one", 
 });
 
 test("an on-device copy of the pipeline reaches the same dialog", () => {
-  const predicate = source.slice(
-    source.indexOf("function isH3PipelinePick("),
-    source.indexOf("// What a pick optimistically replaced"),
+  const predicate = familyRoutingSource.slice(
+    familyRoutingSource.indexOf("function isH3PipelinePick("),
+    familyRoutingSource.indexOf("const MODEL_DEFAULTS"),
   );
   // Not a Hub-id equality test any more: the local directory never matches one. Match only the
   // repository/directory basename so an owner named minimax-h3 cannot classify an unrelated repo.
   assert.match(predicate, /replace\(\/\\\\\/g, "\/"\)/);
-  assert.match(predicate, /split\("\/"\)\.at\(-1\)/);
+  assert.match(predicate, /split\("\/"\)\s*\.at\(-1\)/);
   assert.match(predicate, /familyTokenMatches\("minimax-h3", leaf\)/);
   // And the generic local-pipeline branch consults it, not only the curated branch.
   assert.equal(

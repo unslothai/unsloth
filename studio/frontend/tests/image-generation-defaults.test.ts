@@ -5,8 +5,56 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { defaultsFor } from "../src/features/images/image-generation-defaults.ts";
-import { videoDefaultsFor } from "../src/features/video/video-generation-defaults.ts";
+import {
+  defaultsFor,
+  residentImageDefaultsSeedKey,
+} from "../src/features/images/image-generation-defaults.ts";
+import {
+  isH3PipelinePick,
+  videoDefaultsFor,
+} from "../src/features/video/video-generation-defaults.ts";
+
+test("an explicit video family is authoritative for the H3 task dialog", () => {
+  assert.equal(
+    isH3PipelinePick("C:/models/MiniMax-H3", "pipeline", "ltx-2"),
+    false,
+    "a misleading directory name must not override explicit LTX architecture evidence",
+  );
+  assert.equal(
+    isH3PipelinePick("C:/models/opaque", "pipeline", "minimax-h3"),
+    true,
+  );
+  assert.equal(isH3PipelinePick("C:/models/MiniMax-H3", "pipeline"), true);
+  assert.equal(
+    isH3PipelinePick("C:/models/MiniMax-H3", "single_file", "minimax-h3"),
+    false,
+  );
+});
+
+test("resident image default identity includes the resolved family", () => {
+  const zImage = residentImageDefaultsSeedKey({
+    repoId: "C:/models/opaque",
+    baseRepo: null,
+    family: "z-image",
+    modelKind: "pipeline",
+  });
+  const flux = residentImageDefaultsSeedKey({
+    repoId: "C:/models/opaque",
+    baseRepo: null,
+    family: "flux.1",
+    modelKind: "pipeline",
+  });
+  assert.notEqual(zImage, flux);
+  assert.equal(
+    flux,
+    residentImageDefaultsSeedKey({
+      repoId: "C:/models/opaque",
+      baseRepo: null,
+      family: "flux.1",
+      modelKind: "pipeline",
+    }),
+  );
+});
 
 test("distinguishes Klein base checkpoints from distilled checkpoints", () => {
   for (const size of ["4B", "9B"]) {
