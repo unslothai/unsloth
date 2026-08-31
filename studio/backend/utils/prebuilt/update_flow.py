@@ -20,7 +20,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, Sequence
 
 import structlog
 
@@ -53,23 +53,25 @@ class InstallerExit(RuntimeError):
         self.returncode = returncode
 
 
-_PREBUILT_FALLBACK_PREFIX = "[llama-prebuilt] prebuilt fallback reason:"
-_PREBUILT_FAILED_PREFIX = "[llama-prebuilt] prebuilt install failed:"
+# whisper.cpp updates run through this same helper, so match either installer's
+# log prefix rather than llama's alone.
+_PREBUILT_REASON_RE = re.compile(
+    r"^\[[\w.-]+-prebuilt\]\s+prebuilt (?:fallback reason|install failed):\s*(?P<detail>.*)$"
+)
 
 
-def _installer_actionable_detail(lines: list[str]) -> str | None:
+def _installer_actionable_detail(lines: Sequence[str]) -> str | None:
     """Pull a short, user-facing reason out of installer stdout.
 
-      The installer logs the real failure before dumping a long system report
-    (Windows PATH lines, nvidia-smi, etc.). A raw tail of stdout therefore hides
-      rate-limit and network errors behind noise (#9970).
+    The installer logs the real failure before dumping a long system report
+    (Windows PATH lines, nvidia-smi, ldd), so a raw tail hides rate-limit and
+    network errors behind noise (#9970).
     """
     for line in lines:
         stripped = line.strip()
-        if stripped.startswith(_PREBUILT_FALLBACK_PREFIX):
-            return stripped[len(_PREBUILT_FALLBACK_PREFIX) :].strip()
-        if stripped.startswith(_PREBUILT_FAILED_PREFIX):
-            return stripped[len(_PREBUILT_FAILED_PREFIX) :].strip()
+        match = _PREBUILT_REASON_RE.match(stripped)
+        if match is not None:
+            return match.group("detail").strip()
     for line in lines:
         stripped = line.strip()
         if "GitHub API returned 403" in stripped or "rate limit exceeded" in stripped.lower():
@@ -77,15 +79,22 @@ def _installer_actionable_detail(lines: list[str]) -> str | None:
     return None
 
 
-def format_installer_failure_message(returncode: int, lines: list[str]) -> str:
-    """Build an installer failure message that prefers actionable lines over tail noise."""
-    detail = _installer_actionable_detail(lines)
+def format_installer_failure_message(
+    returncode: int, lines: Sequence[str], actionable_lines: Sequence[str] = ()
+) -> str:
+    """Build an installer failure message that prefers actionable lines over tail noise.
+
+    *actionable_lines* are the ones stream_installer kept as they streamed: the
+    system report is long enough on a Linux CUDA host to push the reason out of
+    the bounded tail, so the tail alone is not a reliable place to find it.
+    """
+    detail = _installer_actionable_detail(actionable_lines) or _installer_actionable_detail(lines)
     if detail:
         lowered = detail.lower()
         if "github api returned 403" in lowered or "rate limit" in lowered:
             return (
                 f"installer exited {returncode}: GitHub API rate limit exceeded while "
-                "fetching llama.cpp releases. Set GH_TOKEN or GITHUB_TOKEN to avoid "
+                "fetching prebuilt releases. Set GH_TOKEN or GITHUB_TOKEN to avoid "
                 "GitHub API rate limits."
             )
         clipped = detail if len(detail) <= 1500 else detail[:1497] + "..."
@@ -418,12 +427,15 @@ def stream_installer(
     watchdog.daemon = True
     watchdog.start()
     tail_lines: list[str] = []
+    actionable_lines: list[str] = []
     try:
         assert proc.stdout is not None
         for line in proc.stdout:
             tail_lines.append(line)
             if len(tail_lines) > 80:
                 del tail_lines[0]
+            if len(actionable_lines) < 8 and _installer_actionable_detail((line,)) is not None:
+                actionable_lines.append(line)
             child = CHILD_PID_LINE_RE.match(line.strip())
             if child is not None:
                 # Recorded while it runs and dropped when the installer says it
@@ -451,7 +463,10 @@ def stream_installer(
     if timed_out.is_set():
         raise RuntimeError(f"installer timed out after {timeout_seconds}s")
     if returncode != 0:
-        raise InstallerExit(returncode, format_installer_failure_message(returncode, tail_lines))
+        raise InstallerExit(
+            returncode,
+            format_installer_failure_message(returncode, tail_lines, actionable_lines),
+        )
 
 
 def _new_phase_record(spec: dict) -> dict:
