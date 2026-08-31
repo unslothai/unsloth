@@ -351,7 +351,12 @@ function resolveInitialConfig(_id: string, _variant: any) {
 }
 function resolveLoadMaxSeqLength(args: any) { return args.maxSeqLength ?? 0; }
 function resolveFitMaxSeqLength(..._a: any[]) { return 0; }
-function resolveManualAutoCtxPin(..._a: any[]) { return null; }
+// Mirrors the real predicate rather than returning a constant: the sliced region
+// stores its result as the load's context pin, so a stub that always answered null
+// would make every autoload scenario here agree with a bug in it. It takes the
+// user's own Context Length (config.customContextLength above), never the n_ctx
+// that went on the wire, which is Auto-resolved on a same-model reload.
+function resolveExplicitCtxPin(n: any) { return n && n > 0 ? n : null; }
 async function ensureGpuDeviceCache() {}
 function reconcilePersistedGpuIds(ids: any) { return ids; }
 function saveSpeculativeType(_x: any) {}
@@ -524,6 +529,18 @@ async function loadModel(payload: any) {
   });
   if (result instanceof Error) throw result;
   return result;
+}
+
+// The speech-only verdict, mirroring
+// studio/frontend/src/features/chat/lib/speech-only-status.ts. Real logic rather than a
+// neutral stub: a stub that always answered false would keep every scenario green if the
+// queued path's guard were removed.
+export function isSpeechOnlyStatus(status: any): boolean {
+  return (
+    Boolean(status?.is_audio) &&
+    status?.audio_type !== "whisper" &&
+    status?.audio_type !== "audio_vlm"
+  );
 }
 """
 
@@ -1371,7 +1388,7 @@ def test_a_cached_text_generation_repo_still_auto_loads():
 
 def test_a_provisional_mac_platform_does_not_hide_a_remote_backends_models():
     """Before the probe lands chatOnly is a browser guess: a Mac browser on a
-    remote Linux Studio would hide every local safetensors model."""
+    remote Linux Unsloth would hide every local safetensors model."""
     safetensors = (
         "{ ...LOCAL_GGUF, id: 'st', load_id: 'st', path: '/models/st',"
         " model_format: 'safetensors' }"

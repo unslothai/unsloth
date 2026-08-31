@@ -5,7 +5,7 @@ import {
   applyPerModelConfigToRuntime,
   currentRuntimePerModelConfig,
   perModelConfigsEqual,
-} from "@/features/model-picker";
+} from "@/features/model-picker/model-config/apply-per-model-config";
 import {
   CONTEXT_LENGTH_MIN,
   DEFAULT_PER_MODEL_CONFIG,

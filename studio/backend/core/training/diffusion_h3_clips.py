@@ -3,7 +3,7 @@
 
 """The clip dataset layer for MiniMax-H3 LoRA training.
 
-MiniMax-H3 is the first family Studio trains from **clips with sound** rather than stills,
+MiniMax-H3 is the first family Unsloth trains from **clips with sound** rather than stills,
 and it has no still-image shortcut: its video VAE encodes ``17 * n + 5`` pixel frames at a
 time (a 1-frame clip is not a valid input, unlike LTX-2's), and every forward carries audio
 rows in the same packed sequence as the video rows. So the dataset unit is a video file with
