@@ -1757,7 +1757,12 @@ def _openai_llama_admission_output_allowance(
     window = context_window or budget
     if cap is not None and cap < window:
         return cap
-    return min(_OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS, max(0, budget - prompt_tokens))
+    # Clamped against the WINDOW, not the budget. One request cannot occupy more KV than
+    # its own slot holds, so charging it prompt + allowance past that overstates it: with
+    # four private 4096 caches and a 3500-token prompt, the flat 1024 charged 4524 for
+    # something that can only ever occupy 4096, and three such chats filled a 16384
+    # aggregate. Identical under --kv-unified, where window and budget are one number.
+    return min(_OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS, max(0, window - prompt_tokens))
 
 
 def _extra_args_image_max_tokens(extra_args) -> Optional[int]:
