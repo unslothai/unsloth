@@ -209,35 +209,6 @@ def test_linux_external_mount_roots_dedupes_aliased_volumes(monkeypatch, tmp_pat
     assert external_media.linux_external_mount_roots() == [shared, extra]
 
 
-@pytest.mark.parametrize(
-    "path",
-    [
-        "/media/dspofu/USB",
-        "/media/Seagate",
-        "/media/dspofu/USB/models",
-        "/mnt/ssd",
-        "/mnt/ssd/models",
-    ],
-)
-def test_linux_media_and_mnt_policy_accepts_volume_descendants(monkeypatch, path):
-    monkeypatch.setattr(external_media.platform, "system", lambda: "Linux")
-
-    if path.startswith("/mnt"):
-        assert external_media.is_linux_mnt_path(path)
-        assert not external_media.is_linux_media_path(path)
-    else:
-        assert external_media.is_linux_media_path(path)
-        assert not external_media.is_linux_mnt_path(path)
-
-
-@pytest.mark.parametrize("path", ["/media", "/mnt"])
-def test_linux_media_and_mnt_policy_rejects_the_parent_root(monkeypatch, path):
-    monkeypatch.setattr(external_media.platform, "system", lambda: "Linux")
-
-    assert not external_media.is_linux_media_path(path)
-    assert not external_media.is_linux_mnt_path(path)
-
-
 def test_hub_scan_folder_accepts_linux_media_and_mnt_mounts(monkeypatch):
     _stub_linux_path_checks(monkeypatch, scan_folders)
     monkeypatch.setattr(external_media.platform, "system", lambda: "Linux")

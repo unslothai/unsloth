@@ -78,20 +78,6 @@ def is_linux_run_media_path(path: str) -> bool:
     return _is_linux_media_mount_path(path, "/run/media")
 
 
-def is_linux_media_path(path: str) -> bool:
-    """True for Linux automounts under /media/<volume> or /media/<user>/<volume>."""
-    if platform.system() != "Linux":
-        return False
-    return _is_linux_media_mount_path(path, "/media", min_parts = 1)
-
-
-def is_linux_mnt_path(path: str) -> bool:
-    """True for Linux paths under a named /mnt/<volume> mount (not /mnt itself)."""
-    if platform.system() != "Linux":
-        return False
-    return _is_linux_media_mount_path(path, "/mnt", min_parts = 1)
-
-
 def _current_username() -> str | None:
     try:
         user = getpass.getuser().strip()
