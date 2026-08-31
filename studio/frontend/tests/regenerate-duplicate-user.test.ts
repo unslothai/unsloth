@@ -16,6 +16,14 @@ import type { ThreadMessage } from "@assistant-ui/react";
 const priorId = "cOfdER0";
 const userId = "SaKf868";
 
+const messageMetadata = {
+  unstable_state: null,
+  unstable_annotations: [],
+  unstable_data: [],
+  steps: [],
+  custom: {},
+} as const;
+
 function mkUser(id: string, text = "Good, let me share document v3.1"): ThreadMessage {
   return {
     id,
@@ -23,16 +31,17 @@ function mkUser(id: string, text = "Good, let me share document v3.1"): ThreadMe
     content: [{ type: "text", text }],
     attachments: [
       {
+        id: `att-${id}`,
         type: "document",
         name: "doc.md",
         contentType: "text/markdown",
-        content: "x".repeat(1000),
+        content: [{ type: "text", text: "x".repeat(1000) }],
+        status: { type: "complete" },
       },
     ],
-    status: { type: "complete", reason: "unknown" },
     createdAt: new Date(),
-    metadata: { custom: {} },
-  } as ThreadMessage;
+    metadata: messageMetadata,
+  } as unknown as ThreadMessage;
 }
 
 function mkAssistant(id: string): ThreadMessage {
@@ -42,8 +51,8 @@ function mkAssistant(id: string): ThreadMessage {
     content: [{ type: "text", text: "Here is my response" }],
     status: { type: "complete", reason: "unknown" },
     createdAt: new Date(),
-    metadata: { custom: {} },
-  } as ThreadMessage;
+    metadata: messageMetadata,
+  } as unknown as ThreadMessage;
 }
 
 function userSiblingsUnder(
@@ -74,8 +83,8 @@ test("assistant-ui Reload adds an assistant sibling only, not a duplicate user",
     content: [],
     status: { type: "running" },
     createdAt: new Date(),
-    metadata: { custom: {} },
-  } as ThreadMessage);
+    metadata: messageMetadata,
+  } as unknown as ThreadMessage);
   repo.resetHead("a1b");
 
   assert.deepEqual(
