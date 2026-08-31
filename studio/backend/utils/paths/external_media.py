@@ -48,7 +48,10 @@ def is_local_filesystem_root(path: str, *, _pathmod = os.path) -> bool:
 
 
 def _is_linux_media_mount_path(
-    path: str, media_root: Path | str, *, min_parts: int = 2
+    path: str,
+    media_root: Path | str,
+    *,
+    min_parts: int = 2,
 ) -> bool:
     """True when *path* is at least *min_parts* components under *media_root*.
 
@@ -154,9 +157,7 @@ def _accept_linux_volume(
     resolved = _try_resolve_dir(volume_dir)
     if resolved is None:
         return None
-    under_scanned = _is_linux_media_mount_path(
-        str(resolved), scanned_base, min_parts = min_parts
-    )
+    under_scanned = _is_linux_media_mount_path(str(resolved), scanned_base, min_parts = min_parts)
     under_alias = bool(also_ok and also_ok(str(resolved)))
     if not under_scanned and not under_alias:
         return None
@@ -197,17 +198,13 @@ def linux_run_media_mount_roots(
     except (OSError, RuntimeError, ValueError):
         return []
     for volume_dir in volume_dirs:
-        accepted = _accept_linux_volume(
-            volume_dir, resolved_base, min_parts = 2, seen = seen
-        )
+        accepted = _accept_linux_volume(volume_dir, resolved_base, min_parts = 2, seen = seen)
         if accepted is not None:
             roots.append(accepted)
     return roots
 
 
-def linux_media_mount_roots(
-    base: Path | str = "/media", *, user: str | None = None
-) -> list[Path]:
+def linux_media_mount_roots(base: Path | str = "/media", *, user: str | None = None) -> list[Path]:
     """Readable Ubuntu/udev automounts under ``/media``.
 
     Layouts: ``/media/<user>/<volume>`` (current udisks) and
@@ -289,9 +286,7 @@ def linux_mnt_mount_roots(base: Path | str = "/mnt") -> list[Path]:
     # Bound the isdir/access probe: a disconnected NFS entry under /mnt can
     # stall the folder browser the same way a mapped Windows drive can.
     candidate_paths = [
-        str(child)
-        for child in children
-        if not is_sensitive_path_component(child.name)
+        str(child) for child in children if not is_sensitive_path_component(child.name)
     ]
     readable = _readable_dirs_within(candidate_paths, _DRIVE_PROBE_TIMEOUT_S)
 
@@ -300,9 +295,7 @@ def linux_mnt_mount_roots(base: Path | str = "/mnt") -> list[Path]:
     for child in children:
         if str(child) not in readable:
             continue
-        accepted = _accept_linux_volume(
-            child, resolved_base, min_parts = 1, seen = seen
-        )
+        accepted = _accept_linux_volume(child, resolved_base, min_parts = 1, seen = seen)
         if accepted is not None:
             roots.append(accepted)
     return roots
