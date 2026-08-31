@@ -61,9 +61,9 @@ def _load_helper():
     src = (root / "unsloth" / "models" / "llama.py").read_text()
     tree = ast.parse(src)
     fn = next(
-        node for node in tree.body
-        if isinstance(node, ast.FunctionDef)
-        and node.name == "_offload_frozen_module_for_training"
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_offload_frozen_module_for_training"
     )
     # The annotations are evaluated when the def executes, so the names they
     # mention have to be real here, not placeholders.
@@ -81,9 +81,14 @@ offload = _load_helper()
 class _Recorder:
     """Stands in for a submodule, recording `.to()` instead of allocating."""
 
-    def __init__(self, device, dtype = torch.float32):
+    def __init__(
+        self,
+        device,
+        dtype = torch.float32,
+    ):
         self.weight = types.SimpleNamespace(
-            device = torch.device(device), dtype = dtype,
+            device = torch.device(device),
+            dtype = dtype,
         )
         self.to_calls = []
         self.requires_grad_calls = []
@@ -102,7 +107,12 @@ class _Recorder:
 
 
 class _Wrapper:
-    def __init__(self, copy_device, original_device = None, dtype = torch.float32):
+    def __init__(
+        self,
+        copy_device,
+        original_device = None,
+        dtype = torch.float32,
+    ):
         self.modules_to_save = types.SimpleNamespace(
             default = _Recorder(copy_device, dtype),
         )
