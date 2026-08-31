@@ -464,6 +464,39 @@ def test_aborting_the_mount_releases_the_wait_even_on_a_stalled_status_read():
     assert out["residentCheckpoint"] == OUTGOING
 
 
+def test_aborting_the_mount_releases_the_wait_even_on_an_unsignalled_read():
+    """The gate has to come down on the abort itself, not on the way out of the handoff.
+
+    listModels and listLoras take no AbortSignal, so an unmount cannot end a stalled one:
+    waiting for the sync to return would leave the gate up past the page it belongs to, and
+    every later refresh discarding its answer while anything is loading.
+    """
+    out = _run(
+        """
+        setScenario({
+          models: [{ id: "%(outgoing)s" }],
+          status: () => REPLACING,
+          listModelsDelays: [2500, 0],
+        });
+        setStoreState(emptyStore());
+        const controller = new AbortController();
+        const mount = refresh({
+          includeLoras: false,
+          signal: controller.signal,
+          waitForServerModel: true,
+        });
+        await sleep(300);
+        controller.abort();
+        await sleep(50);
+        await refresh({ includeLoras: false });
+        await mount;
+        """
+        % {"outgoing": OUTGOING}
+    )
+    assert out["checkpoint"] == OUTGOING
+    assert out["residentCheckpoint"] == OUTGOING
+
+
 def test_mount_publishes_the_model_list_while_it_waits():
     """Waiting must not cost the selector its inventory: the picker stays usable during the load."""
     out = _run(

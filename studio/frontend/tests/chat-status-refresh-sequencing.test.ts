@@ -96,10 +96,21 @@ test("residency is deferred only while a mount wait is outstanding", () => {
   assert.match(SYNC, /if \(statusLoading && pendingServerModelWaits > 0\) return;/);
   // Registered before the sync is issued: a refresh issued later can answer first, and one
   // that answered while the count was still zero adopted the outgoing model.
-  assert.match(
-    SOURCE,
-    /pendingServerModelWaits \+= 1;\s*try \{\s*await syncInferenceStatusToStore\(options\);\s*await waitForServerModel\(options\?\.signal\);\s*\} finally \{\s*pendingServerModelWaits -= 1;\s*\}/,
+  const handoff = SOURCE.slice(
+    SOURCE.indexOf("async function refreshAndWaitForServerModel("),
+    SOURCE.indexOf("* Reconcile the UI after the SERVER unloaded"),
   );
+  assert.ok(
+    handoff.indexOf("pendingServerModelWaits += 1;") <
+      handoff.indexOf("await syncInferenceStatusToStore(options);"),
+  );
+  assert.match(handoff, /await waitForServerModel\(signal\);/);
+  // And released by the abort itself. listModels and listLoras take no signal, so waiting
+  // for the sync to return would keep the gate up past the page that owns it.
+  assert.match(handoff, /signal\?\.addEventListener\("abort", release, \{ once: true \}\)/);
+  assert.match(handoff, /\} finally \{\s*signal\?\.removeEventListener\("abort", release\);\s*release\(\);\s*\}/);
+  // The sync's own read is signalled too, so an unmount ends it rather than parking on it.
+  assert.match(SYNC, /getInferenceStatus\(signal\)/);
 });
 
 test("a completed UI load still publishes residency while holding its lease", () => {

@@ -463,7 +463,9 @@ async function syncInferenceStatusToStore(options?: {
     const selectedAtStart = useChatRuntimeStore.getState().params.checkpoint;
     const [listRes, statusRes, , idleUnloadArmed] = await Promise.all([
       listModels(),
-      getInferenceStatus(),
+      // Signalled, so an unmount ends this read rather than leaving the mount wait it
+      // gates parked on it.
+      getInferenceStatus(signal),
       // Settled from this request alone. Read out of the aggregate below, a sibling
       // rejection discarded a good list yet still marked the inventory settled, so a
       // resident LoRA classified as a base model and pinned a new pair generalized.
@@ -611,10 +613,9 @@ async function syncInferenceStatusToStore(options?: {
 /**
  * The mount handoff: hydrate from status, then observe until the server settles.
  *
- * The wait is registered before the sync is even issued. A refresh issued later can
- * still answer first (this one reads the LoRA inventory, a lifecycle refresh does not),
- * and one that answered inside that window adopted the outgoing model and superseded
- * this sync, leaving the observer nothing to poll on.
+ * Registered before the sync is issued, since a refresh issued later can still answer
+ * first, and one that answered before the count went up adopted the outgoing model and
+ * superseded this sync, leaving the observer nothing to poll on.
  */
 async function refreshAndWaitForServerModel(options?: {
   signal?: AbortSignal;
@@ -622,12 +623,24 @@ async function refreshAndWaitForServerModel(options?: {
   preserveIdleUnloaded?: boolean;
   externalChatSlotLoad?: boolean;
 }): Promise<void> {
+  const signal = options?.signal;
+  let held = true;
   pendingServerModelWaits += 1;
+  // Released on the abort itself, not only on the way out: listModels and listLoras take no
+  // signal, so an unmount cannot stop a stalled one, and the gate it holds would outlive the
+  // page and go on discarding every other refresh's answer.
+  const release = () => {
+    if (!held) return;
+    held = false;
+    pendingServerModelWaits -= 1;
+  };
+  signal?.addEventListener("abort", release, { once: true });
   try {
     await syncInferenceStatusToStore(options);
-    await waitForServerModel(options?.signal);
+    await waitForServerModel(signal);
   } finally {
-    pendingServerModelWaits -= 1;
+    signal?.removeEventListener("abort", release);
+    release();
   }
 }
 
