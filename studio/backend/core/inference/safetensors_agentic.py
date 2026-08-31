@@ -19,7 +19,7 @@ import inspect
 import json
 import re
 import threading
-from typing import Callable, Generator, Optional
+from typing import Any, Callable, Generator, Optional
 
 from loggers import get_logger
 
@@ -489,6 +489,7 @@ def run_safetensors_tool_loop(
     permission_mode: Optional[str] = None,
     reasoning_prefilled: bool = False,
     continue_final_message: bool = False,
+    tool_choice: Any = None,
     markup = None,
     renderable_tools = None,
     context_length: Optional[int] = None,
@@ -547,7 +548,8 @@ def run_safetensors_tool_loop(
     # A resumed turn must keep the partial trailing: autoinject appends a tool call
     # plus its result, moving the boundary so the model opens a fresh answer.
     _skip_autoinject = (
-        (bool(tools) and "search_knowledge_base" not in _active_tool_names(tools))
+        tool_choice == "none"
+        or (bool(tools) and "search_knowledge_base" not in _active_tool_names(tools))
         or (
             confirm_tool_calls and not bypass_permissions and permission_mode not in ("auto", "off")
         )
@@ -561,7 +563,7 @@ def run_safetensors_tool_loop(
     # executed tool for the plan-without-action gate.
     rag_autoinjected = bool(_auto)
 
-    unrestricted_tools = not tools
+    unrestricted_tools = not tools and tool_choice != "none"
     # Gate telling a genuine NAME[ARGS] rehearsal from inactive-name prose; built from the
     # ORIGINAL tools list so a spent one-shot still reads as a tool name. None = unrestricted.
     _enabled_names_gate = None if unrestricted_tools else set(_active_tool_names(tools))
@@ -579,9 +581,13 @@ def run_safetensors_tool_loop(
     # select: the native-template fallback renders with a different profile, and prepare_call
     # must not authorize a tool that render left out of the prompt (#7066).
     _authorized = (
-        renderable_tools
-        if renderable_tools is not None
-        else neutralize_tool_descriptions(tools, None, markup)
+        []
+        if tool_choice == "none"
+        else (
+            renderable_tools
+            if renderable_tools is not None
+            else neutralize_tool_descriptions(tools, None, markup)
+        )
     )
     tool_controller = ToolLoopController(
         tools = (None if unrestricted_tools else _authorized),

@@ -4136,6 +4136,32 @@ class TestGuardrails:
         assert any(e.get("type") == "content" and e.get("text") == "plain answer" for e in events)
         assert exec_fn.calls == []
 
+    def test_tool_choice_none_skips_rag_autoinject_and_withholds_tools(self, monkeypatch):
+        def fail_autoinject(*_args, **_kwargs):
+            raise AssertionError("tool_choice none must prevent RAG autoinjection")
+
+        monkeypatch.setattr("core.inference.tools.build_rag_autoinject", fail_autoinject)
+        seen_tools = []
+
+        def single_turn(_messages, active_tools = None):
+            seen_tools.append(active_tools)
+            yield "plain answer"
+
+        events = _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = single_turn,
+                messages = [{"role": "user", "content": "use docs"}],
+                tools = [{"type": "function", "function": {"name": "search_knowledge_base"}}],
+                execute_tool = lambda *_args, **_kwargs: "unused",
+                tool_choice = "none",
+                rag_scope = {"project_id": "p1", "autoinject": False},
+                max_tool_iterations = 1,
+            )
+        )
+
+        assert seen_tools == [[]]
+        assert any(e.get("type") == "content" and e.get("text") == "plain answer" for e in events)
+
     def test_auto_mode_still_runs_rag_autoinject(self, monkeypatch):
         # "auto" sends confirm_tool_calls=true so unsafe calls gate, but the
         # safe search_knowledge_base retrieval never gates, so autoinject must

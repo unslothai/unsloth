@@ -13,7 +13,7 @@ import json
 import sys
 import torch
 from pathlib import Path
-from typing import Optional, Union, Generator, Tuple
+from typing import Any, Optional, Union, Generator, Tuple
 from utils.models import ModelConfig, get_base_model_from_lora
 from utils.paths import is_model_cached
 from utils.transformers_dtype import dtype_kwargs
@@ -949,6 +949,7 @@ class InferenceBackend:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
+        tool_choice: Any = None,
         continue_final_message: bool = False,
         max_tool_iterations: int = 25,
         auto_heal_tool_calls: bool = True,
@@ -1037,6 +1038,7 @@ class InferenceBackend:
             session_id = session_id,
             thread_id = thread_id,
             rag_scope = rag_scope,
+            tool_choice = tool_choice,
             reasoning_prefilled = reasoning_prefilled,
             continue_final_message = continue_final_message,
             # So a conversation search can be sized against what this model can hold.

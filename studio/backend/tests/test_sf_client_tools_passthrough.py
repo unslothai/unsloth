@@ -386,6 +386,24 @@ class _ToolLoopBackend(_ScriptedBackend):
         yield {"type": "content", "text": "done"}
 
 
+def test_studio_tool_choice_none_reaches_safetensors_tool_loop(monkeypatch):
+    backend = _ToolLoopBackend(_fixed("done"))
+    payload = _request(
+        enable_tools = True,
+        enabled_tools = ["search_knowledge_base"],
+        tool_choice = "none",
+        rag_scope = {"project_id": "p1", "autoinject": False},
+        stream = False,
+    )
+
+    _json_body(_call(payload, monkeypatch, backend))
+
+    assert [tool["function"]["name"] for tool in backend.calls[0]["tools"]] == [
+        "search_knowledge_base"
+    ]
+    assert backend.calls[0]["tool_choice"] == "none"
+
+
 @pytest.mark.parametrize(
     "kind, stream, expected",
     [
