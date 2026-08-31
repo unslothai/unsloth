@@ -1076,6 +1076,24 @@ def _get_total_transformer_layers(model):
     return None
 
 
+def _normalize_hf_device_map(device_map):
+    """Normalize bare CUDA devices in hf_device_map so accelerate 0.34.1+ survives
+    `prepare_model`.  A `torch.device('cuda')` whose `.index` is None makes
+    `torch.device(None)` inside accelerate, which raises
+    `TypeError: device() got an invalid combination of arguments`.
+
+    Replaces both bare-`torch.device` and bare-`"cuda"` string entries with
+    `torch.device('cuda', 0)` in-place.  #3607
+    """
+    if device_map is None:
+        return
+    for key, value in device_map.items():
+        if isinstance(value, torch.device) and value.type == "cuda" and value.index is None:
+            device_map[key] = torch.device("cuda", index=0)
+        elif value == "cuda":
+            device_map[key] = torch.device("cuda", index=0)
+
+
 class FastBaseModel:
     @staticmethod
     @_offline_aware_load
@@ -1675,6 +1693,10 @@ class FastBaseModel:
                     # attn_implementation   = attn_implementation,
                     **kwargs,
                 )
+                # Accelerate >= 0.34.1 crashes on hf_device_map entries whose CUDA
+                # device has no explicit index (`device(None)` TypeError in
+                # prepare_model). Normalize the map right after the load. #3607
+                _normalize_hf_device_map(getattr(model, "hf_device_map", None))
                 # Must precede _attach_bnb_multidevice_hooks: it returns early
                 # while offload_embedding is True.
                 offload_embedding = _resolve_offload_embedding(
