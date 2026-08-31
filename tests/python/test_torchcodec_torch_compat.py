@@ -18,6 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 IMPORT_FIXES_PATH = REPO_ROOT / "unsloth" / "import_fixes.py"
 EXTRAS_NO_DEPS_TXT = REPO_ROOT / "studio" / "backend" / "requirements" / "extras-no-deps.txt"
+SECURITY_AUDIT_YML = REPO_ROOT / ".github" / "workflows" / "security-audit.yml"
 
 
 def _tomllib():
@@ -317,12 +318,52 @@ def test_notebook_validator_ignores_lower_bounds_under_the_resolved_version():
         assert nv.rule_inst_004_torchcodec_torch(cell, COLAB_TORCH211, "nb.ipynb", 0) == [], cell
 
 
+def test_notebook_validator_reads_the_bounds_in_invocation_order():
+    """Whichever bound runs last is the one pip leaves behind, in both directions."""
+    nv = _load_notebook_validator_module()
+
+    downgraded = (
+        '!pip install "torch==2.12.0" "torchcodec>=0.12"\n'
+        '!pip install --no-deps "torchcodec==0.11.1"'
+    )
+    findings = nv.rule_inst_004_torchcodec_torch(downgraded, COLAB_TORCH211, "nb.ipynb", 0)
+    assert len(findings) == 1, "a later exact pin must win over an earlier floor"
+    assert "torchcodec==0.11.1" in findings[0].message
+
+    upgraded = (
+        '!pip install "torch==2.12.0" "torchcodec==0.11.1"\n'
+        '!pip install "torchcodec>=0.12"'
+    )
+    assert nv.rule_inst_004_torchcodec_torch(upgraded, COLAB_TORCH211, "nb.ipynb", 0) == []
+
+    # The reported torch must be the one the notebook ends on, not the discarded floor.
+    retreated = '!pip install "torch>=2.12"\n!pip install "torch==2.10.0"'
+    findings = nv.rule_inst_004_torchcodec_torch(retreated, COLAB_TORCH211, "nb.ipynb", 0)
+    assert len(findings) == 1
+    assert "torch==2.10.0" in findings[0].message
+
+
 def test_pyproject_declares_torch211_audio_extra_with_python_gate():
     text = PYPROJECT.read_text(encoding = "utf-8")
     match = re.search(r"^audio-torch211 = \[(.*?)^\]", text, re.MULTILINE | re.DOTALL)
     assert match is not None, "pyproject must declare an audio-torch211 extra"
     assert "torchcodec>=0.11.0,<0.12.0" in match.group(1)
     assert "python_version >= '3.10'" in match.group(1)
+
+
+def test_security_audit_covers_both_installable_torchcodec_lines():
+    """extras-no-deps.txt used to put torchcodec 0.10 in the audit set. It no longer pins
+    it, and torch 2.10 is still installable (`_TORCH_FLAVOR_REPAIR_PKG_SPEC` and the default
+    ROCm repair both cap below 2.11), so dropping audio-torch210 loses live coverage. The
+    two lines cannot share one resolve, hence the separate input."""
+    text = SECURITY_AUDIT_YML.read_text(encoding = "utf-8")
+    # Both halves of the workflow build the inputs; one is the advisory audit, one is
+    # scan_packages.
+    assert text.count('optional-dependencies"]["audio-torch211"]') == 2
+    assert text.count('optional-dependencies"]["audio-torch210"]') == 2
+    assert text.count("audit-reqs/audio-torch210.txt") >= 2  # generated + osv-scanner
+    assert "for f in unsloth-deps audio-torch210 " in text  # pip-audit
+    assert "files: 'studio overrides extras-no-deps audio-torch210'" in text  # scan_packages
 
 
 def test_extras_no_deps_has_no_unconditional_torchcodec_pin():

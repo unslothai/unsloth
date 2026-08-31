@@ -588,16 +588,24 @@ def _install_cell_lower_bound(install_cell: str, target: str) -> str | None:
 
 
 def _effective_version(install_cell: str, target: str, resolved: str | None) -> str | None:
-    """`resolved` raised by an explicit `>=` floor above it; a lower floor moves nothing.
+    """`resolved` walked forward through the cell's own bounds, in invocation order.
 
-    resolved_set() drops every `>=`, so without this R-INST-004's own `torchcodec>=0.12.0`
-    remedy could not clear the error it offers."""
-    lower = _install_cell_lower_bound(install_cell, target)
-    if lower is None:
-        return resolved
-    if resolved is None or cmp_versions(lower, resolved) > 0:
-        return lower
-    return resolved
+    resolved_set() applies `==` and `<=` but drops `>=`, which does move pip when it lands
+    above the current version. Order is what decides between them: a later `==` downgrades
+    past an earlier floor, and a later floor upgrades past an earlier `==`. Without this
+    R-INST-004's own `torchcodec>=0.12.0` remedy could not clear the error it offers."""
+    current = resolved
+    for inv in iter_pip_invocations(install_cell):
+        for raw in inv.packages:
+            sp = parse_spec(raw)
+            if sp is None or sp.name != target:
+                continue
+            for op, ver in sp.pins:
+                if op == "==":
+                    current = ver
+                elif op == ">=" and (current is None or cmp_versions(ver, current) > 0):
+                    current = ver
+    return current
 
 
 def rule_inst_003_peft_torchao(
