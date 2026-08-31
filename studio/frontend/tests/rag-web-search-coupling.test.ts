@@ -15,7 +15,7 @@ const SOURCE = readFileSync(
 test("project sources force rag autoinject on in the local chat body", () => {
   assert.match(
     SOURCE,
-    /function resolveRagAutoinject\([\s\S]*?if \(projectInScope\) return true;/,
+    /function resolveRagAutoinject\([\s\S]*?if \(projectOnlyScope\) return true;/,
   );
   assert.match(
     SOURCE,
@@ -23,16 +23,11 @@ test("project sources force rag autoinject on in the local chat body", () => {
   );
 });
 
-test("exclusive knowledge-base scopes do not force project autoinject", () => {
-  const helper = SOURCE.slice(
-    SOURCE.indexOf("function resolveRagAutoinject"),
-    SOURCE.indexOf("/** Server-side usage data"),
+test("mixed thread/project scopes preserve Auto-retrieve Off", () => {
+  const projectOnlyChecks = SOURCE.match(
+    /projectRagEnabled &&\s+(?:ragProjectId|researchProjectId) &&\s+!(?:runtime\.)?ragEnabled/g,
   );
-  assert.match(helper, /if \(projectInScope\) return true;/);
-  assert.match(
-    SOURCE,
-    /projectRagEnabled &&\s+ragProjectId &&\s+!\(ragEnabled && ragSource\.type === "kb"\)/,
-  );
+  assert.equal(projectOnlyChecks?.length, 3);
 });
 
 test("local enabled_tools still lists search_knowledge_base without web_search", () => {

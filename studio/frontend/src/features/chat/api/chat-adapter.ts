@@ -307,15 +307,15 @@ function resolveAutoInject(mode: RagAutoInject, checkpoint: string): boolean {
   return size === null || size <= AUTOINJECT_AUTO_MAX_SIZE_B;
 }
 
-/** Project sources in the emitted rag_scope are always pre-retrieved so the
- * Search pill cannot block grounding. Exclusive KB scopes keep the user's
- * Auto-retrieve setting: they send kb_id only, not project_id. */
+/** Project-only scopes are always pre-retrieved so the Search pill cannot
+ * block grounding. KB and mixed thread/project scopes keep the user's
+ * Auto-retrieve setting. */
 function resolveRagAutoinject(
   mode: RagAutoInject,
   checkpoint: string,
-  projectInScope: boolean,
+  projectOnlyScope: boolean,
 ): boolean {
-  if (projectInScope) return true;
+  if (projectOnlyScope) return true;
   return resolveAutoInject(mode, checkpoint);
 }
 
@@ -4273,7 +4273,9 @@ export function createOpenAIStreamAdapter(
                   autoinject: resolveRagAutoinject(
                     runtime.ragAutoInject,
                     params.checkpoint,
-                    Boolean(projectRagEnabled && researchProjectId),
+                    Boolean(
+                      projectRagEnabled && researchProjectId && !runtime.ragEnabled,
+                    ),
                   ),
                   autoinject_min_score: runtime.ragAutoInjectMinScore,
                 }
@@ -5847,9 +5849,7 @@ export function createOpenAIStreamAdapter(
                               ragAutoInject,
                               params.checkpoint,
                               Boolean(
-                                projectRagEnabled &&
-                                  ragProjectId &&
-                                  !(ragEnabled && ragSource.type === "kb"),
+                                projectRagEnabled && ragProjectId && !ragEnabled,
                               ),
                             ),
                             autoinject_min_score: ragAutoInjectMinScore,
@@ -6073,9 +6073,7 @@ export function createOpenAIStreamAdapter(
                             ragAutoInject,
                             params.checkpoint,
                             Boolean(
-                              projectRagEnabled &&
-                                ragProjectId &&
-                                !(ragEnabled && ragSource.type === "kb"),
+                              projectRagEnabled && ragProjectId && !ragEnabled,
                             ),
                           ),
                           autoinject_min_score: ragAutoInjectMinScore,
