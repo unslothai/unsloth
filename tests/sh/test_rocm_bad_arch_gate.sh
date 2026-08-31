@@ -42,11 +42,12 @@ assert_eq() {
 # every ROCm case to cpu). So exercise the real case block lifted from the function.
 _FN_FILE=$(mktemp)
 trap 'rm -f "$_FN_FILE"' EXIT
-# The block ends at the only 8-space `fi` in it: the per-token classification below is a
-# `case` and the all-bad arm a nested `if`, both indented deeper, so neither can end the
-# range early. A future edit that lifts one of them to this level truncates the extract,
-# which the "could not extract" guard and the fall-through cases below both catch.
-awk '/# Archs measured to compute INCORRECTLY under ROCm/,/^        fi$/' "$INSTALL_SH" > "$_FN_FILE"
+# Delimited by an explicit end marker rather than by the block's own closing `fi`: the
+# gate grew a second `if` at the same indent (the unspoofed re-probe), and a structural
+# end would have silently truncated the extract to the first of them, taking every
+# gfx1033 case below with it.
+awk '/# Archs measured to compute INCORRECTLY under ROCm/,/^        # end of the miscomputing-arch gate/' \
+    "$INSTALL_SH" > "$_FN_FILE"
 
 if ! grep -q 'gfx1033' "$_FN_FILE"; then
     echo "FAIL: could not extract the gfx gate from get_torch_index_url in install.sh"
@@ -279,6 +280,61 @@ assert_eq "gfx1033 rocminfo host -> cpu index" \
 # family neighbour that install.sh deliberately serves through gfx103X-all/ROCm.
 assert_eq "gfx1030 rocminfo host -> rocm index" \
     "https://download.pytorch.org/whl/rocm7.2" "$(_index_for_rocminfo_host gfx1030)"
+
+echo "=== HSA_OVERRIDE_GFX_VERSION=10.3.0, the circulated Van Gogh workaround ==="
+# ROCr applies the override in USERLAND while building agent names, so with it set the
+# real rocminfo on a Deck answers gfx1030 and the gate saw no bad token on the one host
+# it exists for: ROCm wheels selected, ROCm backend exported, wrong numbers. This mock is
+# that behaviour -- the same host, answering differently depending on the variable.
+_make_spoofing_host() {  # -> a dir whose rocminfo honours HSA_OVERRIDE_GFX_VERSION
+    _sp_real=$(_make_rocminfo_host gfx1033)
+    _sp_spoofed=$(_make_rocminfo_host gfx1030)
+    _sp_dir=$(mktemp -d)
+    cp "$_sp_real/hipconfig" "$_sp_dir/hipconfig"
+    cat > "$_sp_dir/rocminfo" <<SPOOF
+#!/bin/sh
+if [ -n "\${HSA_OVERRIDE_GFX_VERSION:-}" ]; then
+    exec "$_sp_spoofed/rocminfo"
+fi
+exec "$_sp_real/rocminfo"
+SPOOF
+    chmod +x "$_sp_dir/rocminfo"
+    printf '%s' "$_sp_dir"
+}
+
+_index_for_spoofed_host() {  # $1 = HSA_OVERRIDE_GFX_VERSION ("" to leave it unset)
+    _ish_dir=$(_make_spoofing_host)
+    PATH="$_ish_dir:$_TOOLS_DIR" "$_SH" -c "
+        unset CUDA_VISIBLE_DEVICES UNSLOTH_ROCM_GFX_ARCH UNSLOTH_TORCH_INDEX_URL
+        unset UNSLOTH_TORCH_INDEX_FAMILY
+        if [ -n '$1' ]; then HSA_OVERRIDE_GFX_VERSION='$1'; export HSA_OVERRIDE_GFX_VERSION
+        else unset HSA_OVERRIDE_GFX_VERSION; fi
+        _ARCH=x86_64
+        . '$_E2E_FUNCS'
+        get_torch_index_url
+    " 2>/dev/null | tail -1
+    rm -rf "$_ish_dir"
+}
+
+# The mock really does spoof -- assert it first, or the gate assertion below passes
+# because nothing was hidden from it.
+_spoofed_probe=$( _sp_check=$(_make_spoofing_host)
+    PATH="$_sp_check:$_TOOLS_DIR" "$_SH" -c "
+        unset UNSLOTH_ROCM_GFX_ARCH
+        HSA_OVERRIDE_GFX_VERSION=10.3.0; export HSA_OVERRIDE_GFX_VERSION
+        . '$_E2E_FUNCS'; _probe_amd_gfx_arch | head -1" 2>/dev/null
+    rm -rf "$_sp_check" )
+assert_eq "the mock hides gfx1033 behind the override" "gfx1030" "$_spoofed_probe"
+
+assert_eq "unspoofed Deck -> cpu index" \
+    "https://download.pytorch.org/whl/cpu" "$(_index_for_spoofed_host '')"
+assert_eq "spoofed Deck -> cpu index anyway" \
+    "https://download.pytorch.org/whl/cpu" "$(_index_for_spoofed_host 10.3.0)"
+# The re-probe is scoped to the gate, so a host that really is the reported arch keeps
+# its ROCm index with the override set: only gfx1033 silicon answers gfx1033 unspoofed.
+assert_eq "spoofed gfx1030 host keeps rocm" \
+    "https://download.pytorch.org/whl/rocm7.2" \
+    "$(export HSA_OVERRIDE_GFX_VERSION=10.3.0; _index_for_rocminfo_host gfx1030)"
 
 echo "=== Structural: the gate precedes the version-keyed index selection ==="
 _gate_line=$(grep -n 'Archs measured to compute INCORRECTLY under ROCm' "$INSTALL_SH" | head -1 | cut -d: -f1)

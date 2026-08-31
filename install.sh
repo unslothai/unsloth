@@ -3634,16 +3634,28 @@ _hsa_spoofed_physical_gfx() {
 # as the last command would trip set -e in callers' assignments). Shared by
 # get_torch_index_url's gfx gate and the runtime-less reroute gate so the two
 # can never disagree on what "readable" means.
+#   $1 = "physical" to also strip HSA_OVERRIDE_GFX_VERSION. ROCr applies it in userland
+#   while building agent names, so rocminfo reports the SPOOFED ISA while it is set
+#   (unslothai#7331); dropping it is the one way to read the silicon. Opt-in, because the
+#   spoofed reading is the RUNTIME target and most callers want that -- only a caller
+#   asking what hardware is present wants this. Mirrors _detect_amd_gfx_codes(
+#   ignore_hsa_override = True) in studio/install_python_stack.py. amd-smi reads the
+#   driver, so stripping it there is a no-op, kept for one code path.
+#
+# shellcheck disable=SC2086  # $_pg_strip is a LIST of variable names for unset; POSIX sh
+# has no arrays, and quoting it would unset one variable whose name contains spaces.
 _probe_amd_gfx_arch() {
     _ensure_rocm_probe_env
+    _pg_strip="ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES"
+    [ "${1:-}" = "physical" ] && _pg_strip="$_pg_strip HSA_OVERRIDE_GFX_VERSION"
     _pg=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]')
     if [ -z "$_pg" ] && command -v rocminfo >/dev/null 2>&1; then
-        _pg=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; rocminfo 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+        _pg=$( (unset $_pg_strip; rocminfo 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
     fi
     if [ -z "$_pg" ] && command -v amd-smi >/dev/null 2>&1; then
-        _pg=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi list 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+        _pg=$( (unset $_pg_strip; amd-smi list 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
         if [ -z "$_pg" ]; then
-            _pg=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi static --asic 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+            _pg=$( (unset $_pg_strip; amd-smi static --asic 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
         fi
     fi
     printf '%s\n' "$_pg"
@@ -3934,7 +3946,22 @@ get_torch_index_url() {
         # which demotes an installed ROCm torch only when every detected arch is bad --
         # two implementations of one policy, and a host they disagreed about would be
         # given CPU wheels here and then have ROCm wheels reinstated on the next update.
-        _amd_gfx_tokens=" $(printf '%s\n' "$_amd_gfx_probe" | sed 's/:.*$//' \
+        #
+        # HSA_OVERRIDE_GFX_VERSION=10.3.0 is THE circulated Van Gogh workaround, and while
+        # it is set ROCr hands rocminfo the spoofed name, so the probe answers gfx1030 and
+        # this gate sees no bad token on the one host it exists for. Re-read the inventory
+        # with the variable stripped, as _rocm_miscomputing_host() does through
+        # ignore_hsa_override. No corroboration dance, unlike the #7331 Strix correction
+        # below: that one infers from the product name, which can be wrong about a real
+        # dGPU, whereas this is a direct unspoofed probe and only gfx1033 silicon can
+        # answer gfx1033 to it. Kept in its own variable so the runtime reading the rest
+        # of the function uses is untouched.
+        _amd_gfx_gate_probe="$_amd_gfx_probe"
+        if [ -n "${HSA_OVERRIDE_GFX_VERSION:-}" ]; then
+            _amd_gfx_unspoofed=$(_probe_amd_gfx_arch physical 2>/dev/null || true)
+            [ -n "$_amd_gfx_unspoofed" ] && _amd_gfx_gate_probe="$_amd_gfx_unspoofed"
+        fi
+        _amd_gfx_tokens=" $(printf '%s\n' "$_amd_gfx_gate_probe" | sed 's/:.*$//' \
             | tr '[:upper:]' '[:lower:]' | tr '\n' ' ')"
         _amd_gfx_bad=false
         _amd_gfx_good=false
@@ -3954,6 +3981,8 @@ get_torch_index_url() {
             echo "[WARN] AMD gfx1033 (Van Gogh) is present, but another AMD GPU on this host is not affected -- keeping ROCm PyTorch." >&2
             echo "[WARN] gfx1033 computes incorrect results under ROCm (studio/ROCM_RDNA2_APU.md); pick the other GPU with ROCR_VISIBLE_DEVICES when you train." >&2
         fi
+        # end of the miscomputing-arch gate -- tests/sh/test_rocm_bad_arch_gate.sh lifts
+        # the block between the header comment above and this line, so keep both exact.
         # detect ROCm version
         _rocm_tag=""
         _rocm_tag=$(_detect_rocm_version_tag) || _rocm_tag=""

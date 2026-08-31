@@ -2601,10 +2601,14 @@ class TestInstallShStructure:
             "amd-smi list 2>/dev/null) | grep -oE 'gfx" in helper
         ), "probe must read gfx from amd-smi"
         # The probe clears ROCR/HIP_VISIBLE_DEVICES so a container mask
-        # (ROCR_VISIBLE_DEVICES=-1) can't blind the env-independent KFD detection.
+        # (ROCR_VISIBLE_DEVICES=-1) can't blind the env-independent KFD detection. Both
+        # halves are asserted: the names in the strip list, and the list reaching unset.
+        # The literal `unset ROCR... HIP...` stopped existing when the helper gained its
+        # "physical" mode, which appends HSA_OVERRIDE_GFX_VERSION to the same list.
         assert (
-            "unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES" in helper
+            '_pg_strip="ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES"' in helper
         ), "the gfx probe must clear the visibility masks so a mask can't force CPU"
+        assert "unset $_pg_strip" in helper, "the strip list must reach unset"
         cpu_guard = body.find('if [ -z "$_amd_gfx_probe" ]')
         assert cpu_guard >= 0, "unreadable gfx must fall back to CPU"
         assert cpu_guard < body.find(
@@ -6880,6 +6884,27 @@ class TestRocmMiscomputingArchDemotion:
         calls = self._demotion_calls(monkeypatch, "2.10.0+rocm7.1", [], codes_fn = _codes)
         assert seen.get("ignore_hsa_override") is True
         assert len(calls) == 1
+
+    def test_a_mask_cannot_shrink_the_host_to_its_bad_gpu(self, monkeypatch):
+        """"Every arch is bad" is a question about the host, so it must be asked of the
+        whole host. ROCR_VISIBLE_DEVICES hiding the healthy dGPU would otherwise leave
+        gfx1033 as the only arch and demote a working ROCm install to CPU. install.sh's
+        _probe_amd_gfx_arch unsets both masks for exactly this reason."""
+        seen = {}
+
+        def _codes(**kw):
+            seen.update(kw)
+            return ["gfx1033"] if not kw.get("ignore_visible_masks") else ["gfx1033", "gfx1100"]
+
+        calls = self._demotion_calls(
+            monkeypatch,
+            "2.10.0+rocm7.1",
+            [],
+            env = {"ROCR_VISIBLE_DEVICES": "0"},
+            codes_fn = _codes,
+        )
+        assert seen.get("ignore_visible_masks") is True
+        assert calls == [], "a mask shrank the host to its miscomputing GPU"
 
     def test_kfd_topology_names_the_arch_when_no_runtime_does(self, monkeypatch):
         """A Deck with ROCm torch but no working rocminfo is the host that most needs the

@@ -1447,9 +1447,16 @@ def _rocm_miscomputing_host() -> bool:
     else:
         # ignore_hsa_override: HSA_OVERRIDE_GFX_VERSION=10.3.0 is the usual Van Gogh
         # workaround and makes rocminfo report gfx1030, hiding the arch being judged.
+        # ignore_visible_masks: the question below is whether EVERY GPU on the host is
+        # bad, so it has to be asked of the whole host. A ROCR_VISIBLE_DEVICES that hides
+        # the healthy dGPU would otherwise leave gfx1033 as the only arch in the list and
+        # demote a working ROCm install to CPU. install.sh's _probe_amd_gfx_arch unsets
+        # both masks for the same reason.
         _archs = [
             _code.strip().lower().split(":")[0]
-            for _code in _detect_amd_gfx_codes(ignore_hsa_override = True)
+            for _code in _detect_amd_gfx_codes(
+                ignore_hsa_override = True, ignore_visible_masks = True
+            )
         ]
         if not _archs:
             _inferred = (_infer_linux_amd_gfx_arch() or "").strip().lower().split(":")[0]
