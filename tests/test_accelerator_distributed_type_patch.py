@@ -1,48 +1,82 @@
-# SPDX-License-Identifier: Apache-2.0
-"""#10028: Accelerator.distributed_type must be a property, not a bare function.
-
-`accelerate.accelerator.Accelerator.distributed_type` is a @property upstream.
-Assigning a bare lambda creates a bound method, so every
-`self.distributed_type != DistributedType.NO` guard flips to True on a
-single-device setup — the exact case the module-level patch exists to rule out.
-
-Wrapping in `property()` replaces the eager descriptor so an instance reads
-`DistributedType.NO` instead of a bound method.
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+"""`_utils.py` must patch `Accelerator.distributed_type` with a property, not a bare
+function: a function binds as a method and inverts accelerate's `!= NO` device_map
+guards on a single device (#10016). `import unsloth` needs CUDA or XPU, so these run
+the statement from source in a fresh interpreter, which also catches a revert.
 """
+
+import ast
+import pathlib
+import subprocess
+import sys
+import textwrap
 
 import pytest
 
+_ROOT = pathlib.Path(__file__).resolve().parents[1]
+_UTILS = _ROOT / "unsloth" / "models" / "_utils.py"
+
 accelerate = pytest.importorskip("accelerate")
-from accelerate.utils.dataclasses import DistributedType
-from accelerate.accelerator import Accelerator
-
-# The _utils module patches this at import time when DEVICE_COUNT == 1.
-# We import it here to trigger the code path, then inspect the result.
-from unsloth.models import _utils
 
 
-def test_distributed_type_is_not_a_bound_method():
-    """After patching, `accelerator.distributed_type` returns a value, not a method."""
-    acc = Accelerator()
-    dt = acc.distributed_type
-    assert not callable(dt), (
-        f"distributed_type is a bound method ({type(dt).__name__}), "
-        "not an enum value — the lambda was not wrapped in property()"
+def _patch_statement() -> ast.Assign:
+    """The one assignment to `Accelerator.distributed_type`; a second would be ambiguous."""
+    tree = ast.parse(_UTILS.read_text(encoding = "utf-8"))
+    matches = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and ast.unparse(node.targets[0]).endswith("Accelerator.distributed_type")
+    ]
+    assert len(matches) == 1, f"expected one assignment, found {len(matches)}"
+    return matches[0]
+
+
+def test_distributed_type_is_replaced_with_a_property():
+    value = _patch_statement().value
+    assert isinstance(value, ast.Call) and ast.unparse(value.func) == "property", (
+        "Accelerator.distributed_type is a property upstream; a bare function binds "
+        "as a method and never compares equal to a DistributedType member"
     )
 
 
-def test_distributed_type_is_no_on_single_device():
-    """On a single device with DEVICE_COUNT == 1, distributed_type must be NO."""
-    acc = Accelerator()
-    assert (
-        acc.distributed_type == DistributedType.NO
-    ), f"expected DistributedType.NO, got {acc.distributed_type}"
+def test_patched_distributed_type_reads_as_no():
+    """Running the real assignment must leave the attribute reading as NO."""
+    statement = ast.unparse(_patch_statement())
+    script = textwrap.dedent(
+        f"""
+        import accelerate.accelerator
+        from accelerate.utils.dataclasses import DistributedType
 
+        {statement}
 
-def test_class_attribute_is_a_property():
-    """Verifying class attribute: the descriptor on the class is a property."""
-    desc = Accelerator.__dict__["distributed_type"]
-    assert isinstance(desc, property), (
-        f"Class-level `distributed_type` is a {type(desc).__name__}, not a property — "
-        "the patch did not take effect"
+        # Read it off an instance without standing up a real distributed backend.
+        accelerator = accelerate.accelerator.Accelerator.__new__(
+            accelerate.accelerator.Accelerator
+        )
+        value = accelerator.distributed_type
+        print(repr(value))
+        print(value == DistributedType.NO, value != DistributedType.NO)
+        """
     )
+    result = subprocess.run([sys.executable, "-c", script], capture_output = True, text = True)
+    assert result.returncode == 0, result.stderr
+    value, comparisons = result.stdout.strip().splitlines()[-2:]
+    assert value == repr(accelerate.utils.dataclasses.DistributedType.NO), value
+    # The second is what accelerate's device_map guards actually test.
+    assert comparisons == "True False", comparisons
