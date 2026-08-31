@@ -1018,11 +1018,20 @@ def _flatten_kv_entries(cache):
 
 
 def _kv_prefix_coverage(cache):
+    """Tokens the whole cache holds, or None when no entry can attest to it.
+
+    Hybrid models interleave recurrent layers with attention layers, and a
+    recurrent entry carries no offset because it holds a fixed-size state
+    rather than a token sequence. Every layer still consumes every token, so an
+    attention sibling's offset counts for the recurrent entries beside it. When
+    nothing carries an offset the cache stays unverifiable, which is what keeps
+    purely recurrent models out: their state cannot say how far it advanced.
+    """
     covered = None
     for entry in _flatten_kv_entries(cache):
         offset = getattr(entry, "offset", None)
         if offset is None:
-            return None
+            continue
         if getattr(entry, "start_position", 0):
             return None
         window = getattr(entry, "max_size", None)
