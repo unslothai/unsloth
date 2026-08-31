@@ -950,9 +950,7 @@ def _classify_local_path(
     training_method = _clean_optional_string(adapter_config.get("unsloth_training_method"))
     has_adapter_weights = any(_is_adapter_weight_file(f) for f in files)
     safetensors_files = [
-        f
-        for f in files
-        if f.suffix.lower() == ".safetensors" and not _is_adapter_weight_file(f)
+        f for f in files if f.suffix.lower() == ".safetensors" and not _is_adapter_weight_file(f)
     ]
     has_safetensors = bool(safetensors_files)
     has_transformers_safetensors = any(
