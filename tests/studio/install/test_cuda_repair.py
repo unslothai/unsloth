@@ -1887,9 +1887,9 @@ class TestThePostRepairCheckUsesTheSameRuleAsThePreRepairOne:
         source = inspect.getsource(stack_mod._ensure_cpu_torch)
         predicate = source[source.index("_is_gpu_build = ") :]
         predicate = predicate[: predicate.index("if not _is_gpu_build")]
-        assert "_TORCH_RUNTIME_XPU" in predicate, (
-            "an untagged XPU wheel carries its runtime only in torch.version.xpu"
-        )
+        assert (
+            "_TORCH_RUNTIME_XPU" in predicate
+        ), "an untagged XPU wheel carries its runtime only in torch.version.xpu"
         for marker in ("_hip", "_cuda", "+xpu", "rocm"):
             assert marker in predicate, f"{marker} must still count"
 

@@ -213,13 +213,16 @@ class TestClassificationIsAFaithfulTranslation:
         in torch.version.xpu. The old predicate read it as CPU and declined to reinstall,
         which is the whole reason the marker was added."""
         env = {
-            "re": re, "_version": ver, "_hip": hip, "_cuda": cuda,
+            "re": re,
+            "_version": ver,
+            "_hip": hip,
+            "_cuda": cuda,
             "_TORCH_RUNTIME_XPU": "20250101",
         }
         _run_assignments("_ensure_cpu_torch", {"_ver", "_is_gpu_build"}, env)
-        assert env["_is_gpu_build"] is True, (
-            "with the marker set every state is a GPU build, however the version is tagged"
-        )
+        assert (
+            env["_is_gpu_build"] is True
+        ), "with the marker set every state is a GPU build, however the version is tagged"
 
     def test_xpu_supported_range(self, ver, hip, cuda):
         env = {"re": re, "_version": ver, "_hip": hip, "_cuda": cuda}

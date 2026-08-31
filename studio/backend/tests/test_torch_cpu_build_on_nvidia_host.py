@@ -2629,6 +2629,7 @@ def test_a_deliberate_cpu_install_is_not_offered_a_gpu_repair(
 
 # ============================ the recovery the message names has to exist where it is read
 
+
 @pytest.mark.parametrize("reason", ["torch_cpu_build", "torch_cuda_unavailable"])
 def test_the_repair_advice_names_a_route_every_deployment_has(monkeypatch, reason):
     """Settings carries the repair row only inside the desktop app, and only for a backend
@@ -2640,19 +2641,23 @@ def test_the_repair_advice_names_a_route_every_deployment_has(monkeypatch, reaso
     message = hw._gpu_present_but_unusable_message("export", (reason, "2.11.0+cpu"))
 
     assert message is not None
-    assert "installer" in message.lower(), (
-        "the only route a browser-hosted or externally-attached Studio has is the installer"
-    )
-    assert "desktop app" in message, (
-        "and the Settings route has to say where it lives, or it reads as universal"
-    )
+    assert (
+        "installer" in message.lower()
+    ), "the only route a browser-hosted or externally-attached Studio has is the installer"
+    assert (
+        "desktop app" in message
+    ), "and the Settings route has to say where it lives, or it reads as universal"
 
 
 def test_the_control_that_advice_points_at_still_has_both_gates():
     """If either gate is dropped the message could go back to naming Settings alone."""
     source = (
         pathlib.Path(hw.__file__).resolve().parents[3]
-        / "frontend" / "src" / "features" / "settings" / "components"
+        / "frontend"
+        / "src"
+        / "features"
+        / "settings"
+        / "components"
         / "desktop-repair-control.tsx"
     ).read_text(encoding = "utf-8")
     assert "if (!repair || repair.isExternalServer) return null;" in source
