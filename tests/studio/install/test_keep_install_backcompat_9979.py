@@ -10,18 +10,66 @@ hand-built two-key marker; these call the deciders directly with the shapes real
 carry.
 
 Platforms are simulated through ``HostInfo`` as the rest of this suite does. That covers
-the path decisions and payload tables, not the Windows loader or macOS dyld.
+the path decisions and payload tables, not macOS dyld.
+
+Run natively on Windows too (the parity workflow's windows-latest row), where the loader
+answers for real: ``_binary_image_runs`` sees an actual ``ERROR_BAD_EXE_FORMAT`` instead of
+a stubbed ``run_capture``. Two things stay POSIX-only there and are skipped rather than
+weakened: ``os.chmod`` cannot clear an execute bit Windows does not have, and
+``os.access(X_OK)`` is true for any file that exists.
 """
 
 import importlib.util
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
+
+WINDOWS_HOST = os.name == "nt"
+# os.access(path, os.X_OK) answers "does this exist" on Windows, so the executable=False
+# trees below are indistinguishable from healthy ones there.
+SKIP_X_OK = pytest.mark.skipif(
+    WINDOWS_HOST,
+    reason = "os.access(X_OK) is always true on Windows, so the guard is POSIX only",
+)
+
+
+def _windows_runnable_stub() -> bytes | None:
+    """Bytes of a real .exe that still starts after being copied somewhere else.
+
+    The keep path execs what it finds, so a Windows row needs a genuine PE. Copying
+    python.exe alone loses python3xx.dll and dies 0xC0000135, hence a System32 tool
+    whose imports are all KnownDLLs. Verified by running the copy, not assumed: an
+    unverifiable stub skips the module instead of reporting the loader's refusal as
+    a back-compat failure.
+    """
+    for name in ("where.exe", "hostname.exe"):
+        source = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / name
+        if not source.is_file():
+            continue
+        with tempfile.TemporaryDirectory() as probe_dir:
+            copy = Path(probe_dir) / "llama-server.exe"
+            try:
+                shutil.copyfile(source, copy)
+                subprocess.run([str(copy)], capture_output = True, timeout = 30)
+            except Exception:
+                continue
+        return source.read_bytes()
+    return None
+
+
+RUNNABLE_STUB = _windows_runnable_stub() if WINDOWS_HOST else None
+if WINDOWS_HOST and RUNNABLE_STUB is None:
+    pytest.skip(
+        "no self-contained System32 .exe to stand in for llama-server",
+        allow_module_level = True,
+    )
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
@@ -141,9 +189,13 @@ def build_install(
             if path.parent != install_dir
             else (runnable if runnable_root is None else runnable_root)
         )
-        # A real runnable stub: the keep path execs these, and an empty file that kept
-        # its mode bits is the ENOEXEC case.
-        path.write_text("#!/bin/sh\nexit 0\n" if ok else "", encoding = "utf-8")
+        # A real runnable stub: the keep path execs these. The not-ok file is the bad
+        # image case, ENOEXEC on POSIX and a genuine ERROR_BAD_EXE_FORMAT on Windows,
+        # where an empty file is instead a valid do-nothing program.
+        if WINDOWS_HOST:
+            path.write_bytes(RUNNABLE_STUB if ok else b"not a PE image\n")
+        else:
+            path.write_text("#!/bin/sh\nexit 0\n" if ok else "", encoding = "utf-8")
         os.chmod(path, 0o755 if executable else 0o644)
     (install_dir / "convert_hf_to_gguf.py").write_text("", encoding = "utf-8")
     (install_dir / "gguf-py").mkdir()
@@ -461,6 +513,7 @@ def test_a_windows_loader_failure_is_rejected_even_though_it_exits_zero_ish(tmp_
     assert ILP._existing_install_runs(install_dir, WINDOWS) is False
 
 
+@SKIP_X_OK
 def test_a_non_executable_tree_fails_the_same_gate_setup_sh_uses(tmp_path):
     """setup.sh reuses on ``[ -x build/bin/llama-server ]``; the keep path must agree."""
     install_dir = build_install(
