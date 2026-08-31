@@ -87,6 +87,9 @@ esac
 GPU_BACKEND=rocm
 assert_eq "rocm" "linux-rocm" "$(_source_smoke_install_kind)"
 
+GPU_BACKEND=sycl
+assert_eq "sycl" "linux-sycl" "$(_source_smoke_install_kind)"
+
 GPU_BACKEND=""
 assert_eq "cpu empty" "" "$(_source_smoke_install_kind)"
 
@@ -101,6 +104,7 @@ assert_contains() {
 _src=$(cat "$SETUP_SH")
 assert_contains "env gate present" "$_src" "UNSLOTH_LLAMA_STAGED_VALIDATION"
 assert_contains "calls validate-install" "$_src" "--validate-install"
+assert_contains "SYCL validation enables GPU layers" "$(cat "$SCRIPT_DIR/../../studio/install_llama_prebuilt.py")" '"linux-sycl"'
 assert_contains "smoke fail retries CPU" "$_src" "source build failed smoke test; retrying CPU build"
 # Smoke must run before the install swap.
 _smoke_pos=$(printf '%s' "$_src" | awk '/validate source llama.cpp/{print NR; exit}')

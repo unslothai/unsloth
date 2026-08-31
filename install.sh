@@ -3310,6 +3310,57 @@ _amd_gpu_present_via_pci() {
     return 1
 }
 
+# Returns 0 if an Intel XPU GPU is on the PCI bus via sycl-ls or xpu-smi.
+_has_intel_xpu_gpu() {
+    if _has_usable_nvidia_gpu; then
+        return 1
+    fi
+    if command -v sycl-ls >/dev/null 2>&1; then
+        if _run_bounded sycl-ls 2>/dev/null | grep -Eqi 'intel.*gpu|gpu.*intel'; then
+            return 0
+        fi
+    fi
+    if command -v xpu-smi >/dev/null 2>&1; then
+        _xpu_smi_out=$(_run_bounded xpu-smi discovery 2>/dev/null) || _xpu_smi_out=""
+        if printf '%s\n' "$_xpu_smi_out" | grep -qi 'Device Type:[[:space:]]*GPU' && \
+           printf '%s\n' "$_xpu_smi_out" | grep -qi 'Vendor Name:[[:space:]]*Intel'; then
+            return 0
+        fi
+    fi
+    if [ -d /sys/bus/pci/devices ]; then
+        for _pci_dev in /sys/bus/pci/devices/*; do
+            [ -r "$_pci_dev/vendor" ] && [ -r "$_pci_dev/class" ] && [ -r "$_pci_dev/device" ] || continue
+            read -r _v < "$_pci_dev/vendor" 2>/dev/null || continue
+            read -r _c < "$_pci_dev/class" 2>/dev/null || continue
+            if [ "$_v" = "0x8086" ] && [ "${_c#0x03}" != "$_c" ]; then
+                read -r _d < "$_pci_dev/device" 2>/dev/null || continue
+                _d=$(printf '%s' "$_d" | tr '[:upper:]' '[:lower:]')
+                case "$_d" in
+                    0x56*|0x0bd*|0x64*|0x7d*|0xe2*)
+                        for _pci_render in "$_pci_dev"/drm/renderD*; do
+                            _render_node="/dev/dri/${_pci_render##*/}"
+                            [ -r "$_render_node" ] && [ -w "$_render_node" ] && return 0
+                        done
+                        ;;
+                esac
+            fi
+        done
+    fi
+    return 1
+}
+
+_xpu_python_supported() {
+    [ -x "$VENV_DIR/bin/python" ] || return 1
+    _xpu_python_minor=$(
+        "$VENV_DIR/bin/python" -c 'import sys; print("{}.{}".format(*sys.version_info[:2]))' \
+            2>/dev/null
+    ) || return 1
+    case "$_xpu_python_minor" in
+        3.9|3.10|3.11|3.12|3.13) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 # Map a gfx arch to the AMD pip index family (mirrors install.ps1 $archFamilyMap).
 _amd_arch_index_family_for_gfx() {
     case "$1" in
@@ -3765,6 +3816,21 @@ _detect_rocm_version_tag() {
 get_torch_index_url() {
     _base="${UNSLOTH_PYTORCH_MIRROR:-https://download.pytorch.org/whl}"
     _base="${_base%/}"
+    _fallback_to_intel_or_cpu() {
+        case "$(uname -s):$(uname -m)" in
+            Linux:x86_64|Linux:amd64) : ;;
+            *) echo "$_base/cpu"; return ;;
+        esac
+        if ! _xpu_python_supported; then
+            echo "$_base/cpu"
+            return
+        fi
+        if _has_intel_xpu_gpu; then
+            echo "$_base/xpu"
+        else
+            echo "$_base/cpu"
+        fi
+    }
     # Explicit override -- skip ALL GPU probing (headless / container / CI / cross-install).
     # UNSLOTH_TORCH_INDEX_URL wins (full URL, verbatim); _FAMILY is the leaf (cpu, cu128, ...)
     # appended to the mirror base. Trim whitespace so a whitespace-only value is unset.
@@ -3806,10 +3872,10 @@ get_torch_index_url() {
         # so non-x86_64 Linux hosts fall back cleanly to CPU wheels.
         case "$(uname -m)" in
             x86_64|amd64) : ;;
-            *) echo "$_base/cpu"; return ;;
+            *) _fallback_to_intel_or_cpu; return ;;
         esac
         if ! _has_amd_rocm_gpu; then
-            echo "$_base/cpu"; return
+            _fallback_to_intel_or_cpu; return
         fi
         # A generic rocm index is only safe when the gfx arch is readable: the
         # Strix reroute (gfx1150/1151 -> arch-specific index) learns gfx from
@@ -3828,7 +3894,7 @@ get_torch_index_url() {
                [ -n "$_amd_inferred_gfx" ] && \
                _amd_arch_index_family_for_gfx "$_amd_inferred_gfx" >/dev/null 2>&1; then
                 echo "[WARN] AMD GPU detected but rocminfo/amd-smi can't read its gfx arch -- inferring $_amd_inferred_gfx from hardware IDs." >&2
-                echo "$_base/cpu"; return
+                _fallback_to_intel_or_cpu; return
             fi
             # Repairing rocminfo cannot help here: the arch would read fine and still
             # have no wheels (unslothai#8529). Advice only, same CPU index either way.
@@ -3840,11 +3906,11 @@ get_torch_index_url() {
                 # Torch ends here, llama.cpp does not. `export` is load-bearing: a bare
                 # assignment never reaches the re-run (the unslothai#8458 mistake).
                 echo "[INFO] GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan and re-run this installer (it selects the llama.cpp bundle at install time)." >&2
-                echo "$_base/cpu"; return
+                _fallback_to_intel_or_cpu; return
             fi
             echo "[WARN] AMD GPU detected but its gfx arch can't be read (rocminfo/amd-smi missing or not enumerating the GPU) -- installing CPU-only PyTorch." >&2
             echo "[WARN] For GPU PyTorch, install or repair rocminfo/amd-smi (e.g. sudo pacman -S rocm-hip-sdk) and re-run this installer." >&2
-            echo "$_base/cpu"; return
+            _fallback_to_intel_or_cpu; return
         fi
         # AMD GPU confirmed -- detect ROCm version
         _rocm_tag=""
@@ -3870,7 +3936,7 @@ get_torch_index_url() {
                     echo "[WARN] If this host really runs ROCm 6.0+ and only its packaging says otherwise, pin the wheels and re-run:" >&2
                     echo "[WARN]   UNSLOTH_TORCH_INDEX_FAMILY=rocm6.4   (a PyTorch wheel leaf: rocm6.0-6.4, rocm7.0-7.2)" >&2
                     echo "[WARN]   UNSLOTH_TORCH_INDEX_URL=<full index URL>   (takes precedence, used verbatim)" >&2
-                    echo "$_base/cpu"; return ;;
+                    _fallback_to_intel_or_cpu; return ;;
             esac
             # Supported tags; 6.5+ clips to rocm6.4, 7.3+ caps to rocm7.2.
             # PyTorch publishes major.minor URLs only (no patch level), so
@@ -3915,7 +3981,7 @@ get_torch_index_url() {
         echo "[WARN]   Arch / CachyOS : sudo pacman -S rocm-hip-sdk" >&2
         echo "[WARN]   other distros  : https://rocm.docs.amd.com/en/latest/deploy/linux/index.html" >&2
         echo "[WARN] Minimum required for version detection: amd-smi, hipconfig, /opt/rocm/.info/version, or the rocm-core package." >&2
-        echo "$_base/cpu"; return
+        _fallback_to_intel_or_cpu; return
     fi
     # Parse CUDA version from nvidia-smi output (POSIX-safe, no grep -P).
     # Newer NVIDIA drivers (e.g. 610.x) print "CUDA UMD Version: X.Y" instead
@@ -3942,7 +4008,7 @@ get_torch_index_url() {
     elif [ "$_major" -eq 12 ] && [ "$_minor" -ge 6 ]; then _cuda_tag=cu126
     elif [ "$_major" -ge 12 ]; then _cuda_tag=cu124
     elif [ "$_major" -ge 11 ]; then _cuda_tag=cu118
-    else echo "$_base/cpu"; return; fi
+    else _fallback_to_intel_or_cpu; return; fi
     echo "$_base/$(_cap_cuda_family_for_pre_turing "$_cuda_tag" "$_smi")"
 }
 
@@ -4562,6 +4628,7 @@ _torch_index_leaf=$(printf '%s' "$_torch_index_leaf" | tr '[:upper:]' '[:lower:]
 case "$_torch_index_leaf" in
     rocm*|gfx*) export UNSLOTH_TORCH_BACKEND="rocm" ;;
     cpu)        export UNSLOTH_TORCH_BACKEND="cpu"  ;;
+    xpu)        export UNSLOTH_TORCH_BACKEND="xpu"  ;;
     cu[0-9]*)   export UNSLOTH_TORCH_BACKEND="cuda" ;;
     # Unknown leaf (odd mirror, /current): unset so a stale inherited value can't leak and
     # the stack probes the GPU.
@@ -5074,6 +5141,8 @@ elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
 elif [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
     # Apple Silicon: PyTorch gets Metal (MPS) acceleration over unified memory, so not CPU-only.
     step "gpu" "Apple Silicon (Metal, unified memory)"
+elif [ "$_torch_index_leaf" = "xpu" ]; then
+    step "gpu" "Intel GPU (XPU)"
 elif _has_amd_rocm_gpu; then
     if [ "$_torch_index_pinned" = true ]; then
         # An explicit UNSLOTH_TORCH_INDEX_URL/_FAMILY pin skipped all probing;

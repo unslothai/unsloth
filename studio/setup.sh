@@ -606,6 +606,7 @@ _source_smoke_install_kind() {
             esac
             ;;
         rocm) printf '%s' "linux-rocm" ;;
+        sycl) printf '%s' "linux-sycl" ;;
         *) printf '%s' "" ;;
     esac
 }
@@ -2092,6 +2093,44 @@ export HSA_ENABLE_DXG_DETECTION="${HSA_ENABLE_DXG_DETECTION:-1}"
 if ! command -v rocminfo >/dev/null 2>&1 && [ -x /opt/rocm/bin/rocminfo ]; then
     PATH="$PATH:/opt/rocm/bin"
 fi
+_has_intel_xpu_gpu() {
+    if [ "$_setup_nvidia_usable" = true ]; then
+        return 1
+    fi
+    if command -v sycl-ls >/dev/null 2>&1; then
+        if _setup_run_smi sycl-ls 2>/dev/null | grep -Eqi 'intel.*gpu|gpu.*intel'; then
+            return 0
+        fi
+    fi
+    if command -v xpu-smi >/dev/null 2>&1; then
+        _setup_xpu_smi_out=$(_setup_run_smi xpu-smi discovery 2>/dev/null) || _setup_xpu_smi_out=""
+        if printf '%s\n' "$_setup_xpu_smi_out" | grep -qi 'Device Type:[[:space:]]*GPU' && \
+           printf '%s\n' "$_setup_xpu_smi_out" | grep -qi 'Vendor Name:[[:space:]]*Intel'; then
+            return 0
+        fi
+    fi
+    if [ -d /sys/bus/pci/devices ]; then
+        for _pci_dev in /sys/bus/pci/devices/*; do
+            [ -r "$_pci_dev/vendor" ] && [ -r "$_pci_dev/class" ] && [ -r "$_pci_dev/device" ] || continue
+            read -r _v < "$_pci_dev/vendor" 2>/dev/null || continue
+            read -r _c < "$_pci_dev/class" 2>/dev/null || continue
+            if [ "$_v" = "0x8086" ] && [ "${_c#0x03}" != "$_c" ]; then
+                read -r _d < "$_pci_dev/device" 2>/dev/null || continue
+                _d=$(printf '%s' "$_d" | tr '[:upper:]' '[:lower:]')
+                case "$_d" in
+                    0x56*|0x0bd*|0x64*|0x7d*|0xe2*)
+                        for _pci_render in "$_pci_dev"/drm/renderD*; do
+                            _render_node="/dev/dri/${_pci_render##*/}"
+                            [ -r "$_render_node" ] && [ -w "$_render_node" ] && return 0
+                        done
+                        ;;
+                esac
+            fi
+        done
+    fi
+    return 1
+}
+
 _setup_amd_detected=false
 _setup_nvidia_usable=false
 _setup_gfx_all=""
@@ -3105,6 +3144,13 @@ else
                 fi
             fi
 
+            # Check for SYCL (Intel) only if CUDA/ROCm was not selected
+            if [ -z "$GPU_BACKEND" ] && [ "$_setup_nvidia_usable" != true ]; then
+                if [ "$_setup_xpu_ready" = true ] || _has_intel_xpu_gpu; then
+                    GPU_BACKEND="sycl"
+                fi
+            fi
+
             _BUILD_DESC="building"
             if [ "$_IS_MACOS_ARM64" = true ]; then
                 # Metal takes precedence on Apple Silicon (CUDA/ROCm not functional on macOS)
@@ -3260,6 +3306,12 @@ else
                 if [ -n "$GPU_TARGETS" ]; then
                     CMAKE_ARGS="$CMAKE_ARGS -DGPU_TARGETS=${GPU_TARGETS}"
                     _BUILD_DESC="building (ROCm, ${GPU_TARGETS//;/+})"
+                fi
+            elif [ "$GPU_BACKEND" = "sycl" ]; then
+                _BUILD_DESC="building (Intel SYCL FP16)"
+                CMAKE_ARGS="$CMAKE_ARGS -DGGML_SYCL=ON -DGGML_SYCL_F16=ON"
+                if command -v icpx >/dev/null 2>&1; then
+                    CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx"
                 fi
             elif [ -d /usr/local/cuda ] || _setup_run_smi nvidia-smi &>/dev/null; then
                 _BUILD_DESC="building (CPU, CUDA driver found but nvcc missing)"
@@ -3515,6 +3567,9 @@ else
             # a later setup run report "already matches" and skip repairing the
             # prebuilt over the source binary. Drop it before building.
             rm -f "$WHISPER_CPP_DIR/UNSLOTH_WHISPER_PREBUILT_INFO.json" 2>/dev/null || true
+            if [ "$_setup_xpu_ready" = true ] || _has_intel_xpu_gpu; then
+                export GGML_SYCL=1
+            fi
             if run_quiet_no_exit "whisper.cpp source build" \
                     env UNSLOTH_HOME="$UNSLOTH_HOME" sh "$_WHISPER_BUILD"; then
                 _WHISPER_RECOVERED=true
@@ -3540,7 +3595,7 @@ PY
                 _WHISPER_PAIRING="installed llama.cpp ${_WHISPER_INSTALLED_TAG:-unknown}; whisper requires ${_WHISPER_REQUIRED_TAG:-unknown}"
                 step "whisper.cpp" "no compatible prebuilt ($_WHISPER_PAIRING); curated whisper.cpp dictation is unavailable; publish the paired releases in llama.cpp then whisper.cpp order; browser and Transformers dictation remain available" "$C_WARN"
             else
-                step "whisper.cpp" "prebuilt install failed; curated whisper.cpp dictation is unavailable; retry setup or inspect verbose output; browser and Transformers dictation remain available" "$C_WARN"
+                step "whisper.cpp" "prebuilt install failed; (use UNSLOTH_WHISPER_FORCE_COMPILE=1 to build from source) curated whisper.cpp dictation is unavailable; retry setup or inspect verbose output; browser and Transformers dictation remain available" "$C_WARN"
             fi
         fi
         rm -f "$_WHISPER_LOG"
