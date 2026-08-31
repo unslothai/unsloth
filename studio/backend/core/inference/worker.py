@@ -1231,8 +1231,7 @@ def run_inference_process(
 
     # ── Windows: check Triton availability ──
     # Ahead of the torchao stub below, matching the training and export workers' gate-then-stub order.
-    # Importable Triton isn't enough on AMD: its clang-cl JIT also needs the MSVC
-    # CRT headers, so the gate covers both (#7595).
+    # Importable Triton isn't enough on AMD: its clang-cl JIT also needs the MSVC CRT headers (#7595).
     if sys.platform == "win32":
         from core._msvc_env import gate_torch_compile_on_windows
         gate_torch_compile_on_windows(logger)

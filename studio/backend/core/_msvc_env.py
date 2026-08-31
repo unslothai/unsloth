@@ -1,17 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Gate torch.compile on Triton's C toolchain being usable, on Windows. See #7595.
-
-`import triton` succeeding does not mean a Triton compile will. Triton's AMD/HIP driver
-JIT-compiles `hip_utils.c` with `clang-cl` on first GPU touch, and with no CRT headers that dies
-with `fatal error: 'stdlib.h' file not found`, mid-training or mid-generation rather than at load.
-
-Triton finds those headers itself: `runtime/build.py` calls `windows_utils.find_msvc_winsdk()` and
-passes the result as `/I` flags. That search never reads `INCLUDE`, so there is no environment to
-repair here, only a bad state to refuse. Ask Triton the same question the compile will ask, and
-disable torch.compile with an actionable message when the answer is no.
-"""
+"""Gate torch.compile on Triton's C toolchain, on Windows (#7595). `import triton` succeeding does not
+mean a compile will: Triton's AMD/HIP driver JIT-compiles `hip_utils.c` with `clang-cl`, which without
+CRT headers dies on `'stdlib.h'` mid-run. It passes its own `/I` dirs, never `INCLUDE`: nothing to repair."""
 
 from __future__ import annotations
 
@@ -23,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 def _have_crt_headers() -> bool:
-    """stdlib.h reachable through INCLUDE. Only the compiler's own fallback, see the module note."""
+    """Only the compiler's own fallback; Triton's `/I` dirs are authoritative, see the module note."""
     for d in os.environ.get("INCLUDE", "").split(os.pathsep):
         if d and os.path.isfile(os.path.join(d, "stdlib.h")):
             return True
@@ -31,7 +23,7 @@ def _have_crt_headers() -> bool:
 
 
 def _triton_finds_crt_headers() -> bool:
-    """Whether Triton's own MSVC/WinSDK search turns up the headers it will pass as `/I`."""
+    """The dirs Triton will pass as `/I`, which is what the compile actually searches."""
     try:
         from triton.windows_utils import find_msvc_winsdk  # noqa: PLC0415
         _, inc_dirs, _ = find_msvc_winsdk()
@@ -42,11 +34,7 @@ def _triton_finds_crt_headers() -> bool:
 
 
 def _triton_is_triton_windows() -> bool:
-    """Whether the installed `triton` comes from the triton-windows distribution.
-
-    Torch's XPU Triton and upstream Triton own the same top-level name, so the package alone
-    does not say which one is active. setup.ps1 resolves it the same way when it swaps them.
-    """
+    """XPU Triton and triton-windows own the same top-level name; only the distribution says which."""
     try:
         import importlib.metadata as md  # noqa: PLC0415
         dists = md.packages_distributions().get("triton") or ()
@@ -57,7 +45,7 @@ def _triton_is_triton_windows() -> bool:
 
 
 def _rocm_clang_cl_present() -> bool:
-    """Whether the ROCm wheel's clang-cl is on disk. `get_cc()` prefers it over everything else."""
+    """`get_cc()` prefers this clang-cl over everything else once the ROCm wheel is installed."""
     import sysconfig  # noqa: PLC0415
     return os.path.isfile(
         os.path.join(
@@ -67,16 +55,9 @@ def _rocm_clang_cl_present() -> bool:
 
 
 def _needs_msvc_headers() -> bool:
-    """Whether the compiler Triton will pick needs the MSVC/SDK headers at all.
-
-    Only cl and clang-cl do; without the ROCm wheel `get_cc()` falls through to bundled TinyCC,
-    which carries its own. Asking Triton is exact, so try that first.
-
-    The fallback covers Triton builds that own the package without that private API, and needs
-    both halves: an in-place ROCm-to-XPU repair leaves the compiler on disk without the Triton
-    that would select it. Still unanswerable means ungated, because failing to gate only costs
-    a message on an already-broken box while gating wrongly breaks a working one.
-    """
+    """Only cl and clang-cl need them; `get_cc()` otherwise picks bundled TinyCC, which carries its own. The
+    fallback needs both halves, since a ROCm-to-XPU repair strands the compiler without the Triton that
+    selects it; unanswerable means ungated, because gating wrongly breaks a working box."""
     try:
         from triton.runtime.build import get_cc, is_clang_cl, is_msvc  # noqa: PLC0415
         cc = get_cc()
@@ -87,11 +68,7 @@ def _needs_msvc_headers() -> bool:
 
 
 def _toolchain_summary() -> str:
-    """What the probe saw, short enough to sit in the warning a reporter pastes into an issue.
-
-    The counts are the diagnostic: 0 include dirs means no Visual Studio at all, while several
-    dirs and still no `stdlib.h` means a partial SDK, which looks identical from the outside.
-    """
+    """0 include dirs means no Visual Studio; several with no `stdlib.h` means a partial SDK."""
     try:
         from triton.runtime.build import get_cc  # noqa: PLC0415
         cc = os.path.basename(get_cc())
@@ -119,10 +96,7 @@ def crt_headers_reachable() -> bool:
 
 
 def gate_torch_compile_on_windows(log: logging.Logger) -> None:
-    """Disable torch.compile unless Triton and its C toolchain are both usable.
-
-    No-op off win32. Workers call this before importing torch.
-    """
+    """Workers call this before importing torch."""
     if sys.platform != "win32":
         return
     try:
@@ -145,8 +119,7 @@ def gate_torch_compile_on_windows(log: logging.Logger) -> None:
         return
 
     os.environ["TORCHDYNAMO_DISABLE"] = "1"
-    # Not claiming everything now works: this only turns off the compiles we own. A kernel written
-    # as @triton.jit, which Unsloth's are, still needs the toolchain.
+    # This only turns off the compiles we own; Unsloth's @triton.jit kernels still need the toolchain.
     log.warning(
         "Triton is installed but its C toolchain has no CRT headers, so its "
         "clang-cl JIT would fail on 'stdlib.h' (#7595). torch.compile disabled; "

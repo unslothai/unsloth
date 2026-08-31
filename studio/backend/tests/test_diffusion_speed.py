@@ -720,8 +720,7 @@ def _clear_runtime_cache():
 
 
 def _set_crt_headers(monkeypatch, reachable: bool):
-    """Pin the #7595 toolchain probe. Left real it answers for the CI runner, not the case
-    under test, so a Windows runner with Build Tools would silently invert these assertions."""
+    """Left real, this answers for the CI runner, not the case under test."""
     from core import _msvc_env
     monkeypatch.setattr(_msvc_env, "crt_headers_reachable", lambda: reachable)
 
@@ -760,7 +759,6 @@ def test_windows_without_triton_falls_back_to_eager(monkeypatch):
     assert ds_mod.torch_compile_runtime_available() is False
     assert ds_mod.compile_eligible(_target(), is_gguf = False, family = _family()) is False
 
-    # A Windows install that DOES have the wheel, and a usable toolchain, is not held back.
     monkeypatch.setitem(sys.modules, "triton", types.ModuleType("triton"))
     _set_crt_headers(monkeypatch, True)
     _clear_runtime_cache()
@@ -769,9 +767,7 @@ def test_windows_without_triton_falls_back_to_eager(monkeypatch):
 
 
 def test_windows_with_triton_but_no_msvc_falls_back_to_eager(monkeypatch):
-    """#7595: `import triton` succeeds and the compile still dies, because Triton's clang-cl JIT
-    needs the CRT headers. Reported as image generation failing at step 0 on an RX 9070 XT with
-    no Visual Studio installed."""
+    """#7595: `import triton` succeeds and the compile still dies, for want of CRT headers."""
     from core.inference import diffusion_speed as ds_mod
 
     monkeypatch.delenv("TORCHDYNAMO_DISABLE", raising = False)
@@ -789,8 +785,7 @@ def test_windows_with_triton_but_no_msvc_falls_back_to_eager(monkeypatch):
 
 
 def test_gguf_dequant_respects_the_runtime_gate(monkeypatch):
-    """The GGUF arm is an `if`, so it never reaches the check inside compile_eligible(). Without
-    its own it installs a compiled dequant that only fails at step 0 of the first generation."""
+    """The GGUF arm is an `if`, so it never reaches the check inside compile_eligible()."""
     from core.inference import diffusion_speed as ds_mod
 
     _stub_torch(monkeypatch)
@@ -811,7 +806,6 @@ def test_gguf_dequant_respects_the_runtime_gate(monkeypatch):
     assert called["compiled_dequant"] == 0
     assert not applied.get("compiled_dequant")
 
-    # Positive control: the same load on a box with the toolchain still compiles.
     _set_crt_headers(monkeypatch, True)
     _clear_runtime_cache()
     applied = apply_speed_optims(
