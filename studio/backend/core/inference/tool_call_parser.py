@@ -2574,13 +2574,26 @@ def _parse_gemma_tool_calls(
     # A blocked rehearsal's body is argument text for the same reason. It used to own its span
     # by being promoted; refusing to promote it must not hand its contents to this parser.
     # Only ENABLED execution names: a disabled one never owned its body on this path either.
+    #
+    # One forward pass, like _iter_bracket_spans: the scan stops at the last ``}`` (nothing
+    # after it can close) and resumes past each resolved body. Restarting a balanced scan at
+    # every opener is quadratic, and a stream of unclosed ``terminal[ARGS]{`` is cheap to emit.
     blocked_spans = []
-    for _reh in _tool_healing._REHEARSAL_RE.finditer(content):
+    _reh_cursor = 0
+    _reh_last_close = content.rfind("}")
+    while _reh_last_close >= 0:
+        _reh = _tool_healing._REHEARSAL_RE.search(content, _reh_cursor)
+        if _reh is None or _reh.end() > _reh_last_close:
+            break
+        _reh_cursor = _reh.end()
         if not _markerless_blocked_execution(_reh.group(1), enabled_tool_names):
             continue
         _reh_end = _tool_healing._balanced_json_span(content, _reh.end())
-        if _reh_end is not None:
-            blocked_spans.append((_reh.start(), _reh_end + 1))
+        if _reh_end is None:
+            # This body runs past the last closer, so no later opener can balance either.
+            break
+        blocked_spans.append((_reh.start(), _reh_end + 1))
+        _reh_cursor = _reh_end + 1
     while True:
         m = _GEMMA_BARE_TC_RE.search(content, cursor)
         if m is None:

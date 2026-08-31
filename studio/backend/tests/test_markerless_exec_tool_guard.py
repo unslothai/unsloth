@@ -498,3 +498,18 @@ def test_a_blocked_rehearsal_body_is_not_scanned_for_other_calls():
         'foo[ARGS]{"command":"call:web_search{query:x}"}', enabled_tool_names = EXEC_ENABLED
     )
     assert [c["function"]["name"] for c in disabled] == ["web_search"]
+
+
+def test_blocked_span_collection_is_one_forward_pass():
+    """A stream of unclosed ``terminal[ARGS]{`` must not restart a balanced scan per opener.
+
+    Cheap for a model to emit and quadratic to scan, so it ties up a worker. Timed rather
+    than structural because the shape of the scan is the thing under test; the budget is
+    ~1000x the observed cost, so only a return to the quadratic form can trip it.
+    """
+    import time
+
+    text = "terminal[ARGS]{" * 3200
+    started = time.monotonic()
+    assert parse_tool_calls_from_text(text, enabled_tool_names = EXEC_ENABLED) == []
+    assert time.monotonic() - started < 5.0
