@@ -16,6 +16,8 @@ resolved cap, and the reservation it produces.
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from core.inference.llama_admission import LlamaAdmissionConfig, LlamaAdmissionQueue
 
 import routes.inference as routes_inference
@@ -50,13 +52,13 @@ def _uncapped(messages = None):
 def _resolve(
     payload,
     backend = None,
-    injected = 0,
+    injects_current_date = False,
 ):
     return routes_inference._openai_llama_uncapped_max_tokens(
         payload,
         request = None,
         llama_backend = backend if backend is not None else _backend(),
-        injected_prompt_tokens = injected,
+        injects_current_date = injects_current_date,
     )
 
 
@@ -65,12 +67,8 @@ def _cap(payload, backend = None):
     return None if resolved is None else resolved.max_tokens
 
 
-def _cap_with_injection(
-    payload,
-    injected,
-    backend = None,
-):
-    resolved = _resolve(payload, backend, injected)
+def _cap_with_date(payload, backend = None):
+    resolved = _resolve(payload, backend, injects_current_date = True)
     return None if resolved is None else resolved.max_tokens
 
 
@@ -157,32 +155,46 @@ class TestTheResolvedCap:
         assert _cap(_uncapped()) is None
 
 
+@pytest.fixture
+def date_on(monkeypatch):
+    """The date prompt on, and what a request is charged for it."""
+    line = "The current date is 2026-08-31."
+    monkeypatch.setattr(routes_inference, "current_date_prompt_line", lambda **_: line)
+    return routes_inference._openai_llama_uncapped_injected_date_tokens(None)
+
+
 class TestPromptInjectedAfterTheSizing:
     """The share has to hold what the route adds after the cap is chosen: the standard
     GGUF path prefixes the current date and sends that, and six slots each overrunning
     by an uncharged injection are the overcommit #9392 closed."""
 
-    def test_the_injection_comes_out_of_the_cap(self):
+    def test_the_injection_comes_out_of_the_cap(self, date_on):
         payload = _uncapped()
-        assert _cap_with_injection(payload, 40) == SHARE - HEADROOM - _charged(payload) - 40
+        assert _cap_with_date(payload) == SHARE - HEADROOM - _charged(payload) - date_on
 
-    def test_the_slot_still_holds_one_share(self):
+    def test_the_slot_still_holds_one_share(self, date_on):
         """What llama-server is actually asked for -- injected prompt plus the cap --
         stays inside the share, so N of them still fit the cache."""
         payload = _uncapped()
-        assert _charged(payload) + 40 + _cap_with_injection(payload, 40) == SHARE - HEADROOM
+        assert _charged(payload) + date_on + _cap_with_date(payload) == SHARE - HEADROOM
 
-    def test_the_reservation_covers_the_injection_too(self):
+    def test_the_reservation_covers_the_injection_too(self, date_on):
         """Charging the cap alone reserves less than the request occupies."""
         payload = _uncapped()
-        resolved = _resolve(payload, injected = 40)
+        resolved = _resolve(payload, injects_current_date = True)
         payload.max_tokens = resolved.max_tokens
         assert _cost(payload, resolved.extra_prompt_tokens) == SHARE - HEADROOM
 
-    def test_an_injection_that_eats_the_answer_is_left_alone(self):
+    def test_an_injection_that_eats_the_answer_is_left_alone(self, date_on):
         """Same floor as any other prompt that fills the share."""
         payload = _uncapped()
-        assert _cap_with_injection(payload, SHARE - HEADROOM - _charged(payload)) is None
+        room = SHARE - HEADROOM - _charged(payload) - date_on
+        assert _cap_with_date(_uncapped([{"role": "user", "content": "x" * (room * 4)}])) is None
+
+    def test_a_caller_that_does_not_inject_is_charged_nothing(self, date_on):
+        """/v1/responses builds its own body and adds no date, so it pays nothing for one."""
+        payload = _uncapped()
+        assert _cap(payload) == _cap_with_date(payload) + date_on
 
     def test_the_date_prompt_is_priced_when_it_is_on(self, monkeypatch):
         monkeypatch.setattr(

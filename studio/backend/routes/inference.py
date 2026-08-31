@@ -2027,7 +2027,7 @@ def _openai_llama_uncapped_max_tokens(
     *,
     request: Optional[Request],
     llama_backend,
-    injected_prompt_tokens: int = 0,
+    injects_current_date: bool = False,
 ) -> Optional[_UncappedMaxTokens]:
     """The cap to give a request that names none, so it does not reserve the whole cache.
 
@@ -2049,9 +2049,9 @@ def _openai_llama_uncapped_max_tokens(
     characters per token would be handed the room it is already sitting in, and N of
     those now decode at once. Pessimism costs an answer, optimism costs the cache.
 
-    ``injected_prompt_tokens`` is prompt the caller adds AFTER this -- the standard GGUF
-    path prefixes the current date to the system prompt -- and anything unnamed here is
-    cache nobody accounted for.
+    ``injects_current_date`` names prompt the caller adds AFTER this, and anything unnamed
+    is cache nobody accounted for. Priced here rather than by the caller so it costs a
+    read only once the cheap guards have passed.
 
     Returns the cap AND what admission must add to its own estimate, because the two are
     one decision: admission prices the unchanged payload at the dense rate, so without
@@ -2087,7 +2087,8 @@ def _openai_llama_uncapped_max_tokens(
     # left to hand the output and nothing here can make the two agree.
     if prompt_tokens is None:
         return None
-    prompt_tokens += max(0, injected_prompt_tokens)
+    if injects_current_date:
+        prompt_tokens += _openai_llama_uncapped_injected_date_tokens(request)
     headroom = max(
         _OPENAI_LLAMA_UNCAPPED_MIN_SHARE_HEADROOM_TOKENS,
         share // _OPENAI_LLAMA_UNCAPPED_SHARE_HEADROOM_DIVISOR,
@@ -20346,7 +20347,7 @@ async def produce_openai_chat_completions(
             # The standard GGUF path below prefixes the current date and sends that, so
             # the share has to hold it. Charged on the passthrough branch too, which does
             # not inject: a few tokens, against branching before the route is known.
-            injected_prompt_tokens = _openai_llama_uncapped_injected_date_tokens(request),
+            injects_current_date = True,
         )
         if _shared_max_tokens is not None:
             payload.max_tokens = _shared_max_tokens.max_tokens
