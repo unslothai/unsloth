@@ -164,7 +164,6 @@ const GPU_LAYERS_AUTO = -1;
 // though these scenarios call autoLoadSmallestModel directly.
 let STATUS_CALLS = 0;
 async function getInferenceStatus() {
-  // Fail initial reads or settle the simulated CLI load when requested.
   const call = STATUS_CALLS++;
   if (call < (SCENARIO.statusFailures ?? 0)) {
     throw new Error("status unavailable");
@@ -639,7 +638,6 @@ SCENARIO_HELPERS = """
       platformFetched: true,
       variants: {},
       lastLoaded: null,
-      // Simulated /status load state and failures.
       serverLoading: [],
       serverResident: null,
       statusFailures: 0,
@@ -1641,7 +1639,6 @@ def test_an_unclassified_local_row_is_never_auto_loaded(fmt):
     assert _loaded_paths(out) == [DEFAULT_MODEL]
 
 
-# Advance the helper's clock directly to its timeout.
 _EXPIRE_CLI_LOAD_WAIT = """
 const realNow = Date.now.bind(Date);
 let nowCalls = 0;

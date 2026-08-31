@@ -212,10 +212,8 @@ const LORA_SUFFIX_RE = /_(\d{9,})$/;
 const CLI_LOAD_POLL_IDLE_MS = 60_000;
 const CLI_LOAD_POLL_MAX_MS = 600_000;
 
-// The observer polls only while the selection is empty, and every refresh writes that same
-// selection, so which call owns settlement cannot be a per-call argument: a refresh landing
-// mid-wait would end the wait on the outgoing model. Module-scoped for that reason, and held
-// across the hydrating sync too, since a refresh issued later can still answer first.
+// Module-scoped, not a per-call argument: every refresh writes the selection the observer
+// polls on, so any of them landing mid-wait would end it on the outgoing model.
 let pendingServerModelWaits = 0;
 
 async function waitForServerModel(signal?: AbortSignal): Promise<void> {
@@ -229,8 +227,7 @@ async function waitForServerModel(signal?: AbortSignal): Promise<void> {
   ) {
     let status: InferenceStatusResponse | null = null;
     try {
-      // Into the request, not just around it: an unmount cannot end a wait that is
-      // parked on a stalled fetch, and every refresh defers residency until it does.
+      // Into the request, not just around it: a stalled read outlives the unmount.
       status = await getInferenceStatus(signal);
     } catch {
       // A later poll can recover from a transient status failure.
@@ -463,8 +460,6 @@ async function syncInferenceStatusToStore(options?: {
     const selectedAtStart = useChatRuntimeStore.getState().params.checkpoint;
     const [listRes, statusRes, , idleUnloadArmed] = await Promise.all([
       listModels(),
-      // Signalled, so an unmount ends this read rather than leaving the mount wait it
-      // gates parked on it.
       getInferenceStatus(signal),
       // Settled from this request alone. Read out of the aggregate below, a sibling
       // rejection discarded a good list yet still marked the inventory settled, so a
@@ -495,10 +490,8 @@ async function syncInferenceStatusToStore(options?: {
     setModels(listRes.models.map(toChatModelRow));
 
     const statusLoading = (statusRes.loading?.length ?? 0) > 0;
-    // A replacement reports the outgoing model as active and the incoming one as loading.
-    // Adopting the outgoing one sets the checkpoint waitForServerModel needs empty, so the
-    // observer would stop before the incoming model ever lands. While one is outstanding it
-    // is the only writer of a settled answer.
+    // A replacement names the outgoing model active and the incoming one loading. Adopting
+    // the outgoing one sets the checkpoint the observer needs empty, so it writes this alone.
     if (statusLoading && pendingServerModelWaits > 0) return;
 
     const selectedCheckpoint = useChatRuntimeStore.getState().params.checkpoint;
@@ -613,9 +606,9 @@ async function syncInferenceStatusToStore(options?: {
 /**
  * The mount handoff: hydrate from status, then observe until the server settles.
  *
- * Registered before the sync is issued, since a refresh issued later can still answer
- * first, and one that answered before the count went up adopted the outgoing model and
- * superseded this sync, leaving the observer nothing to poll on.
+ * The gate is up before the sync is issued, since a refresh issued later can answer first and
+ * adopt the outgoing model, and comes down on the abort, since listModels and listLoras take
+ * no signal and an unmount cannot end a stalled one.
  */
 async function refreshAndWaitForServerModel(options?: {
   signal?: AbortSignal;
@@ -626,9 +619,6 @@ async function refreshAndWaitForServerModel(options?: {
   const signal = options?.signal;
   let held = true;
   pendingServerModelWaits += 1;
-  // Released on the abort itself, not only on the way out: listModels and listLoras take no
-  // signal, so an unmount cannot stop a stalled one, and the gate it holds would outlive the
-  // page and go on discarding every other refresh's answer.
   const release = () => {
     if (!held) return;
     held = false;

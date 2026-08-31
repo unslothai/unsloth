@@ -90,12 +90,9 @@ test("residency is deferred only while a mount wait is outstanding", () => {
     /if \(statusLoading\) return;/,
     "the send waiter and the lifecycle bus own settlement themselves; generic hydration must still publish residency",
   );
-  // The mount observer needs the checkpoint empty to poll at all, and every refresh writes
-  // that same checkpoint, so the wait is module-scoped rather than a per-call argument.
   // Behaviour is pinned in tests/studio/test_chat_mount_cli_load_adoption.py.
   assert.match(SYNC, /if \(statusLoading && pendingServerModelWaits > 0\) return;/);
-  // Registered before the sync is issued: a refresh issued later can answer first, and one
-  // that answered while the count was still zero adopted the outgoing model.
+  // Up before the sync is issued: a refresh issued later can answer first.
   const handoff = SOURCE.slice(
     SOURCE.indexOf("async function refreshAndWaitForServerModel("),
     SOURCE.indexOf("* Reconcile the UI after the SERVER unloaded"),
@@ -105,11 +102,10 @@ test("residency is deferred only while a mount wait is outstanding", () => {
       handoff.indexOf("await syncInferenceStatusToStore(options);"),
   );
   assert.match(handoff, /await waitForServerModel\(signal\);/);
-  // And released by the abort itself. listModels and listLoras take no signal, so waiting
-  // for the sync to return would keep the gate up past the page that owns it.
+  // And down on the abort: listModels and listLoras take no signal, so a stalled one
+  // would keep the gate up past the page that owns it.
   assert.match(handoff, /signal\?\.addEventListener\("abort", release, \{ once: true \}\)/);
   assert.match(handoff, /\} finally \{\s*signal\?\.removeEventListener\("abort", release\);\s*release\(\);\s*\}/);
-  // The sync's own read is signalled too, so an unmount ends it rather than parking on it.
   assert.match(SYNC, /getInferenceStatus\(signal\)/);
 });
 
@@ -145,7 +141,6 @@ test("the mount observer adopts only a settled model", () => {
     wait,
     /!useChatRuntimeStore\.getState\(\)\.params\.checkpoint &&\s*!useChatRuntimeStore\.getState\(\)\.modelLoading/,
   );
-  // Into the request, not just around it: a stalled read would otherwise outlive the unmount
-  // that aborted it, and hold every later refresh off publishing residency behind it.
+  // Into the request, or a stalled read outlives the unmount that aborted it.
   assert.match(wait, /await getInferenceStatus\(signal\)/);
 });

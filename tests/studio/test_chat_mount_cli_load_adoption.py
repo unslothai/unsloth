@@ -5,9 +5,8 @@
 
 Runs the real ``refresh`` -> ``syncInferenceStatusToStore`` -> ``waitForServerModel`` sequence from
 use-chat-model-runtime.ts under node with the module boundary stubbed, so these assert behaviour
-rather than source text. During a replacement the backend reports the outgoing model as
-``active_model`` and the incoming one in ``loading``; adopting the outgoing one sets the checkpoint
-the mount observer needs empty, and the observer then exits without ever seeing the new model land.
+rather than source text. A replacement names the outgoing model ``active_model`` and the incoming
+one ``loading``; adopting the outgoing one sets the checkpoint the observer needs empty.
 """
 
 import json
@@ -37,23 +36,18 @@ TEMP = WORKDIR / "temp" / "chat_mount_cli_load_adoption"
 OUTGOING = "org/outgoing-A-GGUF"
 INCOMING = "org/incoming-B-GGUF"
 
-# Every module-boundary name the sliced region uses. A missing one is a bare ReferenceError that
-# the sync's own catch turns into a "Failed to refresh models" toast, which would read as a
-# wrong-checkpoint assertion instead of naming the real cause.
+# Every module-boundary name the sliced region uses. A missing one is a ReferenceError the
+# sync's catch turns into a toast, so it reads as a wrong-checkpoint failure instead.
 PREAMBLE = """
 export const EVENTS: any[] = [];
 
 type Scenario = {
-  /** What /status answers, as a function of ms since the scenario was set. */
   status: (elapsedMs: number) => any;
   models: any[];
-  /** Per-call listModels() latency, the last entry repeating. Lets a refresh issued
-   *  second answer first, which is what a slower inventory read really does. */
+  /** Per-call listModels() latency, last entry repeating: lets a later refresh answer first. */
   listModelsDelays?: number[];
-  /** 1-based /status reads that only end on abort (or after 5s). Indexed rather than
-   *  "from N on" so the reads around the stalled one still answer. */
+  /** 1-based /status reads that only end on abort (or 5s). Indexed, so their neighbours answer. */
   hangStatusReads?: number[];
-  /** /api/models/loras rejects, as one unreadable training output makes it. */
   listLorasFails?: boolean;
 };
 let SCENARIO: Scenario = { status: () => ({}), models: [] };
@@ -155,9 +149,8 @@ export function applyActiveModelStatusToStore(status: any, _options: any): void 
 export function syncModelCapabilities(_checkpoint: string, _status: any): void {}
 export function refreshContextUsage(_options: any): void {}
 
-// The observer's adoption, stubbed at the module boundary it really crosses. It keeps the three
-// refusals the real one makes, because "a pick already landed" is exactly what a concurrent
-// refresh produces here: a stub that adopted anyway would hide the bug these scenarios exist for.
+// Stubbed at the module boundary it really crosses, but keeping the three refusals: "a pick
+// already landed" is what a concurrent refresh produces, and adopting anyway would hide the bug.
 export async function tryAdoptServerActiveModel(options: any): Promise<boolean> {
   if (STATE.params.checkpoint) return true;
   const status = options?.status;
@@ -217,8 +210,7 @@ def _build_harness(run_dir: Path) -> None:
         "/**\n * Reconcile the UI after the SERVER unloaded",
     )
     assert "async function syncInferenceStatusToStore(" in sync
-    # The sequencing IS the bug, so refresh has to run for real rather than be re-typed here.
-    # useCallback and its dependency array are React plumbing with no behaviour to preserve.
+    # The sequencing IS the bug, so refresh runs for real rather than being re-typed here.
     match = re.search(
         r"const refresh = useCallback\(\n"
         r"    async \(options\?: \{(?P<params>.*?)\}\) => \{(?P<body>.*?)\n"
@@ -296,7 +288,6 @@ def _run(script_body: str) -> dict:
           is_gguf: true,
           loading: ["%(incoming)s"],
         };
-        /** Mid-replacement until `ms`, then the incoming model is resident. */
         const settlesAfter = (ms) => (elapsed) =>
           elapsed < ms ? REPLACING : SETTLED_ON_INCOMING;
         """
@@ -362,9 +353,8 @@ def test_mount_adopts_the_incoming_cli_model_not_the_outgoing_one():
 
 
 def test_a_refresh_landing_mid_wait_does_not_end_it_on_the_outgoing_model():
-    """ChatPage fires a second inventory refresh 1.2s after mount, and the lifecycle bus and a
-    tab regaining focus fire more. None asks to wait, so each would adopt the outgoing model and
-    leave the observer with the non-empty checkpoint its loop refuses to poll on."""
+    """ChatPage refreshes again 1.2s after mount, the lifecycle bus and a returning tab more.
+    None asks to wait, so each would adopt the outgoing model and leave the observer nothing."""
     out = _run(
         """
         setScenario({
@@ -404,12 +394,8 @@ def test_mount_waits_for_a_cli_load_that_starts_after_it():
 
 
 def test_a_refresh_that_answers_before_the_mount_sync_does_not_end_the_wait():
-    """The wait has to be registered before the sync is issued, not after it returns.
-
-    A refresh issued second can answer first, and inside that window it saw no wait
-    outstanding: it adopted the outgoing model and superseded the mount sync, so the
-    observer started against a checkpoint its loop refuses to poll on.
-    """
+    """Registered before the sync is issued, not after it returns: a refresh issued second can
+    answer first, and inside that window it saw no wait outstanding and adopted the outgoing one."""
     out = _run(
         """
         setScenario({
@@ -431,18 +417,14 @@ def test_a_refresh_that_answers_before_the_mount_sync_does_not_end_the_wait():
 
 
 def test_aborting_the_mount_releases_the_wait_even_on_a_stalled_status_read():
-    """Deferring residency while a wait is outstanding only holds if the wait can end.
-
-    The abort signal has to reach the request: checked only around it, an unmount leaves
-    the poll parked on the stalled read and every later refresh deferring behind it.
-    """
+    """Deferring residency only holds if the wait can end: checked around the request rather
+    than passed into it, an unmount leaves the poll parked and every later refresh behind it."""
     out = _run(
         """
         setScenario({
           models: [{ id: "%(outgoing)s" }],
           status: () => REPLACING,
-          // The observer's first poll. The mount sync's read before it and the later
-          // refresh's read after it both answer, so only the wait is parked.
+          // The observer's first poll: the reads on either side of it still answer.
           hangStatusReads: [2],
         });
         setStoreState(emptyStore());
@@ -465,12 +447,8 @@ def test_aborting_the_mount_releases_the_wait_even_on_a_stalled_status_read():
 
 
 def test_aborting_the_mount_releases_the_wait_even_on_an_unsignalled_read():
-    """The gate has to come down on the abort itself, not on the way out of the handoff.
-
-    listModels and listLoras take no AbortSignal, so an unmount cannot end a stalled one:
-    waiting for the sync to return would leave the gate up past the page it belongs to, and
-    every later refresh discarding its answer while anything is loading.
-    """
+    """And down on the abort itself, not on the way out: listModels and listLoras take no
+    AbortSignal, so waiting for the sync to return leaves the gate up past its own page."""
     out = _run(
         """
         setScenario({
@@ -534,9 +512,8 @@ def test_mount_still_adopts_a_settled_model_with_no_load_in_flight():
 
 
 def test_a_failing_lora_scan_takes_the_model_list_with_it():
-    """Why the mount must not ask for LoRAs: the three reads share one Promise.all, and the
-    LoRA handler rethrows so the inventory settles from its own request. A rejection therefore
-    skips setModels entirely, and the picker offers nothing at all."""
+    """Why the mount must not ask for LoRAs: the three reads share one Promise.all and the LoRA
+    handler rethrows, so a rejection skips setModels and the picker offers nothing at all."""
     out = _run(
         """
         setScenario({
@@ -564,11 +541,8 @@ def test_the_mount_refresh_does_not_wait_on_the_lora_inventory():
 
 
 def test_a_refresh_that_is_not_the_mount_waiter_still_publishes_residency():
-    """The regression guard for the fix that removed the blanket loading bail-out.
-
-    A refresh with no waiter behind it (the lifecycle bus, the deferred inventory read) owns
-    residency itself, so a load in flight must not stop it publishing what is resident.
-    """
+    """The guard for the commit that removed the blanket loading bail-out: a refresh with no
+    waiter behind it owns residency itself, so a load in flight must not stop it publishing."""
     out = _run(
         """
         setScenario({

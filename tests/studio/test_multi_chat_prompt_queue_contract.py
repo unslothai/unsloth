@@ -527,9 +527,8 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert f"const settled = {probe};" in lifecycle
     assert "const status = settled.status;" in lifecycle
     assert "options?.abortSignal?.throwIfAborted()" in CHAT_ADAPTER
-    # The signal goes into each poll's request, not only around it: a stalled read parks the
-    # send past its own cancellation, and an abort caught by the retry counter would surface
-    # as "could not reach the model server" instead of ending the turn.
+    # Into the request, not only around it, and the abort ahead of the failure counter, or a
+    # cancelled read surfaces as "could not reach the model server" instead of ending the turn.
     poll = _between(
         CHAT_ADAPTER,
         "const deadline = Date.now() + CLI_LOAD_ADOPT_MAX_MS;",

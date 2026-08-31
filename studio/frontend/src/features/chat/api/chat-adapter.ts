@@ -2885,10 +2885,9 @@ type SettledServerStatus =
   | { outcome: ServerLoadBlocked; status?: undefined };
 
 /**
- * Poll until nothing is loading. A status carrying `loading` still names the model
- * being replaced, so no caller may read a residency off it; it can only be waited
- * out. `stopEarly` abandons the wait once the caller stops needing an answer, and
- * a caller that passes none never has to consider that outcome.
+ * Poll until nothing is loading. A status carrying `loading` still names the model being
+ * replaced, so no caller may read a residency off it. `stopEarly` abandons the wait; a
+ * caller that passes none never sees that outcome.
  */
 async function waitForSettledServerStatus(options: {
   abortSignal?: AbortSignal;
@@ -2911,8 +2910,7 @@ async function waitForSettledServerStatus(options?: {
 
     let status: InferenceStatusResponse | null = null;
     try {
-      // Into the request, not just around it, or a stalled read parks this poll past
-      // the send being cancelled.
+      // Into the request, not just around it: a stalled read outlives the cancellation.
       status = await getInferenceStatus(options?.abortSignal);
       failures = 0;
     } catch {
@@ -2951,7 +2949,6 @@ function reportBlockedServerLoad(outcome: ServerLoadBlocked): void {
 
 type CliLoadAdoption = "adopted" | "server-idle" | ServerLoadBlocked;
 
-/** Wait out a server-started load and adopt it before automatic loading. */
 async function adoptInFlightServerLoad(
   abortSignal?: AbortSignal,
 ): Promise<CliLoadAdoption> {
@@ -3971,9 +3968,8 @@ async function resolveQueuedEmptyLocalModel(abortSignal: AbortSignal): Promise<{
       // Hold the lifecycle lease across the probe. Its response cannot become
       // stale behind a foreground or sibling queued load, and only this owner
       // may clear modelLoading afterward.
-      // A failed probe is not evidence that the local server is empty, and neither
-      // is one read mid-replacement. Fail closed so neither a transient status
-      // error nor the model being evicted can stand in for the incoming one.
+      // A failed probe is not evidence the local server is empty, and neither is one read
+      // mid-replacement: fail closed, or the outgoing model stands in for the incoming one.
       const settled = await waitForSettledServerStatus({ abortSignal });
       abortSignal.throwIfAborted();
       if (settled.outcome !== "settled") {

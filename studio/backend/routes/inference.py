@@ -16144,9 +16144,8 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             load_inference_config(backend.active_model_name) if backend.active_model_name else None
         )
 
-        # The backend names the load it is running and the attempt registry names the
-        # one the route accepted; they are the same load, so compare the public ids or
-        # a model loaded from a path would be listed twice.
+        # The backend and the attempt registry name the same load, so compare public ids
+        # or a model loaded from a path is listed twice.
         _loading_models = list(getattr(backend, "loading_models", set()))
         if _tracked_loading_id and not any(
             _loading_public_id(_name) == _tracked_loading_id for _name in _loading_models
