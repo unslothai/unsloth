@@ -445,3 +445,79 @@ def test_the_cli_hands_over_the_managed_venvs_own_paths():
     assert 'kwargs["scan_paths"] = paths' in deps
     # Guarded on its own: a module new enough for `deep` may still predate it.
     assert '_verify_install_supports(module, "scan_paths")' in deps
+
+
+def test_a_quarantined_console_script_is_damage(tmp_path, site_packages):
+    """RECORD names a launcher `../../../bin/x`, and the tree is left intact.
+
+    Skipping every parent-relative row meant the standard `unsloth` command
+    could be gone while the deep check called the install healthy.
+    """
+    venv = site_packages.parent
+    (venv / "pyvenv.cfg").write_text("home = /usr\n", encoding = "utf-8")
+    dist_info = _dist(site_packages)
+    size = _write(site_packages / PKG / "__init__.py", "x = 1\n")
+    launcher = _write(venv / "bin" / PKG, "#!/usr/bin/env python\n")
+    _record(
+        dist_info,
+        [[f"{PKG}/__init__.py", "sha256=x", size], [f"../bin/{PKG}", "sha256=b", launcher]],
+    )
+    assert install_manifest.damaged_payload_files(PKG) == []
+    (venv / "bin" / PKG).unlink()
+    assert install_manifest.damaged_payload_files(PKG) == [f"../bin/{PKG} is missing"]
+
+
+def test_a_recorded_path_outside_the_venv_is_not_damage(tmp_path, site_packages):
+    """It belongs to something else, and reinstalling ours would not restore it."""
+    venv = site_packages.parent
+    (venv / "pyvenv.cfg").write_text("home = /usr\n", encoding = "utf-8")
+    dist_info = _dist(site_packages)
+    _record(dist_info, [["../../elsewhere/thing", "sha256=z", 4]])
+    assert install_manifest.damaged_payload_files(PKG) == []
+
+
+def test_a_parent_relative_row_outside_a_venv_is_skipped(site_packages):
+    """No pyvenv.cfg, so nothing bounds the row and it stays out of scope."""
+    dist_info = _dist(site_packages)
+    _record(dist_info, [[f"../bin/{PKG}", "sha256=b", 4]])
+    assert install_manifest.damaged_payload_files(PKG) == []
+
+
+def test_a_vanished_companion_is_damage(tmp_path, monkeypatch, site_packages):
+    """No dist-info leaves the RECORD scan nothing to walk, and no check above
+    ever looked at the companion's version."""
+    dist_info = _dist(site_packages, name = "unsloth", version = VER)
+    size = _write(site_packages / "unsloth" / "__init__.py", "x = 1\n")
+    _record(dist_info, [["unsloth/__init__.py", "sha256=x", size]])
+    req_root = tmp_path / "requirements"
+    req_root.mkdir()
+    (req_root / install_manifest.BOOT_REQUIREMENT_FILE).write_text("", encoding = "utf-8")
+    monkeypatch.setattr(install_manifest, "installed_versions", lambda name: [VER])
+    install_manifest.write_manifest(root = tmp_path, req_root = req_root, package_name = "unsloth")
+
+    state = install_manifest.verify_install(root = tmp_path, req_root = req_root, deep = True)
+    assert state["ok"] is True
+
+    monkeypatch.setattr(
+        install_manifest,
+        "installed_versions",
+        lambda name: [] if _canonical_name(name) == "unsloth-zoo" else [VER],
+    )
+    state = install_manifest.verify_install(root = tmp_path, req_root = req_root, deep = True)
+    assert state["reason"] == "studio_install_damaged"
+
+
+def test_a_custom_package_does_not_have_to_ship_unsloth_zoo(tmp_path, monkeypatch, site_packages):
+    """`--package X` need not depend on it, and demanding it would repair that
+    environment on every run."""
+    dist_info, rows = _healthy(site_packages)
+    _record(dist_info, rows)
+    req_root = _complete_install(tmp_path, monkeypatch, site_packages)
+    state = install_manifest.verify_install(
+        root = tmp_path, req_root = req_root, package_name = PKG, deep = True
+    )
+    assert state["ok"] is True
+
+
+def _canonical_name(name):
+    return install_manifest._canonical(name)

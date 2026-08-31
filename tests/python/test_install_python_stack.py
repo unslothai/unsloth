@@ -839,6 +839,34 @@ class TestDamagedCorePayloadRepair:
         )
         ips._repair_damaged_core_payload(("unsloth",))
 
+    def test_a_repair_that_leaves_the_files_missing_fails(self, monkeypatch, capsys):
+        """Otherwise the pass that follows audits the intact metadata as
+        satisfied and write_manifest records a success nothing rechecks."""
+        monkeypatch.setattr(
+            ips.install_manifest, "damaged_payload_files", lambda name, **kwargs: ["gone"]
+        )
+        monkeypatch.setattr(ips, "pip_install_try", lambda label, *args: False)
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+        assert ips._repair_damaged_core_payload(("unsloth",)) is False
+
+    def test_a_reinstall_that_restored_the_files_is_a_success(self, monkeypatch):
+        """Judged on the tree, not pip's exit code: uv and pip both exit non-zero
+        for reasons that have nothing to do with the payload."""
+        seen = {"n": 0}
+
+        def scan(name, **kwargs):
+            seen["n"] += 1
+            return ["gone"] if seen["n"] == 1 else []
+
+        monkeypatch.setattr(ips.install_manifest, "damaged_payload_files", scan)
+        monkeypatch.setattr(ips, "pip_install_try", lambda label, *args: False)
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+        assert ips._repair_damaged_core_payload(("unsloth",)) is True
+
+    def test_the_caller_aborts_the_install(self):
+        source = inspect.getsource(ips)
+        assert "if not _repair_damaged_core_payload(" in source
+
     def test_the_repair_runs_before_the_core_phase(self):
         """After it, the upgrade would already have audited the damage as fine."""
         source = inspect.getsource(ips)

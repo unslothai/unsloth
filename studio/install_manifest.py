@@ -500,6 +500,44 @@ _INSTALLER_REWRITTEN_NAMES = frozenset(("package-lock.json",))
 # files our own setup deleted. Skipped whole: they are gone, not shorter.
 _INSTALLER_REGENERATED_TREES = (("studio", "frontend", "dist"),)
 
+def _within(target: Path, anchor: Path) -> bool:
+    """Whether a parent-relative RECORD row still lands inside the environment.
+
+    An absent file outside it belongs to something else, or to no package at all,
+    and a reinstall of ours would not put it back.
+    """
+    try:
+        resolved = target.resolve()
+    except OSError:
+        return False
+    try:
+        resolved.relative_to(anchor)
+    except ValueError:
+        return False
+    return True
+
+
+def _venv_anchor(site_packages: Path) -> Optional[Path]:
+    """The venv a site-packages belongs to, for bounding parent-relative rows.
+
+    RECORD records a console script as `../../../bin/unsloth`, so those rows are
+    only usable once there is something to say they stay inside the environment.
+    None when no venv is found, and the caller then skips them as before.
+    """
+    try:
+        current = site_packages.resolve()
+    except OSError:
+        return None
+    # site-packages is 2 (Windows) or 3 (posix) below the prefix.
+    for _ in range(4):
+        if (current / "pyvenv.cfg").is_file():
+            return current
+        if current == current.parent:
+            break
+        current = current.parent
+    return None
+
+
 # Neither installer wraps the scan in a timeout, so a stalled mount would wedge
 # setup. Warm cost of the largest real case is ~65ms.
 PAYLOAD_SCAN_BUDGET_SECONDS = 5.0
@@ -546,6 +584,10 @@ def damaged_payload_files(
             # RECORD is optional per the spec, and unreadable says nothing.
             if not record:
                 continue
+            try:
+                anchor = _venv_anchor(Path(dist.locate_file("")))
+            except Exception:
+                anchor = None
             # csv, not splitlines: a quoted field may hold a newline, and
             # splitlines also breaks on \v, \f and the Unicode separators.
             for row in csv.reader(io.StringIO(record, newline = "")):
@@ -559,7 +601,7 @@ def damaged_payload_files(
                 if ".dist-info/" in norm or ".egg-info/" in norm or norm.endswith(".pyc"):
                     continue
                 parts = tuple(p for p in norm.split("/") if p and p != ".")
-                if not parts or ".." in parts or norm.startswith("/") or ":" in parts[0]:
+                if not parts or norm.startswith("/") or ":" in parts[0]:
                     continue
                 if len(parts) > 1 and parts[0] in _SHARED_NON_RUNTIME_ROOTS:
                     continue
@@ -567,6 +609,14 @@ def damaged_payload_files(
                     continue
                 try:
                     target = dist.locate_file(rel)
+                    # Console scripts and data files are recorded relative to
+                    # site-packages, so `..` is ordinary. Resolved and bounded to
+                    # the venv rather than skipped: a quarantined `bin/unsloth`
+                    # leaves the whole tree intact and the command gone.
+                    if ".." in parts and (
+                        anchor is None or not _within(Path(target), anchor)
+                    ):
+                        continue
                     info = target.stat()
                 except FileNotFoundError:
                     found.append(f"{rel} is missing")
@@ -670,6 +720,21 @@ def verify_install(
         # disagree with the checks that already passed.
         scan_package = (manifest or {}).get("package") or package_name
         companions = () if _canonical(scan_package) == "unsloth-zoo" else ("unsloth-zoo",)
+        # A companion with no dist-info leaves the scan below nothing to walk,
+        # and nothing above ever looked at its version. Only for the default
+        # install, where unsloth-zoo is an unconditional dependency: a custom
+        # `--package` need not depend on it, and demanding it would repair that
+        # environment on every run.
+        if _canonical(scan_package) == "unsloth" and not vanished:
+            for companion in companions:
+                present = (
+                    _installed_version(companion, installed)
+                    if installed is not None
+                    else installed_version_probe(companion)[0]
+                )
+                if not present:
+                    vanished = True
+                    break
         if vanished or damaged_payload_files(
             scan_package, companion_names = companions, scan_paths = scan_paths
         ):

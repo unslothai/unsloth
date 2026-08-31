@@ -4363,17 +4363,22 @@ def _stage_replacement(name: str):
     return None
 
 
-def _repair_damaged_core_payload(package_names: "tuple[str, ...]", *, local_repo: str = "") -> None:
+def _repair_damaged_core_payload(package_names: "tuple[str, ...]", *, local_repo: str = "") -> bool:
     """Reinstall managed core packages whose recorded files are gone or truncated.
 
     An upgrade of a distribution already at the wanted version installs nothing:
     uv audits it, pip calls it satisfied, and both read metadata a quarantine of
-    the payload leaves intact, so it has to be named for reinstall. Advisory: a
-    repair that cannot run leaves the tree as found. Skipped for a local
-    checkout, whose core packages are an editable overlay.
+    the payload leaves intact, so it has to be named for reinstall. Skipped for
+    a local checkout, whose core packages are an editable overlay.
+
+    False when the files are still missing afterwards, and the caller aborts:
+    the pass that follows would audit the intact metadata as satisfied and
+    write_manifest would record a success nothing rechecks. Judged on the tree
+    rather than pip's exit code, so a reinstall that restored the files while
+    exiting non-zero is not held against it.
     """
     if local_repo:
-        return
+        return True
     damaged: list[str] = []
     seen: set[str] = set()
     for name in package_names:
@@ -4386,6 +4391,7 @@ def _repair_damaged_core_payload(package_names: "tuple[str, ...]", *, local_repo
                 damaged.append(name)
         except Exception:
             continue
+    still_damaged: list[str] = []
     for name in damaged:
         _step(_LABEL, f"{name} is missing installed files; reinstalling it", _dim)
         # --no-deps: resolving the graph would drag the torch build along. Both
@@ -4399,6 +4405,22 @@ def _repair_damaged_core_payload(package_names: "tuple[str, ...]", *, local_repo
             "--force-reinstall",
             name,
         )
+        importlib.invalidate_caches()
+        try:
+            remaining = install_manifest.damaged_payload_files(name, budget_seconds = 0.0)
+        except Exception:
+            remaining = []
+        if remaining:
+            still_damaged.append(name)
+            _safe_print(
+                _red(
+                    f"   {name} is still missing installed files after a reinstall "
+                    f"({remaining[0]}). An unreachable or offline index cannot "
+                    "replace them; rerun with the index available."
+                ),
+                file = sys.stderr,
+            )
+    return not still_damaged
 
 
 def _repair_duplicate_core_metadata(
@@ -5400,7 +5422,8 @@ def install_python_stack() -> int:
 
     # Intact metadata over a missing payload: the core phase would audit it as
     # satisfied. Unbudgeted, since this run is already doing a full install.
-    _repair_damaged_core_payload((package_name, "unsloth-zoo"), local_repo = local_repo)
+    if not _repair_damaged_core_payload((package_name, "unsloth-zoo"), local_repo = local_repo):
+        return 1
 
     # macOS arm64: install MLX stack at latest (UV_OVERRIDE relaxes the
     # mlx-vlm / mlx-lm transformers pin -- set at module load).
