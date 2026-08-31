@@ -556,9 +556,9 @@ def test_mlx_generate_chat_response_accepts_template_kwargs():
             "the route layer forwards this and a missing kwarg raises "
             "TypeError on Mac"
         )
-        assert params[name].default is None, (
-            f"{name!r} must default to None so existing callers stay valid"
-        )
+        assert (
+            params[name].default is None
+        ), f"{name!r} must default to None so existing callers stay valid"
 
 
 def test_mlx_vlm_reemits_think_prefill_inside_adapter_context(monkeypatch):
