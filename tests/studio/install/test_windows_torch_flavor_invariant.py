@@ -491,10 +491,11 @@ class TestABrokenTorchForcesTheDependencyPass:
         # unimportable +xpu wheel still reports its on-disk tag as "xpu", so no flavour
         # change is seen, the bounded range is satisfied, and the resolver keeps it.
         guards = "\n".join(
-            line for line in _SETUP_SRC.splitlines()
-            if f"{force_var} = @(\"--force-reinstall\")" in line
+            line
+            for line in _SETUP_SRC.splitlines()
+            if f'{force_var} = @("--force-reinstall")' in line
         )
         assert guards, f"no {force_var} assignment found"
-        assert "$script:TorchImportDefinitivelyFailed" in guards, (
-            f"{force_var} never forces on a definitively unimportable wheel"
-        )
+        assert (
+            "$script:TorchImportDefinitivelyFailed" in guards
+        ), f"{force_var} never forces on a definitively unimportable wheel"
