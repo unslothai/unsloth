@@ -95,11 +95,7 @@ def test_only_a_ui_session_may_borrow_the_backend_token(via_api_key, expected):
         (" request-token ", True, "request-token"),
     ],
 )
-def test_request_metadata_token_keeps_the_caller_boundary(
-    hf_token,
-    allow_ambient,
-    expected,
-):
+def test_request_metadata_token_keeps_the_caller_boundary(hf_token, allow_ambient, expected):
     resolved = get_request_hf_token(
         hf_token = hf_token,
         allow_ambient_token = allow_ambient,
@@ -111,9 +107,7 @@ def test_request_metadata_token_keeps_the_caller_boundary(
 
 @pytest.mark.parametrize("via_api_key, expected", [(True, False), (False, None)])
 def test_gguf_metadata_route_does_not_lend_api_keys_the_backend_token(
-    monkeypatch,
-    via_api_key,
-    expected,
+    monkeypatch, via_api_key, expected
 ):
     seen = {}
 
@@ -153,11 +147,7 @@ def test_explicit_metadata_token_wins_for_an_api_key(monkeypatch):
 
 
 @pytest.mark.parametrize("via_api_key, expected", [(True, False), (False, None)])
-def test_compatibility_progress_route_keeps_the_caller_boundary(
-    monkeypatch,
-    via_api_key,
-    expected,
-):
+def test_compatibility_progress_route_keeps_the_caller_boundary(monkeypatch, via_api_key, expected):
     seen = {}
 
     async def _fake(repo_id, **kwargs):

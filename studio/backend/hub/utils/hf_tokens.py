@@ -10,11 +10,7 @@ from typing import Literal, Optional, Union
 HfTokenArg = Optional[Union[str, Literal[False]]]
 
 
-def hf_token_arg(
-    hf_token: Optional[str],
-    *,
-    allow_ambient_token: bool,
-) -> HfTokenArg:
+def hf_token_arg(hf_token: Optional[str], *, allow_ambient_token: bool) -> HfTokenArg:
     """Return the explicit token, or choose ambient versus anonymous access."""
     token = (hf_token or "").strip()
     if token:
