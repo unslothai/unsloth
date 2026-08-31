@@ -736,9 +736,7 @@ def test_an_explicit_mode_still_beats_the_launch_default(
     from models.inference import ChatCompletionRequest
     from routes import inference as inference_route
 
-    monkeypatch.setattr(
-        inference_route, "get_llama_cpp_backend", lambda: _loaded_qwen38_backend()
-    )
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _loaded_qwen38_backend())
     payload = ChatCompletionRequest(
         model = "unsloth/Qwen3.8-27B-GGUF",
         messages = [{"role": "user", "content": "hi"}],
@@ -761,9 +759,7 @@ def test_the_launch_default_never_reaches_a_family_without_mode_presets(monkeypa
         "get_llama_cpp_backend",
         lambda: _loaded_qwen38_backend(model_identifier = model_id),
     )
-    payload = ChatCompletionRequest(
-        model = model_id, messages = [{"role": "user", "content": "hi"}]
-    )
+    payload = ChatCompletionRequest(model = model_id, messages = [{"role": "user", "content": "hi"}])
     inference_route._fill_recommended_sampling_openai(payload, model_id)
 
     assert (payload.temperature, payload.top_p, payload.presence_penalty) == (0.7, 0.8, 1.5)
@@ -772,8 +768,8 @@ def test_the_launch_default_never_reaches_a_family_without_mode_presets(monkeypa
 @pytest.mark.parametrize(
     "request_kwargs, expected_mode",
     [
-        ({}, True),                                    # silent: the launch default
-        ({"thinking": {"type": "disabled"}}, False),   # native block still wins
+        ({}, True),  # silent: the launch default
+        ({"thinking": {"type": "disabled"}}, False),  # native block still wins
         ({"enable_thinking": False}, False),
         ({"reasoning_effort": "none"}, False),
     ],
@@ -790,9 +786,7 @@ def test_anthropic_silent_request_follows_the_launch_default(
     from models.inference import AnthropicMessagesRequest
     from routes import inference as inference_route
 
-    monkeypatch.setattr(
-        inference_route, "get_llama_cpp_backend", lambda: _loaded_qwen38_backend()
-    )
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _loaded_qwen38_backend())
     payload = AnthropicMessagesRequest.model_validate(
         {
             "model": "unsloth/Qwen3.8-27B-GGUF",
@@ -801,9 +795,7 @@ def test_anthropic_silent_request_follows_the_launch_default(
             **request_kwargs,
         }
     )
-    mode = inference_route._normalized_sampling_thinking_mode(
-        payload, "unsloth/Qwen3.8-27B-GGUF"
-    )
+    mode = inference_route._normalized_sampling_thinking_mode(payload, "unsloth/Qwen3.8-27B-GGUF")
     assert mode is expected_mode
 
     generation = inference_route._anthropic_reasoning_args(payload)["enable_thinking"]
