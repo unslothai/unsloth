@@ -557,6 +557,63 @@ def test_notebook_validator_merges_repeated_requirements_in_one_command():
     assert nv.rule_inst_004_torchcodec_torch(wide, COLAB_TORCH211, "nb.ipynb", 0) == []
 
 
+TORCHCODEC_WHEEL = (
+    "https://download.pytorch.org/whl/"
+    "torchcodec-0.13.0-cp312-cp312-manylinux_2_28_x86_64.whl"
+)
+
+
+def test_notebook_validator_resumes_after_an_and_following_an_or():
+    """And-or lists are left-associative: in `A || B && C`, C runs when A succeeded, so the
+    conditional tail ends at the `&&`."""
+    nv = _load_notebook_validator_module()
+
+    assert nv._split_chained("!pip install a || pip install b && pip install c") == [
+        "!pip install a ",
+        "!pip install c",
+    ]
+
+    cell = '!pip install "torchcodec==0.11.1" || echo failed && pip install "torch==2.12.0"'
+    assert len(nv.rule_inst_004_torchcodec_torch(cell, COLAB_TORCH211, "nb.ipynb", 0)) == 1
+
+
+def test_notebook_validator_will_not_name_a_multi_minor_window():
+    """Moving down lands on the newest release the window admits, which the floor only names
+    when there is one minor to land in."""
+    nv = _load_notebook_validator_module()
+
+    assert nv._window_names_one_minor("0.10", "0.11")
+    assert not nv._window_names_one_minor("0.10", "0.12")
+
+    # pip picks 0.11 here, which torch 2.11 is fine with, so nothing is reported.
+    spanning = '!pip install "torchcodec==0.15"\n!pip install "torchcodec>=0.10,<0.12"'
+    assert nv.rule_inst_004_torchcodec_torch(spanning, COLAB_TORCH211, "nb.ipynb", 0) == []
+
+    # One minor still names its floor.
+    single = '!pip install "torchcodec>=0.10,<0.11"'
+    assert len(nv.rule_inst_004_torchcodec_torch(single, COLAB_TORCH211, "nb.ipynb", 0)) == 1
+
+
+def test_notebook_validator_reads_a_direct_wheel_install():
+    """pip takes an archive URL as an install target and parse_spec skips it, so a wheel that
+    replaces the codec used to read as no install at all."""
+    nv = _load_notebook_validator_module()
+
+    assert nv._archive_requirement(TORCHCODEC_WHEEL) == ("torchcodec", "0.13.0")
+    assert nv._archive_requirement("torchcodec==0.13.0") is None
+    assert nv._archive_requirement("git+https://github.com/meta-pytorch/torchcodec.git") is None
+    # A URL spells the local tag percent-encoded.
+    assert nv._archive_requirement(
+        "https://x/torch-2.12.0%2Bcu130-cp312-cp312-linux_x86_64.whl"
+    ) == ("torch", "2.12.0+cu130")
+
+    compatible = f'!pip install "torch==2.12.0" {TORCHCODEC_WHEEL}'
+    assert nv.rule_inst_004_torchcodec_torch(compatible, COLAB_TORCH211, "nb.ipynb", 0) == []
+
+    stale = compatible.replace("0.13.0", "0.10.0").replace("torch==2.12.0", "torch==2.11.0")
+    assert len(nv.rule_inst_004_torchcodec_torch(stale, COLAB_TORCH211, "nb.ipynb", 0)) == 1
+
+
 def test_notebook_validator_replays_exclusions():
     """`!=` rules out what is installed, so keeping it reports a version pip cannot leave in
     place. Without a floor to fall back on the pairing is unknown, not stale."""

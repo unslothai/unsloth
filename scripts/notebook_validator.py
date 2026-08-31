@@ -45,6 +45,7 @@ import tempfile
 import textwrap
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any, Iterable, Iterator
 
@@ -372,7 +373,8 @@ def _split_chained(line: str) -> list[str]:
     quoted `;` inside a single argument (`"torch==2.12.0; python_version >= '3.10'"`).
 
     A `||` fallback runs only when the command before it failed, so everything up to the end
-    of that and-or list is dropped; a `;` starts a new list and parsing resumes. An unquoted
+    of that and-or list is dropped until an `&&` or a `;`, since the lists are
+    left-associative and `(A || B) && C` runs C when A succeeded. An unquoted
     `#` that starts a word comments out the rest of the line, so scanning stops there. A
     backslash escapes the next character outside single quotes, matching the shlex pass in
     parse_pip_line, so `\\;` stays inside the argument.
@@ -413,6 +415,7 @@ def _split_chained(line: str) -> list[str]:
             i += 2
         elif line.startswith("&&", i):
             flush()
+            skipping = False  # and-or lists are left-associative: (A || B) && C runs C
             i += 2
         elif ch == ";":
             flush()
@@ -676,6 +679,27 @@ def _compatible_release_ceiling(version: str) -> str | None:
     return ".".join(head)
 
 
+# pip takes `<archive url/path>` as an install target and parse_spec skips anything with a
+# `://`, so a wheel that replaces the package reads as no install at all. The version sits in
+# the filename: PEP 427 puts it in the second `-` field.
+_ARCHIVE_RE = re.compile(
+    r"(?P<name>[A-Za-z0-9._-]+?)-(?P<version>\d[^-]*?)(?:-.*)?\.(?:whl|tar\.gz|zip)$",
+    re.IGNORECASE,
+)
+
+
+def _archive_requirement(argument: str) -> tuple[str, str] | None:
+    """`(project, version)` for a direct archive install, or None when it is not one."""
+    if "://" not in argument and not argument.lower().endswith((".whl", ".tar.gz", ".zip")):
+        return None
+    leaf = argument.split("#", 1)[0].split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]
+    leaf = urllib.parse.unquote(leaf)  # a URL spells the local tag `%2Bcu130`
+    match = _ARCHIVE_RE.match(leaf)
+    if match is None:
+        return None
+    return match.group("name").replace("_", "-").lower(), match.group("version")
+
+
 def _version_is_excluded(version: str, exclusion: str) -> bool:
     """True when `!=exclusion` rules `version` out. A trailing `.*` is a prefix match."""
     wanted = normalise_version(exclusion).split(".")
@@ -683,6 +707,19 @@ def _version_is_excluded(version: str, exclusion: str) -> bool:
         wanted = wanted[:-1]
         return normalise_version(version).split(".")[: len(wanted)] == wanted
     return cmp_versions(version, exclusion) == 0
+
+
+def _window_names_one_minor(floor: str | None, ceiling: str | None) -> bool:
+    """True when `[floor, ceiling)` cannot leave the minor `floor` is in.
+
+    Moving down into a window lands on the newest release it admits, which only the window
+    itself names when there is one minor to land in. `>=0.10,<0.11` qualifies; `>=0.10,<0.12`
+    does not, and pip would pick 0.11 there rather than the floor.
+    """
+    if floor is None or ceiling is None:
+        return False
+    next_minor = _compatible_release_ceiling(f"{version_minor(floor)}.0")
+    return next_minor is not None and cmp_versions(ceiling, next_minor) <= 0
 
 
 def _spec_window(
@@ -728,11 +765,11 @@ def _effective_version(install_cell: str, target: str, resolved: str | None) -> 
 
     Each requirement is a window. An install moves the version into that window when it falls
     outside and leaves it alone when it does not, which is what pip does. Where it moves to is
-    the window's floor, or an inclusive `<=` when the move is downwards: `>=0.10,<0.11` and
-    `~=0.10.0` both land inside one minor, the granularity the callers compare on. A window
-    that only closes from above, with a `<` or a `!=` that rules out what is installed, cannot
-    say where it lands, so it clears the version rather than keeping a stale one, and a bound
-    on an absent package leaves it absent.
+    the window's floor, or an inclusive `<=` when the move is downwards. Moving down only
+    names a version when the window holds one minor, which is the granularity the callers
+    compare on: `>=0.10,<0.11` and `~=0.10.0` do, `>=0.10,<0.12` does not. Anything that
+    cannot say where the install lands clears the version rather than keeping a stale one,
+    and a bound on an absent package leaves it absent.
     """
     current = resolved
     for inv in iter_pip_invocations(install_cell):
@@ -742,7 +779,13 @@ def _effective_version(install_cell: str, target: str, resolved: str | None) -> 
         named = False
         for raw in inv.packages:
             sp = parse_spec(raw)
-            if sp is None or sp.name != target:
+            if sp is None:
+                archive = _archive_requirement(raw)
+                if archive is not None and archive[0] == target:
+                    named = True
+                    pins.append(("==", archive[1]))
+                continue
+            if sp.name != target:
                 continue
             named = True
             pins.extend(sp.pins)
@@ -763,7 +806,7 @@ def _effective_version(install_cell: str, target: str, resolved: str | None) -> 
         elif cap is not None and cmp_versions(current, cap) > 0:
             current = cap  # `<=V` allows V, so V is what pip picks
         elif ceiling is not None and cmp_versions(current, ceiling) >= 0:
-            current = floor  # None when the window is open below: unresolved
+            current = floor if _window_names_one_minor(floor, ceiling) else None
     return current
 
 
