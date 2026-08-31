@@ -408,7 +408,9 @@ def test_the_retry_names_sequential_rather_than_omitting_the_device_map(monkeypa
             # Stands in for the planner: it refuses whenever it is the one asked to place.
             if kwargs.get("device_map") in ("unsloth", None) or "device_map" not in kwargs:
                 raise DeviceMapInfeasible("needs 7.57 GiB free on cuda:0, has 4.10 GiB")
-            return types.SimpleNamespace(hf_device_map = {"model.layers.0": 0}), types.SimpleNamespace()
+            return types.SimpleNamespace(
+                hf_device_map = {"model.layers.0": 0}
+            ), types.SimpleNamespace()
 
     monkeypatch.setattr(mod, "FastLanguageModel", _RefusesAnyPlan)
     monkeypatch.setattr(mod, "detect_audio_type", lambda *a, **k: None)

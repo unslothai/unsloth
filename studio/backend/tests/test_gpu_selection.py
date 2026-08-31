@@ -2432,18 +2432,18 @@ class TestStudioLoadersDeclareTheirPlannerEligibility(unittest.TestCase):
 
     def test_both_loaders_pass_planner_eligible(self):
         import ast
-
         for relative in self.LOADERS:
             tree = ast.parse(self._source(relative))
             calls = [
-                node for node in ast.walk(tree)
-                if isinstance(node, ast.Call)
-                and getattr(node.func, "id", None) == "get_device_map"
+                node
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "get_device_map"
             ]
             self.assertTrue(calls, f"{relative}: no get_device_map call found")
             for call in calls:
                 self.assertIn(
-                    "planner_eligible", {kw.arg for kw in call.keywords},
+                    "planner_eligible",
+                    {kw.arg for kw in call.keywords},
                     f"{relative}:{call.lineno} calls get_device_map without planner_eligible; "
                     "a planner-ineligible route would silently fall back to sequential",
                 )
@@ -2461,7 +2461,8 @@ class TestStudioLoadersDeclareTheirPlannerEligibility(unittest.TestCase):
                     if keyword.arg == "auto_model" and isinstance(keyword.value, ast.Name):
                         seen.add(keyword.value.id)
         self.assertEqual(
-            seen, self.KNOWN_AUTO_MODELS,
+            seen,
+            self.KNOWN_AUTO_MODELS,
             "the explicit auto_model classes Studio loads changed. Each one has to be "
             "checked for a _model_mapping: without it unsloth's planner declines and the "
             "route needs planner_eligible = False to keep its shard.",

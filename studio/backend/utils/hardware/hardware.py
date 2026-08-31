@@ -4936,11 +4936,7 @@ def apply_gpu_ids(gpu_ids, backend: Optional[str] = None) -> None:
         logger.info("Applied gpu_ids: CUDA_VISIBLE_DEVICES='%s'", value)
 
 
-def get_device_map(
-    gpu_ids: Optional[list[int]] = None,
-    *,
-    planner_eligible: bool = True,
-) -> str:
+def get_device_map(gpu_ids: Optional[list[int]] = None, *, planner_eligible: bool = True) -> str:
     """Return the Hugging Face ``device_map`` string for model loading.
 
     Returns ``"unsloth"`` on CUDA, or ``"balanced"`` on XPU, to shard across
