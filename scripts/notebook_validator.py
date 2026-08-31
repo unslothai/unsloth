@@ -365,6 +365,20 @@ def _glue_line_continuations(text: str) -> list[tuple[int, str]]:
     return out
 
 
+def _unwrap_shell_group(command: str) -> str:
+    """`( pip install x )` and `{ pip install x; }` -> `pip install x`.
+
+    A grouped command still runs, so leaving the bracket on hides it from PIP_LINE_RE and
+    with it from every rule, R-INST-001's git+ ban included.
+    """
+    stripped = command.strip()
+    bang = stripped.startswith("!")
+    if bang:
+        stripped = stripped[1:].lstrip()
+    stripped = stripped.lstrip("({").strip().rstrip(")}").rstrip()
+    return f"!{stripped}" if bang and stripped else stripped
+
+
 def _split_chained(line: str) -> list[tuple[str, bool]]:
     """One shell line -> `(command, conditional)` per command. Only the first keeps the `!`.
 
@@ -427,9 +441,12 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             i += 1
     flush()
     (head, head_conditional), *rest = out
-    return [(head, head_conditional)] + [
-        (f"!{text}", flag) for text, flag in ((piece.strip(), flag) for piece, flag in rest) if text
-    ]
+    commands = [(_unwrap_shell_group(head), head_conditional)]
+    for piece, flag in rest:
+        text = _unwrap_shell_group(piece.strip())
+        if text:
+            commands.append((f"!{text}", flag))
+    return commands
 
 
 def iter_pip_invocations(install_cell: str) -> Iterator[PipInvocation]:
@@ -612,6 +629,8 @@ def rule_inst_002_no_deps_transitive(
     findings: list[Finding] = []
     res = resolved_set(install_cell, colab)
     for inv in iter_pip_invocations(install_cell):
+        if inv.conditional:
+            continue  # resolved_set skips it too, so its pins are not in `res`
         if "--no-deps" not in inv.flags:
             continue
         for raw in inv.packages:
