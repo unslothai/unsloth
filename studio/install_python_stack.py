@@ -2988,9 +2988,17 @@ def _expected_torch_flavor_tag() -> str:
     # answers "" for it, and the next launch called the deliberate install broken. Only when
     # the family agrees with the wheel actually installed. Ahead of the manifest, which
     # describes the PREVIOUS install, or a reinstall that changes flavor re-records the old tag.
-    if _TORCH_BACKEND in ("cpu", "rocm", "xpu"):
+    if _TORCH_BACKEND in ("cpu", "cuda", "rocm", "xpu"):
         _installed = _torch_flavor_tag(_installed_torch_version_label())
-        if _installed == _TORCH_BACKEND:
+        # "cuda" names a family, not a leaf, so the wheel's own cu tag is the flavor. Without
+        # this arm a CPU pin that was REMOVED lived on: install.sh resolves cuda and installs
+        # a CUDA wheel, the manifest below still says cpu, and the healthy venv is recorded as
+        # deliberately CPU-only. A later update that swaps in a CPU wheel is then read as the
+        # install working as asked, and the backend suppresses the mismatch and its repair.
+        if _TORCH_BACKEND == "cuda":
+            if _is_cuda_family_leaf(_installed):
+                return _installed
+        elif _installed == _TORCH_BACKEND:
             return _TORCH_BACKEND
     # An unknown-family pin (a corporate /simple mirror, /current) was applied verbatim,
     # and nothing below it can name a family for this venv: the manifest describes the

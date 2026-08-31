@@ -876,6 +876,46 @@ def test_a_transient_probe_failure_does_not_retire_a_settled_mismatch(monkeypatc
     assert hw.current_chat_only_verdict() == ("no_gpu", None)
 
 
+def test_only_uncertainty_about_the_mismatched_vendor_holds_the_verdict(monkeypatch):
+    """A broken probe for a vendor that never had a card cannot pin the old mismatch.
+
+    Detach an AMD eGPU: sysfs conclusively reports no AMD card, while nvidia-smi is broken
+    on a host that never had an NVIDIA one. The carry-forward has nothing to re-add, so
+    holding "your GPU is unusable" here asserts a card is present with nothing to point at,
+    and it holds for as long as that unrelated probe stays broken.
+    """
+    monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "torch_cpu_build")
+    monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", "2.11.0+cpu")
+    monkeypatch.setattr(hw, "CHAT_ONLY_MISMATCH_VENDORS", frozenset({"amd"}))
+    monkeypatch.setattr(hw, "classify_torch_build", lambda **_kw: "torch_cpu_build")
+    monkeypatch.setattr(hw, "_torch_reports_a_usable_accelerator", lambda: False)
+    hw.torch_build_snapshot()
+
+    def _inventory(unanswered):
+        monkeypatch.setattr(
+            hw,
+            "get_physical_gpu_inventory",
+            lambda **_kw: {
+                "available": False,
+                "devices": [],
+                "unknown": True,
+                "unanswered": unanswered,
+            },
+        )
+
+    _inventory(["nvidia"])
+    assert hw.current_chat_only_verdict() == ("no_gpu", None)
+
+    # The vendor the mismatch DID come from, so the card may still be there and unread.
+    _inventory(["amd"])
+    assert hw.current_chat_only_verdict() == ("torch_cpu_build", "2.11.0+cpu")
+
+    # An unknown that names nobody is a cold cache, which is silent about who could not
+    # answer rather than saying everyone did.
+    _inventory([])
+    assert hw.current_chat_only_verdict() == ("torch_cpu_build", "2.11.0+cpu")
+
+
 def test_the_health_path_never_waits_on_the_gpu_probe(monkeypatch):
     """/api/health and /api/liveness both read the chat-only verdict.
 

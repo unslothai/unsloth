@@ -91,6 +91,12 @@ CHAT_ONLY_REASON: Optional[str] = None
 # had just run it. Naming the package that is missing, too old, or refusing to import
 # is the difference between a dead end and a fix. Never shown on its own.
 CHAT_ONLY_DETAIL: Optional[str] = None
+# The vendors whose cards established the two mismatch reasons above, empty for every other
+# reason. current_chat_only_verdict() holds a frozen mismatch while the inventory cannot
+# answer, and without this it holds it for uncertainty about a vendor that had nothing to do
+# with it: a detached AMD eGPU that sysfs now conclusively reports as gone stays "your GPU is
+# unusable" for as long as nvidia-smi is broken on a host that never had an NVIDIA card.
+CHAT_ONLY_MISMATCH_VENDORS: frozenset = frozenset()
 IS_ROCM: bool = False  # True when running on AMD ROCm (HIP) -- routes GPU monitoring to amd.py
 
 # Detection has concurrent callers (the warm thread plus any early get_device()).
@@ -140,10 +146,12 @@ def owning_detection_epoch(epoch: Optional[int]):
 def _discard_detection_locked() -> None:
     """Drop a verdict produced for an epoch that has been retired."""
     global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, CHAT_ONLY_DETAIL, IS_ROCM
+    global CHAT_ONLY_MISMATCH_VENDORS
     DEVICE = None
     CHAT_ONLY = True
     CHAT_ONLY_REASON = None
     CHAT_ONLY_DETAIL = None
+    CHAT_ONLY_MISMATCH_VENDORS = frozenset()
     IS_ROCM = False
     DETECTION_COMPLETE.clear()
 
@@ -1488,14 +1496,20 @@ def _mismatch_verdict_for_this_host(
     request path, and the blocking pass is what warms the caches that /api/health then
     reads without probing anything itself.
     """
+    global CHAT_ONLY_MISMATCH_VENDORS
     if reason is None:
         reason = torch_build_snapshot()["reason"]
     if reason is None:
         return None, None
-    if not _devices_that_can_establish_a_mismatch(
+    establishing = _devices_that_can_establish_a_mismatch(
         get_physical_gpu_inventory().get("devices") or []
-    ):
+    )
+    if not establishing:
         return None, None
+    # Which vendors said so, for the frozen verdict's own uncertainty test.
+    CHAT_ONLY_MISMATCH_VENDORS = frozenset(
+        device.get("vendor") for device in establishing if device.get("vendor")
+    )
     detail = _reported_torch_label()
     logger.warning(
         "GPUs are present on this host but PyTorch cannot use them (%s%s); "
@@ -1759,10 +1773,11 @@ def ensure_hardware_detected(epoch: Optional[int] = None) -> DeviceType:
 def _detect_hardware_locked() -> DeviceType:
     """detect_hardware() body. Call only with _DETECT_LOCK held."""
     global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, CHAT_ONLY_DETAIL, IS_ROCM
-    global _MLX_BLOCKERS_MEASURED
+    global _MLX_BLOCKERS_MEASURED, CHAT_ONLY_MISMATCH_VENDORS
     CHAT_ONLY = True  # reset -- only CUDA/ROCm/XPU/MLX sets it to False
     CHAT_ONLY_REASON = None
     CHAT_ONLY_DETAIL = None
+    CHAT_ONLY_MISMATCH_VENDORS = frozenset()
     _MLX_BLOCKERS_MEASURED = None
     IS_ROCM = False
 
@@ -1967,6 +1982,30 @@ def _request_hardware_redetection() -> None:
         logger.debug("Could not request hardware re-detection: %s", e)
 
 
+def _uncertainty_could_hide_the_frozen_mismatch(inventory: Dict[str, Any]) -> bool:
+    """Whether an inventory that could not answer might still hold the mismatched card.
+
+    Only for the vendors the mismatch actually came from. _carry_unanswered_vendors_forward
+    has already re-added the devices an unanswered vendor had reported, so reaching here
+    with nothing left means every vendor that ever named a card either answered "none" this
+    pass or was never one of them. Holding the mismatch on an unrelated vendor's broken
+    probe then asserts a GPU is present with nothing to point at: a detached AMD eGPU that
+    sysfs conclusively reports as gone would stay "your GPU is unusable" for as long as
+    nvidia-smi is broken on a host that never had an NVIDIA card.
+
+    True when no vendor was recorded, which is every reason but the two mismatches, so the
+    conservative behaviour is unchanged for them. True as well for an unknown that names
+    nobody: a cold cache reads that way, and it is silent about who could not answer rather
+    than saying every vendor did.
+    """
+    if not CHAT_ONLY_MISMATCH_VENDORS:
+        return True
+    unanswered = set(inventory.get("unanswered") or ())
+    if not unanswered:
+        return True
+    return bool(unanswered & CHAT_ONLY_MISMATCH_VENDORS)
+
+
 def current_chat_only_verdict() -> tuple[Optional[str], Optional[str]]:
     """``(reason, detail)``, re-derived when the physical inventory can still change it.
 
@@ -1986,7 +2025,8 @@ def current_chat_only_verdict() -> tuple[Optional[str], Optional[str]]:
     importable torch and no readable wheel describe things a 60 second probe cannot
     change, and re-deriving those would fight detect_hardware() rather than follow it.
 
-    Never raises: a probe that cannot answer keeps the frozen verdict.
+    Never raises: a probe that cannot answer keeps the frozen verdict, as does an
+    inventory whose uncertainty is about the vendor the frozen mismatch came from.
     """
     reason, detail = CHAT_ONLY_REASON, CHAT_ONLY_DETAIL
     frozen_but_measurable = reason == "detection_failed" and TORCH_IMPORT_ERROR is not None
@@ -2012,7 +2052,7 @@ def current_chat_only_verdict() -> tuple[Optional[str], Optional[str]]:
             inventory.get("devices") or []
         ):
             return build_reason, _reported_torch_label(detail)
-        if inventory.get("unknown"):
+        if inventory.get("unknown") and _uncertainty_could_hide_the_frozen_mismatch(inventory):
             return reason, detail
     except Exception as e:
         logger.debug("chat-only verdict refresh failed: %s", e)
