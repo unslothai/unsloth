@@ -6038,6 +6038,11 @@ if ($LocalLlamaCppLinked) {
         if ($prebuiltExit -eq 0) {
             if ($prebuiltOutput -match "already matches") {
                 step "llama.cpp" "prebuilt up to date and validated"
+            } elseif ($prebuiltOutput -match "keeping the existing complete install") {
+                # Exit 0 no longer means something was installed: the installer answers a
+                # transient update failure by keeping the tree already on disk. Reporting
+                # that as "installed and validated" names a release that was never fetched.
+                step "llama.cpp" "update unavailable, existing prebuilt kept" "Yellow"
             } else {
                 step "llama.cpp" "prebuilt installed and validated"
             }

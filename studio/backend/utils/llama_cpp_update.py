@@ -613,6 +613,14 @@ def _run_llama_phase(
     backend = None
     model_was_active = False
     mtmd_guard = ExitStack()
+    # What is installed before the installer runs. The installer now exits 0 for a
+    # transient failure it answered by keeping the existing tree, so a successful exit
+    # no longer implies the release changed, and "Updated llama.cpp to <tag>" would name
+    # the tag the user already had. Reachable on macOS in particular, where the update
+    # path passes no pin and so does not disqualify itself from the keep branch.
+    # Read the same way the post-install check does, so the two tags are comparable.
+    prior_marker = read_install_marker(_find_binary())
+    prior_tag = (prior_marker or {}).get("release_tag") or (prior_marker or {}).get("tag")
     try:
         # Block loads and free the binary while the installer swaps it.
         try:
@@ -716,17 +724,31 @@ def _run_llama_phase(
                     f"{new_backend or 'an unknown backend'}"
                 )
 
-        logger.info("llama update: success", to_tag = new_tag, backend = new_backend)
+        kept_existing = (
+            backend_request is None and new_tag is not None and new_tag == prior_tag
+        )
+        logger.info(
+            "llama update: success",
+            to_tag = new_tag,
+            backend = new_backend,
+            kept_existing = kept_existing,
+        )
         reload_hint = " Reload your model to use it." if model_was_active else ""
+        if backend_request is not None:
+            message = f"llama.cpp is now running on {new_backend or backend_request}.{reload_hint}"
+        elif kept_existing:
+            # Say what happened. Claiming an update that did not happen is worse than
+            # saying nothing changed, because the next thing the user does is look for
+            # a fix that shipped in the release they think they just installed.
+            message = f"llama.cpp is already up to date on {new_tag}."
+        else:
+            message = f"Updated llama.cpp to {new_tag}.{reload_hint}"
         return {
             "to_tag": new_tag,
             "backend": new_backend,
             "reload_required": model_was_active,
-            "message": (
-                f"llama.cpp is now running on {new_backend or backend_request}.{reload_hint}"
-                if backend_request is not None
-                else f"Updated llama.cpp to {new_tag}.{reload_hint}"
-            ),
+            "kept_existing": kept_existing,
+            "message": message,
         }
     except _flow.InstallerExit as exc:
         # Raw "installer exited 4: <log tail>" says nothing actionable in the UI.
