@@ -1246,6 +1246,56 @@ test("a repeated name that announced nothing keeps its metadata", () => {
   assert.deepEqual(stream.parts[0].extra_content, { own: 1, sig: "B" });
 });
 
+test("parked metadata follows the card a late id renames", () => {
+  // The signature waits under the id the card was minted with; the late claim
+  // moves the card, so the entry has to move with it or the turn-end sweep
+  // looks for a part id nothing answers to and drops the signature the
+  // backend keeps.
+  const stream = makeStream(true);
+  stream.feed([
+    {
+      index: 0,
+      function: { name: "lookup", arguments: '{"q":"a"}' },
+      extra_content: { sig: "A" },
+    },
+  ]);
+  stream.feed([
+    { index: 0, function: { name: "lookup" }, extra_content: { sig: "B" } },
+  ]);
+  stream.feed([{ index: 0, id: "call_x", function: { arguments: "" } }], true);
+
+  assert.deepEqual(shape(stream.parts), [["lookup", '{"q":"a"}']]);
+  assert.deepEqual(stream.parts[0].extra_content, { sig: "B" });
+  assert.equal(stream.parts[0].toolCallId, "call_x:uuid-1");
+});
+
+test("parked metadata follows the card a claim renumbers", () => {
+  // Same entry, other mover: a provider claiming the spelling a minted card
+  // holds renumbers every minted card in the round.
+  const stream = makeStream(true);
+  stream.feed([
+    {
+      index: 0,
+      function: { name: "lookup", arguments: '{"q":"a"}' },
+      extra_content: { sig: "A" },
+    },
+  ]);
+  stream.feed([
+    { index: 0, function: { name: "lookup" }, extra_content: { sig: "B" } },
+  ]);
+  stream.feed(
+    [{ index: 1, id: "tool_call_0", function: { name: "beta", arguments: '{"b":2}' } }],
+    true,
+  );
+
+  assert.deepEqual(shape(stream.parts), [
+    ["lookup", '{"q":"a"}'],
+    ["beta", '{"b":2}'],
+  ]);
+  assert.deepEqual(stream.parts[0].extra_content, { sig: "B" });
+  assert.equal(stream.parts[1].extra_content, undefined);
+});
+
 test("a stable id naming a longer tool opens its own call", () => {
   // Reading "web_search" as "web" grown gave the id to the completed card.
   const parts = run([

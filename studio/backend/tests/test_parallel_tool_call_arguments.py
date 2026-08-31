@@ -743,6 +743,22 @@ def test_a_repeated_names_metadata_waits_for_the_call_it_announced():
     assert kept.calls()[0]["extra_content"] == {"own": 1, "sig": "B"}
 
 
+def test_parked_metadata_survives_a_late_id_landing_on_the_call():
+    # The slot key does not change when an id lands here, so the parked
+    # signature is still found. Pinned because the frontend keys the same wait
+    # by card id, which a late id does rename, and the two have to agree.
+    turn = _Turn()
+    turn.merge_structured(
+        [_delta(0, "lookup", '{"q":"a"}') | {"extra_content": {"sig": "A"}}]
+    )
+    turn.merge_structured([_delta(0, "lookup", None) | {"extra_content": {"sig": "B"}}])
+    turn.merge_structured([_delta(0, None, "") | {"id": "call_x"}])
+
+    reported = turn.calls()
+    assert _reported(turn) == [("lookup", '{"q":"a"}')]
+    assert reported[0]["extra_content"] == {"sig": "B"}
+
+
 def test_a_stable_id_naming_a_longer_tool_opens_its_own_call():
     # Reading "web_search" as "web" grown gave the id to the completed call.
     turn = _Turn()

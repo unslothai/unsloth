@@ -5435,6 +5435,7 @@ export function createOpenAIStreamAdapter(
         boundaryScans.delete(partId);
         openTailIds.delete(partId);
         liveArgsTextById.delete(partId);
+        pendingExtraByPartId.delete(partId);
       };
       // The backend reserves provider ids before it mints; the client can
       // only move a card aside once the claim lands.
@@ -5448,6 +5449,12 @@ export function createOpenAIStreamAdapter(
         const live = liveArgsTextById.get(from);
         if (live !== undefined) liveArgsTextById.set(to, live);
         liveArgsTextById.delete(from);
+        // Metadata parked on this card is claimed at the turn boundary by the
+        // part id the card holds then, so it has to travel with the rename or
+        // the sweep looks for a part id nothing answers to and drops it.
+        const pending = pendingExtraByPartId.get(from);
+        if (pending) pendingExtraByPartId.set(to, pending);
+        pendingExtraByPartId.delete(from);
         const at = codexRoundToolCallIds.indexOf(from);
         if (at !== -1) codexRoundToolCallIds[at] = to;
         paintStreamedCard(to);
@@ -5473,6 +5480,7 @@ export function createOpenAIStreamAdapter(
           scan: boundaryScans.get(part.toolCallId),
           live: liveArgsTextById.get(part.toolCallId),
           openTail: openTailIds.has(part.toolCallId),
+          pending: pendingExtraByPartId.get(part.toolCallId),
         }));
         for (const held of carried) {
           reservedToolCallIds.delete(held.from);
@@ -5480,6 +5488,7 @@ export function createOpenAIStreamAdapter(
           boundaryScans.delete(held.from);
           liveArgsTextById.delete(held.from);
           openTailIds.delete(held.from);
+          pendingExtraByPartId.delete(held.from);
           // Cleared before any of them is minted again: the mint reads the ids
           // the parts are holding, and a stale one makes the first card skip
           // the number the backend gives it.
@@ -5495,6 +5504,7 @@ export function createOpenAIStreamAdapter(
           if (held.scan) boundaryScans.set(to, held.scan);
           if (held.live !== undefined) liveArgsTextById.set(to, held.live);
           if (held.openTail) openTailIds.add(to);
+          if (held.pending) pendingExtraByPartId.set(to, held.pending);
           const at = codexRoundToolCallIds.indexOf(held.from);
           if (at !== -1) codexRoundToolCallIds[at] = to;
           const index = toolCallParts.findIndex((part) => part.toolCallId === "");
