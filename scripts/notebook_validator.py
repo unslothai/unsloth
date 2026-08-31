@@ -601,11 +601,14 @@ def _effective_version(install_cell: str, target: str, resolved: str | None) -> 
     resolved_set() drops `>=`, which does move pip when it lands above the current version,
     and applies the `<=` bounds all at once at the end. Order is what decides between them:
     a later `==` or `<=` downgrades past an earlier floor, and a later floor upgrades past
-    an earlier one. Replaying all three keeps whichever ran last. Without this R-INST-004's
-    own `torchcodec>=0.12.0` remedy could not clear the error it offers.
+    an earlier one. Without this R-INST-004's own `torchcodec>=0.12.0` remedy could not
+    clear the error it offers.
 
-    `<` is left out, as resolved_set leaves it out: the version pip lands on is the highest
-    release strictly below the bound, which the pin alone does not name.
+    Only `==` names a version. A range bound moves a version that is already known and
+    otherwise leaves it unknown, because pip resolves the newest release satisfying the
+    requirement and the bound does not name that. So `<` is out entirely, as resolved_set
+    leaves it out (the answer is the highest release strictly below it), and a floor on an
+    absent package leaves it absent rather than pinning it to the floor.
     """
     current = resolved
     for inv in iter_pip_invocations(install_cell):
@@ -619,9 +622,11 @@ def _effective_version(install_cell: str, target: str, resolved: str | None) -> 
             for op, ver in sp.pins:
                 if op == "==":
                     current = ver
-                elif op == ">=" and (current is None or cmp_versions(ver, current) > 0):
+                elif current is None:
+                    continue
+                elif op == ">=" and cmp_versions(ver, current) > 0:
                     current = ver
-                elif op == "<=" and current is not None and cmp_versions(ver, current) < 0:
+                elif op == "<=" and cmp_versions(ver, current) < 0:
                     current = ver
     return current
 

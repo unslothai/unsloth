@@ -410,6 +410,24 @@ def test_notebook_validator_honours_a_torchcodec_uninstall():
     assert nv.rule_inst_004_torchcodec_torch(dropped, COLAB_TORCH211, "nb.ipynb", 0) == []
 
 
+def test_notebook_validator_keeps_an_absent_package_unknown():
+    """Only `==` names a version. A floor on a package that is not there resolves to the
+    newest release satisfying it, which the bound does not name, so the pairing stays
+    unknown rather than being pinned to the floor and reported."""
+    nv = _load_notebook_validator_module()
+
+    reinstalled = '!pip uninstall -y torchcodec\n!pip install "torchcodec>=0.10"'
+    assert nv.rule_inst_004_torchcodec_torch(reinstalled, COLAB_TORCH211, "nb.ipynb", 0) == []
+
+    # Same when nothing supplies a baseline at all (a non-Colab notebook).
+    floor_only = '!pip install "torch==2.11.0" "torchcodec>=0.10"'
+    assert nv.rule_inst_004_torchcodec_torch(floor_only, {}, "nb.ipynb", 0) == []
+
+    # An exact pin still names one, with or without a baseline.
+    exact = '!pip install --no-deps "torch==2.12.1" "torchcodec==0.11.1"'
+    assert len(nv.rule_inst_004_torchcodec_torch(exact, {}, "nb.ipynb", 0)) == 1
+
+
 def test_select_torchcodec_spec_tracks_torch_minor():
     ips = _load_install_python_stack()
     assert ips._select_torchcodec_spec("2.11.0+cu128") == "torchcodec>=0.11.0,<0.12.0"
