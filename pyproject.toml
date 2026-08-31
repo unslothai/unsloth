@@ -84,6 +84,8 @@ exclude = [
     "tests*",
     "studio.backend.tests*",
     "studio.backend.*.tests*",
+    "unsloth_cli.tests*",
+    "unsloth.kernels.moe.tests*",
     "unsloth_compiled_cache*",
     "*.unsloth_compiled_cache*",
     "*.node_modules",
@@ -95,7 +97,9 @@ exclude = [
 # studio.backend.tests above just re-shipped the same 505 files as data of
 # studio.backend (pypa/setuptools#3260). exclude-package-data has the highest
 # precedence of the file selection options, so the veto has to be repeated here.
-# Source layout, not the wheel, so the sdist keeps the suites either way.
+# It only holds for a wheel built straight from the git tree though, and it never
+# touched the sdist -- MANIFEST.in is what covers both on the release path. Kept
+# as the second layer; see the header there for why one of them is not enough.
 [tool.setuptools.exclude-package-data]
 "studio.backend" = ["tests/*"]
 "studio.backend.hub" = ["tests/*"]
