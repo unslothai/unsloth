@@ -41,3 +41,14 @@ test("only OpenAI's synthesized card label is suppressed", () => {
     /const resultIsCardLabel = !!safeUrl && !!actionType;/,
   );
 });
+
+test("a finished find_in_page does not claim it found the pattern", () => {
+  // The action carries the requested pattern and nothing about whether it matched,
+  // and this file already holds that "a call that found nothing must not claim it did".
+  const card = readFileSync(CARD, "utf8");
+  assert.doesNotMatch(card, /`Found "\$\{pattern\}"/);
+  assert.match(
+    card,
+    /`Searched for "\$\{pattern\}" in \$\{displayDomain \|\| "page"\}`/,
+  );
+});

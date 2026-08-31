@@ -171,8 +171,10 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
         toolName={
           isFindInPage
             ? pattern
-              ? `Found "${pattern}" in ${displayDomain || "page"}`
-              : `Find in ${displayDomain || "page"}`
+              ? // Neutral: the action carries no match status, so a finished
+                // call is not evidence the pattern was there.
+                `Searched for "${pattern}" in ${displayDomain || "page"}`
+              : `Searched ${displayDomain || "page"}`
             : isUrlFetch
               ? displayDomain
                 ? `Read ${displayDomain}`
