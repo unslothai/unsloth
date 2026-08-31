@@ -1244,6 +1244,9 @@
       "_EMBEDDED_MARKER_RE": {
         "kind": "assign"
       },
+      "_EXECUTION_CLASS_TOOL_NAMES": {
+        "kind": "assign"
+      },
       "_EXTENSION_SAMPLE": {
         "kind": "assign"
       },
@@ -1451,7 +1454,7 @@
       "_first_sentinel": {
         "decorators": [],
         "kind": "def",
-        "signature": "text: str, start: int"
+        "signature": "text: str, start: int, enabled_tool_names=None"
       },
       "_gemma_balanced_brace_end": {
         "decorators": [],
@@ -1528,6 +1531,9 @@
         "kind": "def",
         "signature": "content: str, enabled_tool_names: Optional[set]=None"
       },
+      "_markerless_promotable": {
+        "kind": "assign"
+      },
       "_mistral_region_end": {
         "decorators": [],
         "kind": "def",
@@ -1602,6 +1608,11 @@
         "decorators": [],
         "kind": "def",
         "signature": "content: str, *, id_offset: int, allow_incomplete: bool=True"
+      },
+      "_promotable_gemma_call_pos": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, start: int, enabled_tool_names"
       },
       "_safe_cut": {
         "decorators": [],
@@ -1695,6 +1706,11 @@
         "decorators": [],
         "kind": "def",
         "signature": "text: str"
+      },
+      "leading_bare_gemma_call_is_promotable": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "stripped: str, enabled_tool_names"
       },
       "parse_tool_calls_from_text": {
         "decorators": [],
@@ -1834,6 +1850,9 @@
       "re.search('<tool_call>\\\\s*$', content[:span_start])": 1
     },
     "symbols": {
+      "EXECUTION_CLASS_TOOL_NAMES": {
+        "kind": "assign"
+      },
       "_BRACKETED_JSON_ONE_LEVEL": {
         "kind": "assign"
       },
@@ -1994,6 +2013,11 @@
         "decorators": [],
         "kind": "def",
         "signature": "content: str, markers"
+      },
+      "_markerless_promotable": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "name, enabled_tool_names"
       },
       "_normalise_gemma_quoted_strings": {
         "decorators": [],

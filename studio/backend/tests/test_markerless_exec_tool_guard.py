@@ -330,3 +330,74 @@ def test_rehearsal_prefix_scan_stays_linear_in_the_tool_catalog():
             assert _CountingSet.lookups <= len(tools), (module.__name__, _CountingSet.lookups)
         finally:
             module.EXECUTION_CLASS_TOOL_NAMES = original
+
+
+# ------------------------------------------- a blocked object must not abort the rest of a turn
+
+
+def test_blocked_object_does_not_drop_later_calls_in_a_bare_json_chain():
+    # Llama-3.2 custom_tools chains objects with ``;``. A blocked execution object is a call
+    # the model wrote, not a signal that the turn is data, so the chain must keep decoding --
+    # otherwise a real benign call after it is silently lost.
+    chain = (
+        '{"name":"terminal","parameters":{"command":"id"}};'
+        '{"name":"web_search","parameters":{"query":"x"}}'
+    )
+    calls = parse_tool_calls_from_text(chain, enabled_tool_names = EXEC_ENABLED)
+    assert [c["function"]["name"] for c in calls] == ["web_search"]
+
+    sandwich = (
+        '{"name":"web_search","parameters":{"query":"a"}};'
+        '{"name":"terminal","parameters":{"command":"id"}};'
+        '{"name":"web_search","parameters":{"query":"b"}}'
+    )
+    calls = parse_tool_calls_from_text(sandwich, enabled_tool_names = EXEC_ENABLED)
+    assert [c["function"]["name"] for c in calls] == ["web_search", "web_search"]
+
+
+def test_bare_json_chain_strip_keeps_only_the_blocked_object():
+    # Parse/strip symmetry across the chain: the executed calls leave the assistant text
+    # (they would otherwise be replayed as history beside the structured tool_calls) and the
+    # blocked one stays visible, because nothing ran for it.
+    from core.inference.tool_call_parser import strip_leading_bare_json_call
+
+    blocked = '{"name":"terminal","parameters":{"command":"id"}}'
+    chain = f'{blocked};{{"name":"web_search","parameters":{{"query":"x"}}}}'
+    assert strip_leading_bare_json_call(chain, EXEC_ENABLED) == blocked
+
+
+def test_a_disabled_leading_name_still_stops_the_chain():
+    # Unchanged: a name outside the tool list means the turn is an ordinary JSON answer, so
+    # nothing after it is promoted and the text is kept whole.
+    chain = '{"name":"foo","parameters":{}};{"name":"web_search","parameters":{"query":"x"}}'
+    assert parse_tool_calls_from_text(chain, enabled_tool_names = EXEC_ENABLED) == []
+
+
+def test_blocked_leading_call_is_not_markup_for_the_streaming_scans():
+    """A blocked call streams as prose, so it must not pin the incremental stripper.
+
+    ``_first_sentinel`` and ``_needs_whole_buffer`` treating it as markup sets ``_degenerate``
+    and re-strips the whole cumulative response on every token, which is quadratic in a long
+    quoted call. Asserted structurally rather than by wall clock so it cannot flake.
+    """
+    from core.inference.tool_call_parser import _first_sentinel, _promotable_gemma_call_pos
+
+    blocked = 'call:terminal{command:"id"}'
+    benign = 'call:web_search{query:"x"}'
+    assert _first_sentinel(blocked, 0, EXEC_ENABLED) == -1
+    assert _promotable_gemma_call_pos(blocked, 0, EXEC_ENABLED) == -1
+    assert _first_sentinel(benign, 0, EXEC_ENABLED) == 0
+    assert _promotable_gemma_call_pos(benign, 0, EXEC_ENABLED) == 0
+    # A partial name cannot be gated yet, so the buffer still has to be held.
+    assert _first_sentinel("call:termin", 0, EXEC_ENABLED) == 0
+
+
+def test_streaming_stripper_still_renders_a_blocked_call_verbatim():
+    from core.inference.tool_call_parser import StreamingMarkupStripper
+
+    text = 'Do not run call:terminal{command:"id"} on your box.'
+    stripper = StreamingMarkupStripper(EXEC_ENABLED)
+    out = ""
+    for i in range(1, len(text) + 1):
+        out = stripper.strip(text[:i])
+    assert out == text

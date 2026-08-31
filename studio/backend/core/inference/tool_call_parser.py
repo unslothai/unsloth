@@ -36,6 +36,7 @@ from core import tool_healing as _tool_healing
 # execution-class guard: a bare ``python``/``terminal``/``edit_file`` call is prose, never
 # promoted to a real call. Trusted wrapped/marker forms (<|tool_call>, [TOOL_CALLS],
 # <function=>) are unaffected.
+_EXECUTION_CLASS_TOOL_NAMES = _tool_healing.EXECUTION_CLASS_TOOL_NAMES
 _markerless_promotable = _tool_healing._markerless_promotable
 
 
@@ -924,16 +925,34 @@ _SENTINEL_MAX_LEN = max(len(sentinel) for sentinel in _STRIP_SENTINELS)
 _EXTENSION_SAMPLE = 64
 
 
-def _first_sentinel(text: str, start: int) -> int:
+def _promotable_gemma_call_pos(text: str, start: int, enabled_tool_names) -> int:
+    """Offset of the first bare ``call:NAME{`` the strip would actually remove, or -1.
+
+    A name the parser will not promote is prose the gemma arm keeps whole, so it is not
+    markup for any of the streaming scans."""
+    for m in _GEMMA_BARE_TC_RE.finditer(text, start):
+        if _markerless_promotable(m.group(1), enabled_tool_names):
+            return m.start()
+    return -1
+
+
+def _first_sentinel(
+    text: str,
+    start: int,
+    enabled_tool_names = None,
+) -> int:
     """Lowest index >= ``start`` at which any strip sentinel occurs, or -1.
 
     ``call`` is the one sentinel that is also an ordinary English word, and treating
     every "I will call the tool" as markup would put the full strip back on the per-token
     path for a plain prose answer. It is therefore confirmed against the arm it stands
-    for: either the whole ``call:NAME{`` anchor is present, or the buffer ends inside a
-    partial one that the next token could complete (``_GEMMA_BARE_TC_PREFIX_RE``, which
-    the parser already keeps for exactly that reason). Every append is checked, so a call
-    that arrives a character at a time is caught while it is still a partial.
+    for: either the whole ``call:NAME{`` anchor is present with a name the strip would
+    remove, or the buffer ends inside a partial one that the next token could complete
+    (``_GEMMA_BARE_TC_PREFIX_RE``, which the parser already keeps for exactly that
+    reason; the name is incomplete there, so it cannot be gated yet). Every append is
+    checked, so a call that arrives a character at a time is caught while it is still a
+    partial. A complete non-promotable call is prose, and counting it here would put the
+    full strip back on every token of a long quoted one.
     """
     best = -1
     for sentinel in _STRIP_SENTINELS:
@@ -947,7 +966,10 @@ def _first_sentinel(text: str, start: int) -> int:
         found = text.find(_GEMMA_BARE_SENTINEL, at)
         if found < 0 or (0 <= best <= found):
             return best
-        if _GEMMA_BARE_TC_RE.match(text, found) or _GEMMA_BARE_TC_PREFIX_RE.match(text, found):
+        if _GEMMA_BARE_TC_PREFIX_RE.match(text, found):
+            return found
+        m = _GEMMA_BARE_TC_RE.match(text, found)
+        if m is not None and _markerless_promotable(m.group(1), enabled_tool_names):
             return found
         at = found + len(_GEMMA_BARE_SENTINEL)
 
@@ -1149,7 +1171,7 @@ class StreamingMarkupStripper:
             # stripping. Scan from ``resume``, not from the opener: everything below it
             # was checked on an earlier token, and a reasoning body is most of a reasoning
             # model's answer, so restarting each token is the quadratic this class removes.
-            if _first_sentinel(text, resume) >= 0:
+            if _first_sentinel(text, resume, self._enabled_tool_names) >= 0:
                 self._open_at = -1
                 return ""
             self._open_at = first
@@ -1158,7 +1180,12 @@ class StreamingMarkupStripper:
         self._open_at = -1
         end += len(closer)
         body = text[self._floor : end]
-        if _first_sentinel(body.replace(opener, "").replace(closer, ""), 0) >= 0:
+        if (
+            _first_sentinel(
+                body.replace(opener, "").replace(closer, ""), 0, self._enabled_tool_names
+            )
+            >= 0
+        ):
             return ""
         settled = self._full_strip(body)
         self._floor_out += settled
@@ -1184,7 +1211,7 @@ class StreamingMarkupStripper:
         actually holds one of these -- and only once markup is present, since this runs
         after the sentinel scan rather than in front of it.
         """
-        return bool(_GEMMA_BARE_TC_RE.search(text, self._floor)) or (
+        return _promotable_gemma_call_pos(text, self._floor, self._enabled_tool_names) >= 0 or (
             self._floor > 0 and _unmatched_think_closer(text, self._floor) >= 0
         )
 
@@ -1283,7 +1310,11 @@ class StreamingMarkupStripper:
                 # sentinel straddling two appends. This is what keeps the pre-markup
                 # phase from rescanning the whole buffer per token.
                 resume = self._scanned_upto - _SENTINEL_MAX_LEN + 1
-                found = _first_sentinel(text, resume if resume > self._floor else self._floor)
+                found = _first_sentinel(
+                    text,
+                    resume if resume > self._floor else self._floor,
+                    self._enabled_tool_names,
+                )
                 if found < 0:
                     self._scanned_upto = len(text)
                     return self._unchanged(text)
@@ -2247,10 +2278,16 @@ def _parse_llama3_bare_json(
         name = obj.get("name") or obj.get("function") or ""
         if not isinstance(name, str) or not name:
             break
-        # Markerless JSON is ambiguous: treat it as a call only when the name is promotable --
-        # an enabled non-execution tool. A disabled name or an execution-class name
-        # (``python``/``terminal``, never promotable from bare JSON) is an ordinary JSON answer.
+        # Markerless JSON is ambiguous: treat it as a call only when the name is promotable.
+        if name in _EXECUTION_CLASS_TOOL_NAMES:
+            # Blocked, not data. The model did write a call here, we just refuse to promote
+            # it from a bare span, so skip the object and keep decoding the chain (as the
+            # Gemma and rehearsal scanners do) instead of dropping a benign call after it.
+            cursor += end_offset
+            continue
         if not _markerless_promotable(name, enabled_tool_names):
+            # A name outside the tool list means the turn is an ordinary JSON answer rather
+            # than a call chain, so stop rather than promote objects deeper in the data.
             break
         # ``parameters`` must be a dict (Llama-3 spec); ``arguments`` may be a dict or
         # JSON-string of one (OpenAI). Looser would fire on ``{"name":"x","parameters":"sentence"}``.
@@ -2686,36 +2723,50 @@ def strip_leading_bare_json_call(text: str, enabled_tool_names: Optional[set] = 
     ``tool_calls``."""
     remainder = text
     stripped_any = False
+    # Blocked-but-call-shaped objects the parser skipped over: kept as prose, in order,
+    # ahead of whatever survives, so parse and strip agree on every link of the chain.
+    kept: list[str] = []
+
+    def _out(tail: str) -> str:
+        if not (stripped_any or kept):
+            return text
+        return ("".join(kept) + tail).lstrip()
+
     while True:
         probe = strip_llama3_leading_sentinels(remainder.lstrip())
         # Skip the Llama-3 ``;`` inter-call separator between chained calls.
-        if stripped_any:
+        if stripped_any or kept:
             probe = probe.lstrip(" \t\n\r;")
         if not (probe.startswith("{") and ('"name"' in probe or '"function"' in probe)):
-            return probe.lstrip() if stripped_any else text
+            return _out(probe)
         # Only suppress when the leading object's TOP-LEVEL name is markerless-promotable. A
         # nested ``"name"`` (e.g. {"result":{"name":"web_search",...}}) is data, not the call
-        # name, so it must not gate the strip. A disabled name, an execution-class name (never
-        # promotable from bare JSON, mirroring _parse_llama3_bare_json so parse and strip agree),
-        # or an un-extractable name under a tool list is kept; ``None`` still strips a
-        # call-shaped non-execution object.
+        # name, so it must not gate the strip. An un-extractable name or one outside the tool
+        # list means the turn is a JSON answer, so the rest is kept as written.
         name = _top_level_bare_json_name(probe)
-        if not _markerless_promotable(name, enabled_tool_names):
-            return probe.lstrip() if stripped_any else text
+        blocked = name in _EXECUTION_CLASS_TOOL_NAMES
+        if not blocked and not _markerless_promotable(name, enabled_tool_names):
+            return _out(probe)
         end = _balanced_brace_end(probe, 0)
         if end is None:
-            return ""  # truncated bare-JSON call -- nothing recoverable
+            # Truncated: a blocked object is prose to the end, a promotable one is an
+            # unrecoverable call fragment.
+            return _out(probe) if blocked else ""
         # A closed object must have the CALL SHAPE the parser accepts (dict ``parameters``,
         # or dict / JSON-string ``arguments``). An ordinary JSON answer like
         # {"name":"web_search","result":"no call"} is content, so the strip keeps it visible.
         try:
             obj = json.loads(probe[: end + 1])
         except (json.JSONDecodeError, ValueError):
-            return probe.lstrip() if stripped_any else text
+            return _out(probe)
         if not _bare_json_call_shaped(obj):
-            return probe.lstrip() if stripped_any else text
+            return _out(probe)
+        if blocked:
+            # Mirrors the parser skipping it: visible as text, and the scan goes on.
+            kept.append(probe[: end + 1])
+        else:
+            stripped_any = True
         remainder = probe[end + 1 :]
-        stripped_any = True
 
 
 def _bare_json_call_shaped(obj) -> bool:
