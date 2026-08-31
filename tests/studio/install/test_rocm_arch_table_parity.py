@@ -401,8 +401,11 @@ def _name_table_py_literal(path: Path, name: str) -> list:
     tree = ast.parse(path.read_text(encoding = "utf-8"))
     for node in tree.body:
         targets = (
-            [node.target] if isinstance(node, ast.AnnAssign)
-            else node.targets if isinstance(node, ast.Assign) else []
+            [node.target]
+            if isinstance(node, ast.AnnAssign)
+            else node.targets
+            if isinstance(node, ast.Assign)
+            else []
         )
         for target in targets:
             if isinstance(target, ast.Name) and target.id == name:

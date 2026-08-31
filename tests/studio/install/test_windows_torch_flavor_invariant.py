@@ -461,8 +461,9 @@ class TestABrokenTorchForcesTheDependencyPass:
     date over a wheel that will not load."""
 
     def test_the_flag_clears_the_skip(self):
-        clear = _SETUP_SRC.index("if ($script:PinChangedForceReinstall -or "
-                                 "$script:TorchImportDefinitivelyFailed) {")
+        clear = _SETUP_SRC.index(
+            "if ($script:PinChangedForceReinstall -or $script:TorchImportDefinitivelyFailed) {"
+        )
         block = _SETUP_SRC[clear : _SETUP_SRC.index("if (-not $SkipPythonDeps) {", clear)]
         assert "$SkipPythonDeps = $false" in block
 
@@ -472,7 +473,8 @@ class TestABrokenTorchForcesTheDependencyPass:
         # The LAST such line: the clear itself now reads the same flag, and _line_of
         # takes the first match.
         consumer = max(
-            number for number, line in enumerate(_SETUP_SRC.splitlines(), start = 1)
+            number
+            for number, line in enumerate(_SETUP_SRC.splitlines(), start = 1)
             if "$script:TorchImportDefinitivelyFailed" in line
         )
         assert clear < guard < consumer, (

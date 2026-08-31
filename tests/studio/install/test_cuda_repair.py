@@ -1857,9 +1857,20 @@ class TestAFailedGpuPinIsNotADeliberateCpuChoice:
     failed install as an intentional one and suppress the repair guidance for good."""
 
     @staticmethod
-    def _pinned(monkeypatch, flavor, *, url = "", family = "", backend = "", recorded = None):
-        for var in ("UNSLOTH_TORCH_INDEX_URL", "UNSLOTH_TORCH_INDEX_FAMILY",
-                    "UNSLOTH_TORCH_INSTALL_INDEX_URL"):
+    def _pinned(
+        monkeypatch,
+        flavor,
+        *,
+        url = "",
+        family = "",
+        backend = "",
+        recorded = None,
+    ):
+        for var in (
+            "UNSLOTH_TORCH_INDEX_URL",
+            "UNSLOTH_TORCH_INDEX_FAMILY",
+            "UNSLOTH_TORCH_INSTALL_INDEX_URL",
+        ):
             monkeypatch.delenv(var, raising = False)
         if url:
             monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", url)
@@ -1872,9 +1883,10 @@ class TestAFailedGpuPinIsNotADeliberateCpuChoice:
         return stack_mod._expected_torch_flavor_was_pinned(flavor)
 
     def test_a_rocm_pin_that_settled_on_cpu_is_not_a_cpu_choice(self, monkeypatch):
-        assert self._pinned(
-            monkeypatch, "cpu", url = "https://download.pytorch.org/whl/rocm6.4"
-        ) is False
+        assert (
+            self._pinned(monkeypatch, "cpu", url = "https://download.pytorch.org/whl/rocm6.4")
+            is False
+        )
 
     def test_an_xpu_family_that_settled_on_cpu_is_not_a_cpu_choice(self, monkeypatch):
         assert self._pinned(monkeypatch, "cpu", family = "xpu") is False
@@ -1886,29 +1898,26 @@ class TestAFailedGpuPinIsNotADeliberateCpuChoice:
         assert self._pinned(monkeypatch, "cpu", recorded = ("cu124", True)) is False
 
     def test_a_cpu_pin_that_settled_on_cpu_still_counts(self, monkeypatch):
-        assert self._pinned(
-            monkeypatch, "cpu", url = "https://download.pytorch.org/whl/cpu"
-        ) is True
+        assert self._pinned(monkeypatch, "cpu", url = "https://download.pytorch.org/whl/cpu") is True
 
     def test_a_rocm_pin_that_settled_on_rocm_still_counts(self, monkeypatch):
-        assert self._pinned(
-            monkeypatch, "rocm", url = "https://download.pytorch.org/whl/rocm6.4"
-        ) is True
+        assert (
+            self._pinned(monkeypatch, "rocm", url = "https://download.pytorch.org/whl/rocm6.4")
+            is True
+        )
 
     def test_a_cuda_pin_counts_for_any_cuda_flavor(self, monkeypatch):
         # cu124 and cu128 are both the cuda family: the pin names the family, and the
         # recorded tag names the exact index within it.
-        assert self._pinned(
-            monkeypatch, "cu128", url = "https://download.pytorch.org/whl/cu124"
-        ) is True
+        assert (
+            self._pinned(monkeypatch, "cu128", url = "https://download.pytorch.org/whl/cu124") is True
+        )
 
     def test_a_carried_forward_cpu_record_still_counts_for_cpu(self, monkeypatch):
         assert self._pinned(monkeypatch, "cpu", recorded = ("cpu", True)) is True
 
     def test_asking_without_a_flavor_answers_as_it_always_did(self, monkeypatch):
-        assert self._pinned(
-            monkeypatch, "", url = "https://download.pytorch.org/whl/rocm6.4"
-        ) is True
+        assert self._pinned(monkeypatch, "", url = "https://download.pytorch.org/whl/rocm6.4") is True
 
 
 class TestTheWindowsXpuTritonSwapReachesADirectRun:

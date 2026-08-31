@@ -1201,7 +1201,8 @@ def test_duplicate_registry_records_are_claimed_one_to_one(monkeypatch):
     monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     # nvidia-smi ANSWERS (absent), so only the registry vendors go unanswered here.
     monkeypatch.setattr(
-        nvidia.subprocess, "run",
+        nvidia.subprocess,
+        "run",
         lambda *_a, **_k: (_ for _ in ()).throw(FileNotFoundError("nvidia-smi")),
     )
     monkeypatch.setattr(nvidia, "_linux_nvidia_procfs_gpu_count", lambda: 0)
@@ -2187,6 +2188,7 @@ def test_hip_visible_devices_outranks_the_cuda_alias(monkeypatch):
 
 # =============================================== a refresh that cannot answer is not news
 
+
 def test_an_unanswerable_refresh_keeps_the_cards_it_already_found(monkeypatch):
     """nvidia-smi timing out must not read as "the GPUs were removed".
 
@@ -2221,7 +2223,8 @@ def test_a_vendor_that_answered_none_is_allowed_to_lose_its_cards(monkeypatch):
 
     monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", (0.0, good))
     monkeypatch.setattr(
-        nvidia.subprocess, "run",
+        nvidia.subprocess,
+        "run",
         lambda *_a, **_k: (_ for _ in ()).throw(FileNotFoundError("nvidia-smi")),
     )
     monkeypatch.setattr(nvidia, "_linux_nvidia_procfs_gpu_count", lambda: 0)
@@ -2237,13 +2240,15 @@ def test_a_registry_that_cannot_be_read_is_not_a_host_without_adapters(monkeypat
     monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     # nvidia-smi ANSWERS (absent), so only the registry vendors go unanswered here.
     monkeypatch.setattr(
-        nvidia.subprocess, "run",
+        nvidia.subprocess,
+        "run",
         lambda *_a, **_k: (_ for _ in ()).throw(FileNotFoundError("nvidia-smi")),
     )
     monkeypatch.setattr(nvidia, "_linux_nvidia_procfs_gpu_count", lambda: 0)
     monkeypatch.setattr(hw, "_windows_live_adapter_names", lambda: ["AMD Radeon RX 7900 XT"])
     monkeypatch.setattr(
-        hw, "_windows_amd_adapter_records_by_luid",
+        hw,
+        "_windows_amd_adapter_records_by_luid",
         lambda vendor_id = hw._AMD_PCI_VENDOR_ID, **kw: (
             None if kw.get("distinguish_failure") else {}
         ),
@@ -2266,16 +2271,20 @@ def test_the_ranking_callers_still_see_an_empty_map(monkeypatch):
 
 # ============================================ a Windows AMD card the registry did not name
 
-@pytest.mark.parametrize("name,eligible", [
-    ("AMD Radeon RX 7900 XT", True),
-    ("AMD Radeon RX 9070 XT", True),
-    ("AMD Radeon 780M Graphics", True),
-    # Polaris and RDNA 1: no wheel family covers them, so a repair could not change
-    # anything and this host is on CPU torch on purpose.
-    ("AMD Radeon RX 580", False),
-    ("AMD Radeon RX 5700 XT", False),
-    ("", False),
-])
+
+@pytest.mark.parametrize(
+    "name,eligible",
+    [
+        ("AMD Radeon RX 7900 XT", True),
+        ("AMD Radeon RX 9070 XT", True),
+        ("AMD Radeon 780M Graphics", True),
+        # Polaris and RDNA 1: no wheel family covers them, so a repair could not change
+        # anything and this host is on CPU torch on purpose.
+        ("AMD Radeon RX 580", False),
+        ("AMD Radeon RX 5700 XT", False),
+        ("", False),
+    ],
+)
 def test_a_windows_adapter_with_no_adapter_family_is_read_from_its_name(
     monkeypatch, name, eligible
 ):
@@ -2294,25 +2303,32 @@ def test_a_windows_adapter_with_no_adapter_family_is_read_from_its_name(
 def test_a_named_arch_still_wins_over_the_marketing_name(monkeypatch):
     """The name table only fills a gap; it never overrides what the driver reported."""
     monkeypatch.setattr(hw, "_linux_kfd_reports_an_amd_gpu", lambda: True)
-    assert hw._amd_device_can_establish_a_mismatch(
-        {"vendor": "amd", "name": "AMD Radeon RX 7900 XT", "gfx": "gfx803"}
-    ) is False
+    assert (
+        hw._amd_device_can_establish_a_mismatch(
+            {"vendor": "amd", "name": "AMD Radeon RX 7900 XT", "gfx": "gfx803"}
+        )
+        is False
+    )
 
 
 # ================================================== only a real ROCm family is a ROCm pin
 
-@pytest.mark.parametrize("leaf,chosen", [
-    ("rocm6.4", True),
-    ("rocm7", True),
-    ("gfx1151", True),
-    ("gfx120X-all", True),
-    # Suffixed leaves are custom pins the installer routes verbatim. Reading one as ROCm
-    # waives the supported-architecture filter and calls a deliberate install broken.
-    ("rocm-rel-7.2.1", False),
-    ("rocm7.2-private", False),
-    ("gfx-mirror", False),
-    ("cpu", False),
-])
+
+@pytest.mark.parametrize(
+    "leaf,chosen",
+    [
+        ("rocm6.4", True),
+        ("rocm7", True),
+        ("gfx1151", True),
+        ("gfx120X-all", True),
+        # Suffixed leaves are custom pins the installer routes verbatim. Reading one as ROCm
+        # waives the supported-architecture filter and calls a deliberate install broken.
+        ("rocm-rel-7.2.1", False),
+        ("rocm7.2-private", False),
+        ("gfx-mirror", False),
+        ("cpu", False),
+    ],
+)
 def test_only_the_installers_rocm_families_count_as_a_rocm_choice(monkeypatch, leaf, chosen):
     monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
     monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", f"https://example.invalid/whl/{leaf}")
@@ -2322,8 +2338,18 @@ def test_only_the_installers_rocm_families_count_as_a_rocm_choice(monkeypatch, l
 
 def test_the_backend_and_the_installer_agree_on_the_family_predicate():
     """One vocabulary, two files: drift here is a silent behaviour split."""
-    for leaf in ("rocm6.4", "rocm7", "gfx1151", "gfx120X-all", "rocm-rel-7.2.1",
-                 "rocm7.2-private", "gfx-mirror", "cpu", "cu124", ""):
+    for leaf in (
+        "rocm6.4",
+        "rocm7",
+        "gfx1151",
+        "gfx120X-all",
+        "rocm-rel-7.2.1",
+        "rocm7.2-private",
+        "gfx-mirror",
+        "cpu",
+        "cu124",
+        "",
+    ):
         assert hw._is_pip_rocm_family_leaf(leaf) == _installer_rocm_family(leaf), leaf
 
 
@@ -2333,12 +2359,13 @@ def _installer_rocm_family(leaf: str) -> bool:
     import pathlib
     import re as _re
 
-    source = (
-        pathlib.Path(__file__).resolve().parents[2] / "install_python_stack.py"
-    ).read_text(encoding = "utf-8")
+    source = (pathlib.Path(__file__).resolve().parents[2] / "install_python_stack.py").read_text(
+        encoding = "utf-8"
+    )
     tree = ast.parse(source)
     fn = next(
-        node for node in tree.body
+        node
+        for node in tree.body
         if isinstance(node, ast.FunctionDef) and node.name == "_is_pip_rocm_family_leaf"
     )
     namespace: dict = {"re": _re}
@@ -2347,6 +2374,7 @@ def _installer_rocm_family(leaf: str) -> bool:
 
 
 # ======================================= a detection failure the disk already explained
+
 
 def test_a_disk_classified_detection_failure_transitions_when_the_probe_recovers(monkeypatch):
     """torch will not import AND the OS probe timed out: only the inventory was missing.
@@ -2361,11 +2389,13 @@ def test_a_disk_classified_detection_failure_transitions_when_the_probe_recovers
     monkeypatch.setattr(hw, "TORCH_IMPORT_ERROR", OSError("[WinError 126] cudart64_12.dll"))
     monkeypatch.setattr(hw, "_installed_torch_label_on_disk", lambda: "2.11.0+cpu")
     monkeypatch.setattr(
-        hw, "torch_build_snapshot",
+        hw,
+        "torch_build_snapshot",
         lambda **_kw: {"reason": "torch_cpu_build", "usable": False, "unknown": False},
     )
     monkeypatch.setattr(
-        hw, "get_physical_gpu_inventory",
+        hw,
+        "get_physical_gpu_inventory",
         lambda **_kw: {
             "devices": [{"vendor": "nvidia", "name": "NVIDIA RTX A4000"}],
             "unknown": False,
@@ -2382,7 +2412,8 @@ def test_a_detection_failure_never_degrades_into_no_gpu(monkeypatch):
     monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", None)
     monkeypatch.setattr(hw, "TORCH_IMPORT_ERROR", OSError("boom"))
     monkeypatch.setattr(
-        hw, "torch_build_snapshot",
+        hw,
+        "torch_build_snapshot",
         lambda **_kw: {"reason": "torch_cpu_build", "usable": False, "unknown": False},
     )
     monkeypatch.setattr(

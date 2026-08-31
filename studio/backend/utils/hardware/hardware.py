@@ -404,9 +404,7 @@ def _probe_physical_gpu_inventory() -> Dict[str, Any]:
             ("intel", _INTEL_PCI_VENDOR_ID),
         ):
             try:
-                records = _windows_amd_adapter_records_by_luid(
-                    _vendor_id, distinguish_failure = True
-                )
+                records = _windows_amd_adapter_records_by_luid(_vendor_id, distinguish_failure = True)
             except Exception as e:
                 logger.debug("Windows %s adapter inventory probe failed: %s", _vendor, e)
                 records = None
@@ -685,7 +683,8 @@ def _carry_unanswered_vendors_forward(
     if not stale_vendors or not previous:
         return inventory
     carried = [
-        device for device in (previous.get("devices") or [])
+        device
+        for device in (previous.get("devices") or [])
         if device.get("vendor") in stale_vendors
     ]
     if not carried:
@@ -694,7 +693,8 @@ def _carry_unanswered_vendors_forward(
     merged["devices"] = list(inventory.get("devices") or []) + carried
     merged["available"] = True
     merged["sources"] = list(inventory.get("sources") or []) + [
-        source for source in (previous.get("sources") or [])
+        source
+        for source in (previous.get("sources") or [])
         if source not in (inventory.get("sources") or [])
     ]
     # Still unknown: these rows describe the host as it was, not as this pass measured it.
@@ -3587,9 +3587,7 @@ def _parse_adapter_family_gfx(family: str) -> str:
 
 
 def _windows_amd_adapter_records_by_luid(
-    vendor_id_filter: int = _AMD_PCI_VENDOR_ID,
-    *,
-    distinguish_failure: bool = False,
+    vendor_id_filter: int = _AMD_PCI_VENDOR_ID, *, distinguish_failure: bool = False
 ) -> "dict[int, Dict[str, Any]] | None":
     """DirectX registry metadata for one vendor's adapters, keyed by LUID.
 

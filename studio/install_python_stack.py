@@ -3061,6 +3061,7 @@ def _expected_torch_flavor_was_pinned(flavor: str = "") -> bool:
     failed install as a deliberate one and suppress the repair guidance for good.
     ``flavor`` empty means nobody asked about a specific one, and every pin counts.
     """
+
     def _names_it(family: str) -> bool:
         return True if not flavor else family == _flavor_tag_family(flavor)
 
@@ -6302,9 +6303,7 @@ def install_python_stack() -> int:
             # writing it back would give a later unpinned run a flavor to "repair" the mirror's to.
             expected_torch_tag = _recordable_torch_flavor_tag(torch_flavor_tag),
             expected_torch_tag_pinned = bool(_recordable_torch_flavor_tag(torch_flavor_tag))
-            and _expected_torch_flavor_was_pinned(
-                _recordable_torch_flavor_tag(torch_flavor_tag)
-            ),
+            and _expected_torch_flavor_was_pinned(_recordable_torch_flavor_tag(torch_flavor_tag)),
         )
         is None
     ):
