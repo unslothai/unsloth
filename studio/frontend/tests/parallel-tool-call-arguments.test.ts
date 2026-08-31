@@ -1150,6 +1150,22 @@ test("a card that never got a name is dropped when the turn ends", () => {
   );
 });
 
+test("a claim that turns out not to be a call gives the number back", () => {
+  // The displacement happens as the claim lands, but a nameless call is not a
+  // call: the backend reserves nothing for it and keeps tool_call_0 for the
+  // valid one, so a card left at tool_call_1 is one its execution events miss.
+  const stream = makeStream();
+  stream.feed([{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }]);
+  stream.feed([{ id: "tool_call_0", index: 1, function: { arguments: '{"b":2}' } }]);
+  assert.equal(stream.parts.length, 2);
+  stream.feed([], true);
+
+  assert.deepEqual(
+    stream.parts.map((p) => [p.toolCallId, p.toolName]),
+    [["tool_call_0", "alpha"]],
+  );
+});
+
 test("a stable id naming a longer tool opens its own call", () => {
   // Reading "web_search" as "web" grown gave the id to the completed card.
   const parts = run([

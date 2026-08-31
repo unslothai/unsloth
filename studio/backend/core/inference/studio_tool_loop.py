@@ -1485,8 +1485,11 @@ async def stream_with_studio_tools(
             # empty status below, so the client keeps the card it drew for that
             # call open and a reprompted call merges into it: an upstream ending
             # on [DONE] sends no finish_reason either, so there is no other
-            # boundary on this path.
-            yield _status_sse("")
+            # boundary on this path. Only when a call was streamed: a turn that
+            # said nothing at all left the client nothing to close, and a
+            # provider that sends no lines still ends the response silently.
+            if turn.by_index:
+                yield _status_sse("")
             # No tool this turn. A model that only said what it was about to do
             # gets one nudge to actually do it, the same recovery the local loops
             # give a stalled small model, then the answer stands as written.

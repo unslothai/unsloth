@@ -709,6 +709,20 @@ def test_a_rejected_call_reserves_no_card_id():
     assert [call.get("card_id") for call in second.calls(taken, cards)] == ["tool_call_0"]
 
 
+def test_a_nameless_claim_does_not_take_a_valid_call_s_card():
+    # The client displaces the card holding a spelling the moment a provider
+    # claims it, so a claim that turns out not to be a call has to give the
+    # number back. Nothing is reserved for it here, so the valid call keeps it.
+    turn = _Turn()
+    turn.merge_structured([_delta(0, "alpha", '{"a":1}')])
+    turn.merge_structured([_delta(1, None, '{"b":2}', call_id = "tool_call_0")])
+
+    reported = [
+        (call.get("card_id"), call["function"]["name"]) for call in turn.calls()
+    ]
+    assert reported == [("tool_call_0", "alpha")]
+
+
 def test_a_stable_id_naming_a_longer_tool_opens_its_own_call():
     # Reading "web_search" as "web" grown gave the id to the completed call.
     turn = _Turn()

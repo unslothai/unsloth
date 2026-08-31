@@ -5360,6 +5360,12 @@ export function createOpenAIStreamAdapter(
           releaseStreamedCard(part.toolCallId);
           changed = true;
         }
+        // Numbering is the backend's pass, and it runs over the calls that
+        // survive: a card dropped above leaves a gap, and a claim displaced one
+        // for a call that turned out not to be one at all. Both are settled
+        // here, where the backend settles them, rather than left a number apart
+        // for the rest of the response.
+        if (changed) renumberMintedCards();
         openTailIds.clear();
         // The next round opens at index 0 again, and without this "B" then
         // "C" across the boundary named one call "BC".
@@ -5431,7 +5437,7 @@ export function createOpenAIStreamAdapter(
       // walks them, or its tool_start reaches the wrong card: with three calls
       // in one delta and a later `tool_call_1`, the two sides read the second
       // and third calls' results off each other's cards.
-      const renumberMintedCards = (claimed: string): void => {
+      const renumberMintedCards = (claimed?: string): void => {
         const minted = toolCallParts.filter(
           (part) =>
             !providerSentToolCallIds.has(part.toolCallId) &&
@@ -5461,7 +5467,7 @@ export function createOpenAIStreamAdapter(
         }
         // Held back only now: the loop above frees every minted id, and one of
         // them is the spelling being claimed.
-        reservedToolCallIds.add(claimed);
+        if (claimed !== undefined) reservedToolCallIds.add(claimed);
         for (const held of carried) {
           const to = mintStreamedCardId(held.part._delta_index);
           paintStreamedCard(to);
