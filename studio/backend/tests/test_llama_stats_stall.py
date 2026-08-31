@@ -363,9 +363,9 @@ def test_a_model_load_is_not_counted_as_a_request_in_flight():
 
     monitor = ApiMonitor(max_entries = 16)
     monitor.record_lifecycle(event = "load", model = "unsloth/Qwen3-27B-GGUF", running = True)
-    assert any(e.status == "running" for e in monitor._entries), (
-        "the load must be a running row, or this test proves nothing"
-    )
+    assert any(
+        e.status == "running" for e in monitor._entries
+    ), "the load must be a running row, or this test proves nothing"
     assert monitor.active_count() == 0
 
     # And through the hook itself, against the live singleton, so swapping
