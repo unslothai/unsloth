@@ -405,7 +405,8 @@ class TestParser:
         assert result[0]["function"]["name"] == "mcp__srv__list-issues"
 
     def test_rehearsal_hyphenated_mcp_name(self):
-        text = 'mcp__srv__list-issues[ARGS]{"q":"x"}'
+        # MCP calls require an explicit native marker; keep the rehearsal payload shape.
+        text = '[TOOL_CALLS]mcp__srv__list-issues[ARGS]{"q":"x"}'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert result[0]["function"]["name"] == "mcp__srv__list-issues"
@@ -1841,9 +1842,9 @@ class TestParserCrossFormatRouting:
         for label, text, expected_name in cases:
             result = parse_tool_calls_from_text(text)
             assert len(result) == 1, f"{label}: parser missed the call"
-            assert (
-                result[0]["function"]["name"] == expected_name
-            ), f"{label}: got {result[0]['function']['name']!r}, expected {expected_name!r}"
+            assert result[0]["function"]["name"] == expected_name, (
+                f"{label}: got {result[0]['function']['name']!r}, expected {expected_name!r}"
+            )
 
     def test_all_new_markers_in_tool_xml_signals(self):
         # The safetensors / MLX streaming buffer must wake on every supported emission marker --
@@ -2051,14 +2052,15 @@ def test_plain_answer_ending_with_tool_name_word_is_preserved():
 
 
 def test_long_tool_name_split_rehearsal_is_not_capped_and_executes():
-    # Finding 10/11: an MCP name longer than the buffer cap, split before [ARGS], is still
-    # held (self-bounding prefix); no leak and the call executes.
+    # Finding 10/11: an explicitly marked MCP name longer than the buffer cap, split before
+    # [ARGS], is still held (self-bounding prefix); no leak and the call executes.
     from core.inference.safetensors_agentic import _MAX_BUFFER_CHARS
 
     name = "mcp__github__create_pull_request"
     assert len(name) >= _MAX_BUFFER_CHARS, len(name)
     exec_fn = FakeExecuteTool(["RESULT"])
-    _turns = iter([[name, name + '[ARGS]{"x":1}'], ["done"]])
+    marked_name = "[TOOL_CALLS]" + name
+    _turns = iter([[marked_name, marked_name + '[ARGS]{"x":1}'], ["done"]])
 
     def st(_messages, active_tools = None):
         yield from next(_turns)
@@ -2242,11 +2244,11 @@ def test_gemma_wrapperless_call_with_whitespace_is_suppressed_when_streamed():
 
 
 def test_long_gemma_tool_name_is_not_streamed_as_content():
-    # A tool name longer than the small buffer cap (OpenAI 64 chars, MCP longer)
-    # must still be held: the ``call:NAME`` prefix keeps buffering until ``{``
-    # instead of leaking ``call:longname`` as visible text.
+    # A tool name longer than the small buffer cap (OpenAI 64 chars, MCP longer) must still
+    # be held when explicitly wrapped, instead of leaking ``call:longname`` as visible text.
     long_name = "mcp__github__list_repository_issues"  # 35 chars
-    turns = iter([list('call:%s{repo:"octo/hello"}' % long_name), ["Done."]])
+    wrapped = '<|tool_call>call:%s{repo:<|"|>octo/hello<|"|>}<tool_call|>' % long_name
+    turns = iter([list(wrapped), ["Done."]])
 
     def _gen(_messages):
         try:
@@ -3695,9 +3697,9 @@ class TestGGUFSafetensorsHealingParity:
         from core.inference.llama_cpp import LlamaCppBackend
 
         src = inspect.getsource(LlamaCppBackend.generate_chat_completion_with_tools)
-        assert (
-            "_shared_strip_tool_markup" in src
-        ), "GGUF stream cleanup must delegate to the shared strip_tool_markup helper"
+        assert "_shared_strip_tool_markup" in src, (
+            "GGUF stream cleanup must delegate to the shared strip_tool_markup helper"
+        )
 
     def test_gguf_uses_canonical_heal_keys(self):
         # GGUF and safetensors heal a bare-string ``arguments`` to the same
@@ -3983,9 +3985,9 @@ class TestProseMentioningToolCall:
         contents = [e for e in events if e["type"] == "content"]
         assert contents, "expected at least one content event"
         final = contents[-1]["text"]
-        assert (
-            "LLM tool" in final
-        ), f"prose mentioning <tool_call> should not be truncated; got {final!r}"
+        assert "LLM tool" in final, (
+            f"prose mentioning <tool_call> should not be truncated; got {final!r}"
+        )
 
     def test_tool_result_with_tool_call_text_does_not_retrigger(self):
         # A literal ``<tool_call>`` in the tool result must not re-trigger: the
@@ -5421,6 +5423,6 @@ class TestStreamingDisplayStripStillMatchesTheExportedHelper:
         for i in range(1, len(text) + 1):
             prefix = text[:i]
             incremental = stripper.strip(safetensors_agentic._strip_mistral_reasoning(prefix))
-            assert incremental == strip_tool_markup_streaming(
-                prefix, enabled_tool_names = names
-            ), f"diverged at offset {i}"
+            assert incremental == strip_tool_markup_streaming(prefix, enabled_tool_names = names), (
+                f"diverged at offset {i}"
+            )

@@ -1857,14 +1857,14 @@ def parse_tool_calls_from_text(
     # object matches and owns the turn, so an enabled ``call:NAME{...}`` in its arguments
     # stays data (Gemma never starts ``{``).
     calls = _parse_llama3_bare_json(
-        content, id_offset = id_offset, enabled_tool_names = enabled_tool_names
+        fallback_content, id_offset = id_offset, enabled_tool_names = enabled_tool_names
     )
     if calls:
         return calls
 
     # Gemma wrapper-less ``call:NAME{...}``: markerless, so the same enabled-name gate applies.
     return _parse_gemma_tool_calls(
-        content,
+        fallback_content,
         id_offset = id_offset,
         allow_incomplete = allow_incomplete,
         enabled_tool_names = enabled_tool_names,
@@ -2541,9 +2541,9 @@ def _parse_gemma_tool_calls(
     ``enabled_tool_names`` gates on the parsed name: the wrapper-less shape is
     indistinguishable from prose documenting the syntax, so a disabled/example
     name must not be stolen as a call. ``None`` keeps the name-agnostic behaviour.
-    An execution-class name (``python``/``terminal``) is never promoted from this
-    markerless path regardless of ``enabled_tool_names`` -- a bare ``call:python{..}``
-    may be attacker-quoted prose, so it must carry the ``<|tool_call>`` wrapper."""
+    Execution-class and MCP names are never promoted from this markerless path
+    regardless of ``enabled_tool_names`` -- a bare call may be attacker-quoted
+    prose, so guarded names must carry the ``<|tool_call>`` wrapper."""
     out: list[dict] = []
     # The WRAPPED form (strict + nested-marker handling) is tool_healing's, which runs
     # first: defer content with a wrapped opener. A marker literal alone is not enough --
@@ -2557,7 +2557,7 @@ def _parse_gemma_tool_calls(
     # in an argument is never re-matched. A leading JSON answer's span is data -- scan after it.
     cursor = _leading_json_value_end(content) or 0
     # A blocked rehearsal's body is argument text too: it owned its span by being promoted, so
-    # refusing to promote it must not hand the contents here. Enabled names only, as above.
+    # refusing to promote it must not hand the contents here. Enabled guarded names only.
     # One forward pass like _iter_bracket_spans (stop at the last ``}``, resume past each body):
     # restarting per opener is quadratic, and unclosed ``terminal[ARGS]{`` is cheap to emit.
     blocked_spans = []

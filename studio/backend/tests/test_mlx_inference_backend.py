@@ -556,9 +556,9 @@ def test_mlx_generate_chat_response_accepts_template_kwargs():
             "the route layer forwards this and a missing kwarg raises "
             "TypeError on Mac"
         )
-        assert (
-            params[name].default is None
-        ), f"{name!r} must default to None so existing callers stay valid"
+        assert params[name].default is None, (
+            f"{name!r} must default to None so existing callers stay valid"
+        )
 
 
 def test_mlx_vlm_reemits_think_prefill_inside_adapter_context(monkeypatch):
@@ -886,6 +886,172 @@ def test_mlx_generate_text_forwards_kwargs_into_template_helper(monkeypatch):
     assert render["kwargs"]["enable_thinking"] is True
     assert render["kwargs"]["reasoning_effort"] == "medium"
     assert render["kwargs"]["preserve_thinking"] is True
+
+
+def test_mlx_tool_turn_preserves_native_gemma_special_token_ids(monkeypatch):
+    _install_fake_mlx(monkeypatch)
+    from core.inference import mlx_inference
+    from core.inference.tool_call_parser import parse_tool_calls_from_text
+
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda *_args, **_kwargs: "prompt",
+        raising = True,
+    )
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.render_with_native_template_fallback",
+        lambda formatted_prompt, **_kwargs: SimpleNamespace(
+            prompt = formatted_prompt,
+            reasoning_channel_markers = None,
+        ),
+        raising = True,
+    )
+
+    mlx_lm_pkg = types.ModuleType("mlx_lm")
+    mlx_lm_sample = types.ModuleType("mlx_lm.sample_utils")
+    mlx_lm_sample.make_sampler = lambda **_kwargs: object()
+    mlx_lm_sample.make_logits_processors = lambda **_kwargs: None
+
+    token_ids = (1, 2, 3, 4, 3, 5, 6, 7)
+
+    def _stream_generate(_model, _tokenizer, **_kwargs):
+        for token_id in token_ids:
+            yield SimpleNamespace(token = token_id)
+
+    mlx_lm_pkg.stream_generate = _stream_generate
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm_pkg)
+    monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", mlx_lm_sample)
+
+    class _Tokenizer:
+        chat_template = "x"
+        all_special_ids = [1, 3, 6, 7]
+        all_special_tokens = ["<|tool_call>", '<|"|>', "<tool_call|>", "<eos>"]
+        pieces = {
+            1: "<|tool_call>",
+            2: "call:terminal{command:",
+            3: '<|"|>',
+            4: "id",
+            5: "}",
+            6: "<tool_call|>",
+            7: "<eos>",
+        }
+
+        def convert_ids_to_tokens(self, token_id):
+            return self.pieces[token_id]
+
+        def decode(
+            self,
+            ids,
+            *,
+            skip_special_tokens = False,
+            **_kwargs,
+        ):
+            special = set(self.all_special_ids) if skip_special_tokens else set()
+            return "".join(
+                self.pieces[int(token_id)] for token_id in ids if token_id not in special
+            )
+
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._model = object()
+    backend._tokenizer = _Tokenizer()
+    backend._is_vlm = False
+
+    snapshots = list(
+        backend.generate_chat_response(
+            messages = [{"role": "user", "content": "run it"}],
+            tools = [{"type": "function", "function": {"name": "terminal"}}],
+            max_new_tokens = len(token_ids),
+        )
+    )
+    assert snapshots[-1] == '<|tool_call>call:terminal{command:<|"|>id<|"|>}<tool_call|>'
+    calls = parse_tool_calls_from_text(snapshots[-1], enabled_tool_names = {"terminal"})
+    assert [call["function"]["name"] for call in calls] == ["terminal"]
+
+
+def test_mlx_reasoning_tool_turn_filters_special_ids_by_provenance(monkeypatch):
+    _install_fake_mlx(monkeypatch)
+    from core.inference import mlx_inference
+    from core.inference.tool_call_parser import parse_tool_calls_from_text
+
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda *_args, **_kwargs: "prompt",
+        raising = True,
+    )
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.render_with_native_template_fallback",
+        lambda formatted_prompt, **_kwargs: SimpleNamespace(
+            prompt = formatted_prompt,
+            reasoning_channel_markers = ("<|channel>thought", "<channel|>"),
+        ),
+        raising = True,
+    )
+
+    mlx_lm_pkg = types.ModuleType("mlx_lm")
+    mlx_lm_sample = types.ModuleType("mlx_lm.sample_utils")
+    mlx_lm_sample.make_sampler = lambda **_kwargs: object()
+    mlx_lm_sample.make_logits_processors = lambda **_kwargs: None
+
+    pieces = {
+        1: "<|channel>",
+        2: "thought\n",
+        3: "reasoned",
+        4: "<channel|>",
+        5: "<|tool_call>",
+        6: "call:terminal{command:id}",
+        7: "<tool_call|>",
+        8: "<eos>",
+    }
+    special_ids = {1, 4, 5, 7, 8}
+
+    def _stream_generate(_model, _tokenizer, **_kwargs):
+        for token_id, piece in pieces.items():
+            # Special-token text is deliberately wrong: production must trust
+            # response.token provenance and decode that id itself.
+            text = "untrusted-special-text" if token_id in special_ids else piece
+            yield SimpleNamespace(token = token_id, text = text)
+
+    mlx_lm_pkg.stream_generate = _stream_generate
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm_pkg)
+    monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", mlx_lm_sample)
+
+    class _Tokenizer:
+        chat_template = "x"
+        all_special_ids = list(special_ids)
+        all_special_tokens = [pieces[token_id] for token_id in special_ids]
+
+        def convert_ids_to_tokens(self, token_id):
+            return pieces[token_id]
+
+        def decode(
+            self,
+            ids,
+            *,
+            skip_special_tokens = False,
+            **_kwargs,
+        ):
+            skipped = special_ids if skip_special_tokens else set()
+            return "".join(pieces[int(token_id)] for token_id in ids if token_id not in skipped)
+
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._model = object()
+    backend._tokenizer = _Tokenizer()
+    backend._is_vlm = False
+
+    snapshots = list(
+        backend.generate_chat_response(
+            messages = [{"role": "user", "content": "run it"}],
+            tools = [{"type": "function", "function": {"name": "terminal"}}],
+            max_new_tokens = len(pieces),
+        )
+    )
+    assert snapshots[-1] == (
+        "<think>reasoned</think><|tool_call>call:terminal{command:id}<tool_call|>"
+    )
+    assert "<eos>" not in snapshots[-1]
+    assert "untrusted-special-text" not in snapshots[-1]
+    calls = parse_tool_calls_from_text(snapshots[-1], enabled_tool_names = {"terminal"})
+    assert [call["function"]["name"] for call in calls] == ["terminal"]
 
 
 def test_mlx_text_normalizes_native_reasoning_and_close_releases_lock(monkeypatch):

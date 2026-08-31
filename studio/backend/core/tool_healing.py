@@ -34,28 +34,31 @@ import re
 # MARKERLESS forms (``call:NAME{..}`` / ``name[ARGS]{json}``) are indistinguishable from prose
 # quoting the syntax, so a model echoing attacker text would turn a quote into execution;
 # require a wrapper (``<|tool_call>``, ``[TOOL_CALLS]``, ``<function=>``) or a structured call.
-# MCP names are out on purpose: over an open third-party vocabulary the only complete rule is
-# "wrapper for every mcp__ name", which removes MCP from the markerless-only backends. Own change.
+# The same rule covers every ``mcp__*`` name because that third-party vocabulary may expose
+# execution or mutation sinks that cannot be safely classified here.
 EXECUTION_CLASS_TOOL_NAMES = frozenset({"python", "terminal", "edit_file"})
+_MCP_TOOL_PREFIX = "mcp__"
 
 
 def _markerless_promotable(name, enabled_tool_names) -> bool:
-    """True when a bare, unwrapped call named ``name`` may be promoted. ``None`` is the
-    name-agnostic gate; execution-class names are refused under either."""
-    if name in EXECUTION_CLASS_TOOL_NAMES:
+    """True when a bare call named ``name`` may be promoted. ``None`` is name-agnostic;
+    execution-class and MCP names are refused under either gate."""
+    if not isinstance(name, str) or not name:
+        return False
+    if name in EXECUTION_CLASS_TOOL_NAMES or name.startswith(_MCP_TOOL_PREFIX):
         return False
     return enabled_tool_names is None or name in enabled_tool_names
 
 
 def _markerless_blocked_execution(name, enabled_tool_names) -> bool:
-    """True when ``name`` is a call the model DID write and we only decline to promote it bare.
+    """True when ``name`` is enabled but the guard declines its bare span.
 
-    Narrower than "not promotable", and the difference is what the surrounding scan does. A
-    name outside the tool list is not a call at all: it ends a bare-JSON chain, does not anchor
-    the call beside it, and never made its body opaque. An enabled execution name keeps all
-    three and loses only the promotion."""
-    return name in EXECUTION_CLASS_TOOL_NAMES and (
-        enabled_tool_names is None or name in enabled_tool_names
+    Unlike a disabled name, an enabled guarded call keeps its place in a chain and its body
+    remains opaque; only markerless promotion is lost."""
+    return (
+        isinstance(name, str)
+        and (name in EXECUTION_CLASS_TOOL_NAMES or name.startswith(_MCP_TOOL_PREFIX))
+        and (enabled_tool_names is None or name in enabled_tool_names)
     )
 
 

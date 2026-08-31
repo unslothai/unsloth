@@ -48,6 +48,7 @@ from core.inference.generation_timing import (
     build_generation_timings,
     with_prefill_boundary_processor,
 )
+from core.inference.native_tool_tokens import NativeToolTokenDecoder, reasoning_control_tokens
 from io import StringIO
 import structlog
 from loggers import get_logger
@@ -217,7 +218,12 @@ class ReasoningTextIteratorStreamer(TextIteratorStreamer):
         **decode_kwargs,
     ):
         decode_kwargs["skip_special_tokens"] = False
-        super().__init__(tokenizer, skip_prompt = skip_prompt, timeout = timeout, **decode_kwargs)
+        stream_tokenizer = NativeToolTokenDecoder(
+            tokenizer, preserved_tokens = reasoning_control_tokens(markers)
+        )
+        super().__init__(
+            stream_tokenizer, skip_prompt = skip_prompt, timeout = timeout, **decode_kwargs
+        )
         self._normalizer = make_reasoning_normalizer(markers, in_reasoning = in_reasoning)
         self._cancel_event = cancel_event
         self._aborted = False
@@ -1276,6 +1282,7 @@ class InferenceBackend:
             reasoning_channel_markers = reasoning_channel_markers,
             reasoning_channel_markers_resolved = reasoning_channel_markers_resolved,
             continued = bool(continue_final_message and trailing_assistant_text(template_messages)),
+            preserve_tool_tokens = bool(tools),
         )
 
     def _generate_vision_response(
@@ -1778,6 +1785,7 @@ class InferenceBackend:
         timeout: float = 0.2,
         cancel_event = None,
         use_harmony: bool = False,
+        preserve_tool_tokens: bool = False,
     ):
         """Create the streamer matching this model's native response protocol."""
         if use_harmony:
@@ -1811,10 +1819,11 @@ class InferenceBackend:
                 cancel_event = cancel_event,
                 in_reasoning = prompt_opens_reasoning_channel(prompt, markers, continued),
             )
+        stream_tokenizer = NativeToolTokenDecoder(tokenizer) if preserve_tool_tokens else tokenizer
         return TextIteratorStreamer(
-            tokenizer,
+            stream_tokenizer,
             skip_prompt = skip_prompt,
-            skip_special_tokens = True,
+            skip_special_tokens = not preserve_tool_tokens,
             timeout = timeout,
         )
 
@@ -1863,6 +1872,7 @@ class InferenceBackend:
         reasoning_channel_markers = None,
         reasoning_channel_markers_resolved: bool = False,
         continued: bool = False,
+        preserve_tool_tokens: bool = False,
     ) -> Generator[str, None, None]:
         """Generate a streaming text response (text models only).
 
@@ -1909,6 +1919,7 @@ class InferenceBackend:
                 timeout = 0.2,
                 cancel_event = cancel_event,
                 use_harmony = self._is_gpt_oss_model(),
+                preserve_tool_tokens = preserve_tool_tokens,
             )
 
             generation_kwargs = dict(

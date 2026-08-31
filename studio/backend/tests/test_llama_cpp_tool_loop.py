@@ -5427,14 +5427,14 @@ def test_gguf_plain_answer_ending_with_tool_name_word_is_preserved(monkeypatch):
 
 
 def test_gguf_long_tool_name_split_rehearsal_is_not_capped_and_executes(monkeypatch):
-    """Finding 11: a realistic MCP name longer than the 32-char buffer cap split as
-    NAME then [ARGS]{...} must still be held (a rehearsal prefix is self-bounding),
-    so the name does not leak and the call executes."""
+    """Finding 11: an explicitly marked MCP name longer than the 32-char buffer cap,
+    split before [ARGS]{...}, must still be held, so the name does not leak and the
+    call executes."""
     name = "mcp__github__create_pull_request"
     assert len(name) >= 32, len(name)
 
     first_stream = [
-        _sse({"content": name}),
+        _sse({"content": "[TOOL_CALLS]" + name}),
         _sse({"content": '[ARGS]{"x":1}'}),
         _done(),
     ]
@@ -7086,9 +7086,9 @@ def test_the_synthesized_final_pass_is_recosted_before_it_is_sent(monkeypatch):
 
     assert len(payloads) == 2, "expected one tool round and one synthesized final pass"
     final_messages = payloads[-1]["messages"]
-    assert any(
-        message.get("role") == "tool" for message in final_messages
-    ), "the final pass should carry the tool result this test is about"
+    assert any(message.get("role") == "tool" for message in final_messages), (
+        "the final pass should carry the tool result this test is about"
+    )
     assert seen, "the callback never ran"
     last_seen = seen[-1]
     assert any(message.get("role") == "tool" for message in last_seen), (

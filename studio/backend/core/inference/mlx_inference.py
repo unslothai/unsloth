@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from typing import Optional, Generator
 from core.inference.message_content import content_to_text
 from core.inference.runtime_context import runtime_context_length
+from core.inference.native_tool_tokens import NativeToolTokenDecoder, reasoning_control_tokens
 from core.inference.chat_template_helpers import (
     detect_reasoning_channel_markers,
     make_reasoning_normalizer,
@@ -1942,6 +1943,14 @@ class MLXInferenceBackend:
         )
 
         preserve_native_channels = reasoning_channel_markers is not None
+        native_token_decoder = (
+            NativeToolTokenDecoder(
+                self._tokenizer,
+                preserved_tokens = reasoning_control_tokens(reasoning_channel_markers),
+            )
+            if tools or preserve_native_channels
+            else None
+        )
         token_ids = []
         normalizer = (
             make_reasoning_normalizer(
@@ -2003,7 +2012,9 @@ class MLXInferenceBackend:
                     final_response = response
                     token_ids.append(response.token)
                     if preserve_native_channels:
-                        sampled += getattr(response, "text", None) or ""
+                        sampled += native_token_decoder.decode_stream_token(
+                            response.token, getattr(response, "text", None) or ""
+                        )
                         if sequences:
                             cut, stopped = _mlx_stop_cut(sampled, sequences)
                         else:
@@ -2019,9 +2030,13 @@ class MLXInferenceBackend:
                         # Re-decoding every id rebuilds rather than extends, so an
                         # invalid byte sequence can revise characters already shown.
                         # Predates stop handling and affects plain replies too.
-                        sampled = self._tokenizer.decode(
-                            token_ids,
-                            skip_special_tokens = True,
+                        sampled = (
+                            native_token_decoder.decode(token_ids)
+                            if native_token_decoder is not None
+                            else self._tokenizer.decode(
+                                token_ids,
+                                skip_special_tokens = True,
+                            )
                         )
                         if not sequences:
                             yield think_prefix + sampled
