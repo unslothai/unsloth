@@ -45,6 +45,16 @@ def test_direct_gguf_file_is_a_loadable_variant(in_tmp_cwd):
     assert response.variants[0].partial is False
 
 
+def test_direct_complete_split_reports_the_whole_family_size(in_tmp_cwd):
+    first = in_tmp_cwd / "foo-Q4_K_M-00001-of-00002.gguf"
+    first.write_bytes(b"GGUF")
+    (in_tmp_cwd / "foo-Q4_K_M-00002-of-00002.gguf").write_bytes(b"GGUF" * 2)
+
+    row = _variants(os.fspath(first)).variants[0]
+    assert row.size_bytes == 12
+    assert row.shard_count == 2
+
+
 def test_markerless_relative_gguf_file_resolves_locally(in_tmp_cwd):
     (in_tmp_cwd / "models").mkdir()
     (in_tmp_cwd / "models" / "foo.gguf").write_bytes(b"GGUF")
