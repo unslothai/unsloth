@@ -312,6 +312,8 @@ def test_an_unreadable_fragment_is_carried_as_the_text_the_card_shows():
     assert json.loads(payload["arguments_text"]) == {"raw": truncated}
     # The replay substitutes a summary instead, so the two texts are meant to differ here.
     assert payload["arguments_text"] != decision.as_assistant_tool_call()["function"]["arguments"]
+
+
 # --- schema-aware argument typing -------------------------------------------------------
 
 _MCP_SERVER = {"id": "notes", "display_name": "Notes"}
