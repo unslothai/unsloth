@@ -196,9 +196,7 @@ def test_every_planned_map_membership_test_is_guarded_against_a_dict():
         for node in ast.walk(tree):
             if not (
                 isinstance(node, ast.Compare)
-                and any(
-                    ast.unparse(c) == "_PLANNED_DEVICE_MAPS" for c in node.comparators
-                )
+                and any(ast.unparse(c) == "_PLANNED_DEVICE_MAPS" for c in node.comparators)
             ):
                 continue
             # One tree, walked twice: a second parse gives different node objects, so

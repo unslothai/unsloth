@@ -303,9 +303,9 @@ def test_studio_detect_hardware_matches_profile(profile, spoof_hardware):
         f"profile {profile.name}: expected {profile.expect_device_type}, "
         f"got {detected!r}. {profile.extra_notes}"
     )
-    assert hw.IS_ROCM is profile.expect_is_rocm, (
-        f"profile {profile.name}: expected IS_ROCM={profile.expect_is_rocm}, got {hw.IS_ROCM}"
-    )
+    assert (
+        hw.IS_ROCM is profile.expect_is_rocm
+    ), f"profile {profile.name}: expected IS_ROCM={profile.expect_is_rocm}, got {hw.IS_ROCM}"
 
 
 @pytest.mark.parametrize("profile", PROFILES, ids = PROFILE_IDS)
