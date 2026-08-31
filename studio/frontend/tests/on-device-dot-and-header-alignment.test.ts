@@ -342,6 +342,17 @@ test("a diffusion model too big for a shared pool is refused, not offloaded", ()
   );
 });
 
+test("the row tooltip reports the figure the verdict was reached with", () => {
+  // classifyGgufFit scores weights PLUS activations and KV, so a 20 GiB quant needing 24 GiB read
+  // "tight fit" beside a tooltip saying "~20GB VRAM". The media rule scores raw size, so it keeps
+  // the raw number.
+  assert.ok(PICKERS.includes("requiredGgufMemoryGb(sizeBytes)"));
+  assert.match(
+    PICKERS,
+    /diffusionLoad\n\s*\? sizeBytes \/ 1024 \*\* 3\n\s*: requiredGgufMemoryGb\(sizeBytes\)/,
+  );
+});
+
 test("aligned meta slots spend their slack on the name", () => {
   // Centring a lone glyph splits the slack either side of it, reading as a gap on both sides.
   assert.ok(

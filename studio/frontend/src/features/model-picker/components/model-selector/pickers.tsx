@@ -75,7 +75,7 @@ import {
 } from "@/hooks/use-model-memory";
 import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
-import type { GgufFitClass } from "@/lib/gguf-fit";
+import { type GgufFitClass, requiredGgufMemoryGb } from "@/lib/gguf-fit";
 import { extractParamLabel } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
 import { cn, formatCompact } from "@/lib/utils";
@@ -3502,7 +3502,17 @@ export function HubModelPicker({
           // The classifier's own verdict, so a GGUF row never borrows "exceeds", which is the
           // torch-only refusal used by the curated branch below.
           status: ggufRowFit(sizeBytes, inferenceGpu),
-          est: sizeBytes ? Math.round(sizeBytes / 1024 ** 3) : 0,
+          // The figure the verdict was reached with, not the raw file size. classifyGgufFit scores
+          // weights PLUS activations and KV, so a 20 GiB quant needing 24 GiB read "tight fit"
+          // beside a tooltip saying "~20GB VRAM". The media rule scores the raw size, so that one
+          // keeps it.
+          est: sizeBytes
+            ? Math.round(
+                diffusionLoad
+                  ? sizeBytes / 1024 ** 3
+                  : requiredGgufMemoryGb(sizeBytes),
+              )
+            : 0,
         });
         continue;
       }
