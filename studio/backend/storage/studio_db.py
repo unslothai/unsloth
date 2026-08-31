@@ -1236,12 +1236,16 @@ def _apply_wal_synchronous(conn: sqlite3.Connection) -> None:
         conn.execute("PRAGMA synchronous=NORMAL")
 
 
-def get_connection(busy_timeout_seconds: float = _BUSY_TIMEOUT_SECONDS) -> sqlite3.Connection:
+def get_connection(
+    busy_timeout_seconds: float = _BUSY_TIMEOUT_SECONDS, *, check_same_thread: bool = True
+) -> sqlite3.Connection:
     """Open studio.db with WAL mode, create tables once per process, enable foreign keys."""
     global _schema_ready
     db_path = studio_db_path()
     ensure_dir(db_path.parent)
-    conn = sqlite3.connect(str(db_path), timeout = busy_timeout_seconds)
+    conn = sqlite3.connect(
+        str(db_path), timeout = busy_timeout_seconds, check_same_thread = check_same_thread
+    )
     conn.row_factory = sqlite3.Row
     # foreign_keys is session-scoped; set per connection
     conn.execute("PRAGMA foreign_keys=ON")
@@ -1267,23 +1271,19 @@ _wal_keeper_lock = threading.Lock()
 
 
 def open_wal_keeper() -> bool:
-    """Hold this database's WAL open for the process. Returns whether a keeper is engaged.
-
-    False when the database is not in WAL mode, which is not a fault: journal_mode=WAL
-    silently declines on filesystems without shared-memory support (network shares, some
-    FUSE and container mounts) and is persistent in the file, so this reads what is in
-    force. There is no WAL to hold open there, and those installs go without the saving
-    rather than without Studio, as _apply_wal_synchronous already treats them.
-
-    Reading the mode is also what opens the WAL: a connection sqlite has not had to
-    engage is not a participant and would keep nothing.
-    """
+    """Hold this database's WAL open for the process. Returns whether a keeper is engaged."""
+    # Replace rather than inherit: a keeper from an earlier lifespan can belong to another
+    # database or a dead thread, and reusing it would keep nothing for the current one.
+    close_wal_keeper()
     global _wal_keeper
     with _wal_keeper_lock:
-        if _wal_keeper is not None:
-            return True
-        conn = get_connection()
+        # Only ever runs the pragma below, on this thread. check_same_thread is off so a
+        # keeper stranded by an earlier lifespan can still be closed from this one.
+        conn = get_connection(check_same_thread = False)
         try:
+            # What is in force, not what was asked for: journal_mode=WAL declines silently
+            # on filesystems without shared-memory support and persists in the file. Nothing
+            # to hold open there, so those installs go without, as _apply_wal_synchronous.
             mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
         except (sqlite3.Error, TypeError, IndexError) as exc:
             conn.close()

@@ -744,23 +744,26 @@ def test_server_errors_keep_their_traceback(status):
     assert level == "error" and kwargs.get("exc_info") is raised
 
 
-def test_wal_keeper_declines_when_the_filesystem_refused_wal(db, caplog):
-    """Network shares and some FUSE mounts leave the file on a rollback journal.
-
-    There is no WAL to hold open there, and the saving is not worth failing startup over:
-    the keeper reports that it did not engage and Studio boots as before.
-    """
-    conn = sqlite3.connect(str(db))
-    conn.execute("PRAGMA journal_mode=DELETE")
-    conn.close()
-    assert _journal_mode(db) == "delete"
-
-    with caplog.at_level(logging.INFO, logger = studio_db.logger.name):
-        assert studio_db.open_wal_keeper() is False
-    assert "not WAL" in caplog.text
+def _digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def test_wal_keeper_holds_the_wal_open_for_short_lived_writers(db):
+def _short_lived_write(path: Path, value: str) -> None:
+    """One writer with the lifetime every studio_db accessor gives its connection."""
+    conn = studio_db.get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "INSERT OR REPLACE INTO app_settings (key, value_json, updated_at) "
+            "VALUES ('wal-probe', ?, '0')",
+            (value,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_wal_keeper_keeps_short_lived_writers_out_of_the_main_database(db):
     """The #9934 write amplification: without a keeper every close rewrites studio.db."""
     wal = Path(f"{db}-wal")
 
@@ -780,23 +783,67 @@ def test_wal_keeper_holds_the_wal_open_for_short_lived_writers(db):
     assert _digest(db) != unkept
 
 
-def _digest(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+def test_a_second_open_replaces_the_keeper_instead_of_inheriting_it(db, tmp_path, monkeypatch):
+    """Inheriting a keeper left by an earlier lifespan holds a database this process has
+    stopped using, reporting success while keeping nothing for the current one."""
+    assert studio_db.open_wal_keeper() is True
+    stale = studio_db._wal_keeper
+
+    second = tmp_path / "second" / "studio.db"
+    second.parent.mkdir()
+    monkeypatch.setattr(studio_db, "studio_db_path", lambda: second)
+    monkeypatch.setattr(studio_db, "_schema_ready", False)
+
+    assert studio_db.open_wal_keeper() is True
+    assert studio_db._wal_keeper is not stale
+    _short_lived_write(second, "kept")
+    assert Path(f"{second}-wal").is_file()
+
+    studio_db.close_wal_keeper()
+    assert studio_db._wal_keeper is None
+    assert not Path(f"{second}-wal").exists()
+    studio_db.close_wal_keeper()
 
 
-def _short_lived_write(path: Path, value: str) -> None:
-    """One writer with the lifetime every studio_db accessor gives its connection."""
-    conn = studio_db.get_connection()
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        conn.execute(
-            "INSERT OR REPLACE INTO app_settings (key, value_json, updated_at) "
-            "VALUES ('wal-probe', ?, '0')",
-            (value,),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+def test_the_replaced_keeper_is_not_left_open(db):
+    """Replacing must release the old connection, not merely drop the reference."""
+    assert studio_db.open_wal_keeper() is True
+    stale = studio_db._wal_keeper
+    assert studio_db.open_wal_keeper() is True
+
+    with pytest.raises(sqlite3.ProgrammingError, match = "closed database"):
+        stale.execute("SELECT 1")
+    studio_db.close_wal_keeper()
+
+
+def test_a_keeper_left_by_a_dead_thread_is_replaced(db):
+    """sqlite refuses a cross-thread close, so replacing has to survive that failing."""
+    opened = threading.Thread(target = studio_db.open_wal_keeper)
+    opened.start()
+    opened.join()
+    stale = studio_db._wal_keeper
+    assert stale is not None
+
+    assert studio_db.open_wal_keeper() is True
+    assert studio_db._wal_keeper is not stale
+    _short_lived_write(db, "kept")
+    assert Path(f"{db}-wal").is_file()
+
+    studio_db.close_wal_keeper()
+    assert not Path(f"{db}-wal").exists()
+
+
+def test_wal_keeper_declines_when_the_filesystem_refused_wal(db, caplog):
+    """A rollback-journal install has nothing to hold open, and must still boot."""
+    conn = sqlite3.connect(str(db))
+    conn.execute("PRAGMA journal_mode=DELETE")
+    conn.close()
+    assert _journal_mode(db) == "delete"
+
+    with caplog.at_level(logging.INFO, logger = studio_db.logger.name):
+        assert studio_db.open_wal_keeper() is False
+    assert studio_db._wal_keeper is None
+    assert "not WAL" in caplog.text
 
 
 def test_the_lifespan_holds_the_keeper_across_every_writer():
