@@ -2,10 +2,17 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { register } from "node:module";
 import test from "node:test";
 
+// The migration now reads the shared sampling table by extensionless specifier,
+// like the rest of src/, so this test needs the bundler resolver too.
+register("./bundler-resolver.mjs", import.meta.url);
+
 import type { PersistedChatSettings } from "../src/features/chat/api/chat-settings-api.ts";
-import { migrateLegacyQwenDefaults } from "../src/features/chat/utils/qwen-defaults-migration.ts";
+const { migrateLegacyQwenDefaults, isPresenceBumpQwen } = await import(
+  "../src/features/chat/utils/qwen-defaults-migration.ts"
+);
 
 const QWEN38 = "unsloth/Qwen3.8-27B-GGUF";
 const LEGACY_SNAPSHOT = {

@@ -12,6 +12,8 @@ export const settingsHttp = {
   >,
   gets: 0,
   beforeConditionalApply: null as (() => void) | null,
+  /** Status for the conditional route, so a backend without it can be modelled. */
+  conditionalStatus: 200,
   puts: [] as Record<string, unknown>[],
   /** One-shot failures for ordinary PUT ordering/retry tests. */
   putFailures: [] as Array<{ status: number; detail?: unknown }>,
@@ -95,6 +97,18 @@ export async function authFetch(
   let responseSettings = settingsHttp.settings;
   let applied: boolean | undefined;
   if (url.endsWith("/compare-and-set") && init?.method === "POST") {
+    if (settingsHttp.conditionalStatus !== 200) {
+      return {
+        ok: false,
+        status: settingsHttp.conditionalStatus,
+        json: async () => ({
+          detail:
+            settingsHttp.conditionalStatus === 405
+              ? "Method Not Allowed"
+              : "Not Found",
+        }),
+      } as Response;
+    }
     const request = JSON.parse(init.body ?? "{}") as {
       expected: Record<string, unknown>;
       expectedAbsent?: string[];

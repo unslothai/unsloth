@@ -94,7 +94,7 @@ import {
 } from "../presets/preset-policy";
 import { recordLastLocalModelLoad } from "../utils/last-local-model-load";
 import { loadFallbackNotice } from "../utils/mmproj-fallback";
-import { resolveQwenThinkingParams } from "../utils/qwen-params";
+import { resolveQwenThinkingParams } from "../utils/qwen-sampling-table";
 import { refreshContextUsage } from "../utils/refresh-context-usage";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import {

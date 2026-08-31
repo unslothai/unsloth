@@ -27,7 +27,7 @@ import {
   isMultimodalResponse,
 } from "../types/api";
 import type { ChatModelRow } from "../types/runtime";
-import { resolveQwenThinkingParams } from "../utils/qwen-params";
+import { resolveQwenThinkingParams } from "../utils/qwen-sampling-table";
 import { sameGpuSelection } from "@/hooks/gpu-selection";
 import { resolveBatchSizeSeed } from "./resolve-batch-size-seed";
 import { resolveChatTemplateSeed } from "./resolve-chat-template-seed";

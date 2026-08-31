@@ -3,6 +3,7 @@
 
 import type { PersistedChatSettings } from "../api/chat-settings-api";
 import type { PersistedInferenceParams } from "../types/runtime";
+import { resolveQwenThinkingParams } from "./qwen-sampling-table";
 
 const LEGACY_QWEN_DEFAULTS = {
   temperature: 0.6,
@@ -25,24 +26,39 @@ const LEGACY_OPTIONAL_GLOBAL_QWEN_DEFAULTS = {
   repetitionPenalty: 1.0,
 } as const;
 
-const CURRENT_QWEN_THINKING_DEFAULTS = {
-  temperature: 0.6,
-  topP: 0.95,
-  topK: 20,
-  minP: 0.0,
-  presencePenalty: 1.5,
-} as const satisfies PersistedInferenceParams;
-
-const CURRENT_QWEN_NON_THINKING_DEFAULTS = {
-  temperature: 0.7,
-  topP: 0.8,
-  topK: 20,
-  minP: 0.0,
-  presencePenalty: 1.5,
-} as const satisfies PersistedInferenceParams;
+/**
+ * The replacement table, read from the same resolver that model load and the
+ * Think toggle use, so a corrected recommendation reaches persisted rows too
+ * instead of this file drifting into a second, silently stale source of truth.
+ *
+ * Returns null for any model the resolver does not give a presencePenalty,
+ * which is exactly the Qwen3.5/3.6/3.8 set: a generic Qwen3 row was never
+ * written with the presence bump, so it is not ours to rewrite.
+ */
+function currentQwenDefaults(
+  modelId: string,
+  thinkingOn: boolean,
+): PersistedInferenceParams | null {
+  const resolved = resolveQwenThinkingParams(modelId, thinkingOn);
+  if (resolved === null || resolved.presencePenalty === undefined) {
+    return null;
+  }
+  return {
+    temperature: resolved.temperature,
+    topP: resolved.topP,
+    topK: resolved.topK,
+    minP: resolved.minP,
+    presencePenalty: resolved.presencePenalty,
+  };
+}
 
 export function isPresenceBumpQwen(modelId: string): boolean {
-  return /(?:^|[^a-z0-9])qwen3\.(?:5|6|8)(?:$|[-_/\\])/i.test(modelId);
+  // Deliberately the resolver's own answer rather than a second predicate: a
+  // model that gets the presence bump on load is exactly the model whose stale
+  // row this migration exists to repair.
+  return (
+    resolveQwenThinkingParams(modelId, true)?.presencePenalty !== undefined
+  );
 }
 
 function isLegacyQwenDefaultSnapshot(
@@ -160,14 +176,23 @@ export function migrateLegacyQwenDefaults(
   globalBelongsToActiveCheckpoint = false,
   migrateOwnedGlobalAlongsideModelMemory = false,
 ): QwenDefaultsMigration {
-  const stored = settings.inferenceParamsByModel;
+  // An empty map is no per-model memory, not per-model memory that is empty.
+  // Both callers already normalize it away, but this is exported: leaving the
+  // distinction to them means a global-only install silently fails to migrate
+  // depending on which path reached here.
+  const storedRaw = settings.inferenceParamsByModel;
+  const stored =
+    storedRaw !== undefined && Object.keys(storedRaw).length > 0
+      ? storedRaw
+      : undefined;
   if (!isBuiltInDefault(settings)) {
     return { settings, patch: null, migratedModelIds: [] };
   }
 
-  const currentDefaults = thinkingOn
-    ? CURRENT_QWEN_THINKING_DEFAULTS
-    : CURRENT_QWEN_NON_THINKING_DEFAULTS;
+  const currentDefaults = currentQwenDefaults(activeCheckpoint, thinkingOn);
+  if (currentDefaults === null) {
+    return { settings, patch: null, migratedModelIds: [] };
+  }
   const currentGlobalDefaults: PersistedInferenceParams = {
     temperature: currentDefaults.temperature,
     topP: currentDefaults.topP,
@@ -183,9 +208,15 @@ export function migrateLegacyQwenDefaults(
     globalBelongsToActiveCheckpoint &&
     isPresenceBumpQwen(activeCheckpoint) &&
     isLegacyGlobalQwenDefaultSnapshot(settings.inferenceParams);
-  const globalPatch = migrateGlobal
+  const globalChanges = migrateGlobal
     ? changedDefaults(settings.inferenceParams ?? {}, currentGlobalDefaults)
     : null;
+  // An already-current global produces {}, which is truthy and would be sent as
+  // an empty conditional patch. Nothing to migrate is not a migration.
+  const globalPatch =
+    globalChanges && Object.keys(globalChanges).length > 0
+      ? globalChanges
+      : null;
 
   if (migratedModelIds.length === 0 && !globalPatch) {
     return { settings, patch: null, migratedModelIds };

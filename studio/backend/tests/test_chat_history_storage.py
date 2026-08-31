@@ -552,6 +552,60 @@ def test_settings_compare_and_set_fences_an_expected_absent_nested_path(tmp_path
     assert settings["inferenceParams"]["presencePenalty"] == 0.0
 
 
+def test_settings_compare_and_set_leaves_timestamps_alone_for_an_empty_patch(
+    tmp_path, monkeypatch
+):
+    """An empty patch is not a settings change. Without the same short-circuit the
+    unconditional merge has, it would rewrite updated_at on every key, which reads
+    as a fresh edit to anything watching those timestamps."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_settings_merge(
+        {"inferenceParams": {"temperature": 0.6}, "autoTitle": True}
+    )
+    conn = studio_db.get_connection()
+    before = {
+        row["key"]: row["updated_at"]
+        for row in conn.execute("SELECT key, updated_at FROM chat_settings")
+    }
+    conn.close()
+
+    settings, applied = studio_db.upsert_chat_settings_merge_if_current({}, {})
+
+    conn = studio_db.get_connection()
+    after = {
+        row["key"]: row["updated_at"]
+        for row in conn.execute("SELECT key, updated_at FROM chat_settings")
+    }
+    conn.close()
+    assert applied is True
+    assert after == before
+    assert settings["inferenceParams"] == {"temperature": 0.6}
+
+
+def test_settings_compare_and_set_fences_a_model_row_added_after_the_read(
+    tmp_path, monkeypatch
+):
+    """Normalizing a differently cased model key writes a whole new exact-key row.
+    The subset compare only checks the spelling that was read, so the exact key
+    needs its own absence fence or a newer tab's row is overwritten wholesale."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    lower = "unsloth/qwen3.8-27b-gguf"
+    exact = "unsloth/Qwen3.8-27B-GGUF"
+    legacy = {"temperature": 0.6, "minP": 0.01, "presencePenalty": 0.0}
+    studio_db.upsert_chat_settings_merge({"inferenceParamsByModel": {lower: legacy}})
+    newer = {"temperature": 0.31, "presencePenalty": 0.4}
+    studio_db.upsert_chat_settings_merge({"inferenceParamsByModel": {exact: newer}})
+
+    settings, applied = studio_db.upsert_chat_settings_merge_if_current(
+        {"inferenceParamsByModel": {lower: legacy}},
+        {"inferenceParamsByModel": {exact: {**legacy, "minP": 0.0, "presencePenalty": 1.5}}},
+        expected_absent_paths = [["inferenceParamsByModel", exact]],
+    )
+
+    assert applied is False
+    assert settings["inferenceParamsByModel"][exact] == newer
+
+
 def test_settings_merge_keeps_each_model_s_remembered_params(tmp_path, monkeypatch):
     """Per-model memory patches one model at a time, so the merge has to keep the
     others. Without this, tuning a second model would wipe the first one's settings

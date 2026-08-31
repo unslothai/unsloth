@@ -4680,7 +4680,12 @@ def upsert_chat_settings_merge_if_current(
     do not prevent a guarded migration. Any field the client did read is fenced
     against a newer tab write in the same BEGIN IMMEDIATE transaction.
     """
-    conn = get_connection()
+    # Contended timeout, not the default: this fires during hydration, when the
+    # ordinary settings writer is also going, and it takes a write lock before
+    # it knows whether it will write anything. On a share where WAL declined
+    # there is one writer for both, and the 5s default surfaces as a bare
+    # "database is locked" the route has no mapping for.
+    conn = get_connection(_CONTENDED_BUSY_TIMEOUT_SECONDS)
     try:
         conn.execute("BEGIN IMMEDIATE")
         current, corrupt = _load_chat_settings_for_merge(conn)
@@ -4703,6 +4708,12 @@ def upsert_chat_settings_merge_if_current(
             raise CorruptSettingsError(
                 f"Cannot apply partial settings patch to corrupt key(s): {keys}"
             )
+        if not updates:
+            # Same short-circuit as the unconditional merge. Without it an empty
+            # patch rewrites updated_at on every key for a no-op, which reads as
+            # a settings change to anything watching those timestamps.
+            conn.commit()
+            return current, True
         merged = _deep_merge_settings(current, updates)
         now = datetime.now(timezone.utc).isoformat()
         conn.executemany(
