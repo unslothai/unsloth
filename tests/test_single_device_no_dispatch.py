@@ -73,7 +73,14 @@ def _load(device_count, dispatch_recorder, inferred_map = None):
         "logger": _Logger(), "DEVICE_COUNT": device_count,
     }
     mod = ast.parse(_SRC)
-    wanted = {"_attach_bnb_multidevice_hooks", "_infer_device_map_from_loaded_model"}
+    # `_repair_dispatch_hooks` (#9995) is called at the top of the function under
+    # test, so exec the real one rather than stubbing it: these tests should fail
+    # if the two ever stop composing.
+    wanted = {
+        "_attach_bnb_multidevice_hooks",
+        "_infer_device_map_from_loaded_model",
+        "_repair_dispatch_hooks",
+    }
     for node in mod.body:
         if isinstance(node, ast.FunctionDef) and node.name in wanted:
             exec(ast.get_source_segment(_SRC, node), ns)
