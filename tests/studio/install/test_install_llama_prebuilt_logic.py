@@ -3083,13 +3083,10 @@ def test_every_reuse_path_syncs_the_arch_coverage():
 
 @pytest.mark.parametrize("visual_server", [True, False], ids = ["present", "missing"])
 def test_a_published_bundle_owes_its_visual_server(tmp_path, monkeypatch, visual_server):
-    """The marker's source label decides, exactly as it does on the canonical reuse path.
-
-    runtime_payload_health_groups only adds llama-diffusion-gemma-visual-server for a
-    published bundle, so omitting the label let an incomplete published Vulkan tree read
-    as validated. setup.sh's source build has its own target for the binary, so exit 2 is
-    a recovery here rather than a detour.
-    """
+    """The marker's source label decides, exactly as on the canonical reuse path.
+    runtime_payload_health_groups only adds llama-diffusion-gemma-visual-server for a published
+    bundle, so omitting the label let an incomplete published Vulkan tree read as validated.
+    setup.sh's source build has its own target for the binary, so exit 2 is a recovery here."""
     _listing_failure(monkeypatch, linux_host)
     install_dir = _complete_existing_llama_install(
         tmp_path, backend = "vulkan", source = "published", visual_server = visual_server
@@ -3116,12 +3113,10 @@ def test_an_upstream_bundle_does_not_owe_a_visual_server(tmp_path, monkeypatch):
 
 
 def test_a_reused_install_backfills_the_paired_runtime_asset(tmp_path: Path):
-    """An install predating runtime_asset only gains it on the reuse path.
-
-    The pairing is in install_fingerprint, but that is a hash: the kept-install payload
-    check reads the field, so without this backfill a paired Windows CUDA tree stays
-    "pair-less" forever and its cudart trio is never required.
-    """
+    """An install predating runtime_asset only gains it on the reuse path. The pairing is in
+    install_fingerprint, but that is a hash: the kept-install payload check reads the field, so
+    without this backfill a paired Windows CUDA tree stays "pair-less" forever and its cudart
+    trio is never required."""
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir()
     marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"

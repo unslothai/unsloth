@@ -6920,6 +6920,7 @@ def _kept_install_payload_is_healthy(install_dir: Path, host: HostInfo) -> bool:
         kind for kind in install_kinds_for_backend(backend) if kind.startswith(platform_prefix)
     )
     if not kinds:
+        # An unknown backend still owes the payload every kind on this platform shares.
         kinds = sorted(kind for kind in INSTALL_KIND_BACKENDS if kind.startswith(platform_prefix))
     if not kinds:
         return True
@@ -6957,17 +6958,14 @@ def _binary_image_runs(
     host: HostInfo,
     runtime_line: str | None = None,
 ) -> bool:
-    """Whether the OS will actually start ``path``.
-
-    ``os.access`` asks "may I execute this", not "is this an executable": a truncated file
-    keeps its mode bits and ``ldd`` on a non-ELF only says it is not a dynamic executable.
-    execve sees it -- measured on Linux, zero-byte and non-ELF both raise ENOEXEC.
-
-    The exit code is NOT the verdict: llama-quantize answers ``--version`` by printing its
-    table and exiting non-zero, the same reason ``macos_dyld_load_issues`` reads output. So
-    a timeout, a failed spawn or an ordinary non-zero exit all read as healthy, because a
-    false positive here spends a source build on a working install.
-    """
+    """Whether the OS will actually start ``path``. ``os.access`` asks "may I execute this", not
+    "is this an executable": a truncated file keeps its mode bits and ``ldd`` on a non-ELF only
+    says it is not a dynamic executable, while execve raises ENOEXEC (measured on Linux, for
+    zero-byte and non-ELF alike). The exit code is NOT the verdict: llama-quantize answers
+    ``--version`` by printing its table and exiting non-zero, the same reason
+    ``macos_dyld_load_issues`` reads output. So a timeout, a failed spawn or an ordinary
+    non-zero exit all read as healthy, since a false positive spends a source build on a
+    working install."""
     try:
         result = run_capture(
             [str(path), "--version"],
@@ -7999,8 +7997,9 @@ def install_prebuilt(
         normalized_requested_llama_tag(llama_tag) != "latest"
         or bool((published_release_tag or "").strip())
         or (bool((published_repo or "").strip()) and published_repo != DEFAULT_PUBLISHED_REPO)
-        # --has-rocm and --rocm-gfx deliberately do not count: both setup entrypoints
-        # forward their DETECTED GPU on every AMD host, so counting them loses them all.
+        # --cpu-fallback is setup.sh's deliberate arm64 recovery, so it counts. --has-rocm
+        # and --rocm-gfx do not: both entrypoints forward a DETECTED GPU on every AMD host,
+        # so counting them would take the keep path away from all of them.
         or force_cpu
     )
     # The failure handler can run before selection assigns these.
