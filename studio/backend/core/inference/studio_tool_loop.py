@@ -773,10 +773,7 @@ class _Turn:
             # which matches no tool and silently never runs.
             announces_over_announcement = (
                 held is not None
-                and (
-                    held.get("announced_only") is True
-                    or held.get("resend_suspect") is True
-                )
+                and (held.get("announced_only") is True or held.get("resend_suspect") is True)
                 and not held["function"]["arguments"]
                 and isinstance(new_name, str)
                 and bool(new_name)
@@ -883,11 +880,7 @@ class _Turn:
                 # one tool's schema under another tool's name. Naming a call
                 # that has none is not a rename, and some servers do send the
                 # arguments first and the name only in a later chunk.
-                if (
-                    isinstance(fragment, str)
-                    and fragment
-                    and not (slot_is_closed and name_before)
-                ):
+                if isinstance(fragment, str) and fragment and not (slot_is_closed and name_before):
                     if fragment.startswith(name_before):
                         current["function"]["name"] = fragment
                     else:

@@ -92,10 +92,7 @@ def _reported(turn: _Turn):
     Not every slot becomes one: a name that arrived with no arguments of its
     own opened a slot mid-stream, and it is dropped here rather than run.
     """
-    return [
-        (call["function"]["name"], call["function"]["arguments"])
-        for call in turn.calls()
-    ]
+    return [(call["function"]["name"], call["function"]["arguments"]) for call in turn.calls()]
 
 
 def _shape(turn: _Turn):
@@ -439,8 +436,7 @@ def test_a_name_resent_or_grown_after_a_call_closed_invents_nothing():
         turn.merge_structured([_delta(0, resent, "")])
 
         reported = [
-            (call["function"]["name"], call["function"]["arguments"])
-            for call in turn.calls()
+            (call["function"]["name"], call["function"]["arguments"]) for call in turn.calls()
         ]
         assert reported == [("alpha", '{"a":1}')]
 
