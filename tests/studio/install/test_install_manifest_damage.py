@@ -340,3 +340,140 @@ def test_the_desktop_boot_path_does_not_ask_for_the_scan():
     assert "def _install_state(deep: bool = False)" in cli
     # verify-install is the one command that opts in.
     assert "_install_state(deep = True)" in cli
+
+
+# ------------------------------------------------- damage the first pass missed
+
+
+def test_a_package_directory_replaced_by_a_file_is_damage(site_packages):
+    """NotADirectoryError is an OSError but not a FileNotFoundError.
+
+    Left to the generic OSError arm it read as merely unreadable, so a payload
+    replaced wholesale by a quarantine stub reported an undamaged install.
+    """
+    dist_info, rows = _healthy(site_packages)
+    _record(dist_info, rows)
+    import shutil
+
+    shutil.rmtree(site_packages / PKG)
+    (site_packages / PKG).write_text("quarantined", encoding = "utf-8")
+    assert install_manifest.damaged_payload_files(PKG) == [
+        f"{PKG}/__init__.py is not reachable"
+    ]
+
+
+def test_the_companion_distribution_is_scanned_too(site_packages):
+    """unsloth-zoo is not in studio.txt, so nothing else would notice it gone."""
+    dist_info, rows = _healthy(site_packages)
+    _record(dist_info, rows)
+    zoo_info = _dist(site_packages, name = "unsloth-zoo", version = "2.0")
+    size = _write(site_packages / "unsloth_zoo" / "__init__.py", "y = 2\n")
+    _record(zoo_info, [["unsloth_zoo/__init__.py", "sha256=y", size]])
+
+    assert install_manifest.damaged_payload_files(PKG, companion_names = ("unsloth-zoo",)) == []
+    (site_packages / "unsloth_zoo" / "__init__.py").unlink()
+    assert install_manifest.damaged_payload_files(PKG) == []
+    assert install_manifest.damaged_payload_files(PKG, companion_names = ("unsloth-zoo",)) == [
+        "unsloth_zoo/__init__.py is missing"
+    ]
+
+
+def test_scan_paths_points_the_scan_at_another_venv(tmp_path, site_packages):
+    """Without it a caller holding a foreign venv could only check metadata."""
+    other = tmp_path / "other-site-packages"
+    other.mkdir()
+    dist_info = _dist(other)
+    size = _write(other / PKG / "__init__.py", "x = 1\n")
+    _record(dist_info, [[f"{PKG}/__init__.py", "sha256=x", size]])
+
+    assert install_manifest.damaged_payload_files(PKG, scan_paths = [str(other)]) == []
+    (other / PKG / "__init__.py").unlink()
+    # This interpreter's own tree is healthy and must not be the one answered for.
+    healthy_info, rows = _healthy(site_packages)
+    _record(healthy_info, rows)
+    assert install_manifest.damaged_payload_files(PKG) == []
+    assert install_manifest.damaged_payload_files(PKG, scan_paths = [str(other)]) == [
+        f"{PKG}/__init__.py is missing"
+    ]
+
+
+def test_a_foreign_venv_is_scanned_when_its_paths_are_given(
+    tmp_path, monkeypatch, site_packages
+):
+    dist_info, rows = _healthy(site_packages)
+    _record(dist_info, rows)
+    req_root = _complete_install(tmp_path, monkeypatch, site_packages)
+    (site_packages / PKG / "__init__.py").unlink()
+
+    state = install_manifest.verify_install(
+        root = tmp_path,
+        req_root = req_root,
+        package_name = PKG,
+        installed = {PKG: VER},
+        deep = True,
+        scan_paths = [str(site_packages)],
+    )
+    assert state["reason"] == "studio_install_damaged"
+
+
+def test_an_uninstalled_managed_distribution_is_damage(tmp_path, monkeypatch, site_packages):
+    """No dist-info at all: every version check compares against it and passes."""
+    dist_info, rows = _healthy(site_packages)
+    _record(dist_info, rows)
+    req_root = _complete_install(tmp_path, monkeypatch, site_packages)
+
+    import shutil
+
+    shutil.rmtree(dist_info)
+    shutil.rmtree(site_packages / PKG)
+    shallow = install_manifest.verify_install(root = tmp_path, req_root = req_root)
+    assert shallow["ok"] is True, "the metadata-only checks cannot see this"
+
+    state = install_manifest.verify_install(root = tmp_path, req_root = req_root, deep = True)
+    assert state["ok"] is False
+    assert state["reason"] == "studio_install_damaged"
+
+
+def test_the_budget_is_checked_before_every_stat(site_packages, monkeypatch):
+    """Batching the clock read let one slow stat per row overrun the budget.
+
+    A clock read is ~68ns against ~1343ns for a warm stat, so guarding every row
+    is cheaper than the call it guards.
+    """
+    dist_info = _dist(site_packages)
+    rows = []
+    for index in range(500):
+        rel = f"{PKG}/mod{index}.py"
+        _write(site_packages / PKG / f"mod{index}.py", "x = 1\n")
+        rows.append([rel, "sha256=x", 6])
+    _record(dist_info, rows)
+
+    clock = {"now": 0.0}
+    monkeypatch.setattr(install_manifest.time, "monotonic", lambda: clock["now"])
+    real_stat = Path.stat
+
+    def slow_stat(self, *args, **kwargs):
+        clock["now"] += 1.0  # a second per stat, as a stalled mount would
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", slow_stat)
+    install_manifest.damaged_payload_files(PKG, budget_seconds = 5.0)
+    # 5 stats, not 64: the old code only looked at the clock every 64th row.
+    # The lower bound keeps the patched stat honest -- if it were not the one
+    # being called the clock would never move and the upper bound alone would
+    # pass on a scan that ignored the budget entirely.
+    assert 5.0 <= clock["now"] <= 6.0
+
+
+def test_the_cli_hands_over_the_managed_venvs_own_paths():
+    """A deep check of another venv has to be pointed at that venv.
+
+    RECORD rows resolve against the distribution that declared them, so without
+    this the scan would answer for the external CLI's own tree instead, and
+    `deep` on the foreign branch would be a silent no-op.
+    """
+    repo = Path(__file__).resolve().parents[3]
+    deps = (repo / "unsloth_cli" / "_studio_deps.py").read_text(encoding = "utf-8")
+    assert 'kwargs["scan_paths"] = paths' in deps
+    # Guarded on its own: a module new enough for `deep` may still predate it.
+    assert '_verify_install_supports(module, "scan_paths")' in deps

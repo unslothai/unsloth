@@ -343,6 +343,16 @@ def install_state(extra_roots: Sequence[Path] = (), deep: bool = False) -> dict:
                 kwargs["installed_conflicts"] = installed_conflicts
             if deep and _verify_install_supports(module, "deep"):
                 kwargs["deep"] = True
+                # The scan resolves RECORD rows against the distribution that
+                # declared them, so without that venv's own site-packages it
+                # would answer for this interpreter's tree, or for nothing at
+                # all. Guarded separately: an install_manifest new enough for
+                # `deep` may still predate `scan_paths`, and there the scan is
+                # simply skipped rather than pointed at the wrong venv.
+                if _verify_install_supports(module, "scan_paths"):
+                    paths = [str(path) for path in _venv_site_packages(root)]
+                    if paths:
+                        kwargs["scan_paths"] = paths
             return module.verify_install(**kwargs)
         # deep stays off for the default caller, `desktop-capabilities`, which
         # the Tauri preflight spawns on the boot path under a 10 second timeout:

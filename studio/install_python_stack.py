@@ -4363,6 +4363,60 @@ def _stage_replacement(name: str):
     return None
 
 
+def _repair_damaged_core_payload(
+    package_names: "tuple[str, ...]",
+    *,
+    local_repo: str = "",
+) -> None:
+    """Reinstall managed core packages whose recorded files are gone or truncated.
+
+    The core phase below asks for an upgrade, and an upgrade of a distribution
+    already at the wanted version installs nothing: uv answers "Audited 1
+    package" and pip calls the requirement satisfied. Both are reading metadata,
+    which an antivirus quarantine of the payload leaves perfectly intact, so the
+    one pass that could put the files back is the one that decides it has
+    nothing to do. Detecting the damage without repairing it would only move the
+    failure later, so the detection and the force flag belong together.
+
+    Advisory. A repair that cannot run (offline, a private index) leaves the tree
+    exactly as it was and the pass below still runs; the manifest verification at
+    the end is what reports the environment unusable.
+
+    Skipped for a local checkout: its core packages are an editable overlay this
+    would replace with the released wheel, and the overlay is reapplied from the
+    checkout rather than from an index.
+    """
+    if local_repo:
+        return
+    damaged: list[str] = []
+    seen: set[str] = set()
+    for name in package_names:
+        canonical = re.sub(r"[-_.]+", "-", name).lower()
+        if canonical in seen:
+            continue
+        seen.add(canonical)
+        try:
+            if install_manifest.damaged_payload_files(name, limit = 1, budget_seconds = 0.0):
+                damaged.append(name)
+        except Exception:
+            continue
+    for name in damaged:
+        _step(_LABEL, f"{name} is missing installed files; reinstalling it", _dim)
+        # --no-deps: the payload is what is missing, not the dependency graph, and
+        # resolving one here would drag the pre-installed torch build with it.
+        # Both flags are named because the pip fallback has no --reinstall-package
+        # and uv's --reinstall is repository-wide.
+        pip_install_try(
+            f"Reinstalling {name}",
+            "--no-cache-dir",
+            "--no-deps",
+            "--reinstall-package",
+            name,
+            "--force-reinstall",
+            name,
+        )
+
+
 def _repair_duplicate_core_metadata(
     package_names: "tuple[str, ...]",
     *,
@@ -4589,6 +4643,11 @@ def _translate_pip_args_for_uv(args: tuple[str, ...]) -> list[str]:
     for arg in args:
         if arg == "--no-cache-dir":
             continue  # uv cache is fast; drop this flag
+        elif arg == "--force-reinstall" and "--reinstall-package" in args:
+            # Already targeted by name; uv's --reinstall is the whole
+            # environment, which would rebuild torch. The flag is only there for
+            # the pip fallback, which has no per-package form.
+            continue
         elif arg == "--force-reinstall":
             translated.append("--reinstall")
         else:
@@ -4611,14 +4670,24 @@ def _build_pip_cmd(args: tuple[str, ...]) -> list[str]:
     """
     cmd = [sys.executable, "-m", "pip", "install"]
     upgrade: list[str] = []
-    skip_next = False
+    drop_next = ""
     for arg in args:
-        if skip_next:
-            skip_next = False
-            upgrade.append(arg)
+        if drop_next:
+            # The previous flag's value: a package name, kept only for the
+            # upgrade list, never as a bare positional of its own.
+            if drop_next == "--upgrade-package":
+                upgrade.append(arg)
+            drop_next = ""
             continue
         if arg == "--upgrade-package":
-            skip_next = True  # the flag; its value is the package to upgrade
+            drop_next = arg  # the flag; its value is the package to upgrade
+            continue
+        if arg == "--reinstall-package":
+            # uv-only, and deliberately not folded into `upgrade`: the caller
+            # pairs it with --force-reinstall, which pip applies to everything it
+            # installs -- safe only because that call also passes --no-deps and
+            # names the package itself.
+            drop_next = arg
             continue
         cmd.append(arg)
     if upgrade:
@@ -5349,6 +5418,12 @@ def install_python_stack() -> int:
         ci_source_overlay = ci_source_overlay,
     ):
         return 1
+
+    # Intact metadata over a missing payload: the core phase below would audit it
+    # as satisfied and install nothing. Unbudgeted, unlike the callers on the
+    # setup fast path -- this one has already committed to a full install pass,
+    # so a slow mount costs time it is spending anyway rather than a timeout.
+    _repair_damaged_core_payload((package_name, "unsloth-zoo"), local_repo = local_repo)
 
     # macOS arm64: install MLX stack at latest (UV_OVERRIDE relaxes the
     # mlx-vlm / mlx-lm transformers pin -- set at module load).

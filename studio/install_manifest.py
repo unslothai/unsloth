@@ -516,6 +516,8 @@ def damaged_payload_files(
     package_name: str = "unsloth",
     limit: int = 3,
     budget_seconds: float = PAYLOAD_SCAN_BUDGET_SECONDS,
+    companion_names: Sequence[str] = (),
+    scan_paths: Optional[Sequence[str]] = None,
 ) -> List[str]:
     """Recorded files of the managed distribution that are gone or truncated.
 
@@ -524,9 +526,17 @@ def damaged_payload_files(
     the dependency fast path, and the repair pass that would restore it never
     runs. This walks the distribution's own RECORD instead.
 
-    Deliberately narrow. It answers for the managed package alone, not for every
-    installed distribution the way `damaged_installed_files` does, because this
-    runs on the fast path and its only job is deciding whether to repair ours.
+    Narrow by design: it answers for the managed package and the companions the
+    caller names, not for every installed distribution the way
+    `damaged_installed_files` does, because this runs on the fast path and its
+    only job is deciding whether to repair ours. unsloth-zoo is a companion for
+    the default install -- studio.txt does not list it, so nothing else here
+    would notice it quarantined, and the training, export and inference paths
+    all import it.
+
+    `scan_paths` names the site-packages roots to search, for a caller
+    describing a venv other than the one it is running in. Without it the
+    scanner answers for this interpreter.
 
     Bounded. Every setup run pays for this, and the call sites in setup.sh and
     setup.ps1 have no timeout around them, so an unbounded walk would hand a
@@ -547,14 +557,17 @@ def damaged_payload_files(
     found: List[str] = []
     deadline = time.monotonic() + budget_seconds if budget_seconds > 0 else None
     try:
-        wanted = _canonical(package_name)
-        paths = _metadata_scan_paths()
+        wanted = {_canonical(name) for name in (package_name, *companion_names) if name}
+        paths = list(scan_paths) if scan_paths is not None else _metadata_scan_paths()
         if not paths:
             return found
+        seen: set = set()
         for dist in distributions(path = paths):
             try:
-                if _canonical(dist.metadata["Name"] or "") != wanted:
+                name = _canonical(dist.metadata["Name"] or "")
+                if name not in wanted or name in seen:
                     continue
+                seen.add(name)
                 record = dist.read_text("RECORD")
             except Exception:
                 continue
@@ -564,13 +577,12 @@ def damaged_payload_files(
                 continue
             # csv, not splitlines: a quoted field may hold a newline, and
             # splitlines also breaks on \v, \f and the Unicode separators.
-            checked = 0
             for row in csv.reader(io.StringIO(record, newline = "")):
-                # Checked every 64 stats rather than every row: a clock read per
-                # row would cost more than the stat it is guarding, and 64 rows
-                # cannot overshoot the budget by more than one slow stat each.
-                checked += 1
-                if deadline is not None and not checked % 64 and time.monotonic() > deadline:
+                # Every row, not every 64th: a clock read is ~68ns against ~1343ns
+                # for a warm stat, so the guard is free, and batching it meant a
+                # mount taking a second per stat could overrun a 5s budget by a
+                # minute -- exactly the case the budget exists for.
+                if deadline is not None and time.monotonic() > deadline:
                     return found
                 rel = row[0] if row else ""
                 if not rel or rel.endswith("/"):
@@ -590,6 +602,11 @@ def damaged_payload_files(
                     info = target.stat()
                 except FileNotFoundError:
                     found.append(f"{rel} is missing")
+                except NotADirectoryError:
+                    # A parent directory replaced by a regular file. Not a
+                    # FileNotFoundError, so this needs naming separately or every
+                    # row beneath it reads as merely unreadable.
+                    found.append(f"{rel} is not reachable")
                 except OSError:
                     # Unreadable is not missing, and a reinstall cannot fix it.
                     continue
@@ -606,7 +623,6 @@ def damaged_payload_files(
                         found.append(f"{rel} is {info.st_size} bytes, expected {row[2]}")
                 if len(found) >= limit:
                     return found
-            break
     except Exception:
         return found[:limit]
     return found
@@ -619,6 +635,7 @@ def verify_install(
     installed: Optional[Dict[str, str]] = None,
     installed_conflicts: Optional[Sequence[str]] = None,
     deep: bool = False,
+    scan_paths: Optional[Sequence[str]] = None,
 ) -> dict:
     """Report whether the managed install finished and can still boot.
 
@@ -642,6 +659,12 @@ def verify_install(
     (`_manifest_candidates` falls through to `sys.prefix`), so an older CLI can
     load a newer copy of this file; defaulting the scan on would put it inside
     that 10 second budget with no way for the old caller to decline.
+
+    `scan_paths` names that other venv's site-packages, so a caller passing
+    `installed` can still ask for the payload scan. Without it a foreign venv is
+    only checked as far as its metadata goes: RECORD rows resolve against the
+    distribution that declared them, and this interpreter's own tree is the
+    wrong subject.
     """
     reqs = req_root or requirements_root()
     missing = missing_requirements(reqs / BOOT_REQUIREMENT_FILE, installed = installed)
@@ -650,6 +673,7 @@ def verify_install(
     manifest = read_manifest(root)
     manifest_ok = False
     reason: Optional[str] = None
+    vanished = False
 
     if manifest is None:
         reason = "studio_install_incomplete"
@@ -670,6 +694,10 @@ def verify_install(
             _canonical(manifest_package) != "unsloth-zoo" and "unsloth-zoo" in foreign_conflicts
         )
         recorded = manifest.get("package_version")
+        # A recorded install whose distribution is gone entirely: pip removed it,
+        # or an antivirus took the dist-info along with the payload. Every check
+        # below compares against `current`, so an absent one passes all of them.
+        vanished = bool(recorded) and not current
         if core_conflict or local_conflict:
             reason = "studio_install_metadata_conflict"
         elif current and recorded and current != recorded:
@@ -687,13 +715,16 @@ def verify_install(
     # one check that touches the filesystem, and it must not divert any of the
     # reasons above. `installed` means we are describing someone else's venv,
     # whose tree this interpreter cannot stat.
-    if manifest_ok and deps_ok and deep and installed is None:
+    if manifest_ok and deps_ok and deep and (installed is None or scan_paths):
         # `manifest` is non-None here: manifest_ok is only reachable through the
         # else branch above. Reused rather than re-read, so the scan cannot
         # disagree with the checks that already passed on a manifest rewritten
         # underneath us mid-run.
-        damaged = damaged_payload_files((manifest or {}).get("package") or package_name)
-        if damaged:
+        scan_package = (manifest or {}).get("package") or package_name
+        companions = () if _canonical(scan_package) == "unsloth-zoo" else ("unsloth-zoo",)
+        if vanished or damaged_payload_files(
+            scan_package, companion_names = companions, scan_paths = scan_paths
+        ):
             manifest_ok = False
             reason = "studio_install_damaged"
 
