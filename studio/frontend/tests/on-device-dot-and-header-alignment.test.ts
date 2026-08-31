@@ -168,7 +168,8 @@ test("chat and the Hub answer the fit question with one formula", () => {
   // Parent rows and the fit gate take the same rule as the quant rows under them, or a media row
   // reads as fitting while everything inside it reads as oom.
   assert.match(PICKERS, /Boolean\(task\)\n\s*\? classifyMediaGgufFit\(/);
-  assert.ok(PICKERS.includes("mediaLoad: taskScoped && r.isGguf,"));
+  // Both gates read the flag the same way, or one hides a row the other keeps.
+  assert.ok(PICKERS.includes("mediaLoad: taskScoped,"));
   assert.ok(RECOMMENDED.includes("mediaLoad: opts.taskScoped }"));
   // And every media call site sets the flag, or the guard silently does nothing.
   assert.equal(
@@ -250,6 +251,15 @@ test("each fit verdict is an info mark that explains itself", () => {
   // Marks are reachable by screen readers without the tooltip.
   assert.ok(PICKERS.includes('label: "Might fit"'));
   assert.ok(PICKERS.includes('label: "Does not fit"'));
+  // "will not load" is right for `exceeds`, which only ever comes from a torch row: inference.py
+  // calls raise_if_offloaded after loading, and that raises ValueError on any CPU or disk offload
+  // ("Inference does not support models loaded with CPU or disk offload"). A GGUF over budget is
+  // handed to --fit instead, which is why it says the opposite.
+  assert.ok(
+    PICKERS.includes(
+      'hint: "Needs more VRAM than this device has. This model will not load."',
+    ),
+  );
   assert.ok(PICKERS.includes("aria-label={verdict.label}"));
   // A marginal row is a full GPU load, so it is not dimmed with the over budget ones.
   assert.ok(

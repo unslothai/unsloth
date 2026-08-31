@@ -12,6 +12,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { usePlatformStore } from "@/config/env";
+import { INVENTORY_FRESHNESS_WINDOW_MS } from "@/features/hub/inventory";
 import { ApiProviderLogo } from "@/features/chat";
 import {
   type ScanFolderInfo,
@@ -62,7 +63,6 @@ import {
   useOnlineStatus,
 } from "@/features/hub";
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
-import { INVENTORY_FRESHNESS_WINDOW_MS } from "@/features/hub/inventory";
 import {
   useDebouncedValue,
   useGpuInfo,
@@ -91,8 +91,8 @@ import {
   FlimSlateIcon,
   Folder02Icon,
   HelpCircleIcon,
-  Image03Icon,
   InformationCircleIcon,
+  Image03Icon,
   PinIcon,
   RemoveCircleIcon,
   Search01Icon,
@@ -119,13 +119,13 @@ import { useChatPickerInventory } from "../../inventory/use-chat-picker-inventor
 import {
   type CommunityModelPolicy,
   allowedHiddenModelIdMatches,
-  audioPickIsRoutable,
   audioPipelineTagFor,
+  audioPickIsRoutable,
+  localAudioRowIsUndecodableGguf,
   communityAudioRowIsRunnable,
   curatedAudioInventoryMatches,
   curatedAudioInventoryTask,
   filesystemRowsSupportedForTask,
-  localAudioRowIsUndecodableGguf,
   macTtsHubRowIsRunnable,
   nativeAudioCheckpointIsLoadable,
   shouldDiscoverCommunityModels,
@@ -135,8 +135,6 @@ import {
   taskPickerRowMatches,
 } from "./audio-picker-policy";
 import { FolderBrowser } from "./folder-browser";
-import { curatedArtifactIsOfferable } from "./host-artifact-policy";
-import { localGgufKindFor } from "./local-gguf-policy";
 import {
   type ModelCapabilities,
   detectCapabilities,
@@ -155,6 +153,8 @@ import {
   curatedTotalParamsFor,
   groupForRepoId,
 } from "./model-catalog";
+import { curatedArtifactIsOfferable } from "./host-artifact-policy";
+import { localGgufKindFor } from "./local-gguf-policy";
 import { ModelDeleteAction } from "./model-delete-action";
 import { ModelLoadSettingsAction } from "./model-load-settings-action";
 import { ModelRowMenu } from "./model-row-menu";
@@ -207,8 +207,8 @@ import type {
   DeletedModelRef,
   ExternalModelOption,
   LoraModelOption,
-  ModelDownloadFootprintResolver,
   ModelOption,
+  ModelDownloadFootprintResolver,
   ModelSelectorChangeMeta,
 } from "./types";
 import { describeVariantListingError } from "./variant-listing-error";
@@ -515,9 +515,9 @@ const CAPABILITY_BADGES: {
  * where only some models carry a soundtrack. Context rather than a prop because every row in the
  * tree wants the same answer and it comes from the picker, not the row.
  */
-const CapabilityScope = createContext<
-  readonly (keyof ModelCapabilities)[] | null
->(null);
+const CapabilityScope = createContext<readonly (keyof ModelCapabilities)[] | null>(
+  null,
+);
 
 // The row reserves a fixed slot for these (META_COLUMN.badge), so the cap is what keeps every
 // column after it lined up.
@@ -797,11 +797,7 @@ export function GgufDownloadFootprint({
         aria-hidden={true}
         className="flex size-3.5 shrink-0 items-center justify-center text-muted-foreground/70"
       >
-        <HugeiconsIcon
-          icon={HelpCircleIcon}
-          className="size-3"
-          strokeWidth={1.8}
-        />
+        <HugeiconsIcon icon={HelpCircleIcon} className="size-3" strokeWidth={1.8} />
       </span>
     </span>
   );
@@ -819,8 +815,7 @@ export function GgufDownloadFootprintExplanation({
     <>
       <span className="font-medium">Full required size</span>
       <span className="ml-1 text-muted-foreground">
-        {formatBytes(checkpointBytes)} model + {formatBytes(companionBytes)}{" "}
-        required assets
+        {formatBytes(checkpointBytes)} model + {formatBytes(companionBytes)} required assets
       </span>
     </>
   );
@@ -2439,9 +2434,7 @@ function localPathTooltip(
   return (
     <>
       <span className="block break-words">{name}</span>
-      {detail ? (
-        <span className="mt-0.5 block break-words">{detail}</span>
-      ) : null}
+      {detail ? <span className="mt-0.5 block break-words">{detail}</span> : null}
       <span className="block mt-1 text-ui-10 text-muted-foreground break-all">
         {path}
       </span>
@@ -3159,9 +3152,7 @@ export function HubModelPicker({
   const [formatFilter, setFormatFilter] = useState<FormatFilter>("all");
   // What this picker's task filter has already established about every row it can show. The Images
   // and Video pages pass their generation tasks; chat passes none and keeps the full set.
-  const capabilityScope = useMemo<
-    readonly (keyof ModelCapabilities)[] | null
-  >(() => {
+  const capabilityScope = useMemo<readonly (keyof ModelCapabilities)[] | null>(() => {
     const tasks: readonly string[] = task
       ? typeof task === "string"
         ? [task]
@@ -3199,9 +3190,7 @@ export function HubModelPicker({
       // them, and hiding what is already on disk reads as Unsloth having lost the model.
       if (downloadedSet.has(id.toLowerCase())) return true;
       const hit = artifactForRepoId(id, catalog);
-      return hit
-        ? curatedArtifactIsOfferable(hit.artifact.repoId, hostClass)
-        : true;
+      return hit ? curatedArtifactIsOfferable(hit.artifact.repoId, hostClass) : true;
     },
     [catalog, downloadedSet, hostClass],
   );
@@ -3229,9 +3218,7 @@ export function HubModelPicker({
         // Size from the catalog, not an id "<n>B" guess: the guess is missing for
         // most curated ids and wrong for others (Wan2.2-TI2V-5B is 30 GB, not 2),
         // and non-unsloth ids never get a listing row to correct it.
-        curatedSizeBytes: catalog
-          ? curatedSizeBytesFor(id, catalog)
-          : undefined,
+        curatedSizeBytes: catalog ? curatedSizeBytesFor(id, catalog) : undefined,
         // Same reason the size is curated: a seed the listing does not return has no
         // other source for its param chip, and most curated ids carry no "<n>B" token.
         totalParams: catalog ? curatedTotalParamsFor(id, catalog) : undefined,
@@ -3314,7 +3301,10 @@ export function HubModelPicker({
       (catalogFit(r.id, pipelineBudget) ??
         hfModelFitsDevice(r, r.isGguf ? rowInferenceGpu : rowGpu, {
           budgetFraction,
-          mediaLoad: taskScoped && r.isGguf,
+          // Not `&& r.isGguf`: on a task page a safetensors row is placed by the same backend, and
+          // this rule IS the budget those rows had before the classifiers were merged. Restricting
+          // it to GGUF left this gate disagreeing with searchRowFitsDevice about the same row.
+          mediaLoad: taskScoped,
         }));
     const unslothRows = orderRecommendedRows({
       seeds: catalogSeedRows,
@@ -3757,8 +3747,7 @@ export function HubModelPicker({
               task: m.task,
               audioType: m.audio_type,
               isGguf: localModelIsGguf(m),
-              isCurated:
-                artifactForRepoId(m.model_id ?? m.id, AUDIO_CATALOG) !== null,
+              isCurated: artifactForRepoId(m.model_id ?? m.id, AUDIO_CATALOG) !== null,
               // Task and codec came from the filesystem classifier, so a renamed CSM file
               // cannot borrow an Orpheus-looking path to clear the gate.
               taskFromGgufArch: true,
@@ -3805,8 +3794,7 @@ export function HubModelPicker({
               task: m.task,
               audioType: m.audio_type,
               isGguf: localModelIsGguf(m),
-              isCurated:
-                artifactForRepoId(m.model_id ?? m.id, AUDIO_CATALOG) !== null,
+              isCurated: artifactForRepoId(m.model_id ?? m.id, AUDIO_CATALOG) !== null,
               // Task and codec came from the filesystem classifier, so a renamed CSM file
               // cannot borrow an Orpheus-looking path to clear the gate.
               taskFromGgufArch: true,
@@ -3856,8 +3844,7 @@ export function HubModelPicker({
               task: m.task,
               audioType: m.audio_type,
               isGguf: localModelIsGguf(m),
-              isCurated:
-                artifactForRepoId(m.model_id ?? m.id, AUDIO_CATALOG) !== null,
+              isCurated: artifactForRepoId(m.model_id ?? m.id, AUDIO_CATALOG) !== null,
               // Task and codec came from the filesystem classifier, so a renamed CSM file
               // cannot borrow an Orpheus-looking path to clear the gate.
               taskFromGgufArch: true,
@@ -4002,7 +3989,9 @@ export function HubModelPicker({
             isDirectGguf: m.isDirectGguf,
           }),
       )
-      .filter((m) => nativeAudioCheckpointIsLoadable(m.audioType, m.exportType))
+      .filter((m) =>
+        nativeAudioCheckpointIsLoadable(m.audioType, m.exportType),
+      )
       .filter((m) => {
         const text = normalizeForSearch(
           `${m.name} ${m.baseModel ?? ""} ${m.id}`,
@@ -6112,11 +6101,7 @@ export function HubModelPicker({
                                     } else {
                                       onSelect(
                                         m.id,
-                                        localModelMeta(
-                                          false,
-                                          m.task,
-                                          m.audio_type,
-                                        ),
+                                        localModelMeta(false, m.task, m.audio_type),
                                       );
                                     }
                                   }}
@@ -6157,11 +6142,7 @@ export function HubModelPicker({
                                     onConfigure={() =>
                                       onConfigure(
                                         m.id,
-                                        localModelMeta(
-                                          false,
-                                          m.task,
-                                          m.audio_type,
-                                        ),
+                                        localModelMeta(false, m.task, m.audio_type),
                                       )
                                     }
                                   />
@@ -6176,9 +6157,7 @@ export function HubModelPicker({
                                   repoId={m.id}
                                   onDevice={true}
                                   onSelect={onSelect}
-                                  resolveDownloadFootprint={
-                                    resolveDownloadFootprint
-                                  }
+                                  resolveDownloadFootprint={resolveDownloadFootprint}
                                   onConfigure={onConfigure}
                                   parentOptionKey={optionKey}
                                   onNavigatePastStart={() =>
@@ -6268,11 +6247,7 @@ export function HubModelPicker({
                                     } else {
                                       onSelect(
                                         m.id,
-                                        localModelMeta(
-                                          false,
-                                          m.task,
-                                          m.audio_type,
-                                        ),
+                                        localModelMeta(false, m.task, m.audio_type),
                                       );
                                     }
                                   }}
@@ -6313,11 +6288,7 @@ export function HubModelPicker({
                                     onConfigure={() =>
                                       onConfigure(
                                         m.id,
-                                        localModelMeta(
-                                          false,
-                                          m.task,
-                                          m.audio_type,
-                                        ),
+                                        localModelMeta(false, m.task, m.audio_type),
                                       )
                                     }
                                   />
@@ -6330,9 +6301,7 @@ export function HubModelPicker({
                                 repoId={m.id}
                                 onDevice={true}
                                 onSelect={onSelect}
-                                resolveDownloadFootprint={
-                                  resolveDownloadFootprint
-                                }
+                                resolveDownloadFootprint={resolveDownloadFootprint}
                                 onConfigure={onConfigure}
                                 parentOptionKey={optionKey}
                                 onNavigatePastStart={() =>
@@ -6411,11 +6380,7 @@ export function HubModelPicker({
                                     } else {
                                       onSelect(
                                         m.id,
-                                        localModelMeta(
-                                          false,
-                                          m.task,
-                                          m.audio_type,
-                                        ),
+                                        localModelMeta(false, m.task, m.audio_type),
                                       );
                                     }
                                   }}
@@ -6452,11 +6417,7 @@ export function HubModelPicker({
                                     onConfigure={() =>
                                       onConfigure(
                                         m.id,
-                                        localModelMeta(
-                                          false,
-                                          m.task,
-                                          m.audio_type,
-                                        ),
+                                        localModelMeta(false, m.task, m.audio_type),
                                       )
                                     }
                                   />
@@ -6469,9 +6430,7 @@ export function HubModelPicker({
                                 repoId={m.id}
                                 onDevice={true}
                                 onSelect={onSelect}
-                                resolveDownloadFootprint={
-                                  resolveDownloadFootprint
-                                }
+                              resolveDownloadFootprint={resolveDownloadFootprint}
                                 onConfigure={onConfigure}
                                 parentOptionKey={optionKey}
                                 onNavigatePastStart={() =>
@@ -6565,9 +6524,7 @@ export function HubModelPicker({
                                 repoId={id}
                                 pipelineTag={pipelineTagById.get(id) ?? null}
                                 onSelect={onSelect}
-                                resolveDownloadFootprint={
-                                  resolveDownloadFootprint
-                                }
+                                resolveDownloadFootprint={resolveDownloadFootprint}
                                 onConfigure={onConfigure}
                                 hfToken={hfToken || undefined}
                                 parentOptionKey={optionKey}
@@ -6690,9 +6647,7 @@ export function HubModelPicker({
                               repoId={id}
                               pipelineTag={pipelineTagById.get(id) ?? null}
                               onSelect={onSelect}
-                              resolveDownloadFootprint={
-                                resolveDownloadFootprint
-                              }
+                                resolveDownloadFootprint={resolveDownloadFootprint}
                               onConfigure={onConfigure}
                               hfToken={hfToken || undefined}
                               parentOptionKey={optionKey}
@@ -6806,9 +6761,7 @@ export function HubModelPicker({
                                 repoId={id}
                                 pipelineTag={pipelineTagById.get(id) ?? null}
                                 onSelect={onSelect}
-                                resolveDownloadFootprint={
-                                  resolveDownloadFootprint
-                                }
+                                resolveDownloadFootprint={resolveDownloadFootprint}
                                 onConfigure={onConfigure}
                                 hfToken={hfToken || undefined}
                                 parentOptionKey={optionKey}

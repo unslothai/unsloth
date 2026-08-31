@@ -97,8 +97,9 @@ export function fitsDevice(opts: {
   budgetKnown?: boolean;
   requireKnown?: boolean;
   budgetFraction?: number;
-  /** Images / Video: the row is placed by the diffusion backend, not llama-server, so it is judged
-   *  by the media rule the quant rows under it use. */
+  /** Images / Video: the row is placed by the diffusion backend, not llama-server, so it takes the
+   *  media rule the quant rows under it use. Applies to every format on those pages, GGUF or not:
+   *  that rule is the budget all of them had before the classifiers were merged. */
   mediaLoad?: boolean;
 }): boolean {
   const {

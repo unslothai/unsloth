@@ -69,10 +69,7 @@ export interface CatalogGroup {
 
 // ── artifact constructors (keep the data tables terse) ─────────────────────────
 
-const gguf = (
-  repoId: string,
-  extra?: Partial<ModelArtifact>,
-): ModelArtifact => ({
+const gguf = (repoId: string, extra?: Partial<ModelArtifact>): ModelArtifact => ({
   repoId,
   format: "gguf",
   loadKind: "gguf",
@@ -151,9 +148,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     scope: "image",
     artifacts: [
       bf16Pipeline("Tongyi-MAI/Z-Image-Turbo", 30, { totalParams: 6154908736 }),
-      bnb4bit("unsloth/Z-Image-Turbo-unsloth-bnb-4bit", 8, {
-        totalParams: 3210823936,
-      }),
+      bnb4bit("unsloth/Z-Image-Turbo-unsloth-bnb-4bit", 8, { totalParams: 3210823936 }),
       gguf("unsloth/Z-Image-Turbo-GGUF"),
     ],
   },
@@ -179,9 +174,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
       // single-file .safetensors, and fp8 is denied for this family anyway
       // (_FAMILY_SCHEME_DENY: qwen-image renders every frame black under fp8). The repo's int8
       // half is reached through the backend prequant path, not from here.
-      bnb4bit("unsloth/Qwen-Image-2512-unsloth-bnb-4bit", 14, {
-        totalParams: 10850871408,
-      }),
+      bnb4bit("unsloth/Qwen-Image-2512-unsloth-bnb-4bit", 14, { totalParams: 10850871408 }),
       gguf("unsloth/Qwen-Image-2512-GGUF"),
     ],
   },
@@ -203,10 +196,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     artifacts: [
       // Apache-2.0 but still gated on the Hub (gated: "auto", a contact-info form), so an
       // anonymous download 401s exactly like dev. The licence and the gate are independent.
-      bf16Pipeline("black-forest-labs/FLUX.1-schnell", 32, {
-        gated: true,
-        totalParams: 11891178560,
-      }),
+      bf16Pipeline("black-forest-labs/FLUX.1-schnell", 32, { gated: true, totalParams: 11891178560 }),
       gguf("unsloth/FLUX.1-schnell-GGUF"),
     ],
   },
@@ -217,10 +207,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     scope: "image",
     artifacts: [
       // FLUX.1-dev is gated (license acceptance + token), like FLUX.1-schnell above.
-      bf16Pipeline("black-forest-labs/FLUX.1-dev", 32, {
-        gated: true,
-        totalParams: 11901408320,
-      }),
+      bf16Pipeline("black-forest-labs/FLUX.1-dev", 32, { gated: true, totalParams: 11901408320 }),
       gguf("unsloth/FLUX.1-dev-GGUF"),
     ],
   },
@@ -231,10 +218,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     description: "Text-to-image",
     scope: "image",
     artifacts: [
-      bf16Pipeline("black-forest-labs/FLUX.1-Krea-dev", 32, {
-        gated: true,
-        totalParams: 11901408320,
-      }),
+      bf16Pipeline("black-forest-labs/FLUX.1-Krea-dev", 32, { gated: true, totalParams: 11901408320 }),
       gguf("QuantStack/FLUX.1-Krea-dev-GGUF"),
     ],
   },
@@ -258,9 +242,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     description: "Image editing",
     scope: "image",
     artifacts: [
-      bf16Pipeline("Qwen/Qwen-Image-Edit-2511", 54, {
-        totalParams: 20430401088,
-      }),
+      bf16Pipeline("Qwen/Qwen-Image-Edit-2511", 54, { totalParams: 20430401088 }),
       gguf("unsloth/Qwen-Image-Edit-2511-GGUF"),
     ],
   },
@@ -271,10 +253,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     scope: "image",
     artifacts: [
       // FLUX.1-Kontext-dev is gated on the Hub (license acceptance + token).
-      bf16Pipeline("black-forest-labs/FLUX.1-Kontext-dev", 32, {
-        gated: true,
-        totalParams: 11901408320,
-      }),
+      bf16Pipeline("black-forest-labs/FLUX.1-Kontext-dev", 32, { gated: true, totalParams: 11901408320 }),
       gguf("unsloth/FLUX.1-Kontext-dev-GGUF"),
     ],
   },
@@ -285,12 +264,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     scope: "image",
     // Gated on the Hub, and the group's only artifact, so a bare click has nothing open to fall
     // through to: the picker must show the gate rather than start a download that 401s.
-    artifacts: [
-      bf16Pipeline("krea/Krea-2-Turbo", 18, {
-        gated: true,
-        totalParams: 12820073036,
-      }),
-    ],
+    artifacts: [bf16Pipeline("krea/Krea-2-Turbo", 18, { gated: true, totalParams: 12820073036 })],
   },
   {
     // 2.6B DiT + Gemma2-2B encoder, ~11 GB bf16-resident (ships fp32, cast on load). Apache-2.0, ungated. No upstream GGUF quants, so the official pipeline is the only artifact.
@@ -298,11 +272,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     displayName: "Lumina Image 2.0",
     description: "Text-to-image",
     scope: "image",
-    artifacts: [
-      bf16Pipeline("Alpha-VLLM/Lumina-Image-2.0", 11, {
-        totalParams: 2609769152,
-      }),
-    ],
+    artifacts: [bf16Pipeline("Alpha-VLLM/Lumina-Image-2.0", 11, { totalParams: 2609769152 })],
   },
   {
     // 17B dual-stream 2K-native DiT with a Qwen2.5-VL encoder; the mirror guider components load natively on diffusers 0.39.
@@ -319,9 +289,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     description: "Text-to-image",
     scope: "image",
     artifacts: [
-      bf16Pipeline("hunyuanvideo-community/HunyuanImage-2.1-Diffusers", 50, {
-        totalParams: 17425795520,
-      }),
+      bf16Pipeline("hunyuanvideo-community/HunyuanImage-2.1-Diffusers", 50, { totalParams: 17425795520 }),
     ],
   },
   {
@@ -332,9 +300,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     description: "Text-to-image",
     scope: "image",
     artifacts: [
-      bf16Pipeline("HiDream-ai/HiDream-I1-Full", 63, {
-        totalParams: 17105733184,
-      }),
+      bf16Pipeline("HiDream-ai/HiDream-I1-Full", 63, { totalParams: 17105733184 }),
       bf16Pipeline("HiDream-ai/HiDream-I1-Dev", 63, {
         label: "BF16 - Dev (distilled)",
         keywords: ["bf16", "dev", "distilled"],
@@ -355,14 +321,8 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     scope: "image",
     artifacts: [
       // Both Ideogram repos are gated on the Hub, so neither can be auto-routed anonymously.
-      fp8Pipeline("ideogram-ai/ideogram-4-fp8", 46, {
-        gated: true,
-        totalParams: 9281557760,
-      }),
-      bnb4bit("ideogram-ai/ideogram-4-nf4-diffusers", 11, {
-        gated: true,
-        totalParams: 4785317809,
-      }),
+      fp8Pipeline("ideogram-ai/ideogram-4-fp8", 46, { gated: true, totalParams: 9281557760 }),
+      bnb4bit("ideogram-ai/ideogram-4-nf4-diffusers", 11, { gated: true, totalParams: 4785317809 }),
     ],
   },
   // SDXL Turbo and Base are different checkpoints with different step/guidance defaults, so two groups.
@@ -371,12 +331,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     displayName: "SDXL Turbo",
     description: "Text-to-image",
     scope: "image",
-    artifacts: [
-      bf16Pipeline("stabilityai/sdxl-turbo", 8, {
-        label: "Safetensors",
-        totalParams: 2567463684,
-      }),
-    ],
+    artifacts: [bf16Pipeline("stabilityai/sdxl-turbo", 8, { label: "Safetensors", totalParams: 2567463684 })],
   },
   {
     canonicalId: "stabilityai/stable-diffusion-xl-base-1.0",
@@ -449,7 +404,11 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
     scope: "video",
     capabilities: { audio: true },
     artifacts: [
-      bf16Single("Lightricks/LTX-2.3", "ltx-2.3-22b-distilled.safetensors", 90),
+      bf16Single(
+        "Lightricks/LTX-2.3",
+        "ltx-2.3-22b-distilled.safetensors",
+        90,
+      ),
       // No FP8 artifact: the LTX-2.3 loader refuses the official scaled-FP8 single file (it carries .weight_scale/.input_scale), so a click would start a ~76 GB download that always fails.
       // 21.0B is what the Hub reports for this repo; carrying it keeps the row identical when the listing is unavailable (offline, rate-limited).
       gguf("unsloth/LTX-2.3-GGUF", { totalParams: 21_005_004_544 }),
@@ -461,31 +420,21 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
     description: "Text-to-video with audio",
     scope: "video",
     capabilities: { audio: true },
-    artifacts: [
-      bf16Pipeline("Lightricks/LTX-2", 90, { totalParams: 18876174592 }),
-    ],
+    artifacts: [bf16Pipeline("Lightricks/LTX-2", 90, { totalParams: 18876174592 })],
   },
   {
     canonicalId: "Wan-AI/Wan2.2-TI2V-5B",
     displayName: "Wan 2.2 TI2V 5B",
     description: "Text-to-video 720p",
     scope: "video",
-    artifacts: [
-      bf16Pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", 30, {
-        totalParams: 4999787712,
-      }),
-    ],
+    artifacts: [bf16Pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", 30, { totalParams: 4999787712 })],
   },
   {
     canonicalId: "Wan-AI/Wan2.2-T2V-A14B",
     displayName: "Wan 2.2 T2V A14B (MoE)",
     description: "Text-to-video, dual-expert",
     scope: "video",
-    artifacts: [
-      bf16Pipeline("Wan-AI/Wan2.2-T2V-A14B-Diffusers", 114, {
-        totalParams: 14288491584,
-      }),
-    ],
+    artifacts: [bf16Pipeline("Wan-AI/Wan2.2-T2V-A14B-Diffusers", 114, { totalParams: 14288491584 })],
   },
   {
     canonicalId: "hunyuanvideo-community/HunyuanVideo-1.5",
@@ -495,24 +444,16 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
     artifacts: [
       // Highest-quality first: pickDefaultArtifact sorts only by FORMAT, so these two bf16 artifacts keep catalog order and the fit
       // loop returns the first that fits. 720p (52 GB) precedes 480p (40 GB), so an 80 GB card (0.7*budget=56) picks 720p.
-      bf16Pipeline(
-        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-720p_t2v",
-        52,
-        {
-          label: "BF16 - 720p",
-          keywords: ["bf16", "720p"],
-          totalParams: 8326608160,
-        },
-      ),
-      bf16Pipeline(
-        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
-        40,
-        {
-          label: "BF16 - 480p",
-          keywords: ["bf16", "480p"],
-          totalParams: 8326608160,
-        },
-      ),
+      bf16Pipeline("hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-720p_t2v", 52, {
+        label: "BF16 - 720p",
+        keywords: ["bf16", "720p"],
+        totalParams: 8326608160,
+      }),
+      bf16Pipeline("hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v", 40, {
+        label: "BF16 - 480p",
+        keywords: ["bf16", "480p"],
+        totalParams: 8326608160,
+      }),
     ],
   },
 ];
@@ -548,9 +489,7 @@ export const AUDIO_CATALOG: CatalogGroup[] = [
     description: "Text-to-speech",
     scope: "audio",
     task: "tts",
-    artifacts: [
-      bf16Pipeline("unsloth/Spark-TTS-0.5B", 3, { label: "Safetensors" }),
-    ],
+    artifacts: [bf16Pipeline("unsloth/Spark-TTS-0.5B", 3, { label: "Safetensors" })],
   },
   {
     canonicalId: "unsloth/Llama-OuteTTS-1.0-1B",
@@ -636,7 +575,9 @@ export const AUDIO_CATALOG: CatalogGroup[] = [
     description: "Speech-to-text",
     scope: "audio",
     task: "stt",
-    artifacts: [gguf("unslothai/Qwen3-ASR-0.6B-GGUF", { deviceQuant: "Q8_0" })],
+    artifacts: [
+      gguf("unslothai/Qwen3-ASR-0.6B-GGUF", { deviceQuant: "Q8_0" }),
+    ],
   },
   {
     canonicalId: "unslothai/Qwen3-ASR-1.7B-GGUF",
@@ -644,7 +585,9 @@ export const AUDIO_CATALOG: CatalogGroup[] = [
     description: "Speech-to-text",
     scope: "audio",
     task: "stt",
-    artifacts: [gguf("unslothai/Qwen3-ASR-1.7B-GGUF", { deviceQuant: "Q8_0" })],
+    artifacts: [
+      gguf("unslothai/Qwen3-ASR-1.7B-GGUF", { deviceQuant: "Q8_0" }),
+    ],
   },
   {
     canonicalId: "unsloth/whisper-large-v3-turbo",
@@ -653,9 +596,7 @@ export const AUDIO_CATALOG: CatalogGroup[] = [
     scope: "audio",
     task: "stt",
     artifacts: [
-      bf16Pipeline("unsloth/whisper-large-v3-turbo", 2, {
-        label: "Safetensors",
-      }),
+      bf16Pipeline("unsloth/whisper-large-v3-turbo", 2, { label: "Safetensors" }),
     ],
   },
   {
@@ -674,9 +615,7 @@ export const AUDIO_CATALOG: CatalogGroup[] = [
     description: "Speech-to-text",
     scope: "audio",
     task: "stt",
-    artifacts: [
-      bf16Pipeline("unsloth/whisper-small", 1, { label: "Safetensors" }),
-    ],
+    artifacts: [bf16Pipeline("unsloth/whisper-small", 1, { label: "Safetensors" })],
   },
   // Both sidecars carry tiny/base (GGML_STT_REPOS, STT_MODEL_REPOS) and Voice
   // settings lists them; only this picker was missing them.
@@ -686,9 +625,7 @@ export const AUDIO_CATALOG: CatalogGroup[] = [
     description: "Speech-to-text",
     scope: "audio",
     task: "stt",
-    artifacts: [
-      bf16Pipeline("unsloth/whisper-base", 1, { label: "Safetensors" }),
-    ],
+    artifacts: [bf16Pipeline("unsloth/whisper-base", 1, { label: "Safetensors" })],
   },
   {
     canonicalId: "unsloth/whisper-tiny",
@@ -696,9 +633,7 @@ export const AUDIO_CATALOG: CatalogGroup[] = [
     description: "Speech-to-text",
     scope: "audio",
     task: "stt",
-    artifacts: [
-      bf16Pipeline("unsloth/whisper-tiny", 1, { label: "Safetensors" }),
-    ],
+    artifacts: [bf16Pipeline("unsloth/whisper-tiny", 1, { label: "Safetensors" })],
   },
 ];
 
@@ -806,9 +741,7 @@ export function groupForRepoId(
 ): CatalogGroup | null {
   const index = indexFor(catalog);
   const lowered = repoId.trim().toLowerCase();
-  return (
-    index.byId.get(lowered) ?? index.byKey.get(canonicalKeyFor(lowered)) ?? null
-  );
+  return index.byId.get(lowered) ?? index.byKey.get(canonicalKeyFor(lowered)) ?? null;
 }
 
 /** The exact curated artifact for a repo id (null when the repo only matches a group by key/alias). */
@@ -881,9 +814,7 @@ export function curatedDisplayNameFor(
   // trigger and curatedRowLabelFor names the row, so a divergence would rename the model as the
   // popover opens.
   if (h3PerfSuffix(repoId, host)) {
-    return (
-      curatedRowLabelFor(repoId, catalog, host)?.name ?? hit.group.displayName
-    );
+    return curatedRowLabelFor(repoId, catalog, host)?.name ?? hit.group.displayName;
   }
   return hit.group.artifacts.length > 1
     ? `${hit.group.displayName} (${hit.artifact.label})`
@@ -919,14 +850,10 @@ export function curatedRowLabelFor(
   // name and let it say so. A chip would only repeat the suffix.
   if (hit.artifact.format === "gguf") {
     const leaf = hit.artifact.repoId.split("/").pop() ?? hit.artifact.repoId;
-    return {
-      name: qualify(GGUF_SUFFIX_RE.test(leaf) ? leaf : `${leaf}-GGUF`),
-      tags: [],
-    };
+    return { name: qualify(GGUF_SUFFIX_RE.test(leaf) ? leaf : `${leaf}-GGUF`), tags: [] };
   }
   // A group with one artifact has nothing to distinguish, so it stays bare, exactly as before.
-  if (hit.group.artifacts.length <= 1)
-    return { name: qualify(hit.group.displayName), tags: [] };
+  if (hit.group.artifacts.length <= 1) return { name: qualify(hit.group.displayName), tags: [] };
   const [format, ...rest] = hit.artifact.label.split(LABEL_PART_SEPARATOR);
   const tags = [format.replace(OFFICIAL_SUFFIX_RE, "").trim()].filter(Boolean);
   const kept: string[] = [];
@@ -955,9 +882,7 @@ export function catalogToModelOptions(
       if (!curatedArtifactIsOfferable(artifact.repoId, host)) continue;
       options.push({
         id: artifact.repoId,
-        name:
-          curatedDisplayNameFor(artifact.repoId, catalog, host) ??
-          group.displayName,
+        name: curatedDisplayNameFor(artifact.repoId, catalog, host) ?? group.displayName,
         description: `${group.description} - ${artifact.label}`,
         isGguf: artifact.format === "gguf",
         deviceQuant: artifact.deviceQuant,
@@ -1124,14 +1049,10 @@ const FORMAT_QUALITY: Record<ArtifactFormat, number> = {
   gguf: 3,
 };
 
-function fitsArtifactBudget(
-  artifact: ModelArtifact,
-  budget: DeviceBudget,
-): boolean {
+function fitsArtifactBudget(artifact: ModelArtifact, budget: DeviceBudget): boolean {
   if (artifact.offloadFitTiers?.length) {
     return artifact.offloadFitTiers.some(
-      (tier) =>
-        budget.gpuGb >= tier.gpuGb && budget.systemRamGb >= tier.systemRamGb,
+      (tier) => budget.gpuGb >= tier.gpuGb && budget.systemRamGb >= tier.systemRamGb,
     );
   }
   if (artifact.approxSizeGb === undefined) return false;
@@ -1156,9 +1077,7 @@ export function pickDefaultArtifact(
     const downloadedGguf = downloaded.find((a) => a.format === "gguf");
     if (downloadedGguf) return downloadedGguf;
     return downloaded.sort(
-      (a, b) =>
-        (a.approxSizeGb ?? Number.POSITIVE_INFINITY) -
-        (b.approxSizeGb ?? Number.POSITIVE_INFINITY),
+      (a, b) => (a.approxSizeGb ?? Infinity) - (b.approxSizeGb ?? Infinity),
     )[0];
   }
   if (!input.gpuGb || input.gpuGb <= 0) {
@@ -1166,19 +1085,13 @@ export function pickDefaultArtifact(
   }
   for (const artifact of artifacts) {
     // Skip a gated, NOT-downloaded artifact: auto-routing there fails the download without license/token access, so fall through to an open one. The downloaded branch above still returns gated artifacts.
-    if (
-      artifact.format !== "gguf" &&
-      !artifact.gated &&
-      fitsArtifactBudget(artifact, input)
-    ) {
+    if (artifact.format !== "gguf" && !artifact.gated && fitsArtifactBudget(artifact, input)) {
       return artifact;
     }
   }
   if (ggufArtifact) return ggufArtifact;
   return artifacts.sort(
-    (a, b) =>
-      (a.approxSizeGb ?? Number.POSITIVE_INFINITY) -
-      (b.approxSizeGb ?? Number.POSITIVE_INFINITY),
+    (a, b) => (a.approxSizeGb ?? Infinity) - (b.approxSizeGb ?? Infinity),
   )[0];
 }
 
@@ -1204,8 +1117,7 @@ export function curatedArtifactFitsDevice(
   if (!hit || hit.artifact.format === "gguf") return undefined;
   const { group, artifact } = hit;
   if (budget.gpuGb <= 0 && budget.systemRamGb <= 0) return undefined;
-  if (artifact.offloadFitTiers?.length)
-    return fitsArtifactBudget(artifact, budget);
+  if (artifact.offloadFitTiers?.length) return fitsArtifactBudget(artifact, budget);
   if (artifact.approxSizeGb === undefined) return undefined;
   // Transcription retries a failed device load on CPU (stt_sidecar.py), so RAM is a real budget
   // there -- but the WHOLE model goes to whichever device it lands on, never split across both,
@@ -1236,8 +1148,7 @@ export function catalogGroupFitsDevice(
     if (a.format === "gguf") return true;
     if (a.offloadFitTiers?.length) {
       return a.offloadFitTiers.some(
-        (tier) =>
-          budget.gpuGb >= tier.gpuGb && budget.systemRamGb >= tier.systemRamGb,
+        (tier) => budget.gpuGb >= tier.gpuGb && budget.systemRamGb >= tier.systemRamGb,
       );
     }
     return a.approxSizeGb !== undefined && a.approxSizeGb <= budgetGb;

@@ -23,10 +23,10 @@ import {
 import { usePlatformStore } from "@/config/env";
 import { getCachedModelPath, revealCachedModel } from "@/features/chat";
 import { pinKey, usePinnedModelsStore } from "@/features/model-picker";
-import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { type GgufFitClass, classifyGgufFit } from "@/lib/gguf-fit";
+import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
@@ -59,6 +59,7 @@ import {
 } from "../download-manager";
 import { useOnlineStatus } from "../hooks/use-online-status";
 import { type GgufVariantDetail, deleteCachedModel } from "../inventory";
+import { formatBytes } from "../lib/format";
 import {
   ggufFilenamesMatch,
   ggufSelectionOverrideMatchesIntent,
@@ -74,7 +75,6 @@ import {
   normalizeGgufVariantIdentity,
 } from "../lib/model-identity";
 import { useHfTokenStore } from "../stores/hf-token-store";
-import { DeleteImpactSummary, useDeleteImpact } from "./delete-impact";
 import { DotTag } from "./dot-tag";
 import { DownloadStopIndicator } from "./download-cancel-indicator";
 import {
@@ -92,6 +92,7 @@ import {
   GgufDownloadStatusCard,
   GgufDownloadingFallbackCard,
 } from "./gguf-status-cards";
+import { DeleteImpactSummary, useDeleteImpact } from "./delete-impact";
 import { useDeleteConfirmAction } from "./use-delete-confirm-action";
 import { useDownloadCardState } from "./use-download-card-state";
 import { useGgufVariantFetchState } from "./use-gguf-variant-fetch-state";
@@ -826,11 +827,7 @@ export function GgufDownloadCard({
   const deleteTargetLabel = deleteTargetVariant
     ? ggufVariantDisplayLabel(deleteTargetVariant)
     : deleteTarget;
-  const deleteImpact = useDeleteImpact(
-    deleteTarget !== null,
-    repoId,
-    deleteTarget,
-  );
+  const deleteImpact = useDeleteImpact(deleteTarget !== null, repoId, deleteTarget);
   const { deleting, runDelete } = useDeleteConfirmAction({
     action: async () => {
       if (!deleteTarget) return;

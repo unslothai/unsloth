@@ -380,4 +380,9 @@ test("a media row is judged by the rule its quant rows use", () => {
     false,
     "a media row does not",
   );
+  // Every format on a task page, not just GGUF: this rule is the budget all of them had before the
+  // classifiers were merged, and restricting it to GGUF left the list gate and the search gate
+  // answering differently for one row.
+  const safetensors = { ...row, id: "unsloth/Some-Image-Model", isGguf: false };
+  assert.equal(hfModelFitsDevice(safetensors, mac, { mediaLoad: true }), false);
 });
