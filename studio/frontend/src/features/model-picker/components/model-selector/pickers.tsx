@@ -646,10 +646,14 @@ const ORANGE = "!text-orange-600 dark:!text-orange-300";
 
 /** Over budget but still card-sized. `_select_gpus` scores against FREE VRAM, so whether this
  *  lands on the GPU depends on what else is resident; missing it costs speed, not the load. */
+/** Over the VRAM Budget, still smaller than the card. Not conditional: `_vram_usable_mib` gives
+ *  `free - reserve`, which on a completely idle card IS the budget this tier has already passed,
+ *  so `_select_gpus` hands it to --fit every time. Other apps only shrink `free` further. Raising
+ *  the budget is the lever that keeps it resident, which is why the card size is worth saying. */
 const MIGHT_FIT: FitVerdict = {
-  label: "Might fit",
+  label: "Over budget",
   tone: AMBER,
-  hint: "Fits your GPU with almost no room to spare. If other apps are using VRAM, it offloads and runs slower.",
+  hint: "Larger than your VRAM Budget allows, so part of it offloads even on an idle GPU. It is still smaller than the card, so raising the budget can keep it resident.",
 };
 /** Past the card. Every GGUF over budget lands here, however far over, because llama-server never
  *  refuses one on size: `_select_gpus` returns `(None, use_fit=True)` and `--fit` offloads the

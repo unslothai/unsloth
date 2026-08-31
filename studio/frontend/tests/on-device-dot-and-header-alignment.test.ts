@@ -257,17 +257,31 @@ test("chat and the Hub answer the fit question with one formula", () => {
   // Threaded through the row filters as well. Passing it to the quant rows alone left the parent
   // rows and the "Fits on device" gate scoring against the 0.97 default.
   assert.ok(HUB_PAGE.includes("useVramBudgetFraction()"));
-  assert.match(
-    HUB_PAGE,
-    /hfModelFitsDevice\(row\.result, inferenceGpu, \{\n\s*budgetFraction,/,
-  );
   assert.ok(RECOMMENDED.includes("budgetFraction?: number;"));
   // Both surfaces count the cards, or the Hub badge and the picker badge diverge again the moment
-  // the VRAM Budget goes above the default on a multi-GPU host.
+  // the VRAM Budget goes above the default on a multi-GPU host. The two row gates take it from
+  // the SCOPED source, which is 1 for a media row and the host count otherwise.
+  assert.ok(HUB_PAGE.includes("gpuCount: source.deviceCount"));
+  assert.ok(HUB_PAGE.includes("gpuCount: inferenceGpu.deviceCount"));
+  // And both gates ask one helper, which picks the budget by the runtime that places the row: an
+  // image or video repo goes to the diffusion planner on one torch device, under the media rule.
+  // Judged by llama.cpp the Hub kept a 52 GiB media GGUF that clears 62.1 GiB on a 64 GiB Mac
+  // and blows the planner's 44.8.
   assert.equal(
-    HUB_PAGE.split("gpuCount: inferenceGpu.deviceCount").length - 1,
-    3,
-    "every Hub gate and the inspector",
+    HUB_PAGE.split("rowFitsDevice(row.result)").length - 1,
+    2,
+    "both Hub fit gates",
+  );
+  assert.ok(
+    HUB_PAGE.includes(
+      "mediaRow || !result.isGguf ? gpu : inferenceGpu,",
+    ),
+  );
+  assert.ok(HUB_PAGE.includes("mediaLoad: mediaRow,"));
+  assert.ok(
+    HUB_PAGE.includes(
+      "studioPageForTask(result.pipelineTag) !== undefined",
+    ),
   );
   // The count is narrowed WITH the capacity, so it can never describe a different inventory than
   // the gpuGb beside it. A task page puts the load on one device; charging the per-card reserve
@@ -347,12 +361,21 @@ test("each fit verdict is an info mark that explains itself", () => {
       '"Model may not fit but still works with offloading. Expect slower inference."',
     ),
   );
-  // Neither surface claims a marginal load can fail. _select_gpus scores against FREE VRAM and
-  // hands a miss to --fit, so a busy card costs speed, not the load.
+  // Neither surface makes a marginal offload conditional on other apps. _vram_usable_mib gives
+  // free - reserve, which on a completely idle card IS the budget this tier has already passed,
+  // so _select_gpus takes --fit every time; other apps only shrink free further. Saying it
+  // "fits with almost no room to spare" promised a resident load the loader never admits.
   const mightFitHint =
-    "Fits your GPU with almost no room to spare. If other apps are using VRAM, it offloads and runs slower.";
+    "Larger than your VRAM Budget allows, so part of it offloads even on an idle GPU. It is still smaller than the card, so raising the budget can keep it resident.";
   assert.ok(PICKERS.includes(mightFitHint));
   assert.ok(HUB_CARD.includes(mightFitHint));
+  assert.ok(
+    !PICKERS.includes("If other apps are using VRAM"),
+    "no conditional offload copy",
+  );
+  assert.ok(!HUB_CARD.includes("If other apps are using VRAM"));
+  assert.ok(!PICKERS.includes('label: "Might fit"'));
+  assert.ok(!HUB_CARD.includes('label: "Might fit"'));
   assert.ok(!PICKERS.includes("Loading can fail while other apps"));
   assert.ok(!HUB_CARD.includes("Within the last GB of VRAM headroom"));
   // The Hub's oom row says it too, so the two surfaces read alike on a host where every
@@ -367,7 +390,7 @@ test("each fit verdict is an info mark that explains itself", () => {
   );
 
   // Marks are reachable by screen readers without the tooltip.
-  assert.ok(PICKERS.includes('label: "Might fit"'));
+  assert.ok(PICKERS.includes('label: "Over budget"'));
   assert.ok(PICKERS.includes('label: "Does not fit"'));
   // "will not load" is right for `exceeds`, which only ever comes from a torch row: inference.py
   // calls raise_if_offloaded after loading, and that raises ValueError on any CPU or disk offload

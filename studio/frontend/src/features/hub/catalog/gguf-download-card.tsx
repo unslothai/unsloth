@@ -110,11 +110,12 @@ const FIT_BADGE: Record<GgufFitClass, FitBadgeMeta> = {
     iconClassName: "text-emerald-600 dark:text-emerald-400",
   },
   marginal: {
-    label: "Might fit",
-    // Not "loading can fail": _select_gpus scores against FREE VRAM and hands a miss to --fit, so
-    // a busy card costs speed rather than the load. Same words the chat picker uses.
+    label: "Over budget",
+    // Not conditional on other apps: _vram_usable_mib gives free - reserve, which on an idle card
+    // is exactly the budget this tier has already passed, so the load takes --fit every time.
+    // Same words the chat picker uses.
     tooltip:
-      "Fits your GPU with almost no room to spare. If other apps are using VRAM, it offloads and runs slower.",
+      "Larger than your VRAM Budget allows, so part of it offloads even on an idle GPU. It is still smaller than the card, so raising the budget can keep it resident.",
     iconClassName: "text-amber-600 dark:text-amber-400",
   },
   partial: {

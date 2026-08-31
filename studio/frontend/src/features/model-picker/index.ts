@@ -10,7 +10,10 @@ export {
   pinKey,
   usePinnedModelsStore,
 } from "./components/model-selector/pinned-models";
-export { hfModelFitsDevice } from "./components/model-selector/recommended-fit";
+export {
+  hfModelFitsDevice,
+  loadScopedGpu,
+} from "./components/model-selector/recommended-fit";
 export {
   NumericValueInput,
   type NumericValueInputHandle,

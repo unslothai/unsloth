@@ -377,6 +377,39 @@ test("both search lists judge a curated id the same way", () => {
   assert.equal(searchRowFitsDevice({ id: BNB, totalParams: 6e9 }, opts), false);
 });
 
+test("the Hub fit gate judges a media GGUF by the planner that places it", () => {
+  // The reported case: 52 GiB of video GGUF on a 64 GiB Mac. llama.cpp allows 52 * 1.15 + 1 =
+  // 60.8 against a 63.5 GiB budget, so the "Fits on device" filter kept it; the diffusion planner
+  // allows 44.8 and cannot offload on a host pool, so it never places.
+  const mac = {
+    available: true,
+    budgetKnown: true,
+    memoryTotalGb: 64,
+    maxDeviceMemoryGb: 64,
+    loadDeviceMemoryGb: 64,
+    loadDeviceSharedMemory: true,
+    loadDeviceSharesHostMemory: true,
+    systemRamAvailableGb: 0,
+    systemRamAvailableHostGb: 64,
+    deviceCount: 1,
+  };
+  const row = {
+    id: "unsloth/Some-Video-GGUF",
+    isGguf: true,
+    estimatedSizeBytes: 52 * 1024 ** 3,
+  };
+  assert.equal(hfModelFitsDevice(row, mac, { gpuCount: 1 }), true);
+  const scoped = loadScopedGpu(mac, true);
+  assert.equal(
+    hfModelFitsDevice(row, scoped, {
+      gpuCount: scoped.deviceCount,
+      mediaLoad: true,
+      hostPooledMemory: true,
+    }),
+    false,
+  );
+});
+
 test("a media GGUF is sized against torch, not the GGUF backend", () => {
   // A Vulkan llama.cpp build sees cards torch cannot, so inferenceGpu is a different inventory
   // (use-gpu-info.ts keeps the torch view for diffusion for exactly this reason). Picking the
