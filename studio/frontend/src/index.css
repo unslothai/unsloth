@@ -2972,13 +2972,8 @@ html[data-chat-font] .aui-root {
 	background: oklch(0.72 0 0 / 0.4);
 }
 
-/* Chromium ignores every ::-webkit-scrollbar rule on an element whose
-   scrollbar-width/scrollbar-color are set, so on Windows these surfaces drew
-   the native rail: flush to the box, its squared top cap clipping against the
-   rounded pills. Reset both properties there (including :hover, which would
-   otherwise re-set scrollbar-color and flip the rail back to native) so the
-   webkit styling above applies. The @supports guard keeps Firefox, which has
-   no webkit scrollbar styling to fall back on, on the standard properties. */
+/* Chromium ignores ::-webkit-scrollbar styling while scrollbar-width/color are
+   set; on Windows reset both (:hover too, or it flips back) to restore it. */
 @supports selector(::-webkit-scrollbar) {
 	:root.client-windows .sidebar-scroll-fade,
 	:root.client-windows .sidebar-scroll-fade:hover,

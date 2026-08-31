@@ -152,10 +152,8 @@ test("the sidebar list measures its scroll rail", async () => {
     new URL("../src/index.css", import.meta.url),
     "utf8",
   );
-  // The one allowed width declaration is the Windows reset back to the browser
-  // default, which hands the rail to the same ::-webkit-scrollbar styling the
-  // other lists use. Anything else (thin, none, a px width) shrinks or hides
-  // the rail, and hiding it outright is what took the scrollbar away.
+  // Only the Windows auto reset may set a width; hiding the rail is what a
+  // width override caused before.
   const railWidthDecls = (
     css.match(/\.sidebar-scroll-fade[^{]*\{[^}]*scrollbar-width:\s*[^;}]+/g) ?? []
   ).map((rule) => /scrollbar-width:\s*([^;}]+)/.exec(rule)?.[1].trim());

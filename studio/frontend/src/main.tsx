@@ -32,9 +32,7 @@ if (uaLower.includes("linux") && !uaLower.includes("android")) {
   document.documentElement.classList.add("render-linux");
 }
 
-// Chromium draws the native scrollbar wherever the standard scrollbar
-// properties are set; index.css keys off this class to hand hover scrollbars
-// on Windows back to the ::-webkit-scrollbar styling.
+// index.css keys off this to restore ::-webkit-scrollbar styling on Windows.
 if (uaLower.includes("windows")) {
   document.documentElement.classList.add("client-windows");
 }
