@@ -68,6 +68,20 @@ class _PieceTokenizer:
         )
 
 
+class _SlowSpacingTokenizer(_PieceTokenizer):
+    def decode(
+        self,
+        token_ids,
+        *,
+        skip_special_tokens = False,
+        spaces_between_special_tokens = True,
+        **_kwargs,
+    ):
+        special = set(self.all_special_ids) if skip_special_tokens else set()
+        pieces = [self.pieces[int(token_id)] for token_id in token_ids if token_id not in special]
+        return (" " if spaces_between_special_tokens else "").join(pieces)
+
+
 def _decode_transformers_tokens(token_ids):
     from core.inference.inference import InferenceBackend
 
@@ -133,6 +147,24 @@ def test_transformers_bare_injected_prose_remains_untrusted():
 def test_complete_native_tool_control_vocabulary_survives_special_token_decode(control):
     tokenizer = _PieceTokenizer([control, "<eos>"], {1, 2})
     assert decode_with_native_tool_tokens(tokenizer, [1, 2]) == control
+
+
+def test_slow_tokenizer_does_not_space_preserved_gemma_segments():
+    parts = [
+        "<|tool_call>",
+        "call:edit_file{path:",
+        '<|"|>',
+        "/tmp/x",
+        '<|"|>',
+        ",edits:[]}",
+        "<tool_call|>",
+    ]
+    tokenizer = _SlowSpacingTokenizer(parts, {1, 3, 5, 7})
+    decoded = decode_with_native_tool_tokens(tokenizer, range(1, len(parts) + 1))
+
+    assert decoded == '<|tool_call>call:edit_file{path:<|"|>/tmp/x<|"|>,edits:[]}<tool_call|>'
+    calls = parse_tool_calls_from_text(decoded, enabled_tool_names = {"edit_file"})
+    assert json.loads(calls[0]["function"]["arguments"])["path"] == "/tmp/x"
 
 
 @pytest.mark.parametrize("opener", ["<|channel>", "<|channel>thought\n"])
