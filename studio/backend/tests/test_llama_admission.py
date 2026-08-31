@@ -847,3 +847,448 @@ def test_dead_waiters_stop_counting_against_the_queue_limit():
         assert queue.is_idle()
 
     asyncio.run(_run())
+
+
+def test_parking_frees_the_slot_for_a_waiter():
+    """A holder waiting on a tool approval must not hold a decode slot.
+
+    It is not generating, and with several prompts unanswered every slot would
+    be held by a run parked on a human while llama-server sits idle.
+    """
+
+    async def _run():
+        queue = get_llama_admission_queue("http://llama.test")
+        config = LlamaAdmissionConfig()
+
+        first = queue.reserve(capacity = 1, config = config)
+        second = queue.reserve(capacity = 1, config = config)
+        first_lease = first.lease_nowait()
+        assert first_lease is not None
+        assert second.lease_nowait() is None
+
+        first_lease.park()
+        assert first_lease.slot is None, "the slot went back to the pool"
+        second_lease = await second.wait(0.1)
+        assert second_lease is not None, "parking did not free the slot"
+
+        # The parked holder keeps its lease, so releasing it is still correct.
+        first_lease.unpark()
+        first_lease.release()
+        second_lease.release()
+        assert queue.snapshot().active == 0
+
+    asyncio.run(_run())
+
+
+def test_unpark_without_park_is_a_no_op():
+    async def _run():
+        queue = get_llama_admission_queue("http://llama.test")
+        config = LlamaAdmissionConfig()
+
+        first = queue.reserve(capacity = 1, config = config)
+        first_lease = first.lease_nowait()
+        assert first_lease is not None
+        first_lease.unpark()
+        first_lease.unpark()
+
+        second = queue.reserve(capacity = 1, config = config)
+        assert second.lease_nowait() is None, "capacity leaked past the limit"
+
+    asyncio.run(_run())
+
+
+def test_releasing_a_parked_lease_leaves_the_queue_evictable():
+    # is_idle() drives registry eviction, and a parked holder owns no slot, so
+    # nothing but the parked count keeps its queue alive. A stuck count would
+    # pin every dead queue for the life of the process.
+    async def _run():
+        queue = get_llama_admission_queue("http://llama.test")
+        config = LlamaAdmissionConfig()
+
+        lease = queue.reserve(capacity = 1, config = config).lease_nowait()
+        lease.park()
+        assert not queue.is_idle(), "a parked holder is coming back to this queue"
+        lease.release()
+        assert queue.is_idle()
+
+    asyncio.run(_run())
+
+
+def test_unpark_waits_instead_of_putting_two_holders_on_one_slot():
+    # park() hands the freed slot to a waiter, so by the time the user answers an approval
+    # prompt someone else may be decoding in it. Resuming regardless left two holders
+    # against capacity 1, and the resumed tool loop went past the admission limit.
+    async def scenario():
+        queue = get_llama_admission_queue("http://llama.test")
+        config = LlamaAdmissionConfig()
+
+        a = queue.reserve(capacity = 1, config = config)
+        a_lease = a.lease_nowait()
+        assert a_lease is not None, "A takes the only slot"
+        b = queue.reserve(capacity = 1, config = config)
+        assert b.lease_nowait() is None, "B waits behind A"
+
+        a_lease.park()  # A parks on an approval prompt; its slot goes to B
+        b_lease = await asyncio.wait_for(b.wait(timeout_s = 1), timeout = 2)
+        assert b_lease is not None, "B was granted the parked slot"
+
+        # A answers the prompt while B is still decoding: it must WAIT.
+        resumed = asyncio.ensure_future(a_lease.unpark_async(poll_s = 0.01))
+        await asyncio.sleep(0.05)
+        assert not resumed.done(), "A must not resume while B holds the slot"
+        assert queue.snapshot().active <= 1, "never over capacity while waiting"
+
+        b_lease.release()
+        await asyncio.wait_for(resumed, timeout = 2)
+        assert a_lease.slot is not None, "A took a real slot back"
+        assert queue.snapshot().active <= 1, "still within capacity after resuming"
+
+    asyncio.run(scenario())
+
+
+def test_unpark_gives_up_when_the_caller_is_cancelled():
+    # A holder being torn down must not sit in the wait loop.
+    async def scenario():
+        queue = get_llama_admission_queue("http://llama.test")
+        config = LlamaAdmissionConfig()
+        a = queue.reserve(capacity = 1, config = config)
+        a_lease = a.lease_nowait()
+        assert a_lease is not None
+        b = queue.reserve(capacity = 1, config = config)
+        a_lease.park()
+        assert await asyncio.wait_for(b.wait(timeout_s = 1), timeout = 2) is not None
+
+        ev = threading.Event()
+        waiting = asyncio.ensure_future(a_lease.unpark_async(cancel_event = ev, poll_s = 0.01))
+        await asyncio.sleep(0.03)
+        assert not waiting.done()
+        ev.set()
+        await asyncio.wait_for(waiting, timeout = 2)
+        assert a_lease.slot is None, "gave up without a slot rather than over-admitting"
+
+    asyncio.run(scenario())
+
+
+def test_an_approved_chat_is_not_overtaken_by_later_arrivals():
+    # A parks on an approval prompt, B takes the slot, C arrives afterwards. release() grants
+    # under the same lock, so a plain poll in unpark_async never saw a free slot: A waited
+    # behind every later arrival and starved.
+    async def scenario():
+        queue = get_llama_admission_queue("http://llama.test")
+        config = LlamaAdmissionConfig()
+
+        a = queue.reserve(capacity = 1, config = config)
+        a_lease = a.lease_nowait()
+        assert a_lease is not None
+        b = queue.reserve(capacity = 1, config = config)
+        a_lease.park()  # A's slot goes to B
+        b_lease = await asyncio.wait_for(b.wait(timeout_s = 1), timeout = 2)
+        assert b_lease is not None
+
+        # A is approved and starts waiting; C arrives only after that.
+        resumed = asyncio.ensure_future(a_lease.unpark_async(poll_s = 0.01))
+        await asyncio.sleep(0.03)
+        c = queue.reserve(capacity = 1, config = config)
+        assert c.lease_nowait() is None
+
+        b_lease.release()  # the slot frees exactly once
+        await asyncio.wait_for(resumed, timeout = 2)
+        # A resumed; C is still queued behind it rather than having overtaken it.
+        assert c.lease_nowait() is None
+        assert queue.snapshot().active <= 1
+
+    asyncio.run(scenario())
+
+
+def test_two_approved_chats_do_not_block_each_other():
+    # A bare pending-count made every approved holder count against every other: park A, admit
+    # and park B, admit C, approve both, and once C released the predicate stayed false forever.
+    async def scenario():
+        queue = get_llama_admission_queue("http://llama.test")
+        config = LlamaAdmissionConfig()
+
+        a = queue.reserve(capacity = 1, config = config)
+        a_lease = a.lease_nowait()
+        assert a_lease is not None
+        b = queue.reserve(capacity = 1, config = config)
+        a_lease.park()  # A parks; B is admitted
+        b_lease = await asyncio.wait_for(b.wait(timeout_s = 1), timeout = 2)
+        assert b_lease is not None
+
+        c = queue.reserve(capacity = 1, config = config)
+        b_lease.park()  # B parks too; C is admitted
+        c_lease = await asyncio.wait_for(c.wait(timeout_s = 1), timeout = 2)
+        assert c_lease is not None
+
+        # Both approvals come back while C is still decoding.
+        first = asyncio.ensure_future(a_lease.unpark_async(poll_s = 0.01))
+        await asyncio.sleep(0.02)
+        second = asyncio.ensure_future(b_lease.unpark_async(poll_s = 0.01))
+        await asyncio.sleep(0.02)
+        assert not first.done() and not second.done()
+
+        c_lease.release()
+        # The earlier approval goes first; the other follows once it releases.
+        await asyncio.wait_for(first, timeout = 2)
+        assert not second.done(), "the second approval waits its turn, not forever"
+        a_lease.release()
+        await asyncio.wait_for(second, timeout = 2)
+        assert queue.snapshot().active <= 1
+
+    asyncio.run(scenario())
+
+
+def test_an_immediate_arrival_cannot_take_an_approved_chats_slot():
+    # The fairness reservation lived only in _grant_waiters_locked. reserve()'s fast path
+    # ignored it, so a request arriving in the window between the slot freeing and the
+    # approved chat's next poll took the slot straight off the top.
+    async def scenario():
+        queue = get_llama_admission_queue("http://llama.test")
+        config = LlamaAdmissionConfig()
+
+        a = queue.reserve(capacity = 1, config = config)
+        a_lease = a.lease_nowait()
+        assert a_lease is not None
+        a_lease.park()  # A is on an approval prompt; its slot is up for grabs
+        b = queue.reserve(capacity = 1, config = config)
+        b_lease = b.lease_nowait()
+        assert b_lease is not None
+
+        resumed = asyncio.ensure_future(a_lease.unpark_async(poll_s = 0.01))
+        await asyncio.sleep(0.03)  # A is approved and now holds a ticket
+
+        # No await between these two: C arrives before A's poll can run again.
+        b_lease.release()
+        c = queue.reserve(capacity = 1, config = config)
+        assert c.lease_nowait() is None, "the freed slot is reserved for the approved chat"
+
+        await asyncio.wait_for(resumed, timeout = 2)
+        assert queue.snapshot().active <= 1
+
+    asyncio.run(scenario())
+
+
+def test_parking_is_bounded_so_the_thread_pool_cannot_be_drained(monkeypatch):
+    # A pending prompt parks an executor thread (the loop blocks inside
+    # to_thread(next, gen)) and frees a slot that admits another run which can
+    # park too, so unbounded parking drains the pool the generators run on.
+    # Pinned because the real budget follows the runner's usable CPUs.
+    monkeypatch.setattr(llama_admission, "_executor_workers", lambda: 32)
+
+    async def scenario():
+        queue = get_llama_admission_queue("http://llama.test")
+        config = LlamaAdmissionConfig()
+        limit = llama_admission._max_parked(1)
+        assert limit >= 1
+
+        leases = []
+        for _ in range(limit):
+            lease = queue.reserve(capacity = 1, config = config).lease_nowait()
+            assert lease is not None and lease.park()
+            leases.append(lease)
+
+        refused = queue.reserve(capacity = 1, config = config).lease_nowait()
+        assert refused is not None
+        assert not refused.park(), "parking is unbounded"
+        # Refusing means keeping the slot, the old behaviour, not an error.
+        assert refused.slot is not None
+        assert queue.snapshot().active == 1
+
+        leases[0].unpark()
+        assert refused.park(), "budget was not returned"
+        for lease in leases[1:] + [refused]:
+            lease.release()
+        leases[0].release()
+
+    asyncio.run(scenario())
+
+
+def test_the_park_budget_is_shared_by_every_queue(monkeypatch):
+    # One executor, so a per-queue budget would be handed out again to every
+    # backend and to every reload onto a fresh ephemeral port.
+    monkeypatch.setattr(llama_admission, "_executor_workers", lambda: 32)
+
+    async def scenario():
+        config = LlamaAdmissionConfig()
+        first = get_llama_admission_queue("http://llama.test:1")
+        second = get_llama_admission_queue("http://llama.test:2")
+        limit = llama_admission._max_parked(1)
+
+        for index in range(limit):
+            queue = first if index % 2 == 0 else second
+            lease = queue.reserve(capacity = 1, config = config).lease_nowait()
+            assert lease.park()
+
+        spare = second.reserve(capacity = 1, config = config).lease_nowait()
+        assert not spare.park(), "each queue got its own budget"
+
+        # A reset drops the queues the count was claimed against, so it must drop
+        # the count too or the leak shrinks the budget process-wide.
+        reset_llama_admission_queues()
+        revived = get_llama_admission_queue("http://llama.test:1")
+        fresh = revived.reserve(capacity = 1, config = config).lease_nowait()
+        assert fresh.park(), "reset leaked the park count"
+        fresh.release()
+
+    asyncio.run(scenario())
+
+
+def test_the_park_budget_leaves_the_executor_room_to_work(monkeypatch):
+    # The pool already permits `capacity` pending prompts and every park admits
+    # one more, so the budget must account for both. Swept across executor sizes
+    # rather than read off this host, since a container gets a small one.
+    for cpus in (1, 2, 4, 8, 16, 28, 64):
+        workers = min(32, cpus + 4)
+        monkeypatch.setattr(llama_admission, "_executor_workers", lambda w = workers: w)
+        reserve = llama_admission._executor_reserve(workers)
+        assert reserve >= 2, f"{workers} workers left no reserve"
+
+        # Even the smallest executor fits the two simultaneous prompts #7455 needs.
+        assert llama_admission._max_parked(1) >= 2, f"no room for two on {workers} workers"
+        assert llama_admission._max_parked(1) <= workers // 2
+        # A backend whose --parallel alone fills the executor gets no parks.
+        assert llama_admission._max_parked(workers) == 0
+        for capacity in range(0, workers + 8):
+            budget = llama_admission._max_parked(capacity)
+            assert budget >= 0, f"negative budget at capacity {capacity}"
+            assert (
+                budget == 0 or capacity + budget <= workers - reserve
+            ), f"{workers} workers: capacity {capacity} plus {budget} parks leaves no room"
+
+
+def test_the_park_budget_follows_the_executors_own_cpu_count(monkeypatch):
+    # 3.13 sizes ThreadPoolExecutor from process_cpu_count(), which honours CPU
+    # affinity and cgroup quotas; cpu_count() would budget from the whole host
+    # inside a one-core container. Pulled apart here, since they usually match.
+    import concurrent.futures
+
+    monkeypatch.setattr(os, "cpu_count", lambda: 64)
+    if hasattr(os, "process_cpu_count"):
+        monkeypatch.setattr(os, "process_cpu_count", lambda: 1)
+    # Against the real thing rather than the formula: the default executor is a
+    # plain ThreadPoolExecutor(), so its own sizing is the answer on any version.
+    with concurrent.futures.ThreadPoolExecutor() as pool:
+        assert llama_admission._executor_workers() == pool._max_workers
+
+
+def test_the_stream_retries_a_park_that_was_refused():
+    # _park_admission short-circuits on `on == _parked`, so recording a refused
+    # park as parked would skip every later approval in the run even once the
+    # budget frees up. Structural because that only shows on a second approval.
+    import ast
+
+    # Read rather than import: routes.inference pulls in the whole app.
+    route = os.path.join(_backend, "routes", "inference.py")
+    with open(route, encoding = "utf-8") as handle:
+        tree = ast.parse(handle.read())
+    helpers = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_park_admission"
+    ]
+    assert len(helpers) == 1, f"expected one _park_admission, found {len(helpers)}"
+
+    guards = [
+        node
+        for node in ast.walk(helpers[0])
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.UnaryOp)
+        and isinstance(node.test.op, ast.Not)
+        and isinstance(node.test.operand, ast.Call)
+        and getattr(node.test.operand.func, "attr", None) == "park"
+        and getattr(node.test.operand.func.value, "id", None) == "lease"
+    ]
+    assert len(guards) == 1, "lease.park()'s answer is ignored"
+    assert all(
+        isinstance(stmt, ast.Return) for stmt in guards[0].body
+    ), "a refused park must leave _parked alone, so a later approval retries it"
+
+
+def test_the_park_budget_counts_every_live_backend(monkeypatch):
+    # base_url takes a fresh port on every load, so a reload mints a queue while
+    # the old one drains. Prompts on both park threads of the one executor, so a
+    # budget sized from either backend alone lets them add up past the reserve.
+    monkeypatch.setattr(llama_admission, "_executor_workers", lambda: 32)
+
+    async def scenario():
+        config = LlamaAdmissionConfig()
+        old = get_llama_admission_queue("http://llama.test:1")
+        draining = old.reserve(capacity = 16, config = config).lease_nowait()
+        assert draining is not None  # in flight, so the registry keeps this queue
+
+        new = get_llama_admission_queue("http://llama.test:2")
+        lease = new.reserve(capacity = 16, config = config).lease_nowait()
+        assert lease is not None
+
+        # 16 slots each against 32 workers: their prompts alone can fill it.
+        assert llama_admission._max_parked(16) > 0, "this test needs a budget to remove"
+        assert not lease.park(), "budget sized from one backend of two"
+
+        draining.release()  # the old backend drains and is up for eviction
+        assert lease.park(), "an idle backend still counted against the budget"
+        lease.release()
+
+    asyncio.run(scenario())
+
+
+def test_the_park_budget_is_freed_when_the_prompt_is_answered(monkeypatch):
+    # The executor thread comes back the moment the answer arrives, before the
+    # resume queues for a slot. Holding the budget until the slot lands refuses
+    # someone else's park, and that someone holds the slot the resumer wants.
+    monkeypatch.setattr(llama_admission, "_executor_workers", lambda: 32)
+
+    async def scenario():
+        config = LlamaAdmissionConfig()
+        queue = get_llama_admission_queue("http://llama.test")
+
+        parked = []
+        for _ in range(llama_admission._max_parked(1)):
+            lease = queue.reserve(capacity = 1, config = config).lease_nowait()
+            assert lease is not None and lease.park()
+            parked.append(lease)
+
+        blocked = queue.reserve(capacity = 1, config = config).lease_nowait()
+        assert blocked is not None
+        assert not blocked.park(), "the budget was not full to begin with"
+
+        # One prompt is answered. Its slot is taken, so the resume queues for one.
+        resumed = asyncio.ensure_future(parked[0].unpark_async(poll_s = 0.01))
+        await asyncio.sleep(0.05)
+        assert not resumed.done(), "the resume needs to still be waiting for its slot"
+
+        assert blocked.park(), "budget held for a prompt wait that is over"
+        # Which is what frees the slot the resumer was waiting for.
+        await asyncio.wait_for(resumed, timeout = 2)
+        for lease in parked[1:] + [blocked]:
+            lease.release()
+        parked[0].release()
+
+    asyncio.run(scenario())
+
+
+def test_releasing_a_parked_holder_returns_its_budget(monkeypatch):
+    # A client that disconnects on the prompt releases straight out of parked,
+    # never unparking. Its executor thread went with it, so keeping the budget
+    # would lose one for the life of the process.
+    monkeypatch.setattr(llama_admission, "_executor_workers", lambda: 32)
+
+    async def scenario():
+        config = LlamaAdmissionConfig()
+        queue = get_llama_admission_queue("http://llama.test")
+
+        parked = []
+        for _ in range(llama_admission._max_parked(1)):
+            lease = queue.reserve(capacity = 1, config = config).lease_nowait()
+            assert lease is not None and lease.park()
+            parked.append(lease)
+
+        blocked = queue.reserve(capacity = 1, config = config).lease_nowait()
+        assert blocked is not None
+        assert not blocked.park(), "the budget was not full to begin with"
+
+        parked[0].release()
+        assert blocked.park(), "a released park never gave its budget back"
+        for lease in parked[1:] + [blocked]:
+            lease.release()
+
+    asyncio.run(scenario())

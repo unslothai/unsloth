@@ -56,12 +56,41 @@ def test_system_gpu_info_preserves_vulkan_visibility_metrics(monkeypatch):
     assert gpu["available"] is False
     assert gpu["backend"] == "cpu"
     assert gpu["index_kind"] == "relative"
-    # A Vulkan llama.cpp build accepts gpu_ids even when torch training is
-    # CPU-only: the pick is a ggml ordinal, not a torch device index.
-    assert gpu["gguf_gpu_ids_supported"] is True
+    # The training inventory must not advertise physical pins for a Vulkan
+    # llama.cpp build. Its ordinals live in inference_gpu below.
+    assert gpu["gguf_gpu_ids_supported"] is False
+    # Torch's view stays empty; the ggml ordinals stay in inference_gpu.
     assert gpu["devices"] == []
     assert inference_gpu["backend"] == "vulkan"
     assert inference_gpu["devices"] == [vulkan_device]
+
+
+def test_system_gpu_info_withholds_gguf_pin_when_the_vulkan_probe_enumerates_nothing(monkeypatch):
+    """A Vulkan build whose probe returns no ordinals has nothing valid to pin,
+    so the picker must be told pins are unsupported rather than offered an empty
+    namespace it would 400 on."""
+    import utils.hardware as hardware
+
+    monkeypatch.setattr(
+        hardware,
+        "get_backend_visible_gpu_info",
+        lambda: {"available": False, "backend": "cpu", "devices": [], "index_kind": "relative"},
+    )
+    monkeypatch.setattr(
+        hardware,
+        "get_visible_gpu_utilization",
+        lambda: {"available": False, "backend": "cpu", "devices": []},
+    )
+    monkeypatch.setattr(hardware, "get_vulkan_inference_gpu_info", lambda: None)
+
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: True))
+    monkeypatch.setattr(main, "_system_gpu_cache", None)
+
+    gpu, _ = main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *args: None))
+
+    assert gpu["gguf_gpu_ids_supported"] is False
 
 
 def test_system_gpu_info_keeps_forced_vulkan_separate_from_training_metrics(monkeypatch):
@@ -181,17 +210,17 @@ def test_vulkan_inference_gpu_uses_real_device_names_and_igpu_flag(monkeypatch):
     reserve is applied; budgeting off the raw shared total would hand out the
     whole machine's RAM with no OS headroom.
     """
+    from core.inference import llama_cpp
     from core.inference.llama_cpp import LlamaCppBackend
     from utils.hardware.hardware import get_vulkan_inference_gpu_info
 
     monkeypatch.setattr(
         LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda binary = None: True)
     )
-    # Fit view: discrete card keeps its total, iGPU reports 0 with capped free.
     monkeypatch.setattr(
-        LlamaCppBackend,
-        "_get_gpu_memory",
-        staticmethod(lambda binary = None: [(0, 15 * 1024, 16 * 1024), (1, 12 * 1024, 0)]),
+        llama_cpp,
+        "_apply_igpu_host_reserve_mib",
+        lambda free_mib, is_igpu: 12 * 1024 if is_igpu else free_mib,
     )
     monkeypatch.setattr(
         LlamaCppBackend,
@@ -231,9 +260,8 @@ def test_vulkan_inference_gpu_uses_real_device_names_and_igpu_flag(monkeypatch):
     assert igpu["memory_total_gb"] == 12.0
 
 
-def test_vulkan_inference_gpu_falls_back_to_ordinal_names(monkeypatch):
-    """A probe that cannot resolve descriptions must not lose the device list:
-    names degrade to Vulkan<i> and the memory readings still get through."""
+def test_vulkan_inference_gpu_uses_inventory_fallback_names(monkeypatch):
+    """The inventory's fallback name must flow through unchanged."""
     from core.inference.llama_cpp import LlamaCppBackend
     from utils.hardware.hardware import get_vulkan_inference_gpu_info
 
@@ -242,13 +270,18 @@ def test_vulkan_inference_gpu_falls_back_to_ordinal_names(monkeypatch):
     )
     monkeypatch.setattr(
         LlamaCppBackend,
-        "_get_gpu_memory",
-        staticmethod(lambda binary = None: [(0, 15 * 1024, 16 * 1024)]),
-    )
-    monkeypatch.setattr(
-        LlamaCppBackend,
         "vulkan_device_inventory",
-        staticmethod(lambda binary = None: (_ for _ in ()).throw(RuntimeError("probe failed"))),
+        staticmethod(
+            lambda binary = None: [
+                {
+                    "index": 0,
+                    "name": "Vulkan0",
+                    "free_mib": 15 * 1024,
+                    "total_mib": 16 * 1024,
+                    "is_igpu": False,
+                }
+            ]
+        ),
     )
 
     info = get_vulkan_inference_gpu_info()

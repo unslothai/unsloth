@@ -8,7 +8,6 @@ Supports: SNAC (Orpheus), CSM (Sesame), BiCodec (Spark), DAC (OuteTTS)
 
 import io
 import re
-import subprocess
 import wave
 import structlog
 from loggers import get_logger
@@ -17,9 +16,13 @@ from typing import Optional, Tuple
 import numpy as np
 import torch
 
-from utils.native_path_leases import child_env_without_native_path_secret
-from utils.subprocess_compat import (
-    windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
+from utils.third_party_source import (
+    deactivate_pinned_package,
+    ensure_dac_speech_weights,
+    ensure_outetts_source,
+    ensure_spark_tts_source,
+    import_outetts_module,
+    import_sparktts_module,
 )
 
 logger = get_logger(__name__)
@@ -50,7 +53,9 @@ class AudioCodecManager:
         self._snac_model = None
         self._bicodec_tokenizer = None
         self._bicodec_repo_path = None
+        self._bicodec_code_dir = None
         self._dac_audio_codec = None
+        self._outetts_code_dir = None
 
     def load_codec(
         self,
@@ -93,33 +98,12 @@ class AudioCodecManager:
     ) -> None:
         if self._bicodec_tokenizer is not None:
             return
-        import os
-        import sys
-
-        # Clone SparkAudio/Spark-TTS for the sparktts package (HF model repos
-        # don't contain it)
-        spark_code_dir = os.path.join(os.path.dirname(model_repo_path or "."), "Spark-TTS")
-        sparktts_pkg = os.path.join(spark_code_dir, "sparktts")
-        if not os.path.isdir(sparktts_pkg):
-            logger.info(f"Cloning SparkAudio/Spark-TTS to {spark_code_dir}...")
-            subprocess.run(
-                [
-                    "git",
-                    "clone",
-                    "--depth",
-                    "1",
-                    "https://github.com/SparkAudio/Spark-TTS",
-                    spark_code_dir,
-                ],
-                check = True,
-                env = child_env_without_native_path_secret(),
-                **_windows_hidden_subprocess_kwargs(),
-            )
-
-        if spark_code_dir not in sys.path:
-            sys.path.insert(0, spark_code_dir)
-
-        from sparktts.models.audio_tokenizer import BiCodecTokenizer
+        spark_code_dir = ensure_spark_tts_source(model_repo_path)
+        self._bicodec_code_dir = spark_code_dir
+        BiCodecTokenizer = import_sparktts_module(
+            "sparktts.models.audio_tokenizer",
+            spark_code_dir,
+        ).BiCodecTokenizer
 
         # BiCodecTokenizer needs the MODEL repo path (has BiCodec/ weights)
         tokenizer_path = model_repo_path or spark_code_dir
@@ -130,50 +114,22 @@ class AudioCodecManager:
     def _load_dac(self, device: str) -> None:
         if self._dac_audio_codec is not None:
             return
-        import os
-        import sys
-
-        # Clone OuteTTS (the pip package has problematic deps; we remove
-        # gguf_model.py, interface.py, __init__.py before importing).
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        outetts_code_dir = os.path.join(base_dir, "OuteTTS")
-        outetts_pkg = os.path.join(outetts_code_dir, "outetts")
-        if not os.path.isdir(outetts_pkg):
-            logger.info(f"Cloning edwko/OuteTTS to {outetts_code_dir}...")
-            subprocess.run(
-                [
-                    "git",
-                    "clone",
-                    "--depth",
-                    "1",
-                    "https://github.com/edwko/OuteTTS",
-                    outetts_code_dir,
-                ],
-                check = True,
-                env = child_env_without_native_path_secret(),
-                **_windows_hidden_subprocess_kwargs(),
-            )
-            # Remove files pulling in heavy / incompatible deps
-            remove_paths = [
-                os.path.join(outetts_pkg, "models", "gguf_model.py"),
-                os.path.join(outetts_pkg, "interface.py"),
-                os.path.join(outetts_pkg, "__init__.py"),
-            ]
-            for fpath in remove_paths:
-                if os.path.exists(fpath):
-                    os.remove(fpath)
-                    logger.info(f"Removed {fpath}")
-
-        if outetts_code_dir not in sys.path:
-            sys.path.insert(0, outetts_code_dir)
-
-        from outetts.version.v3.audio_processor import AudioProcessor
-        from outetts.models.config import ModelConfig as OuteTTSModelConfig
+        outetts_code_dir = ensure_outetts_source()
+        self._outetts_code_dir = outetts_code_dir
+        AudioProcessor = import_outetts_module(
+            "outetts.version.v3.audio_processor",
+            outetts_code_dir,
+        ).AudioProcessor
+        OuteTTSModelConfig = import_outetts_module(
+            "outetts.models.config",
+            outetts_code_dir,
+        ).ModelConfig
+        audio_codec_path = ensure_dac_speech_weights()
 
         dummy_config = OuteTTSModelConfig(
-            tokenizer_path = "OuteAI/Llama-OuteTTS-1.0-1B",
+            tokenizer_path = None,
             device = device,
-            audio_codec_path = None,
+            audio_codec_path = str(audio_codec_path),
         )
         processor = AudioProcessor(config = dummy_config)
         self._dac_audio_codec = processor.audio_codec
@@ -332,7 +288,13 @@ class AudioCodecManager:
             del self._bicodec_tokenizer
             self._bicodec_tokenizer = None
             self._bicodec_repo_path = None
+        if self._bicodec_code_dir is not None:
+            deactivate_pinned_package("sparktts", self._bicodec_code_dir)
+            self._bicodec_code_dir = None
         if self._dac_audio_codec is not None:
             del self._dac_audio_codec
             self._dac_audio_codec = None
+        if self._outetts_code_dir is not None:
+            deactivate_pinned_package("outetts", self._outetts_code_dir)
+            self._outetts_code_dir = None
         logger.info("Unloaded all audio codecs")

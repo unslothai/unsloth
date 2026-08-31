@@ -8,10 +8,16 @@ import {
   resolveDictationLanguage,
   useVoiceSettingsStore,
 } from "@/features/settings/stores/voice-settings-store";
+import { isTauri } from "@/lib/api-base";
 import type { DictationAdapter } from "@assistant-ui/react";
 import { toast } from "sonner";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { startDictationLevelMeter } from "./dictation-level";
+import {
+  beginDictationSession,
+  markDictationFailed,
+  markDictationTranscript,
+} from "./dictation-outcome";
 
 /** Chat open while dictating, so the saved dictation can link back to it. */
 export function activeDictationChatId(): string | undefined {
@@ -71,7 +77,10 @@ export const isMissingDeviceError = (error: unknown): boolean => {
 export const describeMediaError = (error: unknown): string => {
   const name = mediaErrorName(error);
   if (name === "NotAllowedError" || name === "SecurityError") {
-    return "Microphone access is blocked. Allow microphone access for this Unsloth page, then try again.";
+    // The desktop WebView has no site-permission UI, so Settings is the only way back.
+    return isTauri
+      ? "Microphone access is blocked. Open Settings > Voice and click Allow microphone."
+      : "Microphone access is blocked. Allow microphone access for this Unsloth page, then try again.";
   }
   if (name === "NotFoundError" || name === "OverconstrainedError") {
     return "No microphone was found for dictation.";
@@ -127,6 +136,9 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
   static isSupported(): boolean {
     return (
       typeof window !== "undefined" &&
+      // WKWebView exposes the API but Apple's service refuses it
+      // (service-not-allowed); WebView2 and webkit2gtk have no engine at all.
+      !isTauri &&
       window.isSecureContext &&
       getSpeechRecognitionAPI() !== undefined &&
       navigator.mediaDevices?.getUserMedia !== undefined
@@ -139,6 +151,7 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
       throw new Error("Speech recognition is not supported in this browser.");
     }
 
+    beginDictationSession();
     const recognition = new SpeechRecognitionAPI();
     recognition.lang = this.language ?? resolveDictationLanguage();
     recognition.continuous = this.continuous;
@@ -274,6 +287,7 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
       stream = null;
       const transcript = reason === "cancelled" ? "" : finalTranscript;
       if (transcript) {
+        markDictationTranscript();
         for (const callback of speechCallbacks) {
           callback({ transcript, isFinal: true });
         }
@@ -371,6 +385,8 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
       } else {
         toast.error(description);
       }
+      // Any finalized chunks stay in the composer, but must not send alone.
+      markDictationFailed();
       finish("error");
     });
 

@@ -29,14 +29,16 @@ _DEFAULT_EMBEDDING_REPO_IDS = {
     "unsloth/bge-small-en-v1.5-GGUF",
 }
 # Local copies do not always retain the repo id. Keep a narrow basename
-# fallback for Studio's static default embedder only; configured custom repos
+# fallback for Unsloth's static default embedder only; configured custom repos
 # remain exact-match-only.
 _DEFAULT_EMBEDDING_PATH_BASENAMES = {"bge-small-en-v1.5"}
-# Curated Whisper dictation checkpoints (STT, never chat), hidden from the chat
+# Curated dictation checkpoints (STT, never chat), hidden from the chat
 # inventory and pickers: Transformers safetensors repos (unsloth/whisper-*) and
 # their GGUF companions (unslothai/whisper-*-GGUF). Custom checkpoints are caught
 # by config below, but the GGUF companions carry a raw .bin (no config.json), so
-# they must be listed here by id or they leak into chat pickers.
+# they must be listed here by id or they leak into chat pickers. The Qwen3-ASR
+# GGUFs are listed for the same reason: llama.cpp will happily load one as a
+# chat model, where it only answers with transcripts.
 _HIDDEN_STT_REPO_IDS = frozenset(
     {
         "unsloth/whisper-tiny",
@@ -49,8 +51,45 @@ _HIDDEN_STT_REPO_IDS = frozenset(
         "unslothai/whisper-small-GGUF",
         "unslothai/whisper-large-v3-turbo-GGUF",
         "unslothai/whisper-large-v3-GGUF",
+        "unslothai/Qwen3-ASR-0.6B-GGUF",
+        "unslothai/Qwen3-ASR-1.7B-GGUF",
     }
 )
+_HIDDEN_STT_REPO_IDS_LOWER = frozenset(repo_id.lower() for repo_id in _HIDDEN_STT_REPO_IDS)
+
+# Curated Audio-page TTS checkpoints. Unlike the STT set these stay VISIBLE -- the Audio
+# page is where they belong -- but a chat turn on one comes back as synthesized speech,
+# so they must not be chat-loadable. Config sniffing cannot catch them (Orpheus and
+# OuteTTS are LlamaForCausalLM, Spark is Qwen2ForCausalLM) and a GGUF companion carries
+# no tokenizer_config for the codec probe, so the ids answer for those.
+_CURATED_TTS_REPO_IDS = frozenset(
+    {
+        "unsloth/orpheus-3b-0.1-ft",
+        "unsloth/orpheus-3b-0.1-ft-bnb-4bit",
+        "unsloth/orpheus-3b-0.1-ft-unsloth-bnb-4bit",
+        "unsloth/orpheus-3b-0.1-ft-GGUF",
+        "canopylabs/orpheus-3b-0.1-ft",
+        "unsloth/csm-1b",
+        "sesame/csm-1b",
+        "unsloth/Spark-TTS-0.5B",
+        "unsloth/Llama-OuteTTS-1.0-1B",
+    }
+)
+_CURATED_TTS_REPO_IDS_LOWER = frozenset(repo_id.lower() for repo_id in _CURATED_TTS_REPO_IDS)
+
+
+def is_curated_tts_repo_id(value: str | None) -> bool:
+    """True only for Unsloth's exact curated TTS Hub repositories."""
+    return bool(value and value.strip().lower() in _CURATED_TTS_REPO_IDS_LOWER)
+
+
+def is_curated_stt_repo_id(value: str | None) -> bool:
+    """True only for Unsloth's exact curated STT Hub repositories.
+
+    Still hidden from chat, but task-scoped inventory consumers need the real cache rows
+    so the Audio page need not reimplement size, format, variants and lifecycle.
+    """
+    return bool(value and value.strip().lower() in _HIDDEN_STT_REPO_IDS_LOWER)
 
 
 def _config_is_whisper(path: Path) -> bool:
@@ -153,7 +192,7 @@ def is_hidden_model(*values: str | None) -> bool:
     hidden_repo_ids = {
         _PROBE_REPO_ID.lower(),
         *(repo_id.lower() for repo_id in _DEFAULT_EMBEDDING_REPO_IDS),
-        *(repo_id.lower() for repo_id in _HIDDEN_STT_REPO_IDS),
+        *_HIDDEN_STT_REPO_IDS_LOWER,
     }
     exact_paths: list[str] = []
     for model in {

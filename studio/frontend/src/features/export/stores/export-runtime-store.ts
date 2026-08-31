@@ -152,8 +152,6 @@ export interface RunExportParams {
   loraGguf?: boolean;
   loraGgufOuttype?: string;
   saveDirectory: string;
-  /** Custom GGUF shard size (e.g. "2GB", "4GB"); blank/null keeps unsloth's default. */
-  ggufShardSize?: string | null;
   destination: ExportDestination;
   repoId?: string;
   token?: string;
@@ -493,10 +491,11 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
             quantization_method: params.quantLevels,
             push_to_hub: pushToHub,
             repo_id: params.repoId,
-            hf_token: params.token,
-            private: params.privateRepo,
-            gguf_shard_size: params.ggufShardSize?.trim() || null,
+            // A local imatrix export resolves the matrix from a Hub repo, so fall back to the load
+            // token when there is no hub-upload token (both are the same HF token).
+            hf_token: params.token ?? params.loadToken ?? null,
             imatrix: params.useImatrix,
+            private: params.privateRepo,
           }),
         );
         if (outputPath) outputs.push({ label: "GGUF", path: outputPath });

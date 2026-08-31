@@ -14,17 +14,32 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { ChevronDownIcon, XIcon } from "lucide-react";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { XIcon } from "lucide-react";
 import { type KeyboardEvent, useState } from "react";
-import { useChatRuntimeStore } from "../stores/chat-runtime-store";
+import {
+  DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS,
+  useChatRuntimeStore,
+} from "../stores/chat-runtime-store";
+import { MAX_RESEARCH_MODEL_TIMEOUT_SECONDS } from "../utils/mirrored-chat-settings";
 import type { ResearchWebsitePolicy } from "../types/research";
+
+// The field is in minutes; its ceiling is the seconds cap the backend enforces.
+const MAX_RESEARCH_MODEL_TIMEOUT_MINUTES = Math.floor(
+  MAX_RESEARCH_MODEL_TIMEOUT_SECONDS / 60,
+);
 
 function normalizeDomain(raw: string): string | null {
   const value = raw.trim();
   if (!value || /[\\\s]/.test(value)) return null;
   try {
     const url = new URL(value.includes("://") ? value : `https://${value}`);
-    if (!/^https?:$/.test(url.protocol) || url.username || url.password || url.port) {
+    if (
+      !/^https?:$/.test(url.protocol) ||
+      url.username ||
+      url.password ||
+      url.port
+    ) {
       return null;
     }
     return url.hostname
@@ -99,7 +114,9 @@ function DomainList({
               type="button"
               className="text-muted-foreground transition-colors hover:text-foreground"
               aria-label={`Remove ${domain}`}
-              onClick={() => onChange(values.filter((value) => value !== domain))}
+              onClick={() =>
+                onChange(values.filter((value) => value !== domain))
+              }
             >
               <XIcon className="size-3" />
             </button>
@@ -129,7 +146,9 @@ export function DeepResearchComposerButton({
   onConfigure: () => void;
 }) {
   const enabled = useChatRuntimeStore((state) => state.deepResearchEnabled);
-  const setEnabled = useChatRuntimeStore((state) => state.setDeepResearchEnabled);
+  const setEnabled = useChatRuntimeStore(
+    (state) => state.setDeepResearchEnabled,
+  );
 
   if (!enabled) return null;
 
@@ -158,9 +177,12 @@ export function DeepResearchComposerButton({
         <XIcon className="composer-pill-x" />
       </span>
       <span>Deep research</span>
-      <span className="composer-pill-caret flex items-center gap-0.5 text-primary/70">
-        <ChevronDownIcon className="size-3" />
-      </span>
+      {/* Same caret as the other composer pills, so the arrows match. */}
+      <HugeiconsIcon
+        icon={ChevronDownStandardIcon}
+        strokeWidth={1.5}
+        className="composer-pill-caret size-[15px] text-primary/70"
+      />
     </button>
   );
 }
@@ -173,7 +195,15 @@ export function DeepResearchWebsiteAccessDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const policy = useChatRuntimeStore((state) => state.researchWebsitePolicy);
-  const setPolicy = useChatRuntimeStore((state) => state.setResearchWebsitePolicy);
+  const setPolicy = useChatRuntimeStore(
+    (state) => state.setResearchWebsitePolicy,
+  );
+  const modelTimeoutSeconds = useChatRuntimeStore(
+    (state) => state.researchModelTimeoutSeconds,
+  );
+  const setModelTimeoutSeconds = useChatRuntimeStore(
+    (state) => state.setResearchModelTimeoutSeconds,
+  );
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -181,6 +211,8 @@ export function DeepResearchWebsiteAccessDialog({
         <DeepResearchWebsiteAccessContent
           policy={policy}
           setPolicy={setPolicy}
+          modelTimeoutSeconds={modelTimeoutSeconds}
+          setModelTimeoutSeconds={setModelTimeoutSeconds}
           onClose={() => onOpenChange(false)}
         />
       ) : null}
@@ -191,51 +223,118 @@ export function DeepResearchWebsiteAccessDialog({
 function DeepResearchWebsiteAccessContent({
   policy,
   setPolicy,
+  modelTimeoutSeconds,
+  setModelTimeoutSeconds,
   onClose,
 }: {
   policy: ResearchWebsitePolicy;
   setPolicy: (policy: ResearchWebsitePolicy) => void;
+  modelTimeoutSeconds: number;
+  setModelTimeoutSeconds: (seconds: number) => void;
   onClose: () => void;
 }) {
   const [draft, setDraft] = useState<ResearchWebsitePolicy>(policy);
+  const [unlimited, setUnlimited] = useState(modelTimeoutSeconds === 0);
+  // Unlimited has no minutes of its own, so turning the limit back on offers the default.
+  const [timeoutMinutes, setTimeoutMinutes] = useState(
+    String(
+      Math.ceil(
+        (modelTimeoutSeconds || DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS) / 60,
+      ),
+    ),
+  );
+  // The API accepts second-level values the minutes field cannot spell, so saving an
+  // untouched control must replay the stored seconds rather than the rounded minutes.
+  const [timeoutEdited, setTimeoutEdited] = useState(false);
 
   return (
     <DialogContent className="sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle>Website access</DialogTitle>
-          <DialogDescription>
-            Control which websites the next Deep Research run can search and
-            read. Limits are enforced by the server and shared with the research
-            model.
-          </DialogDescription>
-        </DialogHeader>
-        <div className="space-y-6">
-          <DomainList
-            label="Allow only"
-            description="When set, research can access only these domains and their subdomains."
-            values={draft.allowedDomains}
-            onChange={(allowedDomains) => setDraft({ ...draft, allowedDomains })}
-          />
-          <DomainList
-            label="Always block"
-            description="These domains and their subdomains stay blocked. Blocking takes precedence."
-            values={draft.blockedDomains}
-            onChange={(blockedDomains) => setDraft({ ...draft, blockedDomains })}
-          />
+      <DialogHeader>
+        <DialogTitle>Deep research</DialogTitle>
+        <DialogDescription>
+          Control website access and model request time for the next Deep
+          Research run.
+        </DialogDescription>
+      </DialogHeader>
+      <div className="space-y-6">
+        <div className="space-y-2">
+          <div>
+            {/* A run makes many model requests, so this bounds each one, not the run. */}
+            <div className="text-sm font-medium">Time per model request</div>
+            <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
+              {unlimited
+                ? "No limit on a single model request. Slow models can continue while they keep producing output."
+                : "Maximum time for each model request, so a run of many requests can take longer. Output stall safeguards stay active."}
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <Input
+              type="number"
+              min="1"
+              max={MAX_RESEARCH_MODEL_TIMEOUT_MINUTES}
+              step="1"
+              value={timeoutMinutes}
+              disabled={unlimited}
+              onChange={(event) => {
+                setTimeoutEdited(true);
+                setTimeoutMinutes(event.target.value);
+              }}
+              aria-label="Deep Research time per model request in minutes"
+              className="w-28"
+            />
+            <span className="self-center text-sm text-muted-foreground">
+              minutes
+            </span>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setTimeoutEdited(true);
+                setUnlimited((value) => !value);
+              }}
+            >
+              {unlimited ? "Use a limit" : "No limit"}
+            </Button>
+          </div>
         </div>
-        <DialogFooter>
-          <Button variant="ghost" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button
-            onClick={() => {
-              setPolicy(draft);
-              onClose();
-            }}
-          >
-            Save limits
-          </Button>
-        </DialogFooter>
+        <DomainList
+          label="Allow only"
+          description="When set, research can access only these domains and their subdomains."
+          values={draft.allowedDomains}
+          onChange={(allowedDomains) => setDraft({ ...draft, allowedDomains })}
+        />
+        <DomainList
+          label="Always block"
+          description="These domains and their subdomains stay blocked. Blocking takes precedence."
+          values={draft.blockedDomains}
+          onChange={(blockedDomains) => setDraft({ ...draft, blockedDomains })}
+        />
+      </div>
+      <DialogFooter>
+        <Button variant="ghost" onClick={onClose}>
+          Cancel
+        </Button>
+        <Button
+          onClick={() => {
+            setPolicy(draft);
+            const minutes = Number(timeoutMinutes);
+            // The max attribute does not stop a typed value reaching here, and falling
+            // through to the default would hand someone asking for a long run a short one.
+            setModelTimeoutSeconds(
+              unlimited
+                ? 0
+                : !timeoutEdited
+                  ? modelTimeoutSeconds
+                  : Number.isSafeInteger(minutes) && minutes >= 1
+                    ? Math.min(minutes, MAX_RESEARCH_MODEL_TIMEOUT_MINUTES) * 60
+                    : DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS,
+            );
+            onClose();
+          }}
+        >
+          Save limits
+        </Button>
+      </DialogFooter>
     </DialogContent>
   );
 }

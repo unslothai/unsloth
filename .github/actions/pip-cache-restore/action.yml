@@ -1,0 +1,152 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Restore half of the pip cache, replacing `actions/setup-python`'s built-in
+# `cache: 'pip'`.
+#
+# The built-in cache is read-write and saves from its own post-step on WHATEVER
+# REF the job ran on. A cache written on a pull_request ref can only be restored
+# by re-runs of that same pull request ("caches created on the base branch are
+# available to the topic branch, but not the other way round"), so every PR
+# writes a ~700MB copy that nobody else can ever read, and that copy competes for
+# the shared 50 GiB budget against main's copy, which every PR CAN read. Measured
+# on this repo: setup-python entries were 19.45 GiB across 40 entries, 15.49 GiB
+# of it on PR refs, with four interpreter keys duplicated 4-6 times each.
+#
+# Nothing about that is visible as a failure. Over quota, GitHub evicts
+# least-recently-used, so main's copy goes, the next PR misses, downloads, and
+# writes its own copy. CI just gets slower and everyone assumes that is the cost.
+# The repo had already diagnosed and fixed this exact loop for the GGUF caches
+# (see the save step in studio-inference-smoke.yml) and for the Playwright
+# browsers; setup-python was left doing it because its built-in cache has no
+# save-gating knob. Splitting restore from save is how you get one.
+#
+# Pair this with pip-cache-save AFTER the install, passing the outputs below.
+
+name: Restore the pip cache
+description: >-
+  Restore pip's HTTP cache for this runner and interpreter, keyed on the files
+  the job actually installs from. Read-only: the save is a separate action and
+  runs on the default branch only.
+
+inputs:
+  name:
+    description: >-
+      Short, stable identifier for the INSTALLING JOB (`consolidated`,
+      `notebooks-colab`, ...). Two things depend on it.
+
+      Jobs that install different things must not share a key. Five jobs here
+      passed the same key-files and so resolved to the same key; the save is
+      gated on `cache-hit != 'true'`, so whichever finished first on main wrote
+      the cache and the other four restored it exactly, installed their own
+      extra wheels, and never saved them. Those extras were re-downloaded on
+      every run of main, forever, and nothing about it was visible.
+
+      It also makes each family its own key prefix. Without that, generations of
+      five different jobs sit under `pip-<os>-<arch>-py<ver>-` and cannot be told
+      apart from five generations of one, so cache-janitor.yml cannot prune any
+      of them. 14 GiB of unreachable pip entries had accumulated by 2026-08-26
+      for exactly that reason.
+
+      Lowercase, digits and dashes; it goes into the cache key verbatim.
+    required: true
+  key-files:
+    description: >-
+      Newline-separated glob(s) whose hash keys the cache. Pass the files this
+      job installs from, NOT a repo-wide pattern: the built-in cache hashed
+      dependency files across the whole repo, so an unrelated requirements edit
+      invalidated every interpreter's entry at once and orphaned the old ones.
+      Paths resolve from the workspace root, so a job that checks out into a
+      subdirectory must include it.
+    required: true
+
+outputs:
+  dir:
+    description: pip's cache directory on this runner.
+    value: ${{ steps.probe.outputs.dir }}
+  key:
+    description: The full cache key, to hand to pip-cache-save.
+    value: ${{ steps.probe.outputs.key }}
+  prefix:
+    description: The cache key without the dependency hash, i.e. the restore-key.
+    value: ${{ steps.probe.outputs.prefix }}
+  cache-hit:
+    description: 'true when the exact key was restored.'
+    value: ${{ steps.restore.outputs.cache-hit }}
+
+runs:
+  using: composite
+  steps:
+    # `pip cache dir` rather than a hardcoded path per OS: it differs on Linux,
+    # macOS and Windows, and pip itself is the authority on where it put things.
+    - name: Resolve the pip cache directory and key
+      id: probe
+      shell: bash
+      run: |
+        set -euo pipefail
+        dir="$(python -m pip cache dir)"
+        echo "dir=$dir" >> "$GITHUB_OUTPUT"
+        # Minor, deliberately not patch. Nothing in this repo pins a patch version:
+        # 53 steps ask for '3.12' and the one matrix offers '3.11' and '3.13', so the
+        # patch is whatever the hosted image happens to ship that week. Carrying it in
+        # the key duplicated the WHOLE cache every time GitHub bumped it, which is not
+        # a hypothetical -- measured 2026-08-20, two entries differing in nothing but
+        # 3.12.13 vs 3.12.14 held 10.85 and 11.21 GiB, 44% of the repo's 50 GiB budget
+        # between them, against a total that had climbed back to 99.1% full. The same
+        # pairing showed up in 10 of the 12 pip entries.
+        #
+        # Safe because of WHAT is cached, the same argument the uv cache rests on: pip
+        # stores downloaded wheels, tagged cp312 and so ABI-compatible across every
+        # 3.12.x, behind an HTTP cache addressed by URL and hash. A stale entry cannot
+        # serve wrong content; the worst it can do is miss.
+        pyver="$(python -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+        hash="${{ hashFiles(inputs.key-files) }}"
+        # Empty means the globs matched nothing, which would silently collapse
+        # every job onto one key. Loud here, where the cause is one line away.
+        if [ -z "$hash" ]; then
+          echo "::error::pip-cache: key-files matched no file, so the cache key would not distinguish anything. Given: ${{ inputs.key-files }}"
+          exit 1
+        fi
+        name="${{ inputs.name }}"
+        # An empty or surprising segment collapses distinct jobs onto one key, or
+        # breaks the janitor's prefix grouping. Both fail silently, so check here.
+        case "$name" in
+          ''|*[!a-z0-9-]*)
+            echo "::error::pip-cache: name must be lowercase letters, digits and dashes. Given: '$name'"
+            exit 1 ;;
+        esac
+
+        # `v2` is a real load-bearing segment, not decoration. Keys minted before
+        # `name` existed look like `pip-Linux-X64-py3.12-<hash>`, and `Linux` is a
+        # valid name, so nothing distinguishes an old key from a new one whose job
+        # happens to be called `linux`. The janitor matches `pip-v2-` only, which
+        # leaves every legacy entry untouched to expire on its own 7-day idle
+        # timer rather than being ranked against keys it has nothing to do with.
+        #
+        # Emitted separately so the restore-key fallback and the janitor's
+        # grouping are built from the same string as the key, not a copy that
+        # can drift.
+        prefix="pip-v2-${name}-${{ runner.os }}-${{ runner.arch }}-py${pyver}-"
+        echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
+        echo "key=${prefix}${hash}" >> "$GITHUB_OUTPUT"
+
+    - name: Restore the pip cache
+      id: restore
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      # A cache is an optimisation; a cache service blip must not fail the job.
+      continue-on-error: true
+      with:
+        path: ${{ steps.probe.outputs.dir }}
+        key: ${{ steps.probe.outputs.key }}
+        # WITH a prefix fallback, unlike the frontend-dist cache. A dist cache is
+        # a build output: the wrong generation is wrong, so only an exact key will
+        # do. This is pip's HTTP cache, addressed by URL and content hash, where
+        # the previous generation is the current one minus whatever moved. A
+        # dependency bump then costs the changed wheels instead of all of them,
+        # and a stale entry cannot serve wrong content -- the worst it can do is
+        # miss. Same argument that lets the key carry 3.12 rather than 3.12.14.
+        #
+        # `name` is inside the prefix, so the fallback stays inside this job's own
+        # family and never hands one job the wheels another downloaded.
+        restore-keys: |
+          ${{ steps.probe.outputs.prefix }}

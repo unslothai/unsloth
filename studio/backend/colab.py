@@ -243,7 +243,7 @@ def _ready_card_html(
     has_cloudflare_link: bool = False,
     cloudflare_requested: bool = False,
 ) -> str:
-    """Branded ready card for the in-notebook Studio view.
+    """Branded ready card for the in-notebook Unsloth view.
 
     Colab ``*.prod.colab.dev`` proxy URLs are session-scoped and 404 when opened as a
     top-level tab or on another device, so never ``window.open`` them. On real Colab the
@@ -253,12 +253,12 @@ def _ready_card_html(
     if _is_colab_runtime() or _is_colab_proxy_url(url, port):
         if has_cloudflare_link:
             embed_note = (
-                "Open Studio with the Cloudflare link above. In-cell proxy previews on "
+                "Open Unsloth with the Cloudflare link above. In-cell proxy previews on "
                 "current Colab often stay blank, so the tunnel link is the supported path."
             )
         elif cloudflare_requested:
             embed_note = (
-                "Could not open a Cloudflare tunnel, so Studio may be unreachable on Colab. "
+                "Could not open a Cloudflare tunnel, so Unsloth may be unreachable on Colab. "
                 "Check the logs above and re-run this cell. Pass "
                 '<code style="background:#f3f3f3;padding:2px 6px;border-radius:4px;">'
                 "cloudflare=True</code> after fixing any tunnel errors."
@@ -347,7 +347,7 @@ def _warn_colab_cloudflare_missing(*, use_cloudflare: bool, cloudflare_url: "str
     if not use_cloudflare or cloudflare_url or not _is_colab_runtime():
         return
     logger.warning(
-        "Colab Cloudflare tunnel unavailable — Studio is unlikely to be reachable in this "
+        "Colab Cloudflare tunnel unavailable — Unsloth is unlikely to be reachable in this "
         "notebook. Check the logs above for tunnel or auth errors, then re-run start()."
     )
 
@@ -381,12 +381,13 @@ def start_cloudflare_tunnel(port: int) -> "str | None":
         )
         return None
     try:
-        from cloudflare_tunnel import start_studio_tunnel
+        from cloudflare_tunnel import set_studio_tunnel_url_callback, start_studio_tunnel
     except Exception as e:
         logger.info(f"Cloudflare tunnel unavailable ({e}); using Colab proxy only.")
         return None
     try:
-        url = start_studio_tunnel(port)
+        set_studio_tunnel_url_callback(_publish_cloudflare_url)
+        url = start_studio_tunnel(port, managed_by = "colab")
     except Exception as e:
         logger.info(f"Cloudflare tunnel failed to start ({e}); using Colab proxy only.")
         return None
@@ -397,14 +398,6 @@ def start_cloudflare_tunnel(port: int) -> "str | None":
 
 
 def _publish_cloudflare_url(cloudflare_url: "str | None") -> None:
-    """Publish a directly-started tunnel URL onto app.state so /api/health advertises it.
-
-    run_server sets this only when it opens the tunnel itself (skipped on Colab), so we
-    set it here; otherwise the frontend's API examples fall back to an unreachable
-    server_url. Best-effort.
-    """
-    if not cloudflare_url:
-        return
     try:
         from main import app as _studio_app
         _studio_app.state.cloudflare_url = cloudflare_url
@@ -417,12 +410,6 @@ def _stop_cloudflare_tunnel() -> None:
     try:
         from cloudflare_tunnel import stop_studio_tunnel
         stop_studio_tunnel()
-    except Exception:
-        pass
-    # Stop /api/health advertising a dead tunnel.
-    try:
-        from main import app as _studio_app
-        _studio_app.state.cloudflare_url = None
     except Exception:
         pass
 
@@ -495,7 +482,7 @@ _COLAB_IFRAME_HEIGHT = 900
 
 
 def _embed_kernel_port_iframe(port: int) -> bool:
-    """Embed Studio via Colab's native kernel-port iframe helper.
+    """Embed Unsloth via Colab's native kernel-port iframe helper.
 
     Only trusted on a real Colab runtime: colabtools can import ``google.colab`` and
     queue browser-side JS without appending an iframe, so callers outside Colab must use
@@ -645,7 +632,6 @@ def start(port: int = 8888, *, cloudflare: "bool | None" = None):
         try:
             colab_login = _finalize_colab_admin_password() if use_cloudflare else None
             cf_url = start_cloudflare_tunnel(port) if use_cloudflare else None
-            _publish_cloudflare_url(cf_url)
             _show_and_embed(
                 port,
                 cloudflare_url = cf_url,
@@ -716,7 +702,6 @@ def start(port: int = 8888, *, cloudflare: "bool | None" = None):
     try:
         colab_login = _finalize_colab_admin_password() if use_cloudflare else None
         cf_url = start_cloudflare_tunnel(actual_port) if use_cloudflare else None
-        _publish_cloudflare_url(cf_url)
         _show_and_embed(
             actual_port,
             cloudflare_url = cf_url,

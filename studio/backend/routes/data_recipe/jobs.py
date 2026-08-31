@@ -6,11 +6,19 @@
 from __future__ import annotations
 
 import copy
+import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Annotated, Any, Optional
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+
+from auth.authentication import (
+    authenticated_via_api_key,
+    get_current_credential,
+    require_ui_session_for_local_commands,
+)
+from auth.storage import CredentialRotated
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
 
@@ -19,6 +27,7 @@ from core.data_recipe.huggingface import (
     publish_recipe_dataset,
 )
 from core.data_recipe.jobs import get_job_manager
+from core.data_recipe.service import recipe_has_stdio_mcp
 from loggers import get_logger
 from models.data_recipe import (
     JobCreateResponse,
@@ -30,6 +39,13 @@ from utils.utils import safe_error_detail, safe_curated_detail, log_and_http_err
 
 logger = get_logger(__name__)
 router = APIRouter()
+
+# Keepalive cadence, well inside the ~100s a quick tunnel allows between body bytes.
+_KEEPALIVE_EVERY_S = 15.0
+
+# A stdio provider is a command this host would run, so only a UI session may
+# supply one. Annotated, not a Depends default, so a direct call gets False.
+ViaApiKey = Annotated[bool, Depends(authenticated_via_api_key)]
 
 
 def _resolve_local_v1_endpoint(request: Request) -> str:
@@ -257,7 +273,11 @@ def _inject_local_structured_response_format(
         model_configs.extend(new_configs)
 
 
-def _inject_local_providers(recipe: dict[str, Any], request: Request) -> Optional[int]:
+def _inject_local_providers(
+    recipe: dict[str, Any],
+    request: Request,
+    expect_gen: Optional[str] = None,
+) -> Optional[int]:
     """Mutate recipe in-place: point is_local providers at this server and mint
     a short-lived internal sk-unsloth-* key for workflow auth.
 
@@ -313,6 +333,7 @@ def _inject_local_providers(recipe: dict[str, Any], request: Request) -> Optiona
             name = "data-recipe workflow",
             expires_at = expires_at,
             internal = True,
+            expect_gen = expect_gen,
         )
         internal_key_id = int(row["id"])
 
@@ -375,10 +396,17 @@ def _normalize_run_name(value: Any) -> str | None:
 
 
 @router.post("/jobs", response_class = JSONResponse, response_model = JobCreateResponse)
-def create_job(payload: RecipePayload, request: Request):
+def create_job(
+    payload: RecipePayload,
+    request: Request,
+    credential: tuple = Depends(get_current_credential),
+    via_api_key: ViaApiKey = False,
+):
     recipe = payload.recipe
     if not recipe.get("columns"):
         raise HTTPException(status_code = 400, detail = "Recipe must include columns.")
+    if recipe_has_stdio_mcp(recipe):
+        require_ui_session_for_local_commands(via_api_key)
 
     run: dict[str, Any] = payload.run or {}
     run.pop("artifact_path", None)
@@ -406,7 +434,11 @@ def create_job(payload: RecipePayload, request: Request):
             ) from exc
 
     try:
-        internal_api_key_id = _inject_local_providers(recipe, request)
+        internal_api_key_id = _inject_local_providers(recipe, request, credential[1])
+    except CredentialRotated as exc:
+        # A reset-password landed after this request authenticated; the workflow key
+        # is refused, so answer like any other revoked credential rather than 500.
+        raise HTTPException(status_code = 401, detail = "Invalid or expired token") from exc
     except ValueError as exc:
         raise log_and_http_error(
             exc,
@@ -587,7 +619,9 @@ def publish_job_dataset(job_id: str, payload: PublishDatasetRequest):
     }
 
 
-@router.get("/jobs/{job_id}/events")
+# POST too: quick tunnels hold a streamed GET until it closes. The hidden GET keeps old clients.
+@router.post("/jobs/{job_id}/events")
+@router.get("/jobs/{job_id}/events", include_in_schema = False)
 async def job_events(request: Request, job_id: str):
     mgr = get_job_manager()
     last_id = request.headers.get("last-event-id")
@@ -611,6 +645,7 @@ async def job_events(request: Request, job_id: str):
 
     async def gen():
         try:
+            last_sent = time.monotonic()
             for event in sub.replay:
                 yield sub.format_sse(event)
 
@@ -619,9 +654,18 @@ async def job_events(request: Request, job_id: str):
                     break
                 event = await sub.next_event(timeout_sec = 1.0)
                 if event is None:
+                    # A quiet job would otherwise go silent for minutes and take a tunnel 524.
+                    if time.monotonic() - last_sent >= _KEEPALIVE_EVERY_S:
+                        last_sent = time.monotonic()
+                        yield ": keepalive\n\n"
                     continue
+                last_sent = time.monotonic()
                 yield sub.format_sse(event)
         finally:
             mgr.unsubscribe(sub)
 
-    return StreamingResponse(gen(), media_type = "text/event-stream")
+    return StreamingResponse(
+        gen(),
+        media_type = "text/event-stream",
+        headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

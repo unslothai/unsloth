@@ -574,9 +574,8 @@ class ExportOrchestrator:
         push_to_hub: bool = False,
         repo_id: Optional[str] = None,
         hf_token: Optional[str] = None,
-        private: bool = False,
-        gguf_shard_size: Optional[str] = None,
         imatrix_file = None,
+        private: bool = False,
     ) -> Tuple[bool, str, Optional[str]]:
         """Export model in GGUF format. `quantization_method` may be a single method or a list."""
         return self._run_export(
@@ -587,9 +586,8 @@ class ExportOrchestrator:
                 "push_to_hub": push_to_hub,
                 "repo_id": repo_id,
                 "hf_token": hf_token,
-                "private": private,
-                "gguf_shard_size": gguf_shard_size,
                 "imatrix_file": imatrix_file,
+                "private": private,
             },
         )
 

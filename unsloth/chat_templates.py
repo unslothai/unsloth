@@ -39,13 +39,53 @@ import re
 from .ollama_template_mappers import OLLAMA_TEMPLATES
 try:
     from unsloth_zoo.dataset_utils import (
-        train_on_responses_only,
+        train_on_responses_only as _zoo_train_on_responses_only,
         standardize_data_formats,
     )
 except ImportError:
     # dataset_utils pulls torch; keep chat_templates importable on torch-free
     # (MLX) hosts, which expose these via the backend-specific wrappers instead.
-    train_on_responses_only = standardize_data_formats = None
+    _zoo_train_on_responses_only = standardize_data_formats = None
+
+if _zoo_train_on_responses_only is None:
+    train_on_responses_only = None
+else:
+    import functools as _functools
+    import inspect as _inspect
+
+    _ZOO_RESPONSES_ONLY_SIGNATURE = _inspect.signature(_zoo_train_on_responses_only)
+
+    @_functools.wraps(_zoo_train_on_responses_only)
+    def train_on_responses_only(*args, **kwargs):
+        # The zoo still auto-sizes its dataset.map() workers with the uncapped
+        # min(max(cpu_count + 4, 2), 64) heuristic (issue #2693) and is a
+        # separate package, so bound the count on the way in. See
+        # resolve_responses_only_num_proc; the local copy is only the fallback
+        # for a zoo predating it. Top level, not under unsloth.utils, whose
+        # __init__ imports torch: this path has to stay MLX-safe.
+        try:
+            from unsloth_zoo.dataset_num_proc import resolve_responses_only_num_proc
+        except ImportError:
+            from .dataset_num_proc import resolve_responses_only_num_proc
+
+        try:
+            bound = _ZOO_RESPONSES_ONLY_SIGNATURE.bind_partial(*args, **kwargs)
+        except TypeError:
+            # Signature drift, or a bad call. Let the zoo raise its own error.
+            return _zoo_train_on_responses_only(*args, **kwargs)
+
+        # The zoo returns the masking closure before reading num_proc.
+        if bound.arguments.get("return_function", False):
+            return _zoo_train_on_responses_only(*args, **kwargs)
+
+        arguments = dict(bound.arguments)
+        arguments["num_proc"] = resolve_responses_only_num_proc(
+            arguments.get("trainer"),
+            arguments.get("num_proc"),
+        )
+        trainer = arguments.pop("trainer", None)
+        return _zoo_train_on_responses_only(trainer, **arguments)
+
 standardize_sharegpt = standardize_data_formats
 CHAT_TEMPLATES = {}
 DEFAULT_SYSTEM_MESSAGE = {}
@@ -218,7 +258,7 @@ vicuna_ollama = _ollama_template("vicuna")
 
 vicuna_eos_token = "eos_token"
 CHAT_TEMPLATES["vicuna"] = (vicuna_template, vicuna_eos_token, False, vicuna_ollama,)
-DEFAULT_SYSTEM_MESSAGE["vicuna"] = "A chat between a curious user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user\\'s questions."
+DEFAULT_SYSTEM_MESSAGE["vicuna"] = "A chat between a curious user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user's questions."
 
 # =========================================== Vicuna Old
 # https://github.com/lm-sys/FastChat/blob/main/docs/vicuna_weights_version.md#prompt-template
@@ -248,7 +288,7 @@ vicuna_old_ollama = _ollama_template("vicuna_old")
 
 vicuna_old_eos_token = "eos_token"
 CHAT_TEMPLATES["vicuna_old"] = (vicuna_old_template, vicuna_old_eos_token, False, vicuna_old_ollama,)
-DEFAULT_SYSTEM_MESSAGE["vicuna_old"] = "A chat between a curious human and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the human\\'s questions."
+DEFAULT_SYSTEM_MESSAGE["vicuna_old"] = "A chat between a curious human and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the human's questions."
 
 CHAT_TEMPLATES["vicuna old"] = CHAT_TEMPLATES["vicuna_old"]
 DEFAULT_SYSTEM_MESSAGE["vicuna old"] = DEFAULT_SYSTEM_MESSAGE["vicuna_old"]
@@ -1810,6 +1850,13 @@ yi_chat_template_eos_token = "<|endoftext|>"
 CHAT_TEMPLATES["yi-chat"] = (yi_chat_template, yi_chat_template_eos_token, False, yi_chat_ollama)
 DEFAULT_SYSTEM_MESSAGE["yi-chat"] = None
 
+# Caller text is spliced into Jinja '...' / "..." literals: a bare quote closes the
+# literal, a backslash reads as an escape, and \r becomes \n before unescaping. Backslash
+# first, else it re-escapes the rest; escaping both quotes is safe in either style.
+def _escape_jinja_literal(text):
+    return text.replace("\\", "\\\\").replace("'", "\\'").replace('"', '\\"').replace("\r", "\\r")
+
+
 def _change_system_message(template: str, type_chat_template: str, system_message: str = None):
     # For predefined templates, check if default system message exists
     default_system_message = DEFAULT_SYSTEM_MESSAGE.get(f"{type_chat_template}", None)
@@ -1833,7 +1880,9 @@ def _change_system_message(template: str, type_chat_template: str, system_messag
 
     # For predefined templates with default system message
     message_to_use = system_message if system_message is not None else default_system_message
-    new_template = template.replace("{system_message}", message_to_use)
+    # Predefined templates hold {system_message} inside a Jinja literal, so escape it.
+    # Custom ones (above) are filled verbatim: their placeholder may sit in raw text.
+    new_template = template.replace("{system_message}", _escape_jinja_literal(message_to_use))
 
     return new_template, message_to_use
 
@@ -1901,8 +1950,8 @@ def get_chat_template(
 
         chat_template, stop_word, yes_map_eos_token, ollama_modelfile = CHAT_TEMPLATES[chat_template]
 
-        # Check mapping to eos_token
-        if not map_eos_token and yes_map_eos_token: map_eos_token = True
+        # Check mapping to eos_token. The template can veto the mapping, but it must not
+        # force it back on: `map_eos_token = False` is an explicit choice by the caller.
         if not yes_map_eos_token and map_eos_token: map_eos_token = False
 
         if type(stop_word) in (list, tuple,):
@@ -1912,6 +1961,19 @@ def get_chat_template(
             token_mapping = None
 
         assert(type(stop_word) is str)
+
+        # gemma_chatml and gemma2_chatml build <|im_end|> by renaming <eos>, and that rename
+        # runs whether or not the caller opts out, while the rebuilt tokenizer only carries
+        # eos_token = stop_word when the mapping is on: honouring the opt-out here lets the
+        # tokenizer class default re-add <eos> as a fresh id past the end of the embeddings.
+        # Key on the mapping, not on tokenizer.eos_token, or a Gemma checkpoint whose
+        # eos_token is <end_of_turn> (gemma-3-270m-it, gemma-3-1b-it) slips through.
+        if not map_eos_token and yes_map_eos_token and token_mapping is not None:
+            logger.warning_once(
+                f"Unsloth: {type_chat_template} builds {stop_word} by renaming existing "\
+                f"tokens, so map_eos_token = False cannot be honored here."
+            )
+            map_eos_token = True
 
         # Check fast tokenizer
         if not is_fast_tokenizer:
@@ -2040,11 +2102,12 @@ def get_chat_template(
         chat_template = "{{ bos_token }}" + chat_template
 
     # For ShareGPT role -> from and content -> value
+    # The spliced values land inside Jinja literals, so escape them.
     new_chat_template = chat_template\
-        .replace("'role'",      "'" + mapping["role"]      + "'")\
-        .replace("'content'",   "'" + mapping["content"]   + "'")\
-        .replace("'user'",      "'" + mapping["user"]      + "'")\
-        .replace("'assistant'", "'" + mapping["assistant"] + "'")
+        .replace("'role'",      "'" + _escape_jinja_literal(mapping["role"])      + "'")\
+        .replace("'content'",   "'" + _escape_jinja_literal(mapping["content"])   + "'")\
+        .replace("'user'",      "'" + _escape_jinja_literal(mapping["user"])      + "'")\
+        .replace("'assistant'", "'" + _escape_jinja_literal(mapping["assistant"]) + "'")
 
     if use_zoo_tokenizer_patch:
         # Unsloth MLX avoids the model-utils tokenizer wrapper because that
@@ -2249,9 +2312,19 @@ def to_sharegpt(
         if type(convo) is list:
             raise TypeError("Unsloth: Your dataset is probably already in ShareGPT format!")
 
-    possible_columns, final_optional_prompts = _parse_combined_prompt(merged_prompt, dataset)
-    formatter = _create_formatter(possible_columns, final_optional_prompts, merged_column_name)
-    dataset = dataset.map(formatter, batched = True, desc = "Merging columns")
+    if merged_prompt:
+        possible_columns, final_optional_prompts = _parse_combined_prompt(merged_prompt, dataset)
+        formatter = _create_formatter(possible_columns, final_optional_prompts, merged_column_name)
+        dataset = dataset.map(formatter, batched = True, desc = "Merging columns")
+    elif merged_column_name not in dataset.column_names:
+        # Without a merged_prompt there is nothing to build the input from, so the
+        # column has to be there already. Running the formatter anyway would fill
+        # merged_column_name with empty strings and silently blank every human turn.
+        raise KeyError(
+            f"Unsloth: `to_sharegpt` needs an input column named '{merged_column_name}', "
+            f"but the dataset has {dataset.column_names}. Pass `merged_column_name` to "
+            "name the existing column, or `merged_prompt` to build the input from several."
+        )
 
     def __convert_to_sharegpt__(examples):
         users      = examples[merged_column_name]
@@ -2261,10 +2334,14 @@ def to_sharegpt(
                 "Unsloth: Input and output columns must have matching batch lengths. "
                 f"Got {len(users)} {merged_column_name} rows and {len(assistants)} {output_column_name} rows."
             )
+        # A null cell is an absent value, not the word "None". _create_formatter
+        # already coalesces it on the merged path, and skipping the merge must
+        # not reintroduce it; the output column never went through that path at
+        # all, so it leaked here either way.
         texts = [
             [
-                {"from" : "human", "value" : str(user)     },
-                {"from" : "gpt",   "value" : str(assistant)},
+                {"from" : "human", "value" : "" if user      is None else str(user)     },
+                {"from" : "gpt",   "value" : "" if assistant is None else str(assistant)},
             ] \
             for user, assistant in zip(users, assistants)
         ]
@@ -2431,7 +2508,9 @@ extra_eos_tokens = None,
             "Unsloth: Base llama-3 models did not train <|eot_id|>.\n"\
             "Please use the instruct version or use <|end_of_text|>"
         )
-    extra_eos_tokens = list(set(extra_eos_tokens))
+    # dict.fromkeys, not set: `extra_eos_tokens.insert(0, tokenizer.eos_token)` above
+    # sets a priority that `extra_eos_tokens[0]` relies on when appending the EOS.
+    extra_eos_tokens = list(dict.fromkeys(extra_eos_tokens))
 
     count_eos = 0
     for eos in extra_eos_tokens:
@@ -2470,7 +2549,9 @@ extra_eos_tokens = None,
         final_combined_check = left if final_combined_check else chat_template
 
         # Isolate input
-        extra_eos_tokens_regex = "|".join(f"(?:{re.escape(x)})" for x in extra_eos_tokens)
+        # Regex alternations prefer the first match, so match prefix tokens last.
+        eos_tokens_for_matching = sorted(extra_eos_tokens, key = len, reverse = True)
+        extra_eos_tokens_regex = "|".join(f"(?:{re.escape(x)})" for x in eos_tokens_for_matching)
         if len(extra_eos_tokens_regex) != 0:
             find_end = f"(?:{extra_eos_tokens_regex})?"
         else:
@@ -2601,6 +2682,8 @@ extra_eos_tokens = None,
 
     # HF Jinja Chat template
     def process(part, which, content = "message['content']"):
+        # Escape the literal pieces only; the placeholder becomes Jinja syntax below.
+        part = which.join(_escape_jinja_literal(piece) for piece in part.split(which))
         if part.endswith(which):
             part = "'" + part[:part.find(which)] + f"' + {content}"
         elif part.startswith(which):
@@ -2623,29 +2706,28 @@ extra_eos_tokens = None,
             "{% endif %}"\
         "{% endfor %}"\
         "{% if add_generation_prompt %}"\
-            "{{ '" + output_part[:output_part.find("{OUTPUT}")] + "' }}"\
+            "{{ '" + _escape_jinja_literal(output_part[:output_part.find("{OUTPUT}")]) + "' }}"\
         "{% endif %}"
 
     # Now add system prompt to jinja
     if len(system_part) != 0:
+        # Strip the BOS while raw: an escaped bos_token no longer matches.
+        if has_bos_token:
+            system_part = system_part.replace(tokenizer.bos_token, "", 1)
         partial_system = process(system_part, "{SYSTEM}", "messages[0]['content']")
         partial_system = partial_system.replace("{SYSTEM}", "")
+        system_expr = partial_system
 
         if "{SYSTEM}" in partial_system:
             if default_system_message is None:
                 raise RuntimeError("Unsloth: Please specify a default system message!")
-
-        # Separate the BOS
-        if has_bos_token:
-            partial_system = partial_system.replace(tokenizer.bos_token, "", 1)
-            system_part    = system_part   .replace(tokenizer.bos_token, "", 1)
 
         partial_system = \
             "{% if messages[0]['role'] == 'system' %}"\
                 "{{ " + partial_system + " }}"\
                 "{% set loop_messages = messages[1:] %}"
         if default_system_message is not None:
-            full_system = system_part.replace("{SYSTEM}", default_system_message)
+            full_system = _escape_jinja_literal(system_part.replace("{SYSTEM}", default_system_message))
             if "{SYSTEM}" in system_part:
                 modelfile += '\nSYSTEM "' + default_system_message + '"'
             partial_system += "{% else %}"\
@@ -2659,7 +2741,12 @@ extra_eos_tokens = None,
                 "{% set loop_messages = messages %}"\
             "{% endif %}"
         else:
-            partial_system += "{% endif %}"
+            # Emit a static prefix on both branches so the collapse below
+            # makes it unconditional.
+            partial_system += "{% else %}"\
+                "{{ " + system_expr + " }}"\
+                "{% set loop_messages = messages %}"\
+            "{% endif %}"
 
         jinja_template = partial_system + jinja_template
 
@@ -2676,7 +2763,7 @@ extra_eos_tokens = None,
 
     # Check if system part is the same!
     jinja_template = re.sub(
-        r"\{\% if messages\[0\]\['role'\] \=\= 'system' \%\}\{\{ '(.+?)' \}\}"\
+        r"\{\% if messages\[0\]\['role'\] \=\= 'system' \%\}\{\{ '(.*?)' \}\}"\
         r"\{\% set loop\_messages \= messages\[1\:\] \%\}"\
         r"\{\% else \%\}\{\{ '\1' \}\}\{\% set loop\_messages \= messages \%\}\{\% endif \%\}"\
         r"\{\% for message in loop\_messages \%\}",

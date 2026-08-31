@@ -13,6 +13,9 @@ const ModelsPage = lazyRouteComponent(
 export interface ModelsSearch {
   tab?: "discover" | "downloaded";
   model?: string;
+  file?: string;
+
+  intent?: number;
   section?: "trending" | "latest" | "finetune";
   kind?: "models" | "datasets";
 }
@@ -28,6 +31,18 @@ export const Route = createRoute({
     if (raw === "discover" || raw === "downloaded") next.tab = raw;
     const model = search.model;
     if (typeof model === "string" && model.length > 0) next.model = model;
+    const file = search.file;
+    if (next.model && typeof file === "string" && file.length > 0)
+      next.file = file;
+
+    const intent = search.intent;
+    if (
+      next.file &&
+      typeof intent === "number" &&
+      Number.isSafeInteger(intent)
+    ) {
+      next.intent = intent;
+    }
     const section = search.section;
     if (
       section === "trending" ||

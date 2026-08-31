@@ -50,6 +50,11 @@ class ParsedUpdate:
 _RE_SAMPLERS = re.compile(
     r"Preparing samplers to generate (?P<rows>\d+) records across (?P<cols>\d+) columns"
 )
+# Current data-designer phrasing for the same sampling stage (the line above is
+# kept for older builds). No column count is reported here, so only rows is set.
+_RE_SAMPLING_SEED = re.compile(
+    r"Sampling (?P<rows>\d+) records from .*?seed dataset", re.IGNORECASE
+)
 _RE_COLCFG = re.compile(r"model config for column '(?P<col>[^']+)'")
 _RE_PROCESSING_COL = re.compile(r"Processing .* column '(?P<col>[^']+)'")
 _RE_PROGRESS = re.compile(
@@ -221,6 +226,13 @@ def parse_log_message(msg: str) -> ParsedUpdate | None:
             stage = STAGE_SAMPLING,
             rows = int(m.group("rows")),
             cols = int(m.group("cols")),
+        )
+
+    m = _RE_SAMPLING_SEED.search(msg)
+    if m:
+        return ParsedUpdate(
+            stage = STAGE_SAMPLING,
+            rows = int(m.group("rows")),
         )
 
     if "Sorting column configs into a Directed Acyclic Graph" in msg:

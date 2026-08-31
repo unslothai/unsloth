@@ -27,7 +27,7 @@ sys.path.insert(0, _backend)
 import routes.inference as inf_mod
 from routes.inference import (
     _anthropic_passthrough_non_streaming,
-    _anthropic_passthrough_retry_url,
+    _passthrough_retry_url,
     _anthropic_passthrough_stream,
 )
 
@@ -74,6 +74,10 @@ class _Request:
 class _FakeNonStreamingClient:
     def __init__(self):
         self.urls = []
+        self.closed = False
+
+    async def aclose(self):
+        self.closed = True
 
     async def post(self, url, **_kwargs):
         self.urls.append(url)
@@ -152,7 +156,7 @@ async def _run_non_streaming(backend):
 def test_retry_url_rebuilds_from_the_respawned_base_url():
     backend = _Backend()
 
-    url = asyncio.run(_anthropic_passthrough_retry_url(backend, httpx.ConnectError("x")))
+    url = asyncio.run(_passthrough_retry_url(backend, httpx.ConnectError("x")))
 
     assert url == f"{_FRESH}/v1/chat/completions"
     assert backend.respawn_calls == 1
@@ -161,7 +165,7 @@ def test_retry_url_rebuilds_from_the_respawned_base_url():
 def test_retry_url_is_none_when_nothing_respawned():
     backend = _Backend(respawn_ok = False)
 
-    url = asyncio.run(_anthropic_passthrough_retry_url(backend, httpx.ConnectError("x")))
+    url = asyncio.run(_passthrough_retry_url(backend, httpx.ConnectError("x")))
 
     assert url is None
 
@@ -170,7 +174,7 @@ def test_retry_url_defers_to_the_mtp_crash_recovery():
     # An MTP+tensor crash schedules its own reload; retrying would race it.
     backend = _Backend(mtp_handled = True)
 
-    url = asyncio.run(_anthropic_passthrough_retry_url(backend, httpx.ConnectError("x")))
+    url = asyncio.run(_passthrough_retry_url(backend, httpx.ConnectError("x")))
 
     assert url is None
     assert backend.respawn_calls == 0
@@ -179,7 +183,7 @@ def test_retry_url_defers_to_the_mtp_crash_recovery():
 def test_retry_url_tolerates_a_backend_without_respawn_hooks():
     backend = SimpleNamespace(base_url = _DEAD)
 
-    url = asyncio.run(_anthropic_passthrough_retry_url(backend, httpx.ConnectError("x")))
+    url = asyncio.run(_passthrough_retry_url(backend, httpx.ConnectError("x")))
 
     assert url is None
 
@@ -189,7 +193,7 @@ def test_retry_url_tolerates_a_backend_without_respawn_hooks():
 
 def test_non_streaming_retries_against_the_new_port(monkeypatch):
     client = _FakeNonStreamingClient()
-    monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: client)
+    monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
     backend = _Backend()
 
     response = asyncio.run(_run_non_streaming(backend))
@@ -201,7 +205,7 @@ def test_non_streaming_retries_against_the_new_port(monkeypatch):
 
 def test_non_streaming_raises_when_the_server_stays_dead(monkeypatch):
     client = _FakeNonStreamingClient()
-    monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: client)
+    monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
     backend = _Backend(respawn_ok = False)
 
     with pytest.raises(httpx.ConnectError):
@@ -212,7 +216,7 @@ def test_non_streaming_raises_when_the_server_stays_dead(monkeypatch):
 
 def test_non_streaming_does_not_retry_an_mtp_crash(monkeypatch):
     client = _FakeNonStreamingClient()
-    monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: client)
+    monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
     backend = _Backend(mtp_handled = True)
 
     with pytest.raises(httpx.ConnectError):

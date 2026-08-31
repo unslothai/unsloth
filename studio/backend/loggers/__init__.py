@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-from .handlers import get_logger
+from .handlers import get_logger, install_uvicorn_duplicate_exception_filter
 
-__all__ = ["get_logger"]
+__all__ = ["get_logger", "install_uvicorn_duplicate_exception_filter"]

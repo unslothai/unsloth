@@ -13,7 +13,9 @@ Runs against an already-booted, already-bootstrapped Unsloth:
 """
 
 import os
+import re
 import sys
+import time
 from pathlib import Path
 
 from playwright.sync_api import TimeoutError as PWTimeout
@@ -27,8 +29,56 @@ PW = os.environ["STUDIO_PW"]
 ART = Path(os.environ.get("PW_ART_DIR", "logs/playwright_fontscale"))
 ART.mkdir(parents = True, exist_ok = True)
 
-SIZES = (12, 20)
-DEFAULT = 16
+# Read the range from the store instead of restating it: the default is the one
+# size at which data-ui-font-size is dropped, and it has already moved once
+# (16 -> 15), which is exactly what a pinned copy here fails on.
+_STORE = (
+    Path(__file__).resolve().parents[2]
+    / "studio/frontend/src/features/settings/stores/appearance-custom-store.ts"
+).read_text(encoding = "utf-8")
+_RANGE = re.search(
+    r"UI_FONT_SIZE_RANGE\s*=\s*\{\s*min:\s*(\d+),\s*max:\s*(\d+),\s*default:\s*(\d+)",
+    _STORE,
+)
+if _RANGE is None:
+    raise AssertionError("[font-scale] FAIL: no UI_FONT_SIZE_RANGE in appearance-custom-store.ts")
+SIZES = (int(_RANGE.group(1)), int(_RANGE.group(2)))
+DEFAULT = int(_RANGE.group(3))
+# The base the authored rem typography is written against; --ui-font-scale is
+# the preference divided by it.
+_BASE = re.search(r"UI_FONT_SIZE_CSS_BASE\s*=\s*(\d+)", _STORE)
+if _BASE is None:
+    raise AssertionError(
+        "[font-scale] FAIL: no UI_FONT_SIZE_CSS_BASE in appearance-custom-store.ts"
+    )
+CSS_BASE = int(_BASE.group(1))
+
+
+def settled_scroll_top(
+    page,
+    quiet_ms = 200,
+    timeout_ms = 5_000,
+):
+    """The select viewport's scrollTop once it has stopped moving.
+
+    Radix scrolls the highlighted item into view off the back of the keypress, so
+    a scrollTop read straight after `keyboard.press` is a mid-scroll sample, not
+    where the viewport ends up. Poll until it holds the same value for `quiet_ms`.
+    Falls back to the last value seen rather than raising: this only establishes
+    the floor for the wheel check, and that check reports its own failure.
+    """
+    last = page.evaluate(SCROLL_TOP_JS)
+    quiet_since = time.monotonic()
+    deadline = time.monotonic() + timeout_ms / 1000
+    while time.monotonic() < deadline:
+        page.wait_for_timeout(50)
+        now = page.evaluate(SCROLL_TOP_JS)
+        if now != last:
+            last = now
+            quiet_since = time.monotonic()
+        elif (time.monotonic() - quiet_since) * 1000 >= quiet_ms:
+            return now
+    return last
 
 
 def step(s):
@@ -204,17 +254,36 @@ def main():
         if not kb_top > 0:
             fail(f"keyboard did not scroll the select viewport after 40 presses: {kb_top}")
 
+        # That read lands mid-scroll and comes in low (24-35px on the ubuntu CI image),
+        # which is neither the floor the wheel has to beat nor a moment a wheel event
+        # survives. Let the scroll finish and re-read instead of racing it.
+        kb_top = settled_scroll_top(page)
+        # At 0 the comparison below is unsatisfiable, so the wheel would always fail.
+        if not kb_top > 0:
+            fail(f"select viewport returned to the top once the keyboard scroll settled: {kb_top}")
+
         vp_box = viewport.bounding_box()
-        page.mouse.move(vp_box["x"] + vp_box["width"] / 2, vp_box["y"] + 40)
-        page.mouse.wheel(0, -400)
-        try:
-            page.wait_for_function(
-                "top => document.querySelector('[data-radix-select-viewport]').scrollTop < top",
-                arg = kb_top,
-                timeout = 10_000,
-            )
-        except PWTimeout:
-            wheel_top = page.evaluate(SCROLL_TOP_JS)
+        # Keep the pointer inside the viewport: a fixed 40px offset lands outside a
+        # shorter box and the wheel then goes to whatever is underneath.
+        page.mouse.move(
+            vp_box["x"] + vp_box["width"] / 2,
+            vp_box["y"] + min(40, vp_box["height"] / 2),
+        )
+        # A single wheel event can be dropped, so retry a bounded number of times. A
+        # viewport that truly refuses the wheel never moves and still fails.
+        wheel_top = kb_top
+        for _ in range(5):
+            page.mouse.wheel(0, -400)
+            try:
+                page.wait_for_function(
+                    "top => document.querySelector('[data-radix-select-viewport]').scrollTop < top",
+                    arg = kb_top,
+                    timeout = 2_000,
+                )
+                break
+            except PWTimeout:
+                wheel_top = page.evaluate(SCROLL_TOP_JS)
+        else:
             fail(f"wheel did not scroll the select viewport: {kb_top} -> {wheel_top}")
         page.keyboard.press("Escape")
         page.set_viewport_size({"width": 1440, "height": 900})
@@ -226,23 +295,24 @@ def main():
         page.goto(f"{BASE}/hub", wait_until = "domcontentloaded")
         page.wait_for_timeout(2000)
         open_appearance(page)
-        set_input(page, "UI font size", 12)
+        small = SIZES[0]
+        set_input(page, "UI font size", small)
         page.keyboard.press("Escape")
         page.wait_for_timeout(400)
         tab = page.get_by_role("radio").filter(has_text = "Discover").first
         tab.wait_for(state = "visible", timeout = 15000)
         tab_font = tab.evaluate("el => parseFloat(getComputedStyle(el).fontSize)")
-        # text-ui-12p5 at scale 0.75; 16px means twMerge dropped the token.
-        if not near(tab_font, 12.5 * 12 / 16):
+        # text-ui-12p5 at the smallest scale; the unscaled 12.5px means twMerge dropped the token.
+        if not near(tab_font, 12.5 * small / CSS_BASE):
             fail(f"hub tab font did not scale (twMerge drop?): {tab_font}")
         icon_w = page.evaluate(
             "() => { const el = document.querySelector('.size-icon');"
             " return el ? parseFloat(getComputedStyle(el).width) : null; }"
         )
-        # Standard icons render at the UI font size itself below the
-        # default, so setting 12 gives 12px glyphs.
-        if not near(icon_w, 12):
-            fail(f"size-icon did not match the UI font size below 16: {icon_w}")
+        # Standard icons render at the UI font size itself below the CSS base,
+        # so the smallest setting gives glyphs of exactly that many px.
+        if not near(icon_w, small):
+            fail(f"size-icon did not match the UI font size below {CSS_BASE}: {icon_w}")
         page.goto(BASE, wait_until = "domcontentloaded")
         page.wait_for_timeout(1500)
         open_appearance(page)
