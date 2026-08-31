@@ -576,6 +576,8 @@ interface ImportedHelper {
 interface ScanOptions {
   /** Start at this callable instead of the module body. */
   entry?: ts.Node;
+  /** Arguments of the call that reached `entry`, for its parameter defaults. */
+  entryArgs?: readonly ts.Expression[];
   /** Local name -> a helper another module exports, for cross-file calls. */
   helpers?: Map<string, ImportedHelper>;
 }
@@ -774,7 +776,10 @@ function eagerReads(
       const helper = !target ? helpers.get(node.expression.text) : undefined;
       if (helper && !entered.has(helper.fn) && !isShadowed(node.expression)) {
         entered.add(helper.fn);
-        const inner = eagerReads(helper.source, helper.names, { entry: helper.fn });
+        const inner = eagerReads(helper.source, helper.names, {
+          entry: helper.fn,
+          entryArgs: node.arguments,
+        });
         if (inner.length > 0) {
           const { line } = source.getLineAndCharacterOfPosition(node.getStart(source));
           const where = path.relative(SRC, helper.file);
@@ -846,7 +851,7 @@ function eagerReads(
       visit(child, eagerName ? deferred : next, targets);
     });
   };
-  if (options.entry) enterCallable(options.entry, moduleTargets);
+  if (options.entry) enterCallable(options.entry, moduleTargets, options.entryArgs);
   else source.forEachChild((child) => visit(child, false, moduleTargets));
   return found;
 }
@@ -1071,7 +1076,22 @@ function tdzProneExportNames(source: ts.SourceFile): Set<string> {
 function exportedFunctions(source: ts.SourceFile): Map<string, ts.FunctionLikeDeclaration> {
   const out = new Map<string, ts.FunctionLikeDeclaration>();
   for (const statement of source.statements) {
+    if (ts.isExportAssignment(statement) && !statement.isExportEquals) {
+      const expression = statement.expression;
+      if (ts.isArrowFunction(expression) || ts.isFunctionExpression(expression)) {
+        out.set("default", expression);
+      }
+      continue;
+    }
     if (!hasModifier(statement, ts.SyntaxKind.ExportKeyword)) continue;
+    if (
+      ts.isFunctionDeclaration(statement) &&
+      statement.body &&
+      hasModifier(statement, ts.SyntaxKind.DefaultKeyword)
+    ) {
+      out.set("default", statement);
+      continue;
+    }
     if (ts.isFunctionDeclaration(statement) && statement.name && statement.body) {
       out.set(statement.name.text, statement);
       continue;
@@ -1270,11 +1290,20 @@ test("no module-scope read of a chat barrel value", () => {
       const clause = statement.importClause;
       if (!clause || clause.isTypeOnly) continue;
       const bound = clause.namedBindings;
-      if (!bound || ts.isNamespaceImport(bound)) continue;
+      if (!bound && !clause.name) continue;
+      if (bound && ts.isNamespaceImport(bound)) continue;
       const helperSource = parse(target, sources.get(target) ?? "");
       const helperNames = barrelValueNames(helperSource, barrelNameFilter(target));
       if (helperNames.size === 0) continue;
       const exported = exportedFunctions(helperSource);
+      // `import read from "./helper"` binds whatever that module default-exports.
+      if (clause.name) {
+        const fn = exported.get("default");
+        if (fn) {
+          helpers.set(clause.name.text, { file: target, source: helperSource, fn, names: helperNames });
+        }
+      }
+      if (!bound || ts.isNamespaceImport(bound)) continue;
       for (const element of bound.elements) {
         if (element.isTypeOnly) continue;
         const fn = exported.get((element.propertyName ?? element.name).text);
@@ -1833,4 +1862,31 @@ test("a star re-export of the barrel carries every name", () => {
     },
   );
   assert.deepEqual([...names], ["ANYTHING"], "any name from a star bridge is a barrel binding");
+});
+
+test("an imported helper is entered with the caller's arguments, default import included", () => {
+  const named = path.join(SRC, "fake", "namedhelper.ts");
+  const dflt = path.join(SRC, "fake", "defaulthelper.ts");
+  const sources = new Map<string, string>([
+    [named, `import { K } from "${BARREL}";\nexport function read(v = K) { return v; }\n`],
+    [dflt, `import { K } from "${BARREL}";\nexport default function read() { return K; }\n`],
+  ]);
+  const build = (target: string, name: string) => {
+    const source = parse(target, sources.get(target) as string);
+    const fn = exportedFunctions(source).get(name) as ts.FunctionLikeDeclaration;
+    assert.ok(fn, `${target} must export ${name}`);
+    return { file: target, source, fn, names: barrelValueNames(source) };
+  };
+  const scan = (code: string, helpers: Map<string, ImportedHelper>) =>
+    eagerReads(parse(path.join(SRC, "fake", "c.ts"), code), new Set<string>(), { helpers });
+
+  const h = new Map([["read", build(named, "read")]]);
+  assert.equal(scan(`import { read } from "./namedhelper";\nconst v = read();\n`, h).length, 1,
+    "an omitted argument must let the helper's default be evaluated");
+  assert.deepEqual(scan(`import { read } from "./namedhelper";\nconst v = read(1);\n`, h), [],
+    "a supplied argument means the default never runs");
+
+  const d = new Map([["read", build(dflt, "default")]]);
+  assert.equal(scan(`import read from "./defaulthelper";\nconst v = read();\n`, d).length, 1,
+    "a default-imported helper is followed like a named one");
 });
