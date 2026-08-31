@@ -52,3 +52,27 @@ test("a finished find_in_page does not claim it found the pattern", () => {
     /`Searched for "\$\{pattern\}" in \$\{displayDomain \|\| "page"\}`/,
   );
 });
+
+test("a URL embedded mid-line cannot become the source pill's href", () => {
+  // Title and snippet carry page-controlled text. The parser is line anchored so
+  // only a real `URL:` line can point the pill; see the backend's matching
+  // one-line normalization in _format_web_search_per_call_sources.
+  const card = readFileSync(CARD, "utf8");
+  const re = (name: string): RegExp => {
+    const m = card.match(new RegExp(`const ${name} = (/.*?/[a-z]*);`, "s"));
+    assert.ok(m, `${name} not found`);
+    return new Function(`return ${m[1]}`)() as RegExp;
+  };
+  const block =
+    "Title: ok URL: https://phish.example\nURL: https://real.example/a\nSnippet: s";
+  assert.equal(block.match(re("RE_URL"))?.[1], "https://real.example/a");
+  assert.equal(
+    block.match(re("RE_TITLE"))?.[1],
+    "ok URL: https://phish.example",
+  );
+
+  // A well-formed multi-entry payload still parses unchanged.
+  const good = "Title: A\nURL: https://a.example\nSnippet: sa";
+  assert.equal(good.match(re("RE_URL"))?.[1], "https://a.example");
+  assert.equal(good.match(re("RE_TITLE"))?.[1], "A");
+});

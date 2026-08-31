@@ -427,34 +427,54 @@ def _extract_web_search_action(item: dict[str, Any]) -> dict[str, Any]:
 
 
 # Not "": an empty result reads as "Command completed with no output." on the card.
+# Both flushes below run only when no shell_call_output ever arrived, so neither can
+# claim the command reported; they differ in why the stream stopped asking.
 _SHELL_TRUNCATED_NOTE = "(response truncated before the command reported)"
+_SHELL_NO_REPORT_NOTE = "(no output reported for this command)"
+# An entry carrying any of these reported something, even if every value is empty.
+# Only a shape with none of them is unknown enough to dump verbatim.
+_SHELL_OUTPUT_KEYS = frozenset({"stdout", "stderr", "text", "content", "outcome"})
+
+
+def _one_line(value: Any) -> str:
+    """Collapse to a single line. These fields come from the pages that were
+    searched, and the block format below is newline delimited, so a value
+    carrying `\\n---\\nTitle: ...\\nURL: ...` would forge a source entry. Same
+    normalization tools._web_search applies to its own results."""
+    return " ".join(str(value).split())
 
 
 def _format_web_search_per_call_sources(results: Any, sources: Any) -> str:
     """Format one web search call's sources for the frontend source parser."""
     blocks: list[str] = []
+
+    def _clean_url(value: Any) -> str:
+        # Whitespace in a URL cannot survive the block format, and the frontend
+        # rejects it anyway, so drop the entry rather than emit a broken block.
+        if not isinstance(value, str) or not value or any(c.isspace() for c in value):
+            return ""
+        return value
+
     if isinstance(results, list):
         for result in results:
             if not isinstance(result, dict):
                 continue
-            url = result.get("url") if isinstance(result.get("url"), str) else ""
+            url = _clean_url(result.get("url"))
             if not url:
                 continue
-            raw_title = result.get("title")
             # Blank means missing: `Title:\s*(.+)` eats the newline and takes the URL line.
-            title = (raw_title.strip() if isinstance(raw_title, str) else "") or url
-            snippet = result.get("snippet") or result.get("text") or ""
+            title = _one_line(result.get("title") or "") or url
+            snippet = _one_line(result.get("snippet") or result.get("text") or "")
             entry = f"Title: {title}\nURL: {url}"
-            if isinstance(snippet, str) and snippet:
+            if snippet:
                 entry += f"\nSnippet: {snippet}"
             blocks.append(entry)
     if not blocks and isinstance(sources, list):
         for source in sources:
-            url = ""
-            if isinstance(source, str):
-                url = source
-            elif isinstance(source, dict) and isinstance(source.get("url"), str):
-                url = source["url"]
+            raw = source if isinstance(source, str) else None
+            if isinstance(source, dict):
+                raw = source.get("url")
+            url = _clean_url(raw)
             if url:
                 blocks.append(f"Title: {url}\nURL: {url}")
     return "\n---\n".join(blocks)
@@ -5669,7 +5689,7 @@ class ExternalProviderClient:
                                         chunk_parts.append(f"exit_code: {exit_code}")
                                 elif outcome_type == "timeout":
                                     chunk_parts.append("(timeout)")
-                            if not chunk_parts:
+                            if not chunk_parts and not _SHELL_OUTPUT_KEYS & entry.keys():
                                 try:
                                     chunk_parts.append(_json.dumps(entry, indent = 2))
                                 except (TypeError, ValueError):
@@ -6279,7 +6299,8 @@ class ExternalProviderClient:
                                         }
                                     )
                                 # Final flush: finalise any orphan shell_call
-                                # so the card stops spinning.
+                                # so the card stops spinning. Reaching here means no
+                                # shell_call_output ever arrived for it.
                                 for sc_id, sc_state in shell_calls.items():
                                     if sc_state.get("tool_end_emitted"):
                                         continue
@@ -6289,7 +6310,8 @@ class ExternalProviderClient:
                                             "tool_call_id": sc_id,
                                             "result": _format_shell_output(
                                                 sc_state.get("output") or []
-                                            ),
+                                            )
+                                            or _SHELL_NO_REPORT_NOTE,
                                         }
                                     )
                                     sc_state["tool_end_emitted"] = True

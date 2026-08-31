@@ -32,8 +32,11 @@ interface ParsedSource {
 }
 
 const RE_BLOCK_SEP = /\n---\n/;
-const RE_TITLE = /Title:\s*(.+)/;
-const RE_URL = /URL:\s*(.+)/;
+// Line anchored: these fields carry page-controlled text, and an unanchored
+// `URL:` would match one embedded mid-line and point the pill somewhere the
+// search never returned. Every producer emits them at a line start.
+const RE_TITLE = /^Title:\s*(.+)$/m;
+const RE_URL = /^URL:\s*(.+)$/m;
 const RE_SNIPPET = /Snippet:\s*(.+)/s;
 // Mirrors _normalize_url_scheme: a dotted host, optionally followed by a port
 // that may be empty ("example.com:" fetches on the default port) but otherwise
