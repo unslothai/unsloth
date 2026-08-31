@@ -25,6 +25,7 @@ from models.auth import (
     AuthStatusResponse,
     ChangePasswordRequest,
     CreateManagedUserRequest,
+    CreatedManagedUserResponse,
     CreateApiKeyRequest,
     CreateApiKeyResponse,
     DesktopInitialPasswordRequest,
@@ -479,29 +480,53 @@ def list_managed_users(_admin: str = Depends(require_admin)) -> ManagedUserListR
 
 @router.post(
     "/users",
-    response_model = ManagedUserResponse,
+    response_model = CreatedManagedUserResponse,
     status_code = status.HTTP_201_CREATED,
 )
 def create_managed_user(
     payload: CreateManagedUserRequest,
     _admin: str = Depends(require_admin),
-) -> ManagedUserResponse:
-    if any(ch.isspace() for ch in payload.password):
-        raise HTTPException(
-            status_code = status.HTTP_400_BAD_REQUEST,
-            detail = "Temporary password cannot contain spaces",
-        )
+) -> CreatedManagedUserResponse:
     try:
-        storage.create_managed_user(payload.username, payload.password)
+        setup = storage.create_managed_user(payload.username)
     except sqlite3.IntegrityError as exc:
         raise HTTPException(
             status_code = status.HTTP_409_CONFLICT,
             detail = f"Username {payload.username} already exists",
         ) from exc
-    return ManagedUserResponse(
+    return CreatedManagedUserResponse(
         username = payload.username,
         is_admin = False,
         must_change_password = True,
+        setup_code = setup["setup_code"],
+        setup_code_expires_at = setup["setup_code_expires_at"],
+        setup_code_expired = False,
+    )
+
+
+@router.post(
+    "/users/{username}/setup-code",
+    response_model = CreatedManagedUserResponse,
+)
+def regenerate_managed_user_setup_code(
+    username: str,
+    _admin: str = Depends(require_admin),
+) -> CreatedManagedUserResponse:
+    try:
+        setup = storage.regenerate_managed_user_setup_code(username)
+    except KeyError as exc:
+        raise HTTPException(status_code = status.HTTP_404_NOT_FOUND, detail = "User not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code = status.HTTP_400_BAD_REQUEST, detail = str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code = status.HTTP_409_CONFLICT, detail = str(exc)) from exc
+    return CreatedManagedUserResponse(
+        username = username,
+        is_admin = False,
+        must_change_password = True,
+        setup_code = setup["setup_code"],
+        setup_code_expires_at = setup["setup_code_expires_at"],
+        setup_code_expired = False,
     )
 
 
@@ -551,6 +576,16 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
 
     salt, pwd_hash, jwt_secret, must_change_password = record
     if not hashing.verify_password(payload.password, salt, pwd_hash):
+        _record_login_failure(key)
+        raise HTTPException(
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail = f"Incorrect password. To reset it, run this in your terminal: {_reset_password_command()}",
+        )
+
+    # Setup codes are normal first-login passwords, but unlike permanent
+    # passwords they expire. Bind the check to the exact hash verified above so
+    # a concurrent regeneration cannot accidentally authenticate the old code.
+    if not storage.setup_code_login_allowed(payload.username, pwd_hash):
         _record_login_failure(key)
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,

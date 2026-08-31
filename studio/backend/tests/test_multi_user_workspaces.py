@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import secrets
+import re
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -361,32 +362,137 @@ def test_owner_can_create_list_and_delete_standard_accounts(account_client):
     client, _app = account_client
     created = client.post(
         "/api/auth/users",
-        json = {"username": "alice", "password": "temporary-password"},
+        json = {"username": "alice"},
     )
     assert created.status_code == 201
-    assert created.json() == {
-        "username": "alice",
-        "is_admin": False,
-        "must_change_password": True,
-    }
+    created_body = created.json()
+    assert created_body["username"] == "alice"
+    assert created_body["is_admin"] is False
+    assert created_body["must_change_password"] is True
+    assert created_body["setup_code_expired"] is False
+    assert created_body["setup_code_expires_at"]
+    assert re.fullmatch(r"[A-Z2-9]{4}(?:-[A-Z2-9]{4}){3}", created_body["setup_code"])
 
     listed = client.get("/api/auth/users")
     assert listed.status_code == 200
     assert [user["username"] for user in listed.json()["users"]] == ["unsloth", "alice"]
+    assert all("setup_code" not in user for user in listed.json()["users"])
 
     assert client.delete("/api/auth/users/alice").status_code == 204
     assert auth_storage.get_user_and_secret("alice") is None
 
 
+def test_setup_code_is_hashed_expires_and_is_not_listed(account_client):
+    client, _app = account_client
+    created = client.post("/api/auth/users", json = {"username": "alice"})
+    assert created.status_code == 201
+    setup_code = created.json()["setup_code"]
+
+    conn = auth_storage.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT password_hash, setup_code_expires_at FROM auth_user WHERE username = 'alice'"
+        ).fetchone()
+        assert setup_code not in row["password_hash"]
+        assert row["setup_code_expires_at"]
+        conn.execute(
+            "UPDATE auth_user SET setup_code_expires_at = ? WHERE username = 'alice'",
+            (datetime(2000, 1, 1, tzinfo = timezone.utc).isoformat(),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    expired = client.post(
+        "/api/auth/login",
+        json = {"username": "alice", "password": setup_code},
+    )
+    wrong = client.post(
+        "/api/auth/login",
+        json = {"username": "alice", "password": "definitely-wrong"},
+    )
+    assert expired.status_code == wrong.status_code == 401
+    assert expired.json() == wrong.json()
+    listed_user = next(
+        user for user in client.get("/api/auth/users").json()["users"] if user["username"] == "alice"
+    )
+    assert listed_user["setup_code_expired"] is True
+    assert "setup_code" not in listed_user
+
+
+def test_regenerating_pending_setup_code_revokes_old_code_and_refresh_session(account_client):
+    client, _app = account_client
+    created = client.post("/api/auth/users", json = {"username": "alice"}).json()
+    first_code = created["setup_code"]
+    first_login = client.post(
+        "/api/auth/login",
+        json = {"username": "alice", "password": first_code},
+    )
+    assert first_login.status_code == 200
+
+    regenerated = client.post("/api/auth/users/alice/setup-code")
+    assert regenerated.status_code == 200
+    second_code = regenerated.json()["setup_code"]
+    assert second_code != first_code
+    assert client.post(
+        "/api/auth/login",
+        json = {"username": "alice", "password": first_code},
+    ).status_code == 401
+    assert client.post(
+        "/api/auth/refresh",
+        json = {"refresh_token": first_login.json()["refresh_token"]},
+    ).status_code == 401
+    assert client.post(
+        "/api/auth/login",
+        json = {"username": "alice", "password": second_code},
+    ).status_code == 200
+
+
+def test_setup_code_becomes_permanent_password_then_cannot_be_regenerated(account_client):
+    client, _app = account_client
+    setup_code = client.post("/api/auth/users", json = {"username": "alice"}).json()[
+        "setup_code"
+    ]
+    first_login = client.post(
+        "/api/auth/login",
+        json = {"username": "alice", "password": setup_code},
+    )
+    changed = client.post(
+        "/api/auth/change-password",
+        headers = {"Authorization": f"Bearer {first_login.json()['access_token']}"},
+        json = {"current_password": setup_code, "new_password": "alice-permanent-password"},
+    )
+    assert changed.status_code == 200
+
+    conn = auth_storage.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT must_change_password, setup_code_expires_at FROM auth_user WHERE username = 'alice'"
+        ).fetchone()
+        assert row["must_change_password"] == 0
+        assert row["setup_code_expires_at"] is None
+    finally:
+        conn.close()
+    assert client.post(
+        "/api/auth/login",
+        json = {"username": "alice", "password": setup_code},
+    ).status_code == 401
+    assert client.post(
+        "/api/auth/login",
+        json = {"username": "alice", "password": "alice-permanent-password"},
+    ).status_code == 200
+    assert client.post("/api/auth/users/alice/setup-code").status_code == 409
+
+
 def test_standard_account_cannot_manage_users(account_client):
     client, app = account_client
-    auth_storage.create_managed_user("alice", "temporary-password")
+    auth_storage.create_managed_user("alice")
     app.dependency_overrides[get_current_subject] = lambda: "alice"
 
     assert client.get("/api/auth/users").status_code == 403
     assert client.post(
         "/api/auth/users",
-        json = {"username": "bob", "password": "temporary-password"},
+        json = {"username": "bob"},
     ).status_code == 403
 
 
@@ -395,7 +501,7 @@ def test_only_owner_can_change_installation_wide_server_access(account_client):
     from routes.settings import _require_install_admin
 
     _client, _app = account_client
-    auth_storage.create_managed_user("alice", "temporary-password")
+    auth_storage.create_managed_user("alice")
 
     assert _require_install_admin("unsloth") == "unsloth"
     with pytest.raises(HTTPException) as exc_info:
@@ -432,15 +538,17 @@ def test_real_tokens_enforce_roles_and_deletion_revokes_sessions_but_keeps_works
         owner_headers = {
             "Authorization": f"Bearer {owner_login.json()['access_token']}"
         }
-        assert client.post(
+        created_alice = client.post(
             "/api/auth/users",
             headers = owner_headers,
-            json = {"username": "alice", "password": "temporary-password"},
-        ).status_code == 201
+            json = {"username": "alice"},
+        )
+        assert created_alice.status_code == 201
+        alice_setup_code = created_alice.json()["setup_code"]
 
         first_login = client.post(
             "/api/auth/login",
-            json = {"username": "alice", "password": "temporary-password"},
+            json = {"username": "alice", "password": alice_setup_code},
         )
         assert first_login.status_code == 200
         first_headers = {
@@ -450,7 +558,7 @@ def test_real_tokens_enforce_roles_and_deletion_revokes_sessions_but_keeps_works
             "/api/auth/change-password",
             headers = first_headers,
             json = {
-                "current_password": "temporary-password",
+                "current_password": alice_setup_code,
                 "new_password": "alice-permanent-password",
             },
         )
@@ -478,11 +586,12 @@ def test_real_tokens_enforce_roles_and_deletion_revokes_sessions_but_keeps_works
             json = {"refresh_token": alice_tokens["refresh_token"]},
         ).status_code == 401
 
-        assert client.post(
+        recreated = client.post(
             "/api/auth/users",
             headers = owner_headers,
-            json = {"username": "alice", "password": "replacement-password"},
-        ).status_code == 201
+            json = {"username": "alice"},
+        )
+        assert recreated.status_code == 201
         token = _bind("alice")
         try:
             assert workspace_root() == original_workspace

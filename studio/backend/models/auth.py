@@ -56,6 +56,14 @@ class ManagedUserResponse(BaseModel):
     username: str
     is_admin: bool
     must_change_password: bool
+    setup_code_expires_at: Optional[str] = None
+    setup_code_expired: bool = False
+
+
+class CreatedManagedUserResponse(ManagedUserResponse):
+    """Creation-only response. The setup code is never returned by list APIs."""
+
+    setup_code: str
 
 
 class ManagedUserListResponse(BaseModel):
@@ -69,11 +77,6 @@ class CreateManagedUserRequest(BaseModel):
         max_length = 64,
         pattern = r"^[a-z0-9][a-z0-9._-]*$",
         description = "Lowercase login name using letters, numbers, dot, underscore, or dash",
-    )
-    password: str = Field(
-        ...,
-        min_length = MIN_PASSWORD_LENGTH,
-        description = "Temporary password the user must replace on first login",
     )
 
 
