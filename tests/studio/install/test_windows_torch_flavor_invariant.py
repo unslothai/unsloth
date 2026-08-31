@@ -396,3 +396,56 @@ class TestManifestRecordsTheFlavor:
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
+
+
+class TestABrokenTorchForcesItsOwnReinstall:
+    """$script:TorchImportDefinitivelyFailed is raised when the probe reports an import
+    ERROR rather than a timeout, so the wheel on disk is the suspect and not the driver.
+    Every consumer of it lives inside `if (-not $SkipPythonDeps)`, and the XPU and CPU
+    arms did not consult it at all: an unimportable +xpu wheel still reports its on-disk
+    tag as "xpu", so no flavour change is seen, the bounded range is satisfied, and the
+    resolver keeps it. The run then writes a completion manifest over a venv that cannot
+    import torch."""
+
+    def test_the_flag_clears_the_dependency_skip(self):
+        clear = _SETUP_SRC.index(
+            "if ($script:PinChangedForceReinstall -or $script:TorchImportDefinitivelyFailed) {"
+        )
+        block = _SETUP_SRC[clear : _SETUP_SRC.index("if (-not $SkipPythonDeps) {", clear)]
+        assert "$SkipPythonDeps = $false" in block
+
+    def test_the_clear_runs_before_the_block_that_holds_every_consumer(self):
+        clear = _line_of(_SETUP_SRC, "$script:TorchImportDefinitivelyFailed) {")
+        guard = _line_of(_SETUP_SRC, "if (-not $SkipPythonDeps) {")
+        last = max(
+            number for number, line in enumerate(_SETUP_SRC.splitlines(), start = 1)
+            if "$script:TorchImportDefinitivelyFailed" in line
+        )
+        assert clear < guard < last, (
+            f"clear at {clear}, block opens at {guard}, last consumer at {last}; any "
+            f"other order leaves the reinstall announced but unreachable"
+        )
+
+    @pytest.mark.parametrize("force_var", ["$xpuForce", "$cpuForce"])
+    def test_every_conditional_force_gate_reads_the_flag(self, force_var):
+        # The ROCm arm forces unconditionally, so only these two have a gate to miss.
+        assignments = [
+            line for line in _SETUP_SRC.splitlines()
+            if f"{force_var} = " in line and "force-reinstall" in line
+        ]
+        assert assignments, f"no {force_var} assignment found"
+        guards = "\n".join(
+            line for line in _SETUP_SRC.splitlines()
+            if f"{force_var} = @(\"--force-reinstall\")" in line
+        )
+        assert "$script:TorchImportDefinitivelyFailed" in guards, (
+            f"{force_var} never forces on a definitively unimportable wheel, so the "
+            f"resolver keeps it: its on-disk tag is unchanged and the range is satisfied"
+        )
+
+    def test_the_rocm_arm_needs_no_gate(self):
+        rocm = _SETUP_SRC[_SETUP_SRC.index("if ($ROCmIndexUrl) {") :]
+        rocm = rocm[: rocm.index("if ($XpuIndexUrl) {")]
+        assert "--force-reinstall" in rocm and "$rocmForce" not in rocm, (
+            "the ROCm arm forces every time, so a broken wheel is already replaced there"
+        )

@@ -5002,7 +5002,13 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
 
 # A torch-index pin change repairs in place: force the dependency pass so the torch install
 # below force-reinstalls from the new pin (else the fast path keeps the old wheel).
-if ($script:PinChangedForceReinstall) { $SkipPythonDeps = $false }
+# A torch that will not import needs the same pass for the same reason, and it is the only
+# thing that can act on it: every --force-reinstall that reads the flag lives INSIDE this
+# block, so on a current core package with a valid manifest the fast path announced a
+# reinstall it then skipped, and setup exited successfully over an unusable wheel.
+if ($script:PinChangedForceReinstall -or $script:TorchImportDefinitivelyFailed) {
+    $SkipPythonDeps = $false
+}
 
 if (-not $SkipPythonDeps) {
 
@@ -5252,6 +5258,10 @@ if ($XpuIndexUrl) {
     if ($installedTorchTag -ne "xpu") { $xpuForce = @("--force-reinstall") }
     # A changed pin repairs in place, so the existing +xpu wheel must be replaced too.
     if ($script:PinChangedForceReinstall) { $xpuForce = @("--force-reinstall") }
+    # And a +xpu wheel that no longer imports: its on-disk tag is still "xpu", so the check
+    # above sees no flavour change and the range is satisfied, which leaves the resolver
+    # holding the broken wheel and the run writing a completion manifest over it.
+    if ($script:TorchImportDefinitivelyFailed) { $xpuForce = @("--force-reinstall") }
     if ($script:UnslothVerbose) {
         Fast-Install @_xpuTrio @xpuForce --index-url $XpuIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
         $torchInstallExit = $LASTEXITCODE
@@ -5289,6 +5299,9 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
     # --force-reinstall on a pin change: a stale +cu / +rocm wheel still satisfies the CPU
     # torch>= range, so uv would keep it and only swap companions.
     if ($script:PinChangedForceReinstall) { $cpuForce = @("--force-reinstall") }
+    # Same for a wheel that no longer imports. Nothing else here distinguishes it: the tag is
+    # rescued from disk and still reads "cpu", so the range is satisfied and it is kept.
+    if ($script:TorchImportDefinitivelyFailed) { $cpuForce = @("--force-reinstall") }
     # A PINNED cpu index installs the bounded trio (parity with _CPU_TORCH_PKG_SPEC): the /cpu
     # index serves newer torch, and _ensure_cpu_torch keeps any CPU build, so a bare trio could
     # land an unsupported version. Unpinned CPU hosts keep the bare trio (pre-pin behavior).
