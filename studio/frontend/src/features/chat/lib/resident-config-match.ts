@@ -223,9 +223,15 @@ export function residentSpeculativeNeedsRepair(
   ) {
     return true;
   }
+  // ngram-mod is not in SPECULATIVE_MODES because it runs no drafter, so none of the
+  // drafter arms can repair it. It does still stand down on a build that does not
+  // advertise the mode, and that one records "binary_outdated", which an update repairs.
+  const modeCanRepair =
+    SPECULATIVE_MODES.has(mode) ||
+    (mode === "ngram" && status.spec_fallback_reason === "binary_outdated");
   if (
     !RETRYABLE_SPEC_FALLBACKS.has(status.spec_fallback_reason ?? "") ||
-    !SPECULATIVE_MODES.has(mode)
+    !modeCanRepair
   ) {
     return false;
   }

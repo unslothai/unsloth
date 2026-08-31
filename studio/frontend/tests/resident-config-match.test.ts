@@ -1817,3 +1817,32 @@ test("the speculative normalizer reads llama.cpp's disable spellings as off", ()
   assert.equal(normalize("bogus"), "auto");
   assert.equal(normalize(null), null);
 });
+
+/**
+ * Forced ngram-mod on a build that does not advertise the mode stands down and records
+ * "binary_outdated". The settings comparison cannot see that -- the request the picker
+ * would send is identical to the one that stood down -- so the repair check is the only
+ * thing that reloads onto an updated llama.cpp. ngram-mod runs no drafter, so this is the
+ * one reason that reaches it.
+ */
+test("a forced ngram stand-down reloads onto an updated binary", () => {
+  const stoodDown = {
+    spec_fallback_reason: "binary_outdated",
+    spec_fallback_binary_changed: true,
+  };
+  assert.equal(residentSpeculativeNeedsRepair(stoodDown, "ngram"), true);
+  // Same shape as every other binary stand-down: an unchanged binary repairs nothing,
+  // so the prompt must not fire on each re-pick.
+  assert.equal(
+    residentSpeculativeNeedsRepair(
+      { ...stoodDown, spec_fallback_binary_changed: false },
+      "ngram",
+    ),
+    false,
+  );
+  // A healthy forced-ngram runtime still adopts.
+  assert.equal(
+    residentSpeculativeNeedsRepair({ spec_fallback_reason: null }, "ngram"),
+    false,
+  );
+});

@@ -6732,7 +6732,7 @@ class LlamaCppBackend:
         # The stand-down the UI asks the user to fix by updating llama.cpp. That leaves
         # the request identical, so without this the repaired load never happens.
         if (
-            speculative_type in ("auto", "mtp", "mtp+ngram", "dspark", "dflash")
+            speculative_type in ("auto", "mtp", "mtp+ngram", "dspark", "dflash", "ngram")
             and self.spec_binary_fallback_can_retry()
         ):
             return False
@@ -24367,6 +24367,12 @@ class LlamaCppBackend:
                     "does not advertise ngram-mod support; run `unsloth studio "
                     "update`. Loading without speculative decoding."
                 )
+                # The stand-down the warning tells the user to fix, recorded so the
+                # update actually takes: an unrecorded one leaves the picker adopting
+                # this process forever. "binary_outdated" rather than "binary_no_mtp"
+                # because the retry rule for that one asks _SPEC_KIND_CAPABILITY about
+                # _spec_drafter_kind, which ngram-mod never sets, having no drafter.
+                self._spec_fallback_reason = "binary_outdated"
                 return False
             ngram_knobs = _build_ngram_mod_flags(caps)
             flags.extend(["--spec-type", "ngram-mod"])

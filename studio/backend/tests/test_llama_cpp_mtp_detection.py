@@ -1756,6 +1756,30 @@ def test_forced_ngram_without_binary_support_skips_spec(monkeypatch):
     assert "--spec-type" not in flags
     assert backend.speculative_type is None
     assert backend.requested_spec_mode == "ngram"
+    # The warning tells the user to update llama.cpp, so the stand-down has to be
+    # recorded or the update cannot reach a resident process: the reload comparator
+    # dedupes an identical request, and the picker never even sends one.
+    assert backend._spec_fallback_reason == "binary_outdated"
+
+
+def test_forced_ngram_stand_down_reloads_once_the_binary_changes(monkeypatch):
+    backend = _resolver_backend(monkeypatch, ngram_supported = False)
+    backend._build_speculative_flags(
+        speculative_type = "ngram",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _NON_MTP_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    backend._launch_binary_revision = "before-the-update"
+    # An untouched binary advertises nothing new, so the repair must not fire on every
+    # Apply; only a replaced one reopens the load.
+    monkeypatch.setattr(type(backend), "_binary_changed_since_launch", lambda self: False)
+    assert not backend.spec_binary_fallback_can_retry()
+    monkeypatch.setattr(type(backend), "_binary_changed_since_launch", lambda self: True)
+    assert backend.spec_binary_fallback_can_retry()
 
 
 def test_forced_ngram_with_binary_support_emits_spec(monkeypatch):
