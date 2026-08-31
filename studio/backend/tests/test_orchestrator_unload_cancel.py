@@ -6,11 +6,13 @@ hanging the UI. ``unload_model`` now cancels first (the mp.Event the worker chec
 each token) and takes ``_gen_lock`` before the unload round-trip.
 """
 
+import multiprocessing as _mp
 import threading
 import time
 
 import pytest
 
+from core.inference.stop_ledger import PendingTeardowns
 from core.inference import orchestrator as orch_mod
 from core.inference.orchestrator import InferenceOrchestrator
 
@@ -18,6 +20,8 @@ from core.inference.orchestrator import InferenceOrchestrator
 def _bare_orchestrator():
     """An orchestrator without the real __init__ subprocess/network."""
     o = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    o._stop_ledger = None
+    o._pending_teardowns = None
     o._gen_lock = threading.Lock()
     o._send_order_lock = threading.Lock()
     o._subprocess_shutdown_lock = threading.Lock()

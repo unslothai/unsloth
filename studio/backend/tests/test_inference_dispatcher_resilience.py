@@ -14,7 +14,6 @@ import ast
 import queue
 import sys
 import threading
-import time
 from pathlib import Path
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
@@ -36,6 +35,8 @@ class _ScriptedQueue:
 
 def _dispatcher():
     o = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    o._stop_ledger = None
+    o._pending_teardowns = None
     o._dispatcher_stop = threading.Event()
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {}
@@ -124,6 +125,8 @@ def test_route_llama_streaming_async_clients_disable_proxy_env():
 def _direct_reader_host():
     """Orchestrator with only what _direct_reader and the ownership helpers touch."""
     o = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    o._stop_ledger = None
+    o._pending_teardowns = None
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {}
     o._direct_mailboxes = {}

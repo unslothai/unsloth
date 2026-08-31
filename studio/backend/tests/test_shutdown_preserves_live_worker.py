@@ -9,11 +9,13 @@ holds sidecar transformers modules (breaking the rename on Windows). The methods
 the handle and return False so callers can refuse the swap.
 """
 
+import multiprocessing as _mp
 import threading
 
 import pytest
 
 from core.export.orchestrator import ExportOrchestrator
+from core.inference.stop_ledger import PendingTeardowns
 from core.inference.orchestrator import InferenceOrchestrator
 
 
@@ -43,6 +45,8 @@ class _FakeProc:
 
 def _bare_inference():
     o = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    o._stop_ledger = None
+    o._pending_teardowns = None
     o._subprocess_shutdown_lock = threading.Lock()
     o._stop_dispatcher = lambda: None
     o._cancel_generation = lambda: None

@@ -17,6 +17,8 @@ from core.inference.orchestrator import InferenceOrchestrator
 def _idle_orchestrator(models, loading = ()):
     """An orchestrator whose unload round-trip is stubbed to succeed."""
     o = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    o._stop_ledger = None
+    o._pending_teardowns = None
     o._gen_lock = threading.Lock()
     o._dispatcher_lifecycle_lock = threading.Lock()
     o._drain_event = threading.Event()

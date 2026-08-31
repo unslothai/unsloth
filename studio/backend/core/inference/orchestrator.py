@@ -34,6 +34,7 @@ from core.inference.audio_errors import (
     AudioBackendUnsupportedError,
     AudioGenerationCancelledError,
 )
+from core.inference.stop_ledger import PendingTeardowns, StopLedger
 from utils.hardware import get_device, prepare_gpu_selection
 from utils.utils import hf_env_offline
 
@@ -62,6 +63,8 @@ _CTX = mp.get_context("spawn")
 
 
 _DISPATCH_READ_TIMEOUT = 30.0
+
+_STOP_NOTICE_INTERVAL = 0.1
 _DISPATCH_POLL_INTERVAL = 0.5
 _DISPATCH_STOP_TIMEOUT = 5.0
 _DISPATCH_IDLE_TIMEOUT = 30.0
@@ -260,6 +263,8 @@ class InferenceOrchestrator:
         # Set for the whole unload; the worker never clears it (unlike _cancel_event), so a generate queued behind the
         # cancelled one is skipped, not run.
         self._drain_event: Any = None
+        self._stop_ledger: Any = None
+        self._pending_teardowns: Any = None
         self._gen_lock = threading.Lock()  # Serializes generation
         # Cancel event of the request holding _gen_lock: lets a Stop tell whether it owns the running generation or is
         # queued behind it (the worker's event is shared).
@@ -472,6 +477,8 @@ class InferenceOrchestrator:
             self._resp_queue = _CTX.Queue()
             self._cancel_event = _CTX.Event()
             self._drain_event = _CTX.Event()
+            self._stop_ledger = StopLedger(_CTX)
+            self._pending_teardowns = PendingTeardowns(_CTX)
 
             self._proc = _CTX.Process(
                 target = run_without_native_path_secret,
@@ -481,6 +488,8 @@ class InferenceOrchestrator:
                     "resp_queue": self._resp_queue,
                     "cancel_event": self._cancel_event,
                     "drain_event": self._drain_event,
+                    "stop_ledger": self._stop_ledger,
+                    "pending_teardowns": self._pending_teardowns,
                     "config": config,
                 },
                 daemon = True,
@@ -492,16 +501,18 @@ class InferenceOrchestrator:
         logger.info("Inference subprocess started (pid=%s)", self._proc.pid)
 
     def _cancel_generation(self) -> None:
-        """Cancel any ongoing generation in the subprocess (instant)."""
+        """Signal the shared event, which ends whatever the worker is running alone."""
         if self._cancel_event is not None:
             self._cancel_event.set()
 
     def _cancel_every_generation(self) -> None:
         """Stop everything the worker is running, however it is running it."""
+        self._teardown_going_out()
         self._cancel_generation()
         try:
             self._send_cmd({"type": "cancel"})
         except Exception:
+            self._teardown_not_sent()
             logger.debug("Could not tell the worker to let go of its batch", exc_info = True)
 
     def is_worker_alive(self) -> bool:
@@ -603,6 +614,7 @@ class InferenceOrchestrator:
             self._proc = None
             return True
 
+        self._teardown_going_out()
         self._cancel_generation()
         time.sleep(0.5)
 
@@ -611,7 +623,7 @@ class InferenceOrchestrator:
         try:
             self._cmd_queue.put({"type": "shutdown"})
         except (OSError, ValueError):
-            pass
+            self._teardown_not_sent()
 
         try:
             self._proc.join(timeout = timeout)
@@ -655,6 +667,8 @@ class InferenceOrchestrator:
         self._resp_queue = None
         self._cancel_event = None
         self._drain_event = None
+        self._stop_ledger = None
+        self._pending_teardowns = None
         self._reset_worker_scoped_state()
         logger.info("Inference subprocess shut down")
         return True
@@ -754,6 +768,16 @@ class InferenceOrchestrator:
     def _cleanup(self):
         """atexit handler."""
         self._shutdown_subprocess(timeout = 5.0)
+
+    def _teardown_going_out(self) -> None:
+        """Count out a command that ends everything, before it is sent."""
+        if self._pending_teardowns is not None:
+            self._pending_teardowns.sending()
+
+    def _teardown_not_sent(self) -> None:
+        """Take that count back for one that could not be sent."""
+        if self._pending_teardowns is not None:
+            self._pending_teardowns.unsent()
 
     def _ensure_subprocess_alive(self) -> bool:
         """True if the subprocess is alive."""
@@ -1089,30 +1113,31 @@ class InferenceOrchestrator:
         # bail rather than re-block on the new queue under _gen_lock (deadlock).
         initial_proc = self._proc
         initial_resp_queue = self._resp_queue
-        # Deadline for a cancelled multi-reply stream that has told the worker to
-        # stop and reads on instead of tearing down: the replies handed over while
-        # it stops are ones the caller can publish rather than generate again, and
-        # a drain would have waited for the same gen_done only to discard them.
-        # Set where the Stop goes out, below, and read wherever "on its way out"
-        # is the answer: nothing shared is written past it, and no failure past it
-        # is reported.
         reading_on_until = None
+        stop_recorded = False
+        stop_sent = False
         while True:
             if self._proc is not initial_proc or self._resp_queue is not initial_resp_queue:
-                # First of four: past its Stop this stream stays quiet about failure.
-                # The worker was told to end this generation, so what fails afterwards
-                # says nothing about the replies it handed over first, and reporting it
-                # would discard them. None of the four drains -- a terminal response is
-                # in hand, or the worker is gone, or the queue is a later worker's. One
-                # reply returns at its own Stop, and its drain discards what follows.
-                if reading_on_until is not None:
+                if stop_sent:
                     return
                 yield GenStreamError(
                     f"Error: {self._subprocess_crash_message(crash_context)}",
                     public = True,
                 )
                 return
+            if not stop_sent and cancel_event is not None:
+                if cancel_event.is_set():
+                    stop_recorded, stop_sent = self._stop_and_signal(
+                        request_id,
+                        cancel_event,
+                        stop_recorded,
+                        may_signal = False,
+                    )
+                    if stop_sent and rows is not None and reading_on_until is None:
+                        reading_on_until = time.monotonic() + _CANCELLED_ROWS_GRACE
             timeout = read_timeout
+            if not stop_recorded and cancel_event is not None:
+                timeout = min(timeout, _STOP_NOTICE_INTERVAL)
             if reading_on_until is not None:
                 remaining = reading_on_until - time.monotonic()
                 if remaining <= 0:
@@ -1122,7 +1147,7 @@ class InferenceOrchestrator:
             resp = read_one(timeout)
             if resp is None:
                 if not self._ensure_subprocess_alive():
-                    if reading_on_until is not None:
+                    if stop_sent:
                         return
                     yield GenStreamError(
                         f"Error: {self._subprocess_crash_message(crash_context)}",
@@ -1137,50 +1162,27 @@ class InferenceOrchestrator:
             # The worker is answering THIS request, so it is the one executing: only now may its
             # cancel event speak for the shared worker one. The dispatched path opts out: its
             # dispatcher already did this in worker order, which a mailbox read can lag behind.
-            # Not once a Stop has gone out and this is reading on: what it reads then is a
-            # request on its way out, and saying so again would displace whichever request the
-            # worker moved to -- the record that request's own Stop is checked against. A single
-            # reply drains instead of reading on, and its drain never marks.
-            if mark_started and reading_on_until is None:
+            # Not once this stream has sent this request's Stop: what follows it says
+            # nothing about what the worker is on now, and claiming otherwise would displace
+            # whichever request it moved to. A Stop sent from outside this stream leaves
+            # nothing here to read, and is kept out by the claim it retired.
+            if mark_started and not stop_sent:
                 self._mark_worker_started(cancel_event)
             # Subprocess-level error (no request_id); request-scoped failures arrive as gen_error below
             if rtype == "error" and not resp.get("request_id"):
-                if reading_on_until is not None:
+                if stop_sent:
                     return
                 yield GenStreamError(f"Error: {resp.get('error', 'Unknown error')}")
                 return
 
-            # Cancel from route (e.g. SSE connection closed). Sent from a token and
-            # not from the Stop itself, because only a response is evidence the worker
-            # was answering this request -- and from a token alone, so that several
-            # replies relay from exactly what one reply relays from and no response
-            # type becomes a signalling point that a single generation does not have.
-            # Its consequence is deliberate: a reply that withholds its text until a
-            # stop sequence settles sends no token before it finishes, so a turn made
-            # only of those is never told to stop and runs to its own end, bounded by
-            # its token budget. That is what one reply does with the same request, and
-            # it is the cheaper mistake -- a Stop sent from a response the worker has
-            # moved past would end whatever it moved on to.
             if rtype == "token" and cancel_event is not None and cancel_event.is_set():
-                # Same rule as reset_generation_state: the shared worker event may only be set by
-                # the generation the worker is running. A dispatched request can still be draining
-                # stale mailbox tokens after the dispatcher retired it, and signalling from here
-                # would end the next one instead. Tearing a stream down is always safe, so a
-                # single reply's local drain happens either way.
-                #
-                # Once, for several replies: they go on reading afterwards, and a second
-                # Stop from a response read later could land after the worker had taken
-                # the next command. One reply returns here, so it cannot repeat.
-                if rows is None or reading_on_until is None:
-                    # A reply decoding beside others is stopped by name. The
-                    # one-at-a-time path has only the shared event, which speaks
-                    # for whatever the worker is running, so it stays behind the
-                    # same ownership rule reset_generation_state uses.
-                    stopped = self._stop_request(request_id)
-                    if self._owns_worker(cancel_event):
-                        self._cancel_generation()
-                        stopped = True
-                    if rows is not None and stopped:
+                if not stop_sent:
+                    stop_recorded, stop_sent = self._stop_and_signal(
+                        request_id,
+                        cancel_event,
+                        stop_recorded,
+                    )
+                    if stop_sent and rows is not None and reading_on_until is None:
                         reading_on_until = time.monotonic() + _CANCELLED_ROWS_GRACE
                 if rows is None:
                     drain_on_cancel()
@@ -1208,7 +1210,7 @@ class InferenceOrchestrator:
                 return
             elif rtype == "gen_error":
                 self._forget_request(request_id, cancel_event)
-                if reading_on_until is not None:
+                if stop_sent:
                     return
                 yield GenStreamError(f"Error: {resp.get('error', 'Unknown error')}")
                 return
@@ -2058,12 +2060,17 @@ class InferenceOrchestrator:
                         self.active_model_name = None
                     return True
                 self._drain_queue()
-                self._send_cmd(
-                    {
-                        "type": "unload",
-                        "model_name": model_name,
-                    }
-                )
+                self._teardown_going_out()
+                try:
+                    self._send_cmd(
+                        {
+                            "type": "unload",
+                            "model_name": model_name,
+                        }
+                    )
+                except Exception:
+                    self._teardown_not_sent()
+                    raise
                 self._wait_response("unloaded")
 
                 self.models.pop(model_name, None)
@@ -2583,18 +2590,12 @@ class InferenceOrchestrator:
             self._active_cancel_events.append(cancel_event)
 
     def _mark_worker_started(self, cancel_event) -> None:
-        """Promote a claimed request to executing, on its first worker response.
-
-        Sole executor: the shared cancel event belongs to the one generation the
-        worker runs at a time, so answering this one means it has left the
-        previous one behind. Replies decoding together do displace each other
-        here, and whichever is recorded may signal the event. That decides
-        nothing: the batch does not read it, and each of those replies is stopped
-        by the name it was given.
-        """
+        """Promote a still-claimed request to executing, on a worker response."""
         if cancel_event is None:
             return
         with self._active_cancel_lock:
+            if not any(ev is cancel_event for ev in self._active_cancel_events):
+                return
             if self._executing_cancel_events[:1] != [cancel_event]:
                 self._executing_cancel_events[:] = [cancel_event]
 
@@ -2625,19 +2626,42 @@ class InferenceOrchestrator:
             # claim is the executor; anyone else here is queued behind it.
             return self._active_cancel_events[0] is cancel_event
 
-    def _stop_request(self, request_id) -> bool:
-        """Tell the worker to stop one request, by name.
+    def _stop_and_signal(
+        self,
+        request_id: str,
+        cancel_event,
+        recorded: bool = False,
+        *,
+        may_signal: bool = True,
+    ) -> tuple[bool, bool]:
+        """End one request. Reports (recorded, sent)."""
+        recorded, sent = self._stop_named(request_id, recorded)
+        if not sent and may_signal and self._worker_answered(cancel_event):
+            self._cancel_generation()
+            sent = True
+        if sent:
+            self._release_worker(cancel_event)
+        return recorded, sent
 
-        The worker decodes several replies at once, so "stop generating" is no
-        longer a thing that can be said: a stop has to name whose reply it ends.
-        """
-        if not request_id or not self._ensure_subprocess_alive():
-            return False
-        try:
-            self._send_cmd({"type": "cancel", "request_id": request_id})
-        except RuntimeError:
-            return False
-        return True
+    def _stop_named(
+        self,
+        request_id: str,
+        recorded: bool = False,
+    ) -> tuple[bool, bool]:
+        """Stop one request by name. Reports (recorded, sent)."""
+        ledger = self._stop_ledger
+        if ledger is None:
+            return recorded, False
+        if not recorded:
+            recorded = bool(
+                request_id and self._ensure_subprocess_alive() and ledger.stop(request_id)
+            )
+        return recorded, bool(recorded and ledger.read_by_worker())
+
+    def _worker_answered(self, cancel_event) -> bool:
+        """Whether the worker has answered this request, with nothing answering since."""
+        with self._active_cancel_lock:
+            return any(ev is cancel_event for ev in self._executing_cancel_events)
 
     def _forget_request(self, request_id: str, cancel_event) -> None:
         """Retire a reply the moment it ends, rather than when the stream object"""
@@ -2659,13 +2683,13 @@ class InferenceOrchestrator:
     def reset_generation_state(self, caller_cancel_event = None):
         """Cancel any ongoing generation and reset state.
 
-        ``caller_cancel_event`` scopes the reset to one request, two ways, because
-        the worker stops a reply two ways. A reply decoding beside others is ended
-        by name, which reaches that reply and no other. A generation the worker
-        runs on its own is ended by the shared event, which means "stop
-        generating" and so may only be signalled by the request that is running:
-        a chat still queued has no generation of its own to reset, and resetting
-        from its Stop handler would kill whichever chat is running instead.
+        ``caller_cancel_event`` scopes the reset to one request, two ways. The record
+        names a request and so reaches that reply and no other, wherever the worker
+        is running it. The shared event means "stop generating" and speaks for
+        whatever the worker is running rather than for the request that set it, so
+        it may only be signalled by the request that is running: a chat still queued
+        has no generation of its own to reset, and resetting from its Stop handler
+        would kill whichever chat is running instead.
 
         A stop that names a request the worker is not decoding is ignored there,
         and the shared event is not set for a request that does not own it, so
@@ -2687,9 +2711,7 @@ class InferenceOrchestrator:
         if caller_cancel_event is not None:
             request_id = self._request_of(caller_cancel_event)
             if request_id is not None:
-                self._stop_request(request_id)
-                if self._owns_worker(caller_cancel_event):
-                    self._cancel_generation()
+                self._stop_and_signal(request_id, caller_cancel_event)
                 return
             with self._send_order_lock:
                 if not self._owns_worker(caller_cancel_event):
@@ -2699,14 +2721,16 @@ class InferenceOrchestrator:
         self._reset_worker()
 
     def _reset_worker(self) -> None:
+        self._teardown_going_out()
         self._cancel_generation()
         if not self._ensure_subprocess_alive():
+            self._teardown_not_sent()
             return
         try:
             with self._send_order_lock:
                 self._send_cmd({"type": "reset"})
         except RuntimeError:
-            pass
+            self._teardown_not_sent()
 
     # ------------------------------------------------------------------ Audio generation - TTS, ASR, audio input
     # ------------------------------------------------------------------

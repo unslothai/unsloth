@@ -73,6 +73,8 @@ from models.inference import ChatCompletionRequest  # noqa: E402
 
 def _bare_orchestrator():
     orchestrator = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    orchestrator._stop_ledger = None
+    orchestrator._pending_teardowns = None
     orchestrator._gen_lock = threading.Lock()
     orchestrator._send_order_lock = threading.Lock()
     orchestrator._active_cancel_lock = threading.Lock()

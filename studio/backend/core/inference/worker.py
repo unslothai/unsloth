@@ -617,6 +617,80 @@ def _abandon_held_commands(held: list, resp_queue: Any) -> None:
         _abandon_one(held.pop(0), resp_queue)
 
 
+class _Stops:
+    """The record, and everything the loop is holding that a stop can name."""
+
+    def __init__(self, stop_ledger, resp_queue, batch, held: list):
+        self._ledger = stop_ledger
+        self._resp_queue = resp_queue
+        self._batch = batch
+        self._held = held
+        self._written = 0
+        self._stopped: set = set()
+
+    def answer(self) -> None:
+        """Read the record and act on everything it names."""
+        self._refresh()
+        self._batch.drop_stopped(self)
+        _drop_stopped_held(self._held, self._resp_queue, self)
+
+    def _refresh(self) -> None:
+        if self._ledger is None:
+            return
+        self._written, stopped = self._ledger.snapshot(self._written)
+        if stopped is not None:
+            self._stopped = stopped
+
+    def __contains__(self, request_id) -> bool:
+        return request_id in self._stopped
+
+
+class _StopWhileItRuns:
+    """What a generation with the worker to itself checks between tokens."""
+
+    def __init__(self, cancel_event, stops, request_id: str):
+        self._cancel_event = cancel_event
+        self._stops = stops
+        self._request_id = request_id
+
+    def is_set(self) -> bool:
+        if self._cancel_event is not None and self._cancel_event.is_set():
+            return True
+        self._stops.answer()
+        return self._request_id in self._stops
+
+
+_TEARDOWN_COMMANDS = frozenset({"cancel", "reset", "unload", "shutdown"})
+
+
+def _teardown_skip(cmd: dict, resp_queue: Any, pending_teardowns) -> bool:
+    """Whether this command is about to be ended by something already on its way."""
+    if pending_teardowns is None or not pending_teardowns.any_in_flight():
+        return False
+    _abandon_one(cmd, resp_queue)
+    return True
+
+
+def _drop_stopped_held(held: list, resp_queue: Any, stopped) -> None:
+    """Answer the held commands whose callers have stopped them."""
+    for cmd in [held_cmd for held_cmd in held if _cmd_is_stopped(held_cmd, stopped)]:
+        held.remove(cmd)
+        _abandon_one(cmd, resp_queue)
+
+
+def _stopped_before_it_ran(cmd: dict, resp_queue: Any, stopped) -> bool:
+    """Whether this command is for a request its caller has stopped, read as of now."""
+    stopped.answer()
+    if not _cmd_is_stopped(cmd, stopped):
+        return False
+    _abandon_one(cmd, resp_queue)
+    return True
+
+
+def _cmd_is_stopped(cmd: dict, stopped) -> bool:
+    return cmd.get("request_id", "") in stopped
+
+
 def _abandon_one(cmd: dict, resp_queue: Any) -> None:
     """Answer one held command with the terminal response its reader waits for."""
     logger.info(
@@ -730,8 +804,12 @@ def _generation_kwargs(backend, cmd: dict, cancel_event) -> dict:
 def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
     """Handle a generate command: stream tokens back via resp_queue.
 
-    cancel_event is an mp.Event the parent can set anytime (user stop, or new
-    model load mid-generate); generation stops within 1-2 tokens.
+    cancel_event is asked between tokens. Whether it answers for the record naming this
+    request as well as the shared event depends on what the caller passed: the batching
+    loop passes something that reads both, and the loop that runs one command at a time
+    passes the shared event alone. Generation stops within a token or two of whatever it
+    answers for, once it is producing tokens at all; nothing is asked during the prefill,
+    which yields nothing.
     """
     request_id = cmd.get("request_id", "")
 
@@ -751,7 +829,6 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
 
         try:
             for cumulative_text in generator:
-                # cancel_event is an mp.Event — checked instantly, no queue polling.
                 if cancel_event.is_set():
                     logger.info("Generation cancelled for request %s", request_id)
                     break
@@ -917,11 +994,6 @@ def _handle_generate_rows(backend, cmd: dict, resp_queue: Any, cancel_event) -> 
         )
 
 
-# Long enough for a queue put to become readable, short beside the generation it
-# decides the fate of. Measured: an immediate read misses most puts, this misses none.
-_HELD_COMMAND_GRACE = 0.05
-
-
 class _ResidentBatch:
     """The replies an MLX worker is decoding at once."""
 
@@ -1002,6 +1074,12 @@ class _ResidentBatch:
     def cancel_all(self) -> None:
         for request_id in list(self._pending):
             self.cancel(request_id)
+
+    def drop_stopped(self, stopped) -> None:
+        """Withdraw the replies whose callers have stopped them."""
+        for request_id in list(self._pending):
+            if request_id in stopped:
+                self.cancel(request_id)
 
     def step(self) -> None:
         """Decode one token for every reply, reporting what each produced."""
@@ -1347,6 +1425,8 @@ def run_inference_process(
     cancel_event,
     config: dict,
     drain_event = None,
+    stop_ledger = None,
+    pending_teardowns = None,
 ) -> None:
     """Subprocess entrypoint. Persistent — runs the command loop until shutdown.
 
@@ -1359,6 +1439,13 @@ def run_inference_process(
             cancel_event (cleared at the start of every generate), it is never cleared
             here, so a generate still queued behind a cancelled one is skipped rather
             than run — the cancel survives the queue handoff.
+        stop_ledger: StopLedger in shared memory naming the requests the parent has
+            stopped. Read rather than received, because a reply decoding beside others
+            has to be stopped by name and a command cannot say it in time — a queue put
+            is not readable the moment it returns.
+        pending_teardowns: counts the commands that end everything on their way here, so
+            a command held back for a batch to empty is answered rather than run in front
+            of one. Read rather than received, for the same reason as the ledger.
     """
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     os.environ["PYTHONWARNINGS"] = "ignore"  # Suppress warnings at C-level before imports
@@ -1503,39 +1590,32 @@ def run_inference_process(
         logger.info("MLX inference subprocess ready, entering command loop")
         batch = _ResidentBatch(backend, resp_queue)
         deferred: list[dict] = []
+        stops = _Stops(stop_ledger, resp_queue, batch, deferred)
+        if stop_ledger is not None:
+            stop_ledger.worker_reads_this()
         while True:
-            batch.step()
-            # A command taken back off the held list is the one that waited longest,
-            # so it runs rather than queueing behind the siblings it left there.
+            stops.answer()
+            tearing_down = pending_teardowns is not None and pending_teardowns.any_in_flight()
+            if not tearing_down:
+                batch.step()
             from_deferred = False
             try:
-                # Neither replies in the batch nor a command waiting for one to end
-                # can wait a second for something that may never be sent; an idle
-                # loop with nothing held has nothing else to do.
-                cmd = cmd_queue.get(timeout = 0.0 if (batch.rows_in_flight or deferred) else 1.0)
+                cmd = cmd_queue.get(
+                    timeout = 0.0 if (batch.rows_in_flight or deferred) and not tearing_down else 1.0
+                )
             except _queue.Empty:
                 if not deferred or batch.rows_in_flight:
                     continue
-                try:
-                    # Everything already sent has been handled to get here, which is
-                    # what makes this safe to run: a stop for it would have been one
-                    # of them. One more wait for a stop that has been sent but is not
-                    # readable yet -- a queue put is not readable the moment it
-                    # returns -- because the fallback path this runs on clears the
-                    # shared event going in and cannot be stopped out of afterwards.
-                    cmd = cmd_queue.get(timeout = _HELD_COMMAND_GRACE)
-                except _queue.Empty:
-                    cmd = deferred.pop(0)
-                    from_deferred = True
-                except (EOFError, OSError):
-                    batch.close()
-                    return
+                cmd = deferred.pop(0)
+                from_deferred = True
             except (EOFError, OSError):
                 batch.close()
                 return
             if cmd is None:
                 continue
             cmd_type = cmd.get("type", "")
+            if pending_teardowns is not None and cmd_type in _TEARDOWN_COMMANDS:
+                pending_teardowns.taken()
             try:
                 if cmd_type == "generate":
                     if _drain_skip_generate(cmd, resp_queue, drain_event):
@@ -1545,6 +1625,10 @@ def run_inference_process(
                         continue
                     reason = batch.unavailable_reason(cmd)
                     if reason is None:
+                        if _teardown_skip(cmd, resp_queue, pending_teardowns):
+                            continue
+                        if _stopped_before_it_ran(cmd, resp_queue, stops):
+                            continue
                         batch.admit(cmd, None)
                         continue
                     if batch.rows_in_flight:
@@ -1564,20 +1648,36 @@ def run_inference_process(
                     # which would stall the switch until the dispatcher idle-timeout.
                     if _drain_skip_generate(cmd, resp_queue, drain_event):
                         continue
-                    _dispatch_generate(backend, cmd, resp_queue, cancel_event)
+                    if _teardown_skip(cmd, resp_queue, pending_teardowns):
+                        continue
+                    if _stopped_before_it_ran(cmd, resp_queue, stops):
+                        continue
+                    _dispatch_generate(
+                        backend,
+                        cmd,
+                        resp_queue,
+                        _StopWhileItRuns(cancel_event, stops, cmd.get("request_id", "")),
+                    )
                 elif cmd_type == "generate_audio_input":
-                    # Drain discipline as in "generate" (see that branch).
                     if _drain_skip_generate(cmd, resp_queue, drain_event):
                         continue
                     if batch.rows_in_flight or (deferred and not from_deferred):
-                        # The batch holds the model, and audio does not join one.
                         deferred.append(cmd)
                         continue
                     batch.close()
                     cancel_event.clear()
                     if _drain_skip_generate(cmd, resp_queue, drain_event):
                         continue
-                    _handle_generate_audio_input(backend, cmd, resp_queue, cancel_event)
+                    if _teardown_skip(cmd, resp_queue, pending_teardowns):
+                        continue
+                    if _stopped_before_it_ran(cmd, resp_queue, stops):
+                        continue
+                    _handle_generate_audio_input(
+                        backend,
+                        cmd,
+                        resp_queue,
+                        _StopWhileItRuns(cancel_event, stops, cmd.get("request_id", "")),
+                    )
                 elif cmd_type == "generate_audio":
                     # No TTS here, but codec checkpoints still reach this loop
                     # (dispatch is by device). Answer, or the parent waits 120s.
@@ -1615,25 +1715,9 @@ def run_inference_process(
                     _abandon_held_commands(deferred, resp_queue)
                     _handle_unload(backend, cmd, resp_queue)
                 elif cmd_type == "cancel":
-                    # A cancel that names its request stops that reply and leaves
-                    # every other one decoding.
-                    request_id = cmd.get("request_id")
-                    if request_id:
-                        if not batch.cancel(request_id):
-                            # Not decoding, so it may be waiting for the batch to
-                            # empty -- running it later would generate for a
-                            # caller that already stopped it.
-                            for cmd_held in [
-                                held for held in deferred if held.get("request_id") == request_id
-                            ]:
-                                deferred.remove(cmd_held)
-                                _abandon_one(cmd_held, resp_queue)
-                    else:
-                        batch.cancel_all()
-                        # A stop for everything is a stop for what is waiting too,
-                        # which this loop took off the queue and owes an answer.
-                        _abandon_held_commands(deferred, resp_queue)
-                        cancel_event.set()
+                    batch.cancel_all()
+                    _abandon_held_commands(deferred, resp_queue)
+                    cancel_event.set()
                 elif cmd_type == "reset":
                     batch.cancel_all()
                     batch.close()
@@ -1852,8 +1936,8 @@ def run_inference_process(
         return
 
     # ── 4. Command loop — process commands until shutdown ──
-    # cancel_event is an mp.Event the parent can set anytime to cancel
-    # generation instantly (no queue polling needed).
+    # cancel_event is an mp.Event the parent can set anytime, read between tokens rather
+    # than taken off the queue.
     logger.info("Inference subprocess ready, entering command loop")
 
     while True:
@@ -1909,11 +1993,7 @@ def run_inference_process(
                 _handle_unload(backend, cmd, resp_queue)
 
             elif cmd_type == "cancel":
-                # Nothing here decodes replies together, so there is no reply a
-                # name could pick out; the shared event carries a stop for the one
-                # generation this loop runs, and the parent signals it directly.
-                if not cmd.get("request_id"):
-                    cancel_event.set()
+                cancel_event.set()
                 logger.info("Cancel command received")
 
             elif cmd_type == "reset":

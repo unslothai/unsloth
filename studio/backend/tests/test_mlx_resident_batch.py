@@ -3,6 +3,7 @@
 
 """Replies joining and leaving a batch the MLX worker keeps open."""
 
+import multiprocessing as _mp
 import queue as _queue
 import threading
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from core.inference import worker
+from core.inference.stop_ledger import StopLedger
 
 
 class _RespQueue:
@@ -85,8 +87,11 @@ class _Backend:
         self.script = script or {}
         self.sessions = []
         self.on_open = None
+        self.on_reason = None
 
     def resident_unavailable_reason(self, request):
+        if self.on_reason is not None:
+            self.on_reason()
         return self.reason
 
     def open_resident_text_batch(

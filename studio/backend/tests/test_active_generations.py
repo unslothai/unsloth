@@ -7,6 +7,7 @@ A load/unload has to know which streaming chats it would interrupt. Everything
 under test is a dict + threading.Lock, so this passes on every platform.
 """
 
+import multiprocessing as _mp
 import os
 import sys
 import threading
@@ -16,6 +17,7 @@ import pytest
 _backend = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, _backend)
 
+from core.inference.stop_ledger import PendingTeardowns
 from state import active_generations
 
 
@@ -294,6 +296,8 @@ def _stub_load_route(
 
     if backend is None:
         backend = InferenceOrchestrator.__new__(InferenceOrchestrator)
+        backend._stop_ledger = None
+        backend._pending_teardowns = None
         backend.active_model_name = active_model_name
         backend.models = {}
 
@@ -2557,6 +2561,21 @@ def test_drain_returns_as_soon_as_the_cancelled_requests_unwind(monkeypatch):
     assert polls == 3
 
 
+class _Ledger:
+    """The requests the orchestrator has stopped, as the worker would read them."""
+
+    def __init__(self, read_by_worker = False):
+        self.stopped: set = set()
+        self._read_by_worker = read_by_worker
+
+    def stop(self, request_id):
+        self.stopped.add(request_id)
+        return True
+
+    def read_by_worker(self) -> bool:
+        return self._read_by_worker
+
+
 # ── queued chats must not cancel the running one ──────────────────────
 
 
@@ -2567,6 +2586,8 @@ def _orchestrator_for_ownership():
         "core.inference.orchestrator", reason = "inference stack not installed"
     )
     orch = orch_mod.InferenceOrchestrator.__new__(orch_mod.InferenceOrchestrator)
+    orch._stop_ledger = _Ledger()
+    orch._pending_teardowns = None
     orch._gen_lock = threading.Lock()
     orch._active_cancel_events = []
     orch._executing_cancel_events = []
@@ -2748,6 +2769,8 @@ def test_claim_order_matches_send_order_under_concurrent_dispatch():
         "core.inference.orchestrator", reason = "inference stack not installed"
     )
     orch = orch_mod.InferenceOrchestrator.__new__(orch_mod.InferenceOrchestrator)
+    orch._stop_ledger = None
+    orch._pending_teardowns = None
     orch._active_cancel_events = []
     orch._executing_cancel_events = []
     orch._active_cancel_lock = threading.Lock()
