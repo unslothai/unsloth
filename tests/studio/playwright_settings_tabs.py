@@ -27,6 +27,7 @@ from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
     start_vite,
     stop_process,
+    click_forced,
 )
 
 TABS = [
@@ -39,7 +40,9 @@ TABS = [
     "connections",
     "data",
     "api-keys",
+    "remote-lan",
     "agents",
+    "keyboard-shortcuts",
     "debugging",
     "about",
 ]
@@ -51,6 +54,24 @@ CHUNK_DELAY_MS = int(os.environ.get("PW_CHUNK_DELAY_MS", "0"))
 CHUNK_FAIL = os.environ.get("PW_CHUNK_FAIL", "")
 SETTLE_MS = 600
 SETTLE_TIMEOUT_S = 25.0
+LAN_URLS = ("http://192.168.1.24:8888", "http://10.0.0.7:8888")
+LAN_STATUS = {
+    "state": "online",
+    "urls": list(LAN_URLS),
+    "public_urls": [],
+    "error": None,
+    "auto_start": False,
+    "managed_by": "settings",
+    "can_start": False,
+    "can_stop": True,
+    "block_reason": None,
+    "bind_host": "0.0.0.0",
+    "wildcard_bind": True,
+    "serves_web_ui": True,
+    "keyless_lan_eligible": True,
+    "keyless_scope": "off",
+    "keyless_tools": False,
+}
 # The panel scroller inside the dialog, the element `mainScrollRef` points at.
 PANEL = 'div[role="dialog"] main div.hover-scrollbar'
 # How long the Data module is held, and how far into that hold the deep-open is abandoned.
@@ -134,7 +155,7 @@ def settle_panel(page, timeout_s: float = SETTLE_TIMEOUT_S) -> dict:
 def click_tab_and_observe(page, tab: str) -> dict:
     """Click a tab; record how long the panel keeps the old content and whether it blanks."""
     before = snapshot(page)
-    page.locator(f'[data-testid="settings-tab-{tab}"]').click(force = True, timeout = 15000)
+    click_forced(page.locator(f'[data-testid="settings-tab-{tab}"]'), timeout = 15000)
     started = time.time()
     changed_ms = None
     blank_frames = 0
@@ -162,7 +183,7 @@ def click_tab_and_observe(page, tab: str) -> dict:
 def require_harness(page) -> None:
     """Fail with the cause rather than a selector timeout if the page has moved on.
 
-    Vite dev proxies /api to 127.0.0.1:8888. With a real Studio listening there and no
+    Vite dev proxies /api to 127.0.0.1:8888. With a real Unsloth listening there and no
     token, those calls come back 401 and the app's auth handling navigates, which takes
     the harness's window with it. Every later step then times out on a dialog that cannot
     exist. This is not the dialog's doing: it happens on main too, where the harness is
@@ -171,7 +192,7 @@ def require_harness(page) -> None:
     if not page.evaluate("() => !!window.__settingsSmoke"):
         raise RuntimeError(
             "the harness page is gone (window.__settingsSmoke undefined). This smoke page "
-            f"is served by vite on {PORT} and proxies /api to 127.0.0.1:8888; a Studio "
+            f"is served by vite on {PORT} and proxies /api to 127.0.0.1:8888; an Unsloth "
             "listening there answers 401 and the app navigates away. Run this without a "
             "backend on 8888."
         )
@@ -272,9 +293,20 @@ def run_chunk_fail(page) -> None:
     """One panel's module is blocked. The dialog must survive it, and so must the app."""
     open_dialog(page)
     settle_panel(page)
-    page.locator('[data-testid="settings-tab-general"]').click(force = True, timeout = 15000)
+    click_forced(page.locator('[data-testid="settings-tab-general"]'), timeout = 15000)
     settle_panel(page)
-    page.locator(f'[data-testid="settings-tab-{CHUNK_FAIL}"]').click(force = True, timeout = 15000)
+    # Read the nav size instead of hardcoding it. The invariant is that blocking a
+    # panel does not collapse the dialog, not that the dialog has any particular
+    # number of tabs -- and the hardcoded 12 outlived its truth: the
+    # keyboard-shortcuts page made it 13 and this smoke started failing with
+    # "took the dialog down" while reporting dialog: True, which reads like an
+    # error-handling regression and was a stale constant.
+    nav_before = page.evaluate(
+        "() => document.querySelectorAll('[data-testid^=\"settings-tab-\"]').length"
+    )
+    if nav_before < 2:
+        fail(f"the settings nav was already empty before blocking anything ({nav_before})")
+    click_forced(page.locator(f'[data-testid="settings-tab-{CHUNK_FAIL}"]'), timeout = 15000)
     page.wait_for_timeout(3000)
     state = page.evaluate(
         """() => ({
@@ -304,18 +336,67 @@ def run_chunk_fail(page) -> None:
             f"blocking the {CHUNK_FAIL} panel unmounted the app: the throw reached the "
             "harness root boundary, and the real app has none"
         )
-    if not state["dialog"] or state["nav"] != 12:
-        fail(f"blocking the {CHUNK_FAIL} panel took the dialog down ({state})")
+    if not state["dialog"] or state["nav"] != nav_before:
+        fail(
+            f"blocking the {CHUNK_FAIL} panel took the dialog down "
+            f"(nav was {nav_before} before, {state})"
+        )
     else:
         log("the dialog and its twelve nav entries survived")
     # Another tab must still work.
-    page.locator('[data-testid="settings-tab-about"]').click(force = True, timeout = 15000)
+    click_forced(page.locator('[data-testid="settings-tab-about"]'), timeout = 15000)
     after = settle_panel(page)
     report["chunk_fail_recovery"] = after
     if not after.get("present") or after.get("elements", 0) < 5:
         fail(f"after a failed panel, another tab no longer renders ({after})")
     else:
         log("another tab still renders after the failure")
+
+
+def run_lan_address_actions(page) -> None:
+    """Every listed address must own the actions that operate on it."""
+    click_forced(page.locator('[data-testid="settings-tab-remote-lan"]'), timeout = 15000)
+    settle_panel(page)
+
+    rows = {}
+    for url in LAN_URLS:
+        address = page.get_by_text(url, exact = True)
+        if address.count() != 1:
+            fail(f"LAN address {url}: expected one visible row, found {address.count()}")
+            continue
+        labels = address.evaluate(
+            """(node) => [...node.parentElement.querySelectorAll('button')]
+                .map((button) => button.getAttribute('aria-label'))"""
+        )
+        rows[url] = labels
+        expected = [f"Show QR code for {url}", f"Copy {url}"]
+        if labels != expected:
+            fail(f"LAN address {url}: row actions {labels}, expected {expected}")
+
+    if len(rows) != len(LAN_URLS):
+        return
+
+    target = LAN_URLS[1]
+    click_forced(page.get_by_role("button", name = f"Show QR code for {target}", exact = True))
+    qr_dialog = page.locator('div[role="dialog"]').last
+    qr_dialog.wait_for(state = "visible", timeout = 15000)
+    qr_value = qr_dialog.locator("code").inner_text().strip()
+    if qr_value != target:
+        fail(f"LAN QR action opened {qr_value}, expected {target}")
+    page.keyboard.press("Escape")
+    page.get_by_role("heading", name = "Open on your phone").wait_for(state = "hidden", timeout = 15000)
+
+    page.evaluate(
+        """() => Object.defineProperty(navigator, 'clipboard', {
+            configurable: true,
+            value: { writeText: async (text) => { window.__copiedLanUrl = text; } },
+        })"""
+    )
+    click_forced(page.get_by_role("button", name = f"Copy {target}", exact = True))
+    page.wait_for_function("(url) => window.__copiedLanUrl === url", arg = target, timeout = 15000)
+    report["lan_address_actions"] = {"rows": rows, "qr": qr_value, "copied": target}
+    report["steps"].append("lan-address-actions")
+    log("each LAN address keeps its own QR and copy target")
 
 
 def run(page) -> None:
@@ -329,7 +410,7 @@ def run(page) -> None:
     open_dialog(page)
     settle_panel(page)
     # Start off the persisted tab, so the first iteration is a real switch.
-    page.locator('[data-testid="settings-tab-about"]').click(force = True, timeout = 15000)
+    click_forced(page.locator('[data-testid="settings-tab-about"]'), timeout = 15000)
     settle_panel(page)
     for tab in TABS:
         obs = click_tab_and_observe(page, tab)
@@ -349,7 +430,10 @@ def run(page) -> None:
             )
     report["steps"].append("all-tabs-render")
 
-    # --- 3. close/reopen, and deep-open straight to a tab ----------------------------
+    # --- 3. every lan address has actions bound to that address ----------------------
+    run_lan_address_actions(page)
+
+    # --- 4. close/reopen, and deep-open straight to a tab ----------------------------
     page.evaluate("() => window.__settingsSmoke.close()")
     page.wait_for_timeout(300)
     for tab in ("voice", "api-keys", "data", "about", "connections"):
@@ -372,7 +456,7 @@ def run(page) -> None:
         page.wait_for_timeout(200)
     report["steps"].append("deep-open")
 
-    # --- 4. search, then jump to a result and confirm the scroll target flashed ------
+    # --- 5. search, then jump to a result and confirm the scroll target flashed ------
     # A real setting well down a long panel, so a jump that never happens shows in scrollTop.
     target_tab = "general"
     target_label = report["tabs"][target_tab]["settled"]["labels"][-1]
@@ -390,7 +474,7 @@ def run(page) -> None:
     if index is None:
         fail(f"search '{query}': '{target_label}' not among results {texts}")
     else:
-        entries.nth(index).click(force = True)
+        click_forced(entries.nth(index))
         flashed = None
         deadline = time.time() + 15
         while time.time() < deadline:
@@ -446,12 +530,20 @@ def main() -> int:
                 reduced_motion = "reduce",
             )
             page = ctx.new_page()
+            page.route(
+                "**/api/settings/lan-access*",
+                lambda route: route.fulfill(
+                    status = 200,
+                    content_type = "application/json",
+                    body = json.dumps(LAN_STATUS),
+                ),
+            )
             if CHUNK_DELAY_MS or CHUNK_FAIL:
 
                 def handle(route):
                     path = route.request.url
                     if "/tabs/" not in path:
-                        return route.continue_()
+                        return route.fallback()
                     if CHUNK_FAIL and f"/{CHUNK_FAIL}-tab" in path:
                         return route.abort("failed")
                     if CHUNK_DELAY_MS:

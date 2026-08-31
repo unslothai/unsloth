@@ -11,6 +11,8 @@ from __future__ import annotations
 import os
 import sys
 
+from utils.host_policy import is_wildcard_host, wildcard_loopback_host
+
 
 def _safe_print(text: str) -> None:
     """Print text without crashing on terminals that cannot encode Unicode."""
@@ -99,7 +101,8 @@ def print_studio_access_banner(
     def style(text: str, code: str) -> str:
         return f"{code}{text}{reset}" if use_color else text
 
-    ipv6_bind = bind_host in ("::", "::1")
+    listen_all = is_wildcard_host(bind_host)
+    ipv6_bind = bind_host == "::1" or wildcard_loopback_host(bind_host) == "::1"
     if ipv6_bind:
         loopback_url = f"http://[::1]:{port}"
         alt_local = f"http://localhost:{port}"
@@ -111,7 +114,6 @@ def print_studio_access_banner(
     else:
         external_url = f"http://{display_host}:{port}"
 
-    listen_all = bind_host in ("0.0.0.0", "::")
     # The exact aliases the canned loopback_url below is valid for; any other bind
     # (e.g. a specific LAN IP) must show its real address, not http://127.0.0.1.
     loopback_bind = bind_host in ("127.0.0.1", "localhost", "::1")
@@ -172,7 +174,7 @@ def print_studio_access_banner(
                 style("  LAN access is on -- also reachable on your network at:", secondary)
             )
             lines.extend(style(f"    http://{a}:{port}", secondary) for a in lan_addresses)
-            lines.append(style("  Turn it off in Settings > API keys > LAN access.", secondary))
+            lines.append(style("  Turn it off in Settings > Remote & LAN > LAN access.", secondary))
         else:
             lines.extend(
                 [
@@ -182,7 +184,7 @@ def print_studio_access_banner(
                         secondary,
                     ),
                     style(
-                        "  To expose it, turn on Settings > API keys > LAN access, or "
+                        "  To expose it, turn on Settings > Remote & LAN > LAN access, or "
                         f"relaunch with:  unsloth studio -H 0.0.0.0 -p {port}",
                         secondary,
                     ),

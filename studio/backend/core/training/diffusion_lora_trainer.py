@@ -4,7 +4,7 @@
 """Diffusion LoRA training for Unsloth Studio (text-to-image, SDXL).
 
 Trains a LoRA adapter on the U-Net of an SDXL pipeline from an image + caption dataset
-and exports it as a diffusers-format ``.safetensors`` that the Studio diffusion backend
+and exports it as a diffusers-format ``.safetensors`` that the Unsloth diffusion backend
 (and any diffusers pipeline via ``load_lora_weights``) can load.
 
 Design:
@@ -648,7 +648,7 @@ def run_diffusion_lora_training(
                 step_loss += float(loss.detach()) / cfg.gradient_accumulation_steps
                 micro += 1
 
-            # max_grad_norm at or below 0 disables clipping (Studio sends 0.0); passing 0.0 to clip_grad_norm_ would zero every gradient.
+            # max_grad_norm at or below 0 disables clipping (Unsloth sends 0.0); passing 0.0 to clip_grad_norm_ would zero every gradient.
             grad_norm = None
             if cfg.max_grad_norm and cfg.max_grad_norm > 0:
                 # Returned value is the total PRE-clip norm, reported to the UI chart.
@@ -666,7 +666,7 @@ def run_diffusion_lora_training(
                 # Step 1 pays the one-time costs (cudnn autotune, compile warmup), so the rate starts after it.
                 t_steady = now
             if done % cfg.log_every == 0 or done == cfg.train_steps:
-                # ``learning_rate`` (not ``lr``) is the field the Studio training pump reads.
+                # ``learning_rate`` (not ``lr``) is the field the Unsloth training pump reads.
                 if device == "cuda":
                     peak_gb = round(torch.cuda.max_memory_allocated() / 1e9, 2)
                 per_step = cfg.train_batch_size * cfg.gradient_accumulation_steps

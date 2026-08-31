@@ -47,7 +47,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
         with:
           egress-policy: block
           disable-sudo: true
@@ -68,7 +68,12 @@ jobs:
           python-version: '3.12'
 
       - name: Install PyYAML
-        run: pip install pyyaml pytest pytest-xdist vermin
+        # pytest and PyYAML are pinned to the versions security-audit.yml pinned them
+        # to when `pytest tests/security` lived there. That suite exercises
+        # scripts/lint_workflow_triggers.py as a SUBPROCESS and asserts on its exit
+        # semantics, so a pytest or PyYAML that resolves differently changes what it is
+        # asserting against. xdist and vermin stay unpinned: neither is under test.
+        run: pip install pyyaml==6.0.2 pytest==9.0.3 pytest-xdist vermin
 
       - name: Lint workflow triggers + cache keys
         run: python3 scripts/lint_workflow_triggers.py
@@ -100,6 +105,20 @@ jobs:
       # 192 workers and took 327s, worse than running serially. A fixed width is the same
       # everywhere and cannot be made pathological by the machine it lands on.
       #
+      # tests/security rides along on the same invocation. It held its own ubuntu-latest
+      # runner in security-audit.yml for 72s of work behind a queue measured at 11096s,
+      # and the same argument that put the lockfile and load-orchestrator lanes into Lint
+      # CI applies: work with a narrow trigger, moved into a job that was going to occupy
+      # a runner on this commit anyway, can only reduce the slots a commit takes. Here the
+      # trigger widens too, since this workflow has no paths filter and
+      # security-audit.yml's pull_request does.
+      #
+      # This host and not Lint CI, where the other absorbed lanes went. Lint CI installs
+      # shellcheck from apt, so its harden-runner has to permit escalation and an apt
+      # mirror; a security gate moved there would run under a policy weaker than the one
+      # it has today. This workflow's harden-runner block is byte-for-byte identical to
+      # the one the job carried, so nothing about its isolation changes.
+      #
       # The list grew as much as it shrank. Every module here reads a workflow file, so
       # the edit that breaks it is by definition a workflow-only edit, and this is the
       # only job in the repo with no paths filter. Ten guards were sitting outside it,
@@ -110,26 +129,131 @@ jobs:
         run: |
           python3 -m pytest -q -n 4 \
             tests/studio/test_absorbed_lanes_still_run.py \
+            tests/studio/test_agent_guides_verdicts.py \
             tests/studio/test_apt_steps_are_bounded.py \
             tests/studio/test_backend_ci_matrix.py \
             tests/studio/test_backend_ci_parallel_isolation.py \
             tests/studio/test_cache_budget_discipline.py \
             tests/studio/test_chat_ui_shards_cover_everything.py \
+            tests/studio/test_ui_shard_engines.py \
+            tests/studio/test_zoo_suite_parallel_isolation.py \
             tests/studio/test_ci_shell_suite_coverage.py \
+            tests/studio/test_pip_cache_naming.py \
             tests/studio/test_compile_caches_are_per_worker.py \
             tests/studio/test_composer_rtl_bidi_attribute.py \
             tests/studio/test_frontend_dep_removal.py \
+            tests/studio/test_frontend_dist_cache.py \
             tests/studio/test_gguf_smoke_phases_stay_independent.py \
             tests/studio/test_indicator_browsers_run_in_parallel.py \
             tests/studio/test_inference_smoke_http_diagnostics.py \
             tests/studio/test_install_phase_timing.py \
             tests/studio/test_mac_bundled_job_phases.py \
             tests/studio/test_mac_host_offload_optin.py \
+            tests/studio/test_settings_smoke_covers_every_tab.py \
+            tests/studio/test_playwright_install_avoids_with_deps.py \
             tests/studio/test_macos_slots_per_commit.py \
             tests/studio/test_main_runs_survive_merge_bursts.py \
             tests/studio/test_pester_bootstrap_hardening.py \
             tests/studio/test_playwright_suites_run_in_ci.py \
+            tests/studio/test_sdk_installs_are_major_bounded.py \
+            tests/studio/test_short_job_absorption.py \
             tests/studio/test_smoke_workflows_share_one_script.py \
             tests/studio/test_stt_model_search_locator_contract.py \
+            tests/studio/test_uv_cache_discipline.py \
+            tests/studio/test_version_compat_bundle.py \
             tests/studio/test_windows_small_checks_stay_on_their_image.py \
-            tests/studio/test_workflow_guards_run_unfiltered.py
+            tests/studio/test_windows_ui_lanes_are_isolated.py \
+            tests/studio/test_workflow_guards_run_unfiltered.py \
+            tests/security \
+            --ignore=tests/security/test_custom_dtype_no_eval.py \
+            --ignore=tests/security/test_custom_dtype_wire_format.py \
+            --ignore=tests/security/test_mapper_probe_no_exec.py \
+            --ignore=tests/security/test_inherited_custom_dtype_is_neutralized.py
+
+
+  # The four security suites the job above has to --ignore. That job installs four
+  # packages on purpose and these import torch and transformers, so they were
+  # excluded there and named by no other job: a repository-wide search of workflow
+  # pytest commands finds nothing else running them. They were therefore not running
+  # in CI at all, which makes a regression in the hardening they cover mergeable
+  # behind a green tick.
+  #
+  # In THIS workflow rather than security-audit.yml, which is where the job first
+  # landed. `tests/studio/test_short_job_absorption.py` states the rule: the security
+  # suites run here now, and a second runner for the same work in security-audit.yml
+  # is the duplication that rule exists to stop. This job is not that duplication -
+  # it runs the four files the other job cannot - and it inherits this workflow's
+  # unfiltered `on.pull_request`, which is a wider trigger than the one it had.
+  #
+  # CPU torch from the dedicated index. These suites never touch a device - they
+  # parse source, stub `requests` and read env vars - so the CPU wheel is the whole
+  # dependency and it keeps the job to a couple of minutes.
+  security-regression-suites:
+    name: security suites (torch-dependent)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Harden runner (egress block)
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        with:
+          egress-policy: block
+          disable-sudo: true
+          # PyPI plus the CPU torch index, and GitHub for the checkout. These tests
+          # are network-free themselves; `tests/security/conftest.py` blocks sockets
+          # for the duration, so nothing here is dialed once pytest starts.
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            codeload.github.com:443
+            objects.githubusercontent.com:443
+            pypi.org:443
+            files.pythonhosted.org:443
+            download.pytorch.org:443
+            download-r2.pytorch.org:443
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Install CPU torch + transformers
+        run: |
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet \
+            --index-url https://download.pytorch.org/whl/cpu \
+            --extra-index-url https://pypi.org/simple \
+            torch
+          # unsloth-zoo as well. All three suites import `unsloth.models`, which runs
+          # `unsloth/__init__.py`, and that raises ImportError outright when the zoo
+          # distribution is absent - `UNSLOTH_ZOO_DISABLE_GPU_INIT` does not bypass it.
+          # Without this the job would fail during collection rather than run.
+          # Triton as well. `unsloth/_gpu_init.py` imports it unconditionally, and the
+          # CPU torch wheel does not supply it - only the CUDA wheels pull
+          # pytorch-triton in. `UNSLOTH_ALLOW_CPU=1` bypasses device probing, not that
+          # import, so without this the job fails during collection and none of the
+          # four suites run. `consolidated-tests-ci.yml` installs it for the same
+          # reason on the same kind of runner.
+          python -m pip install --quiet transformers peft pytest unsloth-zoo triton
+
+      # Named one by one, not as a directory. The point of this job is those three
+      # files, and pyproject.toml sets testpaths = ["tests/security"], so a bare
+      # pytest here would silently widen into the suites the light runner already
+      # covers and the failure of THIS job would stop meaning what it says.
+      # `ubuntu-latest` has no accelerator, and every one of these files imports
+      # `unsloth.models`, which reaches `get_device_type()`. `UNSLOTH_ALLOW_CPU=1` is
+      # this repo's documented flag for importing on a driverless host, and it is what
+      # the rest of the CPU CI already uses. `UNSLOTH_ZOO_DISABLE_GPU_INIT` is not a
+      # substitute: it is a zoo flag, and against the released zoo this job installs it
+      # skips the init that binds `DEVICE_TYPE`, so `compiler.py` fails to import.
+      - name: Run the torch-dependent security suites
+        env:
+          UNSLOTH_ALLOW_CPU: '1'
+        run: |
+          python -m pytest -q \
+            tests/security/test_custom_dtype_no_eval.py \
+            tests/security/test_custom_dtype_wire_format.py \
+            tests/security/test_mapper_probe_no_exec.py \
+            tests/security/test_inherited_custom_dtype_is_neutralized.py

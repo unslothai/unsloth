@@ -8,12 +8,36 @@ from __future__ import annotations
 
 import json
 
-from utils.models.model_config import _AUDIO_TOKEN_PATTERNS, is_audio_input_type
+from utils.audio_tokens import AUDIO_TOKEN_PATTERNS
+from utils.models.model_config import (
+    detect_audio_type_checked,
+    is_audio_input_type,
+)
+
+
+def test_curated_native_audio_repos_are_detected_without_hub_reads():
+    expected = {
+        "bosonai/higgs-tts-2-3b-base": "higgs_tts2",
+        "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5": "moss_tts_local",
+        "OpenMOSS-Team/MOSS-TTS-Nano-100M": "moss_tts_nano",
+        "multimodalart/higgs-audio-v3-tts-4b-transformers": "higgs_tts3",
+        "MiniMaxAI/MiniMax-Music3": "minimax_music3",
+    }
+    for repo, audio_type in expected.items():
+        assert detect_audio_type_checked(repo) == (audio_type, True)
+
+
+def test_local_native_audio_model_type_is_detected(tmp_path):
+    (tmp_path / "config.json").write_text(
+        json.dumps({"model_type": "moss_tts_nano"}),
+        encoding = "utf-8",
+    )
+    assert detect_audio_type_checked(str(tmp_path)) == ("moss_tts_nano", True)
 
 
 def _classify(tokens: list[str]) -> str | None:
     """Mirror _check_token_patterns: first match in dict order wins."""
-    for audio_type, check in _AUDIO_TOKEN_PATTERNS.items():
+    for audio_type, check in AUDIO_TOKEN_PATTERNS.items():
         if check(tokens):
             return audio_type
     return None
@@ -183,7 +207,7 @@ def test_an_offline_miss_is_not_reprobed_on_every_poll(monkeypatch, tmp_path):
 
 def test_the_offline_miss_expires_so_a_later_download_is_seen(monkeypatch):
     """Bounded, not permanent: the base may be downloaded, or a training run may finish
-    writing the tokenizer it was missing, and neither restarts Studio."""
+    writing the tokenizer it was missing, and neither restarts Unsloth."""
     from utils.models import model_config
 
     monkeypatch.setattr(model_config, "_audio_detection_cache", {})
@@ -227,21 +251,10 @@ def test_every_pattern_has_a_marker_so_the_parse_can_be_skipped():
     """The marker list is what lets a large text tokenizer_config be settled without
     parsing it. It cannot be derived from the patterns, which are lambdas, so a codec
     added there without a marker here would silently stop being detected."""
-    from utils.models.model_config import (
-        _AUDIO_TOKEN_MARKERS,
-        _AUDIO_TOKEN_PATTERNS,
-        _may_hold_audio_tokens,
-    )
+    from utils.audio_tokens import AUDIO_TOKEN_MARKERS, may_hold_audio_tokens
 
     # Fails when a codec is added, which is the point: add its marker too.
-    assert set(_AUDIO_TOKEN_PATTERNS) == {
-        "csm",
-        "whisper",
-        "bicodec",
-        "dac",
-        "snac",
-        "audio_vlm",
-    }
+    assert set(AUDIO_TOKEN_PATTERNS) == {"csm", "whisper", "bicodec", "dac", "snac", "audio_vlm"}
 
     # Whatever each pattern matches, the marker scan must let it through to the parse.
     samples = {
@@ -254,14 +267,14 @@ def test_every_pattern_has_a_marker_so_the_parse_can_be_skipped():
     }
     for audio_type, tokens in samples.items():
         assert _classify(tokens) == audio_type, audio_type
-        assert _may_hold_audio_tokens(json.dumps(tokens)), audio_type
-    assert _may_hold_audio_tokens(json.dumps(["<|image|>", "<|audio|>"]))
+        assert may_hold_audio_tokens(json.dumps(tokens)), audio_type
+    assert may_hold_audio_tokens(json.dumps(["<|image|>", "<|audio|>"]))
 
     # And an ordinary text tokenizer is settled without a parse.
-    assert not _may_hold_audio_tokens(
+    assert not may_hold_audio_tokens(
         json.dumps([f"<|extra_token_{i}|>" for i in range(500)] + ["<bos>", "<eos>"])
     )
-    assert all(marker in "".join(_AUDIO_TOKEN_MARKERS) for marker in _AUDIO_TOKEN_MARKERS)
+    assert all(marker in "".join(AUDIO_TOKEN_MARKERS) for marker in AUDIO_TOKEN_MARKERS)
 
 
 def test_a_large_text_tokenizer_is_not_parsed(monkeypatch, tmp_path):

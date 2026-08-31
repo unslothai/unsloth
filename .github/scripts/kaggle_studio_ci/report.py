@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Turn the Studio payload's report into a job summary and an exit code.
+"""Turn the Unsloth payload's report into a job summary and an exit code.
 
 Sibling of ``.github/scripts/kaggle_t4_ci/report.py``, which holds the same
 line and is reused wholesale for everything that is not rendering: the
@@ -68,7 +68,7 @@ def _notice(level: str, title: str, message: str) -> None:
 # not have to open the payload to know whether a tick means anything.
 ASSERTION_BLURB = {
     "preflight": "a GPU is present and there is disk to use it",
-    "studio_ready": "Studio answered /api/health as healthy, hardware detection settled",
+    "studio_ready": "Unsloth answered /api/health as healthy, hardware detection settled",
     "authenticate": "the bootstrap credential worked",
     "gpu_inference": "the GGUF was on the GPU, not on a CPU fallback that returns text anyway",
     "tool_calling": "the model emitted a real tool call, not prose",
@@ -150,11 +150,11 @@ def main() -> int:
     result_file = evidence / "launch_result.json"
     if not result_file.exists():
         _summary(
-            "### Studio GPU smoke\n\nNo launch result was written. The launcher did not "
+            "### Unsloth GPU smoke\n\nNo launch result was written. The launcher did not "
             "get far enough to record anything, so nothing is known about the code "
             "under test."
         )
-        _notice("warning", "Studio GPU smoke did not run", "no launch_result.json was produced")
+        _notice("warning", "Unsloth GPU smoke did not run", "no launch_result.json was produced")
         return 0
 
     result = json.loads(result_file.read_text(encoding = "utf-8"))
@@ -163,11 +163,11 @@ def main() -> int:
     reports = result.get("reports", [])
 
     header = {
-        "pass": "### Studio GPU smoke: PASS",
-        "fail": "### Studio GPU smoke: FAIL",
-        "partial": "### Studio GPU smoke: PARTIAL",
-        "infra": "### Studio GPU smoke: NOT RUN",
-    }.get(verdict, "### Studio GPU smoke")
+        "pass": "### Unsloth GPU smoke: PASS",
+        "fail": "### Unsloth GPU smoke: FAIL",
+        "partial": "### Unsloth GPU smoke: PARTIAL",
+        "infra": "### Unsloth GPU smoke: NOT RUN",
+    }.get(verdict, "### Unsloth GPU smoke")
 
     lines = [header, "", reason, ""]
     if result.get("slug"):
@@ -211,13 +211,13 @@ def main() -> int:
     _summary("\n".join(lines))
 
     if verdict == "fail":
-        _notice("error", "Studio GPU smoke failed", reason)
+        _notice("error", "Unsloth GPU smoke failed", reason)
         return 1
     if verdict == "partial":
-        _notice("warning", "Studio GPU smoke partially reported", reason)
+        _notice("warning", "Unsloth GPU smoke partially reported", reason)
         return 0
     if verdict == "infra":
-        _notice("warning", "Studio GPU smoke did not run", reason)
+        _notice("warning", "Unsloth GPU smoke did not run", reason)
         return 0
     return 0
 

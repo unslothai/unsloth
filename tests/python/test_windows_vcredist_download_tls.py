@@ -6,10 +6,11 @@
 from __future__ import annotations
 
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
+
+from unsloth_pwsh_runner import run_pwsh
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -59,7 +60,10 @@ Write-Output "AFTER=$([System.Net.ServicePointManager]::SecurityProtocol)"
 
 
 def _run(starting_protocol: str) -> dict[str, str]:
-    result = subprocess.run(
+    # The TLS assertions read the BEFORE/DURING/AFTER lines this script prints, so an
+    # interpreter that never got as far as running the download block would look like
+    # setup.ps1 failing to negotiate TLS 1.2 at all.
+    result = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", _script(starting_protocol)],
         check = True,
         capture_output = True,

@@ -14,7 +14,6 @@ import os
 from pathlib import Path
 from typing import List, NamedTuple, Optional
 
-from fastapi import HTTPException
 from loggers import get_logger
 
 from hub.schemas.inventory import LocalModelInfo, LocalModelListResponse, ModelFormat
@@ -23,7 +22,7 @@ from hub.storage.scan_folders import (
     list_scan_folders,
     remove_scan_folder,
 )
-from hub.utils import download_manifest, inventory_scan as hf_cache_scan
+from hub.utils import download_manifest, gguf, inventory_scan as hf_cache_scan
 from hub.utils.paths import (
     hf_default_cache_dir,
     legacy_hf_cache_dir,
@@ -37,6 +36,13 @@ from hub.utils.paths import (
 from hub.services.models import common as model_common
 from hub.services.models.ollama import scan_ollama_dir
 from utils.hidden_models import is_hidden_model
+from utils.paths.path_utils import is_appledouble_metadata
+from utils.paths.scan_folder_health import (
+    annotate_scan_folders,
+    note_scan_folder_scanned,
+    record_scan_failure,
+    refresh_failed_scan_folders,
+)
 
 logger = get_logger(__name__)
 _MAX_MODELS_PER_CUSTOM_FOLDER = 200
@@ -83,9 +89,17 @@ _is_main_gguf_filename = model_common._is_main_gguf_filename
 _is_transformers_bin_weight_file = model_common._is_transformers_bin_weight_file
 _prefer_complete_larger = model_common._prefer_complete_larger
 _gguf_variant_state_summary = model_common._gguf_variant_state_summary
+_is_diffusers_pipeline_dir = model_common._is_diffusers_pipeline_dir
+
+
+def _http_error(status_code: int, detail: str):
+    from fastapi import HTTPException
+    return HTTPException(status_code = status_code, detail = detail)
 
 
 def _is_immediate_model_weight_file(path: Path) -> bool:
+    if is_appledouble_metadata(path):
+        return False
     suffix = path.suffix.lower()
     if suffix == ".safetensors":
         return True
@@ -111,31 +125,6 @@ def _has_immediate_model_weight(
     except OSError:
         return False
     return False
-
-
-def _is_diffusers_pipeline_dir(path: Path) -> bool:
-    """True for a diffusers PIPELINE root: a top-level ``model_index.json`` with the weights in
-    component subdirs (``transformer/``, ``vae/``, ``text_encoder/`` ...).
-
-    Every image and video model downloaded as a pipeline has this shape and NO root
-    ``config.json``, so the root-config-plus-loose-weights test below rejects it. Without this the
-    Images and Video pickers cannot see a pipeline the user already has on disk, and the LM Studio
-    publisher walk descends into it and offers its components (``vae``, ``transformer``, ...) as
-    separate models, none of which any loader can start.
-
-    Either index counts. A Modular Diffusers pipeline carries ``modular_model_index.json`` and no
-    ``model_index.json``, which is the pair the video loader accepts, so recognising only the
-    conventional one hid a valid local root from the picker and left the publisher walk to offer
-    its components separately.
-
-    ``routes.models._local_pipeline_index`` is the same test; the two scanners are separate
-    modules, and only that one had it."""
-    try:
-        return (path / "model_index.json").is_file() or (
-            path / "modular_model_index.json"
-        ).is_file()
-    except OSError:
-        return False
 
 
 def _has_immediate_model_signal(
@@ -219,7 +208,12 @@ def _scan_models_dir(
             break
         try:
             is_dir = child.is_dir()
-            is_gguf_file = not is_dir and child.suffix.lower() == ".gguf" and child.is_file()
+            is_gguf_file = (
+                not is_dir
+                and child.suffix.lower() == ".gguf"
+                and child.is_file()
+                and not is_appledouble_metadata(child)
+            )
             if not is_dir and not is_gguf_file:
                 continue
             has_model_files = is_gguf_file or _has_immediate_model_signal(child)
@@ -362,6 +356,11 @@ def _scan_hf_cache(
             if snapshot_partial
             else None
         )
+        snapshot_partial_resumable = snapshot_partial and hf_cache_scan.partial_resume_available(
+            "model",
+            model_id,
+            repo_cache_dir = repo_dir,
+        )
         resolved = hf_cache_scan.resolve_hf_cache_realpath(repo_dir)
         scan_path = Path(resolved) if resolved else repo_dir
         load_path = repo_dir if active_cache else scan_path
@@ -435,6 +434,7 @@ def _scan_hf_cache(
             snapshot_partial = snapshot_partial,
             gguf_partial = gguf_partial,
             snapshot_partial_transport = snapshot_partial_transport,
+            snapshot_partial_resumable = snapshot_partial_resumable,
         )
         found.extend(rows)
     return found
@@ -476,7 +476,11 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
             break
         try:
             if not child.is_dir():
-                if child.suffix.lower() == ".gguf" and child.is_file():
+                if (
+                    child.suffix.lower() == ".gguf"
+                    and child.is_file()
+                    and not is_appledouble_metadata(child)
+                ):
                     try:
                         updated_at = child.stat().st_mtime
                     except OSError:
@@ -530,7 +534,11 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
                                 updated_at = updated_at,
                             )
                         )
-                    elif model_dir.suffix.lower() == ".gguf" and model_dir.is_file():
+                    elif (
+                        model_dir.suffix.lower() == ".gguf"
+                        and model_dir.is_file()
+                        and not is_appledouble_metadata(model_dir)
+                    ):
                         try:
                             updated_at = model_dir.stat().st_mtime
                         except OSError:
@@ -574,6 +582,11 @@ def _inventory_path_identity(raw_path: str) -> str:
         # Keep malformed sources distinct until the worker's existing request or
         # per-folder error boundary turns them into a 403/skip.
         return os.path.normcase(raw)
+
+
+def _inventory_physical_identity(raw_path: str) -> str:
+    """physical identity for an existing discovered path without lossy name folding."""
+    return gguf.local_path_physical_identity(raw_path)
 
 
 def _coerce_scan_folder_path(raw_path: str) -> str:
@@ -683,7 +696,9 @@ async def _collect_models_from_default_sources(
             lambda path: _discover_hf_cache(path, entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES),
             folder_path,
         )
-        custom_sources.append((folder_path, discovered))
+        # Carry the registered path: the status registry is keyed on the row, not
+        # on the normalized Path this scan walks.
+        custom_sources.append((folder_path, discovered, str(folder["path"])))
         state_repositories.extend(
             ("model", model_id, folder_path) for _repo, model_id, _updated in discovered
         )
@@ -715,7 +730,7 @@ async def _collect_models_from_default_sources(
     for ollama_dir in ollama_dirs:
         local_models += await _scan_source("Ollama", scan_ollama_dir, ollama_dir)
 
-    for folder_path, discovered in custom_sources:
+    for folder_path, discovered, row_path in custom_sources:
         try:
             custom_models = await asyncio.to_thread(
                 _scan_custom_folder,
@@ -726,7 +741,13 @@ async def _collect_models_from_default_sources(
             )
         except Exception as e:
             logger.warning("Skipping unreadable scan folder %s: %s", folder_path, e)
+            # Only an OS failure is something the user can fix, so only that is shown.
+            if isinstance(e, OSError):
+                record_scan_failure(row_path, e)
             continue
+        # Off the loop, like the scan above it: the probe opens directories, and on a
+        # stalled network mount scandir sits in the kernel with nothing to yield to.
+        await asyncio.to_thread(note_scan_folder_scanned, row_path, found = bool(custom_models))
         local_models.extend(_promote_to_custom_source(model) for model in custom_models)
 
     return local_models
@@ -787,11 +808,16 @@ def _scan_custom_folder(
                 selectable.append(model)
         elif detect_gguf_model(model.path, model_root = str(folder_path)) is not None:
             selectable.append(model)
+
+    selectable = gguf.dedupe_custom_gguf_rows(selectable)
+    remaining = _MAX_MODELS_PER_CUSTOM_FOLDER - len(selectable)
+    if remaining > 0:
+        selectable.extend(scan_ollama_dir(folder_path, limit = remaining))
     return selectable[:_MAX_MODELS_PER_CUSTOM_FOLDER]
 
 
 def _promote_to_custom_source(model: LocalModelInfo) -> LocalModelInfo:
-    if model.source == "hf_cache":
+    if model.source in {"hf_cache", "ollama"}:
         return model
     return model.model_copy(
         update = {
@@ -837,9 +863,16 @@ def _dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelI
                     model.format_variant or "",
                 )
             )
+        elif model.source == "custom":
+            key = _local_inventory_id(
+                "custom",
+                model.model_format,
+                _inventory_physical_identity(model.path),
+                None,
+            )
         else:
             row_key = model.inventory_id or model.id
-            key = f"{row_key}\x00custom" if model.source == "custom" else row_key
+            key = row_key
         existing = deduped.get(key)
         prefer_candidate = existing is None
         if existing is not None:
@@ -856,8 +889,12 @@ def _dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelI
                 )
         if prefer_candidate:
             deduped[key] = model
+
+    deduped_values = list(deduped.values())
+    custom_values = [model for model in deduped_values if model.source == "custom"]
     return sorted(
-        deduped.values(),
+        [model for model in deduped_values if model.source != "custom"]
+        + gguf.suppress_grouped_gguf_file_rows(custom_values),
         key = lambda item: item.updated_at or 0,
         reverse = True,
     )
@@ -877,6 +914,10 @@ def _filter_hidden_models(local_models: List[LocalModelInfo]) -> list[LocalModel
     return visible
 
 
+def _filter_and_dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelInfo]:
+    return _dedupe_local_models(_filter_hidden_models(local_models))
+
+
 async def _scan_local_models_response(
     models_dir: str, custom_folders: list[dict], sources: _LocalInventorySources
 ) -> LocalModelListResponse:
@@ -893,7 +934,7 @@ async def _scan_local_models_response(
     try:
         models_root = _resolve_allowed_models_dir(models_dir, allowed_roots)
     except ValueError:
-        raise HTTPException(status_code = 403, detail = "Directory not allowed")
+        raise _http_error(status_code = 403, detail = "Directory not allowed")
 
     try:
         local_models = await _collect_models_from_default_sources(
@@ -906,7 +947,7 @@ async def _scan_local_models_response(
             known_hf_caches,
             custom_folders,
         )
-        models = _dedupe_local_models(_filter_hidden_models(local_models))
+        models = await asyncio.to_thread(_filter_and_dedupe_local_models, local_models)
         return LocalModelListResponse(
             models_dir = str(models_root),
             hf_cache_dir = str(hf_cache_dir),
@@ -916,7 +957,7 @@ async def _scan_local_models_response(
         )
     except Exception as e:
         logger.error(f"Error listing local models: {e}", exc_info = True)
-        raise HTTPException(
+        raise _http_error(
             status_code = 500,
             detail = f"Failed to list local models: {str(e)}",
         )
@@ -931,11 +972,19 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
         # for a response that is actually about to be served.
         # Classification reads GGUF headers, so keep it off the event loop too.
         try:
-            from routes.models import _local_model_task
-            models = [
-                model.model_copy(update = {"task": _local_model_task(model)})
-                for model in response.models
-            ]
+            from hub.services.models import catalog_classification
+
+            models = []
+            for model in response.models:
+                task, audio_type = catalog_classification._local_model_classification(model)
+                models.append(
+                    model.model_copy(
+                        update = {
+                            "task": task,
+                            "audio_type": audio_type,
+                        }
+                    )
+                )
             return response.model_copy(update = {"models": models})
         except Exception as e:  # noqa: BLE001 -- classification never breaks the listing
             logger.warning("Could not classify local model tasks: %s", e)
@@ -1000,12 +1049,12 @@ def get_models_folder_response() -> dict:
     try:
         path.mkdir(parents = True, exist_ok = True)
     except OSError as e:
-        raise HTTPException(
+        raise _http_error(
             status_code = 500,
             detail = f"Failed to create models folder: {path}: {e}",
         ) from e
     if not path.is_dir():
-        raise HTTPException(
+        raise _http_error(
             status_code = 500,
             detail = f"Models folder path is not a directory: {path}",
         )
@@ -1013,7 +1062,10 @@ def get_models_folder_response() -> dict:
 
 
 def get_scan_folders_response() -> dict:
-    return {"folders": list_scan_folders()}
+    folders = list_scan_folders()
+    # Opening the dialog is how a fixed folder clears, so recheck the bad ones.
+    refresh_failed_scan_folders(folders)
+    return {"folders": annotate_scan_folders(folders)}
 
 
 def add_scan_folder_response(path: str) -> dict:
@@ -1021,7 +1073,7 @@ def add_scan_folder_response(path: str) -> dict:
         folder, inserted = add_scan_folder_with_status(_coerce_scan_folder_path(path))
     except ValueError as e:
         logger.warning("Scan folder rejected: %s (path=%s)", e, path)
-        raise HTTPException(status_code = 400, detail = str(e))
+        raise _http_error(status_code = 400, detail = str(e))
     logger.info("Scan folder added: %s", folder.get("path"))
     if inserted:
         from core.inference.local_model_resolver import invalidate_index, warm_index_soon
