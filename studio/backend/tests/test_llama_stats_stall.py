@@ -313,7 +313,7 @@ def test_the_real_hook_reads_the_api_monitor(monkeypatch):
     hook and it resolves the live monitor rather than a stub of one."""
     from core.inference.api_monitor import api_monitor
 
-    assert ls._api_monitor_running_count() == api_monitor.running_count()
+    assert ls._api_monitor_running_count() == api_monitor.active_count()
     assert isinstance(ls._api_monitor_running_count(), int)
 
     captured = {}
@@ -348,3 +348,79 @@ def test_the_clamped_interval_is_a_wait_every_platform_accepts():
     event = threading.Event()
     threading.Timer(0.05, event.set).start()
     assert event.wait(ls._MAX_ENV_SECONDS) is True
+
+
+def test_a_model_load_is_not_counted_as_a_request_in_flight():
+    """THE DISTINCTION THE FIELD DEPENDS ON.
+
+    api_monitor records a model load as a lifecycle row whose status is "running". A
+    plain count of running rows would therefore report studio_inflight=1 while the
+    engine holds a slot for a load, which is the opposite of the reading the field
+    exists to support. active_count() excludes lifecycle rows; a first cut of this
+    change did not, and nothing but this test distinguished them.
+    """
+    from core.inference.api_monitor import ApiMonitor
+
+    monitor = ApiMonitor(max_entries = 16)
+    monitor.record_lifecycle(event = "load", model = "unsloth/Qwen3-27B-GGUF", running = True)
+    assert any(e.status == "running" for e in monitor._entries), (
+        "the load must be a running row, or this test proves nothing"
+    )
+    assert monitor.active_count() == 0
+
+    # And through the hook itself, against the live singleton, so swapping
+    # active_count() for a raw count of running rows fails here rather than only in
+    # the helper above.
+    from core.inference.api_monitor import api_monitor
+
+    entry_id = api_monitor.record_lifecycle(
+        event = "load", model = "unsloth/Qwen3-27B-GGUF", running = True
+    )
+    try:
+        assert any(e.status == "running" for e in api_monitor._entries)
+        assert ls._api_monitor_running_count() == 0
+    finally:
+        api_monitor.discard(entry_id)
+
+
+def test_the_count_is_read_under_the_monitors_lock_while_it_mutates():
+    """The poller reads this from a daemon thread every 10s while request threads add
+    and finish rows. It must neither race the deque nor deadlock against the terminal
+    callback condition, which shares the same lock."""
+    import threading
+
+    from core.inference.api_monitor import ApiMonitor
+
+    monitor = ApiMonitor(max_entries = 64)
+    stop = threading.Event()
+    seen = []
+    errors = []
+
+    def churn(n):
+        try:
+            for i in range(300):
+                entry_id = monitor.record_lifecycle(event = "load", model = f"m-{n}-{i}", running = True)
+                monitor.finish(entry_id)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    def poll():
+        try:
+            while not stop.is_set():
+                seen.append(monitor.active_count())
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    reader = threading.Thread(target = poll, daemon = True)
+    reader.start()
+    writers = [threading.Thread(target = churn, args = (n,)) for n in range(4)]
+    for w in writers:
+        w.start()
+    for w in writers:
+        w.join(timeout = 30)
+        assert not w.is_alive(), "a writer blocked on the monitor lock"
+    stop.set()
+    reader.join(timeout = 10)
+    assert not reader.is_alive(), "active_count() deadlocked against the writers"
+    assert not errors, errors
+    assert seen and all(isinstance(v, int) and v >= 0 for v in seen)

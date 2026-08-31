@@ -275,12 +275,16 @@ def maybe_start_stats_logger(base_url, logger):
 def _api_monitor_running_count():
     """Requests Studio has in flight, from the API monitor.
 
+    active_count() rather than a plain count of rows whose status is "running": a
+    model load shows as running but is not an in-flight API request, and counting one
+    would answer the opposite of the question this field exists to settle.
+
     Imported at call time, not module scope: this module is stdlib-only by design
     and is loaded from the llama.cpp backend, which the monitor's package imports
     back. Returns None on any failure so the stats line simply omits the field.
     """
     try:
         from core.inference.api_monitor import api_monitor
-        return api_monitor.running_count()
+        return api_monitor.active_count()
     except Exception:  # noqa: BLE001 -- diagnostics must never break the poller
         return None
