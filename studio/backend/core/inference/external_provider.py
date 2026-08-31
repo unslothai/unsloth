@@ -426,6 +426,11 @@ def _extract_web_search_action(item: dict[str, Any]) -> dict[str, Any]:
     return arguments
 
 
+# Shown on a shell card the stream never finished, so it is not mistaken for the
+# "Command completed with no output." an empty result means on a complete stream.
+_SHELL_TRUNCATED_NOTE = "(response truncated before the command reported)"
+
+
 def _format_web_search_per_call_sources(results: Any, sources: Any) -> str:
     """Format one web search call's sources for the frontend source parser."""
     blocks: list[str] = []
@@ -436,7 +441,10 @@ def _format_web_search_per_call_sources(results: Any, sources: Any) -> str:
             url = result.get("url") if isinstance(result.get("url"), str) else ""
             if not url:
                 continue
-            title = result.get("title") if isinstance(result.get("title"), str) else url
+            raw_title = result.get("title")
+            # Blank counts as missing: the parsers read `Title:\s*(.+)`, and on an
+            # empty line the `\s` eats the newline and the title becomes the URL line.
+            title = (raw_title.strip() if isinstance(raw_title, str) else "") or url
             snippet = result.get("snippet") or result.get("text") or ""
             entry = f"Title: {title}\nURL: {url}"
             if isinstance(snippet, str) and snippet:
@@ -6000,11 +6008,13 @@ class ExternalProviderClient:
                                 elif item.get("type") == "web_search_call":
                                     # open_page / find_in_page carry a url (+ pattern), no query.
                                     item_id = item.get("id", "") or (f"ws_{len(web_search_calls)}")
-                                    arguments = _extract_web_search_action(item)
-                                    if not arguments.get("query"):
-                                        prior_query = web_search_calls.get(item_id, {}).get("query")
-                                        if isinstance(prior_query, str) and prior_query:
-                                            arguments["query"] = prior_query
+                                    # Overlay, don't replace: a partial done event
+                                    # would otherwise drop the url / pattern / type
+                                    # the added event carried.
+                                    arguments = {
+                                        **web_search_calls.get(item_id, {}),
+                                        **_extract_web_search_action(item),
+                                    }
                                     web_search_calls[item_id] = dict(arguments)
                                     yield _emit_tool_event(
                                         {
@@ -6373,7 +6383,9 @@ class ExternalProviderClient:
                                     )
                                 # Mirror the response.completed flush so
                                 # truncated streams also finalise orphan
-                                # shell_calls.
+                                # shell_calls. Here an empty output means the
+                                # command never reported, not that it printed
+                                # nothing, so the card must not read as success.
                                 for sc_id, sc_state in shell_calls.items():
                                     if sc_state.get("tool_end_emitted"):
                                         continue
@@ -6383,7 +6395,8 @@ class ExternalProviderClient:
                                             "tool_call_id": sc_id,
                                             "result": _format_shell_output(
                                                 sc_state.get("output") or []
-                                            ),
+                                            )
+                                            or _SHELL_TRUNCATED_NOTE,
                                         }
                                     )
                                     sc_state["tool_end_emitted"] = True

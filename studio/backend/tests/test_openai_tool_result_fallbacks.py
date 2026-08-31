@@ -584,3 +584,110 @@ def test_no_web_search_means_no_include(monkeypatch):
         enabled_tools = ["code_execution"],
     )
     assert "include" not in body
+
+
+# ── partial / degraded event shapes ────────────────────────────────────
+
+
+def test_web_search_done_event_keeps_fields_from_the_added_event(monkeypatch):
+    # A done event that omits the action must not revert the card to a blank
+    # "Web Search": url, pattern and action_type are as load-bearing as query.
+    sse_events = [
+        {
+            "type": "response.output_item.added",
+            "item": {
+                "type": "web_search_call",
+                "id": "ws_partial",
+                "action": {
+                    "type": "find_in_page",
+                    "url": "https://example.com/tigers",
+                    "pattern": "population",
+                },
+            },
+        },
+        {
+            "type": "response.output_item.done",
+            "item": {"type": "web_search_call", "id": "ws_partial"},
+        },
+        {"type": "response.completed", "response": {}},
+    ]
+    lines = _drive_stream(sse_events, ["web_search"], monkeypatch)
+    starts = [e for e in _tool_events(lines) if e["type"] == "tool_start"]
+    assert starts[0]["arguments"]["url"] == "https://example.com/tigers"
+    assert starts[0]["arguments"]["pattern"] == "population"
+    assert starts[0]["arguments"]["action_type"] == "find_in_page"
+
+
+def test_web_search_done_event_wins_where_it_has_a_value(monkeypatch):
+    sse_events = [
+        {
+            "type": "response.output_item.added",
+            "item": {
+                "type": "web_search_call",
+                "id": "ws_upd",
+                "action": {"type": "search", "query": "first"},
+            },
+        },
+        {
+            "type": "response.output_item.done",
+            "item": {
+                "type": "web_search_call",
+                "id": "ws_upd",
+                "action": {"type": "search", "query": "second"},
+            },
+        },
+        {"type": "response.completed", "response": {}},
+    ]
+    lines = _drive_stream(sse_events, ["web_search"], monkeypatch)
+    starts = [e for e in _tool_events(lines) if e["type"] == "tool_start"]
+    assert starts[0]["arguments"]["query"] == "second"
+
+
+def test_blank_result_title_falls_back_to_the_url(monkeypatch):
+    # `Title: \nURL: ...` parses as title="URL: ..." on the frontend, because
+    # its `Title:\s*(.+)` eats the newline. Blank has to mean missing here.
+    sse_events = [
+        {
+            "type": "response.output_item.done",
+            "item": {
+                "type": "web_search_call",
+                "id": "ws_blank",
+                "action": {"type": "search", "query": "tigers"},
+                "results": [
+                    {"title": "   ", "url": "https://example.com/a"},
+                    {"title": "Real Title", "url": "https://example.com/b"},
+                ],
+            },
+        },
+        {"type": "response.completed", "response": {}},
+    ]
+    lines = _drive_stream(sse_events, ["web_search"], monkeypatch)
+    ends = [e for e in _tool_events(lines) if e["type"] == "tool_end"]
+    assert "Title: https://example.com/a" in ends[0]["result"]
+    assert "Title: Real Title" in ends[0]["result"]
+    assert "Title: \n" not in ends[0]["result"]
+
+
+def test_truncated_shell_call_does_not_read_as_a_finished_command(monkeypatch):
+    # response.incomplete finalises the card so it stops spinning, but an empty
+    # result renders as "Command completed with no output.", which is a claim
+    # the truncated stream cannot support.
+    sse_events = [
+        {
+            "type": "response.output_item.done",
+            "item": {
+                "type": "shell_call",
+                "id": "scall_cut",
+                "action": {"commands": ["sleep 30"]},
+            },
+        },
+        {
+            "type": "response.incomplete",
+            "response": {"incomplete_details": {"reason": "max_output_tokens"}},
+        },
+    ]
+    lines = _drive_stream(sse_events, ["code_execution"], monkeypatch)
+    ends = [e for e in _tool_events(lines) if e["type"] == "tool_end"]
+    assert len(ends) == 1
+    assert ends[0]["tool_call_id"] == "scall_cut"
+    assert ends[0]["result"] == "(response truncated before the command reported)"
