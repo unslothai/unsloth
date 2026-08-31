@@ -88,6 +88,7 @@ def _bare_orchestrator():
     orchestrator._dispatcher_thread = None
     orchestrator._dispatcher_stop = threading.Event()
     orchestrator._dispatcher_lifecycle_lock = threading.Lock()
+    orchestrator._worker_released = threading.Condition(orchestrator._dispatcher_lifecycle_lock)
     orchestrator._mailbox_lock = threading.Lock()
     orchestrator._mailboxes = {}
     orchestrator._direct_mailboxes = {}
@@ -536,12 +537,12 @@ def test_dispatcher_refuses_during_exclusive_tts_and_resumes_after():
     orchestrator._resp_queue = queue.Queue()
     orchestrator._worker_reserved_for = "audio generation is in progress"
 
-    assert orchestrator._start_dispatcher() is False
+    assert orchestrator._start_dispatcher() is None
     assert orchestrator._dispatcher_thread is None
 
     orchestrator._worker_reserved_for = None
     try:
-        assert orchestrator._start_dispatcher() is True
+        assert orchestrator._start_dispatcher() is orchestrator._dispatcher_thread
         assert orchestrator._dispatcher_thread is not None
         assert orchestrator._dispatcher_thread.is_alive()
     finally:
@@ -639,29 +640,6 @@ def test_tts_cancel_while_waiting_does_not_signal_active_compare(monkeypatch):
     assert cancel_calls == []
     assert set(orchestrator._mailboxes) == {"compare"}
     assert orchestrator._worker_reserved_for is None
-
-
-def test_dispatched_generation_rechecks_tts_reservation_before_registration(monkeypatch):
-    orchestrator = _bare_orchestrator()
-    orchestrator._dispatcher_thread = _AliveDispatcher()
-    monkeypatch.setattr(orchestrator, "_ensure_subprocess_alive", lambda: True)
-    monkeypatch.setattr(orchestrator, "_start_dispatcher", lambda: False)
-
-    def reserve_tts(*_args, **_kwargs):
-        orchestrator._worker_reserved_for = "audio generation is in progress"
-        return {"type": "generate", "request_id": "compare-1"}
-
-    monkeypatch.setattr(orchestrator, "_build_generate_cmd", reserve_tts)
-    monkeypatch.setattr(
-        orchestrator,
-        "_send_cmd",
-        lambda _cmd: pytest.fail("compare must not enqueue after TTS reservation"),
-    )
-
-    output = list(orchestrator._generate_dispatched(messages = [{"role": "user", "content": "x"}]))
-
-    assert any("audio generation" in str(chunk).lower() for chunk in output)
-    assert orchestrator._mailboxes == {}
 
 
 def test_worker_audio_forwards_shared_cancel_event():

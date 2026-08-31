@@ -21,6 +21,7 @@ def _idle_orchestrator(models, loading = ()):
     o._pending_teardowns = None
     o._gen_lock = threading.Lock()
     o._dispatcher_lifecycle_lock = threading.Lock()
+    o._worker_released = threading.Condition(o._dispatcher_lifecycle_lock)
     o._drain_event = threading.Event()
     o._unload_pending = False
     o.models = dict(models)
@@ -31,7 +32,7 @@ def _idle_orchestrator(models, loading = ()):
     o.cancel_load = lambda _name: False
     o._ensure_subprocess_alive = lambda: True
     o._cancel_generation = lambda: None
-    o._wait_worker_idle = lambda: True
+    o._wait_worker_idle = lambda timeout = None: True
     o._drain_queue = lambda: None
     o._send_cmd = lambda _cmd: None
     o._wait_response = lambda _token: None

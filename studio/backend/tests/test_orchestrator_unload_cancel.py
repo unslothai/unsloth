@@ -7,6 +7,7 @@ each token) and takes ``_gen_lock`` before the unload round-trip.
 """
 
 import base64
+import inspect
 import multiprocessing as _mp
 import queue
 import threading
@@ -19,10 +20,25 @@ from core.inference import orchestrator as orch_mod
 from core.inference.orchestrator import InferenceOrchestrator
 
 
-def _bare_orchestrator():
+class _RecordOfStops:
+    """Stands in for the ledger. Only one thing about it is read here: whether the"""
+
+    def __init__(self, read_by_worker: bool):
+        self.stopped: list = []
+        self._read_by_worker = read_by_worker
+
+    def stop(self, request_id):
+        self.stopped.append(request_id)
+        return True
+
+    def read_by_worker(self) -> bool:
+        return self._read_by_worker
+
+
+def _bare_orchestrator(reads_stops = False):
     """An orchestrator without the real __init__ subprocess/network."""
     o = InferenceOrchestrator.__new__(InferenceOrchestrator)
-    o._stop_ledger = None
+    o._stop_ledger = _RecordOfStops(True) if reads_stops else None
     o._pending_teardowns = None
     o._gen_lock = threading.Lock()
     o._send_order_lock = threading.Lock()
@@ -38,6 +54,7 @@ def _bare_orchestrator():
     o._dispatcher_thread = None
     o._dispatcher_stop = threading.Event()
     o._dispatcher_lifecycle_lock = threading.Lock()
+    o._worker_released = threading.Condition(o._dispatcher_lifecycle_lock)
     o._unload_pending = False
     o._worker_reserved_for = None
     o._mailbox_lock = threading.Lock()
@@ -1290,9 +1307,10 @@ def test_dispatched_bails_when_dispatcher_stopped_before_mailbox_registration(mo
     # Same window, but the unload was a same-model reload so active_model_name is
     # unchanged and _unload_pending has already been cleared; the give-away is that the
     # dispatcher was stopped. Registering a mailbox with no dispatcher to route the reply
-    # would hang the compare stream. Nothing here can say an unload did it -- a caller
-    # that held the worker briefly leaves the same trace -- so the reply says what is
-    # actually known.
+    # would hang the compare stream. A missing dispatcher usually passes -- the caller that
+    # held the worker lets go -- so this is what the request is told once waiting for it to
+    # come back has run out of time, and nothing then can say an unload was the cause.
+    monkeypatch.setattr(orch_mod, "_DISPATCH_IDLE_TIMEOUT", 0.05)
     o = _bare_orchestrator()
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {}
@@ -1975,9 +1993,9 @@ def test_dispatched_bail_stops_orphan_dispatcher_it_started(monkeypatch):
     def fake_start():
         started["v"] = True
         o._dispatcher_thread = _AliveDispatcher()
-        return True  # _start_dispatcher returns True for the caller that spawned it
+        return o._dispatcher_thread  # what _start_dispatcher hands the caller that spawned it
 
-    def fake_stop():
+    def fake_stop(thread = None):
         stopped["v"] = True
         o._dispatcher_thread = None
 
@@ -2178,6 +2196,7 @@ def test_concurrent_start_dispatcher_spawns_exactly_one():
     o._dispatcher_thread = None
     o._dispatcher_stop = threading.Event()
     o._dispatcher_lifecycle_lock = threading.Lock()
+    o._worker_released = threading.Condition(o._dispatcher_lifecycle_lock)
 
     n = 32
     # A barrier aligns every thread on the check-then-spawn window: without the lifecycle
@@ -2199,10 +2218,9 @@ def test_concurrent_start_dispatcher_spawns_exactly_one():
         t.join(timeout = 5)
 
     try:
-        # _start_dispatcher returns True only for the caller that actually spawned a thread.
-        # Exactly one caller may win; every other must observe the dispatcher alive and bail.
-        assert results.count(True) == 1, f"expected exactly one spawn, got {results.count(True)}"
-        assert results.count(False) == n - 1
+        spawned = [result for result in results if result is not None]
+        assert len(spawned) == 1, f"expected exactly one spawn, got {len(spawned)}"
+        assert results.count(None) == n - 1
         # And exactly one live dispatcher thread exists -- no orphan racing resp_queue.
         live = [
             t for t in threading.enumerate() if t.name == "inference-dispatcher" and t.is_alive()
@@ -2243,11 +2261,12 @@ def test_start_dispatcher_refuses_while_unload_pending():
     o._dispatcher_thread = None
     o._dispatcher_stop = threading.Event()
     o._dispatcher_lifecycle_lock = threading.Lock()
+    o._worker_released = threading.Condition(o._dispatcher_lifecycle_lock)
     o._unload_pending = True
 
     started = o._start_dispatcher()
 
-    assert started is False, "must not start a dispatcher while an unload is pending"
+    assert started is None, "must not start a dispatcher while an unload is pending"
     assert o._dispatcher_thread is None, "no dispatcher thread may be created"
     live = [t for t in threading.enumerate() if t.name == "inference-dispatcher" and t.is_alive()]
     assert live == [], "no dispatcher may exist to consume the unloaded reply"
@@ -2264,11 +2283,12 @@ def test_start_dispatcher_resumes_after_unload_clears():
     o._dispatcher_thread = None
     o._dispatcher_stop = threading.Event()
     o._dispatcher_lifecycle_lock = threading.Lock()
+    o._worker_released = threading.Condition(o._dispatcher_lifecycle_lock)
     o._unload_pending = False
 
     try:
         assert (
-            o._start_dispatcher() is True
+            o._start_dispatcher() is o._dispatcher_thread is not None
         ), "a fresh dispatcher must start once no unload is pending"
         assert o._dispatcher_thread is not None and o._dispatcher_thread.is_alive()
     finally:
@@ -2293,6 +2313,7 @@ def test_queued_start_behind_unload_stop_spawns_no_dispatcher():
     o._request_cancel_events = {}
     o._dispatcher_stop = threading.Event()
     o._dispatcher_lifecycle_lock = threading.Lock()
+    o._worker_released = threading.Condition(o._dispatcher_lifecycle_lock)
     o._unload_pending = False
 
     start_queued = threading.Event()  # release the stop's join once the start is queued behind it
@@ -2340,7 +2361,7 @@ def test_queued_start_behind_unload_stop_spawns_no_dispatcher():
     u.join(timeout = 5)
     c.join(timeout = 5)
 
-    assert started_result.get("v") is False, "the queued start must refuse while unloading"
+    assert started_result.get("v") is None, "the queued start must refuse while unloading"
     assert o._dispatcher_thread is None, "the stop cleared it and the queued start spawned nothing"
     live = [t for t in threading.enumerate() if t.name == "inference-dispatcher" and t.is_alive()]
     assert live == [], "no fresh dispatcher may be left to consume the unloaded reply"
