@@ -218,9 +218,20 @@ def _write_backend_fixture(home: Path, request_log: Path) -> None:
                     self.wfile.write(raw)
 
                 def do_OPTIONS(self):
+                    # Recorded like GET and POST. A preflight the browser rejects means the
+                    # real request is never sent, so without this the request log shows
+                    # nothing and the failure looks like the frontend never tried.
+                    record("OPTIONS", urlparse(self.path).path)
                     self.send_response(204)
                     self.send_header("Access-Control-Allow-Origin", "tauri://localhost")
-                    self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-HF-Token")
+                    # Echo what was asked for. studio/backend/main.py runs CORSMiddleware
+                    # with allow_headers = ["*"], so a fixed list here is not the product's
+                    # behaviour but a second copy of it, and it drifted: #8879 began sending
+                    # two X-Unsloth timezone headers on every authFetch, this list still
+                    # named three headers, and every authed request in this test has failed
+                    # its preflight since. Echoing cannot drift again.
+                    requested = self.headers.get("Access-Control-Request-Headers")
+                    self.send_header("Access-Control-Allow-Headers", requested or "*")
                     self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
                     self.end_headers()
 
