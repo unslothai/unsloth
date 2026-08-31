@@ -69,8 +69,10 @@ class _Backend:
         *,
         loaded = True,
         props = None,
+        slots = 4,
     ):
         self.is_loaded = loaded
+        self.effective_parallel_slots = slots
         self.model_identifier = "/media/models/qwen/model.gguf"
         self._openai_advertised_id = "unsloth/Qwen3.8-27B-GGUF"
         self.context_length = 262144
@@ -250,7 +252,10 @@ def test_props_degrades_to_the_local_view_when_the_engine_cannot_be_read():
         body = c.get("/props").json()
     assert body["model_path"] == "unsloth/Qwen3.8-27B-GGUF"
     assert body["default_generation_settings"]["n_ctx"] == 262144
-    assert body["total_slots"] == 0
+    # Not 0: this same response advertises the model as loaded, and a client reading
+    # props for capacity would conclude it cannot serve. The backend knows what it
+    # launched with.
+    assert body["total_slots"] == 4
     assert body["build_info"].startswith("unsloth-studio/")
 
 
@@ -614,3 +619,115 @@ def test_the_denied_endpoints_props_advertises_really_are_denied():
             assert c.get(path).status_code == 404, path
         # POST /props is llama-server's props-change endpoint; Studio serves GET only.
         assert c.post("/props", json = {}).status_code in (404, 405)
+
+
+# ── round three ───────────────────────────────────────────────────────────────
+
+
+def test_a_transient_props_failure_does_not_report_zero_slots():
+    """The response still advertises the model and its context, so total_slots 0 tells a
+    client reading props for capacity that the serving model has no usable slots."""
+    mod = _load(backend = _Backend(props = None, slots = 8))
+    with _client(mod) as c:
+        body = c.get("/props").json()
+    assert body["model_path"] == "unsloth/Qwen3.8-27B-GGUF"
+    assert body["total_slots"] == 8
+
+
+@pytest.mark.parametrize("slots", [0, None, "x", -1])
+def test_an_unreadable_slot_count_is_omitted_rather_than_reported_as_zero(slots):
+    mod = _load(backend = _Backend(props = None, slots = slots))
+    with _client(mod) as c:
+        body = c.get("/props").json()
+    assert "total_slots" not in body, body.get("total_slots")
+    assert body["model_path"] == "unsloth/Qwen3.8-27B-GGUF"
+
+
+def test_a_backend_that_raises_on_the_slot_count_still_answers():
+    class _Raises(_Backend):
+        # A property, not the plain attribute the base class sets, so the read itself
+        # raises the way a backend mid-restart would.
+        @property
+        def effective_parallel_slots(self):
+            raise RuntimeError("backend mid-restart")
+
+        @effective_parallel_slots.setter
+        def effective_parallel_slots(self, _value):
+            pass
+
+    mod = _load(backend = _Raises(props = None))
+    with _client(mod) as c:
+        r = c.get("/props")
+    assert r.status_code == 200
+    assert "total_slots" not in r.json()
+
+
+def test_the_upstream_slot_count_still_wins_when_it_can_be_read():
+    mod = _load(backend = _Backend(props = {"total_slots": 2}, slots = 8))
+    with _client(mod) as c:
+        assert c.get("/props").json()["total_slots"] == 2
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/v1/rerank",
+        "/v1/reranking",
+        "/v1/chat/completions/control",
+        "/v1/chat/completions/input_tokens",
+        "/v1/responses/input_tokens",
+        "/v1/health",
+        "/v1/stream",
+        "/v1/streams/lookup",
+    ],
+)
+@pytest.mark.parametrize("method", ["HEAD", "POST", "DELETE"])
+def test_unserved_v1_aliases_404_on_their_real_method(path, method):
+    """main.py already 404s an unknown GET under /v1/, so only the other methods could
+    still reach the GET-only catch-all and come back 405."""
+    mod = _load()
+    with _client(mod) as c:
+        r = c.request(method, path, json = {} if method == "POST" else None)
+    assert r.status_code == 404, (method, path, r.status_code)
+    assert "text/html" not in r.headers.get("content-type", ""), (method, path)
+
+
+def test_the_v1_deny_list_never_shadows_a_path_studio_serves():
+    """The drift guard. These are hardcoded, so if Studio ever implements one of them
+    this fails and says to delete the line rather than let a 404 shadow a real route."""
+    import os
+
+    os.environ.setdefault("TMPDIR", os.environ.get("UNSLOTH_WORKSPACE", "/tmp") + "/temp")
+    try:
+        import main
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"main.py not importable in this environment: {exc}")
+
+    from routes.llama_compat import _probe_not_found
+
+    def _record(into, path, endpoint):
+        # This module registers its own 404 handlers on exactly these paths, so a naive
+        # walk reports every one of them as served and the guard can never fire.
+        if path and endpoint is not _probe_not_found:
+            into.add(path)
+
+    served = set()
+    for route in main.app.routes:
+        _record(served, getattr(route, "path", None), getattr(route, "endpoint", None))
+        context = getattr(route, "include_context", None)
+        inner = getattr(context, "included_router", None) if context is not None else None
+        if inner is not None:
+            prefix = getattr(context, "prefix", "")
+            for sub in inner.routes:
+                _record(
+                    served,
+                    (prefix + getattr(sub, "path", "")) if getattr(sub, "path", None) else None,
+                    getattr(sub, "endpoint", None),
+                )
+
+    assert "/v1/models" in served, "route walk found nothing; re-derive this"
+    mod = _load()
+    for probe in mod._UNSERVED_V1_PROBE_PATHS:
+        assert f"/{probe}" not in served, (
+            f"Studio now serves /{probe}; drop it from _UNSERVED_V1_PROBE_PATHS"
+        )

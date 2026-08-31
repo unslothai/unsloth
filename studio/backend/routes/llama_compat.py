@@ -87,6 +87,25 @@ _ENGINE_PROBE_PATHS = frozenset(
 # enumerated. Only this one prefix is dynamic in the table above.
 _ENGINE_PROBE_PREFIXES = ("slots/",)
 
+# The /v1-prefixed entries in the same llama-server table that Studio does not
+# implement. Kept separate from the bare set because the two are checked differently:
+# main.py already 404s an unknown GET under /v1/, so only the other methods need a
+# route here. Hardcoded rather than derived from the live route table at import time,
+# with a test that asserts each really is absent from the assembled app -- if Studio
+# ever implements one, CI says to delete the line instead of silently shadowing it.
+_UNSERVED_V1_PROBE_PATHS = frozenset(
+    {
+        "v1/chat/completions/control",
+        "v1/chat/completions/input_tokens",
+        "v1/health",
+        "v1/rerank",
+        "v1/reranking",
+        "v1/responses/input_tokens",
+        "v1/stream",
+        "v1/streams/lookup",
+    }
+)
+
 
 def is_engine_probe_path(full_path: str) -> bool:
     """True for an engine endpoint that must 404 rather than render the app shell."""
@@ -195,7 +214,17 @@ def _server_props() -> dict:
             n_ctx = getattr(llama_backend, "context_length", None)
             if n_ctx:
                 settings["n_ctx"] = int(n_ctx)
-        props.setdefault("total_slots", 0)
+        if "total_slots" not in props:
+            # A transient /props read failure must not report zero slots next to a model
+            # this same response advertises as loaded: a client reading props for
+            # capacity concludes the model cannot serve. The backend knows the number it
+            # launched with; if even that is unreadable, omit rather than claim zero.
+            try:
+                slots = int(getattr(llama_backend, "effective_parallel_slots", 0) or 0)
+            except Exception:  # noqa: BLE001
+                slots = 0
+            if slots > 0:
+                props["total_slots"] = slots
         props.setdefault("chat_template", getattr(llama_backend, "chat_template", "") or "")
     props["build_info"] = f"unsloth-studio/{_studio_version()}"
     return props
@@ -248,6 +277,16 @@ for _probe_path in sorted(_ENGINE_PROBE_PATHS):
 # than a literal: without it POST /slots/0 falls through to the GET-only catch-all and
 # answers 405, which is the false positive again. Both slash forms, because FastAPI's
 # slash redirect does not apply to a path that matches no route at all.
+# main.py answers an unknown GET under /v1/ with a real 404 already, so only the other
+# methods can still reach the GET-only catch-all and come back 405.
+for _v1_path in sorted(_UNSERVED_V1_PROBE_PATHS):
+    router.add_api_route(
+        f"/{_v1_path}",
+        _probe_not_found,
+        methods = _PROBE_DENIED_METHODS,
+        include_in_schema = False,
+    )
+
 for _slots_form in ("/slots/{id_slot}", "/slots/{id_slot}/"):
     router.add_api_route(
         _slots_form,
