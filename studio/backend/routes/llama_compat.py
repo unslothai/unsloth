@@ -170,10 +170,8 @@ def _server_props() -> dict:
     return props
 
 
-# Slash forms too. FastAPI's redirect never fires for these: the SPA catch-all is a
-# full match for "/props/", so the request lands there and comes back as index.html --
-# the original defect, still live for a client that does not canonicalize. routes/
-# inference.py registers "/v1/models/" for the same reason.
+# Slash forms too: FastAPI's redirect never fires, since the catch-all fully matches
+# "/props/" and returns index.html. routes/inference.py registers "/v1/models/" likewise.
 @router.get("/props", include_in_schema = False)
 @router.get("/props/", include_in_schema = False)
 @router.get("/v1/props", include_in_schema = False)

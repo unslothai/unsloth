@@ -693,10 +693,8 @@ def test_the_v1_deny_list_never_shadows_a_path_studio_serves():
 
 @pytest.mark.parametrize("path", ["/props/", "/v1/props/", "/version/"])
 def test_the_trailing_slash_forms_answer_json_not_the_app_shell(path):
-    """FastAPI's slash redirect never fires here: the SPA catch-all is a full match for
-    "/props/", so the request landed there and came back as index.html -- the original
-    defect, still live for any client that does not canonicalize its probe URL.
-    routes/inference.py registers "/v1/models/" for exactly this reason."""
+    """No slash redirect fires here: the catch-all fully matches "/props/", so before
+    this these returned the app shell with a 200, the defect this module exists to fix."""
     mod = _load()
     with _client(mod) as c:
         r = c.get(path)
