@@ -453,7 +453,7 @@ def test_notebook_validator_splits_chained_shell_commands():
     assert nv.rule_inst_004_torchcodec_torch(healed, COLAB_TORCH211, "nb.ipynb", 0) == []
 
     # A `;` inside a PEP 508 marker is one argument, not a separator.
-    marked = '!pip install "torch==2.12.0; python_version >= \'3.10\'"'
+    marked = "!pip install \"torch==2.12.0; python_version >= '3.10'\""
     assert nv._split_chained(marked) == [marked]
     assert len(nv.rule_inst_004_torchcodec_torch(marked, COLAB_TORCH211, "nb.ipynb", 0)) == 1
 
