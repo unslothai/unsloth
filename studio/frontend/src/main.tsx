@@ -32,6 +32,13 @@ if (uaLower.includes("linux") && !uaLower.includes("android")) {
   document.documentElement.classList.add("render-linux");
 }
 
+// Chromium draws the native scrollbar wherever the standard scrollbar
+// properties are set; index.css keys off this class to hand hover scrollbars
+// on Windows back to the ::-webkit-scrollbar styling.
+if (uaLower.includes("windows")) {
+  document.documentElement.classList.add("client-windows");
+}
+
 // Whether off-screen maths takes containment. ON by default, subject to a feature detect for the
 // engine's find-in-page, so on a recent engine this normally SETS the attribute and arms the rule;
 // on an older one it removes an attribute that was never there. Before the first render, because
