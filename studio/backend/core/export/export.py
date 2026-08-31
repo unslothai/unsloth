@@ -102,7 +102,10 @@ def _multi_gpu_device_map_kwargs() -> dict:
             device_map = get_device_map(None)
         else:
             return {}
-        if device_map == "balanced":
+        # Both sharding answers `get_device_map` can give. A whitelist of just
+        # "balanced" silently dropped the map the moment CUDA started asking for
+        # "unsloth", leaving the export on the loader default.
+        if device_map in ("balanced", "unsloth"):
             return {"device_map": device_map}
     except Exception as exc:
         logger.debug(f"multi-GPU device_map resolution failed; using loader default: {exc}")
@@ -138,6 +141,19 @@ def _is_cpu_spill_rejection(exc: BaseException) -> bool:
     match it explicitly. See transformers ``quantizers/quantizer_bnb_4bit.py``.
     """
     return "dispatched on the cpu or the disk" in str(exc).lower()
+
+
+def _is_device_map_infeasible(exc: BaseException) -> bool:
+    """The ``"unsloth"`` planner declining to place the model, by class name.
+
+    It raises rather than spilling a bitsandbytes model to CPU, which is the right
+    answer for a load the user asked for and the wrong one here: the planner budgets
+    from free memory read before this process opens a context, so a training or chat
+    job holding the other cards can make it refuse a model the single-device loader
+    still fits. Matched by name because the class lives in unsloth and importing it
+    would tie the export to a version that defines it.
+    """
+    return type(exc).__name__ == "DeviceMapInfeasible"
 
 
 class _CpuSpillRetry(Exception):
@@ -638,7 +654,10 @@ class ExportBackend:
             if (
                 _device_map_override is None
                 and (
-                    isinstance(e, _CpuSpillRetry) or _is_oom_error(e) or _is_cpu_spill_rejection(e)
+                    isinstance(e, _CpuSpillRetry)
+                    or _is_oom_error(e)
+                    or _is_cpu_spill_rejection(e)
+                    or _is_device_map_infeasible(e)
                 )
                 and _multi_gpu_device_map_kwargs()
             ):

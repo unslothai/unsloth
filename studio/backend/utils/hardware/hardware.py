@@ -4939,11 +4939,26 @@ def apply_gpu_ids(gpu_ids, backend: Optional[str] = None) -> None:
 def get_device_map(gpu_ids: Optional[list[int]] = None) -> str:
     """Return the Hugging Face ``device_map`` string for model loading.
 
-    Returns ``"balanced"`` (shard evenly across GPUs) when:
+    Returns ``"unsloth"`` on CUDA, or ``"balanced"`` on XPU, to shard across
+    GPUs when:
       - ``gpu_ids`` explicitly lists >1 GPU, **or**
       - ``CUDA_VISIBLE_DEVICES``/``ZE_AFFINITY_MASK`` uses non-numeric
         identifiers (UUID/MIG/wildcard) and >1 GPU is visible (fallback:
         numeric IDs unresolvable, so assume multi-GPU is intended).
+
+    CUDA asks for unsloth's head-aware planner rather than accelerate's
+    ``"balanced"``. ``balanced`` caps every device except the last at roughly
+    ``model_size / n_devices`` and then charges cuda:0 alone for the largest
+    layer, so on a small quantized model the unquantized ``lm_head`` does not
+    fit and every module lands on the last card. That is not a split, and a
+    4bit model placed wholly on a non-zero card cannot be trained at all:
+    ``Accelerator.prepare_model`` rejects it with "You can't train a model that
+    has been loaded in 8-bit or 4-bit precision on a different device than the
+    one you're training on".
+
+    XPU keeps ``"balanced"`` deliberately: the unsloth planner has no memory
+    budgets for non-CUDA backends and falls back to ``"sequential"`` there, so
+    asking for it would quietly collapse XPU sharding onto one device.
 
     Returns ``"sequential"`` (single device) otherwise, including CPU/MLX
     backends.
@@ -4978,7 +4993,7 @@ def get_device_map(gpu_ids: Optional[list[int]] = None) -> str:
                     multi_gpu = True
 
         if multi_gpu:
-            return "balanced"
+            return "unsloth" if device == DeviceType.CUDA else "balanced"
 
     return "sequential"
 

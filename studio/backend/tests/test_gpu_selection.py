@@ -553,14 +553,24 @@ class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
         with patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA):
             self.assertEqual(get_device_map(None), "sequential")
             self.assertEqual(get_device_map([0]), "sequential")
-            self.assertEqual(get_device_map([0, 1]), "balanced")
+            self.assertEqual(get_device_map([0, 1]), "unsloth")
 
     def test_get_device_map_uses_all_inherited_visible_gpus_for_uuid_masks(self):
         with (
             patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "GPU-aaa,GPU-bbb"}, clear = True),
             patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
         ):
-            self.assertEqual(get_device_map(None), "balanced")
+            self.assertEqual(get_device_map(None), "unsloth")
+
+    def test_xpu_keeps_balanced_because_the_unsloth_planner_is_cuda_only(self):
+        """The planner falls back to "sequential" off CUDA, which would undo the shard."""
+        with patch("utils.hardware.hardware.get_device", return_value = DeviceType.XPU):
+            self.assertEqual(get_device_map([0, 1]), "balanced")
+
+    def test_a_single_gpu_never_asks_for_a_plan(self):
+        for device in (DeviceType.CUDA, DeviceType.XPU):
+            with patch("utils.hardware.hardware.get_device", return_value = device):
+                self.assertEqual(get_device_map([0]), "sequential")
 
     def test_get_offloaded_device_map_entries_returns_only_cpu_and_disk(self):
         model = SimpleNamespace(

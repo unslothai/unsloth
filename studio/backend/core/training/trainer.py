@@ -3479,9 +3479,9 @@ class UnslothTrainer:
                 # kills the feature. Env-only, deliberately NOT worker.py's
                 # _data_parallel_world_size, which also counts visible CUDA devices:
                 # that bounds a row subset where over-counting is free, this feeds a
-                # veto where both directions are wrong. Unsloth's multi-GPU load is
-                # device_map="balanced", model-parallel to transformers with _n_gpu = 1,
-                # so a balanced 4-GPU run draws one GPU's rows per step and counting
+                # veto where both directions are wrong. Unsloth's multi-GPU load is a
+                # sharding device_map, model-parallel to transformers with _n_gpu = 1,
+                # so a sharded 4-GPU run draws one GPU's rows per step and counting
                 # devices would report 4x the passes, vetoing a qualifying run.
                 world_size = world_size_from_env()
                 if world_size > 1:

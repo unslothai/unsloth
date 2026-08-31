@@ -92,8 +92,8 @@ def _data_parallel_world_size() -> int:
     extra rank does. XPU and MPS stay at one device there, so only CUDA counts.
 
     The larger of the two, never the sum: a distributed run forces n_gpu to 1, and a
-    model-parallel one (device_map="balanced", which is what Unsloth's own multi-GPU
-    load uses) forces it to 1 as well. Rounding up when the model turns out to be
+    model-parallel one (a sharding device_map, which is what Unsloth's own multi-GPU
+    load uses: "unsloth" on CUDA, "balanced" elsewhere) forces it to 1 as well. Rounding up when the model turns out to be
     sharded rather than replicated only tokenizes a larger subset of a corpus this
     bound is orders of magnitude below anyway; rounding down means the run silently
     re-reads rows it has already trained on.
