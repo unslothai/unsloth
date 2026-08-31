@@ -1650,14 +1650,10 @@ def _openai_llama_admission_can_yield(llama_backend) -> bool:
     """Whether a round between generations may hand its commitment back.
 
     Only where llama-server actually clears an idle slot's KV. Under ``--kv-unified``
-    without ``--cache-idle-slots`` the cells of a finished round stay resident, so
-    yielding would not free capacity, only promise the same capacity twice. Studio
-    launches exactly that way on Windows under full GPU offload (``--cache-ram 0``,
-    #5692). There re-costing declines instead of waiting, which is what it did before
-    any of this existed.
-
-    A backend that cannot say (no load yet, or a stub) reads as False: declining is
-    always safe, double-booking is not.
+    without ``--cache-idle-slots`` a finished round's cells stay resident, so yielding
+    would promise the same capacity twice. Studio launches exactly that way on Windows
+    under full GPU offload (``--cache-ram 0``, #5692); there re-costing declines instead
+    of waiting. A backend that cannot say (no load yet, or a stub) reads as False.
     """
     return bool(getattr(llama_backend, "idle_slot_clearing_active", False))
 
@@ -1850,15 +1846,14 @@ def _openai_llama_admission_injected_tool_tokens(injected_tools) -> int:
     """The tool catalogue Unsloth adds itself, in tokens.
 
     ``payload.tools`` is what the CLIENT sent, and for Unsloth's own tool loop that is
-    usually nothing: Web Search and the rest are resolved server-side and rendered into the
-    prompt after admission has already priced the request. Measured on
-    Qwen3.5-4B-MTP-GGUF, the same user turn is 1716 prompt tokens with tools off and 2969
-    with them on, so the catalogue is around 1250 tokens that the message list cannot see.
+    usually nothing: Web Search and the rest resolve server-side and render into the
+    prompt after admission has priced the request. Measured on Qwen3.5-4B-MTP-GGUF, the
+    same user turn is 1716 prompt tokens with tools off and 2969 with them on, so the
+    catalogue is around 1250 tokens the message list cannot see.
 
-    Leaving it out is not a rounding error, it is the difference between four tool chats
-    fitting and four tool chats being killed together: at ``-c 4096`` four requests priced
-    at an equal share were all admitted and llama.cpp answered every one of them with
-    ``Context size has been exceeded``.
+    Leaving it out is not a rounding error: at ``-c 4096`` four requests priced at an
+    equal share were all admitted and llama.cpp answered every one with ``Context size
+    has been exceeded``.
     """
     if not injected_tools:
         return 0
@@ -1931,26 +1926,19 @@ def _openai_llama_admission_tokens(
         output_tokens = max(0, budget - prompt_tokens)
     else:
         output_tokens = cap
-    # A tool loop opens at its own estimate with an equal share as the floor, and
-    # re-costs as it grows (generate_chat_completion_with_tools on_conversation_grew ->
-    # lease.recost_waiting).
+    # A tool loop opens at its own estimate with an equal share as the floor, and re-costs
+    # as it grows (generate_chat_completion_with_tools on_conversation_grew ->
+    # lease.recost_waiting). The floor keeps re-costing rare: under its share a run never
+    # calls the queue at all.
     #
-    # #9392 reserved the WHOLE cache here instead. One lease covers up to 25 rounds and
-    # each round appends its results and re-sends the conversation, so a run that opens
-    # small can grow into the cache while its commitment stays at the opening estimate.
-    # Reserving the upper bound closed that without threading a callback through the
-    # generator, "at the price of serialising concurrent tool requests". That price is
-    # not payable: any lit pill sets enable_tools, so it made every tool chat run alone.
-    # Measured on a 262144 cache, four tool chats went one at a time at 0.1/2.8/4.6/8.8s
-    # to first token; with this they start together.
-    #
-    # The price also scaled the wrong way. #9392's own failure was a 2048-token cache
-    # where 565 + 1485 overflowed; reserving all of that costs a request that could not
-    # have run anyway. Reserving all of 262144 costs three that comfortably could.
-    #
-    # The floor is what keeps re-costing rare rather than load-bearing: a run only has
-    # to re-cost once it outgrows its share of the cache, and under that it never calls
-    # the queue at all.
+    # #9392 reserved the WHOLE cache here instead, closing the same growth without a
+    # callback "at the price of serialising concurrent tool requests". That price is not
+    # payable: any lit pill sets enable_tools, so every tool chat ran alone. Measured on a
+    # 262144 cache, four tool chats went one at a time at 0.1/2.8/4.6/8.8s to first token;
+    # with this they start together. It also scaled the wrong way: #9392's own failure was
+    # a 2048-token cache where 565 + 1485 overflowed, so reserving all of that cost a
+    # request that could not have run anyway, while reserving all of 262144 costs three
+    # that comfortably could.
     #
     # Keyed on the resolved execution path, NOT on payload.tools. The loop opens on
     # `enable_tools`, `mcp_enabled`, the CLI --enable-tools policy or a checkpoint
@@ -1958,16 +1946,13 @@ def _openai_llama_admission_tokens(
     # undercharged Unsloth's own tool traffic; and a passthrough or /responses request
     # that merely forwards `tools` to llama-server runs ONE generation per HTTP call.
     if tool_loop:
-        # Exactly what an equivalent request without tools is charged, with an equal share
-        # as the floor. A tool loop is no longer a special case at admission time; it is a
-        # special case at ROUND time, where recost_waiting raises the figure as the
-        # conversation actually grows.
+        # Exactly what the same request without tools is charged, floored at an equal
+        # share. A tool loop is a special case at ROUND time, not at admission time.
         #
-        # Not clamped to the share. Charging less than prompt + output would open a window
-        # #9392 had closed: a first round may generate its whole output allowance before
-        # any re-cost can run, so under-reserving here would let four loops overflow the
-        # cache before the first boundary. The floor only helps a SMALL request, which is
-        # the one that would otherwise re-cost on its very first round.
+        # Not clamped to the share: charging less than prompt + output reopens what #9392
+        # closed, since a first round may generate its whole output allowance before any
+        # re-cost runs. The floor only helps a SMALL request, the one that would otherwise
+        # re-cost on its very first round.
         share = max(1, budget // max(1, capacity))
         return max(1, min(budget, max(share, prompt_tokens + output_tokens)))
     # Clamped to the budget so an oversized request stays schedulable: the queue
@@ -2019,23 +2004,19 @@ def _openai_llama_admission_recost(
 ) -> None:
     """Charge a tool loop for what its conversation now is, not what it opened as.
 
-    #9392 avoided this by reserving the whole cache for any tool run, which is airtight
-    and serialises every tool chat. Called at the top of each round, this keeps the
-    commitment honest as the conversation grows, so the opening reservation can be an
-    ordinary estimate and four tool chats can decode at once.
+    #9392 avoided this by reserving the whole cache for any tool run, serialising every
+    tool chat. Called at the top of each round, this keeps the commitment honest as the
+    conversation grows, so the opening reservation can be an ordinary estimate and four
+    tool chats can decode at once.
 
-    Growth that does not fit WAITS here rather than proceeding uncharged. Accounting the
-    growth without enforcing it would be the worst of both: four loops open at a share
-    each, grow past it together, and llama.cpp answers with one
-    ``Context size has been exceeded`` that kills every decoding slot and clears its cache.
-    ``recost_waiting`` yields the old commitment before asking for the bigger one, so a
-    round that waits is not holding the room it is waiting for.
+    Growth that does not fit WAITS here rather than proceeding uncharged: four loops that
+    open at a share each and grow past it together draw one ``Context size has been
+    exceeded`` that kills every decoding slot. ``recost_waiting`` yields the old
+    commitment first, so a waiting round is not holding the room it waits for.
 
-    This is a safe place to wait because it is between rounds: the previous round's
-    request has completed, so the slot is idle at llama-server. Idle is not the same as
-    reclaimed, though, so the yield is gated on
-    ``_openai_llama_admission_can_yield``: only a server that clears idle slots actually
-    gives those cells back, and on one that does not this declines instead of waiting.
+    Safe to wait here because it is between rounds and the slot is idle at llama-server.
+    Idle is not reclaimed, though, so the yield is gated on
+    ``_openai_llama_admission_can_yield``; where it is False this declines instead.
     """
     if reservation is None:
         return
@@ -2047,37 +2028,31 @@ def _openai_llama_admission_recost(
         if not budget:
             return
         capacity = _openai_llama_admission_capacity(request, llama_backend)
-        # Every term the OPENING reservation charges, charged again here. A re-cost that
-        # counts fewer things than the reservation it replaces does not merely fail to
-        # notice growth, it SHRINKS a correctly sized lease -- and because the callback
-        # fires at the top of round zero, before the conversation has grown at all, it
-        # does so on a run that is still exactly the request that was admitted. The room
-        # it hands back is room llama-server is already using, and the next arrival is
-        # admitted into it.
+        # Every term the OPENING reservation charges, charged again here. Counting fewer
+        # things than the reservation it replaces would SHRINK a correctly sized lease --
+        # and since the callback fires at the top of round zero, before any growth, it
+        # would hand back room llama-server is already using.
         estimate_messages, message_image_parts = _openai_llama_admission_messages_for_estimate(
             conversation
         )
         prompt_tokens = estimate_messages_tokens_dense(estimate_messages)
-        # Re-sent on every round alongside the conversation, so it belongs in every
-        # re-costing too, not just the opening estimate.
+        # Re-sent every round, so it belongs in every re-costing, not just the opening one.
         prompt_tokens += _openai_llama_admission_injected_tool_tokens(injected_tools)
         # Anthropic keeps `system` and `tools` out of the message list entirely, so for
         # that route this is most of the prompt.
         prompt_tokens += _openai_llama_admission_extra_prompt_tokens(payload)
-        # mtmd embeddings, which are KV the message text cannot show: the image parts are
-        # compacted to "[image]" for the text estimate, so their real cost has to come
-        # from the count that compaction returns. A tool result may add images of its own
-        # (a screenshot tool), so this grows with the rounds like everything else here.
+        # mtmd embeddings, KV the message text cannot show: image parts compact to
+        # "[image]" for the text estimate, so their real cost comes from the compaction
+        # count. A screenshot tool adds more of them, so this grows with the rounds.
         prompt_tokens += _openai_llama_admission_media_tokens(
             payload,
             message_image_parts = message_image_parts,
             image_tokens = _openai_llama_admission_image_tokens(llama_backend),
         )
         if output_tokens is None:
-            # No cap named. Generation is then bounded only by the window (the opening
-            # estimate reserves `budget - prompt_tokens` for exactly this reason), so
-            # charging zero here let an uncapped loop drop to its share on round zero
-            # while each of its generations could still fill most of the cache.
+            # No cap named, so generation is bounded only by the window, as the opening
+            # estimate assumes. Charging zero here dropped an uncapped loop to its share
+            # on round zero while its generations could still fill most of the cache.
             output_tokens = max(0, budget - prompt_tokens)
         share = max(1, budget // max(1, capacity))
         want = max(1, min(budget, max(share, prompt_tokens + max(0, output_tokens))))
@@ -20562,8 +20537,8 @@ async def produce_openai_chat_completions(
                 payload.auto_heal_tool_calls if payload.auto_heal_tool_calls is not None else True
             )
             # Filled once admission returns. The generator below is BUILT before the
-            # reservation exists but not ITERATED until after it does, so the callback
-            # always sees a reservation by the time a round can call it.
+            # reservation exists but not ITERATED until after, so the callback always sees
+            # a reservation by the time a round can call it.
             _gguf_admission_hold: dict = {"reservation": None}
 
             def _gguf_recost(conversation) -> None:
@@ -20572,17 +20547,16 @@ async def produce_openai_chat_completions(
                     conversation,
                     request = request,
                     llama_backend = llama_backend,
-                    # The same payload the opening reservation was priced from, so a
-                    # round is charged for its media and its non-message prompt too.
+                    # The payload the opening reservation was priced from, so a round is
+                    # charged for its media and non-message prompt too.
                     payload = payload,
                     # NOT `or 0`. None means no cap was named, which the reservation
-                    # prices as the rest of the budget; flattening it to zero re-costs an
-                    # uncapped loop down to its share on its very first round.
+                    # prices as the rest of the budget; zero would re-cost an uncapped
+                    # loop down to its share on its very first round.
                     output_tokens = effective_max_tokens,
                     injected_tools = tools_to_use,
-                    # A round waiting for cache room must still answer Stop. This is the
-                    # same event the loop polls at the top of every iteration, so a wait
-                    # ends exactly where an ordinary cancel would have.
+                    # A round waiting for cache room must still answer Stop. Same event
+                    # the loop polls each iteration, so a wait ends where a cancel would.
                     cancel_event = cancel_event,
                 )
 
@@ -20660,9 +20634,8 @@ async def produce_openai_chat_completions(
                     request = request,
                     llama_backend = llama_backend,
                     payload = payload,
-                    # The catalogue Unsloth resolves server-side. payload.tools does not
-                    # carry it and it is roughly 1250 tokens of the prompt, so leaving it
-                    # out admits four chats the cache cannot hold.
+                    # The catalogue Unsloth resolves server-side: payload.tools does not
+                    # carry it and it is roughly 1250 prompt tokens.
                     injected_tools = tools_to_use,
                     # This branch IS the resolved server-side loop (use_tools is true
                     # here whether it came from tools, enable_tools, mcp_enabled, the
@@ -20670,9 +20643,8 @@ async def produce_openai_chat_completions(
                     # and re-costs per round through _gguf_recost.
                     tool_loop = True,
                 )
-                # Hand the rounds their reservation now it exists. Before this point no
-                # round can have run, because the generator above is not iterated until
-                # admission has returned.
+                # Hand the rounds their reservation now it exists; no round can have run
+                # before this, since the generator is not iterated until admission returns.
                 _gguf_admission_hold["reservation"] = reservation
             except LlamaAdmissionQueueFull as exc:
                 _llama_admission_log(
@@ -27915,11 +27887,10 @@ async def anthropic_messages(
                 else:
                     reservation.cancel()
 
-    # Filled once admission returns, and read from inside the tool loop. The generator is
-    # BUILT before the reservation exists but not ITERATED until after it does, so a round
-    # always sees a reservation by the time it can re-cost. Same shape as the chat route's
-    # _gguf_admission_hold; this path runs the identical 25-round loop against the identical
-    # cache, so without it an Anthropic tool run kept its opening estimate for the whole run.
+    # Same shape as the chat route's _gguf_admission_hold: filled once admission returns,
+    # read from inside the tool loop. This path runs the identical 25-round loop against
+    # the identical cache, so without it an Anthropic tool run would keep its opening
+    # estimate for the whole run.
     _anthropic_admission_hold: dict = {"reservation": None}
 
     def _anthropic_recost(conversation) -> None:
@@ -27928,8 +27899,8 @@ async def anthropic_messages(
             conversation,
             request = request,
             llama_backend = llama_backend,
-            # `system` and `tools` live outside `messages` on this route, so without the
-            # payload a re-cost drops most of the prompt it is meant to be charging.
+            # `system` and `tools` live outside `messages` here, so without the payload a
+            # re-cost drops most of the prompt it is meant to charge.
             payload = payload,
             output_tokens = payload.max_tokens,
             injected_tools = openai_tools,

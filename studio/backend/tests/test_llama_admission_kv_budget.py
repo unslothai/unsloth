@@ -453,15 +453,13 @@ class TestToolLoopsOpenAtAShareAndGrow:
     commitment stays at the opening estimate. Another request is then admitted against a
     cache the active rounds have already grown into.
 
-    #9392 closed that by reserving the WHOLE cache for any tool loop. Airtight, and it made
-    every tool chat run alone: any lit pill sets ``enable_tools``, so that was the common
-    case, not a corner. Measured on a 262144 cache, four tool chats reached first token at
-    0.1s, 2.8s, 4.6s and 8.8s, one after another.
+    #9392 closed that by reserving the WHOLE cache for any tool loop, which made every
+    tool chat run alone: any lit pill sets ``enable_tools``. Measured on a 262144 cache,
+    four tool chats reached first token at 0.1s, 2.8s, 4.6s and 8.8s, one after another.
 
     A tool loop now opens at an equal share and re-costs as it grows
-    (``on_conversation_grew`` -> ``lease.recost_waiting``), which is the alternative
-    #9392 named and skipped for the plumbing. The growth is still accounted for; it is
-    charged when it happens instead of assumed up front.
+    (``on_conversation_grew`` -> ``lease.recost_waiting``), the alternative #9392 named:
+    the growth is charged when it happens instead of assumed up front.
     """
 
     @staticmethod
@@ -484,9 +482,8 @@ class TestToolLoopsOpenAtAShareAndGrow:
         ``enable_tools``, ``mcp_enabled``, the CLI policy and a checkpoint repair,
         none of which carry a client catalogue.
 
-        The share is a FLOOR, not a cap. A tool request whose own estimate is larger is
-        charged the estimate; the floor only keeps a small opening request from having to
-        re-cost on its very first round.
+        The share is a FLOOR, not a cap: a larger estimate is charged in full, and the
+        floor only spares a small opening request a re-cost on its first round.
         """
         from types import SimpleNamespace
 
@@ -520,9 +517,8 @@ class TestToolLoopsOpenAtAShareAndGrow:
         assert all(lease is not None for lease in _run(scenario()))
 
     def test_growth_past_the_share_is_still_accounted(self):
-        """The overcommit #9392 fixed stays fixed. Two loops holding a share each cannot
-        both grow into the same cache: the second growth is refused, and refusing it
-        leaves the first exactly as it was."""
+        """The overcommit #9392 fixed stays fixed: loops holding a share each cannot all
+        grow into the same cache, and a refused growth leaves the pool as it was."""
         from types import SimpleNamespace
 
         async def scenario():

@@ -7,8 +7,7 @@ Re-costing a growing tool loop yields its old commitment before asking for a big
 which is only capacity if llama-server clears the idle slot. Under ``--kv-unified`` it
 clears only with ``--cache-idle-slots``, which requires cache-ram and which
 ``--cache-ram 0`` force-disables. Studio emits ``--cache-ram 0`` on Windows under full
-GPU offload (#5692) on the same command line as ``--kv-unified``, so this is a live
-configuration, not a hypothetical one.
+GPU offload (#5692) alongside ``--kv-unified``, so this is a live configuration.
 
 Read off the argv actually spawned, so every emitter is covered by construction.
 """
@@ -26,13 +25,13 @@ BASE = ["llama-server", "-m", "model.gguf", "--parallel", "4", "--kv-unified"]
 
 class TestTheArgvIsWhatDecides:
     def test_a_modern_binary_clears_by_default(self):
-        """--cache-ram defaults to 8192 MiB, and Studio only emits the flag when
-        something asked it to, so an absent flag is the common case and means ON."""
+        """--cache-ram defaults to 8192 MiB and Studio rarely emits the flag, so an
+        absent flag is the common case and means ON."""
         assert active(BASE, supports_cache_ram = True) is True
 
     def test_a_binary_without_cache_ram_never_clears(self):
-        """It predates the feature entirely, and Studio skips the flag rather than
-        failing the launch, so the argv looks identical to the default case."""
+        """It predates the feature, and Studio skips the flag rather than failing the
+        launch, so the argv looks identical to the default case."""
         assert active(BASE, supports_cache_ram = False) is False
 
     def test_windows_full_offload_does_not_clear(self):
@@ -90,7 +89,7 @@ class TestTheRouteAsksTheBackend:
         assert can_yield(_Backend(False)) is False
 
     def test_a_backend_that_cannot_say_does_not_yield(self):
-        """No load yet, a stub, or an older backend object. Declining a re-cost is
-        always safe; promising the same cells twice is not."""
+        """No load yet, a stub, or an older backend object. Declining is safe;
+        promising the same cells twice is not."""
         assert can_yield(_Backend(None)) is False
         assert can_yield(None) is False

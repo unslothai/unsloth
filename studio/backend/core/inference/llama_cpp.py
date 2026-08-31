@@ -4178,17 +4178,16 @@ def _idle_slot_clearing_active(cmd: Sequence[str], *, supports_cache_ram: bool) 
     force-disables it (``server-context.cpp``). So the starting point is the BINARY, not
     the command line: a server old enough to lack ``--cache-ram`` never had idle-slot
     clearing either, while a server that has it clears by default at 8192 MiB. An absent
-    flag therefore means the default is in force, not that clearing is off, which is the
-    common case since Studio only emits ``--cache-ram`` when something asked it to.
+    flag means that default is in force, not that clearing is off -- the common case,
+    since Studio only emits ``--cache-ram`` when something asked it to.
 
     Last-wins, matching llama.cpp's own argument handling.
     """
     enabled = bool(supports_cache_ram)
     for i, arg in enumerate(cmd):
         if arg == "--cache-ram":
-            # A missing or unreadable value reads as no clearing rather than as the
-            # default: the conservative answer costs a re-cost, the other one hands out
-            # cells that are still resident.
+            # A missing or unreadable value reads as no clearing, not as the default: the
+            # conservative answer costs a re-cost, the other hands out resident cells.
             try:
                 enabled = int(cmd[i + 1]) > 0
             except (IndexError, TypeError, ValueError):
@@ -6120,9 +6119,9 @@ class LlamaCppBackend:
         """Whether an idle slot's KV cells actually come back on this server.
 
         Under ``--kv-unified`` an idle slot keeps its cells until ``prompt_clear()``,
-        which llama-server runs only under ``--cache-idle-slots``. False here means
-        releasing a slot frees nothing, so nothing may be handed to another caller on
-        the strength of it. False until a load has spawned, which is the safe answer.
+        which llama-server runs only under ``--cache-idle-slots``. False means releasing
+        a slot frees nothing, so nothing may be handed to another caller on the strength
+        of it. False until a load has spawned, which is the safe answer.
         """
         return self._idle_slot_clearing_active
 
@@ -22253,9 +22252,8 @@ class LlamaCppBackend:
                             logger.debug(f"Could not open llama-server log file: {e}")
                             self._llama_log_path = None
                         _last_spawn_cmd = list(run_cmd)
-                        # Read off the argv actually being spawned rather than the intent,
-                        # so every emitter (the panel value, the Windows full-offload
-                        # tuning, a future one) is covered by construction.
+                        # Read off the argv actually spawned rather than the intent, so
+                        # every emitter is covered by construction.
                         self._idle_slot_clearing_active = _idle_slot_clearing_active(
                             run_cmd,
                             supports_cache_ram = bool(server_caps.get("supports_cache_ram")),
@@ -27415,15 +27413,13 @@ class LlamaCppBackend:
         context_policy: Optional[str] = None,
         compaction_headroom_ratio: Optional[float] = None,
         tool_choice: Any = None,
-        # Appended, never inserted. This signature has no bare `*`, so every parameter is
-        # positional-or-keyword and adding one anywhere but the end silently rebinds the
-        # arguments after it for any caller that passes them positionally.
+        # Appended, never inserted: no bare `*` here, so every parameter is
+        # positional-or-keyword and inserting one rebinds later positional arguments.
         #
         # Called at the top of every round with the conversation as it now stands, so KV
-        # admission can charge what this run occupies rather than the estimate it opened
-        # with. MAY BLOCK: recost_waiting waits for cache room rather than letting the
-        # round run over its reservation. The top of a round is where that is safe, since
-        # the previous round's request has completed.
+        # admission can charge what this run occupies rather than its opening estimate.
+        # MAY BLOCK: recost_waiting waits for cache room. Safe at the top of a round,
+        # where the previous round's request has completed.
         on_conversation_grew: Optional[Callable[[list], None]] = None,
     ) -> Generator[dict, None, None]:
         """
@@ -27900,9 +27896,8 @@ class LlamaCppBackend:
         iteration = -1
         while True:
             iteration += 1
-            # Here rather than at each append: six sites grow the conversation and this
-            # is the one point all of them have to pass through before the cache is
-            # asked to hold the result.
+            # Here rather than at each append: six sites grow the conversation and all of
+            # them pass through this one point before the cache must hold the result.
             if on_conversation_grew is not None:
                 try:
                     on_conversation_grew(conversation)
@@ -30555,13 +30550,12 @@ class LlamaCppBackend:
             except Exception as exc:
                 logger.warning("Could not preflight the rolling context window: %s", exc)
 
-        # The loop's own callback fires at the TOP of a round, so the breaks that lead
-        # here -- the tool-iteration cap, and a controller that turns tools off -- leave
-        # the assistant turn, its tool results and any nudge appended after the last
-        # re-cost. The final pass is then the largest request of the run and the one round
-        # the pool was never told about. Here rather than at the breaks: the recall above
-        # can rebind `conversation`, and this is the one point every path reaches with the
-        # list that is actually about to be sent.
+        # The loop's callback fires at the TOP of a round, so the breaks leading here (the
+        # tool-iteration cap, a controller turning tools off) leave the assistant turn,
+        # its tool results and any nudge appended after the last re-cost -- making this
+        # final pass the largest request of the run and the one the pool never heard
+        # about. Here rather than at the breaks: the recall above can rebind
+        # `conversation`, and every path reaches this point with the list about to be sent.
         if on_conversation_grew is not None:
             try:
                 on_conversation_grew(conversation)

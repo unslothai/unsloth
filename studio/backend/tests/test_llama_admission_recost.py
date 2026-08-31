@@ -3,16 +3,15 @@
 
 """Re-costing a live lease as its tool loop grows.
 
-#9392 admitted generations against the KV cache instead of the slot count, after two
-chats killed each other on a 2048-token cache (565 + 1485, neither too long alone). For a
-tool loop it could not know the final size, because each round appends its results and
-re-sends the conversation, so it reserved the WHOLE cache. That is airtight, and it makes
-every tool chat run alone; since any lit pill sets ``enable_tools`` that is the common
-case, not a corner. Measured on a 262144 cache, four tool chats reached first token at
-0.1s, 2.8s, 4.6s and 8.8s, one after another.
+#9392 admitted generations against the KV cache instead of the slot count, after two chats
+killed each other on a 2048-token cache (565 + 1485, neither too long alone). It could not
+know a tool loop's final size, since each round appends its results and re-sends the
+conversation, so it reserved the WHOLE cache: airtight, and it made every tool chat run
+alone (any lit pill sets ``enable_tools``). Measured on a 262144 cache, four tool chats
+reached first token at 0.1s, 2.8s, 4.6s and 8.8s, one after another.
 
-Re-costing is the alternative that PR named and skipped for the plumbing. These pin the
-properties that make it safe to call from inside a running generator.
+Re-costing is the alternative that PR named and skipped. These pin the properties that
+make it safe to call from inside a running generator.
 """
 
 from __future__ import annotations
@@ -59,8 +58,8 @@ class TestTheQueueSide:
 
     @pytest.mark.asyncio
     async def test_growth_that_does_not_fit_is_refused_and_changes_nothing(self):
-        """Refused, not blocked. This runs inside the generator between two rounds, so a
-        round that waited could be waiting on a holder that is waiting on it."""
+        """Refused, not blocked: this runs inside the generator, where a round that waited
+        could be waiting on a holder that is waiting on it."""
         queue = LlamaAdmissionQueue("test")
         _lease(queue, tokens = 2000, budget = 4096)
         _lease(queue, tokens = 2000, budget = 4096)
@@ -70,7 +69,7 @@ class TestTheQueueSide:
 
     @pytest.mark.asyncio
     async def test_a_lone_holder_may_grow_past_the_budget(self):
-        """The same escape admission uses: refusing the only holder stalls a conversation
+        """The escape admission uses: refusing the only holder stalls a conversation
         nothing else can unblock, and llama.cpp surfaces a real overflow itself."""
         queue = LlamaAdmissionQueue("test")
         _lease(queue, tokens = 2000, budget = 4096)
@@ -104,9 +103,8 @@ class TestTheLeaseSide:
 
     @pytest.mark.asyncio
     async def test_a_refused_recost_leaves_release_correct(self):
-        """The leak this guards: the queue taking the growth while the lease keeps the
-        old number would have release hand back less than it holds, and the difference
-        stays committed for the life of the process."""
+        """The leak this guards: if the queue took the growth while the lease kept the old
+        number, release would hand back less than it holds and strand the difference."""
         queue = LlamaAdmissionQueue("test")
         first = _lease(queue, tokens = 3000, budget = 4096)
         second = _lease(queue, tokens = 1000, budget = 4096)
@@ -149,8 +147,7 @@ class TestTheLeaseSide:
                 lease.release()
 
             # Daemon throughout this file: a failed assertion leaves a growth thread
-            # spinning, and a live non-daemon thread wedges the run at interpreter exit
-            # instead of reporting the failure.
+            # spinning, and a live non-daemon one wedges exit instead of reporting it.
             threads = [
                 threading.Thread(target = grow, daemon = True),
                 threading.Thread(target = drop, daemon = True),
@@ -182,10 +179,10 @@ class TestWaitingForRoomInsteadOfRunningOverIt:
     """``recost`` alone accounts for growth without enforcing it.
 
     A refused recost leaves the run at its old figure and it sends the bigger prompt
-    anyway. Four loops opening at a share each and growing together is then exactly the
-    measured failure: llama.cpp halves the batch to 1, gives up, and
-    ``Context size has been exceeded`` releases and clears EVERY decoding slot, not just
-    the one that overflowed. ``recost_waiting`` is what makes the accounting binding.
+    anyway. Four loops opening at a share each and growing together is then the measured
+    failure: llama.cpp halves the batch to 1, gives up, and ``Context size has been
+    exceeded`` clears EVERY decoding slot, not just the one that overflowed.
+    ``recost_waiting`` is what makes the accounting binding.
     """
 
     @pytest.mark.asyncio
@@ -222,9 +219,9 @@ class TestWaitingForRoomInsteadOfRunningOverIt:
 
     @pytest.mark.asyncio
     async def test_four_loops_growing_together_do_not_overcommit(self):
-        """The deadlock case, and the one that decides the design. Every holder wants more
-        than a share; blocking while still holding would leave all four waiting on each
-        other forever. Yielding first means _committed strictly falls, so somebody fits."""
+        """The deadlock case that decides the design. Every holder wants more than a
+        share, so blocking while still holding leaves all four waiting on each other.
+        Yielding first means _committed strictly falls, so somebody fits."""
         queue = LlamaAdmissionQueue("test")
         budget = 4096
         leases = [_lease(queue, tokens = budget // 4, budget = budget) for _ in range(4)]
@@ -252,9 +249,8 @@ class TestWaitingForRoomInsteadOfRunningOverIt:
 
     @pytest.mark.asyncio
     async def test_the_budget_is_never_exceeded_while_they_wait(self):
-        """Only one reparker may win the committed-is-zero escape. Four racing an empty
-        cache each seeing zero, and each admitting itself, is the overcommit the whole
-        accounting exists to stop."""
+        """Only one reparker may win the committed-is-zero escape: four racing an empty
+        cache would each see zero and each admit itself."""
         queue = LlamaAdmissionQueue("test")
         budget = 4096
         leases = [_lease(queue, tokens = budget // 4, budget = budget) for _ in range(4)]
@@ -284,8 +280,8 @@ class TestWaitingForRoomInsteadOfRunningOverIt:
 
     @pytest.mark.asyncio
     async def test_cancelling_a_waiting_round_restores_its_commitment(self):
-        """Stop pressed while waiting. The run still has to tear down, and until it
-        releases it still occupies llama-server's cache, so the pool must know about it."""
+        """Stop pressed while waiting. Until the run releases it still occupies
+        llama-server's cache, so the pool must know about it."""
         queue = LlamaAdmissionQueue("test")
         first = _lease(queue, tokens = 3000, budget = 4096)
         second = _lease(queue, tokens = 1000, budget = 4096)
@@ -333,12 +329,10 @@ class TestWaitingForRoomInsteadOfRunningOverIt:
         first.release()
         thread.join(5)
         assert not thread.is_alive()
-        # Behind the reparker, not instead of it. The barrier that held this arrival back
-        # comes down with the reclaim, and the reclaim is the last thing that touches the
-        # queue: if it does not run admission itself, nothing else will, and a request
-        # that fits in the room left over waits out the whole grown run for nothing --
-        # which, since a queued waiter also shuts reserve()'s fast path, holds every
-        # later arrival with it.
+        # Behind the reparker, not instead of it. The reclaim brings the barrier down and
+        # is the last thing to touch the queue, so if it does not run admission itself a
+        # request that fits in the room left over waits out the whole grown run -- and
+        # since a queued waiter shuts reserve()'s fast path, so does every later arrival.
         for _ in range(100):
             await asyncio.sleep(0.01)
             if newcomer.lease_nowait() is not None:
@@ -353,10 +347,9 @@ class TestGivingUpTheWait:
     """What a reparker owes the pool when its wait ends without the bigger commitment.
 
     ``yield_commitment`` has already taken the old figure off ``_committed``, but the
-    lease still occupies that KV at llama-server for as long as it lives. Handing it back
-    is therefore a CORRECTION, not a request, and a full cache must not be able to refuse
-    it: a lease that records a commitment it never restored subtracts it again on release
-    and leaves that much phantom room behind.
+    lease still occupies that KV at llama-server. Handing it back is a CORRECTION, not a
+    request, and a full cache must not be able to refuse it: a lease that records a
+    commitment it never restored subtracts it again on release, leaving phantom room.
     """
 
     @pytest.mark.asyncio
@@ -376,8 +369,8 @@ class TestGivingUpTheWait:
         thread.start()
         while queue.snapshot().committed != 1024:
             await asyncio.sleep(0.005)
-        # The other run takes the whole cache while this one is parked, so there is no
-        # room left for the restore to ask for.
+        # The other run takes the whole cache while this one is parked, leaving no room
+        # for the restore to ask for.
         assert winner.recost(4096) is True
         assert queue.snapshot().committed == 4096
 
@@ -385,8 +378,8 @@ class TestGivingUpTheWait:
         thread.join(5)
         assert out == [False]
         assert queue._reparking == 0
-        # Both leases really hold their figures at llama-server, so the pool has to say
-        # so -- over the budget, because that is what is genuinely resident.
+        # Both leases really hold their figures at llama-server, so the pool says so even
+        # over the budget: that is what is genuinely resident.
         assert (
             queue.snapshot().committed == 4096 + 1024
         ), "a restore the cache could not fit was dropped instead of recorded"
@@ -406,8 +399,8 @@ class TestGivingUpTheWait:
 
     @pytest.mark.asyncio
     async def test_a_released_lease_restores_nothing(self):
-        """release() already handed back the 0 this lease held while parked, so
-        re-committing here would strand the difference for the life of the process."""
+        """release() already handed back the 0 held while parked, so re-committing here
+        would strand the difference for the life of the process."""
         queue = LlamaAdmissionQueue("test")
         holder = _lease(queue, tokens = 2000, budget = 4096)
         _lease(queue, tokens = 2000, budget = 4096)
@@ -431,11 +424,10 @@ class TestGivingUpTheWait:
 class TestYieldingIsGatedOnTheServerActuallyClearing:
     """A slot being idle is not the same as its KV cells being reclaimed.
 
-    Under ``--kv-unified`` the cells of a finished round stay resident until
-    ``prompt_clear()``, which llama-server runs only under ``--cache-idle-slots``.
-    ``--cache-ram 0`` force-disables that, and Studio emits exactly that on Windows under
-    full GPU offload (#5692) next to ``--kv-unified``. Yielding there would hand a second
-    caller room the first one is still occupying.
+    Under ``--kv-unified`` a finished round's cells stay resident until ``prompt_clear()``,
+    which llama-server runs only under ``--cache-idle-slots``. ``--cache-ram 0``
+    force-disables that, and Studio emits it on Windows under full GPU offload (#5692)
+    next to ``--kv-unified``. Yielding there hands a second caller occupied room.
     """
 
     @pytest.mark.asyncio
@@ -459,8 +451,8 @@ class TestYieldingIsGatedOnTheServerActuallyClearing:
 
     @pytest.mark.asyncio
     async def test_it_does_not_block(self):
-        """Declining is the pre-existing behaviour: return, do not wait for room that is
-        never coming back on this server."""
+        """Declining is the pre-existing behaviour: do not wait for room that is never
+        coming back on this server."""
         queue = LlamaAdmissionQueue("test")
         holder = _lease(queue, tokens = 2000, budget = 4096)
         _lease(queue, tokens = 2000, budget = 4096)

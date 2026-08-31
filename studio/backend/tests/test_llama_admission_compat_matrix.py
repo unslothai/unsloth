@@ -3,21 +3,19 @@
 
 """Every backend shape this accounting can be handed, and every old caller of it.
 
-Re-costing changes how a tool loop is admitted, so the question is not only "does the new
-path work" but "does every install that does NOT get the new path behave exactly as it did".
-The budget and the slot count are both derived from the loaded backend, and that derivation
-differs per platform and per device:
+Re-costing changes how a tool loop is admitted, so every install that does NOT get the new
+path must behave exactly as it did. Budget and slot count are both derived from the loaded
+backend, and that derivation differs per platform and per device:
 
-  * ``capacity`` is ``effective_parallel_slots``, which is reduced to fit VRAM and forced to
-    1 on a CPU-only or small-VRAM load. A 1-slot backend must be untouched by this change.
-  * ``budget`` is ``_kv_cache_context_total``, which is ``n_ctx`` under ``--kv-unified`` and
-    ``n_ctx * slots`` without it, and is None when the context length cannot be read back
-    from ``/props``. None means slot-only admission, i.e. the pre-#9392 behaviour.
+  * ``capacity`` is ``effective_parallel_slots``, reduced to fit VRAM and forced to 1 on a
+    CPU-only or small-VRAM load. A 1-slot backend must be untouched by this change.
+  * ``budget`` is ``_kv_cache_context_total``: ``n_ctx`` under ``--kv-unified``,
+    ``n_ctx * slots`` without it, None when the context length cannot be read back from
+    ``/props``. None means slot-only admission, the pre-#9392 behaviour.
 
-So the matrix below is the real portability surface for this change. It is not a stand-in
-for running on other operating systems: the code added here is stdlib threading and
-``time.monotonic`` with no OS-specific branch, and what actually varies between a Windows
-NVIDIA box and a Mac CPU-only one is which of these numbers arrives.
+The matrix below is the real portability surface, not a stand-in for other operating
+systems: the code added here is stdlib threading and ``time.monotonic`` with no
+OS-specific branch, and what varies per platform is which of these numbers arrives.
 """
 
 from __future__ import annotations
@@ -101,9 +99,8 @@ def test_a_tool_loop_is_never_charged_more_than_the_cache(label, slots, n_ctx, k
 
 @pytest.mark.parametrize("label,slots,n_ctx,kv_unified", BACKENDS)
 def test_a_single_slot_backend_behaves_as_it_always_did(label, slots, n_ctx, kv_unified):
-    """capacity 1 means share == budget, so a tool loop is charged the whole cache exactly
-    as #9392 charged it. Nothing about a 1-slot install changes, which is the common shape
-    on CPU-only and on a load downshifted to fit VRAM."""
+    """capacity 1 means share == budget, so a tool loop is charged the whole cache just as
+    #9392 charged it. The common shape on CPU-only and on a VRAM-downshifted load."""
     if slots != 1:
         pytest.skip("covered by the multi-slot cases")
     budget = _budget(n_ctx, slots, kv_unified)
@@ -113,8 +110,8 @@ def test_a_single_slot_backend_behaves_as_it_always_did(label, slots, n_ctx, kv_
 @pytest.mark.parametrize("label,slots,n_ctx,kv_unified", BACKENDS)
 @pytest.mark.asyncio
 async def test_the_slots_a_backend_reports_can_all_be_filled(label, slots, n_ctx, kv_unified):
-    """The point of the change: on any multi-slot backend, tool chats of an ordinary size
-    fill the slots the backend advertises rather than running one at a time."""
+    """On any multi-slot backend, ordinary tool chats fill the slots the backend
+    advertises rather than running one at a time."""
     budget = _budget(n_ctx, slots, kv_unified)
     cost = _tokens(_payload(), budget = budget, capacity = slots, tool_loop = True)
     queue = LlamaAdmissionQueue(label)
@@ -127,10 +124,9 @@ async def test_the_slots_a_backend_reports_can_all_be_filled(label, slots, n_ctx
 
 @pytest.mark.parametrize("label,slots,n_ctx,kv_unified", BACKENDS)
 def test_max_tokens_on_max_is_not_treated_as_a_promise_to_use_it(label, slots, n_ctx, kv_unified):
-    """The UI sends max_tokens = context_length for "Max". A tool loop is charged the same
-    as an equivalent plain request, so this serialises identically for both rather than
-    being a tools-only penalty. Fixing that is a separate change; what matters here is that
-    tools are not charged MORE than no-tools for the same request."""
+    """The UI sends max_tokens = context_length for "Max", which serialises with or
+    without tools alike. Fixing that is a separate change; what matters here is that tools
+    are not charged MORE than no-tools for the same request."""
     budget = _budget(n_ctx, slots, kv_unified)
     payload = _payload(max_tokens = n_ctx)
     with_tools = _tokens(payload, budget = budget, capacity = slots, tool_loop = True)
@@ -141,8 +137,8 @@ def test_max_tokens_on_max_is_not_treated_as_a_promise_to_use_it(label, slots, n
 
 
 class TestNothingChangesWhenTheBudgetIsUnknown:
-    """``budget`` is None when the context length cannot be read back. That is the
-    pre-#9392 slot-only path, and it has to stay bit-for-bit what it was."""
+    """``budget`` is None when the context length cannot be read back: the pre-#9392
+    slot-only path, which has to stay bit-for-bit what it was."""
 
     def test_no_budget_means_no_token_cost_at_all(self):
         for tool_loop in (True, False):
@@ -177,8 +173,8 @@ class TestNothingChangesWhenTheBudgetIsUnknown:
 
     @pytest.mark.asyncio
     async def test_the_kv_budget_escape_hatch_still_overcommits(self):
-        """UNSLOTH_LLAMA_ADMISSION_KV_BUDGET=0 is the documented way out for a backend
-        whose reported context length does not match the cache it allocated."""
+        """UNSLOTH_LLAMA_ADMISSION_KV_BUDGET=0, the documented way out for a backend whose
+        reported context length does not match the cache it allocated."""
         queue = LlamaAdmissionQueue("escape")
         config = LlamaAdmissionConfig(kv_budget = False)
         first = _lease(queue, tokens = 1500, budget = 2048, config = config)
@@ -229,10 +225,9 @@ class TestOldCallers:
         assert parameter.default is None, "the hook must be optional for existing callers"
 
     def test_the_hook_was_appended_rather_than_inserted(self):
-        """This signature has no bare ``*``, so every parameter is positional-or-keyword.
-        Adding one anywhere but the end silently rebinds every argument after it for any
-        caller that passes them positionally, which is a break no test would catch and no
-        exception would report."""
+        """No bare ``*`` in this signature, so every parameter is positional-or-keyword and
+        inserting one silently rebinds the arguments after it for positional callers, with
+        no exception to report it."""
         import inspect
 
         from core.inference.llama_cpp import LlamaCppBackend
@@ -274,8 +269,8 @@ class TestNoPersistentStateChanged:
         assert config.kv_budget is True
 
     def test_the_queue_carries_no_serialised_state(self):
-        """Nothing about a queue is written to disk, so a new field cannot break an old
-        install's stored data. The field list is the whole of its state."""
+        """Nothing about a queue is written to disk, and the slots are the whole of its
+        state, so a new field cannot break an old install's stored data."""
         assert "_reparking" in LlamaAdmissionQueue.__slots__
         queue = LlamaAdmissionQueue("fresh")
         assert queue._reparking == 0, "a fresh queue must start with the line open"
@@ -286,13 +281,11 @@ class TestTheInjectedToolCatalogueIsCharged:
 
     ``payload.tools`` is what the CLIENT sent. Unsloth's own tool loop resolves Web Search
     and the rest server-side and renders them into the prompt AFTER admission has priced
-    the request, so pricing from the payload alone undercounts by the size of the whole
-    catalogue. Measured on Qwen3.5-4B-MTP-GGUF, the same user turn is 1716 prompt tokens
-    with tools off and 2969 with them on.
-
-    At ``-c 4096`` that gap is the difference between four tool chats fitting and four tool
-    chats being killed together: priced at an equal share they were all admitted and
-    llama.cpp answered every one with ``Context size has been exceeded``.
+    the request, so pricing from the payload alone undercounts by the whole catalogue.
+    Measured on Qwen3.5-4B-MTP-GGUF, the same user turn is 1716 prompt tokens with tools
+    off and 2969 with them on. At ``-c 4096`` that gap is fatal: priced at an equal share
+    four tool chats were all admitted and llama.cpp answered every one with ``Context size
+    has been exceeded``.
     """
 
     CATALOG = [
@@ -315,9 +308,9 @@ class TestTheInjectedToolCatalogueIsCharged:
     ]
 
     def test_the_catalogue_is_added_to_the_estimate(self):
-        """Checked where the share floor cannot hide it. On a wide pool the floor is small,
-        so the catalogue is what sets the price; on a narrow one the floor is already
-        larger than the whole request and masking it there is correct, not a bug."""
+        """Checked on a wide pool, where the floor is small enough that the catalogue sets
+        the price. On a narrow one the floor already exceeds the whole request, so masking
+        it there is correct."""
         import routes.inference as routes_inference
 
         budget, capacity = 8192, 16  # share 512, smaller than the catalogue
@@ -341,8 +334,8 @@ class TestTheInjectedToolCatalogueIsCharged:
 
     @pytest.mark.asyncio
     async def test_four_tool_chats_are_not_admitted_past_a_small_cache(self):
-        """The live failure, at the unit level. Four short prompts with a real catalogue
-        cannot share 4096 tokens, and admitting all four is what produced four 500s."""
+        """The live failure at unit level: four short prompts with a real catalogue cannot
+        share 4096 tokens, and admitting all four produced four 500s."""
         import routes.inference as routes_inference
 
         budget = 4096

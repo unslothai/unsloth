@@ -3,16 +3,14 @@
 
 """Randomised stress against the admission queue's invariants.
 
-The hand-written tests check the cases someone thought of. These check the two properties
-that have to hold under ANY interleaving, because the failure they guard is not a wrong
-number, it is a wedged Unsloth:
+Two properties that have to hold under ANY interleaving, because the failure they guard is
+a wedged Unsloth, not a wrong number:
 
-  1. ``committed`` never exceeds ``budget``, except for the single holder the escape
-     deliberately lets past. Breaking this is the ``Context size has been exceeded`` that
-     releases and clears every decoding slot at once.
+  1. ``committed`` never exceeds ``budget``, except the single holder the escape lets past.
+     Breaking this is the ``Context size has been exceeded`` that clears every decoding
+     slot at once.
   2. The queue always drains. A leaked repark counter holds the wait line shut for every
-     caller, so a lost decrement does not slow one chat down, it freezes the pool for the
-     life of the process.
+     caller, freezing the pool for the life of the process.
 
 Seeded, so a failure is reproducible from the seed in the assertion message.
 """
@@ -73,7 +71,7 @@ async def test_random_traffic_never_exceeds_the_cache_and_always_drains(seed):
     queue = LlamaAdmissionQueue(f"stress-{seed}")
 
     # Every holder is admitted at a size that fits alongside the others, so any excess is
-    # the queue's doing rather than the workload's. The escape is exercised separately.
+    # the queue's doing, not the workload's. The escape is exercised separately.
     opening = max(1, budget // max(1, capacity))
     leases = [
         lease
@@ -112,7 +110,7 @@ async def test_random_traffic_never_exceeds_the_cache_and_always_drains(seed):
     assert snapshot.committed == 0, f"seed={seed}: {snapshot.committed} tokens stranded"
     assert queue._reparking == 0, f"seed={seed}: repark counter leaked, the queue is wedged"
     # One holder may sit above the budget via the alone escape, so the ceiling is the
-    # budget plus the largest single request rather than the budget itself.
+    # budget plus the largest single request.
     assert (
         ceiling.peak <= budget * 2
     ), f"seed={seed}: committed peaked at {ceiling.peak} against a {budget} cache"
@@ -121,8 +119,8 @@ async def test_random_traffic_never_exceeds_the_cache_and_always_drains(seed):
 @pytest.mark.parametrize("seed", range(6))
 @pytest.mark.asyncio
 async def test_new_arrivals_alongside_growing_holders_still_drain(seed):
-    """Reparkers hold the wait line shut. This is the scenario where forgetting to reopen
-    it would show up as arrivals that are never granted."""
+    """Reparkers hold the wait line shut, so forgetting to reopen it shows up here as
+    arrivals that are never granted."""
     rng = random.Random(1000 + seed)
     capacity = 4
     budget = 4096
@@ -147,8 +145,7 @@ async def test_new_arrivals_alongside_growing_holders_still_drain(seed):
     for thread in threads:
         thread.start()
 
-    # Arrivals that queue behind the growers. They must eventually be admitted, not
-    # rejected and not stuck.
+    # Arrivals queue behind the growers, and must eventually be admitted.
     arrivals: list = []
 
     async def arrive():
@@ -158,9 +155,8 @@ async def test_new_arrivals_alongside_growing_holders_still_drain(seed):
             tokens = rng.randint(1, share),
             budget = budget,
         )
-        # await, never time.sleep. A granted lease is delivered with
-        # loop.call_soon_threadsafe, so a synchronous poll would block the very loop that
-        # has to run the delivery and the lease would never arrive.
+        # await, never time.sleep: a granted lease is delivered with
+        # loop.call_soon_threadsafe, so a synchronous poll blocks its own delivery.
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
             lease = reservation.lease_nowait()
@@ -197,8 +193,7 @@ async def test_a_wait_that_can_never_be_satisfied_gives_up_rather_than_wedging_t
     budget = 4096
     queue = LlamaAdmissionQueue("timeout")
     # All but one token, so the grower is still admitted alongside it and the cache is
-    # exactly full. A squatter holding the whole budget would leave nothing to admit the
-    # grower with, and the test would prove nothing.
+    # exactly full. A squatter holding the whole budget would leave nothing to admit it.
     squatter = _lease(queue, tokens = budget - 1, budget = budget, capacity = 4)
     assert squatter is not None
     grower = _lease(queue, tokens = 1, budget = budget, capacity = 4)
@@ -209,8 +204,8 @@ async def test_a_wait_that_can_never_be_satisfied_gives_up_rather_than_wedging_t
     waited = time.monotonic() - start
     assert 0.4 <= waited < 15, f"gave up after {waited}s, expected roughly the timeout"
     assert queue._reparking == 0, "the wait line is still shut after a timeout"
-    # And the queue is usable again: the grower is back at its old figure, so releasing
-    # the squatter leaves exactly that behind.
+    # The queue is usable again: the grower is back at its old figure, so releasing the
+    # squatter leaves exactly that behind.
     squatter.release()
     assert queue.snapshot().committed == 1
     grower.release()
@@ -219,7 +214,7 @@ async def test_a_wait_that_can_never_be_satisfied_gives_up_rather_than_wedging_t
 
 @pytest.mark.asyncio
 async def test_release_during_a_wait_does_not_spin_forever():
-    """release() runs from the route's teardown and never touches the cancel event, so a
+    """release() runs from the route's teardown without touching the cancel event, so a
     wait that only watched the event would spin on a dead lease and hold the line shut."""
     budget = 4096
     queue = LlamaAdmissionQueue("released")

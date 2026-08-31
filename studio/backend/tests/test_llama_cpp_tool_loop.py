@@ -6914,12 +6914,12 @@ def test_a_second_call_in_a_compacted_turn_is_still_visible_to_the_model(monkeyp
 def test_the_synthesized_final_pass_is_recosted_before_it_is_sent(monkeypatch):
     """The last request of a tool run is the biggest, and it skips the top of the loop.
 
-    ``on_conversation_grew`` is KV admission's only view of a growing tool loop, and it
-    is called at the TOP of a round. The iteration cap breaks out mid-round instead, after
-    the assistant turn and its tool result have been appended, and goes straight to the
-    synthesized final answer. Without a re-cost on that path the largest prompt of the run
-    is the one the pool is never told about, and concurrent tool chats overcommit the
-    shared cache -- which llama.cpp answers by killing every decoding slot at once.
+    ``on_conversation_grew`` is KV admission's only view of a growing tool loop and fires
+    at the TOP of a round. The iteration cap breaks out mid-round instead, after the
+    assistant turn and its tool result are appended, and goes straight to the synthesized
+    final answer. Without a re-cost there the largest prompt of the run is the one the
+    pool never hears about, and llama.cpp answers the overcommit by killing every
+    decoding slot at once.
     """
     first_stream = _structured_tool_call("web_search", {"query": "kernel"}, "call_search")
     final_stream = [_sse({"content": "6.10."}), _done()]

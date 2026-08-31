@@ -366,18 +366,17 @@ class TestMediaIsCharged:
 
 
 class TestTheToolLoopOpensAtAnEqualShare:
-    """#9392 reserved the WHOLE cache for any tool loop, which is airtight and makes
-    every tool chat run alone. Any lit pill sets enable_tools, so that is the common
-    case, not a corner. The loop now opens at an equal share and re-costs per round
-    (llama_cpp.generate_chat_completion_with_tools -> on_conversation_grew ->
-    LlamaAdmissionLease.recost), which is the alternative #9392 named and skipped.
+    """#9392 reserved the WHOLE cache for any tool loop, making every tool chat run alone
+    (any lit pill sets enable_tools). The loop now opens at an equal share and re-costs
+    per round (llama_cpp.generate_chat_completion_with_tools -> on_conversation_grew ->
+    LlamaAdmissionLease.recost), the alternative #9392 named and skipped.
     """
 
     def test_a_server_side_loop_without_client_tools_is_still_a_tool_loop(self):
         """enable_tools / mcp_enabled / CLI policy open the loop with no `tools` array.
 
-        What changed is the amount, not the recognition: keying on payload.tools would
-        still undercharge Unsloth's own tool traffic.
+        The amount changed, not the recognition: keying on payload.tools would still
+        undercharge Unsloth's own tool traffic.
         """
         payload = _Payload(
             messages = [{"role": "user", "content": "search my notes"}],
@@ -389,8 +388,8 @@ class TestTheToolLoopOpensAtAnEqualShare:
         assert cost == 1024, cost
 
     def test_four_tool_chats_fit_the_cache_at_once(self):
-        """The whole point. Four equal shares are exactly the budget, so four tool chats
-        are admitted together instead of one at a time."""
+        """Four equal shares are exactly the budget, so four tool chats are admitted
+        together instead of one at a time."""
         payload = _Payload(
             messages = [{"role": "user", "content": "search my notes"}],
             enable_tools = True,
@@ -400,9 +399,8 @@ class TestTheToolLoopOpensAtAnEqualShare:
         assert cost * 4 <= 262144
 
     def test_a_tool_loop_bigger_than_its_share_is_charged_what_it_is(self):
-        """The share is a floor, not a cap. A run that already sends more than a quarter
-        of the cache is charged for it, so it is not admitted alongside three others that
-        the cache cannot hold with it."""
+        """The share is a floor, not a cap: a run already sending more than a quarter of
+        the cache is charged for it, not admitted alongside three others."""
         payload = _Payload(
             messages = [{"role": "user", "content": "x " * 4000}],
             enable_tools = True,
@@ -465,12 +463,10 @@ class TestARoundIsCostedTheSameWayTheReservationWas:
     """The re-cost REPLACES the opening reservation, so it has to count the same things.
 
     ``_openai_llama_admission_recost`` fires at the top of every round including round
-    zero, before a tool loop has grown anything at all. A re-cost that counts fewer terms
-    than the reservation therefore does not merely fail to notice growth -- it shrinks a
-    correctly sized lease on a run that is still exactly the request that was admitted,
-    and hands the difference to the next arrival as room llama-server is already using.
-    That is the multi-slot ``Context size has been exceeded`` this accounting exists to
-    prevent, arriving through the mechanism meant to prevent it.
+    zero, before a tool loop has grown at all. Counting fewer terms than the reservation
+    therefore shrinks a correctly sized lease and hands the difference to the next
+    arrival as room llama-server is already using -- the multi-slot ``Context size has
+    been exceeded`` this accounting exists to prevent.
     """
 
     class _Backend:
@@ -524,9 +520,9 @@ class TestARoundIsCostedTheSameWayTheReservationWas:
         return asyncio.run(_run())
 
     def test_round_zero_does_not_give_away_a_vision_prompt_s_image_allowance(self):
-        """The image parts are compacted to "[image]" for the text estimate, so the real
-        mtmd cost can only come from the count that compaction returns. Discarding it
-        re-costs a vision tool run DOWNWARD by the whole allowance on its first round."""
+        """Image parts compact to "[image]" for the text estimate, so the real mtmd cost
+        can only come from the compaction count. Discarding it re-costs a vision tool run
+        DOWNWARD by the whole allowance on its first round."""
         payload = _Payload(
             messages = [
                 {
@@ -545,7 +541,7 @@ class TestARoundIsCostedTheSameWayTheReservationWas:
         )
         opened, committed, _ = self._round_zero(payload, output_tokens = 128)
         # One image alone is 4224 against this 4096 budget, so the reservation clamps to
-        # the whole cache -- four times the 1024 share the re-cost used to drop it to.
+        # the whole cache: four times the 1024 share the re-cost used to drop it to.
         assert _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS > 4096 and opened == 4096, opened
         assert committed == opened, (
             f"round zero shrank a correct lease from {opened} to {committed}, "
@@ -555,8 +551,8 @@ class TestARoundIsCostedTheSameWayTheReservationWas:
     def test_round_zero_keeps_an_uncapped_loop_s_output_allowance(self):
         """No max_tokens and no max_completion_tokens: generation is bounded only by the
         window, which is why the reservation charges ``budget - prompt``. Flattening the
-        absent cap to zero re-costs an uncapped loop down to its share while each of its
-        generations can still fill most of the cache."""
+        absent cap to zero drops the loop to its share while its generations can still
+        fill most of the cache."""
         from routes.inference import _effective_openai_max_tokens
 
         payload = _Payload(

@@ -65,10 +65,9 @@ DEFAULT_ADMISSION_MIN_QUEUE = 64
 # reports n_ctx_slot = n_ctx to every slot, so N generations are admitted against a
 # cache that may hold one. When they collide, llama.cpp kills every task involved.
 DEFAULT_ADMISSION_KV_BUDGET = True
-# Ceiling on one round's wait for cache room. Deliberately generous: a legitimate wait is
-# bounded by the longest round in flight, and cutting one short only costs accuracy. It
-# exists because a reparker holds the wait line shut for every other caller, so an
-# unbounded wait would turn one stuck run into a frozen queue. See recost_waiting.
+# Ceiling on one round's wait for cache room; generous, since a legitimate wait is bounded
+# by the longest round in flight. Bounded at all because a reparker holds the wait line
+# shut for every other caller, so an unbounded wait freezes the queue. See recost_waiting.
 DEFAULT_RECOST_WAIT_TIMEOUT_S = 300.0
 
 
@@ -436,17 +435,15 @@ class LlamaAdmissionLease:
     def recost(self, tokens: int) -> bool:
         """Re-state what this lease actually occupies as its conversation grows.
 
-        True when the new figure is in force (including when there is no budget to
-        account against). False means the cache cannot back the growth right now and the
-        previous commitment still stands, so the caller is over its reservation and the
-        pool knows only the old number.
+        True when the new figure is in force (including with no budget to account
+        against). False means the cache cannot back the growth, the previous commitment
+        still stands, and the caller is over its reservation.
         """
         want = max(0, int(tokens or 0))
-        # Held across try_recost, not around it. A release that interleaved between the
-        # queue accepting the new figure and this lease recording it would hand back the
-        # OLD number and strand the difference as committed for the life of the process.
-        # release() takes this lock and then the queue's, so taking them in that order
-        # here cannot deadlock against it.
+        # Held ACROSS try_recost: a release interleaving between the queue accepting the
+        # new figure and this lease recording it would hand back the OLD number and strand
+        # the difference as committed for the life of the process. release() takes this
+        # lock then the queue's, so this order cannot deadlock against it.
         with self._release_lock:
             if self._released or self._queue is None:
                 return True
@@ -469,41 +466,31 @@ class LlamaAdmissionLease:
         """Re-state this lease's cost, waiting for room rather than running over it.
 
         ``recost`` declines when the cache is full and the caller carries on at its old
-        figure, which is honest accounting of a dishonest situation: the next round sends a
-        bigger prompt than the pool has been told about, and enough of those is the
-        ``Context size has been exceeded`` that kills every decoding slot at once.
+        figure, so the next round sends a bigger prompt than the pool was told about, and
+        enough of those is the ``Context size has been exceeded`` that kills every
+        decoding slot at once.
 
-        Call this only where the conversation is between rounds, and only with
-        ``allow_yield`` true where an idle slot's cells actually come back.
-
-        ``allow_yield`` is not a tuning knob either. Being between rounds makes the slot
-        IDLE; what makes an idle slot's cells REUSABLE under ``--kv-unified`` is
-        ``prompt_clear()``, and llama-server runs that only under ``--cache-idle-slots``
-        (``server-context.cpp``), which ``--cache-ram 0`` force-disables and an older
-        server without ``--cache-ram`` never had at all. Studio itself emits
+        Call this only between rounds, and only with ``allow_yield`` true where an idle
+        slot's cells actually come back. Being between rounds makes the slot IDLE; what
+        makes its cells REUSABLE under ``--kv-unified`` is ``prompt_clear()``, which
+        llama-server runs only under ``--cache-idle-slots`` (``server-context.cpp``) --
+        force-disabled by ``--cache-ram 0``, and absent on older servers. Studio emits
         ``--cache-ram 0`` on Windows under full GPU offload (#5692, WDDM overhead)
-        alongside ``--kv-unified``. There a yielded round's cells stay resident, so
-        yielding would not free capacity, it would only hand the same capacity to a
-        second caller: exactly the double-booking this accounting exists to prevent.
-        With yielding off this degrades to the plain ``recost``, which declines rather
-        than overcommits, so that platform keeps the conservative behaviour it had before
-        this existed.
+        alongside ``--kv-unified``; there a yielded round's cells stay resident, so
+        yielding would hand the same capacity to a second caller. With yielding off this
+        degrades to plain ``recost``, which declines rather than overcommits. Where
+        clearing IS active the cache changes only the PRICE: reclaiming costs a prefix hit
+        if the cells were spilled to host RAM.
 
-        Where clearing IS active, what the cache changes is only the PRICE: reclaiming
-        costs a prefix hit if the cells were spilled to host RAM.
-
-        False means this lease still holds the figure it came in with: declined, cancelled,
-        released, or waited past ``timeout_s``. True means the new figure is in force.
-
-        The timeout is not a tuning knob, it is the blast radius. A reparker holds the wait
-        line shut for everyone (see ``yield_commitment``), so a wait that never ends does
-        not stall one chat, it freezes the whole queue. Giving up restores the old
-        commitment and returns to the pre-existing decline-and-continue behaviour, which is
-        a worse trade for that one run and no worse than any release before this existed.
+        False means this lease still holds the figure it came in with: declined,
+        cancelled, released, or waited past ``timeout_s``. The timeout is the blast
+        radius -- a reparker holds the wait line shut for everyone (see
+        ``yield_commitment``), so an endless wait freezes the queue, not one chat. Giving
+        up restores the old commitment and the decline-and-continue behaviour that
+        predates this.
         """
         want = max(0, int(tokens or 0))
-        # The cheap path first. Growth that already fits never touches the wait line, which
-        # is what keeps re-costing rare rather than load-bearing.
+        # Cheap path first: growth that already fits never touches the wait line.
         if self.recost(want):
             return True
         if not allow_yield:
@@ -520,16 +507,15 @@ class LlamaAdmissionLease:
                 if queue.try_reclaim_commitment(want):
                     with self._release_lock:
                         if self._released:
-                            # Released while waiting. Hand the commitment straight back:
-                            # release() already gave back 0 and will not run again.
+                            # Released while waiting; release() already gave back 0 and
+                            # will not run again, so hand the commitment straight back.
                             queue.release(None, want)
                             return True
                         self._tokens = want
                     return True
-                # Checked every pass, not only on the two exits below. release() runs from
-                # the route's teardown and does not touch the cancel event, so a Stop that
-                # tears down before the event is seen would otherwise leave this spinning
-                # on a dead lease, holding the wait line shut for every other caller.
+                # Every pass, not only on the two exits below: release() runs from the
+                # route's teardown without touching the cancel event, so a Stop would
+                # otherwise leave this spinning on a dead lease, wait line held shut.
                 if self._released:
                     queue.abandon_repark()
                     return False
@@ -545,24 +531,21 @@ class LlamaAdmissionLease:
     def _give_up_repark(self, queue, held: int, *, cancelled: bool) -> bool:
         """Stop waiting and go back to holding ``held``.
 
-        Both halves in one queue lock (``abandon_repark(restore = held)``): the wait line
-        reopens and the old figure is re-committed together. This lease still occupies
-        that much of llama-server's cache until it releases, so the pool has to know about
-        it however the wait ended, and re-committing it is a correction rather than a
-        request -- asking through ``try_recost`` let a full cache REFUSE it while this
-        lease had already recorded the figure, so the later release() subtracted a
-        commitment that was never restored and handed the next arrival that much phantom
-        room against a cache with none.
+        Both halves under one queue lock (``abandon_repark(restore = held)``): the wait
+        line reopens and the old figure is re-committed together. This lease still
+        occupies that much of llama-server's cache, so re-committing it is a correction,
+        not a request -- asking through ``try_recost`` let a full cache REFUSE it, after
+        which release() subtracted a commitment that was never restored and handed the
+        next arrival that much phantom room.
 
-        ``_release_lock`` is held across the queue call in the order release() takes them
-        (this lock, then the queue's), which is what ``recost`` relies on too, so the
+        ``_release_lock`` is held across the queue call in release()'s lock order, so the
         commitment cannot be released out from under the restore.
         """
         with self._release_lock:
             if self._released:
-                # release() already ran, and it gave back the 0 this lease was holding
-                # while parked. yield_commitment has already taken `held` off the pool,
-                # so restoring it here would strand it as committed for good.
+                # release() already ran and gave back the 0 held while parked, and
+                # yield_commitment already took `held` off the pool, so restoring it
+                # here would strand it as committed for good.
                 queue.abandon_repark()
                 return False
             self._tokens = held
@@ -719,8 +702,8 @@ class LlamaAdmissionQueue:
         # 0 budget disables the check, which is what every pre-existing caller gets.
         self._committed = 0
         self._budget = 0
-        # Holders that have given their commitment back and are waiting to take a bigger
-        # one. They still hold a slot, so they are not in _waiters; see yield_commitment.
+        # Holders that gave their commitment back and are waiting to take a bigger one.
+        # They still hold a slot, so they are not in _waiters. See yield_commitment.
         self._reparking = 0
 
     def _resize_pool_locked(self, capacity: int) -> None:
@@ -813,10 +796,9 @@ class LlamaAdmissionQueue:
             # cache that no longer exists.
             self._budget = max(0, int(budget or 0))
             self._grant_waiters_locked()
-            # A pending repark closes the fast path as firmly as a non-empty wait line.
-            # The reparker has already given its room back to ask for more, so a new
-            # arrival admitted here would be taking exactly what it let go of, and a
-            # steady arrival rate would hold a growing conversation at its opening size
+            # A pending repark closes the fast path like a non-empty wait line: the
+            # reparker gave its room back to ask for more, so an arrival admitted here
+            # would take exactly that, pinning a growing conversation at its opening size
             # for as long as traffic lasts.
             if not self._waiters and self._reparking == 0:
                 slot = self._take_slot_locked(len(self._unpark_tickets), cost)
@@ -871,16 +853,15 @@ class LlamaAdmissionQueue:
     def try_recost(self, tokens_from: int, tokens_to: int) -> bool:
         """Move a live commitment to a new size. False leaves it exactly as it was.
 
-        A tool loop's cost is not known when it is admitted: each round appends its
-        results and re-sends the conversation, so a run that opened small can grow into
-        the cache while its commitment stays at the opening estimate. #9392 closed that
-        by reserving the whole cache for any tool loop, which is airtight and serialises
-        every tool chat. This is the re-costing that PR named as the alternative.
+        A tool loop's cost is unknown at admission: each round appends its results and
+        re-sends the conversation, so a run that opened small can grow into the cache
+        while its commitment stays at the opening estimate. #9392 closed that by
+        reserving the whole cache for any tool loop, which serialises every tool chat;
+        this is the re-costing that PR named as the alternative.
 
-        Never blocks and never overcommits, which is what makes it safe to call from
-        inside a generator: growth that does not fit is refused, and the caller keeps
-        the commitment it already holds rather than waiting on holders that may be
-        waiting on it.
+        Never blocks and never overcommits, so it is safe to call from inside a
+        generator: growth that does not fit is refused and the caller keeps what it
+        holds, rather than waiting on holders that may be waiting on it.
         """
         tokens_from = max(0, int(tokens_from or 0))
         tokens_to = max(0, int(tokens_to or 0))
@@ -893,8 +874,8 @@ class LlamaAdmissionQueue:
                 self._grant_waiters_locked()
                 return True
             delta = tokens_to - tokens_from
-            # The same escape admission uses: a holder that is alone is allowed past the
-            # budget, because refusing it stalls a conversation nothing else can unblock.
+            # The escape admission uses: a holder that is alone goes past the budget,
+            # since refusing it stalls a conversation nothing else can unblock.
             alone = (self._committed - tokens_from) <= 0
             if alone or self._committed + delta <= self._budget:
                 self._committed += delta
@@ -904,14 +885,13 @@ class LlamaAdmissionQueue:
     def yield_commitment(self, tokens: int) -> None:
         """Hand a live commitment back before asking for a bigger one.
 
-        Half of ``LlamaAdmissionLease.recost_waiting``. Unconditional, and that is the
-        point: a holder that blocked while still holding its old commitment would be
-        waiting on holders who are waiting on it. Four runs at a quarter of the cache each,
-        all wanting half, never resolve. Letting go first cannot deadlock, because
-        ``_committed`` strictly falls and somebody always fits afterwards.
+        Half of ``LlamaAdmissionLease.recost_waiting``. Unconditional by design: a holder
+        that blocked while still holding its old commitment would be waiting on holders
+        waiting on it -- four runs at a quarter of the cache each, all wanting half, never
+        resolve. Letting go first cannot deadlock, since ``_committed`` strictly falls.
 
-        The caller is counted as reparking until it reclaims, so a new arrival cannot take
-        the room it just released. An in-flight conversation beats one that has not started.
+        The caller counts as reparking until it reclaims, so a new arrival cannot take the
+        room it just released: an in-flight conversation beats one that has not started.
         """
         with self._lock:
             self._committed = max(0, self._committed - max(0, int(tokens or 0)))
@@ -921,10 +901,9 @@ class LlamaAdmissionQueue:
     def try_reclaim_commitment(self, tokens: int) -> bool:
         """The other half: take a commitment of ``tokens``, or report that it does not fit.
 
-        Only one caller can win the ``_committed == 0`` escape, because the test and the
-        commit happen under one lock. Four reparkers racing an empty cache would otherwise
-        each see zero and each admit itself, which is the overcommit the accounting exists
-        to stop.
+        Test and commit under one lock, so only one caller can win the ``_committed == 0``
+        escape. Otherwise four reparkers racing an empty cache each see zero and each
+        admit themselves.
         """
         want = max(0, int(tokens or 0))
         with self._lock:
@@ -932,26 +911,22 @@ class LlamaAdmissionQueue:
                 return False
             self._committed += want
             self._reparking = max(0, self._reparking - 1)
-            # The decrement above may have dropped the LAST repark barrier, and
-            # _grant_waiters_locked is a no-op while one stands. Nothing else re-runs it
-            # afterwards: a release that arrived during the repark already found the
-            # barrier up and returned. Without this, a reclaim that leaves room and a free
-            # slot behind strands the wait line until the grown run releases, and since a
-            # queued waiter also closes reserve()'s fast path that freezes every later
-            # arrival too -- the serialisation this re-costing exists to remove.
+            # The decrement above may have dropped the LAST repark barrier, and nothing
+            # else re-runs the grant: a release arriving during the repark already found
+            # the barrier up and returned. Without this, a reclaim that leaves room and a
+            # free slot strands the wait line until the grown run releases, and a queued
+            # waiter also closes reserve()'s fast path for every later arrival.
             self._grant_waiters_locked()
             return True
 
     def abandon_repark(self, restore: int = 0) -> None:
         """Stop counting a reparker that gave up, and re-commit what it takes back.
 
-        One lock for both. ``restore`` is the commitment ``yield_commitment`` handed back
-        and that this lease still occupies at llama-server, so it has to be re-committed
-        UNCONDITIONALLY -- it is not a request for room, it is a correction. Doing it in
-        two steps let the wait line reopen on room the lease was about to take back, and
-        doing it through ``try_recost`` let a full cache refuse the correction outright,
-        after which release() subtracted a commitment that was never restored and left
-        that much phantom room for the next arrival.
+        One lock for both. ``restore`` is what ``yield_commitment`` handed back and the
+        lease still occupies at llama-server, so it is re-committed UNCONDITIONALLY: a
+        correction, not a request for room. In two steps the wait line reopened on room
+        the lease was about to take back; through ``try_recost`` a full cache could refuse
+        it, after which release() subtracted a commitment that was never restored.
         """
         with self._lock:
             self._reparking = max(0, self._reparking - 1)
@@ -1056,9 +1031,9 @@ class LlamaAdmissionQueue:
             return self._in_use == 0 and not self._waiters and not self._parked
 
     def _grant_waiters_locked(self) -> None:
-        # A reparker has already given its commitment back and is mid-conversation, so it
-        # takes the room ahead of anything that has not started. Without this a steady
-        # arrival rate can hold a growing run at its old size indefinitely.
+        # A reparker gave its commitment back mid-conversation, so it takes the room ahead
+        # of anything not yet started. Without this a steady arrival rate can hold a
+        # growing run at its old size indefinitely.
         if self._reparking > 0:
             return
         # Dead waiters are skipped as they are popped, so no prune is needed here.
