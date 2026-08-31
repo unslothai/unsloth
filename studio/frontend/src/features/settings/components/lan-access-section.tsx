@@ -44,7 +44,7 @@ import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import { Copy01Icon, QrCodeIcon, Wifi01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import QRCode from "react-qr-code";
 import { SettingsRow } from "./settings-row";
 
@@ -231,6 +231,7 @@ function LanUrlPanel({ status }: { status: LanAccessStatus | null }) {
 }
 
 export function LanAccessSection() {
+  const portErrorId = useId();
   const [status, setStatus] = useState<LanAccessStatus | null>(null);
   const [busy, setBusy] = useState<LanAccessOperation | null>(null);
 
@@ -344,6 +345,7 @@ export function LanAccessSection() {
     perform("auto", () => updateLanAccessAutoStart(enabled));
 
   const portInvalid = portMode === "custom" && !validLanAccessPort(portDraft);
+  const portErrorVisible = portInvalid || portError !== null;
   const selectedPort =
     portMode === "custom" && !portInvalid ? Number(portDraft) : null;
   const portDirty = status !== null && selectedPort !== status.configuredPort;
@@ -415,69 +417,79 @@ export function LanAccessSection() {
       <LanUrlPanel status={status} />
 
       <div className="border-t border-border/60 px-4 py-1">
-        <SettingsRow
-          label="Port"
-          description="Automatic tries 8888, then 8889–8908. Custom uses only the selected port. Stop LAN access before changing it."
-        >
-          <div className="flex flex-col items-end gap-1.5">
-            <div className="flex items-center gap-2">
-              <Select
-                value={portMode}
-                disabled={busy !== null || lanAccessPortReadOnly(status)}
-                onValueChange={(value) => {
-                  setPortMode(value as PortMode);
-                  setPortError(null);
-                }}
-              >
-                <SelectTrigger
-                  size="sm"
-                  className="w-28"
-                  aria-label="LAN port mode"
-                >
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="automatic">Automatic</SelectItem>
-                  <SelectItem value="custom">Custom</SelectItem>
-                </SelectContent>
-              </Select>
-              {portMode === "custom" ? (
-                <Input
-                  type="number"
-                  min={1}
-                  max={65535}
-                  value={portDraft}
+        {status?.portConfigurationSupported ? (
+          <SettingsRow
+            label="Port"
+            description="Automatic tries 8888, then 8889–8908. Custom uses only the selected port. Stop LAN access before changing it."
+          >
+            <div className="flex flex-col items-end gap-1.5">
+              <div className="flex items-center gap-2">
+                <Select
+                  value={portMode}
                   disabled={busy !== null || lanAccessPortReadOnly(status)}
-                  aria-label="Custom LAN port"
-                  aria-invalid={portInvalid}
-                  className="h-8 w-24"
-                  onChange={(event) => {
-                    setPortDraft(event.target.value);
+                  onValueChange={(value) => {
+                    setPortMode(value as PortMode);
                     setPortError(null);
                   }}
-                />
-              ) : null}
-              <Button
-                type="button"
-                size="sm"
-                onClick={savePort}
-                disabled={
-                  busy !== null ||
-                  lanAccessPortReadOnly(status) ||
-                  portInvalid ||
-                  !portDirty
-                }
+                >
+                  <SelectTrigger
+                    size="sm"
+                    className="w-28"
+                    aria-label="LAN port mode"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="automatic">Automatic</SelectItem>
+                    <SelectItem value="custom">Custom</SelectItem>
+                  </SelectContent>
+                </Select>
+                {portMode === "custom" ? (
+                  <Input
+                    type="number"
+                    min={1}
+                    max={65535}
+                    value={portDraft}
+                    disabled={busy !== null || lanAccessPortReadOnly(status)}
+                    aria-label="Custom LAN port"
+                    aria-invalid={portInvalid}
+                    aria-describedby={portErrorVisible ? portErrorId : undefined}
+                    className="h-8 w-24"
+                    onChange={(event) => {
+                      setPortDraft(event.target.value);
+                      setPortError(null);
+                    }}
+                  />
+                ) : null}
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={savePort}
+                  disabled={
+                    busy !== null ||
+                    lanAccessPortReadOnly(status) ||
+                    portInvalid ||
+                    !portDirty
+                  }
+                >
+                  Save
+                </Button>
+              </div>
+              <span
+                id={portErrorId}
+                role="status"
+                aria-live="polite"
+                className="text-xs text-destructive"
               >
-                Save
-              </Button>
-            </div>
-            {portInvalid || portError ? (
-              <span className="text-xs text-destructive">
-                {portInvalid ? "Enter a port from 1 to 65535." : portError}
+                {portErrorVisible
+                  ? portInvalid
+                    ? "Enter a port from 1 to 65535."
+                    : portError
+                  : null}
               </span>
-            ) : null}
-          </div>
-        </SettingsRow>
+            </div>
+          </SettingsRow>
+        ) : null}
         <SettingsRow
           label="Keyless API status"
           description={keylessLanAccessDescription(status)}

@@ -206,14 +206,24 @@ def _valid_port(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 65535
 
 
-def get_lan_access_port() -> Optional[int]:
-    """The exact saved port, or ``None`` for Automatic."""
+def _read_lan_access_port(*, strict: bool) -> Optional[int]:
     try:
         from storage.studio_db import get_app_setting
         stored = get_app_setting(LAN_ACCESS_PORT_KEY, None)
-    except Exception:
+    except Exception as exc:
+        if strict:
+            raise RuntimeError("lan_access_port_unavailable") from exc
         return None
-    return stored if _valid_port(stored) else None
+    if stored is None or _valid_port(stored):
+        return stored
+    if strict:
+        raise RuntimeError("lan_access_port_invalid")
+    return None
+
+
+def get_lan_access_port() -> Optional[int]:
+    """The valid saved port, or ``None`` for Automatic/status fallback."""
+    return _read_lan_access_port(strict = False)
 
 
 def set_lan_access_port(port: Optional[int]) -> Optional[int]:
@@ -226,7 +236,7 @@ def set_lan_access_port(port: Optional[int]) -> Optional[int]:
 
 
 def lan_access_port_candidates() -> tuple[int, ...]:
-    custom = get_lan_access_port()
+    custom = _read_lan_access_port(strict = True)
     if custom is not None:
         return (custom,)
     return tuple(range(DEFAULT_LAN_ACCESS_PORT, LAST_LAN_ACCESS_PORT + 1))

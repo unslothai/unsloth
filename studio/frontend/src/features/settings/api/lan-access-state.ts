@@ -12,6 +12,7 @@ export type LanAccessStatus = {
   error: string | null;
   autoStart: boolean;
 
+  portConfigurationSupported: boolean;
   configuredPort: number | null;
   activePort: number | null;
   managedBy: LanAccessOwner;
@@ -76,6 +77,7 @@ export function normalizeLanAccessStatus(
     error: status.error ?? null,
     autoStart: status.auto_start,
 
+    portConfigurationSupported: Object.hasOwn(status, "configured_port"),
     configuredPort:
       typeof status.configured_port === "number"
         ? status.configured_port
@@ -132,6 +134,7 @@ export function lanAccessAutoStartReadOnly(
 export function lanAccessPortReadOnly(status: LanAccessStatus | null): boolean {
   return (
     status === null ||
+    !status.portConfigurationSupported ||
     status.state === "online" ||
     status.blockReason === "colab"
   );

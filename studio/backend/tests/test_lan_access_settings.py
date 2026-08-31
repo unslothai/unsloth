@@ -1316,6 +1316,37 @@ def test_start_uses_the_saved_port_policy(monkeypatch):
     assert calls[-1] == (43210, ())
 
 
+@pytest.mark.parametrize(
+    "stored,reason",
+    [
+        (43210, "lan_access_port_unavailable"),
+        ("broken", "lan_access_port_invalid"),
+    ],
+)
+def test_start_refuses_when_the_saved_port_policy_is_unusable(
+    monkeypatch, stored_settings, stored, reason
+):
+    stored_settings[lan_settings.LAN_ACCESS_PORT_KEY] = stored
+    loop = SimpleNamespace(is_closed = lambda: False, is_running = lambda: True)
+    app = _app(lan_access_loop = loop)
+    calls = []
+    monkeypatch.setattr(
+        lan_access,
+        "start_lan_listener",
+        lambda *_args: calls.append(_args) or ("10.0.0.7",),
+    )
+    if stored == 43210:
+        monkeypatch.setattr(
+            studio_db,
+            "get_app_setting",
+            lambda *_args: (_ for _ in ()).throw(OSError("database unavailable")),
+        )
+
+    with pytest.raises(RuntimeError, match = reason):
+        lan_settings.start_lan_access(app)
+    assert calls == []
+
+
 def test_start_and_port_save_are_serialized(monkeypatch):
     entered = threading.Event()
     release = threading.Event()
