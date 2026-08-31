@@ -39,18 +39,18 @@ from utils.host_policy import (
     ],
 )
 def test_cors_origins_for_mode_wildcard(api_only, secure, expected):
-    origins = cors_origins_for_mode(api_only=api_only, secure=secure)
+    origins = cors_origins_for_mode(api_only = api_only, secure = secure)
     assert origins == expected
 
 
 def test_cors_origins_for_mode_desktop_default():
-    origins = cors_origins_for_mode(api_only=True, secure=False)
+    origins = cors_origins_for_mode(api_only = True, secure = False)
     assert origins == list(_TAURI_CORS_ORIGINS)
 
 
 def test_cors_origins_for_mode_env_override(monkeypatch):
     monkeypatch.setenv("UNSLOTH_CORS_ORIGINS", "https://foo.example, http://localhost:9999")
-    origins = cors_origins_for_mode(api_only=True, secure=False)
+    origins = cors_origins_for_mode(api_only = True, secure = False)
     assert origins == ["https://foo.example", "http://localhost:9999"]
 
 
@@ -64,7 +64,7 @@ def test_cors_origins_for_mode_env_override(monkeypatch):
     ],
 )
 def test_cors_origin_regex_for_mode(api_only, secure, expected):
-    regex = cors_origin_regex_for_mode(api_only=api_only, secure=secure)
+    regex = cors_origin_regex_for_mode(api_only = api_only, secure = secure)
     assert regex == expected
 
 
@@ -92,15 +92,15 @@ def test_cors_origin_regex_for_mode(api_only, secure, expected):
     ],
 )
 def test_desktop_cors_preflight_origins(origin, should_allow):
-    state = SimpleNamespace(cloudflare_url=None)
+    state = SimpleNamespace(cloudflare_url = None)
     middleware = RemoteAccessCORSMiddleware(
         lambda *_: None,
-        remote_access_state=state,
-        allow_origins=list(_TAURI_CORS_ORIGINS),
-        allow_origin_regex=_LOOPBACK_ORIGIN_REGEX,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        remote_access_state = state,
+        allow_origins = list(_TAURI_CORS_ORIGINS),
+        allow_origin_regex = _LOOPBACK_ORIGIN_REGEX,
+        allow_credentials = True,
+        allow_methods = ["*"],
+        allow_headers = ["*"],
     )
 
     request = Headers(
