@@ -167,6 +167,73 @@ def test_the_inherited_load_path_drops_only_the_denied_flag(monkeypatch):
     assert resolved == ["--numa", "distribute"]
 
 
+def _inherit_with_ctx_flag(monkeypatch, stored, fields_set, max_seq_length):
+    """Drive the real resolver for a same-model reload that inherits its extras."""
+    import routes.inference as inference_route
+
+    class _Backend:
+        extra_args = list(stored)
+        extra_args_source = ("local/x", "")
+
+    class _Config:
+        is_gguf = True
+        gguf_variant = ""
+
+    class _Request:
+        llama_extra_args = None
+        gguf_variant = ""
+        gpu_memory_mode = "auto"
+        model_fields_set = set(fields_set)
+
+    _Request.max_seq_length = max_seq_length
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _Backend())
+    return inference_route._resolve_inherited_extra_args(_Request(), _Config(), "local/x", None)
+
+
+def test_a_matching_inherited_ctx_flag_survives_an_apply(monkeypatch):
+    """The opt-in has to be durable, or the PR's own fix undoes itself.
+
+    An Apply that re-sends the SAME Context Length is not a fresh save that the
+    stored flag would outrank -- it is the same decision, and stripping it here
+    relaunched at the VRAM-fit estimate while the stored override still said
+    otherwise. Mirrors model_override_load_kwargs on the API auto-switch path;
+    both ask matches_explicit_ctx_override so the two cannot drift.
+    """
+    stored = ["--ctx-size", "100352", "--top-k", "40"]
+
+    assert _inherit_with_ctx_flag(monkeypatch, stored, {"max_seq_length"}, 100352) == [
+        "--ctx-size",
+        "100352",
+        "--top-k",
+        "40",
+    ]
+
+    # And still stripped alongside another set field, which was the reachable gap.
+    assert _inherit_with_ctx_flag(
+        monkeypatch, stored, {"max_seq_length", "cache_type_kv"}, 100352
+    ) == ["--ctx-size", "100352", "--top-k", "40"]
+
+
+def test_a_stale_inherited_ctx_flag_still_loses_to_a_fresh_context(monkeypatch):
+    """Only a MATCHING value is the opt-in; a different one is a stale shadow."""
+    stored = ["--ctx-size", "8192", "--top-k", "40"]
+
+    assert _inherit_with_ctx_flag(monkeypatch, stored, {"max_seq_length"}, 32768) == [
+        "--top-k",
+        "40",
+    ]
+
+
+def test_a_malformed_inherited_ctx_flag_is_stripped_not_raised(monkeypatch):
+    """parse_ctx_override raises on a flag with no value; a load must not."""
+    stored = ["--ctx-size", "--top-k", "40"]
+
+    assert _inherit_with_ctx_flag(monkeypatch, stored, {"max_seq_length"}, 32768) == [
+        "--top-k",
+        "40",
+    ]
+
+
 def test_the_override_save_carries_over_without_refusing(monkeypatch):
     # A user changing Context Length on a model whose stored flags predate the
     # denylist must not get a 400 about a flag they are not editing.
@@ -530,3 +597,16 @@ def test_a_padded_flag_is_carried_over_by_dropping_it_with_its_value():
     assert dropped == ["--top-k"]
     kept, _dropped = _lsa.drop_managed_flags(["--verbose ", "--numa", "distribute"])
     assert kept == ["--numa", "distribute"]
+
+
+@pytest.mark.parametrize("flag", ["--parallel", "-np", "--n-parallel"])
+def test_parallel_denials_point_at_the_supported_knob(flag):
+    # Why (#9510): the parallel slot count IS user-settable, just not through extra args --
+    # refusing `--parallel 1` without naming n_parallel sent users to undocumented env hacks.
+    with pytest.raises(ValueError, match = "managed by Unsloth Studio.*n_parallel"):
+        _lsa.validate_extra_args([flag, "1"])
+
+
+def test_other_denials_stay_terse():
+    with pytest.raises(ValueError, match = "cannot be passed as an extra arg$"):
+        _lsa.validate_extra_args(["--model", "/etc/passwd"])

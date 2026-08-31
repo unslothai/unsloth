@@ -9,7 +9,7 @@ entirely on whether the app's copy handler serialises from the message store. Th
 identical from the DOM and opposite from the clipboard, which is why `select_all_copy` now scores
 itself on the clipboard.
 
-The unit tests in the Studio worktree stub `containsNode`, so the rule "the selection spans the
+The unit tests in the Unsloth worktree stub `containsNode`, so the rule "the selection spans the
 whole mounted list" has never met a real `Selection` there. That is the part most likely to be
 quietly wrong -- partial containment, text-node endpoints, whether a select-all over a scroll
 container really reports the first and last rows as contained -- and it is what this exercises.

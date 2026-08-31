@@ -602,8 +602,14 @@ test("the trailing strip runs on the finished reply, not on every arrival", () =
     true,
     "the strip must sit after the SSE loop, not inside it",
   );
+  // Pinned as a prefix, deliberately. What this test is about is WHERE the final
+  // build sits relative to the strip, not how the merge is spelled, and pinning the
+  // closing parens made it fail the first time an argument was added to
+  // `mergeContinuation` even though the ordering it guards was untouched. A pin that
+  // breaks on unrelated edits gets "fixed" by re-pinning, and one of those days it
+  // gets re-pinned past a real reordering.
   const finalBuild = source.indexOf(
-    "buildAssistantContent(mergeContinuation(cumulativeText))",
+    "buildAssistantContent(mergeContinuation(cumulativeText",
     strip,
   );
   assert.equal(

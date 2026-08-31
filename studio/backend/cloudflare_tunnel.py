@@ -398,11 +398,18 @@ def _process_exited(proc: subprocess.Popen) -> bool:
         return False
 
 
-class CloudflareTunnel:
-    """A cloudflared quick tunnel to http://localhost:<port>. Best-effort throughout.
+def _origin_url(host: str, port: int) -> str:
+    url_host = host.replace("%", "%25")
+    if ":" in url_host and not url_host.startswith("["):
+        url_host = f"[{url_host}]"
+    return f"http://{url_host}:{port}"
 
-    Use localhost (not the wildcard bind) as the tunnel origin so cloudflared's
-    upstream stays local-only.
+
+class CloudflareTunnel:
+    """A cloudflared quick tunnel to a local Studio endpoint. Best-effort throughout.
+
+    Use a loopback address for wildcard binds so cloudflared's upstream stays
+    local-only while matching Studio's active address family.
     """
 
     def __init__(
@@ -410,9 +417,11 @@ class CloudflareTunnel:
         port: int,
         binary: str,
         protocol: Optional[str] = None,
+        origin_host: str = "localhost",
     ):
         self.port = port
         self.binary = binary
+        self.origin_host = origin_host
         # None lets cloudflared pick its default (quic, with its own http2
         # fallback); set to "http2" to force it when quic is blocked.
         self.protocol = protocol
@@ -433,7 +442,7 @@ class CloudflareTunnel:
             self.binary,
             "tunnel",
             "--url",
-            f"http://localhost:{self.port}",
+            _origin_url(self.origin_host, self.port),
             "--no-autoupdate",
         ]
         if self.protocol:
@@ -762,6 +771,7 @@ def start_studio_tunnel(
     *,
     managed_by: str = "launch",
     admission: Optional[Tuple[int, int]] = None,
+    origin_host: str = "localhost",
 ) -> Optional[str]:
     """Start a quick tunnel and return its public URL once it is actually
     serving, or None (best-effort).
@@ -790,6 +800,7 @@ def start_studio_tunnel(
                 and _tunnel_owner == managed_by
                 and _tunnel_port == port
                 and _active_tunnel is not None
+                and getattr(_active_tunnel, "origin_host", "localhost") == origin_host
             ):
                 return _tunnel_url
             if (
@@ -827,7 +838,12 @@ def start_studio_tunnel(
                 if _shutdown_requested or generation != _tunnel_generation:
                     _active_tunnel = None
                     return None
-                tunnel = CloudflareTunnel(port, binary, protocol = protocol)
+                tunnel = CloudflareTunnel(
+                    port,
+                    binary,
+                    protocol = protocol,
+                    origin_host = origin_host,
+                )
                 prior, _active_tunnel = _active_tunnel, tunnel
             if prior is not None and prior.stop() is False:
                 with _active_lock:

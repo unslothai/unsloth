@@ -3,7 +3,7 @@
 
 """The extra-arguments pass-through across every platform and accelerator.
 
-Studio emits a different command on each of these: CUDA, ROCm and Vulkan take
+Unsloth emits a different command on each of these: CUDA, ROCm and Vulkan take
 different offload flags, Metal takes none of them, and Windows spells the binary
 and the paths differently. The claim this suite has to defend is the same on all of
 them, and it is a claim about what does NOT change:
@@ -11,7 +11,7 @@ them, and it is a claim about what does NOT change:
   with the box empty, the command is byte-identical to the one Unsloth emitted
   before this feature existed.
 
-The matrix is the Cartesian product of the platforms Studio ships on and the
+The matrix is the Cartesian product of the platforms Unsloth ships on and the
 accelerators it detects, driven through the real ``load_model`` with the command
 captured at the Popen boundary.
 """
@@ -82,6 +82,53 @@ def _stable(cmd: list[str]) -> list[str]:
         elif index and masked[index - 1] in {"-m", "--model"}:
             masked[index] = "<model>"
     return masked
+
+
+def _launch_with_slot_dir(tmp_path, monkeypatch, platform, slot_dir: Path):
+    """Capture the real launch command with llama.cpp slot persistence advertised."""
+    _apply_platform(monkeypatch, platform)
+    from utils.paths import storage_roots
+
+    monkeypatch.setattr(storage_roots, "llama_slot_cache_root", lambda: slot_dir)
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [])
+    backend.probe_server_capabilities = lambda _binary = None: {"supports_slot_save": True}
+    return backend, _launch(backend, gguf)["cmd"]
+
+
+def _without_flag_value(cmd: list[str], flag: str) -> list[str]:
+    index = cmd.index(flag)
+    return [*cmd[:index], *cmd[index + 2 :]]
+
+
+def test_windows_unicode_slot_path_only_drops_optional_persistence(tmp_path, monkeypatch):
+    """A/B: all launch arguments survive; only the broken optional pair is absent."""
+    windows = PLATFORMS[2]
+    # Relative to tmp_path, because the predicate reads the WHOLE path: pytest's
+    # tmp_path lives under the profile, so on the very hosts this regression is about
+    # (C:\Users\Егор\AppData\Local\Temp) a tmp_path-rooted control arm is not ASCII
+    # either, both launches drop the flag, and the A/B stops comparing anything.
+    monkeypatch.chdir(tmp_path)
+    ascii_dir = Path("Egor") / "llama-slots"
+    unicode_dir = Path("Егор") / "llama-slots"
+
+    _ascii_backend, ascii_cmd = _launch_with_slot_dir(tmp_path, monkeypatch, windows, ascii_dir)
+    unicode_backend, unicode_cmd = _launch_with_slot_dir(
+        tmp_path, monkeypatch, windows, unicode_dir
+    )
+
+    assert ascii_cmd[ascii_cmd.index("--slot-save-path") + 1] == str(ascii_dir)
+    assert _stable(unicode_cmd) == _without_flag_value(_stable(ascii_cmd), "--slot-save-path")
+    assert unicode_backend._slot_save_dir is None
+    assert unicode_backend._slot_save_binary is None
+
+
+@pytest.mark.parametrize("platform", [PLATFORMS[0], PLATFORMS[1], PLATFORMS[3]])
+def test_unicode_slot_path_is_unchanged_off_native_windows(tmp_path, monkeypatch, platform):
+    slot_dir = tmp_path / "Егор" / "llama-slots"
+
+    _backend_instance, cmd = _launch_with_slot_dir(tmp_path, monkeypatch, platform, slot_dir)
+
+    assert cmd[cmd.index("--slot-save-path") + 1] == str(slot_dir)
 
 
 @pytest.mark.parametrize("platform,accelerator", MATRIX)
@@ -185,19 +232,19 @@ def test_a_windows_shaped_value_survives_as_one_token(tmp_path, monkeypatch, pla
 @pytest.mark.parametrize("platform", PLATFORMS, ids = [p[0] for p in PLATFORMS])
 def test_the_denied_env_twins_are_scrubbed_on_every_platform(tmp_path, monkeypatch, platform):
     # llama.cpp reads LLAMA_ARG_* before argv on all of them, so denying the token
-    # without the variable would leave the capability reachable wherever Studio runs.
+    # without the variable would leave the capability reachable wherever Unsloth runs.
     _apply_platform(monkeypatch, platform)
     monkeypatch.setenv("LLAMA_ARG_AGENT", "1")
     monkeypatch.setenv("LLAMA_ARG_TOOLS", "all")
-    # The logging twin matters most of all: Studio classifies a failed start by
+    # The logging twin matters most of all: Unsloth classifies a failed start by
     # reading llama-server's output, and nothing it emits later overrides this.
     monkeypatch.setenv("LLAMA_ARG_LOG_FILE", "/tmp/llama.log")
     # --api-prefix moves /health, which every load waits on, and an inherited API key
-    # makes the healthy child refuse requests Studio sends without one.
+    # makes the healthy child refuse requests Unsloth sends without one.
     monkeypatch.setenv("LLAMA_ARG_API_PREFIX", "/llama")
     monkeypatch.setenv("LLAMA_API_KEY", "sk-someone-elses")
     monkeypatch.setenv("LLAMA_ARG_API_KEY_FILE", "/etc/llama.keys")
-    # Given both TLS twins llama-server listens on https, while Studio probes /health
+    # Given both TLS twins llama-server listens on https, while Unsloth probes /health
     # and proxies over http: the child is healthy and every load times out.
     monkeypatch.setenv("LLAMA_ARG_SSL_KEY_FILE", "/etc/llama/key.pem")
     monkeypatch.setenv("LLAMA_ARG_SSL_CERT_FILE", "/etc/llama/cert.pem")
