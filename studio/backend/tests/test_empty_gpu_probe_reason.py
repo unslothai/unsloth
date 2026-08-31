@@ -60,6 +60,30 @@ def _clear_masks(monkeypatch):
         monkeypatch.delenv(var, raising = False)
 
 
+def _load_site_guard() -> str:
+    """The `if` statement guarding the empty-probe warning, by indentation.
+
+    Structural rather than a fixed window of characters: the guard carries a long
+    comment, and a window wide enough today silently stops covering the condition the
+    moment that comment grows.
+    """
+    import inspect
+    import textwrap
+
+    from core.inference import llama_cpp as mod
+
+    lines = inspect.getsource(mod.LlamaCppBackend.load_model).splitlines()
+    hit = next(
+        (i for i, line in enumerate(lines) if "No GPU was available for this load" in line), None
+    )
+    assert hit is not None, "the empty-probe warning is gone"
+    start = hit
+    while start >= 0 and not lines[start].lstrip().startswith("if "):
+        start -= 1
+    assert start >= 0, "no enclosing if statement"
+    return textwrap.dedent("\n".join(lines[start : hit + 1]))
+
+
 class TestItNamesTheCause:
     def test_a_vulkan_build_says_so(self, monkeypatch):
         monkeypatch.setattr(
@@ -200,14 +224,32 @@ class TestMacOSIsNotACpuVerdict:
 
     def test_the_load_site_does_not_warn_on_macos(self):
         """Source-level, because load_model cannot be driven from a unit test. The
-        simulation in temp/simgpu mirrors this predicate across the platform matrix."""
+        simulation in temp/simgpu executes this same guard across the platform matrix."""
+        guard = _load_site_guard()
+        assert 'sys.platform != "darwin"' in guard, "macOS must be excluded from this warning"
+        assert "not _arch_gate_forced_cpu" in guard, "the arch gate warns better; do not double up"
+
+
+class TestManualModeIsNotAnAbsentGpu:
+    """Both Manual modes set ``gpus = []`` on purpose, to stand the Python planner down
+    and let ``--fit`` or an explicit ``--gpu-layers`` place the model. The GPU is fully
+    used there. The reporting user's own log shows ``GPUs free: []`` directly beneath
+    "Manual mode with Auto layers hands memory management to llama.cpp --fit", so an
+    empty list there is this, not a probe that failed."""
+
+    def test_the_warning_reads_detected_gpus_not_gpus(self):
+        assert "not _detected_gpus" in _load_site_guard(), (
+            "without this every Manual-mode load warns that it is running on the CPU"
+        )
+
+    def test_detected_gpus_is_captured_before_manual_empties_the_pool(self):
+        """The distinction only holds if the capture precedes the emptying."""
         import inspect
 
         from core.inference import llama_cpp as mod
 
         src = inspect.getsource(mod.LlamaCppBackend.load_model)
-        at = src.find("No GPU was available for this load")
-        assert at != -1, "the empty-probe warning is gone"
-        guard = src[max(0, at - 900) : at]
-        assert 'sys.platform != "darwin"' in guard, "macOS must be excluded from this warning"
-        assert "not _arch_gate_forced_cpu" in guard, "the arch gate warns better; do not double up"
+        capture = src.find("_detected_gpus = list(gpus)")
+        emptied = src.find('if gpu_memory_mode == "manual" and gpu_layers < 0:')
+        assert capture != -1 and emptied != -1
+        assert capture < emptied, "_detected_gpus must hold the probe result, not the emptied one"

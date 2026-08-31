@@ -20219,10 +20219,25 @@ class LlamaCppBackend:
                         # --fit flag state, not "does it fit": off means this subset provably fits.
                         f"GPUs free: {gpus}, selected: {gpu_indices}, --fit: {'on' if use_fit else 'off'}"
                     )
-                    if not gpus and not _arch_gate_forced_cpu and sys.platform != "darwin":
+                    if (
+                        not gpus
+                        and not _detected_gpus
+                        and not _arch_gate_forced_cpu
+                        and sys.platform != "darwin"
+                    ):
                         # Above info, because this is the whole difference between a
                         # GPU load and a CPU one. The arch gate already warns with a
                         # better message when it is the cause, so do not repeat it.
+                        #
+                        # _detected_gpus, not gpus: both Manual modes empty `gpus` on
+                        # purpose to stand the Python planner down and let --fit or an
+                        # explicit --gpu-layers place the model, and the GPU is fully
+                        # used there. Reading `gpus` alone would warn "running on the
+                        # CPU" at every Manual load, which is where this started -- the
+                        # reporting user's own log shows `GPUs free: []` directly under
+                        # "Manual mode with Auto layers hands memory management to
+                        # llama.cpp --fit", so their empty list was this, not a probe
+                        # that failed.
                         #
                         # Never on macOS: this probe only ever sees CUDA and HIP, so it
                         # is empty on every Mac, including an Apple Silicon one whose
