@@ -328,6 +328,13 @@ def test_closing_tag_in_prose_does_not_eat_a_fence_closer():
     assert _has_answer_artifact(
         "First, let me show it.\n<html><body><script>const s = `hi`;</script></body></html>"
     )
+    # A page that ENCLOSES a fence is one block and goes whole, so a later literal
+    # delimiter inside it is removed with it rather than left looking unclosed.
+    enclosing = (
+        "First, let me show it.\n<html>\n```python\nx = 1\n```\n<pre>\n```\n</pre>\n</html>"
+    )
+    assert _has_answer_artifact(enclosing)
+    assert not _would_reprompt(enclosing)
 
 
 def test_markup_closing_tag_tolerates_whitespace():

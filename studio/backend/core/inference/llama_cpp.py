@@ -995,21 +995,21 @@ def _looks_like_real_artifact(text: str) -> bool:
     return False
 
 
-def _strip_markup_around_fences(text: str) -> str:
-    """Drop complete <html>/<svg> blocks without touching any complete fence.
+def _strip_markup_outside_fences(text: str) -> str:
+    """Drop complete <html>/<svg> blocks, except ones that BEGIN inside a fence.
 
-    A plain substitution matches from an opening tag inside a fence to a closing
-    one in the prose after it, taking the fence's own closer with it, which then
-    reads as an unfinished block:
-    ``` ```html\\n<html>\\n``` \\nClose it with </html>.```
+    An opening tag inside a code example is that example's content, and pairing it
+    with a closing tag in the prose after the fence swallowed the fence's own closer:
+    ``` ```html\\n<html>\\n``` \\nClose it with </html>.``` then read as unfinished. A
+    block that merely encloses a fence is still a real block and goes whole, so a page
+    holding a Markdown example is not left in pieces.
     """
-    out, pos = [], 0
-    for m in _CLOSED_CODE_FENCE.finditer(text):
-        out.append(_CLOSED_MARKUP_ARTIFACT.sub("", text[pos : m.start()]))
-        out.append(m.group(0))
-        pos = m.end()
-    out.append(_CLOSED_MARKUP_ARTIFACT.sub("", text[pos:]))
-    return "".join(out)
+    fences = [m.span() for m in _CLOSED_CODE_FENCE.finditer(text)]
+
+    def _keep_examples(m):
+        return m.group(0) if any(s <= m.start() < e for s, e in fences) else ""
+
+    return _CLOSED_MARKUP_ARTIFACT.sub(_keep_examples, text)
 
 
 def _text_outside_think(text: str) -> str:
@@ -1039,7 +1039,7 @@ def _has_answer_artifact(text: str) -> bool:
     # snippet, or backticks inside finished HTML, are content, not open state.
     text_without_closed_fences = _CLOSED_CODE_FENCE.sub("", text)
     text_without_both = _CLOSED_MARKUP_ARTIFACT.sub("", text_without_closed_fences)
-    if _has_unclosed_code_fence(_strip_markup_around_fences(text)):
+    if _has_unclosed_code_fence(_strip_markup_outside_fences(text)):
         return False
     # Only meaningful before any artifact lands: afterwards, prose mentioning
     # a bare <html> tag is common and would unbalance the count.
