@@ -10507,9 +10507,8 @@ class LlamaCppBackend:
     # only when an axis is actually quantized.
     _tensor_quant_kv_unsupported_binaries: set[tuple[str, int]] = set()
 
-    # Binary dirs already reported by _warn_missing_windows_cuda_runtime. The env is
-    # rebuilt for every launch and every --list-devices probe, and the condition is a
-    # property of the install, so one line per binary is the whole diagnostic.
+    # Binary dirs already reported by _warn_missing_windows_cuda_runtime. The env is rebuilt
+    # for every launch and every --list-devices probe, so one line per binary is enough.
     _missing_cuda_runtime_warned: set[str] = set()
 
     @classmethod
@@ -10653,8 +10652,8 @@ class LlamaCppBackend:
         try:
             if binary_dir in cls._missing_cuda_runtime_warned:
                 return
-            # Same identification _installed_ggml_backends uses: the official prebuilts
-            # are single-backend, so the ggml CUDA lib beside llama-server IS the build.
+            # Same identification _installed_ggml_backends uses: the official prebuilts are
+            # single-backend, so the ggml CUDA lib beside llama-server IS the build.
             ggml_cuda = os.path.join(binary_dir, "ggml-cuda.dll")
             if not os.path.isfile(ggml_cuda):
                 return
@@ -10714,11 +10713,9 @@ class LlamaCppBackend:
             )
             existing_path = env.get("PATH", "")
             env["PATH"] = ";".join(path_dirs) + ";" + existing_path
-            # Warn against the FULL search path, inherited entries included. A hand
-            # installed CUDA toolkit puts cudart64_*.dll on PATH without the managed
-            # venv or CUDA_PATH knowing about it, and Windows resolves it from there,
-            # so warning on the prepended directories alone told working custom setups
-            # to repair an installation that is fine.
+            # Warn against the FULL search path, inherited entries included: a hand-installed CUDA
+            # toolkit puts cudart64_*.dll on PATH without the venv or CUDA_PATH knowing, and warning
+            # on the prepended directories alone told working custom setups to repair a fine install.
             LlamaCppBackend._warn_missing_windows_cuda_runtime(
                 binary_dir,
                 path_dirs + [d for d in existing_path.split(";") if d],

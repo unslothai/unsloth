@@ -19,8 +19,7 @@ export type TauriRepairController = {
 };
 
 // Null outside Tauri and on the startup screen, where the app shell has not mounted. The
-// consumer renders nothing rather than offering an action that cannot run. Mirrors
-// TauriUpdateContext, which the settings update row already uses this way.
+// consumer renders nothing rather than offering an action that cannot run.
 export const TauriRepairContext = createContext<TauriRepairController | null>(
   null,
 );

@@ -935,16 +935,13 @@ pub async fn native_path_leases_usable(
 
 /// `force_installer` skips the update attempt and runs the bundled installer directly.
 ///
-/// The automatic repair tries `studio update` first because it is the cheap fix for the
-/// common case (a venv one release behind). But an update cannot repair everything it can
-/// break: it reuses the environment it finds, so a managed venv whose PyTorch has been
-/// replaced by a CPU-only wheel comes back from a successful update still CPU-only. Only
-/// install.ps1 / install.sh re-select the torch index and force-reinstall the trio.
+/// The automatic repair tries `studio update` first because it is the cheap fix for a venv
+/// one release behind. But an update reuses the environment it finds, so a managed venv
+/// whose PyTorch has been replaced by a CPU-only wheel comes back from a successful update
+/// still CPU-only. Only install.ps1 / install.sh re-select the torch index.
 ///
-/// So the user-initiated "Repair installation" action in Settings passes true: someone who
-/// asks for a repair by hand has already concluded the ordinary update did not help, and
-/// making them wait through it again before the installer runs is the slow way to the same
-/// place. Absent (the startup auto-repair path) reads as false, so that path is unchanged.
+/// Settings' manual "Repair installation" therefore passes true. Absent (the startup
+/// auto-repair path) reads as false, so that path is unchanged.
 #[tauri::command]
 pub async fn start_managed_repair(
     app: AppHandle,
@@ -996,10 +993,8 @@ pub async fn start_managed_repair(
     let repair_group_id = install::take_pending_repair_group_for_resume(&install_state)
         .unwrap_or_else(|| diagnostics::begin_repair_group(&diagnostics_state));
 
-    // Ok(()) rather than skipping the match: the installer fallback below is the whole body
-    // after it, and a second copy of that call under a `if force_installer` would be the one
-    // place a future change to the fallback could miss. This synthesises "the update ran and
-    // left the install not ready", which is exactly the state the caller is asserting.
+    // Ok(()) rather than skipping the match: a second copy of the fallback under a
+    // `if force_installer` would be the one place a future change could miss.
     let update_result = if force_installer {
         let _ = app.emit("repair-progress", "Running bundled installer...");
         Ok(())
@@ -1028,8 +1023,7 @@ pub async fn start_managed_repair(
             let _ = app.emit("repair-complete", ());
             return Ok(());
         }
-        // The forced path already emitted its own progress line above; it did not run an
-        // update, so telling the user one "finished" would be a plain untruth.
+        // The forced path already emitted its own progress line and ran no update.
         Ok(()) if force_installer => {}
         Ok(()) => {
             warn!("Managed repair update finished, but preflight is still not ready; falling back to installer");

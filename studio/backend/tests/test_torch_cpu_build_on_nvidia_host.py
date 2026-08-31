@@ -45,8 +45,7 @@ import utils.hardware as hardware_pkg
 import utils.hardware.hardware as hw
 from utils.hardware import nvidia
 
-# nvidia-smi rows for User A's box: two A4000s, the second carrying a comma in its
-# name so the rejoin the parser does is covered by a real assertion.
+# nvidia-smi rows for User A's box: two A4000s, the second carrying a comma in its name.
 _TWO_A4000_ROWS = "\n".join(
     [
         "0, NVIDIA RTX A4000, 16376",
@@ -147,13 +146,10 @@ def cpu_torch_on_an_nvidia_host(monkeypatch):
     monkeypatch.setattr(hw, "TORCH_IMPORT_ERROR", None)
     monkeypatch.setattr(hw, "IS_ROCM", False)
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
-    # Cached for 60s so a poll cannot spawn nvidia-smi per request; a test that did
-    # not clear it would read whatever an earlier one measured on the real host.
+    # Cached for 60s, so a test that did not clear it would read the real host's answer.
     monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     _smi(monkeypatch, _TWO_A4000_ROWS)
 
-
-# ========== The inventory itself ==========
 
 
 def test_the_physical_probe_runs_without_a_cuda_device(cpu_torch_on_an_nvidia_host):
@@ -163,8 +159,6 @@ def test_the_physical_probe_runs_without_a_cuda_device(cpu_torch_on_an_nvidia_ho
     assert inventory["sources"] == ["nvidia-smi"]
     assert [device["name"] for device in inventory["devices"]] == [
         "NVIDIA RTX A4000",
-        # Rejoined: nvidia-smi's CSV has no quoting, so a name holding a comma
-        # arrives split across columns.
         "NVIDIA RTX A4000, Founders Edition",
     ]
     assert [device["memory_total_gb"] for device in inventory["devices"]] == [15.99, 15.99]
@@ -184,8 +178,6 @@ def test_the_physical_probe_runs_without_a_cuda_device(cpu_torch_on_an_nvidia_ho
 def test_a_probe_that_cannot_answer_returns_a_result_rather_than_raising(
     monkeypatch, stdout, returncode, failure
 ):
-    # This runs inside GET /api/system. A probe that raised would 500 the whole
-    # System tab over a diagnostic, on the host least able to afford it.
     if failure is None:
         _smi(monkeypatch, stdout, returncode = returncode)
     else:
@@ -194,9 +186,8 @@ def test_a_probe_that_cannot_answer_returns_a_result_rather_than_raising(
             raise failure
 
         monkeypatch.setattr(nvidia.subprocess, "run", _raise)
-    # This suite runs on a real NVIDIA host, whose /proc/driver/nvidia/gpus the absent-CLI
-    # path now falls back to. Pin it empty: the case under test is a machine with no
-    # NVIDIA driver at all.
+    # This suite runs on a real NVIDIA host, so pin procfs empty: the case under test is a
+    # machine with no NVIDIA driver at all.
     monkeypatch.setattr(nvidia, "_linux_nvidia_procfs_gpu_count", lambda: 0)
     monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
@@ -209,12 +200,8 @@ def test_a_probe_that_cannot_answer_returns_a_result_rather_than_raising(
     assert inventory["available"] is False
     assert inventory["devices"] == []
     assert inventory["sources"] == []
-    # "The driver answered and there are no cards" is not the same fact as "no probe
-    # could answer", and collapsing them let a transient nvidia-smi timeout read as a
-    # GPU disappearing and flip a settled mismatch verdict back to no_gpu.
-    # An absent nvidia-smi is the exception: it is the normal state of every AMD,
-    # Intel and CPU-only host, so calling it unknown would keep a settled mismatch
-    # alive for good after the card that established it was removed.
+    # "The driver answered and there are no cards" is not "no probe could answer". An absent
+    # nvidia-smi is the exception: it is the normal state of every AMD, Intel and CPU host.
     _could_not_answer = returncode != 0 or (
         failure is not None and not isinstance(failure, FileNotFoundError)
     )
@@ -222,13 +209,10 @@ def test_a_probe_that_cannot_answer_returns_a_result_rather_than_raising(
 
 
 def test_the_windows_amd_adapters_are_inventoried_too(monkeypatch):
-    # No vendor CLI is guaranteed on Windows AMD (amd-smi elevates a child without a
-    # HIP SDK), so the DirectX registry map _rocm_windows_per_device_vram already
-    # trusts is the source here as well.
+    # No vendor CLI is guaranteed on Windows AMD, so the DirectX registry map is the source.
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
     monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     _smi(monkeypatch, "", returncode = 9)
-    # A registry record only counts when the live scan sees the card too.
     monkeypatch.setattr(
         hw,
         "_windows_live_adapter_names",
@@ -237,7 +221,6 @@ def test_the_windows_amd_adapters_are_inventoried_too(monkeypatch):
     monkeypatch.setattr(
         hw,
         "_windows_amd_adapter_records_by_luid",
-        # Called once per vendor id now; only AMD answers on this host.
         lambda vendor_id = hw._AMD_PCI_VENDOR_ID: (
             {
                 0x24CF5: {
@@ -261,8 +244,6 @@ def test_the_windows_amd_adapters_are_inventoried_too(monkeypatch):
     ]
 
 
-# ========== Classifying the build ==========
-
 
 def test_a_cpu_wheel_and_a_dead_cuda_wheel_are_different_reasons(monkeypatch):
     import sys
@@ -273,7 +254,6 @@ def test_a_cpu_wheel_and_a_dead_cuda_wheel_are_different_reasons(monkeypatch):
     monkeypatch.setitem(sys.modules, "torch", _fake_torch("cuda_dead"))
     assert hw.classify_torch_build() == "torch_cuda_unavailable"
 
-    # A healthy accelerator has nothing to explain.
     monkeypatch.setitem(sys.modules, "torch", _fake_torch("cuda"))
     assert hw.classify_torch_build() is None
 
@@ -281,14 +261,11 @@ def test_a_cpu_wheel_and_a_dead_cuda_wheel_are_different_reasons(monkeypatch):
 def test_an_untagged_wheel_is_only_a_cpu_build_when_it_names_no_runtime(monkeypatch):
     import sys
 
-    # The PyPI macOS/CPU wheel shape: no local version tag at all.
     untagged = _fake_torch("cpu")
     untagged.__version__ = "2.9.0"
     monkeypatch.setitem(sys.modules, "torch", untagged)
     assert hw.classify_torch_build() == "torch_cpu_build"
 
-    # Conda builds are untagged but DO set version.cuda, so they are CUDA wheels and
-    # telling that host to reinstall torch would send it the wrong way.
     conda = _fake_torch("cuda_dead")
     conda.__version__ = "2.6.0"
     monkeypatch.setitem(sys.modules, "torch", conda)
@@ -298,9 +275,8 @@ def test_an_untagged_wheel_is_only_a_cpu_build_when_it_names_no_runtime(monkeypa
 @pytest.mark.parametrize("var", ["CUDA_VISIBLE_DEVICES"])
 @pytest.mark.parametrize("mask", ["", " ", "-1"])
 def test_a_deliberately_emptied_mask_is_not_a_broken_install(monkeypatch, var, mask):
-    # Hiding the GPUs produces exactly the shape this whole feature keys on -- torch
-    # sees none, nvidia-smi sees them all -- and offering that host a repair would be
-    # telling it to undo its own configuration.
+    # Hiding the GPUs produces exactly the shape this feature keys on (torch sees none,
+    # nvidia-smi sees them all) without anything being broken.
     import sys
 
     monkeypatch.setitem(sys.modules, "torch", _fake_torch("cuda_dead"))
@@ -311,7 +287,6 @@ def test_a_deliberately_emptied_mask_is_not_a_broken_install(monkeypatch, var, m
     assert hw.classify_torch_build() is None
     assert hw._torch_gpu_mismatch_report() == {}
 
-    # A mask that NAMES a device is a different thing: that host expects it to work.
     monkeypatch.setenv(var, "0")
     assert hw.classify_torch_build() == "torch_cuda_unavailable"
 
@@ -328,8 +303,6 @@ def test_a_runtime_that_raises_on_its_own_probe_counts_as_unavailable(monkeypatc
     monkeypatch.setitem(sys.modules, "torch", hostile)
     assert hw.classify_torch_build() == "torch_cuda_unavailable"
 
-
-# ========== The detection verdict ==========
 
 
 def _detect(monkeypatch):
@@ -350,7 +323,6 @@ def test_chat_only_stops_claiming_this_host_has_no_gpu(monkeypatch, cpu_torch_on
 
     assert device == hw.DeviceType.CPU
     assert hw.CHAT_ONLY is True
-    # The whole point: "no_gpu" here is false, and the advice it carries is useless.
     assert hw.CHAT_ONLY_REASON == "torch_cpu_build"
     assert hw.CHAT_ONLY_REASON != "no_gpu"
     assert hw.CHAT_ONLY_DETAIL == "2.11.0+cpu"
@@ -370,7 +342,6 @@ def test_a_host_that_really_has_no_gpu_still_reads_no_gpu(monkeypatch):
 
     assert hw.CHAT_ONLY_REASON == "no_gpu"
     assert hw.CHAT_ONLY_DETAIL is None
-    # And nothing is claimed about hardware that was never found.
     assert hw._torch_gpu_mismatch_report() == {}
 
 
@@ -381,11 +352,8 @@ def test_a_healthy_cuda_host_reports_no_mismatch_at_all(monkeypatch):
     monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     _smi(monkeypatch, _TWO_A4000_ROWS)
 
-    # Absence is the signal a reader keys on, so it has to be absence, not a null.
     assert hw._torch_gpu_mismatch_report() == {}
 
-
-# ========== What /api/system publishes ==========
 
 
 def _system_gpu_info(monkeypatch):
@@ -397,17 +365,11 @@ def _system_gpu_info(monkeypatch):
     )
     monkeypatch.setattr(hardware_pkg, "get_vulkan_inference_gpu_info", lambda: None)
     monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CPU)
-    # 10s TTL on the endpoint's own cache, so a sibling test's reading would answer.
     monkeypatch.setattr(main, "_system_gpu_cache", None)
-    # Warm the inventory the way startup does. The mismatch report reads it WITHOUT
-    # blocking, because /api/system is polled every three seconds and a hung nvidia-smi
-    # would stall the request for the probe's whole timeout; a cold cache therefore
-    # answers "unknown" and the first poll publishes nothing. In a running backend
-    # _detect_hardware_locked has already done one blocking read by this point.
+    # Warm the inventory the way startup does: the mismatch report reads it WITHOUT
+    # blocking, because /api/system is polled every three seconds, so a cold cache answers
+    # unknown. In a running backend _detect_hardware_locked has already blocked once.
     hw.get_physical_gpu_inventory()
-    # And the torch measurement, for the same reason: the mismatch report reads a
-    # cached classification rather than importing torch on the request thread, because
-    # the CUDA and XPU availability probes block while a driver is wedged.
     hw.torch_build_snapshot()
     return main._get_cached_system_gpu_info(SimpleNamespace(debug = lambda *args: None))
 
@@ -417,9 +379,8 @@ def test_the_system_endpoint_names_the_cards_without_offering_them(
 ):
     gpu, _inference_gpu = _system_gpu_info(monkeypatch)
 
-    # The hard constraint. `devices` is the runtime-usable list: model fit budgets
-    # against it and the training device picker pins from it, so an unusable card
-    # appearing here would let a user select a GPU that cannot run anything.
+    # The hard constraint: `devices` is the runtime-usable list that model fit budgets
+    # against and the training picker pins from.
     assert gpu["devices"] == []
     assert gpu["available"] is False
 
@@ -431,7 +392,6 @@ def test_the_system_endpoint_names_the_cards_without_offering_them(
         "NVIDIA RTX A4000",
         "NVIDIA RTX A4000, Founders Edition",
     ]
-    # Same list, reachable through the visibility endpoint on its own.
     assert hw.get_backend_visible_gpu_info()["physical_devices"] == gpu["physical_devices"]
 
 
@@ -451,8 +411,6 @@ def test_a_cpu_host_with_no_cards_publishes_neither_field(monkeypatch):
     assert "mismatch" not in gpu
     assert "physical_devices" not in gpu
 
-
-# ========== What the review round after the first one added ==========
 
 
 @pytest.mark.parametrize("local", ["cpu", "cpu.cxx11.abi", "cpu.cxx11abi", "CPU"])
@@ -510,7 +468,6 @@ def test_export_and_video_stop_saying_no_accelerator_was_found(monkeypatch):
     assert video["video_unsupported_reason"] == "torch_cpu_build"
     assert "No supported accelerator" not in video["video_unsupported_message"]
 
-    # The driver case reads differently, because the remedy differs.
     monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "torch_cuda_unavailable")
     monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", "2.6.0+cu124")
     assert hw.export_capability()["export_unsupported_reason"] == "torch_cuda_unavailable"
@@ -519,8 +476,7 @@ def test_export_and_video_stop_saying_no_accelerator_was_found(monkeypatch):
 
 def test_a_genuinely_gpu_less_host_keeps_the_old_wording(monkeypatch):
     monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CPU)
-    # This suite runs on a real NVIDIA box, and the capability helpers read the live host
-    # through get_device() and the verdict refresh. Without these the refresh correctly
+    # This suite runs on a real NVIDIA box, so without these the verdict refresh correctly
     # notices the accelerator this test is pretending not to have.
     monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CPU)
     monkeypatch.setattr(hw, "_torch_reports_a_usable_accelerator", lambda: False)
@@ -552,17 +508,14 @@ def test_nvidia_smi_is_resolved_from_the_standard_windows_locations(monkeypatch)
     monkeypatch.setenv("ProgramFiles", r"C:\Program Files")
     monkeypatch.setenv("SystemRoot", r"C:\Windows")
 
-    # os.path.join, not a literal: this test runs on Linux, where the separator differs.
     nvsmi = nvidia.os.path.join(r"C:\Program Files", r"NVIDIA Corporation\NVSMI\nvidia-smi.exe")
     monkeypatch.setattr(nvidia.os.path, "isfile", lambda p: p == nvsmi)
     assert nvidia._nvidia_smi_executable() == nvsmi
 
-    # The driver store copy is the second chance.
     system32 = nvidia.os.path.join(r"C:\Windows", r"System32\nvidia-smi.exe")
     monkeypatch.setattr(nvidia.os.path, "isfile", lambda p: p == system32)
     assert nvidia._nvidia_smi_executable() == system32
 
-    # Nothing anywhere: hand back the bare name so the caller's OSError path still runs.
     monkeypatch.setattr(nvidia.os.path, "isfile", lambda _p: False)
     assert nvidia._nvidia_smi_executable() == "nvidia-smi"
 
@@ -572,13 +525,10 @@ def test_path_resolution_is_a_no_op_off_windows_and_when_path_has_it(monkeypatch
     monkeypatch.setattr(nvidia.shutil, "which", lambda _name: None)
     assert nvidia._nvidia_smi_executable() == "nvidia-smi"
 
-    # PATH wins whenever it answers, on every platform.
     monkeypatch.setattr(nvidia.platform, "system", lambda: "Windows")
     monkeypatch.setattr(nvidia.shutil, "which", lambda _name: "/usr/bin/nvidia-smi")
     assert nvidia._nvidia_smi_executable() == "/usr/bin/nvidia-smi"
 
-
-# ========== Round three ==========
 
 
 @pytest.mark.parametrize("mask", ["", " ", "-1"])
@@ -599,16 +549,12 @@ def test_a_hip_mask_only_counts_where_it_can_hide_something(monkeypatch, var, ma
     _smi(monkeypatch, _TWO_A4000_ROWS)
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
     monkeypatch.setenv(var, mask)
-    # Prime the cache: the mask set is read off the inventory WITHOUT blocking,
-    # because it is reached from the chat-only verdict that /api/liveness reads. A
-    # cold cache answers "unknown", which deliberately keeps every mask, so the
-    # vendor rule only has something to say once a blocking read has happened -- as
-    # one has by then, in _detect_hardware_locked at startup.
+    # Prime the cache: the mask set reads the inventory WITHOUT blocking (it is reached
+    # from the verdict /api/liveness reads), and a cold cache keeps every mask.
     hw.get_physical_gpu_inventory()
 
     assert hw.classify_torch_build() == "torch_cuda_unavailable"
 
-    # Put an AMD card in the inventory and the same variable becomes meaningful.
     monkeypatch.setattr(
         hw,
         "get_physical_gpu_inventory",
@@ -630,14 +576,12 @@ def test_rocr_is_ignored_on_windows_even_on_an_amd_host(monkeypatch):
     monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "")
     assert hw.classify_torch_build() == "torch_cuda_unavailable"
 
-    # HIP does work on Windows, so that one still counts.
     monkeypatch.delenv("ROCR_VISIBLE_DEVICES")
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "")
     assert hw.classify_torch_build() is None
 
 
 def test_an_inventory_that_answers_nothing_keeps_every_mask(monkeypatch):
-    # Unknown stays conservative: it must not start ignoring masks that may be real.
     import sys
 
     monkeypatch.setitem(sys.modules, "torch", _fake_torch("cuda_dead"))
@@ -662,7 +606,6 @@ def test_a_deliberate_cpu_install_is_not_reported_as_broken(monkeypatch, tmp_pat
     monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
     monkeypatch.setattr(hw.sys, "prefix", str(tmp_path))
 
-    # Nothing recorded and nothing pinned: unknown is not a choice.
     assert hw.classify_torch_build() == "torch_cpu_build"
 
     monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "cpu")
@@ -673,14 +616,12 @@ def test_a_deliberate_cpu_install_is_not_reported_as_broken(monkeypatch, tmp_pat
     assert hw.classify_torch_build() is None
     monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL")
 
-    # A GPU pin is not this, and neither is a GPU flavor in the manifest.
     monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "cu124")
     assert hw.classify_torch_build() == "torch_cpu_build"
     monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY")
 
-    # A recorded cpu counts only when the record says someone NAMED it. setup.ps1
-    # selects /cpu automatically on a GPU-less host and records it identically, so the
-    # tag alone would leave a machine that later gained a card with no repair offered.
+    # A recorded cpu counts only when the record says someone NAMED it: setup.ps1 selects
+    # /cpu automatically on a GPU-less host and records it identically.
     manifest = tmp_path / "unsloth_install_manifest.json"
     manifest.write_text('{"schema": 1, "expected_torch_tag": "cpu"}', encoding = "utf-8")
     assert hw.classify_torch_build() == "torch_cpu_build"
@@ -702,7 +643,6 @@ def test_a_deliberate_cpu_install_is_not_reported_as_broken(monkeypatch, tmp_pat
     manifest.write_text('{"schema": 1, "expected_torch_tag": "cu124"}', encoding = "utf-8")
     assert hw.classify_torch_build() == "torch_cpu_build"
 
-    # A manifest with no flavor key, and a corrupt one, both mean unknown.
     manifest.write_text('{"schema": 1}', encoding = "utf-8")
     assert hw.classify_torch_build() == "torch_cpu_build"
     manifest.write_text("{not json", encoding = "utf-8")
@@ -710,8 +650,6 @@ def test_a_deliberate_cpu_install_is_not_reported_as_broken(monkeypatch, tmp_pat
 
 
 def test_a_dead_accelerator_wheel_is_unaffected_by_a_cpu_record(monkeypatch, tmp_path):
-    # The suppression is about a CPU wheel that was ASKED for. A cu124 wheel whose
-    # runtime will not start is a real problem whatever the manifest says.
     import sys
 
     monkeypatch.setitem(sys.modules, "torch", _fake_torch("cuda_dead"))
@@ -719,7 +657,6 @@ def test_a_dead_accelerator_wheel_is_unaffected_by_a_cpu_record(monkeypatch, tmp
     monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "cpu")
     assert hw.classify_torch_build() is None  # the pin is honoured first
 
-    # ... but with no CPU choice recorded at all it stays a real fault.
     monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY")
     assert hw.classify_torch_build() == "torch_cuda_unavailable"
 
@@ -743,9 +680,7 @@ def test_linux_amd_and_intel_cards_are_inventoried_from_sysfs(monkeypatch, tmp_p
         device.mkdir(parents = True)
         (device / "vendor").write_text(vendor, encoding = "utf-8")
         (device / "mem_info_vram_total").write_text(vram, encoding = "utf-8")
-    # A connector entry pointing at the same card, which must not be double-counted.
     (drm / "card0-DP-1").mkdir()
-    # And a card whose device directory is unreadable.
     (drm / "card9").mkdir()
 
     real_listdir = hw.os.listdir
@@ -768,11 +703,8 @@ def test_linux_amd_and_intel_cards_are_inventoried_from_sysfs(monkeypatch, tmp_p
     assert [r["vendor"] for r in records] == ["amd", "amd", "amd", "intel"]
     assert all(r["source"] == "sysfs-drm" for r in records)
     assert records[0]["memory_total_gb"] == 16.0
-    # 0 and an unparseable value are both unknown, never a zero-capacity claim.
     assert records[1]["memory_total_gb"] is None
     assert records[2]["memory_total_gb"] is None
-    # Intel publishes no equivalent total on the discrete path. Reporting the card with
-    # an unknown capacity is the point; leaving it out would be the bug.
     assert records[3]["memory_total_gb"] is None
 
 
@@ -780,8 +712,6 @@ def test_the_sysfs_probe_is_silent_where_there_is_no_sysfs(monkeypatch):
     monkeypatch.setattr(hw.os, "listdir", lambda _p: (_ for _ in ()).throw(OSError("no such path")))
     assert hw._linux_drm_sysfs_records() == []
 
-
-# ========== Round four ==========
 
 
 def test_a_token_authenticated_cpu_pin_is_still_a_cpu_pin(monkeypatch, tmp_path):
@@ -805,7 +735,6 @@ def test_a_token_authenticated_cpu_pin_is_still_a_cpu_pin(monkeypatch, tmp_path)
         monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", pinned)
         assert hw.classify_torch_build() is None, pinned
 
-    # A cu128 pin carrying the same token shape is not a CPU pin.
     monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", "https://mirror.corp.example/whl/cu128?token=abc")
     assert hw.classify_torch_build() == "torch_cpu_build"
 
@@ -839,13 +768,10 @@ def test_the_chat_only_verdict_follows_the_inventory(monkeypatch):
     monkeypatch.setattr(
         hw, "get_physical_gpu_inventory", lambda **_kw: {"devices": [{"vendor": "nvidia"}]}
     )
-    # The verdict reads a cached measurement and never probes torch inline, because
-    # /api/health and /api/liveness reach it. detect_hardware() takes the blocking pass
-    # on the real path; measure this fake host the same way.
+    # The verdict never probes torch inline; measure this fake host as detection would.
     hw.torch_build_snapshot()
     assert hw.current_chat_only_verdict() == ("torch_cpu_build", "2.11.0+cpu")
 
-    # And the reverse: a card that went away must not leave a mismatch behind.
     monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "torch_cpu_build")
     monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", "2.11.0+cpu")
     monkeypatch.setattr(hw, "get_physical_gpu_inventory", lambda **_kw: {"devices": []})
@@ -887,15 +813,10 @@ def test_export_and_video_read_the_refreshed_verdict(monkeypatch):
         hw, "get_physical_gpu_inventory", lambda **_kw: {"devices": [{"vendor": "nvidia"}]}
     )
 
-    # The verdict reads a cached measurement and never probes torch inline, because
-    # /api/health and /api/liveness reach it. detect_hardware() takes the blocking pass
-    # on the real path; measure this fake host the same way.
     hw.torch_build_snapshot()
     assert hw.export_capability()["export_unsupported_reason"] == "torch_cpu_build"
     assert hw.video_capability()["video_unsupported_reason"] == "torch_cpu_build"
 
-
-# ========== Round five ==========
 
 
 def test_windows_intel_adapters_are_inventoried_too(monkeypatch):
@@ -925,12 +846,8 @@ def test_windows_intel_adapters_are_inventoried_too(monkeypatch):
     assert [d["vendor"] for d in inventory["devices"]] == ["intel"]
     assert inventory["devices"][0]["memory_total_gb"] == 16.0
     assert inventory["available"] is True
-    # Still unknown, because the NVIDIA probe did not answer and contributed no device.
-    # An Intel card is not an answer about an NVIDIA one, and reading it as a complete
-    # inventory let a settled mismatch downgrade itself to no_gpu.
     assert inventory["unknown"] is True
 
-    # The same host once nvidia-smi answers: a driver that reports no cards IS an answer.
     _smi(monkeypatch, "", returncode = 0)
     monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     inventory = hw.get_physical_gpu_inventory()
@@ -947,9 +864,6 @@ def test_a_transient_probe_failure_does_not_retire_a_settled_mismatch(monkeypatc
     """
     monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "torch_cpu_build")
     monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", "2.11.0+cpu")
-    # The premise is a CPU-only wheel; the suite's own host has a working CUDA one, and
-    # the refresh would otherwise read the real build and retire the mismatch for a
-    # reason this test is not about.
     monkeypatch.setattr(hw, "classify_torch_build", lambda **_kw: "torch_cpu_build")
     monkeypatch.setattr(hw, "_torch_reports_a_usable_accelerator", lambda: False)
     monkeypatch.setattr(
@@ -957,13 +871,9 @@ def test_a_transient_probe_failure_does_not_retire_a_settled_mismatch(monkeypatc
         "get_physical_gpu_inventory",
         lambda **_kw: {"available": False, "devices": [], "unknown": True},
     )
-    # The verdict reads a cached measurement and never probes torch inline, because
-    # /api/health and /api/liveness reach it. detect_hardware() takes the blocking pass
-    # on the real path; measure this fake host the same way.
     hw.torch_build_snapshot()
     assert hw.current_chat_only_verdict() == ("torch_cpu_build", "2.11.0+cpu")
 
-    # A probe that DID answer, and found nothing, still retires it.
     monkeypatch.setattr(
         hw,
         "get_physical_gpu_inventory",
@@ -1007,24 +917,19 @@ def test_the_health_path_never_waits_on_the_gpu_probe(monkeypatch):
     monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "torch_cpu_build")
     monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", "2.11.0+cpu")
 
-    # The verdict reads a cached measurement and never probes torch inline, because
-    # /api/health and /api/liveness reach it. detect_hardware() takes the blocking pass
-    # on the real path; measure this fake host the same way.
     hw.torch_build_snapshot()
-    # That warm-up IS the blocking pass, standing in for detection: it compares the
-    # masks against a measured inventory rather than a cold unknown. What the request
-    # path may not do is shell out again, so count from here.
+    # That warm-up IS the blocking pass, standing in for detection. What the request path
+    # may not do is shell out again, so count from here.
     calls["blocking"] = 0
     monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     monkeypatch.setattr(hw, "_physical_gpu_inventory_refreshing", False)
 
-    # Cold inventory cache: no probe runs inline, the refresh is handed to a thread, and
-    # the explicit unknown keeps the frozen verdict rather than retiring it.
+    # Cold inventory cache: no probe inline, the refresh goes to a thread, and the explicit
+    # unknown keeps the frozen verdict.
     assert hw.current_chat_only_verdict() == ("torch_cpu_build", "2.11.0+cpu")
     assert calls["blocking"] == 0, "nothing may shell out on the request path"
     assert calls["threads"] >= 1
 
-    # A second caller while that refresh is still in flight does not queue another.
     monkeypatch.setattr(hw, "_physical_gpu_inventory_refreshing", True)
     before = calls["threads"]
     hw.get_physical_gpu_inventory(block = False)
@@ -1054,13 +959,11 @@ def test_a_stale_cache_is_served_rather_than_re_probed_off_the_request_path(monk
     monkeypatch.setattr(hw, "_probe_physical_gpu_inventory", _probe)
     monkeypatch.setattr(hw.threading, "Thread", _Thread)
     monkeypatch.setattr(hw, "_physical_gpu_inventory_refreshing", False)
-    # Stale by an hour.
     monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", (hw.time.monotonic() - 3600, warm))
 
     assert hw.get_physical_gpu_inventory(block = False) is warm
     assert calls["n"] == 0, "a stale answer beats a subprocess on the request path"
 
-    # The blocking caller, which is not on a request path, does re-probe.
     assert hw.get_physical_gpu_inventory() is warm
     assert calls["n"] == 1
 
@@ -1080,11 +983,8 @@ def test_a_process_that_cannot_start_a_thread_keeps_the_stale_answer(monkeypatch
 
     monkeypatch.setattr(hw.threading, "Thread", _boom)
     assert hw.get_physical_gpu_inventory(block = False) is warm
-    # And the single-flight flag is released, or every later refresh is suppressed.
     assert hw._physical_gpu_inventory_refreshing is False
 
-
-# ========== Round six ==========
 
 
 def test_a_stale_registry_record_is_not_reported_as_a_gpu(monkeypatch):
@@ -1115,8 +1015,6 @@ def test_a_stale_registry_record_is_not_reported_as_a_gpu(monkeypatch):
 
 
 def test_a_live_scan_that_cannot_answer_reports_unknown_rather_than_guessing(monkeypatch):
-    # Neither "this card is real" nor "this card is gone" is knowable then, and unknown
-    # is what keeps a settled verdict instead of inventing one.
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
     monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     _smi(monkeypatch, "", returncode = 9)
@@ -1138,7 +1036,6 @@ def test_a_live_scan_that_cannot_answer_reports_unknown_rather_than_guessing(mon
     "registry,live,matched",
     [
         ("AMD Radeon RX 7900 XT", "AMD Radeon RX 7900 XT", True),
-        # The two sources spell the same card differently; either may be the prefix.
         ("AMD Radeon RX 7900 XT", "AMD Radeon RX 7900 XT Graphics", True),
         ("Intel(R) Arc(TM) A770 Graphics", "Intel(R) Arc(TM) A770", True),
         ("AMD Radeon RX 6800", "NVIDIA GeForce RTX 4090", False),
@@ -1167,11 +1064,8 @@ def test_an_ordinary_intel_igpu_does_not_establish_a_mismatch(monkeypatch, tmp_p
     igpu = [{"vendor": "intel", "name": None, "index": 0}]
     assert hw._devices_that_can_establish_a_mismatch(igpu) == []
 
-    # An Arc card by name does, and so do NVIDIA and AMD unconditionally.
     arc = [{"vendor": "intel", "name": "Intel(R) Arc(TM) A770 Graphics", "index": 0}]
     assert hw._devices_that_can_establish_a_mismatch(arc) == arc
-    # NVIDIA counts unconditionally; an AMD card counts once something can name an
-    # arch this stack ships a wheel for. See the AMD tests below for the rest.
     others = [
         {"vendor": "nvidia", "index": 0},
         {"vendor": "amd", "index": 0, "gfx_candidates": ["gfx1100"]},
@@ -1180,8 +1074,6 @@ def test_an_ordinary_intel_igpu_does_not_establish_a_mismatch(monkeypatch, tmp_p
 
 
 def test_a_nameless_intel_card_counts_once_xpu_was_actually_chosen(monkeypatch, tmp_path):
-    # The Linux sysfs walk publishes no name, which is why the expectation and the
-    # installed runtime are consulted as well.
     import sys
 
     monkeypatch.setitem(sys.modules, "torch", _fake_torch("cpu"))
@@ -1200,7 +1092,6 @@ def test_a_nameless_intel_card_counts_once_xpu_was_actually_chosen(monkeypatch, 
     manifest.write_text('{"schema": 1, "expected_torch_tag": "cpu"}', encoding = "utf-8")
     assert hw._devices_that_can_establish_a_mismatch(nameless) == []
 
-    # An installed XPU wheel counts too: that venv plainly expected an Intel GPU.
     xpu_torch = _fake_torch("cpu")
     xpu_torch.__version__ = "2.9.0+xpu"
     monkeypatch.setitem(sys.modules, "torch", xpu_torch)
@@ -1221,17 +1112,13 @@ def test_an_accelerator_that_came_back_retires_the_cached_verdict(monkeypatch):
     monkeypatch.setitem(sys.modules, "torch", _fake_torch("cuda"))
     calls = {"n": 0}
     monkeypatch.setattr(hw, "invalidate_detection", lambda: calls.__setitem__("n", calls["n"] + 1))
-    # The recovery is measured, not probed inline: warm the snapshot the way detection
-    # does, and note that the recovery path drops it again so the fresh pass re-reads
-    # this fake host rather than the answer from before it came back.
+    # The recovery is measured, not probed inline. The recovery path drops the snapshot
+    # again, so the fresh pass re-reads this fake host rather than the pre-recovery answer.
     hw.torch_build_snapshot()
 
-    # The current answer is kept for now; the next detection pass publishes the real one.
     assert hw.current_chat_only_verdict() == ("torch_cuda_unavailable", "2.6.0+cu124")
     assert calls["n"] == 1
 
-    # At most one request per recovery: a poll every few seconds must not retire the
-    # epoch on every call and starve detection of a chance to settle.
     hw.current_chat_only_verdict()
     hw.current_chat_only_verdict()
     assert calls["n"] == 1
@@ -1254,8 +1141,6 @@ def test_a_host_whose_accelerator_never_came_back_is_not_re_detected(monkeypatch
     assert calls["n"] == 0
 
 
-# ========== Round seven ==========
-
 
 def test_a_healthy_xpu_wheel_is_not_called_unavailable(monkeypatch):
     """An Intel host that started while its runtime was down and later recovered.
@@ -1272,11 +1157,9 @@ def test_a_healthy_xpu_wheel_is_not_called_unavailable(monkeypatch):
     monkeypatch.setitem(sys.modules, "torch", xpu)
     assert hw.classify_torch_build() is None
 
-    # And while the runtime really is down it is still a fault.
     xpu.xpu = types.SimpleNamespace(is_available = lambda: False)
     assert hw.classify_torch_build() == "torch_cuda_unavailable"
 
-    # A probe that raises is not an answer either way; the CUDA one is still consulted.
     def _boom():
         raise RuntimeError("Level Zero not initialised")
 
@@ -1286,8 +1169,6 @@ def test_a_healthy_xpu_wheel_is_not_called_unavailable(monkeypatch):
 
 @pytest.mark.parametrize("mask", ["", " ", "-1"])
 def test_an_emptied_xpu_mask_is_a_deliberate_hide(monkeypatch, mask):
-    # The rest of the module already reads an emptied ZE_AFFINITY_MASK as hiding every
-    # Intel device, so a masked XPU install must not be offered a repair for it.
     import sys
 
     monkeypatch.setitem(sys.modules, "torch", _fake_torch("cuda_dead"))
@@ -1299,7 +1180,6 @@ def test_an_emptied_xpu_mask_is_a_deliberate_hide(monkeypatch, mask):
     monkeypatch.setenv("ZE_AFFINITY_MASK", mask)
     assert hw.classify_torch_build() is None
 
-    # A mask that NAMES a device expects it to work.
     monkeypatch.setenv("ZE_AFFINITY_MASK", "0")
     assert hw.classify_torch_build() == "torch_cuda_unavailable"
 
@@ -1378,7 +1258,6 @@ def test_the_live_scan_stops_on_a_cim_failure_rather_than_reporting_none(monkeyp
     result this whole change exists to remove.
     """
     source = inspect.getsource(hw._windows_live_adapter_names)
-    # The comment above the fix names SilentlyContinue, so check the command itself.
     command = "".join(line for line in source.splitlines() if not line.strip().startswith("#"))
     assert "SilentlyContinue" not in command
     assert "$ErrorActionPreference='Stop'" in command
@@ -1394,7 +1273,6 @@ def test_a_missing_nvidia_smi_does_not_warn_every_refresh(monkeypatch, capsys):
     def _missing(*_a, **_k):
         raise FileNotFoundError("nvidia-smi")
 
-    # structlog renders to stdout here, so read that rather than the stdlib records.
     monkeypatch.setattr(nvidia.subprocess, "run", _missing)
     capsys.readouterr()
     assert (
@@ -1402,7 +1280,6 @@ def test_a_missing_nvidia_smi_does_not_warn_every_refresh(monkeypatch, capsys):
     ), "an absent CLI is its own answer, not the None that means a probe failed"
     assert '"level": "warning"' not in capsys.readouterr().out
 
-    # A driver that IS installed and then hangs is still worth saying loudly.
     def _hang(*_a, **_k):
         raise subprocess.TimeoutExpired("nvidia-smi", 10)
 
@@ -1411,8 +1288,6 @@ def test_a_missing_nvidia_smi_does_not_warn_every_refresh(monkeypatch, capsys):
     assert nvidia._query_gpu_inventory("test") is None
     assert '"level": "warning"' in capsys.readouterr().out
 
-
-# ========== Round eight ==========
 
 
 def test_the_recovery_actually_starts_a_detection_pass(monkeypatch):
@@ -1435,20 +1310,19 @@ def test_the_recovery_actually_starts_a_detection_pass(monkeypatch):
     monkeypatch.setattr(hw, "_discard_detection_locked", lambda: calls.append("discard"))
     monkeypatch.setattr(hw, "start_background_detection", lambda: calls.append("start"))
 
-    # detect_hardware() warms the snapshot on the real path; the verdict itself only
-    # ever reads it non-blocking, so measure this fake host the same way first.
+    # detect_hardware() warms the snapshot on the real path; the verdict only ever reads it
+    # non-blocking, so measure this fake host the same way first.
     hw.torch_build_snapshot()
     hw.current_chat_only_verdict()
 
-    # Order matters: discarding after the pass has started would race it, and starting
-    # before the discard is the no-op this fixes.
+    # Order matters: discarding after the pass started would race it, and starting before
+    # the discard is the no-op this fixes.
     assert calls == ["epoch", "discard", "start"]
 
 
 def test_the_system_mismatch_report_does_not_block(monkeypatch):
-    # GET /api/system is polled every three seconds with _system_gpu_cache_lock held for
-    # the whole call, so a hung nvidia-smi would stall it for the probe's full timeout
-    # and queue every concurrent read behind it.
+    # GET /api/system is polled every three seconds with _system_gpu_cache_lock held for the
+    # whole call, so a hung nvidia-smi would queue every concurrent read behind it.
     source = inspect.getsource(hw._torch_gpu_mismatch_report)
     assert "get_physical_gpu_inventory(block=False)" in source.replace(" ", "")
 
@@ -1467,10 +1341,8 @@ def test_an_unimportable_torch_still_reports_the_cards(monkeypatch, tmp_path):
             raise OSError("[WinError 126] cudart64_12.dll could not be loaded")
 
     monkeypatch.setitem(sys.modules, "torch", _Exploding())
-    # _has_torch() is NOT forced here. It reports False for a wheel that will not
-    # import, which is the same answer it gives for one that is not installed at all,
-    # and the early return on it used to keep this host from ever reaching the on-disk
-    # fallback below. Forcing it True hid exactly that.
+    # _has_torch() is NOT forced here: it reports False for a wheel that will not import,
+    # and the early return on it used to keep this host from the on-disk fallback below.
     assert hw._has_torch() is False, "the premise: an unimportable torch reads as absent"
 
     monkeypatch.setattr(hw, "_installed_torch_label_on_disk", lambda: "2.6.0+cu124")
@@ -1480,17 +1352,14 @@ def test_an_unimportable_torch_still_reports_the_cards(monkeypatch, tmp_path):
         monkeypatch.setattr(hw, "_installed_torch_label_on_disk", lambda label = label: label)
         assert hw.classify_torch_build() == "torch_cuda_unavailable"
 
-    # A CPU wheel that will not import is a broken CPU install, not a GPU one.
     monkeypatch.setattr(hw, "_installed_torch_label_on_disk", lambda: "2.11.0+cpu")
     assert hw.classify_torch_build() == "torch_cpu_build"
 
-    # Nothing readable on disk either: unknown, and unknown is not a claim.
     monkeypatch.setattr(hw, "_installed_torch_label_on_disk", lambda: "")
     assert hw.classify_torch_build() is None
 
 
 def test_the_disk_label_reader_needs_no_interpreter(tmp_path):
-    # The point of reading version.py is that importing torch is the thing that fails.
     pkg = tmp_path / "torch"
     pkg.mkdir()
     (pkg / "version.py").write_text(
@@ -1509,8 +1378,6 @@ def test_the_disk_label_reader_needs_no_interpreter(tmp_path):
     with patch.object(hw.importlib.util, "find_spec", side_effect = ValueError("boom")):
         assert hw._installed_torch_label_on_disk() == ""
 
-
-# ========== Round nine ==========
 
 
 def test_an_untagged_xpu_build_is_not_called_a_cpu_wheel(monkeypatch):
@@ -1531,7 +1398,6 @@ def test_an_untagged_xpu_build_is_not_called_a_cpu_wheel(monkeypatch):
     monkeypatch.setitem(sys.modules, "torch", torch)
     assert hw.classify_torch_build() == "torch_cuda_unavailable"
 
-    # And the plain untagged CPU wheel is still a CPU wheel.
     torch.version = SimpleNamespace(cuda = None, hip = None, xpu = None)
     assert hw.classify_torch_build() == "torch_cpu_build"
 
@@ -1567,13 +1433,10 @@ def test_the_health_path_never_imports_torch_inline(monkeypatch):
         hw, "get_physical_gpu_inventory", lambda **_kw: {"devices": [], "unknown": True}
     )
 
-    # Cold: nothing is measured on the request thread, the refresh is handed to a
-    # thread, and the frozen verdict stands rather than being downgraded on a guess.
     assert hw.current_chat_only_verdict() == ("torch_cpu_build", "2.11.0+cpu")
     assert calls["probes"] == 0, "no torch probe may run on the health path"
     assert calls["threads"] == 1
 
-    # Warm: the measurement is read from the cache, still without probing.
     hw.torch_build_snapshot()
     assert calls["probes"] == 1
     assert hw.current_chat_only_verdict() == ("torch_cpu_build", "2.11.0+cpu")
@@ -1605,8 +1468,6 @@ def test_a_recovery_re_measures_torch_rather_than_reusing_the_old_answer(monkeyp
     ), "the recovery must drop the measurement it was taken before"
 
 
-# ========== Round ten ==========
-
 
 def test_a_vendor_mask_does_not_hide_another_vendors_card(monkeypatch):
     """A hybrid NVIDIA + Arc host with ZE_AFFINITY_MASK="".
@@ -1632,8 +1493,6 @@ def test_a_vendor_mask_does_not_hide_another_vendors_card(monkeypatch):
     kept = hw._devices_that_can_establish_a_mismatch(hybrid)
     assert [d["vendor"] for d in kept] == ["nvidia"]
 
-    # Mask the NVIDIA card as well and the host really is all masked off, which is a
-    # configuration rather than a fault.
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
     assert hw.classify_torch_build() is None
     assert hw._devices_that_can_establish_a_mismatch(hybrid) == []
@@ -1673,13 +1532,11 @@ def test_an_untagged_conda_cuda_build_that_will_not_import_is_not_a_cpu_wheel(mo
         )
         assert hw._classification_from_disk_label() == "torch_cuda_unavailable"
 
-    # No markers and no tag: a CPU wheel that will not import is a broken CPU install.
     monkeypatch.setattr(
         hw, "_installed_torch_markers_on_disk", lambda: {"cuda": None, "hip": None, "xpu": None}
     )
     assert hw._classification_from_disk_label() == "torch_cpu_build"
 
-    # Nothing installed at all is not a claim about anything.
     monkeypatch.setattr(hw, "_installed_torch_label_on_disk", lambda: "")
     assert hw._classification_from_disk_label() is None
 
@@ -1757,18 +1614,14 @@ def test_the_mismatch_verdict_names_the_wheel_it_could_not_import(monkeypatch):
         "get_physical_gpu_inventory",
         lambda **_kw: {"devices": [{"vendor": "nvidia", "name": "A4000"}], "unknown": False},
     )
-    # _torch_version_label imports torch, which is the thing that fails here.
     monkeypatch.setattr(hw, "_torch_version_label", lambda: None)
     monkeypatch.setattr(hw, "_installed_torch_label_on_disk", lambda: "2.6.0+cu124")
 
     assert hw._mismatch_verdict_for_this_host() == ("torch_cuda_unavailable", "2.6.0+cu124")
 
-    # No card the OS can see: the caller's own plain answer is the honest one.
     monkeypatch.setattr(hw, "get_physical_gpu_inventory", lambda **_kw: {"devices": []})
     assert hw._mismatch_verdict_for_this_host() == (None, None)
 
-
-# ========== Round eleven ==========
 
 
 def test_cuda_visible_devices_masks_an_amd_host_too(monkeypatch):
@@ -1791,7 +1644,6 @@ def test_cuda_visible_devices_masks_an_amd_host_too(monkeypatch):
     assert hw.classify_torch_build() is None
     assert hw._devices_that_can_establish_a_mismatch(amd) == []
 
-    # And a mask NAMING devices is not a mask at all: that host expects them to work.
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
     assert hw.classify_torch_build() == "torch_cpu_build"
     assert hw._devices_that_can_establish_a_mismatch(amd) == amd
@@ -1833,13 +1685,10 @@ def test_the_health_path_never_retries_a_failed_torch_import(monkeypatch):
     assert report["mismatch"]["torch_version"] == "2.6.0+cu124"
     assert calls["n"] == 0, "the failed import must not be retried on a request path"
 
-    # A healthy host still reports the live version, which is the more precise one.
     monkeypatch.setattr(hw, "TORCH_IMPORT_ERROR", None)
     monkeypatch.setattr(hw, "_torch_version_label", lambda: "2.11.0+cpu")
     assert hw._reported_torch_label() == "2.11.0+cpu"
 
-
-# ========== Round twelve ==========
 
 
 def test_an_amd_card_the_installers_decline_is_not_a_broken_install(monkeypatch):
@@ -1858,14 +1707,11 @@ def test_an_amd_card_the_installers_decline_is_not_a_broken_install(monkeypatch)
     supported = [{"vendor": "amd", "gfx_candidates": ["gfx1100"]}]
     assert hw._devices_that_can_establish_a_mismatch(supported) == supported
 
-    # A host with no ROCm userspace names no arch at all. setup.sh detects an AMD host
-    # through rocminfo and amd-smi and nothing else, so that machine was never going to
-    # be given a ROCm wheel and its CPU torch is the intended state: claiming otherwise
-    # offers a repair that reinstalls what is already installed.
+    # A host with no ROCm userspace names no arch at all, and setup.sh detects AMD only
+    # through rocminfo and amd-smi, so that machine was never going to get a ROCm wheel.
     unnamed = [{"vendor": "amd"}]
     assert hw._devices_that_can_establish_a_mismatch(unnamed) == []
 
-    # Windows answers by name, through the arch the driver wrote into AdapterFamily.
     assert hw._devices_that_can_establish_a_mismatch([{"vendor": "amd", "gfx": "gfx1201"}])
     assert hw._devices_that_can_establish_a_mismatch([{"vendor": "amd", "gfx": "gfx900"}]) == []
 
@@ -1897,8 +1743,8 @@ def test_the_supported_arch_set_matches_the_installer(monkeypatch):
     install_sh = (root / "install.sh").read_text(encoding = "utf-8")
     block = install_sh[install_sh.index("_amd_arch_index_family_for_gfx()") :]
     block = block[: block.index("esac")]
-    # Only the case LABELS: the values on the right are index families (gfx103X-all),
-    # not architectures, and a bare regex over the block would collect their prefixes.
+    # Only the case LABELS: the values on the right are index families (gfx103X-all), whose
+    # prefixes a bare regex over the block would collect.
     shipped = {
         gfx
         for line in block.splitlines()
@@ -1906,7 +1752,6 @@ def test_the_supported_arch_set_matches_the_installer(monkeypatch):
     }
     assert len(shipped) > 10, "the installer's arch map moved"
 
-    # gfx906 is not in that map: install_python_stack.py carries it on the ROCm 6.3 path.
     extra = {"gfx906"}
     assert set(hw._ROCM_SUPPORTED_GFX) == shipped | extra, (
         "the backend must accept exactly the architectures the installers ship a wheel "
@@ -1931,8 +1776,6 @@ def test_the_gfx_probe_answers_nothing_without_a_rocm_userspace(monkeypatch):
     monkeypatch.setattr(hw.subprocess, "run", lambda *_a, **_k: _Result())
     assert hw._linux_amd_gfx_candidates() == ["gfx1030"]
 
-
-# ========== Round thirteen ==========
 
 
 def test_a_cold_start_measures_the_inventory_before_honouring_a_mask(monkeypatch):
@@ -1994,7 +1837,6 @@ def test_an_absent_nvidia_smi_is_an_answer_not_a_failed_probe(monkeypatch):
         "that could not answer"
     )
 
-    # And the verdict follows: the card really is gone, so the mismatch retires.
     monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "torch_cpu_build")
     monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", "2.11.0+cpu")
     monkeypatch.setattr(hw, "classify_torch_build", lambda **_kw: "torch_cpu_build")
@@ -2002,7 +1844,6 @@ def test_an_absent_nvidia_smi_is_an_answer_not_a_failed_probe(monkeypatch):
     hw.torch_build_snapshot()
     assert hw.current_chat_only_verdict() == ("no_gpu", None)
 
-    # A driver that IS installed and hangs is still an unanswered probe.
     def _hang(*_a, **_k):
         raise subprocess.TimeoutExpired("nvidia-smi", 10)
 
@@ -2010,8 +1851,6 @@ def test_an_absent_nvidia_smi_is_an_answer_not_a_failed_probe(monkeypatch):
     monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     assert hw.get_physical_gpu_inventory()["unknown"] is True
 
-
-# ========== Round fourteen ==========
 
 
 def test_a_second_recovery_can_still_ask_for_a_pass(monkeypatch):
@@ -2041,8 +1880,6 @@ def test_a_second_recovery_can_still_ask_for_a_pass(monkeypatch):
     assert starts["n"] == 1
     assert hw._REDETECTION_REQUESTED is True, "one request per recovery, while it runs"
 
-    # The pass settles. ensure_hardware_detected is what the recovery actually starts,
-    # so that is where the guard has to come down.
     source = _hardware_source()
     ensure = source[source.index("def ensure_hardware_detected(") :]
     ensure = ensure[: ensure.index("def _detect_hardware_locked(")]
@@ -2099,7 +1936,6 @@ def test_the_hardware_module_loads_without_the_rest_of_the_package(tmp_path):
     source = pathlib.Path(hw.__file__).resolve().read_text(encoding = "utf-8")
     header = source[: source.index("logger = get_logger(__name__)")]
     imports = _re.findall(r"^\s*(?:from|import)\s+([\w.]+)", header, _re.MULTILINE)
-    # utils.hardware itself IS stubbed by that sandbox; nothing else under utils is.
     for module in imports:
         if module == "utils.hardware" or module.startswith("utils.hardware."):
             continue
@@ -2108,8 +1944,6 @@ def test_the_hardware_module_loads_without_the_rest_of_the_package(tmp_path):
             "utils.hardware, so import it inside the function that needs it"
         )
 
-
-# ========== Round fifteen ==========
 
 
 def test_a_driver_without_the_cli_still_reports_its_cards(monkeypatch):
@@ -2130,7 +1964,6 @@ def test_a_driver_without_the_cli_still_reports_its_cards(monkeypatch):
     assert result["available"] is True
     assert result["absent"] is False
     assert [d["vendor"] for d in result["devices"]] == ["nvidia", "nvidia"]
-    # procfs publishes neither, and an invented name is worse than an honest blank.
     assert [d["name"] for d in result["devices"]] == [None, None]
     assert [d["memory_total_gb"] for d in result["devices"]] == [None, None]
     assert result["source"] == "proc-driver-nvidia"
@@ -2153,8 +1986,6 @@ def test_a_kfd_confirmed_amd_card_stays_eligible(monkeypatch):
     monkeypatch.setattr(hw, "_linux_kfd_reports_an_amd_gpu", lambda: False)
     assert hw._devices_that_can_establish_a_mismatch(unnamed) == []
 
-    # Positive evidence of an unsupported arch still wins over the KFD signal: the
-    # installer would not have shipped a wheel for that card either way.
     monkeypatch.setattr(hw, "_linux_kfd_reports_an_amd_gpu", lambda: True)
     assert (
         hw._devices_that_can_establish_a_mismatch([{"vendor": "amd", "gfx_candidates": ["gfx803"]}])
@@ -2229,16 +2060,12 @@ def test_the_installer_records_who_named_the_flavor(tmp_path, monkeypatch):
     written = _json.loads((tmp_path / "m.json").read_text(encoding = "utf-8"))
     assert written["expected_torch_tag_pinned"] is True
 
-    # Additive: a caller that says nothing writes no key, and the reader answers False
-    # rather than inventing a choice nobody made.
     manifest_mod.write_manifest(expected_torch_tag = "cpu")
     written = _json.loads((tmp_path / "m.json").read_text(encoding = "utf-8"))
     assert "expected_torch_tag_pinned" not in written
     monkeypatch.setattr(manifest_mod, "read_manifest", lambda root = None: written)
     assert manifest_mod.recorded_torch_flavor_was_pinned() is False
 
-
-# ========== Round sixteen ==========
 
 
 def test_a_vendor_that_did_not_answer_keeps_the_inventory_unknown(monkeypatch):
@@ -2265,7 +2092,6 @@ def test_a_vendor_that_did_not_answer_keeps_the_inventory_unknown(monkeypatch):
     assert [d["vendor"] for d in inventory["devices"]] == ["intel"]
     assert inventory["unknown"] is True
 
-    # And once the NVIDIA probe answers with its own card, nothing is outstanding.
     _smi(monkeypatch, "0, NVIDIA RTX A4000, 16376\n")
     monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     assert hw.get_physical_gpu_inventory()["unknown"] is False
@@ -2285,13 +2111,11 @@ def test_a_stale_registry_record_cannot_claim_a_longer_named_live_card(monkeypat
     assert both[hw._claim_live_adapter("AMD Radeon RX 7900 XT", both)] == "AMD Radeon RX 7900 XT"
     assert both[hw._claim_live_adapter("AMD Radeon RX 7900 XTX", both)] == "AMD Radeon RX 7900 XTX"
 
-    # The prefix rule still has to work: the registry description and the WMI display
-    # name spell the same card differently, and one is routinely a prefix of the other.
+    # The prefix rule still has to work: the registry description and the WMI display name
+    # spell the same card differently, and one is routinely a prefix of the other.
     assert hw._claim_live_adapter("AMD Radeon RX 7900 XTX", ["AMD Radeon RX 7900 XTX 24GB"]) == 0
     assert hw._claim_live_adapter("Something Else", live) is None
 
-
-# ========== Round seventeen ==========
 
 
 def test_a_broken_nvidia_smi_still_reports_the_kernel_driver_cards(monkeypatch):
@@ -2312,7 +2136,6 @@ def test_a_broken_nvidia_smi_still_reports_the_kernel_driver_cards(monkeypatch):
     assert [d["vendor"] for d in result["devices"]] == ["nvidia"]
     assert result["source"] == "proc-driver-nvidia"
 
-    # A non-zero exit is the same shape.
     monkeypatch.setattr(
         nvidia.subprocess,
         "run",
@@ -2320,7 +2143,6 @@ def test_a_broken_nvidia_smi_still_reports_the_kernel_driver_cards(monkeypatch):
     )
     assert nvidia.get_physical_gpu_inventory()["available"] is True
 
-    # And with no kernel driver either, a broken CLI is still an unanswered probe.
     monkeypatch.setattr(nvidia, "_linux_nvidia_procfs_gpu_count", lambda: 0)
     assert nvidia.get_physical_gpu_inventory()["error"] is not None
 
@@ -2345,12 +2167,9 @@ def test_hip_visible_devices_outranks_the_cuda_alias(monkeypatch):
     assert hw.classify_torch_build() == "torch_cpu_build"
     assert hw._devices_that_can_establish_a_mismatch(amd) == amd
 
-    # Both emptied really is a hidden host.
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "")
     assert hw.classify_torch_build() is None
     assert hw._devices_that_can_establish_a_mismatch(amd) == []
 
-    # And the alias still masks AMD when HIP says nothing at all, which is the ROCm
-    # behaviour the previous round added.
     monkeypatch.delenv("HIP_VISIBLE_DEVICES")
     assert hw.classify_torch_build() is None

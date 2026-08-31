@@ -70,8 +70,8 @@ export function DesktopRepairControl(): ReactElement | null {
             </Button>
             <Button
               onClick={() => {
-                // Closed first: the repair stops the backend and swaps the app over to the
-                // repairing screen, so a dialog still mounted would sit on top of it.
+                // Closed first: the repair swaps the app over to the repairing screen, so a dialog
+                // still mounted would sit on top of it.
                 setConfirmOpen(false);
                 void repair.repairInstall();
               }}

@@ -266,10 +266,10 @@ def _nvidia_smi_executable() -> str:
     return "nvidia-smi"
 
 
-# "nvidia-smi is not on this machine" is a conclusive answer, not a failed probe: it is
-# the normal state of every CPU-only, AMD and Intel host, and the installers read the
-# same absence as "no usable NVIDIA GPU". Distinct from None, which means a probe that
-# WAS found could not answer -- a hung driver, a permission fault, a non-zero exit.
+# "nvidia-smi is not on this machine" is a conclusive answer, not a failed probe: it is the
+# normal state of every CPU-only, AMD and Intel host, and the installers read the same
+# absence the same way. Distinct from None, which means a probe that WAS found could not
+# answer -- a hung driver, a permission fault, a non-zero exit.
 NVIDIA_SMI_ABSENT = object()
 
 
@@ -303,15 +303,13 @@ def _query_gpu_inventory(caller: str) -> Any:
             **_windows_hidden_subprocess_kwargs(),
         )
     except FileNotFoundError as e:
-        # No nvidia-smi at all, which is the NORMAL state of every CPU-only, AMD and
-        # Intel host. The physical inventory calls this unconditionally on a 60 second
-        # refresh reached from the health and system polls, so warning here would put a
-        # line in production logs every minute on machines that are working correctly.
+        # No nvidia-smi at all, the NORMAL state of every CPU-only, AMD and Intel host. This is
+        # called on a 60 second refresh reached from the health and system polls, so warning here
+        # would log a line every minute on machines that are working correctly.
         logger.debug("nvidia-smi is not installed (%s): %s", caller, e)
         return NVIDIA_SMI_ABSENT
     except (OSError, subprocess.TimeoutExpired) as e:
-        # Past this point an nvidia-smi WAS found, so a failure is worth saying loudly:
-        # a hung driver or a permission problem is a real fault on an NVIDIA host.
+        # Past this point an nvidia-smi WAS found, so a failure is a real fault on this host.
         logger.warning("nvidia-smi query failed in %s: %s", caller, e)
         return None
     if result.returncode != 0:
@@ -366,18 +364,13 @@ def get_physical_gpu_inventory() -> dict[str, Any]:
     structured unavailable result, so this never raises out of an endpoint.
     """
     rows = _query_gpu_inventory("get_physical_gpu_inventory")
-    # Either way the CLI could not answer: absent, hung past the timeout, or a non-zero
-    # exit. The kernel driver publishes its cards regardless, and on a cold start there
-    # is no settled verdict for the resulting unknown to protect -- the host would be
-    # reported as having no GPU at all, with no repair, for as long as the CLI stays
-    # broken. That is the case this inventory exists for.
+    # Either way the CLI could not answer. The kernel driver publishes its cards regardless,
+    # and on a cold start there is no settled verdict for the resulting unknown to protect.
     if (rows is NVIDIA_SMI_ABSENT or rows is None) and _linux_nvidia_procfs_gpu_count():
         # The kernel driver is loaded and enumerating cards; only the CLI is missing.
-        # install_python_stack._has_usable_nvidia_gpu() reads the same directory for the
-        # same reason, so without this the installer can select or repair a CUDA wheel
-        # on a host where the backend insists there is no card at all. No name and no
-        # capacity are published here: procfs gives neither, and an invented one would
-        # be worse than an honest blank.
+        # _has_usable_nvidia_gpu() reads the same directory, so without this the installer can
+        # repair a CUDA wheel on a host the backend insists has no card. No name and no capacity:
+        # procfs gives neither, and an invented one would be worse than an honest blank.
         return {
             "available": True,
             "source": "proc-driver-nvidia",
@@ -395,9 +388,8 @@ def get_physical_gpu_inventory() -> dict[str, Any]:
             "absent": False,
         }
     if rows is NVIDIA_SMI_ABSENT:
-        # An answer, and the caller must not read it as "some probe failed": an AMD-only
-        # host has no nvidia-smi by design, and marking its inventory unknown would keep
-        # a settled mismatch alive after the card that established it was unplugged.
+        # An answer, and the caller must not read it as "some probe failed": an AMD-only host has
+        # no nvidia-smi by design.
         return {
             "available": False,
             "source": "nvidia-smi",

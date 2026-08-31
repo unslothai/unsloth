@@ -337,8 +337,8 @@ def _select_torchao_spec(torch_version: str | None) -> str:
 # pip_install_try(), the only things here that change what is installed. None means
 # "not probed yet".
 _TORCH_RUNTIME_PROBE: "tuple[bool, bool, str | None, str, str] | None" = None
-# torch.version.xpu from the same probe. Not in the tuple above: thirteen call sites
-# unpack that, and only the GPU-build verdict needs this one.
+# Not in the tuple above: thirteen call sites unpack that, and only the GPU-build
+# verdict needs this one.
 _TORCH_RUNTIME_XPU: str = ""
 
 # Prefix on the probe's own stdout line. Import chatter can arrive before the answer, and
@@ -398,10 +398,7 @@ def _probe_torch_runtime() -> "tuple[bool, bool, str | None, str, str]":
                     "_v = getattr(torch, 'version', None); "
                     "h = getattr(_v, 'hip', '') or ''; "
                     "c = getattr(_v, 'cuda', '') or ''; "
-                    # XPU too. An untagged source or conda XPU build carries its runtime
-                    # here and nowhere else, and without it such a wheel reads as having
-                    # no GPU support at all -- which is the one verdict that fails an
-                    # update outright.
+                    # XPU too: such a wheel carries its runtime here and nowhere else.
                     "x = getattr(_v, 'xpu', '') or ''; "
                     f"print('{_TORCH_PROBE_MARKER}' + '|'.join((v, h, c, x)))"
                 ),
@@ -433,8 +430,7 @@ def _probe_torch_runtime() -> "tuple[bool, bool, str | None, str, str]":
     if _marked:
         _fields = _marked[-1][len(_TORCH_PROBE_MARKER) :].split("|")
         version, hip, cuda = (_fields + ["", "", ""])[:3]
-        # Kept beside the tuple rather than in it: thirteen call sites unpack five
-        # values, and the marker is only interesting to the GPU-build verdict.
+        # Beside the tuple, not in it: thirteen call sites unpack five values.
         _TORCH_RUNTIME_XPU = (_fields + ["", "", "", ""])[3]
     _TORCH_RUNTIME_PROBE = (True, probe.returncode == 0, version, hip, cuda)
     return _TORCH_RUNTIME_PROBE
@@ -2925,12 +2921,8 @@ def _torch_build_is_gpu() -> bool:
             _is_gpu_torch_label(_version.lower())
             or bool(_hip)
             or bool(_cuda)
-            # torch.version.xpu, for the same reason .cuda and .hip are here: an
-            # untagged source, conda or private-index XPU build carries its runtime
-            # there and nowhere else. Without it the installer called such a wheel
-            # CPU-only and failed the update, while the backend's own classifier reads
-            # the identical marker as a GPU build -- the two disagreeing about the same
-            # venv is worse than either answer.
+            # torch.version.xpu, for the same reason .cuda and .hip are here: an untagged
+            # source, conda or private-index XPU build carries its runtime there and nowhere else.
             or bool(_TORCH_RUNTIME_XPU)
         )
     label = _installed_torch_label_on_disk()
@@ -2969,21 +2961,11 @@ def _expected_torch_flavor_tag() -> str:
             return "rocm"
         if _is_cuda_family_leaf(leaf) or leaf in ("xpu", "cpu"):
             return leaf
-    # A resolved backend is a stated choice, not a probe result. setup.sh documents
-    # UNSLOTH_TORCH_BACKEND=cpu, and an AMD host taking it recorded nothing at all
-    # here, because the NVIDIA probe below answers "" for it; the backend then
-    # published no CPU choice, and the next launch found the AMD card beside a CPU
-    # wheel and called the deliberate install broken. Only the families this
-    # vocabulary names, and only when they agree with the wheel actually installed --
-    # a backend is what THIS run asked for, and if the install did not take, recording
-    # it would assert something untrue about the venv.
-    #
-    # Ahead of the manifest, not after it: the manifest describes the PREVIOUS install,
-    # and a reinstall that deliberately changes flavor (UNSLOTH_TORCH_BACKEND=cpu over a
-    # cu124 venv) would otherwise re-record the old tag, so the next launch would call
-    # the new CPU wheel a mismatch and a later unpinned update would restore CUDA over
-    # the choice the user just made. The installed-wheel agreement above is what keeps
-    # this from outranking the manifest on a run whose own install has not happened yet.
+    # A resolved backend is a stated choice, not a probe result: an AMD host taking setup.sh's
+    # documented UNSLOTH_TORCH_BACKEND=cpu recorded nothing here, because the NVIDIA probe
+    # answers "" for it, and the next launch called the deliberate install broken. Only when
+    # the family agrees with the wheel actually installed. Ahead of the manifest, which
+    # describes the PREVIOUS install, or a reinstall that changes flavor re-records the old tag.
     if _TORCH_BACKEND in ("cpu", "rocm", "xpu"):
         _installed = _torch_flavor_tag(_installed_torch_version_label())
         if _installed == _TORCH_BACKEND:
@@ -3042,10 +3024,8 @@ def _expected_torch_flavor_was_pinned() -> bool:
         return True
     if os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip():
         return True
-    # install.sh derives UNSLOTH_TORCH_BACKEND from the index it RESOLVED -- "cpu" on any
-    # machine with no GPU, asked for or not -- and marks it as derived when it does. Only
-    # a value nobody marked is someone stating a preference, which is the form setup.sh
-    # documents ("set UNSLOTH_TORCH_BACKEND=cpu to keep a deliberate CPU install").
+    # install.sh derives UNSLOTH_TORCH_BACKEND from the index it RESOLVED -- "cpu" on any GPU-less
+    # machine, asked for or not -- and marks it derived. Only an unmarked value is a preference.
     if (
         _TORCH_BACKEND in ("cpu", "cuda", "rocm", "xpu")
         and os.environ.get("UNSLOTH_TORCH_BACKEND_SOURCE", "").strip().lower() != "resolved"
@@ -3274,9 +3254,9 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
         return True
     if _TORCH_BACKEND in ("rocm", "xpu", "cpu") and _TORCH_BACKEND != expected:
         return True
-    # A pin whose leaf names no flavor was applied verbatim at install time, so acting on
-    # a manifest that predates it overrides an administrator's mirror. Compared rather than
-    # vetoed: the helper's known set predates XPU.
+    # A pin whose leaf names no flavor was applied verbatim at install time, so acting on an
+    # older manifest overrides an administrator's mirror. Compared, not vetoed: the helper's
+    # known set predates XPU.
     _unknown_pin = _explicit_unknown_family_torch_index_url()
     if _unknown_pin is not None and _torch_index_leaf(_unknown_pin) != expected:
         return True
@@ -3338,9 +3318,8 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
     if _is_windows_arm64():
         _trio = [_torch_pkg, _vision_pkg]
     _label_before = str(installed_version)
-    # --force-reinstall, not install.ps1's uv-only --reinstall-package: pip_install falls
-    # back to pip, which has no word for it. constrain=False: constraints.txt resolves
-    # against PyPI's torch, which is what put this venv here.
+    # --force-reinstall, not install.ps1's uv-only --reinstall-package: pip_install falls back
+    # to pip. constrain=False: constraints.txt resolves against the PyPI torch that did this.
     pip_install(
         "PyTorch flavor repair",
         "--force-reinstall",
@@ -3956,9 +3935,8 @@ NO_TORCH = _infer_no_torch()
 
 # Read at import: install_python_stack() drops the manifest before its dependency pass.
 _RECORDED_TORCH_TAG = install_manifest.recorded_torch_flavor()
-# Whether that record came from someone NAMING a flavor. See
-# _expected_torch_flavor_was_pinned: setup.ps1 publishes an automatic /cpu choice the
-# same way it publishes a pinned one, so the tag alone cannot answer it.
+# Whether that record came from someone NAMING a flavor: setup.ps1 publishes an automatic
+# /cpu choice the same way it publishes a pinned one.
 _RECORDED_TORCH_TAG_PINNED = install_manifest.recorded_torch_flavor_was_pinned()
 
 # UNSLOTH_TORCH_BACKEND is set by install.sh after get_torch_index_url() ("cuda", "rocm",
@@ -6236,12 +6214,9 @@ def install_python_stack() -> int:
         # because the swap keys off the installed +xpu label.
         _ensure_xpu_triton()
     elif not NO_TORCH:
-        # Resolve it on the other platforms too, for the RECORD only: nothing here
-        # enforces it (step 13's repair set owns those hosts). Without this the manifest
-        # carries no flavor off Windows at all, so a Linux GPU box installed with a
-        # transient explicit CPU pin looks, on the next launch with that variable gone,
-        # like a CPU wheel beside a physical GPU -- which the backend reads as a broken
-        # install and offers to repair, reversing the choice the user made.
+        # Resolve it on the other platforms too, for the RECORD only. Without this a Linux GPU box
+        # installed with a transient explicit CPU pin looks, on the next launch, like a CPU wheel
+        # beside a physical GPU.
         torch_flavor_tag = _expected_torch_flavor_tag()
 
     # 14. Final check (silent; third-party conflicts are expected)
@@ -6273,11 +6248,9 @@ def install_python_stack() -> int:
             steps_total = _TOTAL,
             package_name = package_name,
             no_torch = NO_TORCH,
-            # A platform that never resolves a flavor carries the old record forward. An
-            # unknown-family pin is the exception: the previous record describes a venv
-            # that no longer exists, and writing it back (marked pinned, since any explicit
-            # index counts) would let a later unpinned run "repair" the mirror's wheel to a
-            # public one on the strength of a flavor nobody verified.
+            # A platform that never resolves a flavor carries the old record forward. An unknown-family
+            # pin is the exception: the previous record describes a venv that no longer exists, and
+            # writing it back would give a later unpinned run a flavor to "repair" the mirror's to.
             expected_torch_tag = _recordable_torch_flavor_tag(torch_flavor_tag),
             expected_torch_tag_pinned = bool(_recordable_torch_flavor_tag(torch_flavor_tag))
             and _expected_torch_flavor_was_pinned(),

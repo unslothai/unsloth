@@ -308,12 +308,10 @@ def write_manifest(
     # by verify-install, desktop-capabilities and the setup fast path.
     if expected_torch_tag:
         payload["expected_torch_tag"] = str(expected_torch_tag).strip().lower()
-    # Whether that flavor was NAMED by whoever ran the install, or merely what the
-    # selection landed on. setup.ps1 picks /cpu automatically on a host with no GPU and
-    # publishes it exactly as it publishes a pinned one, so the tag alone cannot tell a
-    # deliberate CPU install from a machine that simply had no card at the time -- and
-    # reading the automatic case as deliberate leaves a later eGPU with no repair
-    # offered at all. Absent means unknown, as with every other additive key.
+    # Whether that flavor was NAMED by whoever ran the install, or merely what the selection
+    # landed on: setup.ps1 picks /cpu automatically on a GPU-less host and publishes it exactly
+    # as it publishes a pinned one, and reading the automatic case as deliberate leaves a later
+    # eGPU with no repair offered. Absent means unknown, as with every other additive key.
     if expected_torch_tag_pinned is not None:
         payload["expected_torch_tag_pinned"] = bool(expected_torch_tag_pinned)
     path = manifest_path(root)

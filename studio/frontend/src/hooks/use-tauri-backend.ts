@@ -373,15 +373,12 @@ export function useTauriBackend() {
   }
 
   // `forceInstaller` runs the bundled installer without trying `studio update` first. The
-  // automatic callers leave it off: an out-of-date venv is the common case and the update is
-  // the cheap fix. Settings' manual "Repair installation" turns it on, because an update
-  // reuses the environment it finds -- a managed venv whose PyTorch was replaced by a CPU-only
-  // wheel comes back from a successful update still CPU-only, and only the installer
-  // re-selects the torch index.
+  // automatic callers leave it off, because an out-of-date venv is the common case. Settings'
+  // manual repair turns it on: an update reuses the environment it finds, so a venv whose
+  // PyTorch was replaced by a CPU-only wheel comes back from one still CPU-only.
   async function startRepair(options?: { forceInstaller?: boolean }) {
     const forceInstaller = options?.forceInstaller ?? false;
-    // Survives the elevation round trip: approveElevation resumes by calling this again, and
-    // resuming without the flag would run the update the caller deliberately skipped.
+    // Survives the elevation round trip: approveElevation resumes by calling this again.
     forcedRepairRef.current = forceInstaller;
     elevationResumeRef.current = null;
     setCurrentStepIndex(-1);
@@ -737,9 +734,8 @@ export function useTauriBackend() {
     currentStepIndex, progressDetail, startupMessage, elevationPackages,
     startServer, stopServer, startInstall,
     retry, retryInstall, approveElevation, copyDiagnostics,
-    // Exported for the manual "Repair installation" action in Settings. It is the same
-    // function startup uses, so a manual repair renders the same repairing screen and
-    // restarts the backend afterwards rather than leaving it stopped.
+    // The same function startup uses, so a manual repair renders the same repairing screen
+    // and restarts the backend afterwards rather than leaving it stopped.
     startRepair,
   };
 }

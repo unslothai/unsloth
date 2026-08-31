@@ -956,15 +956,10 @@ def _no_carried_over_hardware_measurements():
     from utils.hardware import hardware as _hw
 
     def _clear():
-        # Under the locks, which is what makes this deterministic: a non-blocking read
-        # hands the refresh to a daemon thread, and that thread holds these while it
-        # writes. Clearing without waiting for it lets a previous test's REAL host
-        # land in the cache a moment after this fixture ran.
-        # Torch lock first, then the inventory lock. That is the order the background
-        # refresh takes them in -- it holds the torch lock across
-        # classify_torch_build(block_inventory = True), which waits on the inventory
-        # lock -- so taking them the other way round here could deadlock the suite
-        # against a refresh a previous test left running.
+        # Under the locks: a non-blocking read hands the refresh to a daemon thread that holds
+        # these while it writes, so clearing without waiting lets a previous test's REAL host land
+        # in the cache a moment later. Torch lock FIRST, then the inventory lock, because that is
+        # the order the background refresh takes them in.
         with _hw._torch_build_snapshot_lock, _hw._physical_gpu_inventory_lock:
             _hw._torch_build_snapshot_cache = None
             _hw._physical_gpu_inventory_cache = None

@@ -796,7 +796,6 @@ def _run_flavor_invariant(
         return result
 
     def _pip(*args, **kwargs):
-        # The real pip_install invalidates the memoized classification.
         stack_mod._invalidate_torch_runtime_probe()
         if repaired is not None:
             state["version"] = repaired
@@ -864,7 +863,6 @@ class TestExpectedTorchFlavorRepairs:
             assert spec in call_args
 
     def test_untagged_pypi_wheel_is_repaired(self):
-        # PyPI forbids +cuNNN, so untagged is its CPU-only Windows build.
         ok, mock_pip = _run_flavor_invariant(installed = "2.11.0", repaired = "2.10.0+cu124")
         assert ok is True
         assert mock_pip.call_count == 1
@@ -1167,7 +1165,6 @@ class TestExpectedXpuFlavorIsEnforced:
             expected_env = "rocm",
         )
         mock_pip.rocm_repair.assert_called_once()
-        # Not called directly: this pass must not invent a repo.amd.com URL of its own.
         mock_pip.assert_not_called()
         assert ok is True
 
@@ -1291,7 +1288,6 @@ class TestAPinnedCpuIndexIsEnforcedToo:
         assert mock_pip.call_count == 1
 
     def test_a_cpu_backend_under_a_gpu_expectation_is_still_left_alone(self):
-        # A deliberate CPU backend must not be dragged up to cu124.
         ok, mock_pip = _run_flavor_invariant(
             installed = "2.11.0+cpu",
             expected_env = "cu124",
@@ -1450,7 +1446,6 @@ class TestAnExplicitPinOutranksTheManifest:
         assert _index_url(mock_pip) == pin
 
     def test_a_rocm_pin_collapses_to_the_flavor_vocabulary(self):
-        # Every AMD leaf (rocm6.4, gfx1151) is "rocm" in the tag vocabulary.
         ok, mock_pip = _run_flavor_invariant(
             installed = "2.11.0+rocm7.2",
             expected_env = None,
@@ -1462,7 +1457,6 @@ class TestAnExplicitPinOutranksTheManifest:
         mock_pip.assert_not_called()
 
     def test_a_cpu_pin_beats_a_gpu_manifest(self):
-        # A deliberate move to CPU must not be reverted by the previous install.
         ok, mock_pip = _run_flavor_invariant(
             installed = "2.11.0+cpu",
             expected_env = None,
@@ -1484,7 +1478,6 @@ class TestAnExplicitPinOutranksTheManifest:
         mock_pip.assert_not_called()
 
     def test_the_setup_handover_still_wins_over_a_pin(self):
-        # The handover describes the run that just installed; the pin may predate it.
         ok, mock_pip = _run_flavor_invariant(
             installed = "2.10.0+cu124",
             repaired = "2.10.0+cu126",

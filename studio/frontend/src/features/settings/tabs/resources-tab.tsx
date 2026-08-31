@@ -429,11 +429,9 @@ export function ResourcesTab() {
       : formatGiB(metrics.vramTotal);
   // The placeholder's cpu backend and empty package list are not facts about the host either.
   const hostReading = (value: string) => (hostUnread ? unknownLabel : value);
-  // Read off systemInfo.gpu rather than displayedGpu: this describes the TRAINING
-  // view of the host, and a Vulkan llama.cpp makes displayedGpu fall back to the
-  // inference inventory. That host -- a card Vulkan enumerates and torch cannot open
-  // -- is precisely the one that must be told, so it cannot be the one that is not.
-  // Gated on the read having settled, so the placeholder can never carry a verdict.
+  // systemInfo.gpu rather than displayedGpu: this describes the TRAINING view of the host,
+  // and a Vulkan llama.cpp makes displayedGpu fall back to the inference inventory, which is
+  // precisely the host that must be told. Gated on the read having settled.
   const gpuInventory = hostUnread
     ? null
     : ((systemInfo.gpu ?? null) as GpuPhysicalInventory | null);
@@ -441,8 +439,7 @@ export function ResourcesTab() {
   const physicalDevices = gpuMismatch
     ? (gpuInventory?.physical_devices ?? [])
     : [];
-  // A CPU-only wheel and a GPU wheel whose runtime will not start need different
-  // advice: one is fixed by reinstalling torch, the other by the driver.
+  // A CPU-only wheel is fixed by reinstalling torch, a dead runtime by the driver.
   const gpuMismatchMessage = gpuMismatch
     ? t(
         gpuMismatch.reason === "torch_cpu_build"
@@ -699,8 +696,8 @@ export function ResourcesTab() {
             );
           })
         ) : gpuMismatch ? (
-          // Not "no visible GPU": the cards are listed directly above. Kept as its
-          // own branch so the CPU-only host's line below stays exactly as it was.
+          // Not "no visible GPU": the cards are listed directly above. Its own branch, so the
+          // CPU-only host's line below stays exactly as it was.
           <div className="py-3 text-sm text-muted-foreground">
             {t("settings.resources.gpu.noUsableGpu")}
           </div>

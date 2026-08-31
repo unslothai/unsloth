@@ -561,13 +561,12 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   } = useTauriBackend();
 
   // Settings' manual repair reruns the INSTALLER, not `studio update`: an update reuses the
-  // environment it finds, so a managed venv whose PyTorch was replaced by a CPU-only wheel
-  // comes back from a successful update still CPU-only.
+  // environment it finds, so a venv whose PyTorch was replaced by a CPU-only wheel comes back
+  // from a successful update still CPU-only.
   //
   // Through a ref, not a dependency: startRepair is a plain function declaration rebuilt on
-  // every render, so listing it would give the context a new identity on each backend status
-  // tick, and pinning it with [] would freeze the first render's closure. The ref keeps the
-  // context stable while still calling the current one.
+  // every render, so listing it would give the context a new identity on each status tick and
+  // pinning it with [] would freeze the first render's closure.
   const startRepairRef = useRef(startRepair);
   startRepairRef.current = startRepair;
   const repairController = useMemo(

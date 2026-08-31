@@ -120,7 +120,7 @@ class TestSetupPs1PublishesTheFlavor:
 
     def test_the_rocm_index_decides_before_the_leaf(self):
         # The AMD Windows path installs from repo.amd.com while $TorchInstallIndexUrl still
-        # points at /cpu, so the leaf alone would publish the wrong flavor.
+        # points at /cpu.
         block = _SETUP_SRC[_SETUP_SRC.index("$_expectedTag = if ($ROCmIndexUrl)") :][:600]
         assert block.startswith('$_expectedTag = if ($ROCmIndexUrl) { "rocm" }')
         assert "Test-CudaFamilyLeaf $_expectedLeaf" in block
@@ -395,10 +395,9 @@ class TestManifestRecordsTheFlavor:
         assert 'return _RECORDED_TORCH_TAG or ""' in helper
 
     def test_a_mirror_pin_does_not_carry_a_stale_flavor_forward(self):
-        # The wheel in the venv came from a mirror whose leaf names no family, so the
-        # previous record describes a venv that no longer exists. Writing it back, and
-        # marking it pinned because an explicit index is present, would hand a later
-        # unpinned run a flavor to "repair" the mirror's build back to.
+        # The wheel came from a mirror whose leaf names no family, so the previous record
+        # describes a venv that no longer exists and would hand a later unpinned run a flavor
+        # to "repair" the mirror's build back to.
         helper = _STACK_SRC[_STACK_SRC.index("def _recordable_torch_flavor_tag(") :]
         helper = helper[: helper.index("\ndef ", 1)]
         assert "_explicit_unknown_family_torch_index_url() is not None" in helper
@@ -436,9 +435,8 @@ class TestTheFlavorProvenance:
         )
 
     def test_a_backend_the_caller_stated_is_not_marked_derived(self):
-        # setup.sh documents UNSLOTH_TORCH_BACKEND=cpu as the way to keep a deliberate
-        # CPU install, and on a GPU-less host the resolved value is cpu as well, so the
-        # two are indistinguishable unless install.sh checks BEFORE overwriting it.
+        # On a GPU-less host the resolved value is cpu too, so a stated choice and the
+        # automatic one are indistinguishable unless install.sh checks BEFORE overwriting.
         source = (PACKAGE_ROOT / "install.sh").read_text(encoding = "utf-8")
         assert "_torch_backend_was_stated" in source
         check = source.index("_torch_backend_was_stated=true")
@@ -457,10 +455,8 @@ class TestTheFlavorProvenance:
         assert "resolved" in pinned
 
     def test_an_untagged_xpu_runtime_counts_as_a_gpu_build(self):
-        # The probe reports torch.version.xpu, and _torch_build_is_gpu consults it: an
-        # untagged source or conda XPU build carries its runtime there and nowhere else,
-        # and calling it CPU-only fails the update outright while the backend's own
-        # classifier reads the same marker as a GPU build.
+        # An untagged source or conda XPU build carries its runtime in torch.version.xpu and
+        # nowhere else, and calling it CPU-only fails the update outright.
         assert "getattr(_v, 'xpu', '')" in _STACK_SRC
         verdict = _STACK_SRC[_STACK_SRC.index("def _torch_build_is_gpu(") :]
         verdict = verdict[: verdict.index("\ndef ", 1)]

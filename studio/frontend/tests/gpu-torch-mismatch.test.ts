@@ -4,15 +4,12 @@
 // What the UI says about a host whose GPUs PyTorch cannot use.
 //
 // A Windows in-app update that resolved torch from PyPI left a 2.11.0+cpu wheel beside two
-// working RTX A4000s (#8473, HF discussion 87). The backend now reports those cards in
-// gpu.physical_devices with a gpu.mismatch reason instead of going silent, and three places
-// have to stop saying the opposite: the System tab's VRAM tile and GPU section, the sidebar's
-// Train hint, and videoNavHint -- all of which told that host it needed to get a GPU.
+// working RTX A4000s (#8473). The backend now reports those cards in gpu.physical_devices
+// with a gpu.mismatch reason, and three places have to stop saying the opposite: the System
+// tab's VRAM tile and GPU section, the sidebar's Train hint, and videoNavHint.
 //
-// The derivations live in resources-tab.tsx and app-sidebar.tsx, which are .tsx and pull in
-// the whole app, so they are lifted by regex and evaluated, exactly as
-// system-status-verdict.test.ts lifts the host verdict beside them. hardware-verdict.ts is
-// import-free by design and is imported outright.
+// The derivations live in .tsx files that pull in the whole app, so they are lifted by
+// regex and evaluated, as system-status-verdict.test.ts does beside them.
 
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -45,7 +42,6 @@ function lift(
   return found[0];
 }
 
-// t() returns its key, so a failure names the string the user would have seen.
 const t = (key: string) => key;
 
 const CPU_BUILD = "settings.resources.gpu.mismatchCpuBuild";
@@ -54,8 +50,8 @@ const NO_USABLE_GPU = "settings.resources.gpu.noUsableGpu";
 const NO_GPU = "settings.resources.gpu.noGpu";
 const UNKNOWN = "settings.resources.environment.unknown";
 
-// gpuInventory itself carries a TS cast, so it is asserted on as source below and supplied
-// here as an input instead. Everything downstream of it is run.
+// gpuInventory carries a TS cast, so it is asserted on as source below and supplied here
+// as an input instead.
 const derivation = [
   lift(
     tabSrc,
@@ -108,8 +104,8 @@ test("a CPU-only wheel and a dead accelerator wheel get different sentences", ()
   assert.equal(cpuBuild.gpuMismatchMessage, CPU_BUILD);
   assert.equal(cpuBuild.physicalDevices.length, 2);
 
-  // Reinstalling torch is the wrong advice for a healthy cu124 wheel whose runtime will
-  // not start, so the two reasons must not collapse into one string.
+  // Reinstalling torch is the wrong advice for a healthy wheel whose runtime will not
+  // start, so the two reasons must not collapse into one string.
   const dead = mismatchFor({
     mismatch: {
       reason: "torch_cuda_unavailable",
@@ -129,8 +125,6 @@ test("a healthy host, and one that really has no GPU, get no banner at all", () 
     const out = mismatchFor(inventory);
     assert.equal(out.gpuMismatch, null);
     assert.equal(out.gpuMismatchMessage, null);
-    // No banner means no rows either: physical_devices present without a mismatch
-    // would otherwise render an unexplained list of greyed-out cards.
     assert.deepEqual(out.physicalDevices, []);
   }
   const strayRows = mismatchFor({
@@ -140,9 +134,8 @@ test("a healthy host, and one that really has no GPU, get no banner at all", () 
 });
 
 test("the verdict is taken from a settled read only, and from the training view", () => {
-  // The placeholder useSystemInfo starts from is shaped like a CPU-only host, which is the
-  // whole reason system-status-verdict.test.ts exists; a banner derived from it would
-  // accuse a host nobody has measured yet.
+  // The placeholder useSystemInfo starts from is shaped like a CPU-only host, so a banner
+  // derived from it would accuse a host nobody has measured yet.
   const inventory = lift(
     tabSrc,
     /const gpuInventory = [\s\S]*?;\n/,
@@ -155,14 +148,12 @@ test("the verdict is taken from a settled read only, and from the training view"
     "gated on the read having settled",
   );
   // systemInfo.gpu, NOT displayedGpu: a Vulkan llama.cpp makes displayedGpu fall back to the
-  // inference inventory, and a card Vulkan enumerates while torch cannot is exactly the host
-  // that must be told (the second report in #8473).
+  // inference inventory, and that host is exactly the second report in #8473.
   assert.match(inventory, /systemInfo\.gpu/);
   assert.doesNotMatch(inventory, /displayedGpu/);
 });
 
 test("the GPU section stops telling this host there is no GPU", () => {
-  // The CPU-only host's own line has to survive untouched, so assert both branches.
   assert.match(
     tabSrc,
     new RegExp(`\\) : gpuMismatch \\? \\([\\s\\S]*?t\\("${NO_USABLE_GPU}"\\)`),
@@ -179,7 +170,6 @@ test("the VRAM tile stops reading as a CPU-only host", () => {
   const tiles = tabSrc.match(/<MetricTile\b[\s\S]*?\/>/g) ?? [];
   const vram = tiles.find((tile) => tile.includes("liveMonitor.vram"));
   assert.ok(vram, "the VRAM tile");
-  // The mismatch branch must come BEFORE the noGpu fallback, or it never runs.
   const mismatchAt = vram.indexOf("liveMonitor.gpuUnusable");
   const noGpuAt = vram.indexOf("liveMonitor.noGpu");
   assert.ok(mismatchAt > -1, "the tile has a mismatch state");
@@ -188,9 +178,8 @@ test("the VRAM tile stops reading as a CPU-only host", () => {
 });
 
 test("the physically detected cards are shown, and never offered as devices", () => {
-  // The banner renders physicalDevices; the selectable rows render metrics.devices, which
-  // comes from the backend's `devices`. If the banner ever read metrics.devices the two
-  // would merge, which is the failure mode the backend field split exists to prevent.
+  // The banner renders physicalDevices and the selectable rows metrics.devices. If the
+  // banner ever read metrics.devices the two would merge, which the field split prevents.
   const banner = lift(
     tabSrc,
     /\{gpuMismatch \? \(\n[\s\S]*?\n\s*\) : null\}/,
@@ -202,7 +191,6 @@ test("the physically detected cards are shown, and never offered as devices", ()
   assert.match(banner, /settings\.resources\.gpu\.unusableDevice/);
 });
 
-// ========== The two navigation hints ==========
 
 test("videoNavHint stops telling a two-GPU host to get a GPU", () => {
   for (const reason of ["torch_cpu_build", "torch_cuda_unavailable"]) {
@@ -214,7 +202,6 @@ test("videoNavHint stops telling a two-GPU host to get a GPU", () => {
       `${reason} is not a missing-GPU host`,
     );
     assert.match(hint, /PyTorch/, `${reason} names what is actually wrong`);
-    // Unmeasured hosts keep their pass, as every other reason does.
     assert.equal(videoNavHint(false, reason), undefined);
   }
   // And the genuine no-GPU host keeps the sentence that is true for it.
@@ -243,8 +230,7 @@ test("the sidebar's Train hint stops doing the same", () => {
     const withDetail = forReason(reason, "2.11.0+cpu");
     assert.ok(withDetail);
     assert.doesNotMatch(withDetail, /needs an NVIDIA or AMD GPU/);
-    // The installed build is the one thing that makes this actionable to someone whose
-    // update has already run, so it is named when the backend supplies it.
+    // The installed build is what makes this actionable to someone whose update already ran.
     assert.match(withDetail, /2\.11\.0\+cpu/);
     const withoutDetail = forReason(reason, null);
     assert.ok(withoutDetail);
@@ -257,7 +243,6 @@ test("the sidebar's Train hint stops doing the same", () => {
   assert.equal(forReason("detection_failed", null), undefined);
 });
 
-// ========== Strings ==========
 
 test("every string the banner reaches for exists", () => {
   const gpu = en.settings.resources.gpu as Record<string, string>;
@@ -280,8 +265,8 @@ test("every string the banner reaches for exists", () => {
       `settings.resources.liveMonitor.${key}`,
     );
   }
-  // The version is what turns "PyTorch is CPU-only" into something a user can check
-  // against their own install, so both sentences have to carry it.
+  // The version is what a user can check against their own install, so both sentences
+  // have to carry it.
   assert.match(gpu.mismatchCpuBuild, /\{version\}/);
   assert.match(gpu.mismatchUnavailable, /\{version\}/);
   // And the CPU-only host's line is still the one it always was.
@@ -291,11 +276,9 @@ test("every string the banner reaches for exists", () => {
 
 // The repair row must not be offered for a backend the desktop does not manage.
 //
-// start_managed_repair rejects that mutation through block_external_conflict, but the
-// rejection arrives only after startRepair has already cleared isExternalServer, stopped
-// the external-server poll and swapped the shell to the repairing screen. A connected user
-// clicking the row therefore lands on the repair-error screen instead of on their server.
-// The settings update control suppresses its own action in the same state.
+// start_managed_repair rejects that mutation, but only after startRepair has cleared
+// isExternalServer, stopped the external-server poll and swapped the shell to the repairing
+// screen, so a connected user lands on the repair-error screen instead of on their server.
 test("the repair row hides itself for an externally started backend", async () => {
   const source = await readFile(
     new URL(
@@ -339,11 +322,9 @@ test("the repair row hides itself for an externally started backend", async () =
 
 // The verdict can change without a restart, so the sidebar has to keep asking.
 //
-// The backend refreshes its physical inventory on a 60s TTL and can reclassify a host:
-// attach an eGPU to a CPU-torch machine and no_gpu becomes torch_cpu_build. The polling
-// effect stopped at the first settled verdict that was neither provisional nor
-// mlx_unavailable, so nothing re-read it and the new hint was unreachable for the rest
-// of the session, with Train and Video still saying the machine needs a GPU.
+// The backend refreshes its physical inventory on a 60s TTL: attach an eGPU to a CPU-torch
+// machine and no_gpu becomes torch_cpu_build. The polling effect stopped at the first
+// settled verdict, so the new hint was unreachable for the rest of the session.
 test("the sidebar keeps polling while the inventory can still change the verdict", async () => {
   const source = await readFile(
     new URL("../src/components/app-sidebar.tsx", import.meta.url),
@@ -356,8 +337,6 @@ test("the sidebar keeps polling while the inventory can still change the verdict
     "the three verdicts the inventory can move must all keep the poll alive",
   );
 
-  // And only those three: an Intel Mac stays an Intel Mac, and polling forever on a
-  // host that is working as intended is a request a minute for nothing.
   const set = source.slice(
     source.indexOf("INVENTORY_SENSITIVE_REASONS = new Set(["),
   );
@@ -374,8 +353,6 @@ test("the sidebar keeps polling while the inventory can still change the verdict
     /if \(selfHealSettled && !capabilitiesUnknown && !inventorySensitive\) return;/,
     "the early return has to consider the inventory-sensitive case",
   );
-  // Matched to the backend's own TTL: polling faster than it can change its answer is
-  // pure request traffic.
   assert.match(source, /const INVENTORY_POLL_MS = 60000;/);
   assert.match(
     source,

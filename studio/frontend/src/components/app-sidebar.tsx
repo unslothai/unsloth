@@ -590,14 +590,11 @@ const SELF_HEAL_POLL_MS = 15000;
 const VERDICT_POLL_STALL_MS = 30000;
 // The backend refreshes its physical GPU inventory on a 60s TTL and can reclassify a host
 // without a restart: attach an eGPU to a CPU-torch machine and no_gpu becomes
-// torch_cpu_build, or a driver finishes restarting and the host stops being chat-only at
-// all. Nothing else re-reads the verdict, so without this the new hint is unreachable for
-// the rest of the session. Matched to that TTL rather than to SELF_HEAL_POLL_MS: polling
+// torch_cpu_build. Nothing else re-reads the verdict. Matched to that TTL, because polling
 // faster than the backend can change its answer is pure request traffic.
 const INVENTORY_POLL_MS = 60000;
 // The verdicts the inventory can still move. Everything else describes something a probe
-// cannot change (an Intel Mac stays an Intel Mac), and polling those forever would be a
-// request a minute for the life of the session on hosts working exactly as intended.
+// cannot change (an Intel Mac stays an Intel Mac).
 const INVENTORY_SENSITIVE_REASONS = new Set([
   "no_gpu",
   "torch_cpu_build",
