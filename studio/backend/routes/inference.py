@@ -19394,12 +19394,37 @@ def _normalize_chat_reasoning_controls(payload) -> None:
         payload.preserve_thinking = nested["preserve_thinking"]
 
 
-def _normalized_sampling_thinking_mode(payload) -> Optional[bool]:
+def _loaded_reasoning_default(model_id) -> Optional[bool]:
+    """The mode llama-server generates in when a request sends no reasoning controls.
+
+    Studio pins it at launch (``--chat-template-kwargs {"enable_thinking": ...}``), so a
+    silent request still generates in it, and sampling has to agree: Qwen3.8 thinks by
+    default, and its model card pairs that with presence_penalty 0.0. The Chat UI already
+    seeds itself this way (apply-inference-status-to-store.ts), so without this an API
+    client and the UI disagree on the same loaded model. Only the loaded model's own id
+    qualifies, so a transformers/MLX request is never priced off the llama.cpp launch.
+    """
+    if not model_id:
+        return None
+    backend = get_llama_cpp_backend()
+    if backend is None or not getattr(backend, "is_loaded", False):
+        return None
+    if getattr(backend, "model_identifier", None) != model_id:
+        return None
+    if not getattr(backend, "supports_reasoning", False):
+        return None
+    if getattr(backend, "reasoning_always_on", False):
+        return True
+    return bool(getattr(backend, "reasoning_default", False))
+
+
+def _normalized_sampling_thinking_mode(payload, model_id = None) -> Optional[bool]:
     """Three-valued reasoning mode used only to select sampling recommendations.
 
     Precedence: ``enable_thinking``, then effort (``none`` means off), then the
-    Anthropic ``thinking`` block. The last is mapped for chat requests already;
-    the fallback also covers /v1/messages.
+    Anthropic ``thinking`` block, then the loaded model's launch-time default. The
+    Anthropic block is mapped for chat requests already; the fallback also covers
+    /v1/messages.
     """
     enable_thinking, reasoning_effort = _resolve_reasoning_controls(
         getattr(payload, "enable_thinking", None),
@@ -19413,7 +19438,7 @@ def _normalized_sampling_thinking_mode(payload) -> Optional[bool]:
         # No .lower(): resolved_enable_thinking() treats only the exact "disabled"
         # as off, and a case variant must not split sampling from generation.
         return str(thinking_type) != "disabled"
-    return None
+    return _loaded_reasoning_default(model_id)
 
 
 def _fill_recommended_sampling_openai(payload, model_id) -> None:
@@ -19434,7 +19459,7 @@ def _fill_recommended_sampling_openai(payload, model_id) -> None:
     effective = resolve_effective_sampling(
         model_id,
         explicit,
-        thinking_mode = _normalized_sampling_thinking_mode(payload),
+        thinking_mode = _normalized_sampling_thinking_mode(payload, model_id),
     )
     for field, value in effective.items():
         setattr(payload, field, value)
@@ -27742,8 +27767,9 @@ async def anthropic_messages(
     # Anthropic sampling fields are Optional, so None already marks "client omitted".
     from utils.inference.inference_config import resolve_effective_sampling
 
+    _anthropic_model_id = getattr(llama_backend, "model_identifier", None) or model_name
     _anthropic_sampling = resolve_effective_sampling(
-        getattr(llama_backend, "model_identifier", None) or model_name,
+        _anthropic_model_id,
         {
             "temperature": payload.temperature,
             "top_p": payload.top_p,
@@ -27752,7 +27778,7 @@ async def anthropic_messages(
             "repetition_penalty": payload.repetition_penalty,
             "presence_penalty": payload.presence_penalty,
         },
-        thinking_mode = _normalized_sampling_thinking_mode(payload),
+        thinking_mode = _normalized_sampling_thinking_mode(payload, _anthropic_model_id),
     )
     temperature = _anthropic_sampling["temperature"]
     top_p = _anthropic_sampling["top_p"]
