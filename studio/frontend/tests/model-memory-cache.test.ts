@@ -206,10 +206,10 @@ test("a save displaces a runtime read already in flight", async () => {
   };
   globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
     if ((init?.method ?? "GET") === "PUT") {
-      return new Response(
-        JSON.stringify({ ...API, keep_resident: true }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      );
+      return new Response(JSON.stringify({ ...API, keep_resident: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
     }
     return new Promise<Response>((resolve) => {
       finishRead = (body) =>
@@ -264,10 +264,10 @@ test("a read started during a save waits for the committed value", async () => {
       });
     }
     gets += 1;
-    return new Response(
-      JSON.stringify({ ...API, keep_resident: committed }),
-      { status: 200, headers: { "Content-Type": "application/json" } },
-    );
+    return new Response(JSON.stringify({ ...API, keep_resident: committed }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
   }) as typeof fetch;
 
   const published: boolean[] = [];
@@ -278,7 +278,11 @@ test("a read started during a save waits for the committed value", async () => {
     const save = updateModelMemorySettings({ keepResident: true });
     const read = loadModelMemorySettings({ force: true });
     await Promise.resolve();
-    assert.equal(gets, 0, "the read must not snapshot before the write commits");
+    assert.equal(
+      gets,
+      0,
+      "the read must not snapshot before the write commits",
+    );
 
     finishPut();
     assert.equal((await save).keepResident, true);
@@ -348,7 +352,11 @@ test("partial saves are serialized before a waiting read", async () => {
     const reserveSave = updateModelMemorySettings({ noRamReserve: true });
     const read = loadModelMemorySettings({ force: true });
     await Promise.resolve();
-    assert.equal(pendingPuts.length, 1, "only the first save may reach the backend");
+    assert.equal(
+      pendingPuts.length,
+      1,
+      "only the first save may reach the backend",
+    );
     assert.equal(gets, 0);
 
     finishNextPut();
