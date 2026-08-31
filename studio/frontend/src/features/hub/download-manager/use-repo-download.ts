@@ -120,10 +120,10 @@ export function useRepoDownload(config: RepoDownloadConfig): DownloadJob {
   );
 
   // Chat and Video staging park this hook on an idle repo id when the queue
-  // clears. That is not leaving the download surface, so skip cancel there or
-  // Hub never sees the banner. A real unmount or a switch to another repo
-  // still clears: the ref already holds the next id when this cleanup runs.
+  // clears. Keep that conflict for Hub, but remember its key so a later real
+  // repo replacement clears the superseded request.
   const repoIdRef = useRef(repoId);
+  const preservedConflictKeyRef = useRef<string | null>(null);
   repoIdRef.current = repoId;
   useEffect(
     () => () => {
@@ -132,7 +132,12 @@ export function useRepoDownload(config: RepoDownloadConfig): DownloadJob {
         parked === "__staged_download_idle__" ||
         parked === "__hub_autoload_idle__"
       ) {
+        preservedConflictKeyRef.current = conflictKey;
         return;
+      }
+      if (preservedConflictKeyRef.current) {
+        downloadManager.cancelConflict(preservedConflictKeyRef.current);
+        preservedConflictKeyRef.current = null;
       }
       downloadManager.cancelConflict(conflictKey);
     },

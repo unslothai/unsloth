@@ -175,11 +175,7 @@ test("a transport mismatch start uses the mismatch helper", () => {
   );
 });
 
-test("staging an idle repo does not drop a recorded transport conflict", () => {
-  // useStagedDownload parks the hook on __staged_download_idle__ when the
-  // queue clears; cancelling on that key change wiped the conflict Chat/Video
-  // had just recorded, so the Hub card never saw it. Cleanup still runs for a
-  // real repo unmount or repo-id change.
+test("staging preserves idle conflicts but clears them before a replacement", () => {
   const source = readFileSync(
     new URL(
       "../src/features/hub/download-manager/use-repo-download.ts",
@@ -189,8 +185,6 @@ test("staging an idle repo does not drop a recorded transport conflict", () => {
   );
   assert.match(source, /__staged_download_idle__/);
   assert.match(source, /__hub_autoload_idle__/);
-  assert.match(
-    source,
-    /useEffect\(\s*\(\)\s*=>\s*\(\)\s*=>\s*\{[\s\S]*?cancelConflict\(conflictKey\)/,
-  );
+  assert.match(source, /preservedConflictKeyRef\.current = conflictKey/);
+  assert.match(source, /cancelConflict\(preservedConflictKeyRef\.current\)/);
 });
