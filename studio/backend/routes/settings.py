@@ -11,7 +11,15 @@ from typing import Any, Literal, Optional, get_args
 from urllib.parse import unquote, urlsplit
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    ValidationError,
+    field_validator,
+)
 
 from auth.authentication import (
     authenticated_via_api_key,
@@ -127,10 +135,8 @@ from utils.current_date_prompt_settings import (
 )
 from utils.lan_access_settings import (
     lan_access_status,
-
     save_lan_access_port,
     set_lan_access_auto_start,
-
     start_lan_access,
     stop_lan_access,
 )
@@ -2999,7 +3005,6 @@ class LanAccessAutoStartPayload(BaseModel):
     enabled: StrictBool
 
 
-
 class LanAccessPortPayload(BaseModel):
     port: Optional[StrictInt] = Field(ge = 1, le = 65535)
 
@@ -3082,7 +3087,6 @@ def update_lan_access_auto_start(
         payload.enabled,
     )
     return _lan_access_response(request)
-
 
 
 @router.put("/lan-access/port", response_model = LanAccessResponse)

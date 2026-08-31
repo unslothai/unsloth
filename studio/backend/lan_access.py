@@ -277,7 +277,10 @@ def _wait_until(predicate, timeout: float) -> bool:
 
 
 def start_lan_listener(
-    app, loop, port: int, fallback_ports: tuple[int, ...] = ()
+    app,
+    loop,
+    port: int,
+    fallback_ports: tuple[int, ...] = (),
 ) -> tuple[str, ...]:
     """Serve ``app`` on LAN addresses at the first bindable candidate port."""
     global _server, _serve_loop, _sockets, _bound_addresses, _port, _error

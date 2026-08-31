@@ -1180,7 +1180,6 @@ def test_stop_releases_the_sockets_itself_when_the_serving_loop_is_gone(monkeypa
 
 
 def _configured(live_server):
-
     lan_settings.set_lan_access_port(live_server.port)
     """The live app carrying the launch policy run.py would have published on it."""
     lan_settings.configure_lan_access(

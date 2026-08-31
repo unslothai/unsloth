@@ -428,7 +428,6 @@ def lan_access_status(app) -> dict:
         ),
         "error": listener["error"],
         "auto_start": get_lan_access_auto_start(),
-
         "configured_port": configured_port,
         "active_port": active_port,
         "managed_by": managed_by,
@@ -455,7 +454,6 @@ def _server_loop(app_state):
 def start_lan_access(app) -> dict:
     """Bring the LAN listener up for this launch. Repeated requests are idempotent."""
     from lan_access import start_lan_listener
-
     with _management_lock:
         status = lan_access_status(app)
         if status["state"] == "online":
