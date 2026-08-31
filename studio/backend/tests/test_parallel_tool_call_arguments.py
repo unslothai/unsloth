@@ -724,8 +724,7 @@ def test_a_nameless_claim_does_not_take_a_valid_call_s_card():
 def test_a_repeated_names_metadata_waits_for_the_call_it_announced():
     # The same tool twice on one slot, the second announced by a name-only
     # delta carrying its own signature. Merging it where it landed overwrote
-    # the closed call's and left the new call unsigned, and Gemini validates a
-    # signature against the call it is replayed on.
+    # the closed call's and left the new one unsigned.
     turn = _Turn()
     turn.merge_structured([_delta(0, "lookup", '{"q":"a"}') | {"extra_content": {"sig": "A"}}])
     turn.merge_structured([_delta(0, "lookup", None) | {"extra_content": {"sig": "B"}}])
@@ -744,9 +743,9 @@ def test_a_repeated_names_metadata_waits_for_the_call_it_announced():
 
 
 def test_parked_metadata_survives_a_late_id_landing_on_the_call():
-    # The slot key does not change when an id lands here, so the parked
-    # signature is still found. Pinned because the frontend keys the same wait
-    # by card id, which a late id does rename, and the two have to agree.
+    # The slot key does not change when an id lands, so the parked signature is
+    # still found. Pinned because the frontend keys the same wait by card id,
+    # which a late id does rename.
     turn = _Turn()
     turn.merge_structured([_delta(0, "lookup", '{"q":"a"}') | {"extra_content": {"sig": "A"}}])
     turn.merge_structured([_delta(0, "lookup", None) | {"extra_content": {"sig": "B"}}])

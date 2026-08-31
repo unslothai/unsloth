@@ -15,10 +15,10 @@ function isSingleJsonObject(text: string): boolean {
  * One slot's accumulated argument text, cut into the top-level JSON objects it
  * holds: `complete` closed, `tail` is still being written.
  *
- * A second top-level `{` means the stream reused the slot for a second parallel
+ * A second top-level `{` means the stream reused the slot for another parallel
  * call, which is what turns two calls into `{"url":"a"}{"url":"b"}`. Text that
- * is not a run of whole objects comes back whole in `tail`, so a stream this
- * was never meant for is left alone.
+ * is not a run of whole objects comes back whole in `tail`, leaving streams
+ * this was never meant for alone.
  */
 export function splitTopLevelJsonObjects(text: string): {
   complete: string[];
@@ -78,12 +78,11 @@ export function splitTopLevelJsonObjects(text: string): {
 }
 
 /**
- * `splitTopLevelJsonObjects` over a string that only ever grows.
- *
- * Rescanning per fragment is O(N^2), and a 20 KB argument sent a character at a
- * time took about a second and a half on the thread that paints the stream.
- * `feed` takes the same string extended, never a rewritten one, so a caller
- * that splits a slot drops its scan.
+ * `splitTopLevelJsonObjects` over a string that only ever grows. Rescanning per
+ * fragment is O(N^2): a 20 KB argument sent a character at a time took about a
+ * second and a half on the thread that paints the stream. `feed` takes the same
+ * string extended, never a rewritten one, so a caller that splits a slot drops
+ * its scan.
  */
 export function createBoundaryScan(): {
   feed: (text: string) => { complete: string[]; tail: string };
@@ -166,7 +165,7 @@ export function toolCallReplayArguments(
     typeof argsText === "string" &&
     argsText.length > 0 &&
     // One object, because that is what `function.arguments` is. A run of them,
-    // an array, a scalar or a half-written object all get the whole request
+    // an array, a scalar or a half-written object gets the whole request
     // rejected, not just the one call.
     isSingleJsonObject(argsText)
   ) {
@@ -179,25 +178,20 @@ export function toolCallReplayArguments(
   }
   const parsed = JSON.parse(serialized) as Record<string, unknown>;
   const keys = Object.keys(parsed);
-  // The adapter writes `{ _raw }` holding the exact text it could not parse, so
-  // a lone `_raw` whose value IS that text is the marker and replaying it would
-  // send a parameter no tool declares. `_raw` is not reserved, though, and an
-  // MCP server's schema is its own, so a tool that really takes one keeps it.
-  //
-  // Only when the surviving text proves it. A thread stored before `argsText`
-  // was kept carries the marker with nothing to compare it to, and guessing
-  // from the shape of the value -- a run of whole JSON objects -- would also
-  // discard the argument of a tool that really takes one, since a leading
-  // underscore is a legal property name and MCP reserves nothing. Guessing
-  // buys little either way: the wrapped form is one JSON object, so replaying
-  // it does not raise the `Extra data` this file exists to prevent.
+  // The adapter writes `{ _raw }` holding the exact text it could not parse,
+  // so a lone `_raw` whose value IS that text is the marker, and replaying it
+  // would send a parameter no tool declares. `_raw` is not reserved and an
+  // MCP server's schema is its own, so recognise it only when the surviving
+  // text proves it: a thread stored before `argsText` was kept has nothing to
+  // compare against, and guessing from the value's shape would discard the
+  // argument of a tool that really takes one. Guessing buys little anyway,
+  // since the wrapped form is one JSON object and raises no `Extra data`.
   if (
     keys.length === 1 &&
     keys[0] === "_raw" &&
     typeof parsed._raw === "string" &&
     // Non-empty, or the equality proves nothing: the adapter only writes the
-    // marker for text it tried to parse, so `{ _raw: "" }` is an argument a
-    // tool was really given rather than anything this file produced.
+    // marker for parsed text, so `{ _raw: "" }` is a real argument.
     parsed._raw.length > 0 &&
     parsed._raw === argsText
   ) {

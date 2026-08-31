@@ -24,17 +24,12 @@ export interface StreamedToolCallPart {
 }
 
 /**
- * The id for a card drawn from a delta the provider gave no id to.
- *
- * The slot's own `tool_call_<index>` when that is free, then the lowest
- * `tool_call_<n>` that is not. `_mint_streamed_card_id` in the backend loop
- * walks the same deltas in the same order under the same rule, so it lands on
- * the same spelling and its `tool_start` and `tool_end` reach the card this
- * stream already drew rather than opening a second one beside it.
- *
- * `reserved` holds the ids the provider itself sent, so a provider that spells
- * one `tool_call_0` keeps it. No colon, because a replayed id has to satisfy
- * `^[a-zA-Z0-9_-]+$`.
+ * The id for a card drawn from a delta the provider gave no id to: the slot's
+ * own `tool_call_<index>` when free, else the lowest `tool_call_<n>` that is.
+ * The backend's `_mint_streamed_card_id` walks the same deltas under the same
+ * rule, so its `tool_start` reaches this card instead of opening a second one.
+ * `reserved` holds ids the provider sent, so one spelled `tool_call_0` keeps
+ * it. No colon: a replayed id must satisfy `^[a-zA-Z0-9_-]+$`.
  */
 export function mintStreamedToolCallId(
   parts: StreamedToolCallPart[],
@@ -51,12 +46,10 @@ export function mintStreamedToolCallId(
 }
 
 /**
- * Let a card drawn by the deltas answer to its own id.
- *
- * Without this `resolveToolCallPartId` mints `<backend id>:<uuid>` the first
- * time the backend names an id-less call, `tool_start` finds no card under
- * that and pushes one, and the turn ends holding two cards and persisting two
- * tool-call parts for every call the stream drew.
+ * Let a card drawn by the deltas answer to its own id. Without it,
+ * `resolveToolCallPartId` mints `<backend id>:<uuid>` when the backend first
+ * names an id-less call, `tool_start` finds no card and pushes one, and the
+ * turn persists two parts per call.
  */
 export function bindStreamedToolCallCard(
   ids: Map<string, string>,

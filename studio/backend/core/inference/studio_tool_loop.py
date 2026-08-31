@@ -523,12 +523,11 @@ class _Turn:
     # Resumable boundary scan per call, keyed the same as ``by_index``.
     scan_by_key: dict[Any, _BoundaryScan] = field(default_factory = dict)
     # Forks whose object never closed: reported only once it does, or a stream
-    # cut short after '{"a":1}{' runs the tool again on half an argument.
+    # cut short after '{"a":1}{' runs the tool on half an argument.
     open_tail_keys: set[Any] = field(default_factory = set)
-    # Metadata from a delta whose name repeated the one the slot holds. That
-    # name is either the call's, resent, or the next call to the same tool
-    # announcing itself, and only the object that follows tells them apart, so
-    # the metadata waits here rather than landing on the wrong call.
+    # Metadata from a delta repeating the slot's name. That name is either the
+    # call's, resent, or the next call to the same tool announcing itself, and
+    # only the object that follows tells them apart.
     pending_extra: dict[Any, dict[str, Any]] = field(default_factory = dict)
     round: int = 0
     healed: list[dict[str, Any]] = field(default_factory = list)
@@ -658,10 +657,9 @@ class _Turn:
                     # concatenates their argument JSON into one unparseable blob
                     # and loses an intent, so key the second on its own id.
                     key = (index, call_id)
-            # A closed object cannot take more content, so the next arguments to
-            # reach a slot already holding one whole object belong to the next
-            # parallel call. Forking on the accumulated text alone only catches
-            # this once those arguments glue on, and a delta carrying an id
+            # A closed object takes no more content, so the next arguments to reach the
+            # slot belong to the next parallel call. Forking on the accumulated text
+            # alone catches this only once they glue on, and a delta carrying an id
             # would claim the finished call and append to it (issue #9807).
             held = self.by_index.get(key)
             new_function = raw_call.get("function")
@@ -715,9 +713,9 @@ class _Turn:
                 or id_names_another_call
                 or names_next_call
             ) and not resends_this_call
-            # An announcement has no object to close, so the rule above cannot
-            # reach it. A different name bringing an object is the next call;
-            # gluing gave "A_longB", which matches no tool.
+            # An announcement has no object to close, so the rule above cannot reach
+            # it. A different name bringing an object is the next call; gluing gave
+            # "A_longB", which matches no tool.
             announces_over_announcement = (
                 held is not None
                 and (held.get("announced_only") is True or held.get("resend_suspect") is True)
@@ -741,10 +739,10 @@ class _Turn:
                 closed, unfinished = self._scan(key, held["function"]["arguments"])
                 slot_is_closed = bool(closed) and not unfinished
             extra = raw_call.get("extra_content")
-            # A name repeating the one a closed slot holds says nothing new
-            # about that call, so metadata riding it belongs to whichever call
-            # the next object opens; merged here it overwrites the signature the
-            # closed call arrived with and leaves the next call unsigned.
+            # A name repeating a closed slot's says nothing new about that call, so
+            # metadata riding it belongs to whichever call the next object opens.
+            # Merged here it overwrites that call's signature and leaves the next
+            # unsigned.
             extra_is_ambiguous = bool(
                 slot_is_closed
                 and isinstance(new_name, str)
@@ -779,9 +777,8 @@ class _Turn:
                     # A fork's guess, or a slot the provider opened itself.
                     # Only the provider's own announcement runs unfilled.
                     "from_fork": held is not None,
-                    # A name extending the one this fork left behind is most
-                    # likely it, resent. It still opens a slot (the prefix is no
-                    # proof) but gives way rather than gluing "alpha_longbeta".
+                    # A name extending the one this fork left behind is most likely it, resent.
+                    # It still opens a slot, but gives way rather than gluing "alpha_longbeta".
                     "resend_suspect": bool(
                         opening_name
                         and held_name_now
@@ -823,10 +820,9 @@ class _Turn:
                 # else continues it.
                 fragment = function.get("name")
                 name_before = current["function"]["name"]
-                # Never once the object has closed AND a name is set: that
-                # would put one tool's arguments under another's name. Naming a
-                # call that has none is not a rename, and servers do send the
-                # arguments first.
+                # Never once the object has closed AND a name is set: that puts one tool's
+                # arguments under another's name. Naming a call that has none is not a
+                # rename, and servers do send the arguments first.
                 if isinstance(fragment, str) and fragment and not (slot_is_closed and name_before):
                     if fragment.startswith(name_before):
                         current["function"]["name"] = fragment
@@ -835,9 +831,8 @@ class _Turn:
                 if isinstance(function.get("arguments"), str) and not resends_this_call:
                     current["function"]["arguments"] += function["arguments"]
                     if not (isinstance(call_id, str) and call_id):
-                        # The id fork cannot see this: an id-less stream has no
-                        # ids to differ on, so appending glued two calls into
-                        # one unparsable blob (issue #9807).
+                        # The id fork cannot see this: an id-less stream has no ids to differ on,
+                        # so appending glued two calls into one blob (issue #9807).
                         self._fork_glued_arguments(
                             index,
                             key,

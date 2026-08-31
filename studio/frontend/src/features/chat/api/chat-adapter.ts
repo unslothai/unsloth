@@ -5288,15 +5288,13 @@ export function createOpenAIStreamAdapter(
       };
       // Tool call parts, cumulative; result lands on tool_end.
       const toolCallParts: PositionedToolCallPart[] = [];
-      // An id for a call the stream gave none (issue #9807). Counted, so a
-      // rerun of the same stream reads the same way in a log.
-      // A card is minted before its part joins `toolCallParts`, so without
-      // this a batch opening three calls mints one id three times.
+      // Ids for calls the stream gave none (issue #9807). A card is minted
+      // before its part joins `toolCallParts`, so without this a batch opening
+      // three calls mints one id three times.
       const reservedToolCallIds = new Set<string>();
-      // Of those, the ones the provider itself sent. A minted card holds its
-      // id only until the provider claims that spelling; `_has_stable_id` does
-      // not say which is which, since a split marks every card but the last
-      // with it to keep a late id off the calls already spoken for.
+      // Of those, the ones the provider sent. `_has_stable_id` cannot say which:
+      // a split marks every card but the last with it, to keep a late id off the
+      // calls already spoken for.
       const providerSentToolCallIds = new Set<string>();
       const boundaryScans = new Map<
         string,
@@ -5305,13 +5303,12 @@ export function createOpenAIStreamAdapter(
       const isPlainRecord = (v: unknown): v is Record<string, unknown> =>
         typeof v === "object" && v !== null && !Array.isArray(v);
       // Forks whose last object never closed, the backend's open_tail_keys.
-      // `{"a":1}{` is not marked truncated, so the lone brace would persist as
-      // a card nothing completes. Kept while the turn runs, to be written to.
+      // `{"a":1}{` is not marked truncated, so the lone brace would persist as a
+      // card nothing completes.
       const openTailIds = new Set<string>();
-      // Metadata from a delta whose name repeated the one a closed card holds.
-      // That name is either the call's, resent, or the next call to the same
-      // tool announcing itself, and only the object that follows tells them
-      // apart, so it waits here rather than landing on the wrong call.
+      // Metadata from a delta repeating a closed card's name. That name is
+      // either that call's, resent, or the next call to the same tool announcing
+      // itself, and only the object that follows tells them apart.
       const pendingExtraByPartId = new Map<string, Record<string, unknown>>();
       const endProviderTurn = (): boolean => {
         let changed = false;
@@ -5327,9 +5324,9 @@ export function createOpenAIStreamAdapter(
           releaseStreamedCard(part.toolCallId);
           changed = true;
         }
-        // An announcement another call took over, and a name that only looked
-        // like the closed call's resent, were never calls. A lone announcement
-        // the provider opened stays: a zero-parameter tool looks like that.
+        // An announcement another call took over, and a name that only looked like
+        // a resent, were never calls. A lone announcement stays: a zero-parameter
+        // tool looks like that.
         for (let at = toolCallParts.length - 1; at >= 0; at -= 1) {
           const part = toolCallParts[at] as PositionedToolCallPart;
           if (
@@ -5354,10 +5351,9 @@ export function createOpenAIStreamAdapter(
           releaseStreamedCard(part.toolCallId);
           changed = true;
         }
-        // A call needs a name to run: _normalized_call drops a nameless one
-        // before it reserves a card id, so a card kept here holds a number the
-        // backend hands to the next round's call, and its events land on this
-        // blank card instead.
+        // _normalized_call drops a nameless call before reserving a card id, so a
+        // card kept here holds a number the backend gives the next round, whose
+        // events then land on this blank card.
         for (let at = toolCallParts.length - 1; at >= 0; at -= 1) {
           const part = toolCallParts[at] as PositionedToolCallPart;
           if (part.toolName || part._delta_index === undefined) continue;
@@ -5381,11 +5377,9 @@ export function createOpenAIStreamAdapter(
           changed = true;
         }
         pendingExtraByPartId.clear();
-        // Numbering is the backend's pass, and it runs over the calls that
-        // survive: a card dropped above leaves a gap, and a claim displaced one
-        // for a call that turned out not to be one at all. Both are settled
-        // here, where the backend settles them, rather than left a number apart
-        // for the rest of the response.
+        // The backend numbers the calls that survive: a card dropped above leaves
+        // a gap, and a claim displaced one for what turned out not to be a call.
+        // Both are settled here, where the backend settles them.
         if (changed) renumberMintedCards();
         openTailIds.clear();
         // The next round opens at index 0 again, and without this "B" then
@@ -5422,10 +5416,9 @@ export function createOpenAIStreamAdapter(
       const releaseStreamedCard = (partId: string): void => {
         reservedToolCallIds.delete(partId);
         toolPartIdByBackendId.delete(partId);
-        // A card that took a late provider id answers to a run-unique part id,
-        // so the id the provider sent is a separate key pointing at it. Left
-        // behind, that reservation makes the next round's mint skip a number
-        // the backend, which never reserved it for a call it filtered, reuses.
+        // A card that took a late id answers to a run-unique part id, so the id
+        // the provider sent is a separate key pointing at it. Left behind, it makes
+        // the next round's mint skip a number the backend reuses.
         for (const [backendId, mapped] of [...toolPartIdByBackendId]) {
           if (mapped !== partId) continue;
           toolPartIdByBackendId.delete(backendId);
@@ -5449,9 +5442,8 @@ export function createOpenAIStreamAdapter(
         const live = liveArgsTextById.get(from);
         if (live !== undefined) liveArgsTextById.set(to, live);
         liveArgsTextById.delete(from);
-        // Metadata parked on this card is claimed at the turn boundary by the
-        // part id the card holds then, so it has to travel with the rename or
-        // the sweep looks for a part id nothing answers to and drops it.
+        // The turn-end sweep claims parked metadata by the part id the card holds
+        // then, so it has to travel with the rename or the sweep finds nothing.
         const pending = pendingExtraByPartId.get(from);
         if (pending) pendingExtraByPartId.set(to, pending);
         pendingExtraByPartId.delete(from);
@@ -5459,19 +5451,16 @@ export function createOpenAIStreamAdapter(
         if (at !== -1) codexRoundToolCallIds[at] = to;
         paintStreamedCard(to);
       };
-      // The backend reserves every id the provider sent before it mints any
-      // card id, so a claim arriving mid-response moves every card the client
-      // had already numbered. Renumber them all, in the order the backend
-      // walks them, or its tool_start reaches the wrong card: with three calls
-      // in one delta and a later `tool_call_1`, the two sides read the second
-      // and third calls' results off each other's cards.
+      // The backend reserves provider ids before minting any card id, so a claim
+      // mid-response moves every card already numbered. Renumber in the order the
+      // backend walks them, or tool_start reaches the wrong card: three calls in
+      // one delta and a later `tool_call_1` cross-wire the second and third.
       const renumberMintedCards = (claimed?: string): void => {
         const minted = toolCallParts.filter(
           (part) =>
             !providerSentToolCallIds.has(part.toolCallId) &&
-            // This round's cards only. An earlier round's are complete, may
-            // already carry a result, and the backend's card ledger is
-            // append-only: it never renumbers one, so neither may this.
+            // This round's cards only. Earlier ones may carry a result, and the
+            // backend's ledger is append-only: it never renumbers, so neither may this.
             (part as PositionedToolCallPart)._delta_index !== undefined,
         ) as PositionedToolCallPart[];
         const carried = minted.map((part) => ({
@@ -5489,9 +5478,8 @@ export function createOpenAIStreamAdapter(
           liveArgsTextById.delete(held.from);
           openTailIds.delete(held.from);
           pendingExtraByPartId.delete(held.from);
-          // Cleared before any of them is minted again: the mint reads the ids
-          // the parts are holding, and a stale one makes the first card skip
-          // the number the backend gives it.
+          // Cleared before any is minted again: the mint reads the ids the parts
+          // hold, and a stale one makes the first card skip the backend's number.
           const at = toolCallParts.indexOf(held.part);
           if (at !== -1) toolCallParts[at] = { ...held.part, toolCallId: "" };
         }
@@ -6619,10 +6607,9 @@ export function createOpenAIStreamAdapter(
                 chunk as unknown as { _toolEvent?: Record<string, unknown> }
               )._toolEvent;
               if (toolEvent !== undefined) {
-                // Unsloth's own tool events end the turn that asked for them;
-                // finish_reason alone is not enough. A hosted tool runs INSIDE
-                // the turn and rides a whole chunk, `choices` and all, where
-                // Unsloth's are bare {"type": "tool_start"} frames.
+                // Unsloth's own tool events end the turn that asked for them; finish_reason
+                // alone is not enough. A hosted tool runs INSIDE the turn and rides a whole
+                // chunk, where Unsloth's are bare {"type": "tool_start"} frames.
                 if (!chunk.choices) {
                   endProviderTurn();
                 }
@@ -7250,9 +7237,8 @@ export function createOpenAIStreamAdapter(
                     !providerSentToolCallIds.has(stableId) &&
                     toolCallParts.some((part) => part.toolCallId === stableId)
                   ) {
-                    // Renumber first: the claimed spelling is held by a minted
-                    // card until this runs, and marking it provider-sent any
-                    // earlier would exempt that very card from the move.
+                    // Renumber first: a minted card holds the claimed spelling until this runs,
+                    // and marking it provider-sent earlier would exempt it from the move.
                     renumberMintedCards(stableId);
                     providerSentToolCallIds.add(stableId);
                     reservedToolCallIds.add(stableId);
@@ -7279,9 +7265,8 @@ export function createOpenAIStreamAdapter(
                     existingIndex === -1
                       ? undefined
                       : toolCallParts[existingIndex];
-                  // A closed object takes no more content, so a name or
-                  // arguments reaching it open the next call. Splitting the
-                  // text alone is too late for a name or an id.
+                  // A closed object takes no more content, so a name or arguments reaching it
+                  // open the next call. Splitting the text alone is too late.
                   const slotIsClosed = (() => {
                     if (!matched?.argsText) return false;
                     const held = scanArgsText(

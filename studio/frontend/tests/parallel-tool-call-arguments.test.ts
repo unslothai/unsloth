@@ -640,12 +640,10 @@ test("the resumable scan agrees with scanning from the start", () => {
 
 test("one argument streamed a character at a time is scanned once", () => {
   // Rescanning per fragment made a 20 KB argument cost over a second on the
-  // thread that paints the stream. Counted, not timed: the scan parses a
-  // segment when it closes one, so a resumable scan parses once per object
-  // however many deltas it arrived in, and a restarting one parses every
-  // object again on every delta after it closed. A wall-clock ratio said the
-  // same thing with about 25 percent of margin, which is not enough on a
-  // loaded runner.
+  // thread that paints the stream. Counted, not timed: a resumable scan
+  // parses once per object however many deltas it arrived in, a restarting
+  // one parses every closed object again on every delta. A wall-clock ratio
+  // agreed, with too little margin for a loaded runner.
   const parses = (size: number, feed: (text: string) => unknown): number => {
     const real = JSON.parse;
     let calls = 0;
@@ -710,10 +708,9 @@ test("metadata arriving alone stays on the call that closed", () => {
 });
 
 test("a name resent or grown after a call closed invents nothing", () => {
-  // Indistinguishable from a second no-argument call to the same tool, so take
-  // the reading that does not run a tool twice. A grown name announces the next
-  // call (the prefix is no evidence), so a provisional card is visible while
-  // the turn runs and the boundary reaps it unfilled.
+  // Indistinguishable from a second no-argument call to the same tool, so
+  // take the reading that does not run a tool twice. A grown name announces
+  // the next call, so its provisional card is reaped unfilled at the boundary.
   for (const resent of ["alpha", "alpha_long"]) {
     const stream = makeStream();
     stream.feed([{ index: 0, function: { name: "alpha", arguments: '{"a":1}' } }]);
@@ -1068,12 +1065,10 @@ test("a card taking a late provider id gives its minted id back", () => {
 });
 
 test("a claim on a split-born card renumbers every minted card", () => {
-  // A split marks every born card but the last _has_stable_id, to keep a late
-  // id off the calls already spoken for, so reading that as provider-owned let
-  // the claim merge into one: "alphabeta" with the arguments glued. The
-  // backend reserves the claim and then numbers the id-less calls in order, so
-  // matching it means renumbering all of them, not just the one displaced;
-  // otherwise its tool_start for the second call reaches the third's card.
+  // A split marks every born card but the last _has_stable_id, so reading
+  // that as provider-owned let the claim merge them: "alphabeta", arguments
+  // glued. The backend reserves the claim then numbers the id-less calls in
+  // order, so matching it means renumbering all of them.
   const stream = makeStream();
   stream.feed([
     { index: 0, function: { name: "alpha", arguments: '{"a":1}{"b":2}{"c":3}' } },
@@ -1144,11 +1139,10 @@ test("a claim in a later round leaves an earlier round's card alone", () => {
 });
 
 test("a dropped card gives back the provider id that aliased it", () => {
-  // A card that took a late provider id answers to a run-unique part id, so
-  // the id the provider sent is a second key pointing at it. Releasing only
-  // the part id left tool_call_1 reserved, and the next round minted
-  // tool_call_2 where the backend, which filters the unfinished call and never
-  // reserved it, minted tool_call_1.
+  // A card that took a late id answers to a run-unique part id, so the id the
+  // provider sent is a second key pointing at it. Releasing only the part id
+  // left tool_call_1 reserved, and the next round minted tool_call_2 where
+  // the backend minted tool_call_1.
   const stream = makeStream(true);
   stream.feed([{ index: 0, function: { name: "alpha", arguments: '{}{"x":' } }]);
   stream.feed([{ id: "tool_call_1", index: 0, function: { arguments: "" } }]);
@@ -1199,11 +1193,10 @@ test("a claim that turns out not to be a call gives the number back", () => {
 });
 
 test("a repeated name's metadata waits for the call it announced", () => {
-  // The same tool twice on one slot, the second announced by a name-only delta
-  // carrying its own signature. Merging it where it landed both overwrote the
-  // closed call's signature and left the new call unsigned, and Gemini
-  // validates a signature against the call it is replayed on, so the turn was
-  // rejected either way round.
+  // The same tool twice on one slot, the second announced by a name-only
+  // delta carrying its own signature. Merging it where it landed overwrote
+  // the closed call's and left the new one unsigned, and Gemini validates a
+  // signature against the call it is replayed on.
   const stream = makeStream();
   stream.feed([
     {
@@ -1247,10 +1240,8 @@ test("a repeated name that announced nothing keeps its metadata", () => {
 });
 
 test("parked metadata follows the card a late id renames", () => {
-  // The signature waits under the id the card was minted with; the late claim
-  // moves the card, so the entry has to move with it or the turn-end sweep
-  // looks for a part id nothing answers to and drops the signature the
-  // backend keeps.
+  // The signature waits under the id the card was minted with, so it has to
+  // move with the card or the turn-end sweep drops what the backend keeps.
   const stream = makeStream(true);
   stream.feed([
     {
@@ -1544,9 +1535,8 @@ test("several calls opened by one delta each get their own card id", () => {
 
 test("the marker is only recognised by the text that proves it", () => {
   // Threads written before argsText was kept carry { _raw } with nothing to
-  // compare it to. Reading the value's shape instead would discard the argument
-  // of a tool that really takes a _raw parameter, and nothing is gained: the
-  // wrapped form is one JSON object, so it raises no Extra data.
+  // compare against. Reading the value's shape instead would discard a real
+  // _raw argument and gain nothing: the wrapped form raises no Extra data.
   const glued = '{"url":"https://example.com/1"}{"query":"search"}';
   assert.equal(toolCallReplayArguments(glued, { _raw: glued }), "{}");
   assert.equal(
@@ -1560,10 +1550,8 @@ test("the marker is only recognised by the text that proves it", () => {
 });
 
 test("an empty _raw is an argument, not the marker", () => {
-  // The adapter only writes the marker for text it tried to parse, and both
-  // writers are guarded on non-empty text, so `{ _raw: "" }` beside an empty
-  // argsText is a value a tool was really given. Equality alone read it as the
-  // marker and replayed {}.
+  // Both writers are guarded on non-empty text, so `{ _raw: "" }` beside an
+  // empty argsText is a real argument. Equality alone read it as the marker.
   assert.equal(toolCallReplayArguments("", { _raw: "" }), '{"_raw":""}');
   assert.equal(toolCallReplayArguments(undefined, { _raw: "" }), '{"_raw":""}');
 });

@@ -190,9 +190,9 @@ class ToolCallDecision:
     tool_name: str
     arguments: dict[str, Any]
     tool_call_id: str = ""
-    # The id the card carries on screen. For a call the provider gave no id to
-    # this is the spelling the client already minted, which is not the id the
-    # conversation replays; for every other call the two are the same.
+    # The id the card carries on screen. For an id-less call that is the
+    # spelling the client minted, not the id the conversation replays;
+    # otherwise the two are the same.
     card_call_id: str = ""
     key: str = ""
     provenance: dict[str, Any] = field(default_factory = dict)
