@@ -411,6 +411,8 @@ def _client(
     url: str,
     headers: Optional[dict],
     use_oauth: bool = False,
+    oauth_client_id: Optional[str] = None,
+    oauth_client_secret: Optional[str] = None,
 ):
     from fastmcp import Client
 
@@ -442,12 +444,36 @@ def _client(
     auth = None
     if use_oauth:
         from fastmcp.client.auth import OAuth
-        auth = OAuth(mcp_url = url, token_storage = _oauth_store())
+        auth = OAuth(
+            mcp_url = url,
+            token_storage = _oauth_store(),
+            client_id = oauth_client_id,
+            client_secret = oauth_client_secret,
+        )
 
     transport_cls = (
         SSETransport if infer_transport_type_from_url(url) == "sse" else StreamableHttpTransport
     )
     return Client(transport_cls(url = url, headers = headers or None, auth = auth))
+
+
+def oauth_client_kwargs_from(client_id: Optional[str], client_secret: Optional[str]) -> dict:
+    """Only extend legacy call signatures when credentials are configured, so
+    existing callers and their test doubles keep their current arity."""
+    if not client_id and not client_secret:
+        return {}
+    return {
+        "oauth_client_id": client_id,
+        "oauth_client_secret": client_secret,
+    }
+
+
+def oauth_client_kwargs(server: dict) -> dict:
+    """``oauth_client_kwargs_from`` for a stored MCP server row."""
+    return oauth_client_kwargs_from(
+        server.get("oauth_client_id"),
+        server.get("oauth_client_secret"),
+    )
 
 
 # Persistent stdio sessions: a stdio MCP server owns live state (a browser, a
@@ -989,9 +1015,16 @@ async def list_tools_async(
     headers: Optional[dict] = None,
     timeout: float = 5.0,
     use_oauth: bool = False,
+    oauth_client_id: Optional[str] = None,
+    oauth_client_secret: Optional[str] = None,
 ) -> list[dict]:
     async def _fetch() -> list[dict]:
-        async with _client(url, headers, use_oauth) as client:
+        async with _client(
+            url,
+            headers,
+            use_oauth,
+            **oauth_client_kwargs_from(oauth_client_id, oauth_client_secret),
+        ) as client:
             tools = await client.list_tools()
         return [t.model_dump(exclude_none = True) for t in tools]
 
@@ -1035,7 +1068,16 @@ def serialize_mcp_server_mutation(handler):
 # endpoint/auth used to probe it (url, headers, oauth) or whether it's used at
 # all (is_enabled). A rename does not. The update route's eviction and
 # get_enabled_mcp_tools' mid-probe guard both key off this so they can't drift.
-TOOL_CACHE_INVALIDATING_FIELDS = frozenset({"url", "headers_json", "use_oauth", "is_enabled"})
+TOOL_CACHE_INVALIDATING_FIELDS = frozenset(
+    {
+        "url",
+        "headers_json",
+        "use_oauth",
+        "oauth_client_id",
+        "oauth_client_secret",
+        "is_enabled",
+    }
+)
 
 
 def get_cached_tools(server_id: str) -> Optional[list[dict]]:
@@ -1416,6 +1458,8 @@ def call_tool_sync(
     args: dict,
     timeout: Optional[float] = 300.0,
     use_oauth: bool = False,
+    oauth_client_id: Optional[str] = None,
+    oauth_client_secret: Optional[str] = None,
     cancel_event = None,
     scope: Optional[str] = None,
     config_check = None,
@@ -1428,7 +1472,12 @@ def call_tool_sync(
     before a fresh stdio session is cached; False fails the call."""
 
     async def _one_shot() -> Any:
-        async with _client(url, headers, use_oauth) as client:
+        async with _client(
+            url,
+            headers,
+            use_oauth,
+            **oauth_client_kwargs_from(oauth_client_id, oauth_client_secret),
+        ) as client:
             # raise_on_error=False lets an is_error result (which may still carry
             # image content) reach _flatten_result instead of FastMCP raising ToolError
             # and dropping the images. Transport failures still raise (handled below).

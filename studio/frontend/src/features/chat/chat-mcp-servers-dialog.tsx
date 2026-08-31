@@ -57,6 +57,11 @@ import {
   createMcpStdioSnapshot,
   resolveMcpStdioUrl,
 } from "./mcp-server-form";
+import {
+  type McpOAuthSecretOwner,
+  buildMcpOAuthFormPayload,
+  mcpOAuthSecretPlaceholder,
+} from "./utils/mcp-oauth-form";
 type HeaderRow = { id: string; key: string; value: string };
 type ArgumentRow = { id: string; value: string };
 type FormTransport = "unknown" | "http" | "stdio";
@@ -70,6 +75,11 @@ type FormState = {
   headers: HeaderRow[];
   credentialTransport: Exclude<FormTransport, "unknown"> | null;
   useOauth: boolean;
+  oauthClientId: string;
+  oauthClientSecret: string;
+  // Not a bare "a secret exists" flag: the hint below has to know whether an
+  // edit has moved the form off the client/address the stored secret belongs to.
+  storedSecretOwner: McpOAuthSecretOwner | null;
 };
 
 const EMPTY_FORM: FormState = {
@@ -81,6 +91,9 @@ const EMPTY_FORM: FormState = {
   headers: [],
   credentialTransport: null,
   useOauth: false,
+  oauthClientId: "",
+  oauthClientSecret: "",
+  storedSecretOwner: null,
 };
 
 function newRowId(): string {
@@ -503,6 +516,11 @@ export function ChatMcpServersDialog({
       headers: headersFromObject(server.headers ?? {}),
       credentialTransport: isHttpAddress(server.url) ? "http" : "stdio",
       useOauth: server.use_oauth ?? false,
+      oauthClientId: server.oauth_client_id ?? "",
+      oauthClientSecret: "",
+      storedSecretOwner: server.has_oauth_client_secret
+        ? { url: server.url, clientId: server.oauth_client_id ?? "" }
+        : null,
     };
 
     if (isHttpAddress(server.url)) {
@@ -626,8 +644,13 @@ export function ChatMcpServersDialog({
       if (url === null || formGenerationRef.current !== generation) return;
       const result = await testMcpServer({
         url,
+        serverId: view.kind === "edit" ? view.id : undefined,
         headers: headersToObject(form.headers),
-        useOauth: stdio ? false : form.useOauth,
+        ...buildMcpOAuthFormPayload(
+          stdio ? false : form.useOauth,
+          form.oauthClientId,
+          form.oauthClientSecret,
+        ),
       });
       if (formGenerationRef.current !== generation) return;
       if (result.ok) {
@@ -695,7 +718,11 @@ export function ChatMcpServersDialog({
           displayName: trimmedName,
           url,
           headers: headers ?? null,
-          useOauth: stdio ? false : form.useOauth,
+          ...buildMcpOAuthFormPayload(
+            stdio ? false : form.useOauth,
+            form.oauthClientId,
+            form.oauthClientSecret,
+          ),
         });
         if (formGenerationRef.current !== generation) return;
         toast.success("MCP server updated");
@@ -705,7 +732,11 @@ export function ChatMcpServersDialog({
           displayName: trimmedName,
           url,
           headers: headers,
-          useOauth: stdio ? false : form.useOauth,
+          ...buildMcpOAuthFormPayload(
+            stdio ? false : form.useOauth,
+            form.oauthClientId,
+            form.oauthClientSecret,
+          ),
         });
         if (formGenerationRef.current !== generation) return;
         toast.success("MCP server added");
@@ -1045,14 +1076,59 @@ export function ChatMcpServersDialog({
             )}
 
             {form.transport !== "unknown" && (
-              <HeadersEditor
-                rows={form.headers}
-                onChange={(headers) =>
-                  setForm((prev) => ({ ...prev, headers }))
-                }
-                stdio={addressIsCommand}
-                disabled={formPending}
-              />
+              <>
+                {!addressIsCommand && form.useOauth && (
+                  <div className="grid gap-3 rounded-md border p-3">
+                    <div className="grid gap-2">
+                      <Label htmlFor="mcp-oauth-client-id">
+                        OAuth client ID
+                      </Label>
+                      <Input
+                        id="mcp-oauth-client-id"
+                        value={form.oauthClientId}
+                        onChange={(e) =>
+                          setForm((prev) => ({
+                            ...prev,
+                            oauthClientId: e.target.value,
+                          }))
+                        }
+                        placeholder="Optional pre-registered client ID"
+                      />
+                    </div>
+                    <div className="grid gap-2">
+                      <Label htmlFor="mcp-oauth-client-secret">
+                        OAuth client secret
+                      </Label>
+                      <Input
+                        id="mcp-oauth-client-secret"
+                        type="password"
+                        value={form.oauthClientSecret}
+                        onChange={(e) =>
+                          setForm((prev) => ({
+                            ...prev,
+                            oauthClientSecret: e.target.value,
+                          }))
+                        }
+                        placeholder={mcpOAuthSecretPlaceholder(
+                          form.storedSecretOwner,
+                          form.url,
+                          form.oauthClientId,
+                        )}
+                        autoComplete="new-password"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                <HeadersEditor
+                  rows={form.headers}
+                  onChange={(headers) =>
+                    setForm((prev) => ({ ...prev, headers }))
+                  }
+                  stdio={addressIsCommand}
+                  disabled={formPending}
+                />
+              </>
             )}
 
             <div className="flex items-center justify-between gap-2 pt-2">

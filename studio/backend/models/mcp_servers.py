@@ -12,6 +12,8 @@ class McpServerCreate(BaseModel):
     headers: Optional[dict[str, str]] = None
     is_enabled: bool = True
     use_oauth: bool = False
+    oauth_client_id: Optional[str] = None
+    oauth_client_secret: Optional[str] = None
 
 
 class McpServerUpdate(BaseModel):
@@ -21,6 +23,8 @@ class McpServerUpdate(BaseModel):
     headers: Optional[dict[str, str]] = None
     is_enabled: Optional[bool] = None
     use_oauth: Optional[bool] = None
+    oauth_client_id: Optional[str] = None
+    oauth_client_secret: Optional[str] = None
 
 
 class McpServerResponse(BaseModel):
@@ -30,14 +34,19 @@ class McpServerResponse(BaseModel):
     headers: dict[str, str] = Field(default_factory = dict)
     is_enabled: bool = True
     use_oauth: bool = False
+    oauth_client_id: Optional[str] = None
+    has_oauth_client_secret: bool = False
     created_at: str
     updated_at: str
 
 
 class McpServerTestRequest(BaseModel):
+    server_id: Optional[str] = None
     url: str
     headers: Optional[dict[str, str]] = None
     use_oauth: bool = False
+    oauth_client_id: Optional[str] = None
+    oauth_client_secret: Optional[str] = None
 
 
 class McpStdioDecodeRequest(BaseModel):

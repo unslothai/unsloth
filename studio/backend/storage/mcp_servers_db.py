@@ -12,6 +12,11 @@ _schema_lock = threading.Lock()
 _schema_ready = False
 
 
+# Not a column: `_server_result` derives it so a masked read can report that a
+# secret exists without carrying a value that could be used as one.
+HAS_OAUTH_CLIENT_SECRET_KEY = "has_oauth_client_secret"
+
+
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(
@@ -23,6 +28,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             headers_json TEXT,
             is_enabled INTEGER NOT NULL DEFAULT 1,
             use_oauth INTEGER NOT NULL DEFAULT 0,
+            oauth_client_id TEXT,
+            oauth_client_secret TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
@@ -32,6 +39,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(mcp_servers)").fetchall()}
     if "use_oauth" not in cols:
         conn.execute("ALTER TABLE mcp_servers ADD COLUMN use_oauth INTEGER NOT NULL DEFAULT 0")
+    if "oauth_client_id" not in cols:
+        conn.execute("ALTER TABLE mcp_servers ADD COLUMN oauth_client_id TEXT")
+    if "oauth_client_secret" not in cols:
+        conn.execute("ALTER TABLE mcp_servers ADD COLUMN oauth_client_secret TEXT")
 
 
 def get_connection() -> sqlite3.Connection:
@@ -59,6 +70,8 @@ def create_server(
     headers_json: Optional[str] = None,
     is_enabled: bool = True,
     use_oauth: bool = False,
+    oauth_client_id: Optional[str] = None,
+    oauth_client_secret: Optional[str] = None,
 ) -> None:
     now = datetime.now(timezone.utc).isoformat()
     conn = get_connection()
@@ -67,8 +80,9 @@ def create_server(
             """
             INSERT INTO mcp_servers
                 (id, display_name, url, headers_json,
-                 is_enabled, use_oauth, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 is_enabled, use_oauth, oauth_client_id, oauth_client_secret,
+                 created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 id,
@@ -77,6 +91,8 @@ def create_server(
                 headers_json,
                 int(is_enabled),
                 int(use_oauth),
+                oauth_client_id,
+                oauth_client_secret,
                 now,
                 now,
             ),
@@ -120,19 +136,35 @@ def delete_server(id: str) -> bool:
         conn.close()
 
 
-def get_server(id: str) -> Optional[dict]:
+def get_server(id: str, *, include_secret: bool = True) -> Optional[dict]:
     conn = get_connection()
     try:
         row = conn.execute("SELECT * FROM mcp_servers WHERE id = ?", (id,)).fetchone()
-        return dict(row) if row else None
+        return _server_result(row, include_secret = include_secret) if row else None
     finally:
         conn.close()
 
 
-def list_servers() -> list[dict]:
+def _server_result(row, *, include_secret: bool) -> dict:
+    """``include_secret=False`` keeps the stored client secret out of the
+    result while still reporting whether one is set, so response and listing
+    paths can never serialize it back to a caller.
+
+    Presence is reported in its own field on BOTH reads rather than typed into
+    ``oauth_client_secret``: a masked row is otherwise one call away from
+    handing a stand-in value to the OAuth client as a real secret, and callers
+    do not have to know which read produced the row."""
+    result = dict(row)
+    result[HAS_OAUTH_CLIENT_SECRET_KEY] = bool(result["oauth_client_secret"])
+    if not include_secret:
+        result["oauth_client_secret"] = None
+    return result
+
+
+def list_servers(*, include_secrets: bool = True) -> list[dict]:
     conn = get_connection()
     try:
         rows = conn.execute("SELECT * FROM mcp_servers ORDER BY created_at").fetchall()
-        return [dict(row) for row in rows]
+        return [_server_result(row, include_secret = include_secrets) for row in rows]
     finally:
         conn.close()

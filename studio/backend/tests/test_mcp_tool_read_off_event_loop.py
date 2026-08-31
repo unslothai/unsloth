@@ -147,7 +147,9 @@ def test_the_cached_row_and_tools_are_one_snapshot_during_an_edit(monkeypatch):
         lambda server, payload: [(server["url"], payload[0]["name"])],
     )
     monkeypatch.setattr(
-        mcp_routes.mcp_servers_db, "get_server", lambda _server_id: dict(state["row"])
+        mcp_routes.mcp_servers_db,
+        "get_server",
+        lambda _server_id, **_kwargs: dict(state["row"]),
     )
     monkeypatch.setattr(mcp_routes.mcp_servers_db, "update_server", _update_server)
     monkeypatch.setattr(mcp_routes, "invalidate_tool_cache", _invalidate)
@@ -196,7 +198,9 @@ def test_queued_updates_recheck_the_stdio_api_key_gate(monkeypatch):
         return True
 
     monkeypatch.setattr(mcp_routes, "stdio_mcp_enabled", lambda: True)
-    monkeypatch.setattr(mcp_routes.mcp_servers_db, "get_server", lambda _id: dict(state["row"]))
+    monkeypatch.setattr(
+        mcp_routes.mcp_servers_db, "get_server", lambda _id, **_kwargs: dict(state["row"])
+    )
     monkeypatch.setattr(mcp_routes.mcp_servers_db, "update_server", _update_server)
     monkeypatch.setattr(mcp_routes, "invalidate_tool_cache", lambda _server_id: None)
     monkeypatch.setattr(mcp_routes, "close_stdio_sessions", lambda *_args, **_kwargs: None)
