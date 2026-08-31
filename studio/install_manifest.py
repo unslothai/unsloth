@@ -697,8 +697,11 @@ def verify_install(
         )
         recorded = manifest.get("package_version")
         # Every check below compares against `current`, which an absent
-        # distribution passes.
-        vanished = bool(recorded) and not current
+        # distribution passes. An empty `recorded` is the same hole one step
+        # earlier: write_manifest stores whatever version it could read, so a
+        # package already gone when it ran is recorded as a finished install
+        # with no version at all.
+        vanished = not current
         if core_conflict or local_conflict:
             reason = "studio_install_metadata_conflict"
         elif current and recorded and current != recorded:

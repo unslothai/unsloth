@@ -4442,10 +4442,25 @@ def _repair_damaged_core_payload(
             name,
         )
         importlib.invalidate_caches()
+        # Presence first: --force-reinstall uninstalls before it installs, so a
+        # failure in between leaves no distribution, and a distribution that is
+        # not there has no RECORD for the scan below to call damaged. Checked
+        # unconditionally, unlike require_present: we only reinstall what the
+        # scan already found, so it was installed a moment ago.
         try:
-            remaining = install_manifest.damaged_payload_files(name, budget_seconds = 0.0)
+            remaining = (
+                []
+                if any(install_manifest.installed_versions(name))
+                else [f"{name} is no longer installed"]
+            )
         except Exception:
             remaining = []
+        try:
+            remaining = remaining or install_manifest.damaged_payload_files(
+                name, budget_seconds = 0.0
+            )
+        except Exception:
+            pass
         if remaining:
             still_damaged.append(name)
             _safe_print(

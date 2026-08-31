@@ -533,3 +533,34 @@ def test_a_custom_package_installs_no_companion(monkeypatch):
 
     assert ips._core_package_names("unsloth") == ("unsloth", "unsloth-zoo")
     assert ips._core_package_names("unsloth-nightly") == ("unsloth-nightly",)
+
+
+def test_a_manifest_with_no_recorded_version_is_damage(tmp_path, monkeypatch, site_packages):
+    """write_manifest stores whatever version it could read, so a package
+    already gone when it ran is recorded as a finished install with none.
+
+    An empty version is only ever absence here: two records or an unreadable
+    one set `local_conflict`, which reports its own reason before this runs.
+    """
+    dist_info, rows = _healthy(site_packages)
+    _record(dist_info, rows)
+    req_root = _complete_install(tmp_path, monkeypatch, site_packages)
+    manifest_path = install_manifest.manifest_path(tmp_path)
+    manifest = json.loads(manifest_path.read_text(encoding = "utf-8"))
+    manifest["package_version"] = ""
+    manifest_path.write_text(json.dumps(manifest), encoding = "utf-8")
+
+    monkeypatch.setattr(install_manifest, "installed_versions", lambda name: [])
+    state = install_manifest.verify_install(root = tmp_path, req_root = req_root, deep = True)
+    assert state["reason"] == "studio_install_damaged"
+
+
+def test_ambiguous_metadata_still_reports_its_own_reason(tmp_path, monkeypatch, site_packages):
+    """Two records also leave the version empty, and that is a conflict, not
+    damage: the reason strings are a contract the desktop reads."""
+    dist_info, rows = _healthy(site_packages)
+    _record(dist_info, rows)
+    req_root = _complete_install(tmp_path, monkeypatch, site_packages)
+    monkeypatch.setattr(install_manifest, "installed_versions", lambda name: [VER, "2.0"])
+    state = install_manifest.verify_install(root = tmp_path, req_root = req_root, deep = True)
+    assert state["reason"] == "studio_install_metadata_conflict"

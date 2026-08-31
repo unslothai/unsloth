@@ -900,6 +900,24 @@ class TestDamagedCorePayloadRepair:
         gate = source.rindex("_repair_damaged_core_payload(")
         assert gate < source.index("install_manifest.write_manifest(")
 
+    def test_a_reinstall_that_removed_the_distribution_fails(self, monkeypatch):
+        """--force-reinstall uninstalls before it installs, and a failure in
+        between leaves nothing: an absent distribution has no RECORD, so the
+        payload scan alone would call the repair a success."""
+        scans = {"n": 0}
+
+        def scan(name, **kwargs):
+            scans["n"] += 1
+            # Damaged on the way in, and afterwards nothing left to call damaged.
+            return ["gone"] if scans["n"] == 1 else []
+
+        monkeypatch.setattr(ips.install_manifest, "damaged_payload_files", scan)
+        monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda name: [])
+        monkeypatch.setattr(ips, "pip_install_try", lambda label, *args: True)
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+        monkeypatch.setattr(ips, "_safe_print", lambda *a, **k: None)
+        assert ips._repair_damaged_core_payload(("unsloth",)) is False
+
     def test_the_caller_aborts_the_install(self):
         source = inspect.getsource(ips)
         assert "if not _repair_damaged_core_payload(" in source
