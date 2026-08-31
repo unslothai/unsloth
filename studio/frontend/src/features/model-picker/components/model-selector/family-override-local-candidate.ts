@@ -10,6 +10,11 @@ export function isFamilyOverrideLocalCandidate(
   model: {
     model_format?: string | null;
     task?: string | null;
+    capabilities?: {
+      canChat?: boolean;
+      canTrain?: boolean;
+      supportsLora?: boolean;
+    } | null;
   },
   allowUnknownLocalModels: boolean,
   familyOverride?: string | null,
@@ -21,6 +26,9 @@ export function isFamilyOverrideLocalCandidate(
     allowUnknownLocalModels &&
     supportsSingleFile &&
     model.task == null &&
-    model.model_format === "safetensors"
+    model.model_format === "safetensors" &&
+    model.capabilities?.canChat === false &&
+    model.capabilities.canTrain === false &&
+    model.capabilities.supportsLora === false
   );
 }

@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { defaultsFor } from "../src/features/images/image-generation-defaults.ts";
+import { videoDefaultsFor } from "../src/features/video/video-generation-defaults.ts";
 
 test("distinguishes Klein base checkpoints from distilled checkpoints", () => {
   for (const size of ["4B", "9B"]) {
@@ -83,20 +84,15 @@ test("a matching canonical family keeps variant-specific repository defaults", (
   }
 });
 
-test("video defaults also prefer the explicit family over a misleading repo name", () => {
-  const source = readFileSync(
-    new URL("../src/features/video/video-page.tsx", import.meta.url),
-    "utf8",
+test("video defaults preserve compatible variants and reject conflicting repo hints", () => {
+  assert.deepEqual(
+    videoDefaultsFor("unsloth/LTX-2.3-distilled-GGUF/model.safetensors", "ltx-2"),
+    { steps: 8, guidance: 1 },
   );
-  const defaults = source.slice(
-    source.indexOf("function defaultsFor("),
-    source.indexOf("function formatEta("),
-  );
-  const override = defaults.indexOf(
-    'if (familyOverride && familyOverride !== "auto")',
-  );
-  const repoMatch = defaults.indexOf("const matched = MODEL_DEFAULTS.find");
-  assert.ok(override >= 0 && repoMatch > override);
+  assert.deepEqual(videoDefaultsFor("local/ltx-distilled-merge", "minimax-h3"), {
+    steps: 30,
+    guidance: 1,
+  });
 });
 
 test("the image Default preset keeps the resolved family after load completion", () => {

@@ -15,7 +15,11 @@ const BARE_CHECKPOINT_CAPABILITY_SIGNATURE =
   /row\.modelFormat === "safetensors"[\s\S]*row\.task == null[\s\S]*!row\.capabilities\.canChat[\s\S]*!row\.capabilities\.canTrain[\s\S]*!row\.capabilities\.supportsLora/;
 
 test("an explicit family surfaces only unclassified local safetensors", () => {
-  const opaqueSafetensors = { model_format: "safetensors", task: null };
+  const opaqueSafetensors = {
+    model_format: "safetensors",
+    task: null,
+    capabilities: { canChat: false, canTrain: false, supportsLora: false },
+  };
   assert.equal(isFamilyOverrideLocalCandidate(opaqueSafetensors, true), true);
   assert.equal(isFamilyOverrideLocalCandidate(opaqueSafetensors, false), false);
   assert.equal(
@@ -35,6 +39,18 @@ test("an explicit family surfaces only unclassified local safetensors", () => {
       true,
     ),
     false,
+  );
+  assert.equal(
+    isFamilyOverrideLocalCandidate(
+      {
+        model_format: "safetensors",
+        task: null,
+        capabilities: { canChat: true, canTrain: false, supportsLora: false },
+      },
+      true,
+    ),
+    false,
+    "a taskless Transformers checkpoint must not become a diffusion candidate",
   );
   assert.equal(
     isFamilyOverrideLocalCandidate(opaqueSafetensors, true, "ideogram-4"),

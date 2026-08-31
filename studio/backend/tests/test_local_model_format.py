@@ -480,8 +480,24 @@ def test_custom_inventory_surfaces_a_safetensors_file_registered_by_path(tmp_pat
     rows = _scan_custom_folder(registered)
 
     assert [(Path(row.path), row.model_format, row.task) for row in rows] == [
-        (root, "safetensors", None)
+        (checkpoint, "safetensors", None)
     ]
+
+
+def test_custom_inventory_keeps_file_rows_in_a_multi_checkpoint_registration(tmp_path):
+    """Reducing a file registration to its parent must not lose it beside another checkpoint."""
+    from hub.services.models.local_inventory import _coerce_scan_folder_path, _scan_custom_folder
+
+    root = tmp_path / "custom"
+    selected = _touch(root / "portrait.safetensors")
+    sibling = _touch(root / "landscape.safetensors")
+
+    rows = _scan_custom_folder(Path(_coerce_scan_folder_path(str(selected))))
+
+    assert {Path(row.path) for row in rows if row.model_format == "safetensors"} == {
+        selected,
+        sibling,
+    }
 
 
 def test_custom_inventory_keeps_configless_safetensors_shards_unknown(tmp_path):

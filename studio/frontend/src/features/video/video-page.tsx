@@ -150,6 +150,10 @@ import {
 import { ReferenceImageEditor } from "./reference-image-editor";
 import { type ReferenceMedia, ReferenceMediaPicker } from "./reference-picker";
 import {
+  VIDEO_DEFAULT_GEN,
+  videoDefaultsFor as defaultsFor,
+} from "./video-generation-defaults";
+import {
   defaultReferenceVideoTrim,
   H3_REFERENCE_MAX_SECONDS,
   referenceVideoTrimError,
@@ -184,37 +188,6 @@ import {
 // only the GGUF rows, and an accelerated host gets the speed qualifiers.
 function useVideoModels(host: HostClass): ModelOption[] {
   return useMemo(() => catalogToModelOptions(VIDEO_CATALOG, host), [host]);
-}
-
-// Per-model generation defaults (steps + guidance), matched by repo-id substring, most specific first.
-const DEFAULT_GEN = { steps: 8, guidance: 1 };
-
-const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> = [
-  { match: "minimax-h3", steps: 30, guidance: 1 },
-  { match: "minimax_h3", steps: 30, guidance: 1 },
-  // "distilled" before the generic "ltx": the distilled model runs at 8 steps, guidance 1.
-  { match: "distilled", steps: 8, guidance: 1 },
-  { match: "ltx", steps: 40, guidance: 4 },
-  // Wan2.2 pipelines default to 50 steps at CFG 5.0 (verified in diffusers 0.39). The backend supplies the fps per family.
-  { match: "wan", steps: 50, guidance: 5 },
-  // HunyuanVideo-1.5 runs 50 steps; guidance 6 matches the guider the repo ships (there is no pipeline kwarg).
-  { match: "hunyuanvideo-1.5-720p", steps: 50, guidance: 6 },
-  { match: "hunyuanvideo", steps: 50, guidance: 6 },
-];
-
-function defaultsFor(
-  repoId: string,
-  familyOverride?: string | null,
-): { steps: number; guidance: number } {
-  if (familyOverride && familyOverride !== "auto") {
-    const fam = familyOverride.toLowerCase();
-    const famMatch = MODEL_DEFAULTS.find((d) => fam.includes(d.match));
-    if (famMatch) return famMatch;
-  }
-  const id = repoId.toLowerCase();
-  const matched = MODEL_DEFAULTS.find((d) => id.includes(d.match));
-  if (matched) return matched;
-  return DEFAULT_GEN;
 }
 
 // Resolution presets offered before a model is loaded. Once loaded, status.defaults.resolution_presets replaces these.
@@ -926,8 +899,8 @@ function VideoGenerator({
   );
   const [negativePrompt, setNegativePrompt] = useState("");
   const [negativeOpen, setNegativeOpen] = useState(false);
-  const [steps, setSteps] = useState(DEFAULT_GEN.steps);
-  const [guidance, setGuidance] = useState(DEFAULT_GEN.guidance);
+  const [steps, setSteps] = useState(VIDEO_DEFAULT_GEN.steps);
+  const [guidance, setGuidance] = useState(VIDEO_DEFAULT_GEN.guidance);
   const modelSeeded = useRef(false);
   const familySeeded = useRef(false);
   // Whether the user has taken the recipe since the pick that is still waiting for its status.
