@@ -330,7 +330,9 @@ def test_planner_refusal_retries_on_the_single_device_loader(monkeypatch, tmp_pa
             cls.calls.append(kwargs)
             if len(cls.calls) == 1:
                 raise DeviceMapInfeasible("2 x 8 GiB is not enough for the head")
-            return types.SimpleNamespace(hf_device_map = {"model.layers.0": 0}), types.SimpleNamespace()
+            return types.SimpleNamespace(
+                hf_device_map = {"model.layers.0": 0}
+            ), types.SimpleNamespace()
 
     monkeypatch.setattr(mod, "FastLanguageModel", _RefusesThenLoads)
     monkeypatch.setattr(mod, "detect_audio_type", lambda *a, **k: None)
