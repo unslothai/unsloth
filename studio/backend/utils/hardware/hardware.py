@@ -951,6 +951,22 @@ def _torch_index_leaf(url: str) -> str:
     return path.rstrip("/").rsplit("/", 1)[-1]
 
 
+def _stated_torch_index_source() -> str:
+    """The torch index this install was told to use, or "".
+
+    URL first, and the family ONLY when no URL is set. install.sh's
+    get_torch_index_url() returns on UNSLOTH_TORCH_INDEX_URL without ever reading
+    UNSLOTH_TORCH_INDEX_FAMILY, so when the two name different families the family is
+    not a second opinion, it is dead. Reading either as authoritative let a stale
+    ..._FAMILY=cpu beside a new ..._URL=.../cu128 suppress the CPU-wheel mismatch on a
+    host the installer had actually pointed at CUDA.
+    """
+    url = (os.environ.get("UNSLOTH_TORCH_INDEX_URL") or "").strip()
+    if url:
+        return url
+    return (os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY") or "").strip()
+
+
 def _expected_cpu_flavor_was_chosen() -> bool:
     """Whether THIS install deliberately selected a CPU wheel.
 
@@ -964,9 +980,8 @@ def _expected_cpu_flavor_was_chosen() -> bool:
     documents. Read straight off disk rather than by importing that module, which lives
     outside the backend package. Never raises.
     """
-    for var in ("UNSLOTH_TORCH_INDEX_FAMILY", "UNSLOTH_TORCH_INDEX_URL"):
-        if _torch_index_leaf(os.environ.get(var) or "") == "cpu":
-            return True
+    if _torch_index_leaf(_stated_torch_index_source()) == "cpu":
+        return True
     try:
         path = os.path.join(sys.prefix, "unsloth_install_manifest.json")
         with open(path, encoding = "utf-8") as fh:
@@ -1178,9 +1193,8 @@ def _is_pip_rocm_family_leaf(leaf: str) -> bool:
 
 def _expected_rocm_flavor_was_chosen() -> bool:
     """Whether this install selected a ROCm wheel, by pin or by recorded flavor."""
-    for var in ("UNSLOTH_TORCH_INDEX_FAMILY", "UNSLOTH_TORCH_INDEX_URL"):
-        if _is_pip_rocm_family_leaf(_torch_index_leaf(os.environ.get(var) or "")):
-            return True
+    if _is_pip_rocm_family_leaf(_torch_index_leaf(_stated_torch_index_source())):
+        return True
     try:
         path = os.path.join(sys.prefix, "unsloth_install_manifest.json")
         with open(path, encoding = "utf-8") as fh:
@@ -1267,9 +1281,8 @@ def _amd_device_can_establish_a_mismatch(device: Dict[str, Any]) -> bool:
 
 def _expected_xpu_flavor_was_chosen() -> bool:
     """Whether this install selected an XPU wheel, by pin or by recorded flavor."""
-    for var in ("UNSLOTH_TORCH_INDEX_FAMILY", "UNSLOTH_TORCH_INDEX_URL"):
-        if _torch_index_leaf(os.environ.get(var) or "") == "xpu":
-            return True
+    if _torch_index_leaf(_stated_torch_index_source()) == "xpu":
+        return True
     try:
         path = os.path.join(sys.prefix, "unsloth_install_manifest.json")
         with open(path, encoding = "utf-8") as fh:
@@ -1854,7 +1867,18 @@ def _detect_hardware_locked() -> DeviceType:
         # Still measurable from the wheel on disk, and this host needs it most: detection_failed
         # otherwise sends the user to the server log instead of offering the repair, and the
         # verdict refresh deliberately freezes it. From DISK, because the import is what failed.
-        _disk_reason = _classification_from_disk_label()
+        #
+        # Both suppressions classify_torch_build() applies before its own disk fallback, and
+        # for the same reasons: a deliberately CPU-only install is not broken, and the repair
+        # offered for it would reinstall the very wheel that was asked for. Reached directly
+        # here because classify_torch_build() goes through _has_torch(), which re-runs the
+        # import that already failed.
+        _disk_reason = None
+        if not (
+            _masks_hide_every_accelerator(block_inventory = True)
+            or _expected_cpu_flavor_was_chosen()
+        ):
+            _disk_reason = _classification_from_disk_label()
         _seed_torch_build_snapshot(_disk_reason)
         _build_reason, _build_detail = _mismatch_verdict_for_this_host(_disk_reason)
         if _build_reason is not None:

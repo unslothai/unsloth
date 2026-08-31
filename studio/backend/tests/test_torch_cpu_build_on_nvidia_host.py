@@ -33,6 +33,7 @@ the reports describe; the Windows adapter half is exercised through its own map.
 from __future__ import annotations
 
 import inspect
+import pathlib
 import subprocess
 import types
 from types import SimpleNamespace
@@ -2541,3 +2542,108 @@ def test_a_previously_seen_amd_card_survives_an_unreadable_walk(monkeypatch):
 
     assert [d["vendor"] for d in after["devices"]] == ["amd"]
     assert after["unknown"] is True
+
+
+# =========================== the URL outranks the family, as install.sh's resolver does
+
+@pytest.mark.parametrize("chosen,url,family", [
+    # install.sh returns on UNSLOTH_TORCH_INDEX_URL without ever reading the family, so
+    # when the two disagree the family is not a second opinion, it is dead. A stale
+    # ..._FAMILY=cpu beside a new ..._URL=.../cu128 suppressed a real CPU-wheel mismatch.
+    (False, "https://download.pytorch.org/whl/cu128", "cpu"),
+    (True, "https://download.pytorch.org/whl/cpu", "cu128"),
+    (True, "", "cpu"),
+    (True, "https://download.pytorch.org/whl/cpu", ""),
+    (False, "", "cu128"),
+    (False, "", ""),
+    # Whitespace-only is unset, the way install.sh trims it.
+    (True, "   ", "cpu"),
+])
+def test_a_cpu_choice_reads_the_url_before_the_family(monkeypatch, chosen, url, family):
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", url)
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", family)
+    monkeypatch.setattr(hw.sys, "prefix", "/nonexistent-prefix-for-this-test")
+    assert hw._expected_cpu_flavor_was_chosen() is chosen
+
+
+@pytest.mark.parametrize("helper,url,family,chosen", [
+    ("_expected_rocm_flavor_was_chosen", "https://download.pytorch.org/whl/cu128",
+     "rocm6.4", False),
+    ("_expected_rocm_flavor_was_chosen", "https://download.pytorch.org/whl/rocm6.4",
+     "cpu", True),
+    ("_expected_xpu_flavor_was_chosen", "https://download.pytorch.org/whl/cu128",
+     "xpu", False),
+    ("_expected_xpu_flavor_was_chosen", "https://download.pytorch.org/whl/xpu",
+     "cpu", True),
+])
+def test_the_rocm_and_xpu_helpers_use_the_same_precedence(
+    monkeypatch, helper, url, family, chosen
+):
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", url)
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", family)
+    monkeypatch.setattr(hw.sys, "prefix", "/nonexistent-prefix-for-this-test")
+    assert getattr(hw, helper)() is chosen
+
+
+def test_the_backend_precedence_matches_install_sh():
+    """One rule, two languages: install.sh returns on the URL and never reads the family."""
+    source = (
+        pathlib.Path(hw.__file__).resolve().parents[4] / "install.sh"
+    ).read_text(encoding = "utf-8")
+    block = source[source.index('_url="${UNSLOTH_TORCH_INDEX_URL:-}"') :]
+    block = block[: block.index('_family="${UNSLOTH_TORCH_INDEX_FAMILY:-}"')]
+    assert 'echo "$_url"; return' in block, (
+        "install.sh no longer short-circuits on the URL; the backend mirrors that rule"
+    )
+
+
+# ================== a deliberate CPU install whose torch will not import is not broken
+
+@pytest.fixture
+def _broken_torch_on_a_gpu_host(monkeypatch):
+    """detect_hardware()'s disk-only branch: torch is installed and will not import."""
+    monkeypatch.setattr(hw, "TORCH_IMPORT_ERROR", OSError("[WinError 126]"))
+    monkeypatch.setattr(hw, "_installed_torch_label_on_disk", lambda: "2.11.0+cpu")
+    # The real venv's torch DOES carry CUDA markers, and the classifier reads those too.
+    monkeypatch.setattr(
+        hw, "_installed_torch_markers_on_disk", lambda: {"hip": "", "cuda": "", "xpu": ""}
+    )
+    monkeypatch.setattr(
+        hw, "get_physical_gpu_inventory",
+        lambda **_kw: {
+            "devices": [{"vendor": "nvidia", "name": "NVIDIA RTX A4000"}],
+            "unknown": False,
+        },
+    )
+    for var in ("UNSLOTH_TORCH_INDEX_URL", "UNSLOTH_TORCH_INDEX_FAMILY",
+                "CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES",
+                "ROCR_VISIBLE_DEVICES", "ZE_AFFINITY_MASK"):
+        monkeypatch.delenv(var, raising = False)
+    monkeypatch.setattr(hw.sys, "prefix", "/nonexistent-prefix-for-this-test")
+
+
+def test_a_broken_torch_on_an_unpinned_host_still_reports_the_mismatch(
+    monkeypatch, _broken_torch_on_a_gpu_host
+):
+    assert hw._classification_from_disk_label() == "torch_cpu_build"
+    assert hw._expected_cpu_flavor_was_chosen() is False
+
+
+def test_a_deliberate_cpu_install_is_not_offered_a_gpu_repair(
+    monkeypatch, _broken_torch_on_a_gpu_host
+):
+    """The repair the UI would offer reinstalls the very wheel that was asked for.
+
+    classify_torch_build() suppresses this before its own disk fallback; the branch in
+    detect_hardware() reached _classification_from_disk_label() directly and did not.
+    """
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", "https://download.pytorch.org/whl/cpu")
+    assert hw._expected_cpu_flavor_was_chosen() is True
+
+    source = inspect.getsource(hw._detect_hardware_locked).replace(" ", "")
+    assert "_expected_cpu_flavor_was_chosen()" in source, (
+        "the disk-only branch has to apply the same suppression classify_torch_build does"
+    )
+    assert "_masks_hide_every_accelerator" in source, (
+        "and the mask suppression beside it: an emptied mask is a deliberate CPU pin too"
+    )

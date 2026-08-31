@@ -341,12 +341,16 @@ test("the sidebar keeps polling while the inventory can still change the verdict
     source.indexOf("INVENTORY_SENSITIVE_REASONS = new Set(["),
   );
   const listed = set.slice(0, set.indexOf("]"));
-  for (const settled of ["mlx_unavailable", "intel_mac", "detection_failed"]) {
+  for (const settled of ["mlx_unavailable", "intel_mac"]) {
     assert.ok(
       !listed.includes(settled),
       `${settled} cannot change on a probe and must not keep polling`,
     );
   }
+  // detection_failed IS listed. current_chat_only_verdict() can replace it once the
+  // inventory recovers, for the host whose torch will not import but whose wheel was
+  // classified from disk, so treating it as settled froze the sidebar on the failure.
+  assert.ok(listed.includes("detection_failed"));
 
   assert.match(
     source,
@@ -407,9 +411,12 @@ test("only a host the inventory can still reclassify keeps polling", () => {
     "a healthy GPU host must not gain a forced read a minute",
   );
   assert.ok(!polls(true, "intel_mac"), "an Intel Mac stays an Intel Mac");
+  // detection_failed is NOT settled when torch is the thing that failed: the backend
+  // classifies the wheel from disk and swaps in the mismatch once the inventory recovers,
+  // so stopping the poll froze the sidebar on the failure for the session.
   assert.ok(
-    !polls(true, "detection_failed"),
-    "a probe cannot undo a detection that already failed",
+    polls(true, "detection_failed"),
+    "the backend can still replace this one, so the read has to keep happening",
   );
 
   // The two pre-existing polls are untouched.

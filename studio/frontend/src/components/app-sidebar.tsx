@@ -599,6 +599,12 @@ const INVENTORY_SENSITIVE_REASONS = new Set([
   "no_gpu",
   "torch_cpu_build",
   "torch_cuda_unavailable",
+  // A torch that will not import is classified from its wheel on disk, so the backend can
+  // replace this with torch_cpu_build or torch_cuda_unavailable once the OS probe recovers.
+  // Leaving it out treated that first answer as settled and stopped the only forced health
+  // re-read, so the sidebar and navigation stayed on the failure for the rest of the session
+  // while /api/system already reported the mismatch.
+  "detection_failed",
 ]);
 
 /** One workflow in the list under the Images row. */
