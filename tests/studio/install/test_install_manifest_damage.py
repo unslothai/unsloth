@@ -256,26 +256,35 @@ def test_a_damaged_payload_invalidates_an_otherwise_complete_install(
     _record(dist_info, rows)
     req_root = _complete_install(tmp_path, monkeypatch, site_packages)
 
-    ok_state = install_manifest.verify_install(root = tmp_path, req_root = req_root)
+    ok_state = install_manifest.verify_install(
+        root = tmp_path, req_root = req_root, deep = True)
     assert ok_state["ok"] is True and ok_state["reason"] is None
 
     (site_packages / PKG / "__init__.py").unlink()
-    state = install_manifest.verify_install(root = tmp_path, req_root = req_root)
+    state = install_manifest.verify_install(
+        root = tmp_path, req_root = req_root, deep = True)
     assert state["ok"] is False
     assert state["reason"] == "studio_install_damaged"
     # The deps walk still succeeded; only the payload is at fault.
     assert state["deps_ok"] is True
 
 
-def test_deep_false_skips_the_payload_scan(tmp_path, monkeypatch, site_packages):
-    """The desktop preflight opts out: its probe runs under a 10 second timeout."""
+def test_the_scan_is_off_unless_asked_for(tmp_path, monkeypatch, site_packages):
+    """Default off, so every caller that predates the kwarg is unaffected.
+
+    The skew fails the safe way round this way: an external CLI resolves this
+    module out of the managed venv, so an older caller can load a newer copy of
+    it, and that caller has no way to decline a scan it does not expect.
+    """
     dist_info, rows = _healthy(site_packages)
     _record(dist_info, rows)
     req_root = _complete_install(tmp_path, monkeypatch, site_packages)
     (site_packages / PKG / "__init__.py").unlink()
 
-    state = install_manifest.verify_install(root = tmp_path, req_root = req_root, deep = False)
-    assert state["ok"] is True and state["reason"] is None
+    for kwargs in ({}, {"deep": False}):
+        state = install_manifest.verify_install(
+            root = tmp_path, req_root = req_root, **kwargs)
+        assert state["ok"] is True and state["reason"] is None, kwargs
 
 
 def test_describing_a_foreign_venv_never_scans_this_one(tmp_path, monkeypatch, site_packages):
@@ -285,7 +294,8 @@ def test_describing_a_foreign_venv_never_scans_this_one(tmp_path, monkeypatch, s
     req_root = _complete_install(tmp_path, monkeypatch, site_packages)
     (site_packages / PKG / "__init__.py").unlink()
 
-    state = install_manifest.verify_install(root = tmp_path, req_root = req_root, installed = {PKG: VER})
+    state = install_manifest.verify_install(
+        root = tmp_path, req_root = req_root, installed = {PKG: VER}, deep = True)
     assert state["reason"] != "studio_install_damaged"
 
 
@@ -295,5 +305,39 @@ def test_the_scan_runs_last_and_diverts_no_existing_reason(tmp_path, monkeypatch
     _record(dist_info, rows)
     (site_packages / PKG / "__init__.py").unlink()
 
-    state = install_manifest.verify_install(root = tmp_path)
+    state = install_manifest.verify_install(root = tmp_path, deep = True)
     assert state["reason"] == "studio_install_incomplete"
+
+
+# ------------------------------------------------------- who asks for the scan
+
+def test_the_installers_ask_for_the_scan():
+    """setup.sh and setup.ps1 are the two callers that want it.
+
+    They import this module from their own directory, so unlike an external CLI
+    they can never be skewed against it.
+    """
+    repo = Path(__file__).resolve().parents[3]
+    for name in ("studio/setup.sh", "studio/setup.ps1"):
+        text = (repo / name).read_text(encoding = "utf-8")
+        assert "verify_install(deep = True)" in text, f"{name} stopped asking for the scan"
+        # and it must survive an older module that has no such keyword
+        assert "except TypeError:" in text, f"{name} lost its older-tree fallback"
+
+
+def test_the_desktop_boot_path_does_not_ask_for_the_scan():
+    """`desktop-capabilities` feeds the Tauri preflight under a 10 second timeout.
+
+    Pinned because nothing else would notice it regressing: a refactor that made
+    install_state scan by default would put a stat of every recorded file inside
+    that budget, and a timed-out probe reports a healthy install stale and
+    repairs it.
+    """
+    repo = Path(__file__).resolve().parents[3]
+    deps = (repo / "unsloth_cli" / "_studio_deps.py").read_text(encoding = "utf-8")
+    assert "def install_state(extra_roots: Sequence[Path] = (), deep: bool = False)" in deps
+
+    cli = (repo / "unsloth_cli" / "commands" / "studio.py").read_text(encoding = "utf-8")
+    assert "def _install_state(deep: bool = False)" in cli
+    # verify-install is the one command that opts in.
+    assert "_install_state(deep = True)" in cli

@@ -294,7 +294,7 @@ def _verify_install_supports(module, parameter: str) -> bool:
         return False
 
 
-def install_state(extra_roots: Sequence[Path] = ()) -> dict:
+def install_state(extra_roots: Sequence[Path] = (), deep: bool = False) -> dict:
     """verify_install() result, or incomplete when the helper cannot be loaded.
 
     studio/install_manifest.py ships in the same wheel as this file, so a tree
@@ -341,19 +341,19 @@ def install_state(extra_roots: Sequence[Path] = ()) -> dict:
             kwargs = {"root": root, "req_root": req_root, "installed": installed}
             if _verify_install_supports(module, "installed_conflicts"):
                 kwargs["installed_conflicts"] = installed_conflicts
-            if _verify_install_supports(module, "deep"):
-                kwargs["deep"] = False
+            if deep and _verify_install_supports(module, "deep"):
+                kwargs["deep"] = True
             return module.verify_install(**kwargs)
-        # deep = False: this feeds `desktop-capabilities`, which the Tauri
-        # preflight spawns on the boot path under a 10 second timeout. A stat of
-        # every recorded file could spend that budget on a cold page cache, and a
-        # timed-out probe reports the install stale and repairs a healthy venv --
-        # strictly worse than the quarantine it would have caught. `unsloth
-        # studio update --verify` already scans the tree after the pass, and
-        # setup.sh gets the scan on the fast path by calling with no arguments.
-        # Guarded like the kwargs above so a newer CLI against an older
-        # install_manifest.py does not die on an unexpected keyword.
-        deep_kwargs = {"deep": False} if _verify_install_supports(module, "deep") else {}
+        # deep stays off for the default caller, `desktop-capabilities`, which
+        # the Tauri preflight spawns on the boot path under a 10 second timeout:
+        # a stat of every recorded file could spend that budget on a cold page
+        # cache, and a timed-out probe reports the install stale and repairs a
+        # healthy venv, which is worse than the quarantine it would have caught.
+        # `verify-install` passes deep because nothing times it out and it is the
+        # diagnostic a user is told to run. Guarded like the kwargs above so a
+        # newer CLI against an older install_manifest.py does not die on an
+        # unexpected keyword.
+        deep_kwargs = {"deep": True} if (deep and _verify_install_supports(module, "deep")) else {}
         state = module.verify_install(root = root, **deep_kwargs)
         if foreign and not state["deps_ok"]:
             # The manifest came from another venv but the dependency walk ran

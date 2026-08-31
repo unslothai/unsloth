@@ -506,8 +506,17 @@ _INSTALLER_REWRITTEN_NAMES = frozenset(("package-lock.json",))
 # skipped the way a shared root is.
 _INSTALLER_REGENERATED_TREES = (("studio", "frontend", "dist"),)
 
+# Wall clock the payload scan may spend. Every setup run pays it and neither
+# installer wraps the call in a timeout, so a stalled network mount would
+# otherwise wedge setup. ~65ms is the warm cost of the largest real case.
+PAYLOAD_SCAN_BUDGET_SECONDS = 5.0
 
-def damaged_payload_files(package_name: str = "unsloth", limit: int = 3) -> List[str]:
+
+def damaged_payload_files(
+    package_name: str = "unsloth",
+    limit: int = 3,
+    budget_seconds: float = PAYLOAD_SCAN_BUDGET_SECONDS,
+) -> List[str]:
     """Recorded files of the managed distribution that are gone or truncated.
 
     The version checks above read metadata only, so a payload an antivirus
@@ -519,8 +528,16 @@ def damaged_payload_files(package_name: str = "unsloth", limit: int = 3) -> List
     installed distribution the way `damaged_installed_files` does, because this
     runs on the fast path and its only job is deciding whether to repair ours.
 
-    Never raises: an environment this cannot read is reported as undamaged, so a
-    probe that cannot answer leaves the fast path exactly as it found it.
+    Bounded. Every setup run pays for this, and the call sites in setup.sh and
+    setup.ps1 have no timeout around them, so an unbounded walk would hand a
+    stalled NFS mount or a network drive the ability to wedge setup outright.
+    3644 of unsloth's 4358 recorded rows are stat'ed and that takes ~65ms warm,
+    so the budget is roughly 75x headroom; past it the scan gives up and reports
+    what it has.
+
+    Never raises, and gives up rather than guesses: an environment this cannot
+    read or cannot finish reading is reported as undamaged, so a scan that
+    cannot answer leaves the fast path exactly as it found it.
     """
     import csv
     import io
@@ -528,6 +545,7 @@ def damaged_payload_files(package_name: str = "unsloth", limit: int = 3) -> List
     from importlib.metadata import distributions
 
     found: List[str] = []
+    deadline = time.monotonic() + budget_seconds if budget_seconds > 0 else None
     try:
         wanted = _canonical(package_name)
         paths = _metadata_scan_paths()
@@ -546,7 +564,14 @@ def damaged_payload_files(package_name: str = "unsloth", limit: int = 3) -> List
                 continue
             # csv, not splitlines: a quoted field may hold a newline, and
             # splitlines also breaks on \v, \f and the Unicode separators.
+            checked = 0
             for row in csv.reader(io.StringIO(record, newline = "")):
+                # Checked every 64 stats rather than every row: a clock read per
+                # row would cost more than the stat it is guarding, and 64 rows
+                # cannot overshoot the budget by more than one slow stat each.
+                checked += 1
+                if deadline is not None and not checked % 64 and time.monotonic() > deadline:
+                    return found
                 rel = row[0] if row else ""
                 if not rel or rel.endswith("/"):
                     continue
@@ -593,7 +618,7 @@ def verify_install(
     package_name: str = "unsloth",
     installed: Optional[Dict[str, str]] = None,
     installed_conflicts: Optional[Sequence[str]] = None,
-    deep: bool = True,
+    deep: bool = False,
 ) -> dict:
     """Report whether the managed install finished and can still boot.
 
@@ -605,10 +630,18 @@ def verify_install(
     and dependency checks would answer for the venv the caller happens to be
     running in.
 
-    `deep` adds the payload scan. It defaults on so setup.sh and setup.ps1, which
-    call this with no arguments, get it; the desktop preflight passes False,
-    because its capability subprocess runs under a 10 second timeout on the boot
-    path and a stat of every recorded file is not worth spending that budget on.
+    `deep` adds the payload scan, and is off by default so that every existing
+    caller keeps the behaviour it has today. setup.sh and setup.ps1 opt in; they
+    import this module from their own directory, so they can never be skewed
+    against it. The desktop preflight deliberately does not: its capability
+    subprocess runs under a 10 second timeout on the boot path, and a stat of
+    every recorded file is not worth spending that budget on.
+
+    Off rather than on because the skew fails the safe way round. An external CLI
+    driving a managed venv resolves this module out of that venv
+    (`_manifest_candidates` falls through to `sys.prefix`), so an older CLI can
+    load a newer copy of this file; defaulting the scan on would put it inside
+    that 10 second budget with no way for the old caller to decline.
     """
     reqs = req_root or requirements_root()
     missing = missing_requirements(reqs / BOOT_REQUIREMENT_FILE, installed = installed)
@@ -655,7 +688,11 @@ def verify_install(
     # reasons above. `installed` means we are describing someone else's venv,
     # whose tree this interpreter cannot stat.
     if manifest_ok and deps_ok and deep and installed is None:
-        damaged = damaged_payload_files((read_manifest(root) or {}).get("package") or package_name)
+        # `manifest` is non-None here: manifest_ok is only reachable through the
+        # else branch above. Reused rather than re-read, so the scan cannot
+        # disagree with the checks that already passed on a manifest rewritten
+        # underneath us mid-run.
+        damaged = damaged_payload_files((manifest or {}).get("package") or package_name)
         if damaged:
             manifest_ok = False
             reason = "studio_install_damaged"

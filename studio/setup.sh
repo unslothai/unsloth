@@ -1858,7 +1858,11 @@ try:
     import install_manifest
 except Exception:
     sys.exit(0)  # older tree without the manifest helper: leave the fast path alone
-sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
+try:
+    ok = install_manifest.verify_install(deep = True)['ok']
+except TypeError:
+    ok = install_manifest.verify_install()['ok']  # older tree, no payload scan
+sys.exit(0 if ok else 1)
 " "$SCRIPT_DIR" 2>/dev/null; then
             substep "studio install incomplete -- forcing dependency pass to repair..."
             _SKIP_PYTHON_DEPS=false
