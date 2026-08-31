@@ -5507,12 +5507,19 @@ if ($stackExit -eq 0 -and $XpuIndexUrl) {
         $_tritonTmp = Join-Path ([System.IO.Path]::GetTempPath()) "unsloth_triton_xpu_$([guid]::NewGuid().ToString('N').Substring(0,8))"
         try {
             New-Item -ItemType Directory -Force -Path $_tritonTmp -ErrorAction SilentlyContinue | Out-Null
+            # `--dest`, never pip's `-d` spelling. A [Parameter()] attribute makes Fast-Download an
+            # ADVANCED function, so PowerShell binds common parameters first, and `-d` is a unique
+            # prefix of `-Debug`: it binds there and never reaches $Args_. pip then reads the temp
+            # dir as a positional requirement and fails with "Directory ... is not installable.
+            # Neither 'setup.py' nor 'pyproject.toml' found." before it ever queries the index
+            # (#10018) -- which reads as a missing package, not a dropped flag. Long flags survive
+            # because `--d` is not a parameter-name token. Same rule for every Fast-* wrapper.
             if ($script:UnslothVerbose) {
-                Fast-Download --no-deps --only-binary=:all: -d $_tritonTmp $_tritonXpuSpec --index-url $XpuIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
+                Fast-Download --no-deps --only-binary=:all: --dest $_tritonTmp $_tritonXpuSpec --index-url $XpuIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
                 $tritonDlExit = $LASTEXITCODE
                 $tritonDlOutput = ""
             } else {
-                $tritonDlOutput = Fast-Download --no-deps --only-binary=:all: -d $_tritonTmp $_tritonXpuSpec --index-url $XpuIndexUrl | Out-String
+                $tritonDlOutput = Fast-Download --no-deps --only-binary=:all: --dest $_tritonTmp $_tritonXpuSpec --index-url $XpuIndexUrl | Out-String
                 $tritonDlExit = $LASTEXITCODE
             }
             # The exit code alone is not enough: no wheel on disk means nothing to install from.
