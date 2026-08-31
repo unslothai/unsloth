@@ -867,7 +867,9 @@ def test_a_template_that_cannot_disable_is_never_priced_as_non_thinking(
     assert payload.presence_penalty == expected_presence_penalty
 
 
-@pytest.mark.parametrize("request_kwargs", [{"enable_thinking": True}, {"reasoning_effort": "high"}])
+@pytest.mark.parametrize(
+    "request_kwargs", [{"enable_thinking": True}, {"reasoning_effort": "high"}]
+)
 def test_a_loaded_template_that_cannot_reason_keeps_the_flat_preset(monkeypatch, request_kwargs):
     """supports_reasoning=False is an answer, not a missing one.
 
@@ -898,7 +900,10 @@ def test_a_loaded_template_that_cannot_reason_keeps_the_flat_preset(monkeypatch,
     inference_route._normalize_chat_reasoning_controls(payload)
     inference_route._fill_recommended_sampling_openai(payload, "unsloth/Qwen3.8-27B-GGUF")
 
-    assert backend._request_reasoning_kwargs(payload.enable_thinking, payload.reasoning_effort, None) is None
+    assert (
+        backend._request_reasoning_kwargs(payload.enable_thinking, payload.reasoning_effort, None)
+        is None
+    )
     assert (payload.temperature, payload.presence_penalty) == (0.7, 1.5)
 
 
