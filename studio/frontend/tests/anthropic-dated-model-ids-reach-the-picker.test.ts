@@ -10,8 +10,10 @@ type Prune = (providerType: string, modelIds: string[]) => string[];
 let vite: ViteDevServer;
 let pruneProviderModelIds: Prune;
 
-// The pre-4.6 generation carries a `-YYYYMMDD` suffix because that IS its
-// name: there is no undated `claude-haiku-4-5` to fall back to.
+// The dated id is what `/v1/models` returns for the pre-4.6 generation, and
+// the editor matches a saved selection against that catalog. The undated
+// aliases the API also accepts are not in the listing, so a seed using one
+// gets demoted to a manual entry the first time the catalog loads.
 const DATED = [
   "claude-opus-4-5-20251101",
   "claude-sonnet-4-5-20250929",
