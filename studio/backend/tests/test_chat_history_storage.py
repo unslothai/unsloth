@@ -1248,9 +1248,7 @@ def test_sync_keeps_identical_user_siblings_as_distinct_ids(tmp_path, monkeypatc
     assert by_id["assistant-b"]["parentId"] == "user-b"
 
 
-def test_sync_does_not_purge_a_content_identical_user_with_an_active_run(
-    tmp_path, monkeypatch
-):
+def test_sync_does_not_purge_a_content_identical_user_with_an_active_run(tmp_path, monkeypatch):
     from storage import chat_generation_runs_db as runs_db
 
     _reset_studio_db(tmp_path, monkeypatch)
@@ -1299,12 +1297,7 @@ def test_sync_does_not_purge_a_content_identical_user_with_an_active_run(
     assert created is True
 
     synced = studio_db.sync_chat_messages("thread-1", [prior, user_a])
-    assert {message["id"] for message in synced} >= {
-        "prior",
-        "user-a",
-        "user-b",
-        "assistant-b",
-    }
+    assert {message["id"] for message in synced} >= {"prior", "user-a", "user-b", "assistant-b"}
     assert studio_db.get_chat_message("thread-1", "user-b") is not None
     assert runs_db.get_run("run-1", "alice") is not None
     assert run["userMessageId"] == "user-b"
@@ -1341,9 +1334,7 @@ def test_sync_repeated_message_id_keeps_last_copy_and_its_child(tmp_path, monkey
     assert by_id["assistant-1"]["parentId"] == "user-a"
 
 
-def test_sync_preserves_non_list_attachments_and_malformed_stored_json(
-    tmp_path, monkeypatch
-):
+def test_sync_preserves_non_list_attachments_and_malformed_stored_json(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread())
     user_a = {
