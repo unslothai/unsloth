@@ -20155,6 +20155,18 @@ class LlamaCppBackend:
                         # --fit flag state, not "does it fit": off means this subset provably fits.
                         f"GPUs free: {gpus}, selected: {gpu_indices}, --fit: {'on' if use_fit else 'off'}"
                     )
+                    if 0 < effective_ctx < requested_ctx:
+                        # The line above reports the context that WILL run, and a user
+                        # who asked for more sees only the smaller number and concludes
+                        # their setting did not apply. Name both, so a shortened window
+                        # reads as a decision with a cause rather than a lost setting.
+                        logger.warning(
+                            "Context length was reduced from the requested %d to %d to fit "
+                            "this machine. Lower the context, free VRAM, or pick a smaller "
+                            "quant to keep the full window.",
+                            requested_ctx,
+                            effective_ctx,
+                        )
                     # The planner ran to completion over a real device list and
                     # left --fit on, i.e. it could not prove the model fits. THAT
                     # is a partial-placement verdict. Set last, so any early
