@@ -3,23 +3,14 @@
 
 """An uncapped request must not reserve the whole KV cache (#9955).
 
-Token accounting closed a real overcommit (#9392), but it charges a request that
-names no ``max_tokens`` the rest of the window, because that request really is
-forwarded as ``max_tokens = backend_ctx`` and may generate that much. One such
-request therefore commits the entire cache and every other caller queues behind
-it. The reporter's API card said it exactly:
-
-    SLOTS   1/6 busy - 4 queued
-    IN FLIGHT   5
-
-Six slots, five requests in the building, one of them decoding. The clients that
-hit this are the ordinary ones: browser translation, and most OpenAI SDK calls,
-none of which send a cap.
+Token accounting closed a real overcommit (#9392), but a request naming no
+``max_tokens`` is forwarded as ``max_tokens = backend_ctx``, so it is charged the
+rest of the window and every other caller queues behind it -- "SLOTS 1/6 busy - 4
+queued" on the reporter's card, from the ordinary clients that send no cap.
 
 The fix resolves the omitted cap to the slot's share of the cache before the
-request is either reserved or forwarded, so the reservation is honest rather than
-pessimistic and ``--parallel N`` serves N of them at once. These cover both halves
-of that: the size of the resolved cap, and the reservation it produces.
+request is reserved or forwarded. These cover both halves: the size of the
+resolved cap, and the reservation it produces.
 """
 
 import asyncio
@@ -167,13 +158,9 @@ class TestTheResolvedCap:
 
 
 class TestPromptInjectedAfterTheSizing:
-    """The share has to hold what the route adds after the cap is chosen.
-
-    The standard GGUF path prefixes the current date to the system prompt of a keyless
-    chat and sends that, which admission's estimate of the payload cannot see. Since the
-    reservation lands exactly on a share, an uncharged injection is a slot that overruns
-    its share, and six of them are the overcommit #9392 closed.
-    """
+    """The share has to hold what the route adds after the cap is chosen: the standard
+    GGUF path prefixes the current date and sends that, and six slots each overrunning
+    by an uncharged injection are the overcommit #9392 closed."""
 
     def test_the_injection_comes_out_of_the_cap(self):
         payload = _uncapped()
@@ -186,8 +173,7 @@ class TestPromptInjectedAfterTheSizing:
         assert _charged(payload) + 40 + _cap_with_injection(payload, 40) == SHARE - HEADROOM
 
     def test_the_reservation_covers_the_injection_too(self):
-        """Charging the cap alone would leave admission reserving less than the request
-        occupies, and a mixed queue could then admit past the budget."""
+        """Charging the cap alone reserves less than the request occupies."""
         payload = _uncapped()
         resolved = _resolve(payload, injected = 40)
         payload.max_tokens = resolved.max_tokens
@@ -212,11 +198,9 @@ class TestPromptInjectedAfterTheSizing:
 
 
 class TestDenseText:
-    """A rate is wrong on the input that does not match it, and the cap hands out every
-    token the estimate calls free. A base64 or hex prompt tokenises near one character
-    per token against the four the dense rate charges, so sizing on that rate would hand
-    a slot room its own prompt is already sitting in -- and N of them now decode at once,
-    which is the overcommit #9392 closed."""
+    """The cap hands out every token the estimate calls free, and a hex prompt tokenises
+    near one character per token against the four the dense rate charges: sizing on that
+    rate would give a slot room its own prompt sits in, N of them at once."""
 
     def test_a_blob_is_charged_what_it_can_cost(self):
         payload = _uncapped([{"role": "user", "content": "a1b2c3d4" * 256}])
@@ -225,16 +209,14 @@ class TestDenseText:
         assert _cap(payload) == SHARE - HEADROOM - _charged(payload)
 
     def test_the_reservation_still_lands_on_a_share(self):
-        """Admission prices the payload at the dense rate, so the difference has to be
-        handed to it or it reserves less than the slot holds."""
+        """Admission prices at the dense rate, so the difference has to be handed to it."""
         payload = _uncapped([{"role": "user", "content": "a1b2c3d4" * 256}])
         resolved = _resolve(payload)
         payload.max_tokens = resolved.max_tokens
         assert _cost(payload, resolved.extra_prompt_tokens) == SHARE - HEADROOM
 
     def test_a_blob_that_fills_the_share_keeps_the_whole_window(self):
-        """Pessimism costs an answer, never the cache: past the floor the request is
-        simply left with the default it always had."""
+        """Pessimism costs an answer, never the cache."""
         payload = _uncapped([{"role": "user", "content": "a1b2c3d4" * (SHARE // 4)}])
         assert _cap(payload) is None
 
@@ -244,7 +226,7 @@ class TestWhatTheShareDoesNotHold:
 
     def test_a_multibyte_character_is_charged_its_bytes(self):
         """A code point with no merge falls back to a token per UTF-8 byte, so counting
-        characters would not be the bound the cap is sized against."""
+        characters is not a bound."""
         payload = _uncapped([{"role": "user", "content": "\U0001f600" * 64}])
         ascii_payload = _uncapped([{"role": "user", "content": "x" * 64}])
         assert _charged(payload) > _charged(ascii_payload) * 3
@@ -256,9 +238,8 @@ class TestWhatTheShareDoesNotHold:
         assert SHARE - (_charged(payload) + resolved.max_tokens) == HEADROOM
 
     def test_a_request_carrying_tools_is_left_alone(self):
-        """The non-streaming passthrough re-sends a tools request under one lease, with
-        the first answer and a nudge appended and the same cap, so a share-sized cap
-        would let one lease hold nearly two shares."""
+        """The non-streaming passthrough re-sends a tools request under one lease, first
+        answer and nudge appended, at the same cap, so one lease would hold two shares."""
         payload = _uncapped()
         payload.tools = [{"type": "function", "function": {"name": "get_weather"}}]
         assert _cap(payload) is None

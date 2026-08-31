@@ -149,21 +149,13 @@ def estimate_messages_tokens_conservative(
 
 
 def estimate_messages_tokens_upper_bound(messages: list[dict]) -> int:
-    """One token per character: what no tokenizer can exceed.
+    """One token per UTF-8 byte: a bound, not a rate.
 
-    Every estimate above is a rate, and a rate is wrong on the input that does not match
-    it -- `estimate_messages_tokens_dense` charges ASCII the English four against a
-    measured 1.13 for hex, and even the conservative rate of two stays deliberately below
-    what a blob really costs. That is right for a caller pricing what a thread has already
-    spent, where over-pricing throws away room. It is wrong for one handing out room it
-    then fills exactly: there the undercount is cache nobody accounted for.
-
-    A byte-level BPE merges bytes into tokens and never splits one, so a token per BYTE
-    is a bound rather than a rate, and it holds for text no sample here predicted. Bytes
-    and not characters: a code point with no merge falls back to one token per UTF-8
-    byte, and an emoji is four of them. It costs about 4x on English prose, so it belongs
-    only where being wrong means overflowing the cache, and where being pessimistic costs
-    a shorter answer.
+    A byte-level BPE merges bytes and never splits one, so this holds for the text the
+    rates above mispredict -- dense charges ASCII the English four against a measured
+    1.13 for hex, and the conservative two stays deliberately below what a blob costs.
+    About 4x on prose, so it belongs only to a caller handing out room it then fills,
+    where an undercount is cache nobody accounted for and pessimism costs an answer.
     """
     total = 0
     for message in messages:
