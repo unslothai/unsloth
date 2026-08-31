@@ -777,7 +777,7 @@ def test_build_rag_autoinject_project_scope_runs_when_autoinject_off(monkeypatch
         {"project_id": "p1", "autoinject": False},
     )
     assert result is not None
-    assert "fourteen minutes" in result["messages"][-1]["content"]
+    assert "project hit" in result["messages"][-1]["content"]
     assert captured.get("scope_project_id") == "p1"
 
 

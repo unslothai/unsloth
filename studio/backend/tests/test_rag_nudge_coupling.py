@@ -12,6 +12,7 @@ from routes import inference
 
 TOOLS = [{"type": "function", "function": {"name": "search_knowledge_base"}}]
 TOOLS_WITH_WEB = TOOLS + [{"type": "function", "function": {"name": "web_search"}}]
+TOOLS_WITH_RESEARCH = TOOLS + [{"type": "function", "function": {"name": "deep_research"}}]
 RAG_SCOPE = {"project_id": "p1"}
 
 
@@ -40,6 +41,27 @@ def test_rag_and_web_nudge_discourages_automatic_web_fallback():
     assert inference._RAG_GROUNDING_NUDGE in out
     assert inference._RAG_WEB_SEARCH_PRIORITY_NUDGE in out
     assert inference._RAG_CLOSED_CORPUS_NUDGE not in out
+
+
+def test_closed_corpus_nudge_is_scoped_to_document_questions():
+    assert "When the user asks about the attached documents" in inference._RAG_CLOSED_CORPUS_NUDGE
+    assert "answer normally from your own capabilities" in inference._RAG_CLOSED_CORPUS_NUDGE
+    assert "If the requested information is not in" not in inference._RAG_CLOSED_CORPUS_NUDGE
+
+
+def test_deep_research_skips_closed_corpus_nudge():
+    out = _rag_nudge(nudge = "", tools = TOOLS_WITH_RESEARCH, rag_scope = RAG_SCOPE)
+    assert inference._RAG_GROUNDING_NUDGE in out
+    assert inference._RAG_CLOSED_CORPUS_NUDGE not in out
+    assert inference._RAG_WEB_SEARCH_PRIORITY_NUDGE not in out
+
+
+def test_external_provider_route_applies_rag_nudge():
+    import inspect
+
+    src = inspect.getsource(inference._proxy_to_external_provider)
+    assert "_apply_rag_nudge" in src
+    assert src.index("_apply_rag_nudge") < src.index("stream_with_studio_tools")
 
 
 def test_rag_nudge_unchanged_without_scope():

@@ -15,11 +15,23 @@ const SOURCE = readFileSync(
 test("project sources force rag autoinject on in the local chat body", () => {
   assert.match(
     SOURCE,
-    /function resolveRagAutoinject\([\s\S]*?if \(projectRagEnabled\) return true;/,
+    /function resolveRagAutoinject\([\s\S]*?if \(projectInScope\) return true;/,
   );
   assert.match(
     SOURCE,
-    /autoinject: resolveRagAutoinject\(\s*ragAutoInject,\s*params\.checkpoint,\s*projectRagEnabled,/,
+    /autoinject: resolveRagAutoinject\(\s*ragAutoInject,\s*params\.checkpoint,\s*Boolean\(/,
+  );
+});
+
+test("exclusive knowledge-base scopes do not force project autoinject", () => {
+  const helper = SOURCE.slice(
+    SOURCE.indexOf("function resolveRagAutoinject"),
+    SOURCE.indexOf("/** Server-side usage data"),
+  );
+  assert.match(helper, /if \(projectInScope\) return true;/);
+  assert.match(
+    SOURCE,
+    /projectRagEnabled &&\s+ragProjectId &&\s+!\(ragEnabled && ragSource\.type === "kb"\)/,
   );
 });
 

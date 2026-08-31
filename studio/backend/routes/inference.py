@@ -4246,13 +4246,20 @@ _RAG_GROUNDING_NUDGE = (
     "your answer on them and cite them. Do not answer from memory when the "
     "attached documents are relevant."
 )
-# When web_search is not enabled, keep answers inside the attached corpus.
+# When no internet-capable tool is enabled, keep document answers inside the
+# attached corpus. Unrelated questions still use the model's own capabilities.
 _RAG_CLOSED_CORPUS_NUDGE = (
-    "The attached documents form a closed corpus. If the requested information "
-    "is not in search_knowledge_base results or injected passages, say it is "
-    "not available in the attached documents. Do not search the public "
-    "internet or invent facts."
+    "When the user asks about the attached documents, those documents are a "
+    "closed corpus. If that document information is not in "
+    "search_knowledge_base results or injected passages, say it is not "
+    "available in the attached documents rather than inventing facts. Do not "
+    "search the public internet. For questions that are not about the attached "
+    "documents, answer normally from your own capabilities without searching "
+    "the public internet."
 )
+# deep_research reaches the public web; treat it like web_search so a closed-
+# corpus instruction cannot cancel an armed research turn.
+_RAG_INTERNET_TOOL_NAMES = frozenset({"web_search", "deep_research"})
 # When both RAG and web_search are enabled (e.g. the Search pill is on), project
 # sources must still win over an automatic web fallback.
 _RAG_WEB_SEARCH_PRIORITY_NUDGE = (
@@ -4790,19 +4797,22 @@ async def _apply_rag_nudge(nudge: str, tools: list[dict], *, rag_scope) -> str:
     """Append the RAG grounding nudge to ``nudge`` when the knowledge-base tool
     is active (search_knowledge_base present and a retrieval scope is set).
 
-    When web_search is absent, adds closed-corpus guidance so the Search pill
-    being off cannot be read as permission to answer from the public web. When
-    both tools are present and a project scope is set, tells the model not to
-    treat web_search as an automatic fallback after an empty document search.
+    When no internet-capable tool is present, adds closed-corpus guidance so
+    the Search pill being off cannot be read as permission to answer document
+    questions from the public web. ``deep_research`` counts as internet-capable
+    so an armed research turn is not told the corpus is closed. When
+    ``web_search`` is present and a project scope is set, tells the model not
+    to treat web_search as an automatic fallback after an empty document search.
 
     Returns ``nudge`` unchanged when RAG isn't active."""
     tool_names = {(t.get("function") or {}).get("name") for t in (tools or [])}
     if "search_knowledge_base" not in tool_names or not rag_scope:
         return nudge
     grounding = _RAG_GROUNDING_NUDGE + await _rag_roster_sentence(rag_scope)
-    if "web_search" not in tool_names:
+    has_internet_tool = bool(tool_names & _RAG_INTERNET_TOOL_NAMES)
+    if not has_internet_tool:
         grounding = grounding + " " + _RAG_CLOSED_CORPUS_NUDGE
-    elif rag_scope.get("project_id"):
+    elif "web_search" in tool_names and rag_scope.get("project_id"):
         grounding = grounding + " " + _RAG_WEB_SEARCH_PRIORITY_NUDGE
     if not nudge:
         return grounding
@@ -18828,14 +18838,24 @@ async def _proxy_to_external_provider(
         request,
         include_api_key = run_studio_tool_loop,
     )
-    if run_studio_tool_loop and payload.bypass_permissions:
+    if run_studio_tool_loop:
         # Full access disables the sandbox at execution time, so the schemas must
         # say so too rather than describing a sandbox the model will not get.
-        _external_nudge = _build_tool_action_nudge(
-            tools = external_studio_tools,
-            model_name = model,
-            full_access = True,
-            full_access_only = True,
+        _external_nudge = ""
+        if payload.bypass_permissions:
+            _external_nudge = _build_tool_action_nudge(
+                tools = external_studio_tools,
+                model_name = model,
+                full_access = True,
+                full_access_only = True,
+            )
+        # Same RAG guidance the local GGUF/safetensors loops apply: Search off
+        # is a closed corpus for document questions, and Search on still prefers
+        # project sources over an automatic web fallback.
+        _external_nudge = await _apply_rag_nudge(
+            _external_nudge,
+            external_studio_tools,
+            rag_scope = payload.rag_scope,
         )
         if _external_nudge:
             chat_messages = _append_to_system_message(chat_messages, _external_nudge)
