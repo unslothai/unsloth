@@ -551,16 +551,13 @@ class TestARoundIsCostedTheSameWayTheReservationWas:
     def test_round_zero_keeps_an_uncapped_loop_s_output_allowance(self):
         """No max_tokens and no max_completion_tokens.
 
-        The invariant is that the round-zero re-cost does not SHRINK the lease the
-        opening reservation took: the callback fires before the conversation has grown,
-        so anything it gives back is room llama-server is already using and the next
-        arrival is admitted into it.
+        The invariant: the round-zero re-cost must not SHRINK the opening lease. The
+        callback fires before the conversation has grown, so anything given back is room
+        llama-server is already using, and the next arrival is admitted into it.
 
-        The size of that allowance is a separate question and it changed: an absent cap
-        (and "Max", which is the same statement) is charged
-        ``_OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS`` rather than the rest of the
-        window. What matters here is that BOTH sides price it the same way, which is why
-        this asserts equality rather than a number.
+        The allowance SIZE is a separate question and it changed (an absent cap, and
+        "Max", are charged ``_OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS``), so this
+        asserts the two sides agree rather than asserting a number.
         """
         from routes.inference import (
             _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS,

@@ -364,12 +364,10 @@ class TestTheWholeRenderedPromptIsCounted:
         )
 
     def test_an_uncapped_request_reserves_a_bounded_allowance(self):
-        """It used to reserve the whole window, on the grounds that generation MAY run
-        that long. It may, but almost none do, and charging the window made the default
-        Studio chat (Max Tokens = Max, which sends the context length) cost the entire
-        cache before writing a token, so a second chat could never start. The reservation
-        is now an allowance, `_OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS`, clamped to
-        what is left."""
+        """It used to reserve the whole window because generation MAY run that long.
+        Almost none do, and charging the window made the default Studio chat (Max Tokens
+        = Max sends the context length) cost the entire cache before writing a token, so a
+        second chat could never start. Now an allowance clamped to what is left."""
         from types import SimpleNamespace
 
         from routes.inference import _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
@@ -386,11 +384,9 @@ class TestTheWholeRenderedPromptIsCounted:
     def test_two_uncapped_short_prompts_do_not_both_run(self):
         """The collision this closes: tiny commitments, cache-filling generations.
 
-        Still true on a 2048 cache, but for a different reason than it used to be: the
-        allowance is no longer the whole window, it is simply that two of them do not fit
-        in 2048. On a cache with room for both they now DO both run, which is the point of
-        the change. What is being pinned here is that the allowance is charged at all; a
-        request charged only for its prompt would let any number of these in.
+        Still true at 2048, but now only because two allowances do not fit there; on a
+        larger cache they DO both run, which is the point. What this pins is that the
+        allowance is charged at all, since a prompt-only charge would admit any number.
         """
         from types import SimpleNamespace
 
