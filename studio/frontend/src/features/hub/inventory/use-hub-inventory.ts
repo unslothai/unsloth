@@ -143,7 +143,7 @@ function liveInventoryRank(job: ManagedDownload): number {
   return 0;
 }
 
-function liveInventorySelectionKey(
+export function liveInventorySelectionKey(
   job: Pick<ManagedDownload, "kind" | "repoId" | "variant" | "inventoryKind">,
 ): string {
   return inventoryHintKey(
@@ -152,7 +152,7 @@ function liveInventorySelectionKey(
   );
 }
 
-function observedKeyProtections(
+export function observedKeyProtections(
   jobs: Record<string, ManagedDownload>,
 ): Record<InventoryHint["kind"], Set<string>> {
   const keys: Record<InventoryHint["kind"], Set<string>> = {
@@ -192,7 +192,7 @@ function liveJobDisplayBytes(job: ManagedDownload): number {
   return Math.max(job.downloadedBytes, job.completedBytes, 0);
 }
 
-function createLiveInventoryJobsSelector(isDatasetMode: boolean): (state: {
+export function createLiveInventoryJobsSelector(isDatasetMode: boolean): (state: {
   jobs: Record<string, ManagedDownload>;
 }) => LiveInventoryJob[] {
   let cache: { signature: string; jobs: LiveInventoryJob[] } = {

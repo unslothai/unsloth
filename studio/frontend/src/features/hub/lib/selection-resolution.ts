@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { findCompleteHfCacheLocalRow } from "../inventory/inventory-dedupe";
+import {
+  findCompleteHfCacheLocalRow,
+  provenUnknownPartialFamily,
+} from "../inventory/inventory-dedupe";
 import { cachedInventoryId } from "../inventory/view-models";
 import type {
   CachedInventoryRow,
@@ -226,12 +229,38 @@ function resolveCurrentSelection(
     : null;
 }
 
+function formatFamilyOf(
+  modelFormat: CachedInventoryRow["modelFormat"],
+): "gguf" | "model" {
+  return modelFormat === "gguf" ? "gguf" : "model";
+}
+
+/**
+ * Whether `row` can carry a selection currently identified as `provisional`.
+ *
+ * An unclassified row stays a candidate unless its family can be PROVEN to
+ * differ. Reading `unknown` as "compatible with anything" is what let a
+ * cancelled GGUF download land on a safetensors snapshot fragment of the same
+ * repository -- deduplication had already decided those were two artifacts and
+ * kept them both, so the resolver must not then merge them. Only the positive
+ * direction is sound, so an unclassified partial with no transport is still
+ * accepted: that is the ordinary cancel-and-resume row.
+ */
 function isProvisionalFormatCompatible(
   provisional: CachedInventoryRow["modelFormat"],
-  current: CachedInventoryRow["modelFormat"],
+  row: Pick<
+    CachedInventoryRow | LocalInventoryRow,
+    "modelFormat" | "partial" | "partialTransport"
+  >,
 ): boolean {
+  const current = row.modelFormat;
   if (current === "unknown") {
-    return true;
+    // A complete row carries no transport, so there is nothing to disagree with.
+    if (!row.partial) {
+      return true;
+    }
+    const proven = provenUnknownPartialFamily(row);
+    return proven === null || proven === formatFamilyOf(provisional);
   }
   if (provisional === "safetensors") {
     return (
@@ -267,10 +296,10 @@ function resolveFormatTransition(
   if (identity.source === "download") {
     return resolveCurrentSelection(
       matchingCached.filter((row) =>
-        isProvisionalFormatCompatible(identity.modelFormat, row.modelFormat),
+        isProvisionalFormatCompatible(identity.modelFormat, row),
       ),
       matchingLocal.filter((row) =>
-        isProvisionalFormatCompatible(identity.modelFormat, row.modelFormat),
+        isProvisionalFormatCompatible(identity.modelFormat, row),
       ),
       filteredCachedIds,
       filteredLocalIds,
@@ -321,9 +350,16 @@ function resolveFormatTransition(
   ) {
     return null;
   }
+  // Cancel and resume land here: the classified row is gone and only an
+  // unclassified partial is left. It is the right row only if it belongs to the
+  // same family, by the same rule deduplication used to keep it.
   return resolveCurrentSelection(
     [],
-    matchingLocal.filter((row) => row.modelFormat === "unknown"),
+    matchingLocal.filter(
+      (row) =>
+        row.modelFormat === "unknown" &&
+        isProvisionalFormatCompatible(identity.modelFormat, row),
+    ),
     filteredCachedIds,
     filteredLocalIds,
     localRows,

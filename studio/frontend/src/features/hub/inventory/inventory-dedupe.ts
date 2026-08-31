@@ -18,13 +18,34 @@ function repoKey(repoId: string | null | undefined): string | null {
   return repoId?.trim().toLowerCase() || null;
 }
 
-type PartialFormatFamily = "gguf" | "model";
+export type PartialFormatFamily = "gguf" | "model";
 
 function partialFormatFamily(
   modelFormat: CachedInventoryRow["modelFormat"],
 ): PartialFormatFamily | null {
   if (modelFormat === "unknown") return null;
   return modelFormat === "gguf" ? "gguf" : "model";
+}
+
+/**
+ * The family an unclassified PARTIAL row can be PROVEN to belong to, or null
+ * when its transport says nothing.
+ *
+ * The backend writes a transport only for snapshot partials -- a GGUF row is
+ * hardcoded to none (`services/models/common.py`, `cache_inventory.py`), so a
+ * transport proves the model family. The converse does not hold: a snapshot
+ * partial with neither a cancel marker nor a manifest reports none as well
+ * (`utils/inventory_scan.py`), so an absent transport proves nothing and must
+ * not be read as "GGUF".
+ *
+ * Exported so selection resolution refuses the same pairing deduplication
+ * deliberately kept apart. Meaningless for a complete row, which never carries
+ * a transport; callers must check `row.partial` first.
+ */
+export function provenUnknownPartialFamily(
+  row: Pick<CachedInventoryRow | LocalInventoryRow, "partialTransport">,
+): PartialFormatFamily | null {
+  return row.partialTransport ? "model" : null;
 }
 
 function addPartialFormatFamily(
@@ -40,16 +61,21 @@ function addPartialFormatFamily(
   familiesByRepo.set(repo, families);
 }
 
-function knownFamiliesMatchUnknownPartial(
-  row: Pick<CachedInventoryRow | LocalInventoryRow, "partialTransport">,
+function knownFamiliesMatchUnknownRow(
+  row: Pick<CachedInventoryRow | LocalInventoryRow, "partialTransport" | "partial">,
   families: ReadonlySet<PartialFormatFamily> | undefined,
 ): boolean {
   if (!families?.size) return false;
   if (families.size > 1) return true;
-  // snapshot partials carry a transport; gguf partials do not.
-  return row.partialTransport
-    ? families.has("model")
-    : families.has("gguf");
+  // A complete row has no transport to read, so the family test below would
+  // always say "gguf" and would retain it beside a safetensors row purely
+  // because it is complete. Nothing distinguishes it from the known row, so
+  // any known family shadows it.
+  if (!row.partial) return true;
+  // Deduplication keeps its two-way heuristic: guessing wrong here shows one
+  // extra row, which is recoverable, whereas the resolver's version of this
+  // question decides which artifact the user is looking at.
+  return families.has(row.partialTransport ? "model" : "gguf");
 }
 
 export function findCompleteHfCacheLocalRow(
@@ -183,7 +209,7 @@ export function dedupeSameSourceHubCacheRows({
       !row.liveDownload &&
       row.modelFormat === "unknown" &&
       repo &&
-      knownFamiliesMatchUnknownPartial(row, partialFormatFamilies.get(repo))
+      knownFamiliesMatchUnknownRow(row, partialFormatFamilies.get(repo))
     ) {
       return false;
     }
@@ -212,14 +238,14 @@ export function dedupeSameSourceHubCacheRows({
         row.partial &&
         row.modelFormat === "unknown" &&
         repo &&
-        knownFamiliesMatchUnknownPartial(row, partialFormatFamilies.get(repo))
+        knownFamiliesMatchUnknownRow(row, partialFormatFamilies.get(repo))
       ) {
         return false;
       }
       if (
         row.modelFormat === "unknown" &&
         repo &&
-        knownFamiliesMatchUnknownPartial(
+        knownFamiliesMatchUnknownRow(
           row,
           completeCachedFormatFamilies.get(repo),
         )

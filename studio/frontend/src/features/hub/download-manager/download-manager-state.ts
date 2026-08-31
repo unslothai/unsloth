@@ -29,6 +29,7 @@ import {
   type JobListeners,
   type ManagedDownload,
   downloadInventoryHintKind,
+  scopedDownloadInventoryKind,
 } from "./download-manager-types";
 import {
   clearRuntimeTimer,
@@ -54,6 +55,38 @@ function finiteNumber(value: unknown, fallback: number): number {
 
 function nonNegativeNumber(value: unknown, fallback = 0): number {
   return Math.max(0, finiteNumber(value, fallback));
+}
+
+/**
+ * The inventory kind of a persisted job, recovering it for records written
+ * before the field existed.
+ *
+ * Those records still carry `scopedFiles`, and that is the same evidence
+ * `startJob` classifies a fresh scoped request from. Without this, a scoped
+ * GGUF download persisted by an older Studio comes back as a model download on
+ * the next launch, so its row changes format under any selection pointing at
+ * it, and stays wrong until backend adoption happens to repair it.
+ */
+function inventoryKindOfPersisted(
+  value: Record<string, unknown>,
+  variant: string | null,
+): { inventoryKind?: Exclude<InventoryHint["kind"], "dataset"> } {
+  if (
+    value.inventoryKind === INVENTORY_HINT_KIND.MODEL ||
+    value.inventoryKind === INVENTORY_HINT_KIND.GGUF
+  ) {
+    return { inventoryKind: value.inventoryKind };
+  }
+  if (
+    variant?.startsWith("@") &&
+    Array.isArray(value.scopedFiles) &&
+    value.scopedFiles.every((file) => typeof file === "string")
+  ) {
+    return {
+      inventoryKind: scopedDownloadInventoryKind(value.scopedFiles as string[]),
+    };
+  }
+  return {};
 }
 
 function sanitizePersistedJob(
@@ -93,10 +126,7 @@ function sanitizePersistedJob(
     ...(typeof value.checkpoint === "boolean"
       ? { checkpoint: value.checkpoint }
       : {}),
-    ...(value.inventoryKind === INVENTORY_HINT_KIND.MODEL ||
-    value.inventoryKind === INVENTORY_HINT_KIND.GGUF
-      ? { inventoryKind: value.inventoryKind }
-      : {}),
+    ...inventoryKindOfPersisted(value, variant),
     // A held reading survives the reload that carried it: dropping the flag restores the stale
     // downloadedBytes with the guard reading undefined (so, measured), which is the "0 B left"
     // the guard exists to stop.
@@ -610,9 +640,18 @@ export function discardDeletedModelInventoryHints(
     discardDeletedInventoryHints(repoId, ["model", "gguf"]);
     return;
   }
-  discardPendingInventoryHint("gguf", repoId);
-  clearCompletedInventoryHint({ kind: "gguf", repoId });
   const job = getState().jobs[jobKeyOf(DOWNLOAD_KIND.MODEL, repoId, variant)];
+  // Every other hint site classifies a scoped `@variant` as a model download.
+  // Hardcoding "gguf" here was right while any variant meant GGUF; now it
+  // leaves a scoped model download's own hint behind, and the deleted row comes
+  // back optimistically until the hint expires.
+  const kind = downloadInventoryHintKind(
+    DOWNLOAD_KIND.MODEL,
+    variant,
+    job?.inventoryKind,
+  );
+  discardPendingInventoryHint(kind, repoId);
+  clearCompletedInventoryHint({ kind, repoId });
   if (job?.state === "complete") {
     removeJob(job.key);
   }
