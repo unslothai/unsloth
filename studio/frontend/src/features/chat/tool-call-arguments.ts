@@ -35,9 +35,18 @@ export function toolCallArgumentsText(
   exactText: unknown,
   args: unknown,
 ): string {
-  return typeof exactText === "string" && exactText.length > 0
-    ? exactText
-    : JSON.stringify(args ?? {});
+  if (typeof exactText === "string" && exactText.length > 0) {
+    try {
+      JSON.parse(exactText);
+      return exactText;
+    } catch {
+      // Text that does not parse cannot be these arguments, so it is not what the tool
+      // runs with either. This card is an approval boundary, so fall back to the
+      // structured arguments rather than print something unreadable next to Allow.
+      // `toolCallReplayArguments` above screens the same field the same way.
+    }
+  }
+  return JSON.stringify(args ?? {});
 }
 
 type JsonTextNode =

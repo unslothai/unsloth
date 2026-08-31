@@ -136,3 +136,57 @@ test("prompt export routes through the exact-text replay helper", () => {
     false,
   );
 });
+
+test("argument text that does not parse is not shown on an approval card", () => {
+  // A card is what the user approves, so text that cannot be these arguments must not be
+  // rendered next to Allow. The structured arguments stand in, exactly as replay does.
+  for (const junk of [
+    "not json at all",
+    "   ",
+    '{"id":1',
+    "<script>alert(1)</script>",
+  ]) {
+    assert.equal(toolCallArgumentsText(junk, { q: "gpu" }), '{"q":"gpu"}');
+  }
+  // Valid text is still preferred, including the whole point of the field.
+  assert.equal(
+    toolCallArgumentsText('{"id":9007199254740993}', { id: 9007199254740992 }),
+    '{"id":9007199254740993}',
+  );
+});
+
+test("a Gemini native_part merge keeps the executed integer", () => {
+  // The adapter computes the overwritten keys from tool_end BEFORE folding native_part
+  // into args.google, so `google` travels the lexeme-preserving path. That is what lets
+  // the id survive a merge that genuinely adds data.
+  const card = '{"google":{"executableCode":{"code":"print(1)"}},"id":9007199254740993}';
+  const mergedArgs = {
+    google: { executableCode: { code: "print(1)" }, native_part: { inlineData: "AAA" } },
+    id: 9007199254740992,
+  };
+
+  const merged = mergedToolCallArgumentsText(card, mergedArgs, []);
+
+  assert.ok(merged.includes("9007199254740993"), merged);
+  assert.ok(merged.includes("native_part"), merged);
+  assert.deepEqual(JSON.parse(merged), {
+    google: { executableCode: { code: "print(1)" }, native_part: { inlineData: "AAA" } },
+    id: 9007199254740992,
+  });
+});
+
+test("a card stored before this change still merges", () => {
+  // Sessions persisted by an older build carry the browser's own encoding as argsText.
+  // Reading one back has to keep working, and must not throw.
+  const legacy = JSON.stringify({ id: 9007199254740992, q: "gpu" });
+  const merged = mergedToolCallArgumentsText(legacy, { id: 9007199254740992, q: "gpu", done: true }, []);
+
+  assert.deepEqual(JSON.parse(merged), { id: 9007199254740992, q: "gpu", done: true });
+});
+
+test("unreadable stored text falls back instead of throwing", () => {
+  for (const junk of ["", "   ", "{", "not json", '{"a":1} trailing']) {
+    const out = mergedToolCallArgumentsText(junk, { a: 1 }, []);
+    assert.deepEqual(JSON.parse(out), { a: 1 });
+  }
+});
