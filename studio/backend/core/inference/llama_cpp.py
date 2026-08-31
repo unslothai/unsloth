@@ -901,6 +901,9 @@ _HAS_ANSWER_ARTIFACT = re.compile(
 )
 
 _FENCE_RUN_RE = re.compile(r"(?<!`)(?P<backticks>`{3,})(?!`)|(?<!~)(?P<tildes>~{3,})(?!~)")
+# Blockquote markers are markdown structure, not content: stripped so a
+# fence inside a quote is judged at its real column.
+_BLOCKQUOTE_PREFIX = re.compile(r"^[ \t]*(?:>[ \t]?)+")
 
 
 def _has_unclosed_code_fence(text: str) -> bool:
@@ -912,13 +915,14 @@ def _has_unclosed_code_fence(text: str) -> bool:
     not at line start) is only accepted when its trailing characters
     look like a clean CommonMark info-string token with no internal
     whitespace. Column-0 fences always count, so multi-token info
-    strings like ``\\`\\`\\`python linenums=1`` still work. A leading
-    ``>`` blockquote marker leaves the fence inline by this rule, which
-    is why the closed-fence patterns also tolerate one.
+    strings like ``\\`\\`\\`python linenums=1`` still work, blockquoted
+    or not: the ``>`` marker is stripped first so a quoted fence is
+    judged at its real column instead of reading as prose.
     """
     active_char: Optional[str] = None
     active_len = 0
-    for line in text.splitlines():
+    for raw_line in text.splitlines():
+        line = _BLOCKQUOTE_PREFIX.sub("", raw_line)
         m = _FENCE_RUN_RE.search(line)
         if not m:
             continue

@@ -212,10 +212,30 @@ def test_artifact_regex_detects_blockquoted_code_fence():
     samples = [
         "First, let me show it.\n> ```python\n> x = 1\n> ```",
         "Let me quote it.\n> ~~~bash\n> echo hi\n> ~~~",
+        # The marker is stripped before the column is judged, so a quoted
+        # fence keeps the multi-token info strings a column-0 fence allows.
+        'First, let me show it.\n> ```python linenums="1"\n> x = 1\n> ```',
+        "First, let me show it.\n>> ```python title=demo.py\n>> x = 1\n>> ```",
     ]
     for text in samples:
         assert _has_answer_artifact(text), text
         assert not _would_reprompt(text), text
+
+
+def test_blockquoted_open_fence_still_reprompts():
+    """Stripping the marker must not make an unfinished quoted block
+    look complete."""
+    text = 'First, let me show it.\n> ```python linenums="1"\n> x = 1'
+    assert not _has_answer_artifact(text)
+    assert _would_reprompt(text)
+
+
+def test_quoted_prose_mention_of_backticks_after_code():
+    """A blockquoted prose line is still prose: it must not reopen a
+    fence that the code block already closed."""
+    text = "First, let me show it.\n```python\nx = 1\n```\n> Use ``` for markdown."
+    assert _has_answer_artifact(text)
+    assert not _would_reprompt(text)
 
 
 def test_blockquote_marker_does_not_close_an_open_fence_early():
