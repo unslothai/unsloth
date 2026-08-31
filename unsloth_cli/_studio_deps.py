@@ -341,8 +341,20 @@ def install_state(extra_roots: Sequence[Path] = ()) -> dict:
             kwargs = {"root": root, "req_root": req_root, "installed": installed}
             if _verify_install_supports(module, "installed_conflicts"):
                 kwargs["installed_conflicts"] = installed_conflicts
+            if _verify_install_supports(module, "deep"):
+                kwargs["deep"] = False
             return module.verify_install(**kwargs)
-        state = module.verify_install(root = root)
+        # deep = False: this feeds `desktop-capabilities`, which the Tauri
+        # preflight spawns on the boot path under a 10 second timeout. A stat of
+        # every recorded file could spend that budget on a cold page cache, and a
+        # timed-out probe reports the install stale and repairs a healthy venv --
+        # strictly worse than the quarantine it would have caught. `unsloth
+        # studio update --verify` already scans the tree after the pass, and
+        # setup.sh gets the scan on the fast path by calling with no arguments.
+        # Guarded like the kwargs above so a newer CLI against an older
+        # install_manifest.py does not die on an unexpected keyword.
+        deep_kwargs = {"deep": False} if _verify_install_supports(module, "deep") else {}
+        state = module.verify_install(root = root, **deep_kwargs)
         if foreign and not state["deps_ok"]:
             # The manifest came from another venv but the dependency walk ran
             # here, so it says nothing about that venv.
