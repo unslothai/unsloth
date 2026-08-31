@@ -227,13 +227,13 @@ test("each fit verdict is an info mark that explains itself", () => {
   // Only oom fails to load, so only its hint says so; partial offloads and runs slower.
   assert.ok(
     PICKERS.includes(
-      'hint: "Model doesn\'t fit but still works with offloading. Expect slower inference."',
+      'hint: "Model may not fit but still works with offloading. Expect slower inference."',
     ),
   );
   // The Hub says it in the same words, which is the point of sharing the classifier.
   assert.ok(
     HUB_CARD.includes(
-      '"Model doesn\'t fit but still works with offloading. Expect slower inference."',
+      '"Model may not fit but still works with offloading. Expect slower inference."',
     ),
   );
   // Neither surface claims a marginal load can fail. _select_gpus scores against FREE VRAM and
@@ -249,7 +249,7 @@ test("each fit verdict is an info mark that explains itself", () => {
   assert.ok(!HUB_CARD.includes('label: "Won\'t fit"'));
   assert.equal(
     HUB_CARD.split(
-      '"Model doesn\'t fit but still works with offloading. Expect slower inference."',
+      '"Model may not fit but still works with offloading. Expect slower inference."',
     ).length - 1,
     2,
     "partial and oom both",

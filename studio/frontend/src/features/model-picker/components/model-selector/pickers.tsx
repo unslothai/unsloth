@@ -658,7 +658,7 @@ const MIGHT_FIT: FitVerdict = {
 const OFFLOADS: FitVerdict = {
   label: "Does not fit",
   tone: ORANGE,
-  hint: "Model doesn't fit but still works with offloading. Expect slower inference.",
+  hint: "Model may not fit but still works with offloading. Expect slower inference.",
 };
 /** checkVramFit's 75-100% band, which is the ONLY source of `tight` here: a torch estimate that
  *  still fits on the card entirely. It has no --fit, so it neither spills nor offloads. */
