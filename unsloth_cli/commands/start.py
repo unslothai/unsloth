@@ -1670,6 +1670,11 @@ def _resolve_model(
         or load.tensor_parallel
         or load.gpu_memory_mode is not None
     )
+    if requested is None and load_has_overrides:
+        active = next((m for m in models if m.get("loaded") is not False), None)
+        requested = active.get("id") if active else None
+        if requested:
+            preload_check = None
     # /v1/models also lists cached-but-unloaded catalog entries (loaded == False);
     # matching one would skip /api/inference/load and leave the agent pointed at a
     # model that is not resident, so only attach to an entry that is actually loaded.
