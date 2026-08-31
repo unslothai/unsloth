@@ -1,0 +1,461 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Back-compat for the kept-install path against every marker shape that has shipped.
+
+``_existing_install_runs`` and ``_kept_install_payload_is_healthy`` decide whether a
+transient update failure keeps the install the user already has. They read
+``UNSLOTH_PREBUILT_INFO.json``, whose schema is append-only across twelve shapes and has
+no version field and no migration step, so "the key is absent" is the normal case for
+anything installed before the release that added it.
+
+The existing keep-path tests all drive ``install_prebuilt`` with a hand-built two-key
+marker. These call the two deciders directly with the marker shapes real installs
+actually carry, so a reader can see which historical install each case stands for.
+
+Platforms are simulated the way the rest of this suite does it, through ``HostInfo``:
+that is enough for the path decisions and the payload tables, and it is not enough for
+Windows loader or macOS dyld behaviour, which no Linux runner can answer.
+"""
+
+import importlib.util
+import json
+import os
+import signal
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+
+PACKAGE_ROOT = Path(__file__).resolve().parents[3]
+MODULE_PATH = PACKAGE_ROOT / "studio" / "install_llama_prebuilt.py"
+SPEC = importlib.util.spec_from_file_location("studio_install_llama_prebuilt", MODULE_PATH)
+assert SPEC is not None and SPEC.loader is not None
+ILP = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = ILP
+SPEC.loader.exec_module(ILP)
+
+HostInfo = ILP.HostInfo
+
+
+def _host(**kw) -> HostInfo:
+    base = dict(
+        system = "Linux",
+        machine = "x86_64",
+        is_windows = False,
+        is_linux = True,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+    )
+    base.update(kw)
+    return HostInfo(**base)
+
+
+LINUX = _host()
+WINDOWS = _host(system = "Windows", machine = "AMD64", is_windows = True, is_linux = False)
+MACOS = _host(
+    system = "Darwin",
+    machine = "arm64",
+    is_windows = False,
+    is_linux = False,
+    is_macos = True,
+    is_x86_64 = False,
+    is_arm64 = True,
+    macos_version = (15, 5),
+)
+
+# The payload each platform's kinds share, as runtime_payload_health_groups computes it.
+_SHARED_PAYLOAD = {
+    "linux": [
+        "libllama-common.so",
+        "libllama.so",
+        "libggml.so",
+        "libggml-base.so",
+        "libggml-cpu.so",
+        "libmtmd.so",
+    ],
+    "windows": ["llama.dll"],
+    "macos": ["libllama.dylib", "libggml.dylib", "libmtmd.dylib"],
+}
+_BACKEND_PAYLOAD = {
+    ("linux", "cuda"): ["libggml-cuda.so"],
+    ("linux", "rocm"): ["libggml-hip.so"],
+    ("linux", "vulkan"): ["libggml-vulkan.so"],
+    ("windows", "cuda"): ["ggml-cuda.dll"],
+    ("windows", "rocm"): ["ggml-hip.dll"],
+    ("windows", "vulkan"): ["ggml-vulkan.dll"],
+}
+# Only a published bundle owes the visual server.
+_PUBLISHED_PAYLOAD = {
+    "linux": ["llama-diffusion-gemma-visual-server"],
+    "windows": ["llama-diffusion-gemma-visual-server.exe"],
+    "macos": [],
+}
+_CUDART_TRIO = ("cudart64_13.dll", "cublas64_13.dll", "cublasLt64_13.dll")
+
+
+def _platform_of(host: HostInfo) -> str:
+    return "windows" if host.is_windows else "macos" if host.is_macos else "linux"
+
+
+def build_install(
+    tmp_path,
+    *,
+    host = LINUX,
+    marker = "default",
+    executable = True,
+    runnable = True,
+    runnable_root = None,
+    payload = True,
+    payload_backend = "unset",
+    cudart = False,
+    visual_server = True,
+):
+    """Write an install tree. ``marker`` is the literal object to serialise.
+
+    ``marker="default"`` writes a minimal current-shape marker; ``marker=None`` writes no
+    marker file at all (a source build); a ``str`` is written verbatim (corrupt markers).
+    """
+    install_dir = tmp_path / "llama.cpp"
+    platform = _platform_of(host)
+    runtime_dir = (
+        install_dir / "build" / "bin" / "Release" if host.is_windows
+        else install_dir / "build" / "bin"
+    )
+    runtime_dir.mkdir(parents = True)
+    ext = ".exe" if host.is_windows else ""
+
+    for path in (
+        install_dir / f"llama-server{ext}",
+        install_dir / f"llama-quantize{ext}",
+        runtime_dir / f"llama-server{ext}",
+        runtime_dir / f"llama-quantize{ext}",
+    ):
+        ok = runnable if path.parent != install_dir else (
+            runnable if runnable_root is None else runnable_root
+        )
+        # A real runnable stub: the keep path execs these, and an empty file that kept
+        # its mode bits is the ENOEXEC case.
+        path.write_text("#!/bin/sh\nexit 0\n" if ok else "", encoding = "utf-8")
+        os.chmod(path, 0o755 if executable else 0o644)
+    (install_dir / "convert_hf_to_gguf.py").write_text("", encoding = "utf-8")
+    (install_dir / "gguf-py").mkdir()
+
+    marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    if marker == "default":
+        marker = {"release_tag": "old-release", "tag": "old-upstream"}
+    if marker is not None:
+        marker_path.write_text(
+            marker if isinstance(marker, str) else json.dumps(marker) + "\n",
+            encoding = "utf-8",
+        )
+
+    if payload:
+        for name in _SHARED_PAYLOAD[platform]:
+            (runtime_dir / name).write_text("", encoding = "utf-8")
+        if payload_backend != "unset":
+            for name in _BACKEND_PAYLOAD.get((platform, payload_backend), ()):
+                (runtime_dir / name).write_text("", encoding = "utf-8")
+        if visual_server:
+            for name in _PUBLISHED_PAYLOAD[platform]:
+                (runtime_dir / name).write_text("", encoding = "utf-8")
+        if cudart:
+            for name in _CUDART_TRIO:
+                (runtime_dir / name).write_text("", encoding = "utf-8")
+    return install_dir
+
+
+# ---------------------------------------------------------------------------
+# The twelve marker shapes, oldest first. Each is what write_prebuilt_metadata
+# produced at that time, trimmed to the keys the keep path reads.
+# ---------------------------------------------------------------------------
+
+S1 = {  # 2026-03-25 #4562: no release_tag, no backend, no asset_sha256
+    "requested_tag": "b6099", "tag": "b6099",
+    "asset": "llama-b6099-bin-ubuntu-x64.tar.gz",
+    "source": "upstream", "bundle_profile": "full", "runtime_line": None,
+    "coverage_class": None, "prebuilt_fallback_used": False,
+    "installed_at_utc": "2026-03-26T04:11:07Z",
+}
+S2 = {  # 2026-04-01 #4741: release_tag + fingerprint arrive
+    **S1, "release_tag": "b6210", "published_repo": "unslothai/llama.cpp",
+    "asset": "app-b6210-linux-x64-cuda12.tar.gz", "asset_sha256": "3f" * 32,
+    "source": "published", "runtime_line": "cuda12",
+    "install_fingerprint": "aa" * 32,
+}
+S5 = {**S2, "force_cpu": False}                       # 2026-07-20 #7228
+S6 = {**S5, "llama_backend": "vulkan",                # 2026-07-27 #7373
+      "asset": "llama-b7001-bin-ubuntu-vulkan-x64.tar.gz", "runtime_line": None}
+S7 = {**S5, "ggml_tree": "b7440"}                     # 2026-08-04 #7817
+S8 = {**S7, "rocm_gfx": "gfx1151",                    # 2026-08-08 #8050
+      "asset": "app-b9001-linux-x64-rocm-gfx110X.tar.gz", "runtime_line": None}
+S9 = {**S7, "backend": "cuda", "backend_request": "auto"}          # 2026-08-13 #8520
+S10 = {**S9, "gfx_target": None, "mapped_targets": []}             # 2026-08-13 #7670
+S11 = {**S10, "supported_sms": ["80", "86", "89", "90"]}           # 2026-08-18 #8841 == main
+S12 = {**S11, "runtime_asset": None}                               # this PR
+
+# A real marker this box produced by running studio/install_llama_prebuilt.py for real.
+S12_REAL = {
+    "requested_tag": "latest", "tag": "b10698",
+    "release_tag": "b10698-mix-67dfc8b", "published_repo": "unslothai/llama.cpp",
+    "asset": "app-b10698-mix-67dfc8b-linux-x64-cuda13-newer.tar.gz",
+    "force_cpu": False, "llama_backend": None,
+    "backend": "cuda", "backend_request": "auto",
+    "asset_sha256": "d4" * 32, "runtime_asset": None, "source": "published",
+    "ggml_tree": "0034c6eb", "bundle_profile": "cuda13-newer", "runtime_line": "cuda13",
+    "coverage_class": "newer", "gfx_target": None, "mapped_targets": [],
+    "supported_sms": ["86", "89", "90", "100", "103", "120"],
+    "install_fingerprint": "36" * 32, "prebuilt_fallback_used": False,
+    "installed_at_utc": "2026-08-31T06:40:37Z",
+}
+
+ALL_SHAPES = [
+    ("S1-upstream-cpu", S1, None),
+    ("S2-published-cuda", S2, "cuda"),
+    ("S5-force-cpu-field", S5, "cuda"),
+    ("S6-legacy-vulkan", S6, "vulkan"),
+    ("S7-ggml-tree", S7, "cuda"),
+    ("S8-rocm-gfx", S8, "rocm"),
+    ("S9-backend-key", S9, "cuda"),
+    ("S10-gfx-target", S10, "cuda"),
+    ("S11-main-today", S11, "cuda"),
+    ("S12-this-pr", S12, "cuda"),
+    ("S12-real-install", S12_REAL, "cuda"),
+]
+
+
+@pytest.mark.parametrize(("name", "marker", "backend"), ALL_SHAPES,
+                         ids = [s[0] for s in ALL_SHAPES])
+def test_every_shipped_marker_shape_keeps_a_complete_linux_install(
+    tmp_path, name, marker, backend,
+):
+    """A complete install must be kept whatever release wrote its marker.
+
+    S1-S8 carry no ``backend`` key at all, so the backend has to come back out of the
+    asset name; S1's upstream CPU asset names no backend either and must fail open.
+    """
+    install_dir = build_install(tmp_path, marker = marker, payload_backend = backend)
+    assert ILP._kept_install_payload_is_healthy(install_dir, LINUX) is True
+    assert ILP._existing_install_runs(install_dir, LINUX) is True
+
+
+@pytest.mark.parametrize(("name", "marker", "backend"), ALL_SHAPES,
+                         ids = [s[0] for s in ALL_SHAPES])
+def test_no_shipped_marker_shape_is_kept_once_its_backend_payload_is_gutted(
+    tmp_path, name, marker, backend,
+):
+    """Deleting the shared payload must be caught for every shape, old or new."""
+    install_dir = build_install(tmp_path, marker = marker, payload_backend = backend)
+    runtime_dir = install_dir / "build" / "bin"
+    for lib in _SHARED_PAYLOAD["linux"]:
+        (runtime_dir / lib).unlink()
+    assert ILP._kept_install_payload_is_healthy(install_dir, LINUX) is False
+    assert ILP._existing_install_runs(install_dir, LINUX) is False
+
+
+def test_a_pre_runtime_asset_windows_cuda_install_is_not_asked_for_the_cudart_trio(tmp_path):
+    """S11 and older cannot record a pairing, so demanding one would loop forever.
+
+    Every Windows CUDA install that exists today predates ``runtime_asset``. If the keep
+    path required the trio on a marker that cannot say whether it was paired, a legacy
+    install would be rejected on every run.
+    """
+    install_dir = build_install(
+        tmp_path, host = WINDOWS, marker = S11, payload_backend = "cuda", cudart = False,
+    )
+    assert ILP._kept_install_payload_is_healthy(install_dir, WINDOWS) is True
+
+
+def test_a_paired_windows_cuda_install_still_owes_its_cudart_trio(tmp_path):
+    """Once the marker names the pairing, the trio becomes required."""
+    paired = {**S12, "runtime_asset": "cudart-llama-bin-win-cuda-13.0-x64.zip"}
+    gutted = build_install(
+        tmp_path / "gutted", host = WINDOWS, marker = paired,
+        payload_backend = "cuda", cudart = False,
+    )
+    intact = build_install(
+        tmp_path / "intact", host = WINDOWS, marker = paired,
+        payload_backend = "cuda", cudart = True,
+    )
+    assert ILP._kept_install_payload_is_healthy(gutted, WINDOWS) is False
+    assert ILP._kept_install_payload_is_healthy(intact, WINDOWS) is True
+
+
+def test_a_source_build_is_never_kept_because_it_has_no_marker(tmp_path):
+    """The keep path is for prebuilts only.
+
+    ``confirm_install_tree`` lists ``UNSLOTH_PREBUILT_INFO.json`` among the files it
+    requires, so a source build -- which never writes one -- cannot reach the payload
+    check at all and falls through to the source-build fallback, as it did before.
+    """
+    install_dir = build_install(tmp_path, marker = None, payload_backend = "cuda")
+    assert (install_dir / "llama-server").exists()
+    assert not (install_dir / "UNSLOTH_PREBUILT_INFO.json").exists()
+    assert ILP._install_tree_is_usable(install_dir, LINUX) is False
+    assert ILP._existing_install_runs(install_dir, LINUX) is False
+
+
+@pytest.mark.parametrize(
+    "corrupt",
+    ["not json", "", "[]", "null", '"cuda"', "123", '{"release_tag": "b1"',
+     "﻿{}", "{}"],
+    ids = ["garbage", "empty", "list", "null", "string", "number", "truncated",
+           "bom", "empty-object"],
+)
+def test_a_corrupt_marker_is_still_kept_but_owes_the_whole_platform_payload(tmp_path, corrupt):
+    """An unreadable marker cannot name a backend, so it owes every kind's shared set.
+
+    This is the asymmetry with the test above: the marker file being *present but
+    unreadable* still satisfies ``confirm_install_tree``, so the tree stays eligible and
+    is judged on what is actually on disk.
+    """
+    install_dir = build_install(tmp_path, marker = corrupt, payload_backend = "cuda")
+    assert ILP._kept_install_payload_is_healthy(install_dir, LINUX) is True
+    assert ILP._existing_install_runs(install_dir, LINUX) is True
+
+    for lib in _SHARED_PAYLOAD["linux"]:
+        (install_dir / "build" / "bin" / lib).unlink()
+    assert ILP._kept_install_payload_is_healthy(install_dir, LINUX) is False
+
+
+def test_a_marker_from_a_newer_unsloth_is_ignored_key_by_key(tmp_path):
+    """Forwards compatibility: unknown keys must not disturb the decision."""
+    future = {**S12, "install_generation": 3, "unknown_future_field": {"a": [1, 2]}}
+    install_dir = build_install(tmp_path, marker = future, payload_backend = "cuda")
+    assert ILP._kept_install_payload_is_healthy(install_dir, LINUX) is True
+    assert ILP._existing_install_runs(install_dir, LINUX) is True
+
+
+def test_a_backend_this_unsloth_does_not_know_falls_back_to_the_asset_name(tmp_path):
+    """An unrecognised ``backend`` is not the end of the derivation.
+
+    ``marker_backend`` tries the recorded backend, then the install kind, then the asset
+    name. So a marker from a newer Unsloth naming a backend this one has never heard of
+    still gets held to whatever its asset name says, rather than dropping to the
+    lowest-common payload. Asserted both ways round so the fallback order is pinned.
+    """
+    named = {**S12, "backend": "sycl"}  # asset is ...linux-x64-cuda12.tar.gz
+    assert ILP.marker_backend(named) == "cuda"
+
+    without_cuda_lib = build_install(tmp_path / "a", marker = named, payload_backend = None)
+    assert ILP._kept_install_payload_is_healthy(without_cuda_lib, LINUX) is False
+
+    with_cuda_lib = build_install(tmp_path / "b", marker = named, payload_backend = "cuda")
+    assert ILP._kept_install_payload_is_healthy(with_cuda_lib, LINUX) is True
+
+
+def test_a_backend_no_source_can_name_falls_open_to_the_shared_payload(tmp_path):
+    """When neither the backend nor the asset name resolves, do not reject a good tree."""
+    opaque = {**S12, "backend": "sycl", "asset": "bundle.tar.gz"}
+    assert ILP.marker_backend(opaque) is None
+
+    install_dir = build_install(tmp_path, marker = opaque, payload_backend = None)
+    assert ILP._kept_install_payload_is_healthy(install_dir, LINUX) is True
+
+
+def test_the_macos_keep_path_requires_the_dylibs(tmp_path):
+    """macOS reaches the same decider and owes its own shared payload.
+
+    Simulated through ``HostInfo``: this covers the path and the payload table, not dyld.
+    """
+    install_dir = build_install(tmp_path / "ok", host = MACOS, marker = S12)
+    assert ILP._kept_install_payload_is_healthy(install_dir, MACOS) is True
+
+    gutted = build_install(tmp_path / "gutted", host = MACOS, marker = S12)
+    (gutted / "build" / "bin" / "libggml.dylib").unlink()
+    assert ILP._kept_install_payload_is_healthy(gutted, MACOS) is False
+
+
+def test_a_legacy_published_vulkan_install_without_the_visual_server_is_refused(tmp_path):
+    """``source`` has been recorded since the first shape, so this reaches old installs.
+
+    A published Vulkan install that predates ``ensure_diffusion_visual_server`` is held
+    to a file it never had. Documented here because it is the one case where an old
+    install is pushed to a source build rather than kept.
+    """
+    install_dir = build_install(
+        tmp_path, marker = S6 | {"source": "published"},
+        payload_backend = "vulkan", visual_server = False,
+    )
+    assert ILP._kept_install_payload_is_healthy(install_dir, LINUX) is False
+
+
+def test_a_binary_that_dies_on_sigsegv_is_not_a_working_install(tmp_path, monkeypatch):
+    """A crashing image must be rejected, not treated as a successful probe."""
+    install_dir = build_install(tmp_path, marker = S12, payload_backend = "cuda")
+    monkeypatch.setattr(
+        ILP, "run_capture",
+        lambda *a, **k: subprocess.CompletedProcess(a[0] if a else [], -signal.SIGSEGV, "", ""),
+    )
+    assert ILP._existing_install_runs(install_dir, LINUX) is False
+
+
+def test_a_binary_that_hangs_is_treated_as_healthy(tmp_path, monkeypatch):
+    """Pins the deliberate fail-open: a timeout must not spend a source build.
+
+    Not an endorsement. If this ever needs to change, this test is the record of what
+    the behaviour was and why.
+    """
+    install_dir = build_install(tmp_path, marker = S12, payload_backend = "cuda")
+
+    def hang(*a, **k):
+        raise subprocess.TimeoutExpired(a[0] if a else ["llama-server"], 60)
+
+    monkeypatch.setattr(ILP, "run_capture", hang)
+    assert ILP._existing_install_runs(install_dir, LINUX) is True
+
+
+def test_a_windows_loader_failure_is_rejected_even_though_it_exits_zero_ish(tmp_path, monkeypatch):
+    """0xC0000135 is a positive exit code, not a signal. Simulated: no Windows here."""
+    install_dir = build_install(
+        tmp_path, host = WINDOWS, marker = S12, payload_backend = "cuda",
+    )
+    monkeypatch.setattr(
+        ILP, "run_capture",
+        lambda *a, **k: subprocess.CompletedProcess(a[0] if a else [], 0xC0000135, "", ""),
+    )
+    assert ILP._existing_install_runs(install_dir, WINDOWS) is False
+
+
+def test_a_non_executable_tree_fails_the_same_gate_setup_sh_uses(tmp_path):
+    """setup.sh reuses on ``[ -x build/bin/llama-server ]``; the keep path must agree."""
+    install_dir = build_install(
+        tmp_path, marker = S12, payload_backend = "cuda", executable = False,
+    )
+    assert ILP._existing_install_runs(install_dir, LINUX) is False
+
+
+def test_a_rotten_root_entrypoint_is_caught_even_when_build_bin_is_fine(tmp_path):
+    """Inference launches the root copy first, so it cannot be excused by build/bin."""
+    install_dir = build_install(
+        tmp_path, marker = S12, payload_backend = "cuda", runnable_root = False,
+    )
+    assert ILP._existing_install_runs(install_dir, LINUX) is False
+
+
+@pytest.mark.parametrize(
+    ("marker", "expected"),
+    [
+        (S1, "auto"),
+        (S2, "auto"),
+        (S5 | {"force_cpu": True}, "cpu"),
+        (S6, "vulkan"),
+        (S9, "auto"),
+        (S9 | {"backend_request": "cuda"}, "cuda"),
+        ({}, "auto"),
+    ],
+    ids = ["s1", "s2", "s5-forced-cpu", "s6-legacy-vulkan", "s9-auto", "s9-pinned", "empty"],
+)
+def test_the_stored_backend_choice_reads_the_same_from_every_shape(tmp_path, marker, expected):
+    """The keep path gates on this, so old shapes must not read as a pinned choice."""
+    install_dir = build_install(tmp_path, marker = marker)
+    assert ILP.persisted_backend_request(install_dir) == expected
