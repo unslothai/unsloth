@@ -61,7 +61,10 @@ export const ContextUsageBar: FC<
           {percent !== null ? (
             <div className="h-1.5 w-16 rounded-full bg-black/10 dark:bg-white/15 overflow-hidden">
               <div
-                className={cn("h-full rounded-full transition-all", severity.bar)}
+                className={cn(
+                  "h-full rounded-full transition-all",
+                  severity.bar,
+                )}
                 style={{ width: `${percent}%` }}
               />
             </div>
@@ -78,7 +81,12 @@ export const ContextUsageBar: FC<
           {percent !== null ? (
             <div className="flex items-center justify-between gap-4">
               <span className="text-muted-foreground">Context usage</span>
-              <span className={cn("font-mono tabular-nums font-medium", severity.text)}>
+              <span
+                className={cn(
+                  "font-mono tabular-nums font-medium",
+                  severity.text,
+                )}
+              >
                 {percent.toFixed(1)}%
               </span>
             </div>
@@ -115,18 +123,28 @@ export const ContextUsageBar: FC<
               </span>
             </div>
           )}
+          {state.processedTokens !== null && (
+            <div className="flex items-center justify-between gap-4">
+              <span className="text-muted-foreground">Processed this pass</span>
+              <span className="font-mono tabular-nums">
+                {formatTokenCountFull(state.processedTokens)}
+              </span>
+            </div>
+          )}
           {percent !== null || state.hasUsageDetails ? (
             <div className="my-0.5 border-t border-border/40" />
           ) : null}
           <div className="flex items-center justify-between gap-4">
             <span className="text-muted-foreground">{state.totalRowName}</span>
-            <span className="font-mono tabular-nums">{state.totalRowValue}</span>
+            <span className="font-mono tabular-nums">
+              {state.totalRowValue}
+            </span>
           </div>
           {percent !== null && percent > 85 ? (
             <div className="mt-1 max-w-64 text-ui-11 leading-snug text-muted-foreground/90">
-              Close to the context limit. Generation will stop at 100%.
-              Increase <span className="font-medium">Context Length</span> in
-              the chat Settings panel to keep going.
+              Close to the context limit. Generation will stop at 100%. Increase{" "}
+              <span className="font-medium">Context Length</span> in the chat
+              Settings panel to keep going.
             </div>
           ) : null}
         </div>

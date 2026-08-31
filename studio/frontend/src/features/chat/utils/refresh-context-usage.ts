@@ -15,6 +15,7 @@ import { isExternalModelId } from "../external-providers";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { MessageRecord } from "../types";
 import { listStoredChatMessages } from "./chat-history-storage";
+import { restorableContextUsage } from "./context-usage-restore";
 
 // Per thread, not per module: in compare mode a hidden pane's history load would otherwise
 // invalidate the visible thread's count, blanking the bar.
@@ -191,12 +192,13 @@ export async function refreshContextUsage(
   const store = useChatRuntimeStore.getState();
   const threadId = options?.threadId ?? store.activeThreadId;
   const checkpoint = store.params.checkpoint;
+  const contextLength = store.ggufContextLength;
 
   if (
     !checkpoint ||
     isExternalModelId(checkpoint) ||
     (!options?.afterModelLoad && store.modelLoading) ||
-    store.ggufContextLength == null
+    contextLength == null
   ) {
     return;
   }
@@ -219,6 +221,7 @@ export async function refreshContextUsage(
 
   const capturedThreadId = threadId ?? null;
   const capturedCheckpoint = checkpoint;
+  const capturedContextLength = contextLength;
 
   if (countsInFlight.has(capturedThreadId)) {
     retryAfterInFlight.set(capturedThreadId, options);
@@ -232,7 +235,8 @@ export async function refreshContextUsage(
   // supersedes this one; publishing after either puts another model's number on the bar.
   const stale = (): boolean =>
     superseded(capturedThreadId, generation) ||
-    useChatRuntimeStore.getState().params.checkpoint !== capturedCheckpoint;
+    useChatRuntimeStore.getState().params.checkpoint !== capturedCheckpoint ||
+    useChatRuntimeStore.getState().ggufContextLength !== capturedContextLength;
 
   countsInFlight.add(capturedThreadId);
   let published = false;
@@ -264,6 +268,38 @@ export async function refreshContextUsage(
       runMessages = orderBySelectedBranch(records).map(
         storedMessageToRunMessage,
       );
+    }
+
+    // A local model id is intentionally not persisted in the frontend store, so after an app
+    // restart history can arrive while checkpoint is still empty. The history loader correctly
+    // declines to attribute model-scoped usage then; once status hydration calls this function,
+    // retry the exact snapshot before estimating the whole visible transcript. The same path
+    // protects a same-model reload from replacing exact post-compaction usage with that estimate.
+    const lastRunMessage = runMessages.at(-1);
+    const lastCustom = (
+      lastRunMessage?.metadata as { custom?: unknown } | undefined
+    )?.custom;
+    const restoredUsage =
+      lastRunMessage?.role === "assistant"
+        ? restorableContextUsage(
+            lastCustom,
+            capturedCheckpoint,
+            capturedContextLength,
+          )
+        : null;
+    if (restoredUsage) {
+      if (stale()) {
+        return;
+      }
+      const current = useChatRuntimeStore.getState();
+      if (threadId) {
+        current.setThreadContextUsage(threadId, restoredUsage);
+      }
+      if (current.activeThreadId === capturedThreadId) {
+        current.setContextUsage(restoredUsage);
+      }
+      published = true;
+      return;
     }
 
     // /chat/count_tokens always 503s on images: /apply-template swaps each for a marker. Declining

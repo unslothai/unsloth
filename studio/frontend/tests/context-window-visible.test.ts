@@ -32,7 +32,10 @@ test("a load in flight has no window to name", () => {
 
 // selecting an API model nulls ggufContextLength, so a stale length must be refused on its own
 test("an API model shows no window even with a stale length in the store", () => {
-  assert.equal(hasKnownContextWindow({ ...base, isExternalModel: true }), false);
+  assert.equal(
+    hasKnownContextWindow({ ...base, isExternalModel: true }),
+    false,
+  );
 });
 
 test("a non-GGUF local model has no window either", () => {
@@ -94,7 +97,44 @@ test("a counted chat states the ratio", () => {
 
 // a prompt already over the window pins at 100 rather than overflowing the fill
 test("usage past the window clamps to 100 percent", () => {
-  assert.equal(deriveContextUsageBar({ used: 40000, total: 32768 })?.percent, 100);
+  const state = deriveContextUsageBar({
+    // Real long-running GGUF turn: llama.cpp shifted its live KV window while
+    // processing 9,496 prompt + 24,759 completion tokens in a 32k context.
+    used: 34255,
+    total: 32000,
+    promptTokens: 9496,
+    completionTokens: 24759,
+  });
+  assert.ok(state);
+  assert.equal(state.percent, 100);
+  assert.equal(state.face, "32.0k / 32.0k");
+  assert.equal(state.totalRowName, "Active context");
+  assert.equal(state.totalRowValue, "32,000 / 32,000");
+  assert.equal(state.processedTokens, 34255);
+  assert.match(state.label, /34\.3k tokens processed by the latest pass/);
+});
+
+test("ordinary in-window usage has no separate processed-work row", () => {
+  const state = deriveContextUsageBar({ used: 12000, total: 32768 });
+  assert.ok(state);
+  assert.equal(state.face, "12.0k / 32.8k");
+  assert.equal(state.processedTokens, null);
+  assert.equal(state.totalRowName, "Total");
+});
+
+test("the near-limit help keeps the context-length guidance", () => {
+  const component = readFileSync(
+    new URL(
+      "../src/features/chat/components/context-usage-bar.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(component, /Generation will stop at 100%/);
+  assert.match(
+    component,
+    /Context Length<\/span> in the chat\s+Settings panel to keep going/,
+  );
 });
 
 // external providers: usage is known, the window is not
@@ -130,4 +170,3 @@ test("the header renders the bar on the window alone, with usage optional", () =
   );
   assert.match(page, /used=\{contextUsage\?\.totalTokens \?\? null\}/);
 });
-
