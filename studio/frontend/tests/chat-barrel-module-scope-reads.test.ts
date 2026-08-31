@@ -778,8 +778,19 @@ function isErasedEdge(statement: ts.ImportDeclaration | ts.ExportDeclaration): b
   return clause.elements.length > 0 && clause.elements.every((e) => e.isTypeOnly);
 }
 
+// Keyed on the text as well as the name: the unit cases below reparse "t.ts"
+// with different sources, so caching on the name alone would return the wrong
+// tree. Without this the bearing fixpoint reparses every file on each pass and
+// the scan reparses each imported module once per importer.
+const parseCache = new Map<string, ts.SourceFile>();
+
 function parse(fileName: string, text: string): ts.SourceFile {
-  return ts.createSourceFile(fileName, text, ts.ScriptTarget.ESNext, true);
+  const key = `${fileName} ${text}`;
+  const cached = parseCache.get(key);
+  if (cached) return cached;
+  const source = ts.createSourceFile(fileName, text, ts.ScriptTarget.ESNext, true);
+  parseCache.set(key, source);
+  return source;
 }
 
 function analyse(fileName: string, text: string): string[] {
