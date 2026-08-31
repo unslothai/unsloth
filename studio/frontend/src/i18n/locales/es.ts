@@ -769,6 +769,14 @@ export const es = {
         launchAtLoginDescription:
           "Inicia Unsloth en segundo plano cuando inicias sesión. Permanece en la barra de menús o en la bandeja del sistema hasta que lo abras.",
 
+        serverPort: "Puerto del servidor",
+        serverPortDescription:
+          "Automático prueba 8888 y luego 8889–8908. Personalizado usa solo el puerto elegido. Los cambios se aplican la próxima vez que se inicie el servidor.",
+        serverPortAutomatic: "Automático",
+        serverPortCustom: "Personalizado",
+        serverPortInvalid: "Introduce un puerto entre 1 y 65535.",
+        serverPortSaveError: "No se pudo guardar el puerto del servidor.",
+
         closeToTray: "Cerrar en la bandeja del sistema",
         closeToTrayDescription:
           "Mantén Unsloth y su servidor ejecutándose en segundo plano al cerrar la ventana principal.",

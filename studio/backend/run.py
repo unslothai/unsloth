@@ -1284,16 +1284,15 @@ def _resolve_port(
     host: str,
     port: int,
     avoid_own_studio: bool = True,
+    allow_fallback: bool = True,
 ) -> int:
-    """The requested port, or the next free one.
-
-    With ``avoid_own_studio`` this aborts rather than falling back past one of our
-    own servers, on *port* itself or anywhere in the fallback range: skipping one
-    is what strands it. Callers that read the bound port back pass False and keep
-    the plain fallback.
-    """
+    """Return the requested port, or the next free one when fallback is allowed."""
     if _is_port_free(host, port):
         return port
+    if not allow_fallback:
+        raise SystemExit(
+            f"Requested port {port} is already in use. Choose a different server port and try again."
+        )
     if avoid_own_studio:
         own = _own_studio_on_port(port, host)
         if own is not None:
@@ -2330,6 +2329,7 @@ def run_server(
     password: "Optional[str]" = None,
     emit_tauri_port: bool = True,
     abort_if_own_studio: "Optional[bool]" = None,
+    exact_port: bool = False,
 ):
     """
     Start the FastAPI server.
@@ -2542,7 +2542,12 @@ def run_server(
     # bare launch, which has nothing but the banner, benefits from the refusal.
     if abort_if_own_studio is None:
         abort_if_own_studio = not api_only
-    port = _resolve_port(host, port, avoid_own_studio = abort_if_own_studio)
+    port = _resolve_port(
+        host,
+        port,
+        avoid_own_studio = abort_if_own_studio,
+        allow_fallback = not exact_port,
+    )
     if port != original_port:
         blocker = _get_pid_on_port(original_port)
         if not silent:
@@ -2986,6 +2991,7 @@ def _build_arg_parser():
         "`unsloth studio reset-password`.",
     )
     parser.add_argument("--port", type = int, default = 8888, help = "Port to bind to")
+    parser.add_argument("--exact-port", action = "store_true", help = argparse.SUPPRESS)
     parser.add_argument(
         "--frontend",
         type = str,
@@ -3104,6 +3110,7 @@ if __name__ == "__main__":
     kwargs = dict(
         host = args.host,
         port = args.port,
+        exact_port = args.exact_port,
         silent = args.silent,
         api_only = args.api_only,
         llama_parallel_slots = args.parallel,

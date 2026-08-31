@@ -744,6 +744,14 @@ export const ja = {
         launchAtLoginDescription:
           "ログイン時に Unsloth をバックグラウンドで起動します。開くまでメニューバーまたはシステムトレイに常駐します。",
 
+        serverPort: "サーバーポート",
+        serverPortDescription:
+          "自動では 8888、続いて 8889～8908 を試します。カスタムでは選択したポートだけを使用します。変更は次回のサーバー起動時に適用されます。",
+        serverPortAutomatic: "自動",
+        serverPortCustom: "カスタム",
+        serverPortInvalid: "1～65535 のポートを入力してください。",
+        serverPortSaveError: "サーバーポートを保存できませんでした。",
+
         closeToTray: "システムトレイに格納して閉じる",
         closeToTrayDescription:
           "メインウィンドウを閉じても、Unsloth とサーバーをバックグラウンドで実行し続けます。",

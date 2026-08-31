@@ -2713,10 +2713,28 @@ mod tests {
     }
 
     #[test]
-    fn backend_args_always_enable_api_only() {
+    fn backend_args_apply_port_policy() {
         assert_eq!(
-            backend_args(8888),
+            backend_args(crate::server_port::LaunchPolicy {
+                port: 8888,
+                exact: false,
+            }),
             vec!["studio", "--api-only", "-H", "127.0.0.1", "-p", "8888"]
+        );
+        assert_eq!(
+            backend_args(crate::server_port::LaunchPolicy {
+                port: 43210,
+                exact: true,
+            }),
+            vec![
+                "studio",
+                "--api-only",
+                "-H",
+                "127.0.0.1",
+                "-p",
+                "43210",
+                "--exact-port"
+            ]
         );
     }
 
@@ -3177,28 +3195,30 @@ pub(crate) fn resolve_backend_binary() -> Result<std::path::PathBuf, String> {
         .ok_or_else(|| "Unsloth binary not found. Please install Unsloth first.".to_string())
 }
 
-fn backend_args(port: u16) -> Vec<String> {
-    [
-        "studio",
-        "--api-only",
-        "-H",
-        "127.0.0.1",
-        "-p",
-        &port.to_string(),
-    ]
-    .into_iter()
-    .map(String::from)
-    .collect()
+fn backend_args(policy: crate::server_port::LaunchPolicy) -> Vec<String> {
+    let mut args = vec![
+        "studio".to_string(),
+        "--api-only".to_string(),
+        "-H".to_string(),
+        "127.0.0.1".to_string(),
+        "-p".to_string(),
+        policy.port.to_string(),
+    ];
+    if policy.exact {
+        args.push("--exact-port".to_string());
+    }
+    args
 }
 
 /// Spawn the backend process and wire up stdout/stderr reader threads.
 pub fn start_backend(
     app: &AppHandle,
     state: &BackendState,
-    port: u16,
+    policy: crate::server_port::LaunchPolicy,
     shutdown: &ShutdownFlag,
     diagnostics_state: &DiagnosticsState,
 ) -> Result<u64, String> {
+    let port = policy.port;
     let _runtime_launch_guard = acquire_studio_runtime_launch_guard()?;
 
     // A backend started while the job is disarmed is the orphan this guards
@@ -3249,7 +3269,7 @@ pub fn start_backend(
         }
     };
 
-    let args = backend_args(port);
+    let args = backend_args(policy);
     // Built before ownership is claimed: a missing managed interpreter must not
     // leave a pending owner behind for a backend that was never spawned.
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -6118,7 +6138,10 @@ mod managed_cli_working_dir_tests {
     #[test]
     fn backend_args_are_unchanged_by_the_working_directory_fix() {
         assert_eq!(
-            backend_args(8888),
+            backend_args(crate::server_port::LaunchPolicy {
+                port: 8888,
+                exact: false,
+            }),
             vec!["studio", "--api-only", "-H", "127.0.0.1", "-p", "8888"]
         );
     }

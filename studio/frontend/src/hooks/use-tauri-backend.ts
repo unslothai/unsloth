@@ -334,8 +334,7 @@ export function useTauriBackend() {
 
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      // backend/run.py keeps the 8888-8908 fallback via server-port/TAURI_PORT.
-      await invoke("start_managed_server", { port: 8888 });
+      await invoke("start_managed_server");
 
       // Rust emits server-port only after validating the desktop-owned process.
       // Treat that as the UI handoff point instead of doing a second health poll.

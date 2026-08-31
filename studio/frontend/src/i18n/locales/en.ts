@@ -755,6 +755,14 @@ export const en = {
         launchAtLoginDescription:
           "Start Unsloth in the background when you log in. It stays in the menu bar or system tray until you open it.",
 
+        serverPort: "Server port",
+        serverPortDescription:
+          "Automatic tries 8888, then 8889–8908. Custom uses only the selected port. Changes apply the next time the server starts.",
+        serverPortAutomatic: "Automatic",
+        serverPortCustom: "Custom",
+        serverPortInvalid: "Enter a port from 1 to 65535.",
+        serverPortSaveError: "Failed to save the server port.",
+
         closeToTray: "Close to system tray",
         closeToTrayDescription:
           "Keep Unsloth and its server running in the background when you close the main window.",

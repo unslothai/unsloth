@@ -336,7 +336,7 @@ pub async fn check_install_status() -> bool {
     }
 }
 
-/// Start the backend server on the given port.
+/// Start the backend server using the saved desktop port policy.
 /// Also spawns a health watchdog that monitors the backend and emits
 /// `server-crashed` if it becomes unresponsive (deadlock, OOM, etc.).
 #[tauri::command]
@@ -345,13 +345,21 @@ pub async fn start_server(
     state: tauri::State<'_, BackendState>,
     shutdown: tauri::State<'_, ShutdownFlag>,
     diagnostics: tauri::State<'_, DiagnosticsState>,
-    port: u16,
 ) -> Result<(), String> {
-    info!("start_server command called with port {}", port);
+    let policy = crate::server_port::launch_policy(&app);
+    info!(
+        "start_server command called with port {} exact={}",
+        policy.port, policy.exact
+    );
 
     let diagnostics_state = diagnostics.inner().clone();
-    let generation = match process::start_backend(&app, &state, port, &shutdown, &diagnostics_state)
-    {
+    let generation = match process::start_backend(
+        &app,
+        &state,
+        policy,
+        &shutdown,
+        &diagnostics_state,
+    ) {
         Ok(generation) => generation,
         Err(_error) if process::request_staged_rollback_restart(&app, &state) => return Ok(()),
         Err(error) => return Err(error),
@@ -384,14 +392,22 @@ pub async fn start_managed_server(
     state: tauri::State<'_, BackendState>,
     shutdown: tauri::State<'_, ShutdownFlag>,
     diagnostics: tauri::State<'_, DiagnosticsState>,
-    port: u16,
 ) -> Result<(), String> {
-    info!("start_managed_server command called with port {}", port);
+    let policy = crate::server_port::launch_policy(&app);
+    info!(
+        "start_managed_server command called with port {} exact={}",
+        policy.port, policy.exact
+    );
 
     let started = Instant::now();
     let diagnostics_state = diagnostics.inner().clone();
-    let generation = match process::start_backend(&app, &state, port, &shutdown, &diagnostics_state)
-    {
+    let generation = match process::start_backend(
+        &app,
+        &state,
+        policy,
+        &shutdown,
+        &diagnostics_state,
+    ) {
         Ok(generation) => generation,
         Err(_error) if process::request_staged_rollback_restart(&app, &state) => return Ok(()),
         Err(error) => return Err(error),

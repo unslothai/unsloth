@@ -773,6 +773,14 @@ export const de = {
         launchAtLoginDescription:
           "Startet Unsloth im Hintergrund, wenn Sie sich anmelden. Es bleibt in der Menüleiste bzw. im Infobereich, bis Sie es öffnen.",
 
+        serverPort: "Server-Port",
+        serverPortDescription:
+          "Automatisch versucht 8888, dann 8889–8908. Benutzerdefiniert verwendet nur den gewählten Port. Änderungen gelten beim nächsten Serverstart.",
+        serverPortAutomatic: "Automatisch",
+        serverPortCustom: "Benutzerdefiniert",
+        serverPortInvalid: "Geben Sie einen Port von 1 bis 65535 ein.",
+        serverPortSaveError: "Der Server-Port konnte nicht gespeichert werden.",
+
         closeToTray: "In den Infobereich schließen",
         closeToTrayDescription:
           "Unsloth und seinen Server im Hintergrund weiterlaufen lassen, wenn Sie das Hauptfenster schließen.",

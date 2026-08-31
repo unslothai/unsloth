@@ -744,6 +744,14 @@ export const it = {
         launchAtLoginDescription:
           "Avvia Unsloth in background quando accedi. Rimane nella barra dei menu o nell'area di notifica finché non lo apri.",
 
+        serverPort: "Porta del server",
+        serverPortDescription:
+          "Automatico prova 8888, poi 8889–8908. Personalizzato usa solo la porta scelta. Le modifiche si applicano al prossimo avvio del server.",
+        serverPortAutomatic: "Automatico",
+        serverPortCustom: "Personalizzato",
+        serverPortInvalid: "Inserisci una porta da 1 a 65535.",
+        serverPortSaveError: "Impossibile salvare la porta del server.",
+
         closeToTray: "Chiudi nell'area di notifica",
         closeToTrayDescription:
           "Mantieni Unsloth e il suo server in esecuzione in background quando chiudi la finestra principale.",

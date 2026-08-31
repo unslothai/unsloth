@@ -736,6 +736,14 @@ export const zhCN = {
         launchAtLoginDescription:
           "登录系统时在后台启动 Unsloth。在你打开它之前，它会一直驻留在菜单栏或系统托盘中。",
 
+        serverPort: "服务器端口",
+        serverPortDescription:
+          "自动模式先尝试 8888，再尝试 8889–8908。自定义模式仅使用所选端口。更改将在下次服务器启动时生效。",
+        serverPortAutomatic: "自动",
+        serverPortCustom: "自定义",
+        serverPortInvalid: "请输入 1 到 65535 之间的端口。",
+        serverPortSaveError: "无法保存服务器端口。",
+
         closeToTray: "关闭到系统托盘",
         closeToTrayDescription:
           "关闭主窗口时，让 Unsloth 及其服务器继续在后台运行。",

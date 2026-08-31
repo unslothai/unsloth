@@ -760,6 +760,14 @@ export const ptBR = {
         launchAtLoginDescription:
           "Inicia o Unsloth em segundo plano quando você faz login. Ele permanece na barra de menus ou na bandeja do sistema até você abri-lo.",
 
+        serverPort: "Porta do servidor",
+        serverPortDescription:
+          "Automático tenta 8888 e depois 8889–8908. Personalizado usa somente a porta escolhida. As alterações valem na próxima inicialização do servidor.",
+        serverPortAutomatic: "Automático",
+        serverPortCustom: "Personalizado",
+        serverPortInvalid: "Digite uma porta de 1 a 65535.",
+        serverPortSaveError: "Não foi possível salvar a porta do servidor.",
+
         closeToTray: "Fechar para a bandeja do sistema",
         closeToTrayDescription:
           "Mantém o Unsloth e seu servidor em execução em segundo plano ao fechar a janela principal.",

@@ -757,6 +757,14 @@ export const hi = {
         launchAtLoginDescription:
           "लॉगिन करने पर Unsloth को बैकग्राउंड में शुरू करता है। इसे खोलने तक यह मेनू बार या सिस्टम ट्रे में रहता है।",
 
+        serverPort: "सर्वर पोर्ट",
+        serverPortDescription:
+          "ऑटोमैटिक पहले 8888, फिर 8889–8908 आज़माता है। कस्टम केवल चुने हुए पोर्ट का उपयोग करता है। बदलाव अगली बार सर्वर शुरू होने पर लागू होंगे।",
+        serverPortAutomatic: "ऑटोमैटिक",
+        serverPortCustom: "कस्टम",
+        serverPortInvalid: "1 से 65535 तक का पोर्ट दर्ज करें।",
+        serverPortSaveError: "सर्वर पोर्ट सहेजा नहीं जा सका।",
+
         closeToTray: "सिस्टम ट्रे में बंद करें",
         closeToTrayDescription:
           "मुख्य विंडो बंद करने पर Unsloth और उसके सर्वर को बैकग्राउंड में चलते रहने दें।",

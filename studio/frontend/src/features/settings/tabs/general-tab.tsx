@@ -67,6 +67,7 @@ import { DocumentsRagSection } from "../components/documents-rag-section";
 import { LanguageSelect } from "../components/language-select";
 import { TRANSPORT_MODE_STORAGE_KEY } from "@/features/hub";
 import { DownloadTransportRow } from "../components/download-transport-row";
+import { ServerPortSetting } from "../components/server-port-setting";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
@@ -557,6 +558,13 @@ export function GeneralTab() {
                 </span>
               ) : null}
             </div>
+          </SettingsRow>
+
+          <SettingsRow
+            label={t("settings.general.startup.serverPort")}
+            description={t("settings.general.startup.serverPortDescription")}
+          >
+            <ServerPortSetting />
           </SettingsRow>
 
           {closeToTraySetting.supported ? (

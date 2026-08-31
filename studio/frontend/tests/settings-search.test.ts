@@ -8,6 +8,8 @@ import {
   SETTINGS_SEARCH_KEYWORDS,
   createSettingsSearchIndex,
 } from "../src/features/settings/settings-search.ts";
+
+import { parseCustomServerPort } from "../src/features/settings/api/server-port.ts";
 import { en } from "../src/i18n/locales/en.ts";
 
 const UPDATE_ENTRY = "settings.about.updates";
@@ -56,6 +58,8 @@ test("model memory rows are reachable by the terms the feature is about", () => 
 const DESKTOP_STARTUP_ENTRIES = [
   "settings.general.startup.sectionTitle",
   "settings.general.startup.launchAtLogin",
+
+  "settings.general.startup.serverPort",
 ] as const;
 const CLOSE_TO_TRAY_ENTRY = "settings.general.startup.closeToTray";
 const CURRENT_DATE_ENTRY = "settings.chat.currentDate.label";
@@ -65,6 +69,15 @@ test("the current date prompt setting is searchable under Chat", () => {
 
   assert.ok(index.chat.includes(CURRENT_DATE_ENTRY));
 });
+
+test("custom server ports accept only the native port range", () => {
+  assert.equal(parseCustomServerPort("1"), 1);
+  assert.equal(parseCustomServerPort("65535"), 65535);
+  for (const value of ["", "0", "65536", "8.5", "abc"]) {
+    assert.equal(parseCustomServerPort(value), null);
+  }
+});
+
 
 test("desktop startup entries are absent from browser search", () => {
   const desktop = createSettingsSearchIndex({ desktop: true, closeToTray: true });

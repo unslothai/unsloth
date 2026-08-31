@@ -20,6 +20,7 @@ mod native_path_policy;
 mod preflight;
 mod process;
 mod process_identity;
+mod server_port;
 mod staged_update;
 mod update;
 mod webview_permissions;
@@ -1962,6 +1963,8 @@ fn main() {
             commands::start_install,
             commands::start_server,
             commands::start_managed_server,
+            server_port::get_server_port,
+            server_port::set_server_port,
             commands::stop_server,
             commands::check_health,
             commands::get_server_logs,

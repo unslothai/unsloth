@@ -751,6 +751,14 @@ export const ko = {
         launchAtLoginDescription:
           "로그인하면 Unsloth를 백그라운드에서 시작합니다. 열기 전까지 메뉴 막대 또는 시스템 트레이에 남아 있습니다.",
 
+        serverPort: "서버 포트",
+        serverPortDescription:
+          "자동은 8888을 먼저 시도한 다음 8889–8908을 시도합니다. 사용자 지정은 선택한 포트만 사용합니다. 변경 사항은 다음 서버 시작 시 적용됩니다.",
+        serverPortAutomatic: "자동",
+        serverPortCustom: "사용자 지정",
+        serverPortInvalid: "1~65535 사이의 포트를 입력하세요.",
+        serverPortSaveError: "서버 포트를 저장하지 못했습니다.",
+
         closeToTray: "시스템 트레이로 닫기",
         closeToTrayDescription:
           "기본 창을 닫아도 Unsloth와 서버가 백그라운드에서 계속 실행되도록 합니다.",

@@ -538,6 +538,13 @@ def test_a_foreign_process_on_the_requested_port_still_falls_back(monkeypatch):
     assert run._resolve_port("127.0.0.1", 8888) == 8889
 
 
+def test_exact_port_rejects_an_occupied_port(monkeypatch):
+    monkeypatch.setattr(run, "_is_port_free", lambda host, p: False)
+
+    with pytest.raises(SystemExit, match = "Requested port 8888 is already in use"):
+        run._resolve_port("127.0.0.1", 8888, allow_fallback = False)
+
+
 def test_a_caller_that_reads_the_port_back_keeps_the_plain_fallback(tmp_path, monkeypatch):
     # api-only callers (the desktop app via TAURI_PORT, `studio run` via
     # app.state.server_port) follow us to the new port, so aborting there only

@@ -259,6 +259,8 @@ export function createSettingsSearchIndex({
       "settings.about.updates",
       "settings.general.startup.sectionTitle",
       "settings.general.startup.launchAtLogin",
+
+      "settings.general.startup.serverPort",
       ...(closeToTray ? (["settings.general.startup.closeToTray"] as const) : []),
     ],
     about: SETTINGS_SEARCH_INDEX.about.filter(

@@ -754,6 +754,14 @@ export const ar = {
         launchAtLoginDescription:
           "يبدأ Unsloth في الخلفية عند تسجيل الدخول، ويبقى في شريط القوائم أو علبة النظام حتى تفتحه.",
 
+        serverPort: "منفذ الخادم",
+        serverPortDescription:
+          "يحاول الوضع التلقائي المنفذ 8888 ثم 8889–8908. يستخدم الوضع المخصص المنفذ المحدد فقط. تُطبَّق التغييرات عند بدء الخادم في المرة التالية.",
+        serverPortAutomatic: "تلقائي",
+        serverPortCustom: "مخصص",
+        serverPortInvalid: "أدخل منفذًا من 1 إلى 65535.",
+        serverPortSaveError: "تعذّر حفظ منفذ الخادم.",
+
         closeToTray: "الإغلاق إلى علبة النظام",
         closeToTrayDescription:
           "إبقاء Unsloth وخادمه قيد التشغيل في الخلفية عند إغلاق النافذة الرئيسية.",

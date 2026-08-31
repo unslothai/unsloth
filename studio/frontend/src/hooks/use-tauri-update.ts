@@ -667,7 +667,7 @@ export function useTauriUpdate(isExternalServer = false) {
         }
         try {
           const { invoke } = await import("@tauri-apps/api/core");
-          await invoke("start_server", { port: 8888 });
+          await invoke("start_server");
           retainFailure(msg, "recovered_after_shell_failure");
           toast.error("App update failed", {
             description:
@@ -727,7 +727,7 @@ export function useTauriUpdate(isExternalServer = false) {
     if (!(await crashCleanupReady())) return;
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("start_server", { port: 8888 });
+      await invoke("start_server");
       if (skippedError) {
         retainFailure(skippedError, phaseRef.current ?? "recovered_after_shell_failure");
         setDismissed(false);

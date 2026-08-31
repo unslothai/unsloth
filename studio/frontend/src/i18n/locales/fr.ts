@@ -771,6 +771,14 @@ export const fr = {
         launchAtLoginDescription:
           "Démarre Unsloth en arrière-plan lorsque vous vous connectez. Il reste dans la barre de menus ou la zone de notification jusqu'à ce que vous l'ouvriez.",
 
+        serverPort: "Port du serveur",
+        serverPortDescription:
+          "Le mode automatique essaie 8888, puis 8889–8908. Le mode personnalisé utilise uniquement le port choisi. Les modifications s'appliquent au prochain démarrage du serveur.",
+        serverPortAutomatic: "Automatique",
+        serverPortCustom: "Personnalisé",
+        serverPortInvalid: "Saisissez un port entre 1 et 65535.",
+        serverPortSaveError: "Impossible d'enregistrer le port du serveur.",
+
         closeToTray: "Fermer dans la zone de notification",
         closeToTrayDescription:
           "Laisser Unsloth et son serveur fonctionner en arrière-plan lorsque vous fermez la fenêtre principale.",

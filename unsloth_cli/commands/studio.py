@@ -1776,6 +1776,7 @@ def _format_context_length_line(load_result: dict) -> Optional[str]:
 def studio_default(
     ctx: typer.Context,
     port: int = typer.Option(8888, "--port", "-p"),
+    exact_port: bool = typer.Option(False, "--exact-port", hidden = True),
     host: str = typer.Option("127.0.0.1", "--host", "-H"),
     frontend: Optional[Path] = typer.Option(None, "--frontend", "-f"),
     silent: bool = typer.Option(False, "--silent", "-q"),
@@ -2063,6 +2064,8 @@ def studio_default(
                 "--parallel",
                 str(parallel),
             ]
+            if exact_port:
+                args.append("--exact-port")
             # Forward the frontend dist resolved before the gate (skipped in
             # --api-only, which serves no UI).
             if resolved_frontend is not None:
@@ -2139,6 +2142,7 @@ def studio_default(
         run_kwargs = dict(
             host = host,
             port = port,
+            exact_port = exact_port,
             silent = silent,
             api_only = api_only,
             llama_parallel_slots = parallel,
