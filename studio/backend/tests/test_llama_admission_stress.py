@@ -78,8 +78,7 @@ async def test_random_traffic_never_exceeds_the_cache_and_always_drains(seed):
     leases = [
         lease
         for lease in (
-            _lease(queue, tokens = opening, budget = budget, capacity = capacity)
-            for _ in range(capacity)
+            _lease(queue, tokens = opening, budget = budget, capacity = capacity) for _ in range(capacity)
         )
         if lease is not None
     ]
@@ -102,10 +101,7 @@ async def test_random_traffic_never_exceeds_the_cache_and_always_drains(seed):
         lease.release()
 
     with _Ceiling(queue) as ceiling:
-        threads = [
-            threading.Thread(target = worker, args = (lease,), daemon = True)
-            for lease in leases
-        ]
+        threads = [threading.Thread(target = worker, args = (lease,), daemon = True) for lease in leases]
         for thread in threads:
             thread.start()
         for thread in threads:
@@ -117,9 +113,9 @@ async def test_random_traffic_never_exceeds_the_cache_and_always_drains(seed):
     assert queue._reparking == 0, f"seed={seed}: repark counter leaked, the queue is wedged"
     # One holder may sit above the budget via the alone escape, so the ceiling is the
     # budget plus the largest single request rather than the budget itself.
-    assert ceiling.peak <= budget * 2, (
-        f"seed={seed}: committed peaked at {ceiling.peak} against a {budget} cache"
-    )
+    assert (
+        ceiling.peak <= budget * 2
+    ), f"seed={seed}: committed peaked at {ceiling.peak} against a {budget} cache"
 
 
 @pytest.mark.parametrize("seed", range(6))
@@ -134,8 +130,7 @@ async def test_new_arrivals_alongside_growing_holders_still_drain(seed):
     share = budget // capacity
 
     holders = [
-        _lease(queue, tokens = share, budget = budget, capacity = capacity)
-        for _ in range(capacity)
+        _lease(queue, tokens = share, budget = budget, capacity = capacity) for _ in range(capacity)
     ]
     holders = [lease for lease in holders if lease is not None]
 
@@ -148,9 +143,7 @@ async def test_new_arrivals_alongside_growing_holders_still_drain(seed):
         time.sleep(rng.uniform(0.0, 0.02))
         lease.release()
 
-    threads = [
-        threading.Thread(target = grower, args = (lease,), daemon = True) for lease in holders
-    ]
+    threads = [threading.Thread(target = grower, args = (lease,), daemon = True) for lease in holders]
     for thread in threads:
         thread.start()
 
@@ -190,9 +183,9 @@ async def test_new_arrivals_alongside_growing_holders_still_drain(seed):
         thread.join(120)
 
     assert not any(t.is_alive() for t in threads + newcomers), f"seed={seed}: did not drain"
-    assert arrivals and all(lease is not None for lease in arrivals), (
-        f"seed={seed}: an arrival was never admitted, the wait line stayed shut"
-    )
+    assert arrivals and all(
+        lease is not None for lease in arrivals
+    ), f"seed={seed}: an arrival was never admitted, the wait line stayed shut"
     assert queue.snapshot().committed == 0
     assert queue._reparking == 0
 

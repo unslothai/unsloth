@@ -35,7 +35,6 @@ from core.inference.llama_admission import (
 
 def _tokens(payload, *, budget, capacity, tool_loop):
     import routes.inference as routes_inference
-
     return routes_inference._openai_llama_admission_tokens(
         payload,
         budget = budget,
@@ -44,7 +43,12 @@ def _tokens(payload, *, budget, capacity, tool_loop):
     )
 
 
-def _payload(*, max_tokens = 128, tools = True, text = "hi"):
+def _payload(
+    *,
+    max_tokens = 128,
+    tools = True,
+    text = "hi",
+):
     return SimpleNamespace(
         messages = [{"role": "user", "content": text}],
         max_tokens = max_tokens,
@@ -53,7 +57,14 @@ def _payload(*, max_tokens = 128, tools = True, text = "hi"):
     )
 
 
-def _lease(queue, *, tokens, budget, capacity = 4, config = None):
+def _lease(
+    queue,
+    *,
+    tokens,
+    budget,
+    capacity = 4,
+    config = None,
+):
     reservation = queue.reserve(
         capacity = capacity,
         config = config or LlamaAdmissionConfig(),
@@ -65,13 +76,13 @@ def _lease(queue, *, tokens, budget, capacity = 4, config = None):
 
 # (label, slots, n_ctx, kv_unified) -- the shapes a real load actually produces.
 BACKENDS = [
-    ("cpu-only, 1 slot",            1,   4096,  True),
-    ("small vram, downshifted",     1,   8192,  True),
-    ("2 slots unified",             2,   8192,  True),
-    ("4 slots unified",             4,   4096,  True),
-    ("8 slots unified",             8, 262144,  True),
-    ("4 slots NOT unified",         4,   4096, False),
-    ("2 slots NOT unified",         2,   8192, False),
+    ("cpu-only, 1 slot", 1, 4096, True),
+    ("small vram, downshifted", 1, 8192, True),
+    ("2 slots unified", 2, 8192, True),
+    ("4 slots unified", 4, 4096, True),
+    ("8 slots unified", 8, 262144, True),
+    ("4 slots NOT unified", 4, 4096, False),
+    ("2 slots NOT unified", 2, 8192, False),
 ]
 
 
@@ -107,19 +118,15 @@ async def test_the_slots_a_backend_reports_can_all_be_filled(label, slots, n_ctx
     budget = _budget(n_ctx, slots, kv_unified)
     cost = _tokens(_payload(), budget = budget, capacity = slots, tool_loop = True)
     queue = LlamaAdmissionQueue(label)
-    admitted = [
-        _lease(queue, tokens = cost, budget = budget, capacity = slots) for _ in range(slots)
-    ]
-    assert all(lease is not None for lease in admitted), (
-        f"{label}: only {sum(l is not None for l in admitted)}/{slots} slots usable"
-    )
+    admitted = [_lease(queue, tokens = cost, budget = budget, capacity = slots) for _ in range(slots)]
+    assert all(
+        lease is not None for lease in admitted
+    ), f"{label}: only {sum(l is not None for l in admitted)}/{slots} slots usable"
     assert queue.snapshot().committed <= budget
 
 
 @pytest.mark.parametrize("label,slots,n_ctx,kv_unified", BACKENDS)
-def test_max_tokens_on_max_is_not_treated_as_a_promise_to_use_it(
-    label, slots, n_ctx, kv_unified
-):
+def test_max_tokens_on_max_is_not_treated_as_a_promise_to_use_it(label, slots, n_ctx, kv_unified):
     """The UI sends max_tokens = context_length for "Max". A tool loop is charged the same
     as an equivalent plain request, so this serialises identically for both rather than
     being a tools-only penalty. Fixing that is a separate change; what matters here is that
@@ -128,9 +135,9 @@ def test_max_tokens_on_max_is_not_treated_as_a_promise_to_use_it(
     payload = _payload(max_tokens = n_ctx)
     with_tools = _tokens(payload, budget = budget, capacity = slots, tool_loop = True)
     without = _tokens(payload, budget = budget, capacity = slots, tool_loop = False)
-    assert with_tools <= max(without, budget // max(1, slots)), (
-        f"{label}: tools charged {with_tools} vs {without} without"
-    )
+    assert with_tools <= max(
+        without, budget // max(1, slots)
+    ), f"{label}: tools charged {with_tools} vs {without} without"
 
 
 class TestNothingChangesWhenTheBudgetIsUnknown:
@@ -164,9 +171,7 @@ class TestNothingChangesWhenTheBudgetIsUnknown:
     async def test_recost_waiting_is_a_no_op_when_admission_is_disabled(self):
         """config.enabled False hands back a lease with no queue behind it."""
         queue = LlamaAdmissionQueue("disabled")
-        lease = queue.reserve(
-            capacity = 4, config = LlamaAdmissionConfig(enabled = False)
-        ).lease_nowait()
+        lease = queue.reserve(capacity = 4, config = LlamaAdmissionConfig(enabled = False)).lease_nowait()
         assert lease.recost_waiting(999999, timeout_s = 1.0) is True
         lease.release()
 
@@ -235,9 +240,9 @@ class TestOldCallers:
         names = list(
             inspect.signature(LlamaCppBackend.generate_chat_completion_with_tools).parameters
         )
-        assert names[-1] == "on_conversation_grew", (
-            f"the hook must be last; signature ends {names[-3:]}"
-        )
+        assert (
+            names[-1] == "on_conversation_grew"
+        ), f"the hook must be last; signature ends {names[-3:]}"
 
     def test_the_wait_timeout_has_a_sane_default(self):
         assert DEFAULT_RECOST_WAIT_TIMEOUT_S > 0
@@ -325,13 +330,12 @@ class TestTheInjectedToolCatalogueIsCharged:
             tool_loop = True,
             injected_tools = self.CATALOG,
         )
-        assert with_catalog > without, (
-            f"the catalogue must raise the price: {with_catalog} vs {without}"
-        )
+        assert (
+            with_catalog > without
+        ), f"the catalogue must raise the price: {with_catalog} vs {without}"
 
     def test_a_catalogue_of_a_realistic_size_is_not_rounded_away(self):
         import routes.inference as routes_inference
-
         charged = routes_inference._openai_llama_admission_injected_tool_tokens(self.CATALOG)
         assert charged > 500, f"only {charged} tokens charged for a six-tool catalogue"
 
@@ -351,23 +355,20 @@ class TestTheInjectedToolCatalogueIsCharged:
         )
         queue = LlamaAdmissionQueue("catalog")
         admitted = sum(
-            _lease(queue, tokens = cost, budget = budget, capacity = 4) is not None
-            for _ in range(4)
+            _lease(queue, tokens = cost, budget = budget, capacity = 4) is not None for _ in range(4)
         )
-        assert queue.snapshot().committed <= budget, (
-            f"admitted {admitted} chats at {cost} each against a {budget} cache"
-        )
+        assert (
+            queue.snapshot().committed <= budget
+        ), f"admitted {admitted} chats at {cost} each against a {budget} cache"
 
     def test_no_catalogue_means_no_extra_charge(self):
         """A request that injects nothing must be priced exactly as before."""
         import routes.inference as routes_inference
-
         for empty in (None, [], ()):
             assert routes_inference._openai_llama_admission_injected_tool_tokens(empty) == 0
 
     def test_an_unserialisable_catalogue_does_not_break_admission(self):
         import routes.inference as routes_inference
-
         class Awkward:
             def __repr__(self):
                 raise RuntimeError("no")
