@@ -317,21 +317,26 @@ test("light mode is the chatbox's background, under a slightly heavier shadow", 
   assert.ok(background);
   assert.match(bar, new RegExp(`background-color:\\s*${background[1]};`, "i"));
 
-  // The shadow is the composer's, a touch larger and darker, because that one sits at the bottom
-  // of the page with nothing under it and this one floats over content.
+  // The shadow is the composer's, at the composer's darkness, spread wider: that one sits at the
+  // bottom of the page with nothing under it and this one floats over content.
   const shape = (rule: string) => {
     const hit =
-      /box-shadow:\s*0 (\d+)px (\d+)px -\d+px rgba\(0, 0, 0, ([\d.]+)\);/.exec(rule);
+      /box-shadow:\s*0 (\d+)px (\d+)px (-?\d+)px rgba\(0, 0, 0, ([\d.]+)\);/.exec(rule);
     assert.ok(hit, "box-shadow is not in the shape this test reads");
-    return { y: Number(hit[1]), blur: Number(hit[2]), alpha: Number(hit[3]) };
+    return {
+      y: Number(hit[1]),
+      blur: Number(hit[2]),
+      spread: Number(hit[3]),
+      alpha: Number(hit[4]),
+    };
   };
   const from = shape(composer);
   const to = shape(bar);
-  assert.ok(to.blur > from.blur, `blur ${to.blur} is not larger than ${from.blur}`);
-  assert.ok(to.alpha > from.alpha, `alpha ${to.alpha} is not darker than ${from.alpha}`);
-  // Slightly. A drop shadow twice the composer's would read as a different material.
-  assert.ok(to.blur <= from.blur * 1.5, `blur ${to.blur} is more than slightly larger`);
-  assert.ok(to.alpha <= from.alpha * 1.5, `alpha ${to.alpha} is more than slightly darker`);
+  assert.equal(to.alpha, from.alpha, "the bar is darker than the chatbox, not just wider");
+  assert.ok(to.blur > from.blur, `blur ${to.blur} is not wider than ${from.blur}`);
+  assert.ok(to.spread > from.spread, `spread ${to.spread} is not wider than ${from.spread}`);
+  // Slightly. A shadow twice the composer's would read as a different material.
+  assert.ok(to.blur <= from.blur * 2, `blur ${to.blur} is more than slightly wider`);
   assert.ok(to.y >= from.y);
 });
 

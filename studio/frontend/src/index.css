@@ -3485,10 +3485,11 @@ html[data-chat-font] .aui-root {
    around a panel that has given up its border. */
 .find-bar-surface {
 	background-color: #ffffff;
-	/* The composer's shadow, a touch larger and darker: that one sits at the
-	   bottom of the page with nothing under it, this one floats over content.
-	   Kept in step by tests/find-in-page.test.ts. */
-	box-shadow: 0 3px 10px -2px rgba(0, 0, 0, 0.2);
+	/* The composer's shadow at the composer's darkness, spread wider: that one
+	   sits at the bottom of the page with nothing under it, this one floats over
+	   content and needs more to sit on. Kept in step by
+	   tests/find-in-page.test.ts. */
+	box-shadow: 0 3px 14px -1px rgba(0, 0, 0, 0.16);
 }
 
 .dark .find-bar-surface {
