@@ -365,18 +365,58 @@ class TestMediaIsCharged:
             assert cost > 2000, f"{field} was charged {cost}, i.e. nothing for the media"
 
 
-class TestTheToolLoopReservesTheWholeCache:
-    def test_a_server_side_loop_without_client_tools_reserves_the_budget(self):
-        """enable_tools / mcp_enabled / CLI policy open the loop with no `tools` array."""
+class TestTheToolLoopOpensAtAnEqualShare:
+    """#9392 reserved the WHOLE cache for any tool loop, which is airtight and makes
+    every tool chat run alone. Any lit pill sets enable_tools, so that is the common
+    case, not a corner. The loop now opens at an equal share and re-costs per round
+    (llama_cpp.generate_chat_completion_with_tools -> on_conversation_grew ->
+    LlamaAdmissionLease.recost), which is the alternative #9392 named and skipped.
+    """
+
+    def test_a_server_side_loop_without_client_tools_is_still_a_tool_loop(self):
+        """enable_tools / mcp_enabled / CLI policy open the loop with no `tools` array.
+
+        What changed is the amount, not the recognition: keying on payload.tools would
+        still undercharge Unsloth's own tool traffic.
+        """
         payload = _Payload(
             messages = [{"role": "user", "content": "search my notes"}],
             enable_tools = True,
             max_tokens = 128,
         )
         assert getattr(payload, "tools", None) is None
-        assert (
-            _openai_llama_admission_tokens(payload, budget = 4096, capacity = 4, tool_loop = True) == 4096
+        cost = _openai_llama_admission_tokens(
+            payload, budget = 4096, capacity = 4, tool_loop = True
         )
+        assert cost == 1024, cost
+
+    def test_four_tool_chats_fit_the_cache_at_once(self):
+        """The whole point. Four equal shares are exactly the budget, so four tool chats
+        are admitted together instead of one at a time."""
+        payload = _Payload(
+            messages = [{"role": "user", "content": "search my notes"}],
+            enable_tools = True,
+            max_tokens = 128,
+        )
+        cost = _openai_llama_admission_tokens(
+            payload, budget = 262144, capacity = 4, tool_loop = True
+        )
+        assert cost * 4 <= 262144
+
+    def test_a_tool_loop_bigger_than_its_share_is_charged_what_it_is(self):
+        """The share is a floor, not a cap. A run that already sends more than a quarter
+        of the cache is charged for it, so it is not admitted alongside three others that
+        the cache cannot hold with it."""
+        payload = _Payload(
+            messages = [{"role": "user", "content": "x " * 4000}],
+            enable_tools = True,
+            max_tokens = 128,
+        )
+        cost = _openai_llama_admission_tokens(
+            payload, budget = 4096, capacity = 4, tool_loop = True
+        )
+        assert cost > 1024, cost
+        assert cost <= 4096
 
     def test_a_passthrough_forwarding_tools_is_charged_its_own_round(self):
         """One HTTP call is one generation there: the client drives the rounds."""

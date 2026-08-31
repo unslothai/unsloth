@@ -27359,6 +27359,10 @@ class LlamaCppBackend:
         bypass_permissions: bool = False,
         permission_mode: Optional[str] = None,
         promote_reasoning_only: bool = True,
+        # Called at the top of every round with the conversation as it now stands, so KV
+        # admission can charge what this run occupies rather than the estimate it opened
+        # with. See routes/inference _openai_llama_admission_tokens. Must not block.
+        on_conversation_grew: Optional[Callable[[list], None]] = None,
         perf_callback: Optional[Callable[[dict], None]] = None,
         reasoning_provenance: Optional[dict] = None,
         context_overflow: Optional[str] = None,
@@ -27840,6 +27844,14 @@ class LlamaCppBackend:
         iteration = -1
         while True:
             iteration += 1
+            # Here rather than at each append: six sites grow the conversation and this
+            # is the one point all of them have to pass through before the cache is
+            # asked to hold the result.
+            if on_conversation_grew is not None:
+                try:
+                    on_conversation_grew(conversation)
+                except Exception:  # accounting must never break a run in progress
+                    logger.debug("tool loop recost failed", exc_info = True)
             if iteration >= max_tool_iterations + _extra + _continuation_credits:
                 break
             if cancel_event is not None and cancel_event.is_set():

@@ -53,6 +53,8 @@ from dataclasses import dataclass, field
 from collections.abc import AsyncIterator
 from typing import Any, Protocol
 
+import structlog
+
 from core.inference import tools as tools_module
 from core.inference.chat_template_helpers import append_assistant_turn
 from core.inference.passthrough_healing import StreamToolCallHealer, heal_gate, nudge_enabled
@@ -139,6 +141,9 @@ _USAGE_DETAIL_FIELDS = (
 )
 
 _STEP_DONE = object()
+
+
+logger = structlog.get_logger(__name__)
 
 
 def _truncate_for_model(
@@ -349,6 +354,11 @@ class ToolLoopPolicy:
     auto_heal: bool | None = None
     # None follows UNSLOTH_TOOL_CALL_NUDGE; explicit booleans win.
     nudge_tool_calls: bool | None = None
+    # Called with the conversation after each round appends its tool results, so the KV
+    # admission queue can charge what this run now occupies instead of the estimate it
+    # opened with. None leaves the opening reservation in force. Must not block: it runs
+    # inside the generator, between a round and the next provider call.
+    on_conversation_grew: Any = None
 
 
 @dataclass
@@ -1384,6 +1394,13 @@ async def stream_with_studio_tools(
                 continue_final_message = run.continue_final_message,
             )
         conversation.extend(tool_messages)
+        if policy.on_conversation_grew is not None:
+            # After the append, before the next provider call: this is the size the
+            # cache is about to be asked to hold.
+            try:
+                policy.on_conversation_grew(conversation)
+            except Exception:  # never let accounting break a run in progress
+                logger.debug("tool loop recost failed", exc_info = True)
         # Deferred to after the results so a no-op never splits a call from them,
         # and merged into a trailing user turn so the roles keep alternating.
         _append_user_turn(

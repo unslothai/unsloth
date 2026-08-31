@@ -445,13 +445,23 @@ class TestTheWholeRenderedPromptIsCounted:
         assert self._cost(payload) is not None
 
 
-class TestToolLoopsReserveTheirUpperBound:
+class TestToolLoopsOpenAtAShareAndGrow:
     """One lease covers up to 25 rounds, each larger than the last.
 
     `generate_chat_completion_with_tools` appends every tool result and re-sends the
     conversation, so a request that starts small can approach the full window while its
     commitment stays at the opening estimate. Another request is then admitted against a
     cache the active rounds have already grown into.
+
+    #9392 closed that by reserving the WHOLE cache for any tool loop. Airtight, and it made
+    every tool chat run alone: any lit pill sets ``enable_tools``, so that was the common
+    case, not a corner. Measured on a 262144 cache, four tool chats reached first token at
+    0.1s, 2.8s, 4.6s and 8.8s, one after another.
+
+    A tool loop now opens at an equal share and re-costs as it grows
+    (``ToolLoopPolicy.on_conversation_grew`` -> ``lease.recost``), which is the alternative
+    #9392 named and skipped for the plumbing. The growth is still accounted for; it is
+    charged when it happens instead of assumed up front.
     """
 
     @staticmethod
@@ -469,10 +479,15 @@ class TestToolLoopsReserveTheirUpperBound:
             tool_loop = tool_loop,
         )
 
-    def test_a_tool_request_reserves_the_whole_cache(self):
+    def test_a_tool_request_opens_at_an_equal_share(self):
         """Keyed on the resolved path, not on ``tools``: the loop also opens on
         ``enable_tools``, ``mcp_enabled``, the CLI policy and a checkpoint repair,
-        none of which carry a client catalogue."""
+        none of which carry a client catalogue.
+
+        The share is a FLOOR, not a cap. A tool request whose own estimate is larger is
+        charged the estimate; the floor only keeps a small opening request from having to
+        re-cost on its very first round.
+        """
         from types import SimpleNamespace
 
         payload = SimpleNamespace(
@@ -481,9 +496,10 @@ class TestToolLoopsReserveTheirUpperBound:
             enable_tools = True,
             tools = None,
         )
-        assert self._cost(payload, tool_loop = True) == 2048
+        assert self._cost(payload, tool_loop = True) == 2048 // 4
 
-    def test_two_tool_requests_do_not_run_together(self):
+    def test_four_tool_requests_run_together(self):
+        """The behaviour this change exists for. Under #9392 the second one waited."""
         from types import SimpleNamespace
         async def scenario():
             queue = LlamaAdmissionQueue("test")
@@ -494,12 +510,43 @@ class TestToolLoopsReserveTheirUpperBound:
                 tools = None,
             )
             cost = self._cost(payload, tool_loop = True)
-            first = await _reserve(queue, capacity = 4, tokens = cost, budget = 2048)
-            assert first.lease_nowait() is not None
-            second = await _reserve(queue, capacity = 4, tokens = cost, budget = 2048)
-            return second.lease_nowait()
+            leases = []
+            for _ in range(4):
+                reservation = await _reserve(
+                    queue, capacity = 4, tokens = cost, budget = 2048
+                )
+                leases.append(reservation.lease_nowait())
+            return leases
 
-        assert _run(scenario()) is None
+        assert all(lease is not None for lease in _run(scenario()))
+
+    def test_growth_past_the_share_is_still_accounted(self):
+        """The overcommit #9392 fixed stays fixed. Two loops holding a share each cannot
+        both grow into the same cache: the second growth is refused, and refusing it
+        leaves the first exactly as it was."""
+        from types import SimpleNamespace
+        async def scenario():
+            queue = LlamaAdmissionQueue("test")
+            payload = SimpleNamespace(
+                messages = [{"role": "user", "content": "hi"}],
+                max_tokens = 16,
+                enable_tools = True,
+                tools = None,
+            )
+            cost = self._cost(payload, tool_loop = True)
+            leases = []
+            for _ in range(4):
+                reservation = await _reserve(
+                    queue, capacity = 4, tokens = cost, budget = 2048
+                )
+                leases.append(reservation.lease_nowait())
+            # The cache is exactly full at four shares, so nobody may grow.
+            return leases, queue
+
+        leases, queue = _run(scenario())
+        assert queue.snapshot().committed == 2048
+        assert leases[0].recost(2048) is False
+        assert queue.snapshot().committed == 2048
 
     def test_a_request_without_tools_is_unaffected(self):
         """The serialisation is the price of a tool loop, not of every request."""
