@@ -1052,6 +1052,12 @@ class TestEnsureRocmTorch:
         assert "gfx1151" not in calls
         assert "non-Strix runtime target (gfx1100)" in buf.getvalue()
 
+    # The venv is described by mocks like the hardware: the Strix skip arm asks
+    # _already_on_amd_arch_leaf, which reads this interpreter's own metadata, so on a host
+    # that already runs AMD gfx1151 torch it keeps the wheels and the reroute never fires.
+    # Passed as `new` rather than return_value so no mock argument joins the signature.
+    @patch.object(stack_mod, "_installed_rocm_wheel_family", lambda: None)
+    @patch.object(stack_mod, "_torch_requires_rocm_sdk", lambda: False)
     @patch.object(stack_mod, "IS_MACOS", False)
     @patch("platform.machine", return_value = "x86_64")
     @patch.object(stack_mod, "IS_WINDOWS", False)
@@ -1176,6 +1182,11 @@ Agent 4
         assert "gfx1151" in torch_call
         assert "torch>=2.11.0,<2.12.0" in torch_call
 
+    # A gfx pin is compared against the installed `rocm` meta-package before the version
+    # heuristics run, and that read goes to THIS interpreter's metadata. Unpinned, the
+    # gfx120X-all and gfx1150 cases below flip on any host that already has AMD per-arch
+    # torch, because the family it reads back is that host's, not the pin's.
+    @patch.object(stack_mod, "_installed_rocm_wheel_family", lambda: None)
     def test_rocm_pin_family_mismatch_helper(self):
         """_rocm_pin_family_mismatch: exact rocm compare, else the 2.11 line."""
         f = stack_mod._rocm_pin_family_mismatch
@@ -1310,6 +1321,11 @@ Agent 4
             any(str(a).startswith("torch") for a in _c.args) for _c in mock_pip.call_args_list
         )
 
+    # Same reason as test_rocm_pin_family_mismatch_helper: the pin's staleness is judged
+    # against the installed family first, so an unpinned read makes this assert something
+    # about the machine running the suite.
+    @patch.object(stack_mod, "_installed_rocm_wheel_family", lambda: None)
+    @patch.object(stack_mod, "_torch_requires_rocm_sdk", lambda: False)
     @patch.object(stack_mod, "IS_WINDOWS", False)
     @patch.object(stack_mod, "pip_install_try", return_value = True)
     @patch.object(stack_mod, "pip_install")
