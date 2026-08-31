@@ -728,6 +728,50 @@ class TestAnthropicMessagesToOpenAI:
         assert result[0]["tool_call_id"] == "tu_1"
         assert result[0]["content"] == "Result text"
 
+    def test_tool_result_precedes_trailing_user_text(self):
+        msgs = [
+            {"role": "user", "content": [{"type": "text", "text": "what files are here?"}]},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Let me look."},
+                    {"type": "tool_use", "id": "tu_1", "name": "Bash", "input": {"command": "ls"}},
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "tu_1", "content": "README.md\nsrc/"},
+                    {"type": "text", "text": "<system-reminder>Keep going.</system-reminder>"},
+                ],
+            },
+        ]
+        result = anthropic_messages_to_openai(msgs)
+        assert [m["role"] for m in result] == ["user", "assistant", "tool", "user"]
+        assert result[2]["tool_call_id"] == "tu_1"
+        assert result[2]["content"] == "README.md\nsrc/"
+        assert result[3]["content"] == "<system-reminder>Keep going.</system-reminder>"
+
+    def test_tool_result_with_image_keeps_user_parts_after_tool(self):
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "tu_1", "content": "ok"},
+                    {"type": "text", "text": "and this?"},
+                    {
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": "image/jpeg", "data": "AAAA"},
+                    },
+                ],
+            }
+        ]
+        result = anthropic_messages_to_openai(msgs)
+        assert [m["role"] for m in result] == ["tool", "user"]
+        parts = result[1]["content"]
+        assert parts[0] == {"type": "text", "text": "and this?"}
+        assert parts[1]["type"] == "image_url"
+
     def test_mixed_text_and_tool_use_blocks(self):
         msgs = [
             {

@@ -175,6 +175,9 @@ def anthropic_messages_to_openai(
                         }
                     )
 
+            for tr in tool_results:
+                result.append(tr)
+
             if has_image:
                 result.append({"role": "user", "content": user_parts})
             else:
@@ -182,8 +185,6 @@ def anthropic_messages_to_openai(
                 text = "\n".join(p["text"] for p in user_parts)
                 if text:
                     result.append({"role": "user", "content": text})
-            for tr in tool_results:
-                result.append(tr)
 
     return result
 
