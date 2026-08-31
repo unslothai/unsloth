@@ -720,7 +720,6 @@ def _clear_runtime_cache():
 
 
 def _set_crt_headers(monkeypatch, reachable: bool):
-    """Left real, this answers for the CI runner, not the case under test."""
     from core import _msvc_env
     monkeypatch.setattr(_msvc_env, "crt_headers_reachable", lambda: reachable)
 
@@ -767,7 +766,6 @@ def test_windows_without_triton_falls_back_to_eager(monkeypatch):
 
 
 def test_windows_with_triton_but_no_msvc_falls_back_to_eager(monkeypatch):
-    """#7595: `import triton` succeeds and the compile still dies, for want of CRT headers."""
     from core.inference import diffusion_speed as ds_mod
 
     monkeypatch.delenv("TORCHDYNAMO_DISABLE", raising = False)
@@ -785,7 +783,6 @@ def test_windows_with_triton_but_no_msvc_falls_back_to_eager(monkeypatch):
 
 
 def test_gguf_dequant_respects_the_runtime_gate(monkeypatch):
-    """The GGUF arm is an `if`, so it never reaches the check inside compile_eligible()."""
     from core.inference import diffusion_speed as ds_mod
 
     _stub_torch(monkeypatch)

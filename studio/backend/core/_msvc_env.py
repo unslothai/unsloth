@@ -2,8 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Gate torch.compile on Triton's C toolchain, on Windows (#7595). `import triton` succeeding does not
-mean a compile will: Triton's AMD/HIP driver JIT-compiles `hip_utils.c` with `clang-cl`, which without
-CRT headers dies on `'stdlib.h'` mid-run. It passes its own `/I` dirs, never `INCLUDE`: nothing to repair."""
+mean a compile will: Triton's clang-cl JIT dies on `'stdlib.h'` mid-run when the CRT headers are absent.
+It passes its own `/I` dirs and never reads `INCLUDE`, so there is nothing to repair, only a state to refuse."""
 
 from __future__ import annotations
 
@@ -15,7 +15,6 @@ logger = logging.getLogger(__name__)
 
 
 def _have_crt_headers() -> bool:
-    """Only the compiler's own fallback; Triton's `/I` dirs are authoritative, see the module note."""
     for d in os.environ.get("INCLUDE", "").split(os.pathsep):
         if d and os.path.isfile(os.path.join(d, "stdlib.h")):
             return True
@@ -23,7 +22,6 @@ def _have_crt_headers() -> bool:
 
 
 def _triton_finds_crt_headers() -> bool:
-    """The dirs Triton will pass as `/I`, which is what the compile actually searches."""
     try:
         from triton.windows_utils import find_msvc_winsdk  # noqa: PLC0415
         _, inc_dirs, _ = find_msvc_winsdk()
@@ -45,7 +43,6 @@ def _triton_is_triton_windows() -> bool:
 
 
 def _rocm_clang_cl_present() -> bool:
-    """`get_cc()` prefers this clang-cl over everything else once the ROCm wheel is installed."""
     import sysconfig  # noqa: PLC0415
     return os.path.isfile(
         os.path.join(
@@ -55,9 +52,9 @@ def _rocm_clang_cl_present() -> bool:
 
 
 def _needs_msvc_headers() -> bool:
-    """Only cl and clang-cl need them; `get_cc()` otherwise picks bundled TinyCC, which carries its own. The
-    fallback needs both halves, since a ROCm-to-XPU repair strands the compiler without the Triton that
-    selects it; unanswerable means ungated, because gating wrongly breaks a working box."""
+    """Only cl and clang-cl need them; `get_cc()` otherwise picks bundled TinyCC, which carries its own.
+    The fallback needs both halves: an in-place ROCm-to-XPU repair leaves the compiler on disk without
+    the Triton that selects it. Unanswerable means ungated: gating wrongly breaks a working box."""
     try:
         from triton.runtime.build import get_cc, is_clang_cl, is_msvc  # noqa: PLC0415
         cc = get_cc()
@@ -87,7 +84,6 @@ def _toolchain_summary() -> str:
 
 
 def crt_headers_reachable() -> bool:
-    """Whether a Triton compile in THIS process will find the CRT headers. True off win32."""
     if sys.platform != "win32":
         return True
     if not _needs_msvc_headers():
@@ -96,7 +92,6 @@ def crt_headers_reachable() -> bool:
 
 
 def gate_torch_compile_on_windows(log: logging.Logger) -> None:
-    """Workers call this before importing torch."""
     if sys.platform != "win32":
         return
     try:

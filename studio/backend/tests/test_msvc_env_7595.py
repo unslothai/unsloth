@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Triton C-toolchain gate on Windows (#7595). Discovery is stubbed, so these run on CI Linux too."""
+"""Triton C-toolchain gate on Windows (#7595). Discovery is stubbed, so these also run on CI Linux."""
 
 import os
 import sys
@@ -19,7 +19,6 @@ def _fake_triton(
     inc_dirs,
     cc = "clang-cl.exe",
 ):
-    """Stub triton.windows_utils to return inc_dirs, and get_cc() to report `cc`."""
     pkg = types.ModuleType("triton")
     utils = types.ModuleType("triton.windows_utils")
     utils.find_msvc_winsdk = lambda *a, **k: (None, list(inc_dirs), [])
@@ -69,7 +68,6 @@ def test_triton_discovery_false_when_no_dir_has_stdlib(tmp_path, monkeypatch):
 
 
 def test_triton_discovery_false_when_search_returns_nothing(monkeypatch):
-    """No Visual Studio at all: find_msvc_winsdk yields an empty /I list."""
     _fake_triton(monkeypatch, [])
     assert _msvc_env._triton_finds_crt_headers() is False
 
@@ -104,7 +102,6 @@ def test_reachable_is_true_off_win32(monkeypatch):
 
 
 def test_reachable_via_triton_even_when_include_is_empty(tmp_path, monkeypatch):
-    """Triton passes explicit /I dirs."""
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.delenv("INCLUDE", raising = False)
     ucrt = tmp_path / "ucrt"
@@ -115,7 +112,6 @@ def test_reachable_via_triton_even_when_include_is_empty(tmp_path, monkeypatch):
 
 
 def test_reachable_via_include_when_triton_finds_nothing(tmp_path, monkeypatch):
-    """Older triton-windows passes no /I and leans on the compiler's INCLUDE."""
     monkeypatch.setattr(sys, "platform", "win32")
     (tmp_path / "stdlib.h").write_text("/* stub */")
     monkeypatch.setenv("INCLUDE", str(tmp_path))
@@ -131,7 +127,6 @@ def test_not_reachable_when_neither_source_has_headers(tmp_path, monkeypatch):
 
 
 def test_tinycc_does_not_need_msvc_headers(tmp_path, monkeypatch):
-    """Gating TinyCC, which carries its own headers, would disable compile on a box that works."""
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setenv("INCLUDE", str(tmp_path))
     _fake_triton(monkeypatch, [], cc = "tcc.exe")
@@ -140,7 +135,6 @@ def test_tinycc_does_not_need_msvc_headers(tmp_path, monkeypatch):
 
 
 def test_clang_cl_does_need_msvc_headers(tmp_path, monkeypatch):
-    """The AMD case: get_cc() prefers the ROCm wheel's clang-cl, which does need them."""
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setenv("INCLUDE", str(tmp_path))
     _fake_triton(monkeypatch, [], cc = "clang-cl.exe")
@@ -149,7 +143,6 @@ def test_clang_cl_does_need_msvc_headers(tmp_path, monkeypatch):
 
 
 def test_xpu_triton_without_the_private_api_is_not_gated(tmp_path, monkeypatch):
-    """Reading the missing private API as "MSVC required" would regress every Windows XPU install."""
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setenv("INCLUDE", str(tmp_path))
     monkeypatch.setitem(sys.modules, "triton.runtime.build", None)
@@ -170,7 +163,6 @@ def test_stale_rocm_clang_cl_under_xpu_triton_is_not_gated(tmp_path, monkeypatch
 
 
 def test_triton_is_triton_windows_reads_the_distribution_name(monkeypatch):
-    """Resolved by distribution, the same question setup.ps1 asks when it swaps the two."""
     import importlib.metadata as md
 
     monkeypatch.setattr(md, "packages_distributions", lambda: {"triton": ["triton-windows"]})
@@ -188,7 +180,6 @@ def test_triton_is_triton_windows_reads_the_distribution_name(monkeypatch):
 
 
 def test_no_private_api_but_rocm_clang_cl_on_disk_is_gated(tmp_path, monkeypatch):
-    """The other half: get_cc() would pick the ROCm clang-cl sitting right there."""
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setenv("INCLUDE", str(tmp_path))
     monkeypatch.setitem(sys.modules, "triton.runtime.build", None)
@@ -201,7 +192,6 @@ def test_no_private_api_but_rocm_clang_cl_on_disk_is_gated(tmp_path, monkeypatch
 
 
 def test_rocm_clang_cl_present_probes_the_platlib_path(tmp_path, monkeypatch):
-    """The path is the one get_cc() builds, so a typo here silently disables the whole gate."""
     import sysconfig
 
     monkeypatch.setattr(sysconfig, "get_path", lambda name: str(tmp_path))
@@ -213,7 +203,6 @@ def test_rocm_clang_cl_present_probes_the_platlib_path(tmp_path, monkeypatch):
 
 
 def test_toolchain_summary_separates_no_vs_from_a_partial_sdk(tmp_path, monkeypatch):
-    """No Visual Studio and a partial SDK look identical in a bug report without the counts."""
     _fake_triton(monkeypatch, [], cc = "clang-cl.exe")
     monkeypatch.delenv("INCLUDE", raising = False)
     summary = _msvc_env._toolchain_summary()
@@ -229,7 +218,6 @@ def test_toolchain_summary_separates_no_vs_from_a_partial_sdk(tmp_path, monkeypa
 
 
 def test_toolchain_summary_never_raises(monkeypatch):
-    """It is evaluated as an argument to the warning, after TORCHDYNAMO_DISABLE is already set."""
     monkeypatch.setitem(sys.modules, "triton.runtime.build", None)
     monkeypatch.setitem(sys.modules, "triton.windows_utils", None)
     assert "compiler=unknown" in _msvc_env._toolchain_summary()
@@ -251,7 +239,6 @@ def test_gate_survives_a_probe_that_raises(monkeypatch):
 
 
 def _gate(monkeypatch, *, triton_importable, headers_ok):
-    """Drive the gate with a stubbed triton + header outcome; return the log."""
     monkeypatch.setattr(sys, "platform", "win32")
     # setenv first: delenv(raising = False) records nothing when absent, so the gate's write leaks.
     monkeypatch.setenv("TORCHDYNAMO_DISABLE", "")
