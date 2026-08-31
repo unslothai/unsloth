@@ -449,9 +449,11 @@ def _probe_physical_gpu_inventory() -> Dict[str, Any]:
     # here; the amdgpu kernel driver publishes these files with no subprocess at all.
     if platform.system() == "Linux":
         try:
-            sysfs_devices = _linux_drm_sysfs_records()
+            sysfs_devices = _linux_drm_sysfs_records(distinguish_failure = True)
         except Exception as e:
             logger.debug("Linux DRM sysfs inventory probe failed: %s", e)
+            sysfs_devices = None
+        if sysfs_devices is None:
             sysfs_devices = []
             unanswered.update(("amd", "intel"))
         if sysfs_devices:
@@ -602,7 +604,9 @@ def _adapter_name_is_live(name: Optional[str], live_names: list[str]) -> bool:
     )
 
 
-def _linux_drm_sysfs_records() -> list[Dict[str, Any]]:
+def _linux_drm_sysfs_records(
+    *, distinguish_failure: bool = False
+) -> "list[Dict[str, Any]] | None":
     """Every AMD or Intel card the DRM drivers have bound, from /sys/class/drm.
 
     ``vendor`` is 0x1002 for AMD/ATI and 0x8086 for Intel, and amdgpu's
@@ -618,12 +622,21 @@ def _linux_drm_sysfs_records() -> list[Dict[str, Any]]:
     user their GPU exists, which is the whole point.
 
     Never raises: an unreadable or malformed file skips that card.
+
+    ``distinguish_failure`` returns None when the walk could not be trusted, so the
+    inventory can mark AMD and Intel unanswered instead of publishing "no cards" for a
+    TTL. A MISSING /sys/class/drm is not a failure: a host with no DRM subsystem has
+    answered. Note the limit -- a driver that unbinds its cards leaves the directory
+    readable and empty, which nothing here can tell from a host that never had one.
     """
     root = "/sys/class/drm"
+    unreadable = False
     try:
         entries = sorted(os.listdir(root))
-    except OSError:
+    except FileNotFoundError:
         return []
+    except OSError:
+        return None if distinguish_failure else []
     records: list[Dict[str, Any]] = []
     for entry in entries:
         if not re.fullmatch(r"card\d+", entry):
@@ -632,7 +645,12 @@ def _linux_drm_sysfs_records() -> list[Dict[str, Any]]:
         try:
             with open(os.path.join(device, "vendor"), encoding = "utf-8") as fh:
                 vendor = fh.read().strip().lower()
+        except FileNotFoundError:
+            # A cardN with no PCI vendor is a virtual or platform device, not a card
+            # this walk lost.
+            continue
         except OSError:
+            unreadable = True
             continue
         vendors = {"0x1002": "amd", "0x8086": "intel"}
         if vendor not in vendors:
@@ -653,6 +671,10 @@ def _linux_drm_sysfs_records() -> list[Dict[str, Any]]:
                 "source": "sysfs-drm",
             }
         )
+    if unreadable and distinguish_failure:
+        # One card that could not be read makes the whole walk a partial answer, and a
+        # partial answer published as a complete one drops a card for a TTL.
+        return None
     return records
 
 

@@ -1842,7 +1842,7 @@ def test_an_absent_nvidia_smi_is_an_answer_not_a_failed_probe(monkeypatch):
     monkeypatch.setattr(nvidia.subprocess, "run", _missing)
     monkeypatch.setattr(nvidia, "_linux_nvidia_procfs_gpu_count", lambda: 0)
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(hw, "_linux_drm_sysfs_records", lambda: [])
+    monkeypatch.setattr(hw, "_linux_drm_sysfs_records", lambda **_kw: [])
     monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
 
     inventory = hw.get_physical_gpu_inventory()
@@ -2091,7 +2091,7 @@ def test_a_vendor_that_did_not_answer_keeps_the_inventory_unknown(monkeypatch):
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
     monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     monkeypatch.setattr(
-        hw, "_linux_drm_sysfs_records", lambda: [{"vendor": "intel", "name": None, "index": 0}]
+        hw, "_linux_drm_sysfs_records", lambda **_kw: [{"vendor": "intel", "name": None, "index": 0}]
     )
 
     def _timeout(*_a, **_k):
@@ -2438,3 +2438,95 @@ def test_a_detection_failure_with_an_importable_torch_stays_frozen(monkeypatch):
     monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", None)
     monkeypatch.setattr(hw, "TORCH_IMPORT_ERROR", None)
     assert hw.current_chat_only_verdict() == ("detection_failed", None)
+
+
+def test_an_unreadable_drm_walk_is_not_a_host_without_amd_cards(monkeypatch, tmp_path):
+    """/sys/class/drm going unreadable is the driver restart the TTL exists to tolerate.
+
+    Swallowing that into an empty list made the failure look like a successful "no
+    cards", so nothing marked the vendor unanswered and the carry-forward had nothing
+    to act on: the previously detected cards were dropped for a whole TTL.
+    """
+    def denied(_root):
+        raise PermissionError("EACCES during driver restart")
+
+    monkeypatch.setattr(hw.os, "listdir", denied)
+    assert hw._linux_drm_sysfs_records() == [], "the ranking callers keep the old shape"
+    assert hw._linux_drm_sysfs_records(distinguish_failure = True) is None
+
+
+def test_a_host_with_no_drm_subsystem_has_answered(monkeypatch):
+    """Missing is not unreadable: a container or a machine with no DRM said "no cards"."""
+    def absent(_root):
+        raise FileNotFoundError("/sys/class/drm")
+
+    monkeypatch.setattr(hw.os, "listdir", absent)
+    assert hw._linux_drm_sysfs_records(distinguish_failure = True) == []
+
+
+def test_a_card_whose_vendor_cannot_be_read_makes_the_walk_partial(monkeypatch):
+    """A partial answer published as a complete one drops that card for a TTL."""
+    monkeypatch.setattr(hw.os, "listdir", lambda _root: ["card0"])
+    real_open = open
+
+    def blocked(path, *a, **k):
+        if str(path).endswith("vendor"):
+            raise PermissionError("EACCES")
+        return real_open(path, *a, **k)
+
+    monkeypatch.setattr("builtins.open", blocked)
+    assert hw._linux_drm_sysfs_records(distinguish_failure = True) is None
+    assert hw._linux_drm_sysfs_records() == []
+
+
+def test_a_cardn_with_no_pci_vendor_is_not_a_lost_card(monkeypatch):
+    """A virtual or platform cardN publishes no vendor file and never was a GPU."""
+    monkeypatch.setattr(hw.os, "listdir", lambda _root: ["card0"])
+    real_open = open
+
+    def missing(path, *a, **k):
+        if str(path).endswith("vendor"):
+            raise FileNotFoundError(path)
+        return real_open(path, *a, **k)
+
+    monkeypatch.setattr("builtins.open", missing)
+    assert hw._linux_drm_sysfs_records(distinguish_failure = True) == []
+
+
+def test_the_inventory_marks_both_sysfs_vendors_unanswered(monkeypatch):
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
+    monkeypatch.setattr(
+        nvidia.subprocess, "run",
+        lambda *_a, **_k: (_ for _ in ()).throw(FileNotFoundError("nvidia-smi")),
+    )
+    monkeypatch.setattr(nvidia, "_linux_nvidia_procfs_gpu_count", lambda: 0)
+    monkeypatch.setattr(hw, "_linux_drm_sysfs_records", lambda **_kw: None)
+
+    inventory = hw.get_physical_gpu_inventory()
+
+    assert inventory["unanswered"] == ["amd", "intel"]
+    assert inventory["unknown"] is True
+
+
+def test_a_previously_seen_amd_card_survives_an_unreadable_walk(monkeypatch):
+    """End to end: the distinction is only worth having if the carry-forward uses it."""
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
+    monkeypatch.setattr(
+        nvidia.subprocess, "run",
+        lambda *_a, **_k: (_ for _ in ()).throw(FileNotFoundError("nvidia-smi")),
+    )
+    monkeypatch.setattr(nvidia, "_linux_nvidia_procfs_gpu_count", lambda: 0)
+    card = {"vendor": "amd", "index": 0, "name": None, "memory_total_gb": 20.0,
+            "source": "sysfs-drm"}
+    monkeypatch.setattr(hw, "_linux_drm_sysfs_records", lambda **_kw: [dict(card)])
+    good = hw.get_physical_gpu_inventory()
+    assert [d["vendor"] for d in good["devices"]] == ["amd"]
+
+    monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", (0.0, good))
+    monkeypatch.setattr(hw, "_linux_drm_sysfs_records", lambda **_kw: None)
+    after = hw.get_physical_gpu_inventory()
+
+    assert [d["vendor"] for d in after["devices"]] == ["amd"]
+    assert after["unknown"] is True
