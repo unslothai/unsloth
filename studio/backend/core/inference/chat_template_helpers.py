@@ -43,15 +43,24 @@ _ATEM_CLOSE = "<|eom|>"
 _ATEM_END_OF_TURN = "<|eot|>"
 # <|eom|> ends a block, <|eot|> ends the whole turn; either terminates the block in hand.
 _ATEM_BLOCK_ENDS = (_ATEM_CLOSE, _ATEM_END_OF_TURN)
+_ATEM_BLOCK_END_MAX_LEN = max(len(marker) for marker in _ATEM_BLOCK_ENDS)
 _ATEM_TEMPLATE_OPENER = "<|start|>assistant to=self<|message|>"
 _ATEM_HEADER_PREFIXES = ("<|start|>assistant to=", "to=")
-_ATEM_HEADER_RE = re.compile(r"(?:<\|start\|>assistant )?to=(?P<recipient>[^<\s]+)<\|message\|>")
+# Bound on a recipient, so the holdback window below can never be shorter than a header
+# the model actually wrote. Namespaced tool names run long, so this is generous rather
+# than a guess at a name cap: nothing in the grammar or in Studio caps a recipient.
+_ATEM_RECIPIENT_MAX_LEN = 256
+_ATEM_HEADER_RE = re.compile(
+    r"(?:<\|start\|>assistant )?to=(?P<recipient>[^<\s]{1,%d})<\|message\|>" % _ATEM_RECIPIENT_MAX_LEN
+)
 # A partially streamed header tail: a recipient name, then a prefix of "<|message|>".
 _ATEM_PARTIAL_TAIL_RE = re.compile(
     r"[^<\s]*(?:<(?:\|(?:m(?:e(?:s(?:s(?:a(?:g(?:e(?:\|)?)?)?)?)?)?)?)?)?)?"
 )
-# Longest holdback. 64 is the tool-name cap, so a recipient cannot be longer.
-_ATEM_HEADER_MAX_LEN = len("<|start|>assistant to=") + 64 + len("<|message|>")
+# Longest holdback, derived from the same bound so the two cannot drift apart.
+_ATEM_HEADER_MAX_LEN = (
+    len("<|start|>assistant to=") + _ATEM_RECIPIENT_MAX_LEN + len("<|message|>")
+)
 # Call syntax, taken verbatim from the response_template grammar the checkpoint ships:
 # a call repeats with no enclosing tag, other attributes may precede "name" on the call
 # and sit either side of it on a parameter.
@@ -1159,6 +1168,15 @@ def neutralize_control_markup_in_messages(
             new_name = neutralize_control_markup(name, markup)
             if new_name != name:
                 updates["name"] = new_name
+        # A recipient-addressed template concatenates this straight into the header
+        # ("<|start|>assistant to=" + recipient + "<|message|>"), so an assistant turn
+        # carrying one forged a whole system turn with real control tokens. FULL rewrite
+        # for the reason the reasoning fields take one: it must never hold delimiters.
+        recipient = msg.get("recipient")
+        if isinstance(recipient, str) and recipient:
+            new_recipient = neutralize_control_markup(recipient, markup)
+            if new_recipient != recipient:
+                updates["recipient"] = new_recipient
         # A separate reasoning field is the INNER text of a thought block the template wraps
         # itself (Qwen chat_templates.py:759, Gemma-4 gemma-4.jinja:245, Harmony
         # chat_templates.py:1330). None is "content", so it reached the prompt unswept and an
@@ -2062,13 +2080,33 @@ def _split_partial_marker(text: str, marker: str) -> tuple[str, str]:
     return text, ""
 
 
-def _find_atem_block_end(text: str) -> tuple[int, int]:
+def _find_atem_block_end(text: str, start: int = 0) -> tuple[int, int]:
+    """Earliest block terminator at or after ``start``. Callers that keep feeding the
+    same buffer pass what they have already searched, so a held block costs one scan."""
     index, length = -1, 0
     for marker in _ATEM_BLOCK_ENDS:
-        found = text.find(marker)
+        found = text.find(marker, start)
         if found >= 0 and (index < 0 or found < index):
             index, length = found, len(marker)
     return index, length
+
+
+def _atem_partial_framing_len(text: str) -> int:
+    """Length of the trailing fragment that can only be framing the model never finished.
+
+    Restricted to fragments opening with "<", which is what separates unfinished markup
+    from prose: a bare "to=" tail is also how "...auto=true" ends, and a turn cut there
+    should keep its text. So the first header of a turn, which has no "<|start|>" prefix,
+    is left alone and only the block terminators and later headers are recognized."""
+    for size in range(min(len(text), _ATEM_HEADER_MAX_LEN), 0, -1):
+        tail = text[-size:]
+        if not tail.startswith("<"):
+            continue
+        if any(marker.startswith(tail) for marker in _ATEM_BLOCK_ENDS):
+            return size
+        if _atem_header_can_extend(tail):
+            return size
+    return 0
 
 
 def _split_partial_atem_boundary(text: str) -> tuple[str, str]:
@@ -2089,11 +2127,19 @@ def _split_partial_atem_block_end(text: str) -> tuple[str, str]:
 def _atem_parameter_value(raw: str):
     """JSON where it parses, otherwise the text exactly as written (the grammar's
     ``allow_non_json``), so a multi-line string argument reaches the tool with every
-    character intact. json.loads ignores whitespace around a value by itself."""
+    character intact. json.loads ignores whitespace around a value by itself.
+
+    Anything that will not re-serialize as JSON stays text: NaN and the infinities are
+    not JSON (RFC 8259 s6) yet json.loads takes them, and an overflowing literal like
+    1e400 becomes inf without ever being one. Either would put a bare token in the
+    canonical call. RecursionError is deep nesting rather than a value, and the
+    grammar's fallback covers it the same way."""
     try:
-        return json.loads(raw)
-    except ValueError:
+        value = json.loads(raw)
+        json.dumps(value, allow_nan = False)
+    except (ValueError, RecursionError):
         return raw
+    return value
 
 
 def _atem_unfinished_tag(text: str) -> int:
@@ -2302,6 +2348,9 @@ class RecipientChannelNormalizer:
         self._passthrough = False
         self._skip_opening_newline = False
         self._between_blocks = True
+        # How much of a held tool block has already been searched for a terminator,
+        # so a long argument is scanned once rather than once per delta.
+        self._tool_scanned = 0
 
     def feed(self, text: str) -> str:
         """Consume the next slice of model output and return the text it settles."""
@@ -2314,20 +2363,23 @@ class RecipientChannelNormalizer:
                 break
 
             if self._tool_header is not None:
-                index, length = _find_atem_block_end(self._buffer)
+                index, length = _find_atem_block_end(self._buffer, self._tool_scanned)
                 if index < 0:
+                    # Everything but a possible split terminator has been ruled out.
+                    self._tool_scanned = max(0, len(self._buffer) - _ATEM_BLOCK_END_MAX_LEN + 1)
                     break  # a call is rewritten only once it is whole
-                block, terminator = self._buffer[:index], self._buffer[index : index + length]
+                block = self._buffer[:index]
                 self._buffer = self._buffer[index + length :]
-                header, self._tool_header = self._tool_header, None
+                self._tool_header = None
+                self._tool_scanned = 0
                 pieces = _atem_block_pieces(block, complete = True)
                 self._between_blocks = True
                 if pieces is not None:
                     output.append("".join(text for _, text in pieces))
                     continue
-                # No call in it at all: hand the block on untouched, as before.
-                output.append(header + block + terminator)
-                self._passthrough = True
+                # No call in it at all: keep the body, but this block is closed and the
+                # next header is still ours to read, so do not stop normalizing the turn.
+                output.append(_atem_surrounding_text(block))
                 continue
 
             if self._in_reply:
@@ -2346,8 +2398,12 @@ class RecipientChannelNormalizer:
 
             if self._in_reasoning:
                 if self._skip_opening_newline:
-                    if self._buffer.startswith("\n"):
-                        self._buffer = self._buffer[1:]
+                    if self._buffer == "\r":
+                        break  # cannot tell "\r\n" from a lone "\r" yet
+                    for newline in ("\r\n", "\n"):
+                        if self._buffer.startswith(newline):
+                            self._buffer = self._buffer[len(newline) :]
+                            break
                     self._skip_opening_newline = False
                     if not self._buffer:
                         break
@@ -2436,6 +2492,11 @@ class RecipientChannelNormalizer:
             else:
                 output = "".join(t for is_call, t in pieces if keep_calls or not is_call)
             self._tool_header = None
+        elif output:
+            # feed() held this back because it could still become framing. The stream
+            # ended before it did, so drop it rather than show the control markup.
+            held = _atem_partial_framing_len(output)
+            output = output[: len(output) - held] if held else output
         if not self._in_reasoning:
             # Flushed between blocks: a later delta must not be re-parsed as a
             # header now that the text before it has already been emitted.
