@@ -9379,8 +9379,9 @@ class LlamaCppBackend:
 
         Returns raw (uncapped) rows sorted by index:
         ``{"index", "free_mib", "total_mib", "is_igpu", "name", "type_known"}``.
-        ``type_known`` is False when ggml could not read the device type, so
-        ``is_igpu`` there is a default rather than an answer. The index is
+        ``type_known`` is False only when the probe reported that ggml could not
+        read the device type, so ``is_igpu`` there is a default rather than an
+        answer; a row from before the column existed keeps its own. The index is
         ggml's compact Vulkan ordinal -- the one the registry names
         ``Vulkan<index>`` and load_model pins with ``--device``, NOT the raw
         ``GGML_VK_VISIBLE_DEVICES`` space. A user-set ``GGML_VK_VISIBLE_DEVICES``
@@ -9442,7 +9443,11 @@ class LlamaCppBackend:
                         "is_igpu": parts[2] == "1",
                         "total_mib": int(parts[3]) // (1024 * 1024),
                         "name": parts[4].strip() if len(parts) >= 5 else "",
-                        "type_known": len(parts) == 6 and parts[5] == "1",
+                        # A row without the column is not an unclassified device: the
+                        # older probe still asked ggml, it just did not report whether
+                        # the answer held. Unknown is reserved for a six-column row
+                        # that says so, or the lock is added for a discrete card.
+                        "type_known": parts[5] == "1" if len(parts) == 6 else True,
                     }
                 )
             except ValueError:
