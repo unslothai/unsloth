@@ -88,7 +88,6 @@ export function useModelsSelection({
   accessToken: string | undefined;
   online: boolean;
 }): ModelsSelection {
-  // Per-tab selection so switching keeps each list's highlighted row.
   const [discoverSelectedId, setDiscoverSelectedId] = useState<string | null>(
     null,
   );

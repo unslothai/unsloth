@@ -28,19 +28,10 @@ function partialFormatFamily(
 }
 
 /**
- * The family an unclassified PARTIAL row can be PROVEN to belong to, or null
- * when its transport says nothing.
- *
- * The backend writes a transport only for snapshot partials -- a GGUF row is
- * hardcoded to none (`services/models/common.py`, `cache_inventory.py`), so a
- * transport proves the model family. The converse does not hold: a snapshot
- * partial with neither a cancel marker nor a manifest reports none as well
- * (`utils/inventory_scan.py`), so an absent transport proves nothing and must
- * not be read as "GGUF".
- *
- * Exported so selection resolution refuses the same pairing deduplication
- * deliberately kept apart. Meaningless for a complete row, which never carries
- * a transport; callers must check `row.partial` first.
+ * The family an unclassified PARTIAL row can be PROVEN to belong to, or null. The backend writes a transport
+ * only for snapshot partials and hardcodes none for a GGUF (`services/models/common.py`, `cache_inventory.py`).
+ * The converse is WRONG: a snapshot partial with neither a cancel marker nor a manifest also reports none
+ * (`utils/inventory_scan.py`), so an absent transport must not be read as "GGUF". Null for a complete row.
  */
 export function provenUnknownPartialFamily(
   row: Pick<CachedInventoryRow | LocalInventoryRow, "partialTransport">,
@@ -67,14 +58,8 @@ function knownFamiliesMatchUnknownRow(
 ): boolean {
   if (!families?.size) return false;
   if (families.size > 1) return true;
-  // A complete row has no transport to read, so the family test below would
-  // always say "gguf" and would retain it beside a safetensors row purely
-  // because it is complete. Nothing distinguishes it from the known row, so
-  // any known family shadows it.
+  // A complete row has no transport, so the test below would always say "gguf" and keep it beside a safetensors row; any known family shadows it instead.
   if (!row.partial) return true;
-  // Deduplication keeps its two-way heuristic: guessing wrong here shows one
-  // extra row, which is recoverable, whereas the resolver's version of this
-  // question decides which artifact the user is looking at.
   return families.has(row.partialTransport ? "model" : "gguf");
 }
 

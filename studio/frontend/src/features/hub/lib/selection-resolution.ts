@@ -236,15 +236,9 @@ function formatFamilyOf(
 }
 
 /**
- * Whether `row` can carry a selection currently identified as `provisional`.
- *
- * An unclassified row stays a candidate unless its family can be PROVEN to
- * differ. Reading `unknown` as "compatible with anything" is what let a
- * cancelled GGUF download land on a safetensors snapshot fragment of the same
- * repository -- deduplication had already decided those were two artifacts and
- * kept them both, so the resolver must not then merge them. Only the positive
- * direction is sound, so an unclassified partial with no transport is still
- * accepted: that is the ordinary cancel-and-resume row.
+ * Whether `row` can carry a selection currently identified as `provisional`. An unclassified row stays a
+ * candidate unless its family can be PROVEN to differ: reading `unknown` as "compatible with anything" let a
+ * cancelled GGUF download land on a safetensors fragment deduplication had deliberately kept apart.
  */
 function isProvisionalFormatCompatible(
   provisional: CachedInventoryRow["modelFormat"],
@@ -350,9 +344,7 @@ function resolveFormatTransition(
   ) {
     return null;
   }
-  // Cancel and resume land here: the classified row is gone and only an
-  // unclassified partial is left. It is the right row only if it belongs to the
-  // same family, by the same rule deduplication used to keep it.
+  // Cancel and resume land here: only an unclassified partial is left, and it is the right row only if it is the same family dedup used to keep it.
   return resolveCurrentSelection(
     [],
     matchingLocal.filter(

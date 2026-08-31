@@ -1,13 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Deleting a scoped download must clear the hint it actually published.
-//
-// A pending inventory hint keeps a just-finished download visible in On Device
-// until the backend scan catches up. Deleting the model has to discard that
-// hint, or the row the user just deleted comes back on the next refresh and
-// stays until the hint expires. Scoped `@variant` downloads publish a `model`
-// hint, so clearing only `gguf` leaves theirs behind.
+// A scoped `@variant` download publishes a `model` hint, so deleting one while clearing only `gguf` leaves the row to come back until the hint expires.
 
 import assert from "node:assert/strict";
 import test from "node:test";

@@ -1,17 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Compatibility and edge-case cover for the On Device selection resolver.
-//
-// The selection ID is the one piece of Hub state that outlives the process: it sits in the URL, so a
-// bookmark, a pinned tab or a shared link written by an older Studio arrives at this code unchanged.
-// The download manager's persisted jobs outlive it the same way, through localStorage. Everything
-// below is an upgrade path someone can actually walk into, not a synthetic mutation:
-//   - a deep link built before inventory IDs were percent-encoded,
-//   - a raw `Org/Repo` ID from a response that predates `inventory_id`,
-//   - a scoped download persisted before `inventoryKind` existed,
-//   - a local row whose ID is a Windows or POSIX filesystem path,
-//   - an ID whose percent escapes are malformed, which `decodeURIComponent` throws on.
+// The selection ID outlives the process in the URL, and the download manager's jobs outlive it in
+// localStorage, so every case below is an upgrade path a bookmark or an older Studio can walk into.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -77,12 +68,8 @@ function resolve(
   });
 }
 
-// ---------------------------------------------------------------------------
-// Deep links written by an older Studio
-// ---------------------------------------------------------------------------
 
 test("a pre-encoding deep link still selects its row", () => {
-  // Studio wrote `cache:gguf:unsloth/gemma-3-270m-it` before IDs were encoded.
   const repoId = "unsloth/gemma-3-270m-it";
   const row = cachedRow(repoId, "gguf");
 
@@ -100,7 +87,6 @@ test("a raw Org/Repo deep link still selects its row", () => {
 
 test("percent escapes resolve regardless of hex case", () => {
   const row = cachedRow("unsloth/gemma-3-270m-it", "gguf");
-  // decodeURIComponent accepts either spelling; a link may carry either.
   assert.equal(
     resolve("cache:gguf:unsloth%2fgemma-3-270m-it", [row], []).selectedId,
     row.id,
@@ -112,7 +98,6 @@ test("percent escapes resolve regardless of hex case", () => {
 });
 
 test("repo IDs survive characters encodeURIComponent leaves alone", () => {
-  // -_.!~*'() are not escaped, so the encoded and raw spellings coincide.
   for (const repoId of [
     "unsloth/model-v1.5",
     "unsloth/model_v2",
@@ -148,20 +133,16 @@ test("non-ASCII repo IDs round-trip through the canonical ID", () => {
   }
 });
 
-// ---------------------------------------------------------------------------
-// Malformed IDs must fail safely, never throw
-// ---------------------------------------------------------------------------
 
 test("malformed selection IDs fail safely instead of throwing", () => {
-  // decodeURIComponent throws URIError on every one of these. An uncaught throw
-  // here surfaces as a blank Hub, because this runs inside a render.
+  // decodeURIComponent throws URIError on all of these, and this runs inside a render, so an uncaught throw is a blank Hub.
   const malformed = [
     "cache:gguf:%",
     "cache:gguf:%2",
     "cache:gguf:%ZZ",
     "cache:gguf:%E0%A4%A",
     "cache:gguf:%C3%28",
-    "cache:gguf:%ED%A0%80", // lone surrogate
+    "cache:gguf:%ED%A0%80",
     "cache:gguf:org%2F%",
   ];
   for (const id of malformed) {
@@ -188,16 +169,13 @@ test("structurally invalid selection IDs are rejected", () => {
     ":gguf:org%2Frepo",
     "cache:nosuchformat:org%2Frepo",
     "bogus:gguf:org%2Frepo",
-    "cache:gguf:org%2Frepo:extra", // 4-segment, backend format_variant shape
+    "cache:gguf:org%2Frepo:extra",
     "ollama:gguf:llama3",
   ]) {
     assert.doesNotThrow(() => resolve(id, [row], []), `threw on ${id}`);
   }
 });
 
-// ---------------------------------------------------------------------------
-// Filesystem-path row IDs: Windows, UNC and POSIX
-// ---------------------------------------------------------------------------
 
 test("a Windows path is never mistaken for a raw repo ID", () => {
   const gguf = cachedRow("org/repo", "gguf");
@@ -234,7 +212,6 @@ test("a POSIX path is never mistaken for a raw repo ID", () => {
 });
 
 test("a locally selected path row keeps its exact selection", () => {
-  // models_dir rows are keyed by path and must still resolve by exact match.
   const row = localRow({
     id: "C:\\Users\\me\\models\\mymodel",
     load_id: "C:\\Users\\me\\models\\mymodel",
@@ -246,17 +223,10 @@ test("a locally selected path row keeps its exact selection", () => {
   assert.equal(resolve(row.id, [], [row]).selectedId, row.id);
 });
 
-// ---------------------------------------------------------------------------
-// One oracle for a row's format family
-//
-// inventory-dedupe reads a truthy partialTransport as "snapshot/model family"
-// and a missing one as "gguf". The resolver must not contradict that when it
-// decides whether a provisional download may adopt an unclassified row.
-// ---------------------------------------------------------------------------
+// inventory-dedupe reads a truthy partialTransport as model family and a missing one as gguf; the resolver must not contradict it.
 
 test("a gguf download does not adopt a snapshot partial the deduper kept apart", () => {
   const repoId = "unsloth/hybrid-repo";
-  // A safetensors snapshot fragment: carries a transport, so it is model-family.
   const snapshot = localRow({
     id: repoId,
     inventory_id: `hf_cache:unknown:${encodeURIComponent(repoId)}`,
@@ -270,7 +240,6 @@ test("a gguf download does not adopt a snapshot partial the deduper kept apart",
     partial_resumable: true,
   });
 
-  // The deduper deliberately keeps it beside an unrelated gguf job.
   const gguf = cachedRow(repoId, "gguf", { partial: true });
   const deduped = dedupeSameSourceHubCacheRows({
     cachedRows: [gguf],
@@ -282,7 +251,6 @@ test("a gguf download does not adopt a snapshot partial the deduper kept apart",
     "precondition: the deduper keeps the unrelated snapshot partial",
   );
 
-  // So the resolver must not then hand that snapshot to the cancelled gguf download.
   assert.equal(
     resolve(
       optimisticInventoryId("gguf", repoId),
@@ -316,10 +284,8 @@ test("a gguf download still adopts an unclassified gguf partial", () => {
 });
 
 test("a transport-less partial is still adopted, in either direction", () => {
-  // Only the positive direction is provable: the backend never writes a
-  // transport for a GGUF partial, but a snapshot partial with no cancel marker
-  // and no manifest also reports none. So an absent transport is not evidence,
-  // and both downloads must keep their own cancelled partial.
+  // Only the positive direction is provable: the backend never writes a transport for a GGUF partial, but a
+  // snapshot partial with no cancel marker and no manifest also reports none, so an absent transport is not evidence.
   const repoId = "unsloth/gguf-repo";
   const partial = localRow({
     id: repoId,
@@ -353,7 +319,7 @@ test("a known-format selection does not fall back onto a proven other family", (
     model_id: repoId,
     model_format: "unknown",
     partial: true,
-    partial_transport: "xet", // model family
+    partial_transport: "xet",
   });
 
   assert.equal(
@@ -369,14 +335,9 @@ test("a known-format selection does not fall back onto a proven other family", (
   );
 });
 
-// ---------------------------------------------------------------------------
-// A complete row carries no transport evidence, so it must not be classified by it
-// ---------------------------------------------------------------------------
 
 test("a complete unclassified local row is suppressed by any complete cache row", () => {
-  // partialTransport is null on every complete row, so reading it as "gguf family"
-  // would retain the duplicate beside safetensors and drop it beside gguf. The row
-  // is the same row in both cases.
+  // partialTransport is null on every complete row, so reading it as "gguf family" would retain the duplicate beside safetensors and drop it beside gguf.
   for (const format of ["gguf", "safetensors"] as const) {
     const repoId = "unsloth/complete-repo";
     const complete = cachedRow(repoId, format);
@@ -404,9 +365,6 @@ test("a complete unclassified local row is suppressed by any complete cache row"
   }
 });
 
-// ---------------------------------------------------------------------------
-// Scoped download classification, including records written before inventoryKind
-// ---------------------------------------------------------------------------
 
 test("scoped file sets classify by extension, case-insensitively", () => {
   assert.equal(scopedDownloadInventoryKind(["model.gguf"]), "gguf");
@@ -429,9 +387,6 @@ test("an unscoped quant variant is still gguf without an explicit kind", () => {
   assert.equal(downloadInventoryHintKind("model", null, undefined), "model");
 });
 
-// ---------------------------------------------------------------------------
-// URL synchronization
-// ---------------------------------------------------------------------------
 
 test("the gguf file query survives canonicalization but a stale one is dropped", () => {
   const gguf = resolveSelectionUrlSync({
@@ -469,9 +424,7 @@ test("a null selection never invents a row", () => {
   );
 });
 
-// ---------------------------------------------------------------------------
-// Determinism: the resolver must be idempotent, or the URL sync effect loops
-// ---------------------------------------------------------------------------
+// The resolver must be idempotent, or the URL sync effect loops.
 
 test("resolution is idempotent across every row shape combination", () => {
   const repoId = "org/repo";

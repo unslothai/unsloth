@@ -1,13 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The upgrade path for scoped downloads.
-//
-// `inventoryKind` is new, so every job persisted by an earlier Studio arrives
-// without it. Those records still carry `scopedFiles`, which is the same
-// evidence a fresh request is classified from, so hydration can recover the
-// kind rather than falling through to "model" and giving a scoped GGUF
-// download a safetensors row on the first launch after an update.
+// Jobs persisted before `inventoryKind` still carry `scopedFiles`, so hydration recovers the kind rather than giving a scoped GGUF a safetensors row after an update.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -48,23 +42,18 @@ store.set(
   JSON.stringify({
     state: {
       jobs: {
-        // Written before `inventoryKind` existed: a scoped RAG embedding
-        // download of a GGUF file.
+        // Written before `inventoryKind` existed: a scoped GGUF embedding download.
         legacyGguf: persistedJob("org/embedder", "@rag-embedding", {
           scopedFiles: ["nomic-embed-text-v1.5.Q8_0.gguf"],
         }),
-        // Same vintage, a diffusion checkpoint.
         legacyModel: persistedJob("org/diffusion", "@diffusion", {
           scopedFiles: ["transformer/diffusion_pytorch_model.safetensors"],
         }),
-        // Explicitly classified: the stored value must win over the files.
         explicit: persistedJob("org/explicit", "@diffusion", {
           scopedFiles: ["model.safetensors"],
           inventoryKind: "gguf",
         }),
-        // Nothing to infer from: stays unclassified rather than guessing.
         noEvidence: persistedJob("org/unknown-scope", "@diffusion"),
-        // An ordinary quant download is not scoped and is unaffected.
         quant: persistedJob("org/quant", "Q4_K_M"),
       },
       conflicts: {},
