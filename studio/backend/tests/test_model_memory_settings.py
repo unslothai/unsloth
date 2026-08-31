@@ -1721,10 +1721,11 @@ class TestMlockApplicable:
         assert body.mlock_applicable is False
         assert body.mlock_skip_reason == "ungoverned"
 
-    def test_a_resident_stt_backend_is_ungoverned(self, monkeypatch):
+    @staticmethod
+    def _with_stt(monkeypatch, status):
+        """Install an orchestrator whose only resident thing is this STT status."""
         import core.inference.gpu_arbiter as arbiter
         import core.inference.orchestrator as orchestrator
-        import routes.settings as rs
 
         _install_backend(monkeypatch, _fake_backend(), keep = True, no_res = False)
         monkeypatch.setattr(arbiter, "current_owner", lambda: None)
@@ -1737,13 +1738,64 @@ class TestMlockApplicable:
                 {
                     "active_model_name": None,
                     "loading_models": [],
-                    "resident_stt_model": lambda self: {"engine": "whisper.cpp"},
+                    "resident_stt_model": lambda self: status,
                 },
             )(),
+        )
+
+    def test_a_resident_stt_backend_is_ungoverned(self, monkeypatch):
+        import routes.settings as rs
+
+        # The shape stt_registry.resident() really returns for a loaded sidecar.
+        self._with_stt(
+            monkeypatch,
+            {"model": "base.en", "engine": "whisper.cpp", "device": "cpu", "loading": False},
         )
         body = rs._model_memory_response()
         assert body.mlock_applicable is False
         assert body.mlock_skip_reason == "ungoverned"
+
+    def test_a_loading_stt_sidecar_is_ungoverned(self, monkeypatch):
+        import routes.settings as rs
+        self._with_stt(
+            monkeypatch,
+            {"model": None, "engine": "whisper.cpp", "device": None, "loading": True},
+        )
+        assert rs._model_memory_response().mlock_skip_reason == "ungoverned"
+
+    def test_an_idle_stt_registry_is_still_no_launch(self, monkeypatch):
+        """resident() answers with all four keys whether or not a sidecar is up, so
+        the dict is always truthy. Reading it that way made every request with the
+        llama backend inactive report an ungoverned launch, and the panel told a
+        user with nothing loaded that their runner does not support the setting."""
+        import routes.settings as rs
+
+        self._with_stt(
+            monkeypatch, {"model": None, "engine": None, "device": None, "loading": False}
+        )
+        body = rs._model_memory_response()
+        assert body.mlock_applicable is True
+        assert body.mlock_skip_reason is None
+        assert body.mlock_active is True
+
+    def test_a_stale_chat_claim_is_not_a_live_runtime(self, monkeypatch):
+        """No chat unload path releases the arbiter, so CHAT ownership outlives the
+        model. Reading it as a resident runtime turned every unloaded session into
+        an ungoverned one; backend.is_active already answers for chat."""
+        import core.inference.gpu_arbiter as arbiter
+        import core.inference.orchestrator as orchestrator
+        import routes.settings as rs
+
+        _install_backend(monkeypatch, _fake_backend(), keep = True, no_res = False)
+        monkeypatch.setattr(orchestrator, "peek_inference_backend", lambda: None)
+        monkeypatch.setattr(arbiter, "current_owner", lambda: arbiter.CHAT)
+        body = rs._model_memory_response()
+        assert body.mlock_applicable is True
+        assert body.mlock_skip_reason is None
+        assert body.mlock_active is True
+
+        monkeypatch.setattr(arbiter, "current_owner", lambda: arbiter.VIDEO)
+        assert rs._model_memory_response().mlock_skip_reason == "ungoverned"
 
     @pytest.mark.parametrize("owner", ["diffusion", "video"])
     def test_a_cpu_only_media_runner_is_ungoverned(self, monkeypatch, owner):

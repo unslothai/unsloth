@@ -958,14 +958,22 @@ def _active_launch_placement():
         backend = get_llama_cpp_backend()
         pending = bool(getattr(backend, "_memory_launch_pending", False))
         if not backend.is_active and not pending:
-            from core.inference.gpu_arbiter import current_owner
+            from core.inference.gpu_arbiter import DIFFUSION, VIDEO, current_owner
             from core.inference.orchestrator import peek_inference_backend
 
             orchestrator = peek_inference_backend()
             resident_stt_model = getattr(orchestrator, "resident_stt_model", None)
-            stt_model_loaded = bool(resident_stt_model()) if callable(resident_stt_model) else False
+            stt_status = resident_stt_model() if callable(resident_stt_model) else None
+            # The registry answers with all four keys whether or not a sidecar is up,
+            # so the dict itself is always truthy; only these two say one is there.
+            stt_model_loaded = bool(
+                stt_status and (stt_status.get("model") or stt_status.get("loading"))
+            )
             if (
-                current_owner() is not None
+                # Media only. The chat claim outlives its model, since no unload path
+                # releases it, so reading it as a live runtime turns every unloaded
+                # session ungoverned; backend.is_active above already answers for chat.
+                current_owner() in (DIFFUSION, VIDEO)
                 or bool(getattr(orchestrator, "active_model_name", None))
                 or bool(getattr(orchestrator, "loading_models", None))
                 or stt_model_loaded
