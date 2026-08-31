@@ -107,7 +107,8 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
   { providerType: "openai", prefixes: ["gpt-5"], cap: 128000 },
   { providerType: "openai", prefixes: ["gpt-4.1"], cap: 32768 },
   { providerType: "openai", prefixes: ["gpt-4.5"], cap: 16384 },
-  { providerType: "openai", prefixes: ["gpt-4o"], cap: 16384 },
+  // `chatgpt-4o-latest` shares the gpt-4o cap but not its prefix.
+  { providerType: "openai", prefixes: ["gpt-4o", "chatgpt-4o"], cap: 16384 },
   // 4,096 is under the 8,192 in DEFAULT_INFERENCE_PARAMS, so these two fail on
   // an untouched config rather than only on a raised slider.
   {
@@ -815,8 +816,22 @@ const OPENAI_REASONING_MODELS = [
     supportsOff: true,
     levels: ["none", "low", "medium", "high", "xhigh"],
   },
+  // 5.1 is where "none" replaced "minimal"; sending "minimal" to either of
+  // these returns "Unsupported value: 'reasoning_effort' does not support
+  // 'minimal' with this model". 5.2 adds xhigh, 5.1 does not. Both sit ahead
+  // of the bare `gpt-5` entry, which still takes the old ladder.
   {
-    prefixes: ["gpt-5", "gpt-5.1", "gpt-5.2"],
+    prefixes: ["gpt-5.2"],
+    supportsOff: true,
+    levels: ["none", "low", "medium", "high", "xhigh"],
+  },
+  {
+    prefixes: ["gpt-5.1"],
+    supportsOff: true,
+    levels: ["none", "low", "medium", "high"],
+  },
+  {
+    prefixes: ["gpt-5"],
     supportsOff: false,
     levels: ["minimal", "low", "medium", "high"],
   },

@@ -76,6 +76,28 @@ test("the gpt-5.6 family gets the gpt-5.5 reasoning ladder", () => {
   }
 });
 
+test("the gpt-5.1 and gpt-5.2 ladders drop minimal for none", () => {
+  // These reach the picker now. "minimal" was replaced by "none" from 5.1 on,
+  // and offering it makes the turn fail with "Unsupported value:
+  // 'reasoning_effort' does not support 'minimal' with this model".
+  const ladders: Array<[string, readonly string[]]> = [
+    ["gpt-5.2", ["none", "low", "medium", "high", "xhigh"]],
+    ["gpt-5.1", ["none", "low", "medium", "high"]],
+  ];
+  for (const [model, levels] of ladders) {
+    const caps = getExternalReasoningCapabilities("openai", model);
+    assert.equal(caps.supportsReasoningOff, true, model);
+    assert.deepEqual([...caps.reasoningEffortLevels], levels, model);
+  }
+  // Bare gpt-5 keeps the old ladder, so the split must not swallow it.
+  const five = getExternalReasoningCapabilities("openai", "gpt-5");
+  assert.equal(five.supportsReasoningOff, false);
+  assert.deepEqual(
+    [...five.reasoningEffortLevels],
+    ["minimal", "low", "medium", "high"],
+  );
+});
+
 test("ChatGPT subscription models expose Unsloth-owned search and code tools", () => {
 
   setProviderModelCapabilities("openai_codex", {

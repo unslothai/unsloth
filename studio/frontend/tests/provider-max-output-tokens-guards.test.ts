@@ -109,6 +109,7 @@ test("every OpenAI family the picker admits carries its documented cap", () => {
     ["gpt-4.5-preview", 16384],
     ["gpt-4o", 16384],
     ["gpt-4o-mini", 16384],
+    ["chatgpt-4o-latest", 16384],
     ["gpt-3.5-turbo", 4096],
     ["gpt-3.5-turbo-16k", 4096],
     ["gpt-4-turbo", 4096],
