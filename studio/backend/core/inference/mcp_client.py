@@ -575,9 +575,7 @@ class _McpSession:
             self.loop = asyncio.ProactorEventLoop()
         else:
             self.loop = asyncio.new_event_loop()
-        self._thread = threading.Thread(
-            target = self._run_loop, name = "mcp-session", daemon = True
-        )
+        self._thread = threading.Thread(target = self._run_loop, name = "mcp-session", daemon = True)
         self._thread.start()
 
     def _run_loop(self) -> None:
@@ -940,9 +938,7 @@ def close_mcp_sessions(url: Optional[str] = None, headers = _ANY_HEADERS) -> Non
     hk = None if headers is _ANY_HEADERS else _headers_key(headers)
     with _mcp_sessions_lock:
         keys = [
-            k
-            for k in _mcp_sessions
-            if (url is None or k[0] == url) and (hk is None or k[1] == hk)
+            k for k in _mcp_sessions if (url is None or k[0] == url) and (hk is None or k[1] == hk)
         ]
         sessions = [_mcp_sessions.pop(k) for k in keys]
         for key in keys:
@@ -1417,7 +1413,6 @@ def call_tool_sync(
     scope: Optional[str] = None,
     config_check = None,
 ) -> str:
-
     async def _one_shot() -> Any:
         async with _client(url, headers, use_oauth) as client:
             # raise_on_error=False lets an is_error result (which may still carry

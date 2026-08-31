@@ -917,7 +917,11 @@ def test_http_tool_error_keeps_session(fake_clients):
 
     call_tool_sync(HTTP_URL, None, "t", {}, scope = "chat")
 
-    async def _tool_error(name, args, raise_on_error = True):
+    async def _tool_error(
+        name,
+        args,
+        raise_on_error = True,
+    ):
         raise ToolError("nope")
 
     session_client = fake_clients[0]
