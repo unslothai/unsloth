@@ -767,9 +767,9 @@ def _effective_version(install_cell: str, target: str, resolved: str | None) -> 
     outside and leaves it alone when it does not, which is what pip does. Where it moves to is
     the window's floor, or an inclusive `<=` when the move is downwards. Moving down only
     names a version when the window holds one minor, which is the granularity the callers
-    compare on: `>=0.10,<0.11` and `~=0.10.0` do, `>=0.10,<0.12` does not. Anything that
-    cannot say where the install lands clears the version rather than keeping a stale one,
-    and a bound on an absent package leaves it absent.
+    compare on: `>=0.10,<0.11` and `~=0.10.0` do, `>=0.10,<0.12` and `>=0.9,!=0.11.*` do not.
+    Anything that cannot say where the install lands clears the version rather than keeping a
+    stale one, and a bound on an absent package leaves it absent.
     """
     current = resolved
     for inv in iter_pip_invocations(install_cell):
@@ -795,18 +795,20 @@ def _effective_version(install_cell: str, target: str, resolved: str | None) -> 
             current = None  # removed; a later install can put it back
             continue
         exact, floor, cap, ceiling, exclusions = _spec_window(pins)
+        # Where an install lands when it has to move down, or None when nothing names it.
+        landing = floor if _window_names_one_minor(floor, ceiling) else None
         if exact is not None:
             current = exact
         elif current is None:
             continue  # nothing to move, and a bound does not name a version
         elif any(_version_is_excluded(current, ver) for ver in exclusions):
-            current = floor  # pip cannot keep it; only the floor names where it goes
+            current = landing  # pip cannot keep what is installed
         elif floor is not None and cmp_versions(floor, current) > 0:
             current = floor
         elif cap is not None and cmp_versions(current, cap) > 0:
             current = cap  # `<=V` allows V, so V is what pip picks
         elif ceiling is not None and cmp_versions(current, ceiling) >= 0:
-            current = floor if _window_names_one_minor(floor, ceiling) else None
+            current = landing
     return current
 
 

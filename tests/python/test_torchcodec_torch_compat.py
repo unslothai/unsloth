@@ -630,6 +630,14 @@ def test_notebook_validator_replays_exclusions():
     untouched = '!pip install "torch==2.12.0" "torchcodec!=0.9.*"'
     assert len(nv.rule_inst_004_torchcodec_torch(untouched, COLAB_TORCH211, "nb.ipynb", 0)) == 1
 
+    # What is left after the exclusion spans minors, so the floor does not name it either.
+    broad = '!pip install "torch==2.12.0" "torchcodec>=0.9,!=0.11.*"'
+    assert nv.rule_inst_004_torchcodec_torch(broad, COLAB_TORCH211, "nb.ipynb", 0) == []
+
+    # One minor left over still names its floor.
+    narrow = '!pip install "torch==2.11.0" "torchcodec>=0.10,<0.11,!=0.11.*"'
+    assert len(nv.rule_inst_004_torchcodec_torch(narrow, COLAB_TORCH211, "nb.ipynb", 0)) == 1
+
 
 def test_notebook_validator_reads_a_range_as_one_window():
     """A `>=X,<Y` pair is the same constraint as `~=X`, and the guard's own remedy is
