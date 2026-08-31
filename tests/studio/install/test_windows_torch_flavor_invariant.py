@@ -451,3 +451,34 @@ class TestTheFlavorProvenance:
         verdict = _STACK_SRC[_STACK_SRC.index("def _torch_build_is_gpu(") :]
         verdict = verdict[: verdict.index("\ndef ", 1)]
         assert "_TORCH_RUNTIME_XPU" in verdict
+
+
+class TestABrokenTorchForcesTheDependencyPass:
+    """$script:TorchImportDefinitivelyFailed is set when the probe reports an import
+    error rather than a timeout. Its ONLY consumer -- the CUDA --force-reinstall -- lives
+    inside the `if (-not $SkipPythonDeps)` block, so on a current core package with a
+    valid manifest the fast path skipped it and the update reported dependencies up to
+    date over a wheel that will not load."""
+
+    def test_the_flag_clears_the_skip(self):
+        clear = _SETUP_SRC.index("if ($script:PinChangedForceReinstall -or "
+                                 "$script:TorchImportDefinitivelyFailed) {")
+        block = _SETUP_SRC[clear : _SETUP_SRC.index("if (-not $SkipPythonDeps) {", clear)]
+        assert "$SkipPythonDeps = $false" in block
+
+    def test_the_clear_runs_before_the_block_it_unlocks(self):
+        clear = _line_of(_SETUP_SRC, "$script:TorchImportDefinitivelyFailed) {")
+        guard = _line_of(_SETUP_SRC, "if (-not $SkipPythonDeps) {")
+        # The LAST such line: the clear itself now reads the same flag, and _line_of
+        # takes the first match.
+        consumer = max(
+            number for number, line in enumerate(_SETUP_SRC.splitlines(), start = 1)
+            if "$script:TorchImportDefinitivelyFailed" in line
+        )
+        assert clear < guard < consumer, (
+            f"the flag clears the skip at {clear}, the block opens at {guard} and its "
+            f"consumer is at {consumer}; any other order leaves the repair unreachable"
+        )
+
+    def test_the_flag_is_still_raised_where_the_import_definitively_failed(self):
+        assert "$script:TorchImportDefinitivelyFailed = $true" in _SETUP_SRC

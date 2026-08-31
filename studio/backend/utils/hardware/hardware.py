@@ -404,11 +404,18 @@ def _probe_physical_gpu_inventory() -> Dict[str, Any]:
             ("intel", _INTEL_PCI_VENDOR_ID),
         ):
             try:
-                records = _windows_amd_adapter_records_by_luid(_vendor_id)
+                records = _windows_amd_adapter_records_by_luid(
+                    _vendor_id, distinguish_failure = True
+                )
             except Exception as e:
                 logger.debug("Windows %s adapter inventory probe failed: %s", _vendor, e)
-                records = {}
+                records = None
+            if records is None:
+                # A registry key that could not be read is not "this vendor has no adapters":
+                # the aggregate would publish unknown=False with nothing in it, and the settled
+                # mismatch would collapse to no_gpu for a whole TTL.
                 unanswered.add(_vendor)
+                continue
             if not records:
                 continue
             if _live is None:
@@ -462,11 +469,15 @@ def _probe_physical_gpu_inventory() -> Dict[str, Any]:
             devices.extend(sysfs_devices)
             sources.append("sysfs-drm")
 
+    _unanswered = sorted(unanswered - {device.get("vendor") for device in devices})
     return {
         "available": bool(devices),
         "devices": devices,
         "sources": sources,
-        "unknown": bool(unanswered - {device.get("vendor") for device in devices}),
+        "unknown": bool(_unanswered),
+        # Which vendors, not just that one exists: the cache carries the previous answer
+        # forward per vendor, and only a vendor named here may be carried.
+        "unanswered": _unanswered,
     }
 
 
@@ -652,17 +663,58 @@ _UNKNOWN_PHYSICAL_GPU_INVENTORY: Dict[str, Any] = {
     "devices": [],
     "sources": [],
     "unknown": True,
+    "unanswered": [],
 }
+
+
+def _carry_unanswered_vendors_forward(
+    inventory: Dict[str, Any], previous: Optional[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Re-add the devices only a vendor this pass could not ask had reported.
+
+    A refresh that cannot reach nvidia-smi is not news that the cards left, but caching
+    it as the new inventory says exactly that for a whole TTL: current_chat_only_verdict()
+    holds its frozen reason on ``unknown``, while _torch_gpu_mismatch_report() reads the
+    devices and finds none, so the Resources tab says no GPU on the same response where
+    the sidebar says PyTorch cannot use one.
+
+    Per vendor, and only for vendors in ``unanswered``: a vendor that answered "none" gave
+    an answer, and a card that really was removed has to be allowed to disappear.
+    """
+    stale_vendors = set(inventory.get("unanswered") or ())
+    if not stale_vendors or not previous:
+        return inventory
+    carried = [
+        device for device in (previous.get("devices") or [])
+        if device.get("vendor") in stale_vendors
+    ]
+    if not carried:
+        return inventory
+    merged = dict(inventory)
+    merged["devices"] = list(inventory.get("devices") or []) + carried
+    merged["available"] = True
+    merged["sources"] = list(inventory.get("sources") or []) + [
+        source for source in (previous.get("sources") or [])
+        if source not in (inventory.get("sources") or [])
+    ]
+    # Still unknown: these rows describe the host as it was, not as this pass measured it.
+    return merged
 
 
 def _run_physical_gpu_inventory_probe() -> Dict[str, Any]:
     """One probe pass, stored in the cache. Never raises."""
     global _physical_gpu_inventory_cache
+    previous = _physical_gpu_inventory_cache
     try:
         inventory = _probe_physical_gpu_inventory()
     except Exception as e:
         logger.debug("Physical GPU inventory probe failed: %s", e)
         inventory = dict(_UNKNOWN_PHYSICAL_GPU_INVENTORY)
+        # A pass that raised asked nobody, so every vendor is unanswered.
+        inventory["unanswered"] = ["amd", "intel", "nvidia"]
+    inventory = _carry_unanswered_vendors_forward(
+        inventory, previous[1] if previous is not None else None
+    )
     _physical_gpu_inventory_cache = (time.monotonic(), inventory)
     return inventory
 
@@ -1092,11 +1144,22 @@ def _linux_kfd_reports_an_amd_gpu() -> bool:
     return False
 
 
+def _is_pip_rocm_family_leaf(leaf: str) -> bool:
+    """True when a lowercased leaf names a pip ROCm family: EXACTLY rocm<digits>[.<digits>]
+    or gfx<digit>. install_python_stack._is_pip_rocm_family_leaf, kept in step with it.
+
+    A suffixed leaf (rocm-rel-7.2.1, gfx-mirror) starts with the same letters but is a
+    custom pin the installer routes verbatim and never treats as a ROCm choice. Reading
+    one as ROCm here waives the supported-architecture filter, so a gfx803 host that was
+    deliberately left on CPU torch gets told its own install is broken.
+    """
+    return bool(re.fullmatch(r"rocm\d+(?:\.\d+)?", leaf)) or bool(re.match(r"gfx\d", leaf))
+
+
 def _expected_rocm_flavor_was_chosen() -> bool:
     """Whether this install selected a ROCm wheel, by pin or by recorded flavor."""
     for var in ("UNSLOTH_TORCH_INDEX_FAMILY", "UNSLOTH_TORCH_INDEX_URL"):
-        leaf = _torch_index_leaf(os.environ.get(var) or "")
-        if leaf.startswith("rocm") or leaf.startswith("gfx"):
+        if _is_pip_rocm_family_leaf(_torch_index_leaf(os.environ.get(var) or "")):
             return True
     try:
         path = os.path.join(sys.prefix, "unsloth_install_manifest.json")
@@ -1122,6 +1185,36 @@ def _torch_reports_a_hip_runtime() -> bool:
         return False
 
 
+# Marketing name -> gfx, mirroring setup.ps1's $nameArchTable and
+# install_python_stack._WIN_GPU_NAME_ARCH_TABLE. Only names those two route to a wheel
+# family: this decides whether a repair could change anything, so a card no index covers
+# must not match. Most specific first.
+_GPU_NAME_GFX_TABLE: "list[tuple[str, str]]" = [
+    (r"9070|9080|R9700", "gfx1201"),
+    (r"9060", "gfx1200"),
+    (r"8065S|8060S|8050S|8040S|Strix Halo|Ryzen AI Max|AI Max", "gfx1151"),
+    (r"890M|880M|Strix Point|HX 37[05]|AI 9 HX|AI 9 36[05]", "gfx1150"),
+    (r"860M|840M|Krackan|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33", "gfx1152"),
+    (r"RX 7900|PRO W7900|PRO W7800", "gfx1100"),
+    (r"RX 7800|RX 7700(?!S)|PRO W7700|PRO V710", "gfx1101"),
+    (r"RX 7600|RX 7700S|RX 7650|PRO W7600|PRO W7500", "gfx1102"),
+    (r"780M|760M|740M|Phoenix|Hawk Point|Z1 Extreme|Z2 Extreme", "gfx1103"),
+    (r"RX 6900|RX 6800|RX 6750|RX 6700|PRO W6800|PRO W6900", "gfx1030"),
+    (r"RX 6650|RX 6600|PRO W6600|PRO W6650", "gfx1032"),
+    (r"RX 6500|RX 6400|RX 6300|PRO W6400|PRO W6500", "gfx1034"),
+]
+
+
+def _rocm_supported_gfx_from_gpu_name(name: str) -> Optional[str]:
+    """The gfx arch this marketing name maps to, when the ROCm wheels cover it."""
+    if not name:
+        return None
+    for pattern, arch in _GPU_NAME_GFX_TABLE:
+        if re.search(pattern, name, re.IGNORECASE) and arch in _ROCM_SUPPORTED_GFX:
+            return arch
+    return None
+
+
 def _amd_device_can_establish_a_mismatch(device: Dict[str, Any]) -> bool:
     """Whether this AMD adapter is one the installers would have given a ROCm wheel.
 
@@ -1139,6 +1232,13 @@ def _amd_device_can_establish_a_mismatch(device: Dict[str, Any]) -> bool:
         if gfx
     ]
     if not candidates:
+        # The DirectX registry publishes AdapterFamily only when the driver wrote one, so a
+        # supported Windows card (the reported RX 7900 XT) can arrive with no arch at all.
+        # setup.ps1 answers that from the marketing name, so answer it the same way before
+        # falling through to a probe that can only speak for Linux.
+        _named = _rocm_supported_gfx_from_gpu_name(device.get("name") or "")
+        if _named:
+            return True
         # Nothing NAMES the card, so ask what the installer asks: _has_rocm_gpu() falls back to
         # the KFD topology, and a card `studio update` would repair is eligible here.
         return _linux_kfd_reports_an_amd_gpu()
@@ -1822,15 +1922,22 @@ def current_chat_only_verdict() -> tuple[Optional[str], Optional[str]]:
     and the Export and Video pages went on insisting no accelerator exists. The reverse
     is the same bug -- a card that goes away leaves a mismatch nobody can act on.
 
-    Only the three inventory-sensitive verdicts are re-derived. mlx_unavailable,
-    detection_failed and intel_mac describe things a 60 second probe cannot change, and
-    re-deriving those would fight detect_hardware() rather than follow it.
+    Only the three inventory-sensitive verdicts are re-derived, plus the one
+    detection_failed that is not really unmeasured: a torch that will not import was
+    classified from its wheel on disk at startup, and if the OS probe had also not
+    answered yet then the inventory is the ONLY thing still missing. Freezing that host
+    is the same split this function exists to close, with the repair guidance as the
+    thing it withholds. mlx_unavailable, intel_mac and a detection_failed with no
+    importable torch and no readable wheel describe things a 60 second probe cannot
+    change, and re-deriving those would fight detect_hardware() rather than follow it.
 
     Never raises: a probe that cannot answer keeps the frozen verdict.
     """
     reason, detail = CHAT_ONLY_REASON, CHAT_ONLY_DETAIL
+    frozen_but_measurable = reason == "detection_failed" and TORCH_IMPORT_ERROR is not None
     if reason not in ("no_gpu", "torch_cpu_build", "torch_cuda_unavailable"):
-        return reason, detail
+        if not frozen_but_measurable:
+            return reason, detail
     try:
         snapshot = torch_build_snapshot(block = False)
         if snapshot["unknown"]:
@@ -1855,7 +1962,9 @@ def current_chat_only_verdict() -> tuple[Optional[str], Optional[str]]:
     except Exception as e:
         logger.debug("chat-only verdict refresh failed: %s", e)
         return reason, detail
-    return "no_gpu", None
+    # "No GPU here" is a measurement, and a host whose torch will not import never made
+    # one: detect_hardware() refused to say it, so this cannot say it either.
+    return (reason, detail) if frozen_but_measurable else ("no_gpu", None)
 
 
 def _gpu_present_but_unusable_message(
@@ -3479,7 +3588,9 @@ def _parse_adapter_family_gfx(family: str) -> str:
 
 def _windows_amd_adapter_records_by_luid(
     vendor_id_filter: int = _AMD_PCI_VENDOR_ID,
-) -> dict[int, Dict[str, Any]]:
+    *,
+    distinguish_failure: bool = False,
+) -> "dict[int, Dict[str, Any]] | None":
     """DirectX registry metadata for one vendor's adapters, keyed by LUID.
 
     ``vendor_id_filter`` defaults to AMD, which is every pre-existing caller. The
@@ -3492,16 +3603,31 @@ def _windows_amd_adapter_records_by_luid(
     All or nothing: a record this cannot read makes the map incomplete, and an
     incomplete map is indistinguishable from a complete one at the join, which
     would then pair a visible card with a hidden same-named card's counter. So
-    any failure past the point where a subkey is known to be an adapter returns
-    ``{}``, which drops the caller back to capacity ranking. Same for off
-    Windows or without the key.
+    any failure past the point where a subkey is known to be an adapter gives up
+    on the whole map, which drops the caller back to capacity ranking. Same for
+    off Windows or without the key.
+
+    The ranking callers only need "no usable map", so they get ``{}``.
+    ``distinguish_failure`` returns ``None`` for that case instead: the inventory has
+    to tell a vendor with no adapters from a vendor it could not ask, because
+    publishing the first for the second erases a settled mismatch.
     """
-    if platform.system() != "Windows":
+    records = _windows_amd_adapter_records_or_none(vendor_id_filter)
+    if records is None and not distinguish_failure:
         return {}
+    return records
+
+
+def _windows_amd_adapter_records_or_none(
+    vendor_id_filter: int = _AMD_PCI_VENDOR_ID,
+) -> "dict[int, Dict[str, Any]] | None":
+    """The read itself. ``None`` whenever the registry could not answer."""
+    if platform.system() != "Windows":
+        return None
     try:
         import winreg
     except ImportError:
-        return {}
+        return None
     by_luid: dict[int, Dict[str, Any]] = {}
     try:
         with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _WINDOWS_DIRECTX_KEY) as dx_key:
@@ -3535,7 +3661,7 @@ def _windows_amd_adapter_records_by_luid(
                             pass
                 name = str(description).strip()
                 if not name:
-                    return {}
+                    return None
                 record = {"name": name}
                 gfx = _parse_adapter_family_gfx(str(family))
                 if gfx:
@@ -3545,7 +3671,7 @@ def _windows_amd_adapter_records_by_luid(
                 by_luid[int(luid)] = record
     except Exception as e:
         logger.debug("DirectX adapter registry read declined: %s", e)
-        return {}
+        return None
     return by_luid
 
 

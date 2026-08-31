@@ -477,6 +477,19 @@ export function useTauriBackend() {
   }
 
   const retry = useCallback(() => {
+    // Retry on a FORCED repair has to re-run that repair, not the preflight. The installer
+    // is transactional, so a failed attempt over an existing install restores the desktop-ready
+    // environment it found: checkInstallAndStart() then sees a ready install and restarts the
+    // same CPU-only backend the user pressed Repair about, and the button does nothing.
+    // Elevation resumes already preserve this; the error path did not.
+    if (statusRef.current === "repair-error" && forcedRepairRef.current) {
+      clearAuthFailure();
+      clearServerStopIntent();
+      setError(null);
+      void startRepair({ forceInstaller: true });
+      return;
+    }
+    forcedRepairRef.current = false;
     clearAuthFailure();
     clearServerStopIntent();
     setError(null);

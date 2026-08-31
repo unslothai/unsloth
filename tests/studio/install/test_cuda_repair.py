@@ -1826,6 +1826,90 @@ class TestThePostRepairCheckUsesTheSameRuleAsThePreRepairOne:
             assert stack_mod._installed_flavor_tag_now("cu124") == "cpu"
             assert stack_mod._installed_flavor_tag_now() == "cpu"
 
+    def test_an_untagged_xpu_wheel_does_not_satisfy_a_cpu_expectation(self):
+        """torch.version.xpu is where an untagged source, conda or private-index XPU
+        build carries its runtime -- .hip and .cuda are both empty there. Reading only
+        those two accepted the XPU wheel under a /cpu pin, returned success without
+        replacing it, and then recorded a PINNED cpu flavor for a venv still holding it.
+        """
+        with (
+            patch.object(
+                stack_mod,
+                "_probe_torch_runtime",
+                return_value = (True, True, "2.9.0", "", ""),
+            ),
+            patch.object(stack_mod, "_TORCH_RUNTIME_XPU", "20250101"),
+        ):
+            assert stack_mod._installed_flavor_tag_now("cpu") == "xpu"
+
+    def test_the_gpu_family_reading_prefers_the_explicit_runtimes(self):
+        # An XPU marker beside a CUDA or HIP one names the accelerator that wheel was
+        # BUILT for; xpu is the answer only when it is the sole marker.
+        assert stack_mod._gpu_family_from_runtime_markers("6.4", "12.4") == "rocm"
+        assert stack_mod._gpu_family_from_runtime_markers("", "12.4") == "cuda"
+        assert stack_mod._gpu_family_from_runtime_markers("", "") == "xpu"
+
+
+class TestAFailedGpuPinIsNotADeliberateCpuChoice:
+    """setup.ps1 falls back to the CPU index when a pinned ROCm or XPU install fails and
+    publishes the resolved cpu tag, while the original GPU pin is still in the
+    environment. Recording that as pinned makes _expected_cpu_flavor_was_chosen() read a
+    failed install as an intentional one and suppress the repair guidance for good."""
+
+    @staticmethod
+    def _pinned(monkeypatch, flavor, *, url = "", family = "", backend = "", recorded = None):
+        for var in ("UNSLOTH_TORCH_INDEX_URL", "UNSLOTH_TORCH_INDEX_FAMILY",
+                    "UNSLOTH_TORCH_INSTALL_INDEX_URL"):
+            monkeypatch.delenv(var, raising = False)
+        if url:
+            monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", url)
+        if family:
+            monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", family)
+        monkeypatch.delenv("UNSLOTH_TORCH_BACKEND_SOURCE", raising = False)
+        monkeypatch.setattr(stack_mod, "_TORCH_BACKEND", backend)
+        monkeypatch.setattr(stack_mod, "_RECORDED_TORCH_TAG", (recorded or ("", False))[0])
+        monkeypatch.setattr(stack_mod, "_RECORDED_TORCH_TAG_PINNED", (recorded or ("", False))[1])
+        return stack_mod._expected_torch_flavor_was_pinned(flavor)
+
+    def test_a_rocm_pin_that_settled_on_cpu_is_not_a_cpu_choice(self, monkeypatch):
+        assert self._pinned(
+            monkeypatch, "cpu", url = "https://download.pytorch.org/whl/rocm6.4"
+        ) is False
+
+    def test_an_xpu_family_that_settled_on_cpu_is_not_a_cpu_choice(self, monkeypatch):
+        assert self._pinned(monkeypatch, "cpu", family = "xpu") is False
+
+    def test_a_gpu_backend_that_settled_on_cpu_is_not_a_cpu_choice(self, monkeypatch):
+        assert self._pinned(monkeypatch, "cpu", backend = "rocm") is False
+
+    def test_a_carried_forward_gpu_record_does_not_pin_a_cpu_fallback(self, monkeypatch):
+        assert self._pinned(monkeypatch, "cpu", recorded = ("cu124", True)) is False
+
+    def test_a_cpu_pin_that_settled_on_cpu_still_counts(self, monkeypatch):
+        assert self._pinned(
+            monkeypatch, "cpu", url = "https://download.pytorch.org/whl/cpu"
+        ) is True
+
+    def test_a_rocm_pin_that_settled_on_rocm_still_counts(self, monkeypatch):
+        assert self._pinned(
+            monkeypatch, "rocm", url = "https://download.pytorch.org/whl/rocm6.4"
+        ) is True
+
+    def test_a_cuda_pin_counts_for_any_cuda_flavor(self, monkeypatch):
+        # cu124 and cu128 are both the cuda family: the pin names the family, and the
+        # recorded tag names the exact index within it.
+        assert self._pinned(
+            monkeypatch, "cu128", url = "https://download.pytorch.org/whl/cu124"
+        ) is True
+
+    def test_a_carried_forward_cpu_record_still_counts_for_cpu(self, monkeypatch):
+        assert self._pinned(monkeypatch, "cpu", recorded = ("cpu", True)) is True
+
+    def test_asking_without_a_flavor_answers_as_it_always_did(self, monkeypatch):
+        assert self._pinned(
+            monkeypatch, "", url = "https://download.pytorch.org/whl/rocm6.4"
+        ) is True
+
 
 class TestTheWindowsXpuTritonSwapReachesADirectRun:
     """setup.ps1 performs the swap after this script exits; a direct run has no such

@@ -220,7 +220,7 @@ def test_the_windows_amd_adapters_are_inventoried_too(monkeypatch):
     monkeypatch.setattr(
         hw,
         "_windows_amd_adapter_records_by_luid",
-        lambda vendor_id = hw._AMD_PCI_VENDOR_ID: (
+        lambda vendor_id = hw._AMD_PCI_VENDOR_ID, **_kw: (
             {
                 0x24CF5: {
                     "name": "AMD Radeon RX 7900 XT",
@@ -542,6 +542,10 @@ def test_a_hip_mask_only_counts_where_it_can_hide_something(monkeypatch, var, ma
     monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     _smi(monkeypatch, _TWO_A4000_ROWS)
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    # sys.platform too, not just platform.system(): the ROCR row is gated on sys.platform
+    # (hardware.py's own resolver reads it), so on a Windows runner ROCR is correctly
+    # ignored and this row asserted the opposite of what that host should do.
+    monkeypatch.setattr(hw.sys, "platform", "linux")
     monkeypatch.setenv(var, mask)
     # Prime the cache: the mask set reads the inventory WITHOUT blocking (it is reached
     # from the verdict /api/liveness reads), and a cold cache keeps every mask.
@@ -826,7 +830,7 @@ def test_windows_intel_adapters_are_inventoried_too(monkeypatch):
     monkeypatch.setattr(
         hw,
         "_windows_amd_adapter_records_by_luid",
-        lambda vendor_id = hw._AMD_PCI_VENDOR_ID: (
+        lambda vendor_id = hw._AMD_PCI_VENDOR_ID, **_kw: (
             {0x1: {"name": "Intel(R) Arc(TM) A770", "dedicated_memory_bytes": 16 * 1024**3}}
             if vendor_id == hw._INTEL_PCI_VENDOR_ID
             else {}
@@ -993,7 +997,7 @@ def test_a_stale_registry_record_is_not_reported_as_a_gpu(monkeypatch):
     monkeypatch.setattr(
         hw,
         "_windows_amd_adapter_records_by_luid",
-        lambda vendor_id = hw._AMD_PCI_VENDOR_ID: (
+        lambda vendor_id = hw._AMD_PCI_VENDOR_ID, **_kw: (
             {0x1: {"name": "AMD Radeon RX 6800", "dedicated_memory_bytes": 16 * 1024**3}}
             if vendor_id == hw._AMD_PCI_VENDOR_ID
             else {}
@@ -1013,7 +1017,7 @@ def test_a_live_scan_that_cannot_answer_reports_unknown_rather_than_guessing(mon
     monkeypatch.setattr(
         hw,
         "_windows_amd_adapter_records_by_luid",
-        lambda vendor_id = hw._AMD_PCI_VENDOR_ID: (
+        lambda vendor_id = hw._AMD_PCI_VENDOR_ID, **_kw: (
             {0x1: {"name": "AMD Radeon RX 6800"}} if vendor_id == hw._AMD_PCI_VENDOR_ID else {}
         ),
     )
@@ -1195,12 +1199,17 @@ def test_duplicate_registry_records_are_claimed_one_to_one(monkeypatch):
     """
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
     monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
-    _smi(monkeypatch, "", returncode = 9)
+    # nvidia-smi ANSWERS (absent), so only the registry vendors go unanswered here.
+    monkeypatch.setattr(
+        nvidia.subprocess, "run",
+        lambda *_a, **_k: (_ for _ in ()).throw(FileNotFoundError("nvidia-smi")),
+    )
+    monkeypatch.setattr(nvidia, "_linux_nvidia_procfs_gpu_count", lambda: 0)
     monkeypatch.setattr(hw, "_windows_live_adapter_names", lambda: ["AMD Radeon RX 7900 XT"])
     monkeypatch.setattr(
         hw,
         "_windows_amd_adapter_records_by_luid",
-        lambda vendor_id = hw._AMD_PCI_VENDOR_ID: (
+        lambda vendor_id = hw._AMD_PCI_VENDOR_ID, **_kw: (
             {
                 0x1: {"name": "AMD Radeon RX 7900 XT", "dedicated_memory_bytes": 20 * 1024**3},
                 0x2: {"name": "AMD Radeon RX 7900 XT", "dedicated_memory_bytes": 20 * 1024**3},
@@ -1227,7 +1236,7 @@ def test_both_records_survive_when_both_cards_are_live(monkeypatch):
     monkeypatch.setattr(
         hw,
         "_windows_amd_adapter_records_by_luid",
-        lambda vendor_id = hw._AMD_PCI_VENDOR_ID: (
+        lambda vendor_id = hw._AMD_PCI_VENDOR_ID, **_kw: (
             {
                 0x1: {"name": "AMD Radeon RX 7900 XT"},
                 0x2: {"name": "AMD Radeon RX 7900 XT"},
@@ -2174,3 +2183,227 @@ def test_hip_visible_devices_outranks_the_cuda_alias(monkeypatch):
 
     monkeypatch.delenv("HIP_VISIBLE_DEVICES")
     assert hw.classify_torch_build() is None
+
+
+# =============================================== a refresh that cannot answer is not news
+
+def test_an_unanswerable_refresh_keeps_the_cards_it_already_found(monkeypatch):
+    """nvidia-smi timing out must not read as "the GPUs were removed".
+
+    Overwriting the cache with the empty failure holds for a whole TTL, and the two
+    consumers then disagree inside one response: current_chat_only_verdict() keeps its
+    frozen mismatch on ``unknown`` while _torch_gpu_mismatch_report() reads the devices,
+    finds none, and drops physical_devices and mismatch from /api/system.
+    """
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
+    _smi(monkeypatch, _TWO_A4000_ROWS)
+    good = hw.get_physical_gpu_inventory()
+    assert len(good["devices"]) == 2 and good["unknown"] is False
+
+    monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", (0.0, good))
+    _smi(monkeypatch, "", returncode = 9)
+    after = hw.get_physical_gpu_inventory()
+
+    assert [d["name"] for d in after["devices"]] == [d["name"] for d in good["devices"]]
+    assert after["available"] is True
+    # Still unknown: these rows describe the host as it was, not as this pass measured it.
+    assert after["unknown"] is True
+    assert after["unanswered"] == ["nvidia"]
+
+
+def test_a_vendor_that_answered_none_is_allowed_to_lose_its_cards(monkeypatch):
+    """The carry-forward is per unanswered vendor only, so a real removal still lands."""
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
+    _smi(monkeypatch, _TWO_A4000_ROWS)
+    good = hw.get_physical_gpu_inventory()
+
+    monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", (0.0, good))
+    monkeypatch.setattr(
+        nvidia.subprocess, "run",
+        lambda *_a, **_k: (_ for _ in ()).throw(FileNotFoundError("nvidia-smi")),
+    )
+    monkeypatch.setattr(nvidia, "_linux_nvidia_procfs_gpu_count", lambda: 0)
+    after = hw.get_physical_gpu_inventory()
+
+    assert after["devices"] == []
+    assert after["unknown"] is False
+
+
+def test_a_registry_that_cannot_be_read_is_not_a_host_without_adapters(monkeypatch):
+    """`{}` from the DirectX helper covers both, so the inventory has to ask which."""
+    monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
+    # nvidia-smi ANSWERS (absent), so only the registry vendors go unanswered here.
+    monkeypatch.setattr(
+        nvidia.subprocess, "run",
+        lambda *_a, **_k: (_ for _ in ()).throw(FileNotFoundError("nvidia-smi")),
+    )
+    monkeypatch.setattr(nvidia, "_linux_nvidia_procfs_gpu_count", lambda: 0)
+    monkeypatch.setattr(hw, "_windows_live_adapter_names", lambda: ["AMD Radeon RX 7900 XT"])
+    monkeypatch.setattr(
+        hw, "_windows_amd_adapter_records_by_luid",
+        lambda vendor_id = hw._AMD_PCI_VENDOR_ID, **kw: (
+            None if kw.get("distinguish_failure") else {}
+        ),
+    )
+
+    inventory = hw.get_physical_gpu_inventory()
+
+    assert inventory["devices"] == []
+    assert inventory["unknown"] is True
+    assert inventory["unanswered"] == ["amd", "intel"]
+
+
+def test_the_ranking_callers_still_see_an_empty_map(monkeypatch):
+    """Only the inventory asked for the distinction; nothing else changed shape."""
+    monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(hw, "_windows_amd_adapter_records_or_none", lambda *a, **k: None)
+    assert hw._windows_amd_adapter_records_by_luid() == {}
+    assert hw._windows_amd_adapter_records_by_luid(distinguish_failure = True) is None
+
+
+# ============================================ a Windows AMD card the registry did not name
+
+@pytest.mark.parametrize("name,eligible", [
+    ("AMD Radeon RX 7900 XT", True),
+    ("AMD Radeon RX 9070 XT", True),
+    ("AMD Radeon 780M Graphics", True),
+    # Polaris and RDNA 1: no wheel family covers them, so a repair could not change
+    # anything and this host is on CPU torch on purpose.
+    ("AMD Radeon RX 580", False),
+    ("AMD Radeon RX 5700 XT", False),
+    ("", False),
+])
+def test_a_windows_adapter_with_no_adapter_family_is_read_from_its_name(
+    monkeypatch, name, eligible
+):
+    """AdapterFamily is written by the driver, so the reported RX 7900 XT arrives bare.
+
+    Falling through to the KFD probe discards it: that probe is Linux-only and returns
+    False on Windows, which made Windows accidentally stricter than Linux for the exact
+    card this feature was written for.
+    """
+    monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(hw, "_linux_kfd_reports_an_amd_gpu", lambda: False)
+    device = {"vendor": "amd", "name": name, "source": "directx-registry"}
+    assert hw._amd_device_can_establish_a_mismatch(device) is eligible
+
+
+def test_a_named_arch_still_wins_over_the_marketing_name(monkeypatch):
+    """The name table only fills a gap; it never overrides what the driver reported."""
+    monkeypatch.setattr(hw, "_linux_kfd_reports_an_amd_gpu", lambda: True)
+    assert hw._amd_device_can_establish_a_mismatch(
+        {"vendor": "amd", "name": "AMD Radeon RX 7900 XT", "gfx": "gfx803"}
+    ) is False
+
+
+# ================================================== only a real ROCm family is a ROCm pin
+
+@pytest.mark.parametrize("leaf,chosen", [
+    ("rocm6.4", True),
+    ("rocm7", True),
+    ("gfx1151", True),
+    ("gfx120X-all", True),
+    # Suffixed leaves are custom pins the installer routes verbatim. Reading one as ROCm
+    # waives the supported-architecture filter and calls a deliberate install broken.
+    ("rocm-rel-7.2.1", False),
+    ("rocm7.2-private", False),
+    ("gfx-mirror", False),
+    ("cpu", False),
+])
+def test_only_the_installers_rocm_families_count_as_a_rocm_choice(monkeypatch, leaf, chosen):
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", f"https://example.invalid/whl/{leaf}")
+    monkeypatch.setattr(hw.sys, "prefix", "/nonexistent-prefix-for-this-test")
+    assert hw._expected_rocm_flavor_was_chosen() is chosen
+
+
+def test_the_backend_and_the_installer_agree_on_the_family_predicate():
+    """One vocabulary, two files: drift here is a silent behaviour split."""
+    for leaf in ("rocm6.4", "rocm7", "gfx1151", "gfx120X-all", "rocm-rel-7.2.1",
+                 "rocm7.2-private", "gfx-mirror", "cpu", "cu124", ""):
+        assert hw._is_pip_rocm_family_leaf(leaf) == _installer_rocm_family(leaf), leaf
+
+
+def _installer_rocm_family(leaf: str) -> bool:
+    """install_python_stack._is_pip_rocm_family_leaf, loaded without importing the module."""
+    import ast
+    import pathlib
+    import re as _re
+
+    source = (
+        pathlib.Path(__file__).resolve().parents[2] / "install_python_stack.py"
+    ).read_text(encoding = "utf-8")
+    tree = ast.parse(source)
+    fn = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_is_pip_rocm_family_leaf"
+    )
+    namespace: dict = {"re": _re}
+    exec(compile(ast.Module(body = [fn], type_ignores = []), "<installer>", "exec"), namespace)
+    return namespace["_is_pip_rocm_family_leaf"](leaf)
+
+
+# ======================================= a detection failure the disk already explained
+
+def test_a_disk_classified_detection_failure_transitions_when_the_probe_recovers(monkeypatch):
+    """torch will not import AND the OS probe timed out: only the inventory was missing.
+
+    detect_hardware() classifies the wheel from disk for exactly this host, then publishes
+    detection_failed when the inventory cannot corroborate it. Freezing that forever leaves
+    /api/system reporting the recovered mismatch while the sidebar, Export and Video keep
+    saying detection failed and never offer the repair.
+    """
+    monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "detection_failed")
+    monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", None)
+    monkeypatch.setattr(hw, "TORCH_IMPORT_ERROR", OSError("[WinError 126] cudart64_12.dll"))
+    monkeypatch.setattr(hw, "_installed_torch_label_on_disk", lambda: "2.11.0+cpu")
+    monkeypatch.setattr(
+        hw, "torch_build_snapshot",
+        lambda **_kw: {"reason": "torch_cpu_build", "usable": False, "unknown": False},
+    )
+    monkeypatch.setattr(
+        hw, "get_physical_gpu_inventory",
+        lambda **_kw: {
+            "devices": [{"vendor": "nvidia", "name": "NVIDIA RTX A4000"}],
+            "unknown": False,
+        },
+    )
+
+    assert hw.current_chat_only_verdict() == ("torch_cpu_build", "2.11.0+cpu")
+
+
+def test_a_detection_failure_never_degrades_into_no_gpu(monkeypatch):
+    """A host that never measured cannot be told it has no GPU; that IS the claim
+    detect_hardware() refused to make for it."""
+    monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "detection_failed")
+    monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", None)
+    monkeypatch.setattr(hw, "TORCH_IMPORT_ERROR", OSError("boom"))
+    monkeypatch.setattr(
+        hw, "torch_build_snapshot",
+        lambda **_kw: {"reason": "torch_cpu_build", "usable": False, "unknown": False},
+    )
+    monkeypatch.setattr(
+        hw, "get_physical_gpu_inventory", lambda **_kw: {"devices": [], "unknown": False}
+    )
+
+    assert hw.current_chat_only_verdict() == ("detection_failed", None)
+
+
+@pytest.mark.parametrize("reason", ["mlx_unavailable", "intel_mac"])
+def test_the_other_frozen_verdicts_stay_frozen(monkeypatch, reason):
+    """Only the disk-classified failure moved; a 60 second probe still cannot speak to these."""
+    monkeypatch.setattr(hw, "CHAT_ONLY_REASON", reason)
+    monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", "detail")
+    monkeypatch.setattr(hw, "TORCH_IMPORT_ERROR", OSError("boom"))
+    assert hw.current_chat_only_verdict() == (reason, "detail")
+
+
+def test_a_detection_failure_with_an_importable_torch_stays_frozen(monkeypatch):
+    """Nothing classified this host, so there is nothing for the inventory to confirm."""
+    monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "detection_failed")
+    monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", None)
+    monkeypatch.setattr(hw, "TORCH_IMPORT_ERROR", None)
+    assert hw.current_chat_only_verdict() == ("detection_failed", None)

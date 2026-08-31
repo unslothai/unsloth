@@ -2902,6 +2902,22 @@ def _torch_flavor_tag(version: str) -> str:
     return "cpu"
 
 
+def _gpu_family_from_runtime_markers(hip: str, cuda: str) -> str:
+    """Which GPU family an untagged wheel's runtime markers name.
+
+    torch.version.xpu alongside .hip and .cuda, for the reason _torch_build_is_gpu already
+    reads all three: an untagged source, conda or private-index XPU build carries its
+    runtime only there. Omitting it let an explicit /cpu pin over such a wheel compare
+    equal, return success without replacing anything, and then record a PINNED cpu flavor
+    for an environment that still holds an XPU build.
+    """
+    if hip:
+        return "rocm"
+    if cuda:
+        return "cuda"
+    return "xpu"
+
+
 def _torch_build_is_gpu() -> bool:
     """Whether the installed torch can use a GPU at all, on the evidence available.
 
@@ -3010,8 +3026,26 @@ def _recordable_torch_flavor_tag(resolved: str) -> str:
     return _RECORDED_TORCH_TAG or ""
 
 
-def _expected_torch_flavor_was_pinned() -> bool:
-    """Whether the flavor was NAMED by whoever ran this install.
+def _index_leaf_flavor_family(leaf: str) -> str:
+    """The flavor family a pip index leaf names: cpu, xpu, rocm, cuda, or "" for none."""
+    leaf = (leaf or "").strip().lower()
+    if leaf in ("cpu", "xpu"):
+        return leaf
+    if _is_pip_rocm_family_leaf(leaf):
+        return "rocm"
+    if _is_cuda_family_leaf(leaf):
+        return "cuda"
+    return ""
+
+
+def _flavor_tag_family(tag: str) -> str:
+    """The family a flavor tag belongs to. cu124 and cu128 are both "cuda"."""
+    tag = (tag or "").strip().lower()
+    return "cuda" if tag.startswith("cu") else tag
+
+
+def _expected_torch_flavor_was_pinned(flavor: str = "") -> bool:
+    """Whether ``flavor`` was NAMED by whoever ran this install.
 
     Distinct from _expected_torch_flavor_is_explicit(), which counts setup.ps1's
     handover variable. setup.ps1 publishes that variable for an AUTOMATIC /cpu choice on
@@ -3019,19 +3053,34 @@ def _expected_torch_flavor_was_pinned() -> bool:
     this question. An index pin, an index family, and UNSLOTH_TORCH_BACKEND all can:
     each of them is someone saying which build they want. Carried forward from the
     previous manifest, so an update that names nothing does not erase the fact.
+
+    Each of them only answers for the family it NAMES. setup.ps1 falls back to the CPU
+    index when a pinned ROCm or XPU install fails, and publishes the resolved cpu tag
+    while the original GPU pin is still in the environment: counting that pin would
+    record a pinned CPU flavor, and _expected_cpu_flavor_was_chosen() would then read a
+    failed install as a deliberate one and suppress the repair guidance for good.
+    ``flavor`` empty means nobody asked about a specific one, and every pin counts.
     """
-    if _explicit_torch_index_url() is not None:
+    def _names_it(family: str) -> bool:
+        return True if not flavor else family == _flavor_tag_family(flavor)
+
+    pin = _explicit_torch_index_url()
+    if pin is not None and _names_it(_index_leaf_flavor_family(_torch_index_leaf(pin))):
         return True
-    if os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip():
+    _family_var = os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip()
+    if _family_var and _names_it(_index_leaf_flavor_family(_torch_index_leaf(_family_var))):
         return True
     # install.sh derives UNSLOTH_TORCH_BACKEND from the index it RESOLVED -- "cpu" on any GPU-less
     # machine, asked for or not -- and marks it derived. Only an unmarked value is a preference.
     if (
         _TORCH_BACKEND in ("cpu", "cuda", "rocm", "xpu")
         and os.environ.get("UNSLOTH_TORCH_BACKEND_SOURCE", "").strip().lower() != "resolved"
+        and _names_it(_TORCH_BACKEND)
     ):
         return True
-    return bool(_RECORDED_TORCH_TAG_PINNED)
+    return bool(_RECORDED_TORCH_TAG_PINNED) and _names_it(
+        _flavor_tag_family(_RECORDED_TORCH_TAG or "")
+    )
 
 
 def _expected_torch_index_url(tag: str) -> str:
@@ -3085,8 +3134,8 @@ def _installed_flavor_tag_now(expected: str = "") -> str:
     _ran, _importable, _version, _hip, _cuda = _probe_torch_runtime()
     if _ran and _importable and _version:
         tag = _torch_flavor_tag(_version)
-        if expected == "cpu" and tag == "cpu" and (_hip or _cuda):
-            return "rocm" if _hip else "cuda"
+        if expected == "cpu" and tag == "cpu" and (_hip or _cuda or _TORCH_RUNTIME_XPU):
+            return _gpu_family_from_runtime_markers(_hip, _cuda)
         return tag
     label = _installed_torch_label_on_disk()
     return _torch_flavor_tag(label) if label else ""
@@ -3282,8 +3331,8 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
     installed = _torch_flavor_tag(installed_version)
     # _torch_flavor_tag reads untagged as "cpu", so a private index's untagged CUDA build
     # compares equal under a /cpu pin.
-    if expected == "cpu" and installed == "cpu" and (_hip or _cuda):
-        installed = "rocm" if _hip else "cuda"
+    if expected == "cpu" and installed == "cpu" and (_hip or _cuda or _TORCH_RUNTIME_XPU):
+        installed = _gpu_family_from_runtime_markers(_hip, _cuda)
     if installed == expected:
         return True
 
@@ -6253,7 +6302,9 @@ def install_python_stack() -> int:
             # writing it back would give a later unpinned run a flavor to "repair" the mirror's to.
             expected_torch_tag = _recordable_torch_flavor_tag(torch_flavor_tag),
             expected_torch_tag_pinned = bool(_recordable_torch_flavor_tag(torch_flavor_tag))
-            and _expected_torch_flavor_was_pinned(),
+            and _expected_torch_flavor_was_pinned(
+                _recordable_torch_flavor_tag(torch_flavor_tag)
+            ),
         )
         is None
     ):

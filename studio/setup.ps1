@@ -5002,7 +5002,13 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
 
 # A torch-index pin change repairs in place: force the dependency pass so the torch install
 # below force-reinstalls from the new pin (else the fast path keeps the old wheel).
-if ($script:PinChangedForceReinstall) { $SkipPythonDeps = $false }
+# A torch that will not import needs the same pass for the same reason, and it is the only
+# thing that can act on it: its --force-reinstall lives INSIDE this block, so on a current
+# core package with a valid manifest the fast path skipped the repair entirely and the
+# update reported dependencies up to date over a broken wheel.
+if ($script:PinChangedForceReinstall -or $script:TorchImportDefinitivelyFailed) {
+    $SkipPythonDeps = $false
+}
 
 if (-not $SkipPythonDeps) {
 
