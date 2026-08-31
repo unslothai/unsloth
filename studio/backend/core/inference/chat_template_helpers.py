@@ -51,16 +51,15 @@ _ATEM_HEADER_PREFIXES = ("<|start|>assistant to=", "to=")
 # than a guess at a name cap: nothing in the grammar or in Studio caps a recipient.
 _ATEM_RECIPIENT_MAX_LEN = 256
 _ATEM_HEADER_RE = re.compile(
-    r"(?:<\|start\|>assistant )?to=(?P<recipient>[^<\s]{1,%d})<\|message\|>" % _ATEM_RECIPIENT_MAX_LEN
+    r"(?:<\|start\|>assistant )?to=(?P<recipient>[^<\s]{1,%d})<\|message\|>"
+    % _ATEM_RECIPIENT_MAX_LEN
 )
 # A partially streamed header tail: a recipient name, then a prefix of "<|message|>".
 _ATEM_PARTIAL_TAIL_RE = re.compile(
     r"[^<\s]*(?:<(?:\|(?:m(?:e(?:s(?:s(?:a(?:g(?:e(?:\|)?)?)?)?)?)?)?)?)?)?"
 )
 # Longest holdback, derived from the same bound so the two cannot drift apart.
-_ATEM_HEADER_MAX_LEN = (
-    len("<|start|>assistant to=") + _ATEM_RECIPIENT_MAX_LEN + len("<|message|>")
-)
+_ATEM_HEADER_MAX_LEN = len("<|start|>assistant to=") + _ATEM_RECIPIENT_MAX_LEN + len("<|message|>")
 # Call syntax, taken verbatim from the response_template grammar the checkpoint ships:
 # a call repeats with no enclosing tag, other attributes may precede "name" on the call
 # and sit either side of it on a parameter.

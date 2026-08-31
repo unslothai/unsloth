@@ -1017,9 +1017,7 @@ def test_normalize_reasoning_snapshots_derives_state_from_prompt():
     assert first_turn[-1] == "<think>reasoning</think>answer"
 
 
-_MUSE_CALL = (
-    '<atem:invoke name="{name}"><atem:parameter name="q">1</atem:parameter></atem:invoke>'
-)
+_MUSE_CALL = '<atem:invoke name="{name}"><atem:parameter name="q">1</atem:parameter></atem:invoke>'
 
 
 @pytest.mark.parametrize("length", [16, 64, 65, 97, 128, 256])
