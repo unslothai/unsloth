@@ -57,9 +57,9 @@ def test_it_is_a_warning_not_an_info():
 
 def test_it_tells_the_user_what_to_do():
     block = _fit_down_block()
-    assert any(word in block for word in ("Lower the context", "free VRAM", "smaller")), (
-        "a reduction the user cannot act on is only half the message"
-    )
+    assert any(
+        word in block for word in ("Lower the context", "free VRAM", "smaller")
+    ), "a reduction the user cannot act on is only half the message"
 
 
 def test_it_sits_with_the_placement_decision_it_explains():
