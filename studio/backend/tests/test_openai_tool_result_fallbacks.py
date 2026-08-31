@@ -505,9 +505,6 @@ def test_shell_call_incomplete_does_not_double_emit(monkeypatch):
     assert "done" in ends[0]["result"]
 
 
-# ── web_search `include` selectors are OpenAI-cloud only ───────────────
-
-
 def _capture_body(monkeypatch, *, base_url: str, enabled_tools) -> dict:
     """Run one request against a mock transport and return the JSON body sent."""
     captured: dict = {}
@@ -562,7 +559,6 @@ def test_azure_openai_requests_web_search_sources(monkeypatch):
 
 
 def test_custom_base_url_keeps_web_search_but_drops_the_include(monkeypatch):
-    # A strict Responses server can implement web_search and still 400 on the enum.
     for base_url in (
         "http://127.0.0.1:11434/v1",
         "https://api.openai.com.attacker.com/v1",
@@ -586,12 +582,7 @@ def test_no_web_search_means_no_include(monkeypatch):
     assert "include" not in body
 
 
-# ── partial / degraded event shapes ────────────────────────────────────
-
-
 def test_web_search_done_event_keeps_fields_from_the_added_event(monkeypatch):
-    # A done event that omits the action must not revert the card to a blank
-    # "Web Search": url, pattern and action_type are as load-bearing as query.
     sse_events = [
         {
             "type": "response.output_item.added",
@@ -644,8 +635,6 @@ def test_web_search_done_event_wins_where_it_has_a_value(monkeypatch):
 
 
 def test_blank_result_title_falls_back_to_the_url(monkeypatch):
-    # `Title: \nURL: ...` parses as title="URL: ..." on the frontend, because
-    # its `Title:\s*(.+)` eats the newline. Blank has to mean missing here.
     sse_events = [
         {
             "type": "response.output_item.done",
@@ -669,9 +658,7 @@ def test_blank_result_title_falls_back_to_the_url(monkeypatch):
 
 
 def test_truncated_shell_call_does_not_read_as_a_finished_command(monkeypatch):
-    # response.incomplete finalises the card so it stops spinning, but an empty
-    # result renders as "Command completed with no output.", which is a claim
-    # the truncated stream cannot support.
+    # "Command completed with no output." is a claim a truncated stream cannot make.
     sse_events = [
         {
             "type": "response.output_item.done",

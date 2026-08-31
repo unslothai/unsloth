@@ -13,7 +13,6 @@ const CARD = fileURLToPath(
   ),
 );
 
-/** The trailing branch of the card body, after the sources and images cases. */
 function urlBranch(): string {
   const source = readFileSync(CARD, "utf8");
   const start = source.indexOf("        ) : safeUrl || resultText ? (");
@@ -22,9 +21,7 @@ function urlBranch(): string {
 }
 
 test("a url does not hide the tool result", () => {
-  // The local web_search url mode returns the fetched page text -- or why the
-  // fetch failed -- as the result. A branch that renders the link INSTEAD of it
-  // drops both without a trace.
+  // url mode returns the fetched page or why it failed; a link INSTEAD of it drops both.
   const branch = urlBranch();
   const link = branch.indexOf("href={safeUrl}");
   const body = branch.indexOf("{resultText}");
@@ -38,8 +35,7 @@ test("a url does not hide the tool result", () => {
 
 test("only OpenAI's synthesized card label is suppressed", () => {
   assert.match(urlBranch(), /resultText && !resultIsCardLabel/);
-  // Scoped to safeUrl so a query-only OpenAI search still shows its result and
-  // the branch can never render an empty box.
+  // Scoped to safeUrl so a query-only search keeps its result and the box is never empty.
   assert.match(
     readFileSync(CARD, "utf8"),
     /const resultIsCardLabel = !!safeUrl && !!actionType;/,

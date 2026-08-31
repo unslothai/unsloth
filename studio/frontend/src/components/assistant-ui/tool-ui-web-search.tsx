@@ -124,11 +124,8 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
     ? `https://${bareUrl}`
     : url;
   const safeUrl = isSafeHttpUrl(candidateUrl) ? candidateUrl : "";
-  // OpenAI's hosted open_page / find_in_page calls carry a synthesized label
-  // ("Read: <url>", see external_provider._web_search_card_text) that the link
-  // already says; only they set action_type. The local tool's url mode puts the
-  // fetched page text or its failure diagnostic there, so the link must not
-  // replace it.
+  // Only OpenAI's hosted open_page / find_in_page set action_type, and their result is
+  // the "Read: <url>" label; the local url mode puts the fetched page text there.
   const resultIsCardLabel = !!safeUrl && !!actionType;
   const displayDomain = (() => {
     if (!safeUrl) return "";

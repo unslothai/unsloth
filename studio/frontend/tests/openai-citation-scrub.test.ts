@@ -17,8 +17,6 @@ test("a complete marker leaves no trace", () => {
 });
 
 test("a truncated marker takes its payload with it", () => {
-  // Stripping only the private-use delimiters left "citeturn0search0" on
-  // screen, which is the garbled text this scrub exists to prevent.
   assert.equal(scrubOpenAICitationMarkers(`See ${PARTIAL}`), "See ");
   assert.equal(scrubOpenAICitationMarkers(`a ${MARKER} b ${PARTIAL}`), "a  b ");
 });
