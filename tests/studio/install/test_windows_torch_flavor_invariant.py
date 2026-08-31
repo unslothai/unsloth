@@ -59,7 +59,6 @@ def _publication_block() -> str:
     return _SETUP_SRC[start:end]
 
 
-# ── setup.ps1: the venv wipe ─────────────────────────────────────────────────
 
 
 class TestSetupPs1NoWipeEscape:
@@ -82,12 +81,10 @@ class TestSetupPs1NoWipeEscape:
             :1200
         ]
         assert "$shouldRebuild = $false" in body
-        # Keeping the wheel is only half the job: the index selection re-runs the same
-        # rescan and would route the pass to the CPU index without this.
+        # Without this the index selection re-runs the same rescan and routes to /cpu.
         assert "$script:PreservedInstallerTorchTag = $installedTorchTag" in body
 
     def test_the_escape_is_narrow(self):
-        # Everything between the `if (` and the opening brace of the escape.
         start = _SETUP_SRC.index("if ($shouldRebuild -and -not $InstallerManagedSetup -and\n")
         condition = _SETUP_SRC[start : _SETUP_SRC.index("{", start)]
         for clause in (
@@ -100,10 +97,8 @@ class TestSetupPs1NoWipeEscape:
             assert clause in condition, f"the escape must be gated on {clause!r}"
 
     def test_the_installed_tag_is_tested_before_the_variables_it_implies(self):
-        # $_pinnedIdx and $expectedTorchTag are assigned only inside the
-        # `if (-not $shouldRebuild)` block, and a probe that answered is what makes that
-        # block run. Under a caller's Set-StrictMode, ordering the -and chain the other
-        # way turns the read into a fatal error on a venv whose torch cannot import.
+        # $_pinnedIdx and $expectedTorchTag are assigned only inside `if (-not
+        # $shouldRebuild)`, so under Set-StrictMode the other -and order is a fatal read.
         start = _SETUP_SRC.index("if ($shouldRebuild -and -not $InstallerManagedSetup -and\n")
         condition = _SETUP_SRC[start : _SETUP_SRC.index("{", start)]
         assert condition.index("$installedTorchTag -and") < condition.index("$_pinnedIdx")
@@ -114,7 +109,6 @@ class TestSetupPs1NoWipeEscape:
         assert "Keeping the installed Intel XPU environment" in _SETUP_SRC
 
 
-# ── setup.ps1: the handover ──────────────────────────────────────────────────
 
 
 class TestSetupPs1PublishesTheFlavor:
@@ -164,7 +158,6 @@ class TestSetupPs1PublishesTheFlavor:
             assert f"$env:{name} = if (" not in block
 
 
-# ── install.ps1 parity ───────────────────────────────────────────────────────
 
 
 class TestInstallPs1Parity:
@@ -172,7 +165,6 @@ class TestInstallPs1Parity:
     same wheels, and a support log from either must read the same."""
 
     def test_the_repair_trio_matches_install_ps1(self):
-        # install.ps1's $_fixSpecs, the non-XPU arm of its flavor repair.
         match = re.search(r'else\s*\{\s*@\((\s*"torch[^)]*?)\)\s*\}', _INSTALL_SRC, re.S)
         assert match is not None, "install.ps1's flavor-repair spec array moved"
         ps_specs = tuple(re.findall(r'"([^"]+)"', match.group(1)))
@@ -212,7 +204,6 @@ class TestInstallPs1Parity:
             assert line in _STACK_SRC, f"install_python_stack.py no longer prints {line!r}"
 
     def test_the_flavor_vocabulary_matches_convertto_torchflavortag(self):
-        # install.ps1's classifier, arm for arm.
         arms = _INSTALL_SRC[_INSTALL_SRC.index("function ConvertTo-TorchFlavorTag") :][:900]
         assert r"'\+(cu\d+)'" in arms
         assert r"'\+rocm'" in arms
@@ -224,7 +215,6 @@ class TestInstallPs1Parity:
         assert '"+xpu" in value' in py
 
 
-# ── install_python_stack: step wiring ────────────────────────────────────────
 
 
 def _install_stack_ast():
@@ -283,8 +273,8 @@ class TestStepThirteenWiring:
         )
 
     def test_the_existing_repair_set_is_untouched(self):
-        # Both points, verbatim: step 2b (which Windows does enter -- the four helpers
-        # return early there themselves) and the Linux-only step 13.
+        # Step 2b (which Windows enters; the four helpers return early there) and the
+        # Linux-only step 13.
         guards = _guards_containing("_ensure_cuda_torch")
         assert [ast.unparse(guard.test) for guard in guards] == [
             "not IS_MACOS and (not NO_TORCH)",
@@ -346,7 +336,6 @@ class TestStepTotals:
         assert _base_total(**flags) == total
 
 
-# ── manifest round-trip ──────────────────────────────────────────────────────
 
 
 class TestManifestRecordsTheFlavor:
@@ -366,8 +355,8 @@ class TestManifestRecordsTheFlavor:
         assert install_manifest.recorded_torch_flavor(tmp_path) == "cu128"
 
     def test_absent_reads_as_unknown_not_cpu(self, tmp_path):
-        # Claiming a flavor nobody selected would let a repair reinstall over a deliberate
-        # build, so an install written before this key existed must answer None.
+        # Claiming a flavor nobody selected would let a repair reinstall over a
+        # deliberate build.
         install_manifest.write_manifest(root = tmp_path, req_root = tmp_path)
         assert install_manifest.recorded_torch_flavor(tmp_path) is None
 
@@ -380,8 +369,7 @@ class TestManifestRecordsTheFlavor:
         assert install_manifest.recorded_torch_flavor(tmp_path) is None
 
     def test_the_key_is_additive(self, tmp_path):
-        # MANIFEST_SCHEMA must not move: every existing manifest stays valid, and
-        # verify_install rejects a schema it does not know.
+        # MANIFEST_SCHEMA must not move: verify_install rejects a schema it does not know.
         assert install_manifest.MANIFEST_SCHEMA == 1
         install_manifest.write_manifest(
             root = tmp_path, req_root = tmp_path, expected_torch_tag = "cu124", no_torch = False
@@ -392,8 +380,7 @@ class TestManifestRecordsTheFlavor:
         assert payload["expected_torch_tag"] == "cu124"
 
     def test_no_index_url_is_ever_written(self, tmp_path):
-        # A pinned index can carry a token in its userinfo, query or fragment, and this
-        # file sits in the venv and is read back by every later check.
+        # A pinned index can carry a token; this file sits in the venv and is read back.
         install_manifest.write_manifest(
             root = tmp_path, req_root = tmp_path, expected_torch_tag = "cu124"
         )
@@ -420,8 +407,7 @@ class TestManifestRecordsTheFlavor:
         ), "the mirror check has to come before the carry-forward"
 
     def test_the_record_is_read_before_the_manifest_is_dropped(self):
-        # install_python_stack() removes the manifest before its dependency pass, so a
-        # read deferred into main() always answers None.
+        # install_python_stack() removes the manifest before its dependency pass.
         read = _line_of(
             _STACK_SRC, "_RECORDED_TORCH_TAG = install_manifest.recorded_torch_flavor()"
         )
