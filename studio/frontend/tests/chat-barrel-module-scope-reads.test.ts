@@ -32,6 +32,8 @@ import ts from "typescript";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SRC = path.join(HERE, "..", "src");
 const BARREL = "@/features/chat";
+/** Marks a bridge that re-exports the whole barrel, so it carries every name. */
+const STAR = "*";
 
 /**
  * Local names this module binds to values pulled from the chat barrel.
@@ -74,6 +76,19 @@ function barrelValueNames(
     }
   }
   return names;
+}
+
+/** Local names bound by `import * as X`, whichever module they came from. */
+function namespaceImportNames(source: ts.SourceFile): Set<string> {
+  const out = new Set<string>();
+  for (const statement of source.statements) {
+    if (!ts.isImportDeclaration(statement)) continue;
+    const clause = statement.importClause;
+    if (!clause || clause.isTypeOnly) continue;
+    const bound = clause.namedBindings;
+    if (bound && ts.isNamespaceImport(bound)) out.add(bound.name.text);
+  }
+  return out;
 }
 
 function collectBindingNames(name: ts.BindingName, out: Set<string>): void {
@@ -366,6 +381,15 @@ function defersEvaluation(node: ts.Node): boolean {
   return false;
 }
 
+/** True when this namespace identifier is being read through, as `chat.K`. */
+function isNamespaceMemberRead(node: ts.Identifier): boolean {
+  const parent = node.parent;
+  if (!parent) return false;
+  if (ts.isPropertyAccessExpression(parent) && parent.expression === node) return true;
+  if (ts.isElementAccessExpression(parent) && parent.expression === node) return true;
+  return false;
+}
+
 /** True when this identifier is a name being declared or a property label. */
 function isNonReference(node: ts.Identifier): boolean {
   const parent = node.parent;
@@ -484,6 +508,12 @@ function isConditionalConstruct(node: ts.Node): boolean {
     ts.isSwitchStatement(node) ||
     ts.isTryStatement(node) ||
     ts.isConditionalExpression(node) ||
+    // `flag && await x` and `a ?? await x` skip their right side, so an await
+    // there is not certain to run either.
+    (ts.isBinaryExpression(node) &&
+      (node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
+        node.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+        node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken)) ||
     ts.isForStatement(node) ||
     ts.isForInStatement(node) ||
     ts.isForOfStatement(node) ||
@@ -554,6 +584,10 @@ function eagerReads(
   source: ts.SourceFile,
   names: Set<string>,
   options: ScanOptions = {},
+  // `import * as chat` binds the namespace OBJECT, which exists from
+  // instantiation. Passing it around is safe; only `chat.K` reads an export
+  // that may still be uninitialized.
+  namespaces: Set<string> = new Set(),
 ): string[] {
   if (names.size === 0 && !options.helpers?.size) return [];
 
@@ -576,6 +610,7 @@ function eagerReads(
     target: ts.Node,
     targets: Targets,
     args?: readonly ts.Expression[],
+    defaultsOnly = false,
   ): void => {
     const fn = target as ts.FunctionLikeDeclaration;
     (fn.parameters ?? []).forEach((parameter, index) => {
@@ -594,7 +629,7 @@ function eagerReads(
       }
       visit(parameter.initializer, false, targets);
     });
-    if (!fn.body || fn.asteriskToken) return;
+    if (defaultsOnly || !fn.body || fn.asteriskToken) return;
     const inner = ts.isBlock(fn.body) ? collectTargets(fn.body.statements, targets) : targets;
     const suspendsAt = firstSuspensionPos(fn.body);
     if (suspendsAt === null) visit(fn.body, false, inner);
@@ -611,7 +646,8 @@ function eagerReads(
       ts.isIdentifier(node) &&
       names.has(node.text) &&
       !isNonReference(node) &&
-      !isShadowed(node)
+      !isShadowed(node) &&
+      !(namespaces.has(node.text) && !isNamespaceMemberRead(node))
     ) {
       const { line } = source.getLineAndCharacterOfPosition(node.getStart(source));
       found.push(`${node.text} (line ${line + 1})`);
@@ -634,6 +670,20 @@ function eagerReads(
         enterCallable(tagged, targets);
       }
     }
+    // `f.call(...)` / `f.apply(...)` on a local function runs it now.
+    if (
+      !deferred &&
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      (node.expression.name.text === "call" || node.expression.name.text === "apply") &&
+      ts.isIdentifier(node.expression.expression)
+    ) {
+      const named = targets.functions.get(node.expression.expression.text);
+      if (named && !entered.has(named) && resolvesToTarget(node.expression.expression, named)) {
+        entered.add(named);
+        enterCallable(named, targets);
+      }
+    }
     // `[0].map(cb)` runs cb before it returns. Only these built-ins: an
     // arbitrary callback may be stored and invoked long after load, which is
     // the same line the Promise executor case draws.
@@ -644,9 +694,37 @@ function eagerReads(
       SYNCHRONOUS_CALLBACK_METHODS.has(node.expression.name.text)
     ) {
       for (const argument of node.arguments) {
-        if (!isCallableNode(argument) || entered.has(argument)) continue;
-        entered.add(argument);
-        enterCallable(argument, targets);
+        // A named callback resolves through the target map, as a call to it
+        // would; an inline one is the callable itself.
+        let callee: ts.Node | undefined;
+        if (isCallableNode(argument)) callee = argument;
+        else if (ts.isIdentifier(argument)) {
+          const named = targets.functions.get(argument.text);
+          if (named && resolvesToTarget(argument, named)) callee = named;
+        }
+        if (!callee || entered.has(callee)) continue;
+        entered.add(callee);
+        enterCallable(callee, targets);
+      }
+    }
+    // `C.read()` runs a static method now, the same as any other eager call.
+    if (
+      !deferred &&
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      ts.isIdentifier(node.expression.expression)
+    ) {
+      const cls = targets.classes.get(node.expression.expression.text);
+      if (cls && resolvesToTarget(node.expression.expression, cls)) {
+        const wanted = node.expression.name.text;
+        for (const member of cls.members) {
+          if (!ts.isMethodDeclaration(member) || !member.name) continue;
+          if (!ts.isIdentifier(member.name) || member.name.text !== wanted) continue;
+          if (!hasModifier(member, ts.SyntaxKind.StaticKeyword)) continue;
+          if (entered.has(member)) continue;
+          entered.add(member);
+          enterCallable(member, targets, node.arguments);
+        }
       }
     }
     // `obj.read()` on a local object literal runs that method now. The getter
@@ -681,9 +759,12 @@ function eagerReads(
     // followed to the letter and still leave the crash in place.
     if (!deferred && ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
       const target = targets.functions.get(node.expression.text);
-      if (target && !entered.has(target) && resolvesToTarget(node.expression, target)) {
+      if (target && resolvesToTarget(node.expression, target)) {
+        // Defaults depend on THIS call's arguments, so they are re-checked even
+        // when the body has already been walked: `read(1); read();` evaluates
+        // the default only on the second call.
+        enterCallable(target, targets, node.arguments, entered.has(target));
         entered.add(target);
-        enterCallable(target, targets, node.arguments);
       }
       // Extracting the helper into its own module is the same move as
       // extracting it into a function, and it hid the read just as well: the
@@ -704,8 +785,23 @@ function eagerReads(
     // `new C()` runs the constructor and every instance field initializer now,
     // for a named class exactly as for an inline function expression.
     if (!deferred && ts.isNewExpression(node) && ts.isIdentifier(node.expression)) {
-      const cls = targets.classes.get(node.expression.text);
-      if (cls && !entered.has(cls) && resolvesToTarget(node.expression, cls)) {
+      // A derived class runs its base's constructor and instance fields first,
+      // even when it declares no constructor of its own, so walk the chain.
+      const chain: ts.ClassLikeDeclaration[] = [];
+      let current = targets.classes.get(node.expression.text);
+      let anchor: ts.Identifier | undefined = node.expression;
+      while (current && anchor && resolvesToTarget(anchor, current) && !chain.includes(current)) {
+        chain.unshift(current);
+        anchor = undefined;
+        for (const clause of current.heritageClauses ?? []) {
+          if (clause.token !== ts.SyntaxKind.ExtendsKeyword) continue;
+          const base = clause.types[0]?.expression;
+          if (base && ts.isIdentifier(base)) anchor = base;
+        }
+        current = anchor ? targets.classes.get(anchor.text) : undefined;
+      }
+      for (const cls of chain) {
+        if (entered.has(cls)) continue;
         entered.add(cls);
         for (const member of cls.members) {
           if (ts.isConstructorDeclaration(member) && member.body) {
@@ -796,7 +892,7 @@ function parse(fileName: string, text: string): ts.SourceFile {
 function analyse(fileName: string, text: string): string[] {
   const source = parse(fileName, text);
   const names = barrelValueNames(source);
-  return names.size === 0 ? [] : eagerReads(source, names);
+  return names.size === 0 ? [] : eagerReads(source, names, {}, namespaceImportNames(source));
 }
 
 function walkSources(dir: string, out: string[] = []): string[] {
@@ -867,6 +963,7 @@ function barrelBearingModules(
     if (target === null) return false;
     const names = bearing.get(target);
     if (!names) return false;
+    if (names.has(STAR)) return true;
     return exported === undefined ? names.size > 0 : names.has(exported);
   };
 
@@ -901,8 +998,14 @@ function barrelBearingModules(
         const upstream = target ? bearing.get(target) : undefined;
         if (!fromBarrel && !upstream) continue;
         if (!clause) {
-          // `export * from x` republishes whatever x carries.
-          for (const name of upstream ?? []) if (record(file, name)) changed = true;
+          // `export * from x` republishes whatever x carries. From the barrel
+          // that is every one of its exports, so record a wildcard rather than
+          // enumerating them; the predicate treats it as matching any name.
+          if (fromBarrel) {
+            if (record(file, STAR)) changed = true;
+          } else {
+            for (const name of upstream ?? []) if (record(file, name)) changed = true;
+          }
           continue;
         }
         if (ts.isNamespaceExport(clause)) {
@@ -1145,6 +1248,7 @@ test("no module-scope read of a chat barrel value", () => {
       }
       const carried = bearing.get(target);
       if (!carried) return false;
+      if (carried.has(STAR)) return true;
       return exported === undefined ? carried.size > 0 : carried.has(exported);
     };
   const offenders: string[] = [];
@@ -1180,7 +1284,7 @@ test("no module-scope read of a chat barrel value", () => {
     if (names.size === 0 && helpers.size === 0) continue;
     if (names.size > 0) importers += 1;
     if (!atRisk.has(file)) continue;
-    for (const hit of eagerReads(source, names, { helpers })) {
+    for (const hit of eagerReads(source, names, { helpers }, namespaceImportNames(source))) {
       const entry = `${path.relative(SRC, file)}: ${hit}`;
       if (KNOWN_DEEP_CYCLE_READS.has(entry)) {
         stillPresent.add(entry);
@@ -1204,6 +1308,34 @@ test("no module-scope read of a chat barrel value", () => {
 test("the scan catches every shape the regex version missed", () => {
   const cases: Array<[string, string]> = [
     ["plain const", `import { K } from "${BARREL}";\nconst a = [K];\n`],
+    [
+      "default re-evaluated on a later argument-less call",
+      `import { K } from "${BARREL}";\nfunction read(v = K) {}\nread(1);\nread();\n`,
+    ],
+    [
+      "base constructor reached through a derived class",
+      `import { K } from "${BARREL}";\nclass Base { constructor() { use(K); } }\nclass D extends Base {}\nnew D();\n`,
+    ],
+    [
+      "static method invoked at module scope",
+      `import { K } from "${BARREL}";\nclass C { static read() { return K; } }\nC.read();\n`,
+    ],
+    [
+      "read after a short-circuited await",
+      `import { K } from "${BARREL}";\nasync function r() { flag && await x; return K; }\nr();\n`,
+    ],
+    [
+      "named callback handed to a synchronous method",
+      `import { K } from "${BARREL}";\nfunction cb() { return K; }\n[0].map(cb);\n`,
+    ],
+    [
+      "named function invoked through call",
+      `import { K } from "${BARREL}";\nfunction f() { return K; }\nf.call(null);\n`,
+    ],
+    [
+      "namespace read through a property",
+      `import * as chat from "${BARREL}";\nconst v = chat.K;\n`,
+    ],
     [
       "callback passed to a synchronous array method",
       `import { K } from "${BARREL}";\n[0].map(() => K);\n`,
@@ -1366,6 +1498,22 @@ test("the scan catches every shape the regex version missed", () => {
 test("deferred reads and non-references are left alone", () => {
   const cases: Array<[string, string]> = [
     ["arrow body", `import { K } from "${BARREL}";\nconst f = () => [K];\n`],
+    [
+      "namespace object merely stored",
+      `import * as chat from "${BARREL}";\nconst copy = chat;\n`,
+    ],
+    [
+      "default skipped when every call supplies the argument",
+      `import { K } from "${BARREL}";\nfunction read(v = K) {}\nread(1);\n`,
+    ],
+    [
+      "named callback handed to an unknown function",
+      `import { K } from "${BARREL}";\nfunction cb() { return K; }\nregisterLater(cb);\n`,
+    ],
+    [
+      "instance method that is never invoked",
+      `import { K } from "${BARREL}";\nclass C { read() { return K; } }\n`,
+    ],
     [
       "function body",
       `import { K } from "${BARREL}";\nfunction f() { return K; }\n`,
@@ -1557,6 +1705,7 @@ test("barrel bindings are tracked through local re-export bridges", () => {
       if (target === null) return false;
       const carried = bearing.get(target);
       if (!carried) return false;
+      if (carried.has(STAR)) return true;
       return exported === undefined ? carried.size > 0 : carried.has(exported);
     });
 
@@ -1663,4 +1812,25 @@ test("the barrel entry is resolved, so moving it cannot silently empty the scan"
     moved,
     "and resolves the same way from the root the closure starts at",
   );
+});
+
+test("a star re-export of the barrel carries every name", () => {
+  const bridge = path.join(SRC, "fake", "starbridge.ts");
+  const sources = new Map<string, string>([[bridge, `export * from "${BARREL}";\n`]]);
+  const resolve = makeResolver(sources);
+  const bearing = barrelBearingModules(sources, resolve);
+  const carried = bearing.get(bridge);
+  assert.ok(carried, "the bridge must carry something");
+  const names = barrelValueNames(
+    parse(path.join(SRC, "fake", "c.ts"), `import { ANYTHING } from "./starbridge";\nconst a = [ANYTHING];\n`),
+    (spec, exported) => {
+      if (spec === BARREL) return true;
+      const target = resolve(spec, path.join(SRC, "fake", "c.ts"));
+      const c = target === null ? undefined : bearing.get(target);
+      if (!c) return false;
+      if (c.has("*")) return true;
+      return exported === undefined ? c.size > 0 : c.has(exported);
+    },
+  );
+  assert.deepEqual([...names], ["ANYTHING"], "any name from a star bridge is a barrel binding");
 });
