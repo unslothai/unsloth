@@ -185,7 +185,6 @@ class TestFriendlyUpstreamError:
 
     def test_anthropic_upstream_error_leaves_other_failures_alone(self):
         from routes.inference import _anthropic_upstream_error
-
         assert _anthropic_upstream_error("disk full") == "llama-server error: disk full"
         assert "compile a grammar" in _anthropic_upstream_error("failed to parse grammar")
 
