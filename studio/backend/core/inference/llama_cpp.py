@@ -1058,8 +1058,11 @@ def _text_outside_think(text: str) -> str:
     # A prefilled reasoning template emits the opening marker itself, so the
     # generated text carries only the closer and the splitter sees no block. Same
     # marker pairs the strip paths recognise.
-    for opener, closer in (("<think", "</think>"), ("[THINK]", "[/THINK]"),
-                           ("<thinking", "</thinking>")):
+    for opener, closer in (
+        ("<think", "</think>"),
+        ("[THINK]", "[/THINK]"),
+        ("<thinking", "</thinking>"),
+    ):
         close = text.find(closer)
         if close >= 0 and opener not in text[:close]:
             return text[close + len(closer) :]
