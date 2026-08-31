@@ -47,7 +47,7 @@ from .context_window import _RESULT_NOTICE_RESERVE
 _UNSET_CONTEXT_TOKENS = object()
 _REQUEST_CONTEXT_TOKENS: ContextVar = ContextVar(
     "unsloth_request_context_tokens",
-    default=_UNSET_CONTEXT_TOKENS,
+    default = _UNSET_CONTEXT_TOKENS,
 )
 
 # What the CONVERSATION has left, as opposed to how big the window is. The window alone
@@ -56,7 +56,7 @@ _REQUEST_CONTEXT_TOKENS: ContextVar = ContextVar(
 # say, and every cap then behaves exactly as it did before this existed.
 _REQUEST_RESULT_BUDGET: ContextVar = ContextVar(
     "unsloth_request_result_budget_tokens",
-    default=None,
+    default = None,
 )
 
 import uuid
@@ -112,7 +112,7 @@ if sys.platform == "linux":
 
         _libc_name = ctypes.util.find_library("c")
         if _libc_name:
-            _libc = ctypes.CDLL(_libc_name, use_errno=True)
+            _libc = ctypes.CDLL(_libc_name, use_errno = True)
     except (OSError, AttributeError):
         pass
 
@@ -836,9 +836,9 @@ def _sed_exec_payloads(program: str) -> "list[str]":
                 pos += 1
             return pos
         if pos < n and program[pos] == "/":
-            pos = _skip_section(pos + 1, "/", brackets=True)
+            pos = _skip_section(pos + 1, "/", brackets = True)
         elif pos < n and program[pos] == "\\" and pos + 1 < n:
-            pos = _skip_section(pos + 2, program[pos + 1], brackets=True)
+            pos = _skip_section(pos + 2, program[pos + 1], brackets = True)
         else:
             return pos
         while pos < n and program[pos] in "IM":
@@ -881,8 +881,8 @@ def _sed_exec_payloads(program: str) -> "list[str]":
             i = end
         elif cmd in "sy" and i < n:
             delim, i = program[i], i + 1
-            i = _skip_section(i, delim, brackets=cmd == "s")
-            i = _skip_section(i, delim, brackets=False)
+            i = _skip_section(i, delim, brackets = cmd == "s")
+            i = _skip_section(i, delim, brackets = False)
             if cmd == "s":
                 executes = False
                 while i < n and program[i] in _SED_SUBST_FLAGS:
@@ -1050,7 +1050,7 @@ def _sed_program_unresolved(variants: "list[str]", live: "set[str]") -> bool:
     # without backslashes can only make a spelling MATCH, so it fails closed.
     keys = {_expansion_key(found) for found in live}
     return not any(
-        all(_expansion_key(found) not in keys for found in _shell_expansions(variant, quoted=False))
+        all(_expansion_key(found) not in keys for found in _shell_expansions(variant, quoted = False))
         for variant in variants
     )
 
@@ -1082,7 +1082,7 @@ def _quoted_separator_indexes(text: str, tokens: "list[str]", punctuation: str) 
     if _QUOTED_SEPARATOR_MARK not in masked:
         return frozenset()  # every separator character was bare
     try:
-        lexer = shlex.shlex(masked, posix=True, punctuation_chars=punctuation)
+        lexer = shlex.shlex(masked, posix = True, punctuation_chars = punctuation)
         lexer.whitespace_split = True
         marked = list(lexer)
     except ValueError:
@@ -1111,7 +1111,7 @@ def _masked_tokens(
         mark if char in chars and states[index] else char for index, char in enumerate(text)
     )
     try:
-        lexer = shlex.shlex(masked, posix=True, punctuation_chars=punctuation)
+        lexer = shlex.shlex(masked, posix = True, punctuation_chars = punctuation)
         lexer.whitespace_split = True
         marked = list(lexer)
     except ValueError:
@@ -1164,7 +1164,7 @@ def _unquoted_expansion_indexes(
         for index, char in enumerate(text)
     )
     try:
-        lexer = shlex.shlex(masked, posix=True, punctuation_chars=punctuation)
+        lexer = shlex.shlex(masked, posix = True, punctuation_chars = punctuation)
         lexer.whitespace_split = True
         marked = list(lexer)
     except ValueError:
@@ -1197,7 +1197,7 @@ def _unquoted_glob_indexes(text: str, tokens: "list[str]", punctuation: str) -> 
         for index, char in enumerate(text)
     )
     try:
-        lexer = shlex.shlex(masked, posix=True, punctuation_chars=punctuation)
+        lexer = shlex.shlex(masked, posix = True, punctuation_chars = punctuation)
         lexer.whitespace_split = True
         marked = list(lexer)
     except ValueError:
@@ -1993,7 +1993,7 @@ def _find_sensitive_paths(command: str) -> set[str]:
     # non-POSIX shlex on Windows leaves the splice quotes intact and the
     # bypass slips through.
     try:
-        lexer = shlex.shlex(normalized, posix=True, punctuation_chars=";&|()`")
+        lexer = shlex.shlex(normalized, posix = True, punctuation_chars = ";&|()`")
         lexer.whitespace_split = True
         tokens = list(lexer)
     except ValueError:
@@ -2105,7 +2105,7 @@ def _find_blocked_commands(command: str) -> set[str]:
 
     # Decode ANSI-C quoting first ($'ssh' -> ssh) so a blocked name hidden behind
     # it is still detected at command position.
-    command = _decode_ansi_c(command, keep_one_word=True)
+    command = _decode_ansi_c(command, keep_one_word = True)
 
     # punctuation_chars splits separators into their own tokens, so command
     # position is detected even in `echo done; rm -rf x` (no whitespace).
@@ -2116,9 +2116,9 @@ def _find_blocked_commands(command: str) -> set[str]:
     lexed_posix = _shell_is_posix()
     try:
         if not lexed_posix:
-            tokens = shlex.split(command, posix=False)
+            tokens = shlex.split(command, posix = False)
         else:
-            lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()`")
+            lexer = shlex.shlex(command, posix = True, punctuation_chars = ";&|()`")
             lexer.whitespace_split = True
             tokens = list(lexer)
     except ValueError:
@@ -3816,9 +3816,9 @@ _PERCENT_NAMED_RE = re.compile(r"%\((\w+)\)[-#0 +]*\d*(?:\.\d+)?[a-zA-Z]")
 
 def _folded_path(
     node,
-    literals=None,
-    ctors=None,
-    join_names=None,
+    literals = None,
+    ctors = None,
+    join_names = None,
 ) -> "str | None":
     """Best-effort value of a path built from string literals, so a sensitive
     path assembled from pieces (os.path.join('/etc', 'passwd'), '/etc'+'/passwd',
@@ -4058,7 +4058,7 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
     # whitespace to shlex, which would demote "ls\nrm x" to argument position.
     command = command.replace("\r\n", ";").replace("\n", ";").replace("\r", ";")
     try:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()")
+        lexer = shlex.shlex(command, posix = True, punctuation_chars = ";&|()")
         lexer.whitespace_split = True
         tokens = list(lexer)
     except ValueError:
@@ -4069,7 +4069,7 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
     expanded_command = _expand_shell_assignments(_expand_param_defaults(command))
     if expanded_command != command:
         try:
-            elexer = shlex.shlex(expanded_command, posix=True, punctuation_chars=";&|()")
+            elexer = shlex.shlex(expanded_command, posix = True, punctuation_chars = ";&|()")
             elexer.whitespace_split = True
             scan_tokens = list(elexer)
         except ValueError:
@@ -6112,7 +6112,7 @@ def _command_is_network_exec_or_exfil(command: str) -> bool:
     if "<(" in command:  # bash <(curl ...) process substitution
         return True
     try:
-        tokens = shlex.split(command.replace("\n", " "), posix=True)
+        tokens = shlex.split(command.replace("\n", " "), posix = True)
     except ValueError:
         return True
     # Scope the flag scan to the segment that actually runs curl/wget: a shared
@@ -6269,7 +6269,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         return True
     # Newlines separate commands in a shell but read as whitespace to shlex, and
     # ANSI-C quoting ($'rm') hides the real command name.
-    decoded = _decode_ansi_c(command, keep_one_word=True)
+    decoded = _decode_ansi_c(command, keep_one_word = True)
     normalized = decoded.replace("\r\n", ";").replace("\n", ";").replace("\r", ";")
     # Identical to the blanket form unless a newline is actually present, so the
     # usual single-line command never pays for the quote walk.
@@ -6322,7 +6322,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
     # for the usual single-line command.
     for text in {normalized, expanded, quoted_newlines_kept}:
         try:
-            lexer = shlex.shlex(text, posix=True, punctuation_chars=";&|()")
+            lexer = shlex.shlex(text, posix = True, punctuation_chars = ";&|()")
             lexer.whitespace_split = True
             tokens = list(lexer)
         except ValueError:
@@ -7896,7 +7896,7 @@ def _is_trusted_windows_bash(path: str) -> bool:
     return _is_trusted_windows_program_dir(os.path.dirname(path))
 
 
-@functools.lru_cache(maxsize=1)
+@functools.lru_cache(maxsize = 1)
 def _windows_bash() -> "str | None":
     """Path to a trusted native Win32 bash, or None when only cmd is available."""
     candidates: list[str] = []
@@ -8021,7 +8021,7 @@ def _session_in_flight(session_id: "str | None"):
             # session stays closed, so nothing starts in the directory removed.
             try:
                 for pending_id, pending_files in pending.items():
-                    if _thread_exists(pending_id, unknown=True):
+                    if _thread_exists(pending_id, unknown = True):
                         # Recreated while that call ran: this delete belongs to
                         # the chat that went, the folder is the new one's now.
                         continue
@@ -8059,7 +8059,6 @@ def _orphan_records_dir() -> str:
     """
     try:
         from utils.paths.storage_roots import studio_root
-
         return os.path.join(str(studio_root()), "orphaned-projects")
     except Exception:
         # Only if the studio home cannot be resolved at all: beside the sandbox
@@ -8092,7 +8091,7 @@ def _read_orphan_record(kind: str, record_id: str) -> "dict | None":
 
     path = os.path.join(_orphan_records_dir(), _orphan_record_name(kind, record_id))
     try:
-        with open(path, encoding="utf-8") as fh:
+        with open(path, encoding = "utf-8") as fh:
             record = _json.loads(fh.read(4096).strip())
     except (OSError, ValueError, TypeError):
         return None
@@ -8133,9 +8132,9 @@ def _write_orphan_record(kind: str, record_id: str, record: dict) -> None:
 
     record = {**record, "id": record_id, "chat": kind == _ORPHAN_CHAT}
     try:
-        os.makedirs(_orphan_records_dir(), exist_ok=True)
+        os.makedirs(_orphan_records_dir(), exist_ok = True)
         name = _orphan_record_name(kind, record_id)
-        with open(os.path.join(_orphan_records_dir(), name), "w", encoding="utf-8") as fh:
+        with open(os.path.join(_orphan_records_dir(), name), "w", encoding = "utf-8") as fh:
             fh.write(_json.dumps(record))
     except OSError:
         logger.warning("Could not record kept folder for %s", record_id)
@@ -8189,7 +8188,7 @@ def list_orphaned_projects() -> "list[tuple[str, str, str | None, bool, bool]]":
         names = names[:_MAX_ORPHAN_RECORDS]
     for name in names:
         try:
-            with open(os.path.join(_orphan_records_dir(), name), encoding="utf-8") as fh:
+            with open(os.path.join(_orphan_records_dir(), name), encoding = "utf-8") as fh:
                 raw = fh.read(4096).strip()
         except OSError:
             continue
@@ -8258,7 +8257,6 @@ def collect_orphaned_project_workspaces() -> None:
     running in there, or while a chat still shows its files.
     """
     from storage.studio_db import sandbox_is_referenced_elsewhere
-
     for record_id, workspace, root, pending, is_chat in list_orphaned_projects():
         if not pending:
             continue
@@ -8268,28 +8266,28 @@ def collect_orphaned_project_workspaces() -> None:
             # to reuse: a chat or a project created since owns that folder, and
             # a card of its own may not be stored yet.
             recreated = (
-                _thread_exists(record_id, unknown=True)
+                _thread_exists(record_id, unknown = True)
                 if is_chat
                 else live_project_owns(record_id, workspace, root)
             )
             if recreated:
                 logger.info("Kept %s: it was created again", record_id)
                 continue
-            if not wait_for_sessions_idle([session], timeout=0.0):
+            if not wait_for_sessions_idle([session], timeout = 0.0):
                 continue
             if sandbox_is_referenced_elsewhere(session):
                 continue
             if is_chat:
                 # Its own ownership checks decide whether that directory is
                 # ours to take, exactly as the chat's own delete would.
-                remove_session_sandbox(session, delete_files=True)
+                remove_session_sandbox(session, delete_files = True)
             else:
                 _delete_recorded_workspace(record_id, workspace, root)
             # A locked file on Windows, or a network volume having a bad
             # moment: the record stays so the next launch tries again.
             forget_orphaned_project_if_gone(record_id, workspace, root, is_chat)
         except Exception:  # noqa: BLE001 - a stuck record must not break a delete
-            logger.warning("Could not collect workspace for %s", record_id, exc_info=True)
+            logger.warning("Could not collect workspace for %s", record_id, exc_info = True)
 
 
 def finish_workspace_delete_when_idle(
@@ -8303,13 +8301,13 @@ def finish_workspace_delete_when_idle(
 
     def _wait_and_collect() -> None:
         session = project_session_id(project_id)
-        wait_for_sessions_idle([session], timeout=timeout)
+        wait_for_sessions_idle([session], timeout = timeout)
         collect_orphaned_project_workspaces()
 
     thread = threading.Thread(
-        target=_wait_and_collect,
-        name="workspace-delete",
-        daemon=True,
+        target = _wait_and_collect,
+        name = "workspace-delete",
+        daemon = True,
     )
     thread.start()
     return thread
@@ -8345,7 +8343,6 @@ def _orphaned_project_workdir(project_id: str) -> "str | None":
     suffix = re.sub(r"[^A-Za-z0-9_-]+", "-", project_id)[:8].strip("-_") or "project"
     try:
         from utils.paths import project_workspaces_root
-
         root = str(project_workspaces_root())
         names = sorted(os.listdir(root))[:_MAX_SNAPSHOT_DIRS]
     except Exception:
@@ -8368,7 +8365,6 @@ def _thread_exists(thread_id: str, unknown: bool = False) -> bool:
     """
     try:
         from storage.studio_db import get_chat_thread
-
         return get_chat_thread(thread_id) is not None
     except Exception:  # noqa: BLE001 - see `unknown`
         return unknown
@@ -8388,7 +8384,6 @@ def live_project_owns(
     """
     try:
         from storage.studio_db import get_chat_project
-
         project = get_chat_project(project_id)
     except Exception:  # noqa: BLE001 - an unanswerable check keeps the files
         return True
@@ -8409,7 +8404,6 @@ def _project_exists(project_id: str) -> bool:
     """Whether a project of the user's is stored under this exact id."""
     try:
         from storage.studio_db import get_chat_project
-
         return get_chat_project(project_id) is not None
     except Exception:  # noqa: BLE001 - a storage hiccup must not delete files
         return True
@@ -8442,10 +8436,9 @@ def _get_project_workdir(session_id: str) -> str | None:
         return None
     try:
         from storage.studio_db import ensure_chat_project_workspace
-
         project = ensure_chat_project_workspace(project_id)
     except Exception:
-        logger.warning("Failed to resolve project sandbox for %s", session_id, exc_info=True)
+        logger.warning("Failed to resolve project sandbox for %s", session_id, exc_info = True)
         return None
     if not project:
         # The project is gone but a chat forked out of it still shows cards for
@@ -8557,7 +8550,7 @@ def _marker_owner(workdir: str) -> "str | None":
     if os.path.islink(marker):
         return None  # not a marker we wrote, and not one to follow
     try:
-        with open(marker, encoding="utf-8") as fh:
+        with open(marker, encoding = "utf-8") as fh:
             owner = fh.read(256).strip()
     except (OSError, UnicodeDecodeError):
         return None
@@ -8655,7 +8648,7 @@ def _ensure_session_dir(root: str, session_id: str) -> str:
             workdir = _free_fallback_dir(root, session_id)
             if workdir is None or not _contained_in_root(workdir, root):
                 return _sandbox_fallback(root, "_invalid")
-        os.makedirs(workdir, exist_ok=True)
+        os.makedirs(workdir, exist_ok = True)
         if _claim_sandbox(workdir, session_id):
             return workdir
         # A marker naming nobody is one a tool wrote over, and at our own root
@@ -8669,7 +8662,7 @@ def _ensure_session_dir(root: str, session_id: str) -> str:
         workdir = _free_fallback_dir(root, session_id)
         if workdir is None or not _contained_in_root(workdir, root):
             return _sandbox_fallback(root, "_invalid")
-        os.makedirs(workdir, exist_ok=True)
+        os.makedirs(workdir, exist_ok = True)
         _claim_sandbox(workdir, session_id)
         return workdir
 
@@ -8789,7 +8782,6 @@ def sandbox_root() -> str:
         return os.path.expanduser(override)
     try:
         from utils.paths.storage_roots import studio_root
-
         return os.path.join(str(studio_root()), "sandbox")
     except Exception:
         return _legacy_sandbox_root()
@@ -8844,7 +8836,7 @@ def _staged_move(source: str, target: str, name: str) -> None:
         shutil.move(source, staging)
     except OSError:
         # Half filled and ours, and the source is still where it was.
-        shutil.rmtree(staging, ignore_errors=True)
+        shutil.rmtree(staging, ignore_errors = True)
         raise
     # Marked here, not after the rename: across filesystems the move has already
     # removed the legacy copy, so from this instant the staging tree is the only
@@ -8936,7 +8928,7 @@ def _migrate_one_legacy_session(root: str, name: str) -> None:
         if target is None or not _contained_in_root(target, root):
             return  # nowhere free to land, left for the whole-tree pass
         try:
-            os.makedirs(root, exist_ok=True)
+            os.makedirs(root, exist_ok = True)
             _staged_move(source, target, name)
         except OSError as error:
             logger.warning("Could not move sandbox %s: %s", name, error)
@@ -8988,7 +8980,7 @@ def _migrate_legacy_sandbox_locked(root: str) -> bool:
     try:
         if os.path.realpath(legacy) == os.path.realpath(root) or not os.path.isdir(legacy):
             return True
-        os.makedirs(root, exist_ok=True)
+        os.makedirs(root, exist_ok = True)
         moved = 0
         complete = True
         for name in os.listdir(legacy):
@@ -9072,7 +9064,7 @@ def _sandbox_fallback(
         if not _free_for(made, owner):
             continue
         try:
-            os.makedirs(made, exist_ok=True)
+            os.makedirs(made, exist_ok = True)
         except OSError:
             continue
         if _claim_sandbox(made, name):
@@ -9099,7 +9091,7 @@ def _nothing_to_serve(name: str) -> str:
     with _nothing_lock:
         if _NOTHING_ROOT is None or not os.path.isdir(_NOTHING_ROOT):
             try:
-                _NOTHING_ROOT = tempfile.mkdtemp(prefix="unsloth-unowned-")
+                _NOTHING_ROOT = tempfile.mkdtemp(prefix = "unsloth-unowned-")
             except OSError:
                 _NOTHING_ROOT = os.path.join(tempfile.gettempdir(), "unsloth-unowned")
         root = _NOTHING_ROOT
@@ -9200,9 +9192,9 @@ def _get_workdir(session_id: str | None = None) -> str:
         elif session_id:
             workdir = _ensure_session_dir(sandbox_root_path, session_id)
         else:
-            workdir = _sandbox_fallback(sandbox_root_path, "_default", create=True)
+            workdir = _sandbox_fallback(sandbox_root_path, "_default", create = True)
         created = not os.path.isdir(workdir)
-        os.makedirs(workdir, exist_ok=True)
+        os.makedirs(workdir, exist_ok = True)
         if not project_workdir and not session_id:
             # The fallbacks are directories like any other: claimed, so the next
             # run knows this one is the one we made.
@@ -9297,9 +9289,9 @@ def migrate_legacy_sandbox_in_background() -> "threading.Thread":
         try:
             _migrate_legacy_sandbox(sandbox_root())
         except Exception:  # noqa: BLE001 - best effort, like the rest of this
-            logger.debug("legacy sandbox migration failed", exc_info=True)
+            logger.debug("legacy sandbox migration failed", exc_info = True)
 
-    thread = threading.Thread(target=_run, name="sandbox-migrate", daemon=True)
+    thread = threading.Thread(target = _run, name = "sandbox-migrate", daemon = True)
     thread.start()
     return thread
 
@@ -9325,7 +9317,7 @@ def _drain_detached_deletes() -> None:
     while True:
         target, tries = _delete_queue.get()
         try:
-            shutil.rmtree(target, ignore_errors=True)
+            shutil.rmtree(target, ignore_errors = True)
             if os.path.exists(target):
                 _retry_detached_delete(target, tries)
         finally:
@@ -9361,16 +9353,16 @@ def _queue_detached_delete(target: str) -> None:
         if _delete_worker is None or not _delete_worker.is_alive():
             try:
                 _delete_worker = threading.Thread(
-                    target=_drain_detached_deletes,
-                    name="sandbox-delete",
-                    daemon=True,
+                    target = _drain_detached_deletes,
+                    name = "sandbox-delete",
+                    daemon = True,
                 )
                 _delete_worker.start()
             except RuntimeError:
                 # No thread to be had: better a slow call than a tree under a
                 # name nothing resolves to and nothing deletes.
                 _delete_worker = None
-                shutil.rmtree(target, ignore_errors=True)
+                shutil.rmtree(target, ignore_errors = True)
                 return
     _delete_queue.put((target, 0))
 
@@ -9398,7 +9390,7 @@ def sweep_detached_sandboxes(root: "str | None" = None) -> None:
             continue
         if _marker_owner(target) is None and not _root_is_ours():
             continue
-        shutil.rmtree(target, ignore_errors=True)
+        shutil.rmtree(target, ignore_errors = True)
 
 
 _swept_detached = False
@@ -9423,7 +9415,7 @@ def _start_detached_sweep() -> "threading.Thread | None":
         # still running in it when the app went away.
         collect_orphaned_project_workspaces()
 
-    thread = threading.Thread(target=_sweep, name="sandbox-sweep", daemon=True)
+    thread = threading.Thread(target = _sweep, name = "sandbox-sweep", daemon = True)
     thread.start()
     return thread
 
@@ -9670,7 +9662,7 @@ def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
             try:
                 os.rename(target, detached)
             except OSError:
-                shutil.rmtree(target, ignore_errors=True)
+                shutil.rmtree(target, ignore_errors = True)
                 gone = not os.path.isdir(target)
                 if gone:
                     _forget_spill_record(forget_record)
@@ -9683,7 +9675,7 @@ def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
         # is already gone by the time this runs.
         if not _holds_no_user_files(target, _sandbox_name(session_id)):
             return False
-        shutil.rmtree(target, ignore_errors=True)
+        shutil.rmtree(target, ignore_errors = True)
         gone = not os.path.isdir(target)
         if gone:
             _forget_spill_record(forget_record)
@@ -9806,12 +9798,12 @@ def _edit_file_write(
     payload = (bom + text.replace("\n", newline)).encode("utf-8")
     directory = os.path.dirname(path) or "."
     try:
-        os.makedirs(directory, exist_ok=True)
+        os.makedirs(directory, exist_ok = True)
     except OSError as exc:
         return f"Error: cannot create directory for '{os.path.basename(path)}': {exc}"
     tmp = ""
     try:
-        fd, tmp = tempfile.mkstemp(dir=directory, prefix=".unsloth_edit_")
+        fd, tmp = tempfile.mkstemp(dir = directory, prefix = ".unsloth_edit_")
         with os.fdopen(fd, "wb") as fh:
             fh.write(payload)
         try:
@@ -9917,8 +9909,8 @@ def _edit_file_receipt(
     stream = difflib.unified_diff(
         before_window.split("\n"),
         after_window.split("\n"),
-        lineterm="",
-        n=2,
+        lineterm = "",
+        n = 2,
     )
     # drop the ---/+++ headers; the name is on the summary line
     taken = list(itertools.islice(stream, 2 + _EDIT_FILE_DIFF_LINES + 1))[2:]
@@ -9990,7 +9982,7 @@ def _edit_file_create(
     if not os.path.lexists(target):
         directory = os.path.dirname(target) or "."
         try:
-            os.makedirs(directory, exist_ok=True)
+            os.makedirs(directory, exist_ok = True)
         except OSError as exc:
             return f"Error: cannot create directory for '{name}': {exc}"
         if workdir is not None and _is_outside_workdir(target, workdir):
@@ -10036,7 +10028,7 @@ def _edit_file_create(
             "replace."
         )
     # Guarded like any other edit, so a chat that filled it in is not clobbered.
-    error = _edit_file_write(target, new, newline, "", expect=b"", workdir=workdir)
+    error = _edit_file_write(target, new, newline, "", expect = b"", workdir = workdir)
     if error:
         return error
     return f"Created {name} ({new.count(chr(10)) + 1 if new else 0} lines)"
@@ -10256,7 +10248,7 @@ def _edit_file(
             edits[0][1],
             name,
             "\n",
-            workdir=None if disable_sandbox else _get_workdir(session_id),
+            workdir = None if disable_sandbox else _get_workdir(session_id),
         )
     for index, (old, new, _) in enumerate(edits, 1):
         if not old:
@@ -10303,8 +10295,8 @@ def _edit_file(
         after,
         newline,
         bom,
-        expect=data,
-        workdir=None if disable_sandbox else _get_workdir(session_id),
+        expect = data,
+        workdir = None if disable_sandbox else _get_workdir(session_id),
     )
     if error:
         return error
@@ -10315,7 +10307,7 @@ def _edit_file(
         first_new,
         name,
         total,
-        change_at=change_at,
+        change_at = change_at,
     )
 
 
@@ -10517,7 +10509,7 @@ def _to_full_access(description: str, tool_name: str) -> str:
     """
     clause = _FULL_ACCESS_CLAUSE[tool_name]
     for sandboxed, full_access in _FULL_ACCESS_SUBSTITUTIONS:
-        description = description.replace(sandboxed, full_access.format(clause=clause))
+        description = description.replace(sandboxed, full_access.format(clause = clause))
     return description
 
 
@@ -10987,14 +10979,14 @@ async def get_enabled_mcp_tools() -> list[dict]:
         results = await asyncio.gather(
             *(
                 list_tools_async(
-                    url=s["url"],
-                    headers=parse_server_headers(s),
-                    timeout=probe_timeout(s["url"], bool(s.get("use_oauth"))),
-                    use_oauth=bool(s.get("use_oauth")),
+                    url = s["url"],
+                    headers = parse_server_headers(s),
+                    timeout = probe_timeout(s["url"], bool(s.get("use_oauth"))),
+                    use_oauth = bool(s.get("use_oauth")),
                 )
                 for s in uncached
             ),
-            return_exceptions=True,
+            return_exceptions = True,
         )
         # Keep this re-read on-loop so an edit cannot invalidate between it and
         # the cache writes below. Drop results for changed or removed servers.
@@ -11052,18 +11044,18 @@ def _render_html_result(arguments: dict) -> str:
 def execute_tool(
     name: str,
     arguments: dict,
-    cancel_event=None,
+    cancel_event = None,
     timeout: int | None = _TIMEOUT_UNSET,
     session_id: str | None = None,
     thread_id: str | None = None,
     rag_scope: dict | None = None,
     disable_sandbox: bool = False,
-    output_callback=None,
+    output_callback = None,
     website_policy: dict | None = None,
     conversation_branch: list[dict] | None = None,
     conversation_budget_tokens: int | None = None,
-    conversation_token_counter=None,
-    context_tokens=_UNSET_CONTEXT_TOKENS,
+    conversation_token_counter = None,
+    context_tokens = _UNSET_CONTEXT_TOKENS,
     search_images: bool = False,
     result_budget_tokens: int | None = None,
 ) -> str:
@@ -11136,7 +11128,7 @@ def execute_tool(
                 },
                 effective_timeout,
                 cancel_event,
-                search_fn=_search_conversation,
+                search_fn = _search_conversation,
             ),
             name,
         )
@@ -11161,8 +11153,8 @@ def execute_tool(
         # percent-quote the parts so ids can't collide or ":" merge conversations.
         if thread_id:
             mcp_scope = "s={}:t={}".format(
-                urllib.parse.quote(session_id or "", safe=""),
-                urllib.parse.quote(thread_id, safe=""),
+                urllib.parse.quote(session_id or "", safe = ""),
+                urllib.parse.quote(thread_id, safe = ""),
             )
         else:
             mcp_scope = None
@@ -11182,15 +11174,15 @@ def execute_tool(
 
         return _fit_result_to_room(
             call_tool_sync(
-                url=url,
-                headers=headers,
-                name=tool_name,
-                args=arguments,
-                timeout=effective_timeout,
-                use_oauth=bool(server.get("use_oauth")),
-                cancel_event=cancel_event,
-                scope=mcp_scope,
-                config_check=_config_current,
+                url = url,
+                headers = headers,
+                name = tool_name,
+                args = arguments,
+                timeout = effective_timeout,
+                use_oauth = bool(server.get("use_oauth")),
+                cancel_event = cancel_event,
+                scope = mcp_scope,
+                config_check = _config_current,
             ),
             name,
         )
@@ -11202,12 +11194,12 @@ def execute_tool(
         return _fit_result_to_room(
             _web_search(
                 arguments.get("query", ""),
-                url=arguments.get("url"),
-                timeout=effective_timeout,
-                cancel_event=cancel_event,
-                website_policy=website_policy,
-                include_images=search_images,
-                image_queries=arguments.get("image_queries"),
+                url = arguments.get("url"),
+                timeout = effective_timeout,
+                cancel_event = cancel_event,
+                website_policy = website_policy,
+                include_images = search_images,
+                image_queries = arguments.get("image_queries"),
             ),
             name,
         )
@@ -11220,9 +11212,9 @@ def execute_tool(
                 cancel_event,
                 effective_timeout,
                 session_id,
-                disable_sandbox=disable_sandbox,
-                output_callback=output_callback,
-                thread_id=thread_id,
+                disable_sandbox = disable_sandbox,
+                output_callback = output_callback,
+                thread_id = thread_id,
             )
     if name == "terminal":
         with _session_in_flight(session_id):
@@ -11231,9 +11223,9 @@ def execute_tool(
                 cancel_event,
                 effective_timeout,
                 session_id,
-                disable_sandbox=disable_sandbox,
-                output_callback=output_callback,
-                thread_id=thread_id,
+                disable_sandbox = disable_sandbox,
+                output_callback = output_callback,
+                thread_id = thread_id,
             )
     # Same in-flight guard as the two above: it writes into the session workdir,
     # so a chat deleted mid-call must not unlink it underneath.
@@ -11242,8 +11234,8 @@ def execute_tool(
             return _fit_result_to_room(
                 _edit_file(
                     arguments,
-                    session_id=session_id,
-                    disable_sandbox=disable_sandbox,
+                    session_id = session_id,
+                    disable_sandbox = disable_sandbox,
                 ),
                 name,
             )
@@ -11273,7 +11265,6 @@ def _search_knowledge_base(arguments: dict, rag_scope: dict | None) -> str:
         return "Error: query is empty."
     try:
         from storage import rag_db
-
         if not rag_db.RAG_AVAILABLE:
             return "Knowledge base search is unavailable on this server."
         from core.rag.tool import search_knowledge_base_with_sources
@@ -11283,18 +11274,17 @@ def _search_knowledge_base(arguments: dict, rag_scope: dict | None) -> str:
 
     top_k = _opt_int((arguments or {}).get("top_k") or scope.get("default_top_k"))
     text, sources = search_knowledge_base_with_sources(
-        query=str(query),
-        scope_kb_id=scope.get("kb_id"),
-        scope_thread_id=scope.get("thread_id"),
-        scope_project_id=scope.get("project_id"),
-        top_k=top_k,
+        query = str(query),
+        scope_kb_id = scope.get("kb_id"),
+        scope_thread_id = scope.get("thread_id"),
+        scope_project_id = scope.get("project_id"),
+        top_k = top_k,
         **_scope_retrieval_kwargs(scope),
     )
     # Append the UI source-map after the sentinel; loops strip it before the model.
     if sources:
         import json as _json
-
-        return text + RAG_SOURCES_SENTINEL + _json.dumps(sources, ensure_ascii=False)
+        return text + RAG_SOURCES_SENTINEL + _json.dumps(sources, ensure_ascii = False)
     return text
 
 
@@ -11339,7 +11329,6 @@ def _search_conversation(arguments: dict, rag_scope: dict | None) -> str:
         default_k = 1
         try:
             from core.rag import config as rag_config
-
             affordable = max(0, int(budget)) // max(1, int(rag_config.CHUNK_TOKENS))
             default_k = max(1, int(rag_config.CONVERSATION_ARCHIVE_TOP_K))
         except Exception:
@@ -11361,8 +11350,8 @@ def _search_conversation(arguments: dict, rag_scope: dict | None) -> str:
         return conversation_archive.recall(
             str(thread_id),
             str(query),
-            top_k=k,
-            branch_messages=scope.get("branch_messages"),
+            top_k = k,
+            branch_messages = scope.get("branch_messages"),
         )
 
     found = _recall(top_k)
@@ -11398,7 +11387,7 @@ def _search_conversation(arguments: dict, rag_scope: dict | None) -> str:
 _TOOL_MESSAGE_FRAMING_TOKENS = 8
 
 
-def _conversation_search_cost(text: str, counter=None) -> int:
+def _conversation_search_cost(text: str, counter = None) -> int:
     """What admitting this result really costs, exactly when the caller has a tokenizer.
 
     The estimate below is pessimistic for CJK and emoji but still optimistic for ASCII
@@ -11413,7 +11402,7 @@ def _conversation_search_cost(text: str, counter=None) -> int:
         try:
             return int(counter(text)) + _TOOL_MESSAGE_FRAMING_TOKENS
         except Exception:
-            logger.debug("conversation search: exact result count failed", exc_info=True)
+            logger.debug("conversation search: exact result count failed", exc_info = True)
     return _conversation_search_tokens(text) + _TOOL_MESSAGE_FRAMING_TOKENS
 
 
@@ -11436,8 +11425,7 @@ def _rendered_conversation_search(found) -> str:
     text, sources = found
     if sources:
         import json as _json
-
-        return text + RAG_SOURCES_SENTINEL + _json.dumps(sources, ensure_ascii=False)
+        return text + RAG_SOURCES_SENTINEL + _json.dumps(sources, ensure_ascii = False)
     return text
 
 
@@ -11445,8 +11433,8 @@ def _search_knowledge_base_with_budget(
     arguments: dict,
     rag_scope: dict | None,
     timeout: int | None,
-    cancel_event=None,
-    search_fn=None,
+    cancel_event = None,
+    search_fn = None,
 ) -> str:
     """Admission-controlled RAG search.
 
@@ -11456,7 +11444,7 @@ def _search_knowledge_base_with_budget(
     if cancel_event is not None and cancel_event.is_set():
         return "Error: knowledge base search cancelled."
     deadline = time.monotonic() + timeout if timeout is not None else None
-    while not _RAG_SEARCH_SLOT.acquire(timeout=0.05):
+    while not _RAG_SEARCH_SLOT.acquire(timeout = 0.05):
         if cancel_event is not None and cancel_event.is_set():
             return "Error: knowledge base search cancelled."
         if deadline is not None and time.monotonic() >= deadline:
@@ -11490,7 +11478,7 @@ def _search_knowledge_base_with_budget(
         finally:
             release_slot()
 
-    result: queue.Queue = queue.Queue(maxsize=1)
+    result: queue.Queue = queue.Queue(maxsize = 1)
 
     def search() -> None:
         try:
@@ -11501,7 +11489,7 @@ def _search_knowledge_base_with_budget(
             release_slot()
 
     try:
-        threading.Thread(target=search, name="rag-tool-search", daemon=True).start()
+        threading.Thread(target = search, name = "rag-tool-search", daemon = True).start()
     except Exception:
         release_slot()
         raise
@@ -11516,7 +11504,7 @@ def _search_knowledge_base_with_budget(
         if deadline is not None:
             wait = min(wait, max(0.001, deadline - time.monotonic()))
         try:
-            ok, value = result.get(timeout=wait)
+            ok, value = result.get(timeout = wait)
         except queue.Empty:
             continue
         if ok:
@@ -11671,7 +11659,7 @@ def build_synthetic_search_exchange(
 
     call_id = call_prefix + _uuid.uuid4().hex[:12]
     args = {"query": query}
-    full_result = text + RAG_SOURCES_SENTINEL + _json.dumps(sources, ensure_ascii=False)
+    full_result = text + RAG_SOURCES_SENTINEL + _json.dumps(sources, ensure_ascii = False)
     events = [
         {"type": "status", "text": f"{status_label}: {query[:60]}"},
         {
@@ -11698,7 +11686,7 @@ def build_synthetic_search_exchange(
                     "type": "function",
                     "function": {
                         "name": tool_name,
-                        "arguments": _json.dumps(args, ensure_ascii=False),
+                        "arguments": _json.dumps(args, ensure_ascii = False),
                     },
                 }
             ],
@@ -11767,7 +11755,6 @@ def build_conversation_recall(
     thin = False
     try:
         from core.inference import instruction_pin
-
         thin = instruction_pin.is_thin_query(query)
         if thin:
             _behind = branch_messages or conversation
@@ -11797,14 +11784,14 @@ def build_conversation_recall(
         found = conversation_archive.recall(
             thread_id,
             query,
-            top_k=top_k,
-            branch_messages=branch_messages,
-            extra_queries=[anchor] if anchor else None,
+            top_k = top_k,
+            branch_messages = branch_messages,
+            extra_queries = [anchor] if anchor else None,
             # This is the automatic lookup, so it is the one the quality floor applies to.
-            forced=True,
+            forced = True,
         )
     except Exception:
-        logger.warning("Conversation recall failed", exc_info=True)
+        logger.warning("Conversation recall failed", exc_info = True)
         return None
     if not found:
         return None
@@ -11814,16 +11801,16 @@ def build_conversation_recall(
         return {
             "events": [],
             "messages": [],
-            "prefix": _RECALL_BLOCK.format(text=text),
+            "prefix": _RECALL_BLOCK.format(text = text),
             "sources": len(sources),
         }
     built = build_synthetic_search_exchange(
-        tool_name="search_conversation",
-        call_prefix="conv_recall_",
-        status_label="Recalling earlier conversation",
-        query=query,
-        text=text,
-        sources=sources,
+        tool_name = "search_conversation",
+        call_prefix = "conv_recall_",
+        status_label = "Recalling earlier conversation",
+        query = query,
+        text = text,
+        sources = sources,
     )
     built["sources"] = len(sources)
     logger.info("Conversation recall: %d earlier passage(s) for %r", len(sources), query[:80])
@@ -11855,7 +11842,6 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
         return None
     try:
         from storage import rag_db
-
         if not rag_db.RAG_AVAILABLE:
             return None
         from core.rag.tool import render_sources, search_for_autoinject, whole_document_context
@@ -11886,7 +11872,7 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     if whole_doc_requested:
         try:
             budget = _whole_doc_budget(rag_scope, conversation)
-            whole = whole_document_context(scope_thread_id=thread_id, max_tokens=budget)
+            whole = whole_document_context(scope_thread_id = thread_id, max_tokens = budget)
         except Exception as exc:  # noqa: BLE001
             logger.warning("RAG whole-document context failed: %s", exc)
             whole = None
@@ -11896,10 +11882,10 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
             if project_id:
                 try:
                     proj = search_for_autoinject(
-                        query=query,
-                        scope_project_id=project_id,
-                        top_k=top_k,
-                        min_dense_score=floor,
+                        query = query,
+                        scope_project_id = project_id,
+                        top_k = top_k,
+                        min_dense_score = floor,
                         **_scope_retrieval_kwargs(rag_scope),
                     )
                 except Exception as exc:  # noqa: BLE001
@@ -11943,8 +11929,8 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
             rendered = render_sources(kept)
         return (rendered, kept) if _fits(rendered, max_tokens) else None
 
-    def retrieve(*, max_tokens=None, **scope):
-        found = search_for_autoinject(query=query, top_k=top_k, **scope)
+    def retrieve(*, max_tokens = None, **scope):
+        found = search_for_autoinject(query = query, top_k = top_k, **scope)
         return _trim(found[0], found[1], max_tokens) if found else None
 
     # An oversized thread attachment is mandatory grounding: with auto-injection
@@ -11956,9 +11942,9 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
         try:
             if whole_doc_requested and not enabled:
                 found = retrieve(
-                    max_tokens=budget,
-                    scope_thread_id=thread_id,
-                    min_dense_score=None,
+                    max_tokens = budget,
+                    scope_thread_id = thread_id,
+                    min_dense_score = None,
                     **_scope_retrieval_kwargs(rag_scope),
                 )
                 project_id = rag_scope.get("project_id")
@@ -11968,8 +11954,8 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
                     # below into discarding thread grounding already in hand.
                     try:
                         proj = retrieve(
-                            scope_project_id=project_id,
-                            min_dense_score=floor,
+                            scope_project_id = project_id,
+                            min_dense_score = floor,
                             **_scope_retrieval_kwargs(rag_scope),
                         )
                     except Exception as exc:  # noqa: BLE001
@@ -11983,10 +11969,10 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
                         found = _trim(render_sources(merged), merged, budget) or found
             else:
                 found = retrieve(
-                    scope_kb_id=rag_scope.get("kb_id"),
-                    scope_thread_id=thread_id,
-                    scope_project_id=rag_scope.get("project_id"),
-                    min_dense_score=floor,
+                    scope_kb_id = rag_scope.get("kb_id"),
+                    scope_thread_id = thread_id,
+                    scope_project_id = rag_scope.get("project_id"),
+                    min_dense_score = floor,
                     **_scope_retrieval_kwargs(rag_scope),
                 )
         except Exception as exc:  # noqa: BLE001
@@ -12000,12 +11986,12 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
         return None
 
     built = build_synthetic_search_exchange(
-        tool_name="search_knowledge_base",
-        call_prefix="rag_auto_",
-        status_label="Searching documents",
-        query=query,
-        text=text,
-        sources=sources,
+        tool_name = "search_knowledge_base",
+        call_prefix = "rag_auto_",
+        status_label = "Searching documents",
+        query = query,
+        text = text,
+        sources = sources,
     )
     logger.info("RAG auto-inject: %d passage(s) for %r", len(sources), query[:80])
     return built
@@ -12107,7 +12093,7 @@ def _extract_pdf_text(data: bytes) -> str:
     """Extract page-delimited text with the same parser used by RAG ingestion."""
     from ..rag.parsers import parse_pdf_bytes
 
-    pages, total_pages = parse_pdf_bytes(data, max_pages=_MAX_WEB_PDF_PAGES)
+    pages, total_pages = parse_pdf_bytes(data, max_pages = _MAX_WEB_PDF_PAGES)
     page_limit_reached = total_pages > _MAX_WEB_PDF_PAGES
     parts: list[str] = []
     length = 0
@@ -12178,7 +12164,7 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
         # TLS handshake with the real hostname for SNI + cert verification.
         self.sock = self._context.wrap_socket(
             self.sock,
-            server_hostname=self._sni_hostname,
+            server_hostname = self._sni_hostname,
         )
 
 
@@ -12191,7 +12177,7 @@ class _SNIHTTPSHandler(urllib.request.HTTPSHandler):
     """
 
     def __init__(self, hostname: str):
-        super().__init__(context=_tls_ctx)
+        super().__init__(context = _tls_ctx)
         self._sni_hostname = hostname
 
     def https_open(self, req):
@@ -12199,7 +12185,7 @@ class _SNIHTTPSHandler(urllib.request.HTTPSHandler):
 
     def _sni_connection(self, host, **kwargs):
         kwargs["context"] = _tls_ctx
-        return _PinnedHTTPSConnection(host, sni_hostname=self._sni_hostname, **kwargs)
+        return _PinnedHTTPSConnection(host, sni_hostname = self._sni_hostname, **kwargs)
 
 
 def _explicit_proxy_applies(scheme: str, host: str) -> bool:
@@ -12237,7 +12223,7 @@ def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str
     import socket
 
     try:
-        infos = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+        infos = socket.getaddrinfo(hostname, port, type = socket.SOCK_STREAM)
     except (OSError, UnicodeError) as e:
         # IDNA encoding rejects a hostname with UnicodeError, not OSError.
         return False, f"Failed to resolve host: {e}", ""
@@ -12407,7 +12393,7 @@ def _resolve_with_budget(hostname, port, deadline, cancel_event):
     if deadline is None and cancel_event is None:
         return _validate_and_resolve_host(hostname, port)
 
-    result: "queue.Queue" = queue.Queue(maxsize=1)
+    result: "queue.Queue" = queue.Queue(maxsize = 1)
 
     def _resolve():
         try:
@@ -12415,13 +12401,13 @@ def _resolve_with_budget(hostname, port, deadline, cancel_event):
         except Exception as exc:  # defensive: never let the worker die silently
             result.put((False, f"Failed to resolve host: {exc}", ""))
 
-    threading.Thread(target=_resolve, name="web-fetch-dns", daemon=True).start()
+    threading.Thread(target = _resolve, name = "web-fetch-dns", daemon = True).start()
     while True:
         budget_error = _fetch_budget_exceeded(deadline, cancel_event)
         if budget_error is not None:
             return False, budget_error, ""
         try:
-            return result.get(timeout=0.05)
+            return result.get(timeout = 0.05)
         except queue.Empty:
             continue
 
@@ -12510,7 +12496,7 @@ def _normalize_url_scheme(url: str) -> str:
     else:
         rest = url
 
-    authority = re.split(r"[/?#]", rest, maxsplit=1)[0]
+    authority = re.split(r"[/?#]", rest, maxsplit = 1)[0]
     host, _, port = authority.partition(":")
     if not _DOTTED_HOST_RE.fullmatch(host):
         return url
@@ -12524,7 +12510,7 @@ def _fetch_url_raw(
     timeout: int = 30,
     extra_headers: dict | None = None,
     deadline: float | None = None,
-    cancel_event=None,
+    cancel_event = None,
     website_policy: dict | None = None,
     raw_bytes_max: int | None = None,
 ) -> tuple[str | None, "str | bytes", str]:
@@ -12582,9 +12568,9 @@ def _fetch_url_raw(
             cp = urlparse(current_url)
             # http.client rejects a non-ASCII selector outright.
             cp = cp._replace(
-                path=quote(cp.path, safe=_IRI_PATH_SAFE),
-                params=quote(cp.params, safe=_IRI_PATH_SAFE),
-                query=quote(cp.query, safe=_IRI_QUERY_SAFE),
+                path = quote(cp.path, safe = _IRI_PATH_SAFE),
+                params = quote(cp.params, safe = _IRI_PATH_SAFE),
+                query = quote(cp.query, safe = _IRI_QUERY_SAFE),
             )
             # Bracket IPv6 so the netloc stays a valid URL.
             validated_netloc = f"[{current_host}]" if ":" in current_host else current_host
@@ -12597,12 +12583,12 @@ def _fetch_url_raw(
             if os.environ.get(_DISABLE_DNS_PINNING_ENV) == "1" and proxied:
                 # Enterprise proxies need the hostname in CONNECT for policy and TLS
                 # interception, and they resolve it, so nothing rebinds behind us.
-                request_url = urlunparse(cp._replace(netloc=validated_netloc))
+                request_url = urlunparse(cp._replace(netloc = validated_netloc))
             else:
                 # Pin to the validated IP to prevent DNS rebinding.
                 ip_str = f"[{pinned_ip}]" if ":" in pinned_ip else pinned_ip
                 ip_netloc = f"{ip_str}:{cp.port}" if cp.port else ip_str
-                request_url = urlunparse(cp._replace(netloc=ip_netloc))
+                request_url = urlunparse(cp._replace(netloc = ip_netloc))
 
             handlers = [_NoRedirect, _SNIHTTPSHandler(current_host)]
             if not proxied:
@@ -12616,11 +12602,11 @@ def _fetch_url_raw(
             }
             if extra_headers:
                 headers.update(extra_headers)
-            req = urllib.request.Request(request_url, headers=headers)
+            req = urllib.request.Request(request_url, headers = headers)
             try:
                 # Cap the socket timeout at the time left on the overall deadline
                 # so a single slow hop cannot outlast the whole fetch budget.
-                resp = opener.open(req, timeout=_fetch_hop_timeout(timeout, deadline))
+                resp = opener.open(req, timeout = _fetch_hop_timeout(timeout, deadline))
             except _HTTPError as e:
                 if e.code not in (301, 302, 303, 307, 308):
                     return f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}", "", ""
@@ -12749,7 +12735,7 @@ def _fetch_url_raw(
             (codec for bom, codec in _UNICODE_BOM_CODECS if raw_bytes.startswith(bom)),
             None,
         )
-        raw_html = raw_bytes.decode(declared or bom_codec or "utf-8", errors="replace")
+        raw_html = raw_bytes.decode(declared or bom_codec or "utf-8", errors = "replace")
 
         # Catch mislabeled or unlabeled binary, including valid UTF-8 controls.
         if _looks_binary(raw_html):
@@ -12850,7 +12836,6 @@ def _loaded_context_tokens() -> int | None:
     """
     try:
         from routes.inference import get_llama_cpp_backend  # noqa: PLC0415
-
         llama = get_llama_cpp_backend()
         if getattr(llama, "is_loaded", False):
             ctx = getattr(llama, "context_length", None)
@@ -13129,7 +13114,7 @@ def _neutralized_for_prompt(chunk: str, llama) -> str:
         content = swept[0].get("content") if swept else None
         return content if isinstance(content, str) else chunk
     except Exception:  # noqa: BLE001 -- measuring is never fatal
-        logger.debug("result budget: markup sweep failed", exc_info=True)
+        logger.debug("result budget: markup sweep failed", exc_info = True)
         return chunk
 
 
@@ -13226,15 +13211,15 @@ def _loaded_token_counter(ctx: int):
         rendered = False
         if retained and not template_down:
             try:
-                spent = counter(message, None, None, strict=True)
+                spent = counter(message, None, None, strict = True)
                 rendered = True
             except Exception:  # noqa: BLE001 -- not fatal: the fallback still prices bytes
                 template_down.append(True)
         if not rendered:
             try:
-                spent = counter(message, None, None, strict=False)
+                spent = counter(message, None, None, strict = False)
             except Exception:  # noqa: BLE001 -- now it is: fall back to the estimate
-                logger.debug("result budget: exact count failed", exc_info=True)
+                logger.debug("result budget: exact count failed", exc_info = True)
                 return None
         value = int(spent) if isinstance(spent, (int, float)) and spent > 0 else None
         # The fallback's count is USED, exactly as before -- it still tokenizes the real
@@ -13410,7 +13395,7 @@ def _text_token_cost(text: str, ctx: int) -> float:
             spent = counter(text)
             measured = None if spent is None else float(spent)
         except Exception:
-            logger.debug("token count failed", exc_info=True)
+            logger.debug("token count failed", exc_info = True)
     if measured is not None:
         return measured
     # A counter that could not answer is a counter that is not there: taking its presence
@@ -13514,7 +13499,7 @@ def _fetch_page_text(
     # before any model is loaded, which is exactly when the window is still unknown.
     max_chars: int | None = None,
     timeout: int = 30,
-    cancel_event=None,
+    cancel_event = None,
     website_policy: dict | None = None,
 ) -> str:
     """Fetch a URL and return readable text content.
@@ -13544,13 +13529,13 @@ def _fetch_page_text(
     if readme_api_url:
         err, body, _ctype = _fetch_url_raw(
             readme_api_url,
-            timeout=timeout,
-            extra_headers={
+            timeout = timeout,
+            extra_headers = {
                 "Accept": "application/vnd.github.raw+json",
                 "X-GitHub-Api-Version": "2022-11-28",
             },
-            deadline=deadline,
-            cancel_event=cancel_event,
+            deadline = deadline,
+            cancel_event = cancel_event,
             **policy_kwargs,
         )
         # The README API is unauthenticated and rate-limited; on any failure fall
@@ -13564,8 +13549,7 @@ def _fetch_page_text(
             # a block tag is kept as-is (see _HTML_DOCUMENT_RE).
             if _looks_like_html_document(body):
                 from ._html_to_md import html_to_markdown
-
-                converted = html_to_markdown(body, main_content=True)
+                converted = html_to_markdown(body, main_content = True)
                 readme_body = converted if converted.strip() else body
             if readme_body.strip():
                 return _truncate_page_text(
@@ -13575,9 +13559,9 @@ def _fetch_page_text(
 
     err, body, content_type = _fetch_url_raw(
         url,
-        timeout=timeout,
-        deadline=deadline,
-        cancel_event=cancel_event,
+        timeout = timeout,
+        deadline = deadline,
+        cancel_event = cancel_event,
         **policy_kwargs,
     )
     if err is not None:
@@ -13595,7 +13579,7 @@ def _fetch_page_text(
     # Convert HTML to Markdown with the builtin converter (no external deps).
     from ._html_to_md import html_to_markdown
 
-    return _truncate_page_text(html_to_markdown(body, main_content=True), max_chars)
+    return _truncate_page_text(html_to_markdown(body, main_content = True), max_chars)
 
 
 def _search_failure_message(exc: BaseException, timeout: int) -> str:
@@ -13634,9 +13618,9 @@ def _image_search_or_none(subjects: list, timeout, cancel_event, website_policy)
     try:
         return _image_search(
             subjects,
-            timeout=timeout,
-            cancel_event=cancel_event,
-            website_policy=website_policy,
+            timeout = timeout,
+            cancel_event = cancel_event,
+            website_policy = website_policy,
         )
     except Exception as exc:  # noqa: BLE001 - a garnish must not become the answer
         logger.debug("image lookup failed (%s)", type(exc).__name__)
@@ -13671,10 +13655,10 @@ def _web_search(
     max_results: int = 5,
     timeout: int = _EXEC_TIMEOUT,
     url: str | None = None,
-    cancel_event=None,
+    cancel_event = None,
     website_policy: dict | None = None,
     include_images: bool = False,
-    image_queries=None,
+    image_queries = None,
 ) -> str:
     """Search the web and return formatted results.
 
@@ -13690,9 +13674,9 @@ def _web_search(
         fetch_timeout = 60 if timeout is None else min(timeout, 60)
         return _fetch_page_text(
             url.strip(),
-            timeout=fetch_timeout,
-            cancel_event=cancel_event,
-            website_policy=website_policy,
+            timeout = fetch_timeout,
+            cancel_event = cancel_event,
+            website_policy = website_policy,
         )
 
     subjects = _clean_image_queries(image_queries)
@@ -13727,8 +13711,8 @@ def _web_search(
             (website_policy or {}).get(key) for key in ("allowedDomains", "blockedDomains")
         )
         wanted = max_results * _POLICY_OVERFETCH if restricted else max_results
-        client = DDGS(timeout=timeout)
-        results = client.text(effective_query, max_results=wanted)
+        client = DDGS(timeout = timeout)
+        results = client.text(effective_query, max_results = wanted)
         if cancel_event is not None and cancel_event.is_set():
             return "Search cancelled."
         if not results:
@@ -13828,7 +13812,7 @@ def _clean_image_queries(queries) -> list[str]:
 def _image_search(
     queries,
     timeout: int = _EXEC_TIMEOUT,
-    cancel_event=None,
+    cancel_event = None,
     website_policy: dict | None = None,
 ) -> str:
     # One lookup per subject, concurrently; same registry and tokens as web_search.
@@ -13855,10 +13839,10 @@ def _image_search(
         # A client per call: ddgs instances are not documented thread-safe.
         try:
             return list(
-                DDGS(timeout=timeout).images(
+                DDGS(timeout = timeout).images(
                     scope_search_query(subject, website_policy),
-                    max_results=IMAGE_SEARCH_PER_QUERY * 4,
-                    safesearch="moderate",
+                    max_results = IMAGE_SEARCH_PER_QUERY * 4,
+                    safesearch = "moderate",
                 )
                 or []
             )
@@ -13866,7 +13850,7 @@ def _image_search(
             logger.debug("image lookup skipped %r (%s)", subject, type(exc).__name__)
             return []
 
-    with ThreadPoolExecutor(max_workers=len(cleaned)) as pool:
+    with ThreadPoolExecutor(max_workers = len(cleaned)) as pool:
         raw_by_subject = list(pool.map(lookup, cleaned))
     if cancel_event is not None and cancel_event.is_set():
         return "Search cancelled."
@@ -13877,9 +13861,9 @@ def _image_search(
         entries = register_images(
             raw,
             website_policy,
-            max_images=IMAGE_SEARCH_PER_QUERY,
-            subject=subject,
-            expected_generation=expected_generation,
+            max_images = IMAGE_SEARCH_PER_QUERY,
+            subject = subject,
+            expected_generation = expected_generation,
         )
         if not entries:
             sections.append(f"{subject}: no image found")
@@ -13919,7 +13903,7 @@ def _web_search_images_suffix(client, query, wanted, cancel_event, website_polic
     expected_generation = cache_generation()
     try:
         raw = images_fn(
-            query, max_results=max(wanted, MAX_IMAGES_PER_SEARCH * 2), safesearch="moderate"
+            query, max_results = max(wanted, MAX_IMAGES_PER_SEARCH * 2), safesearch = "moderate"
         )
     except Exception as exc:  # noqa: BLE001 - optional extra; the text results stand on their own
         logger.debug("web_search image lookup skipped (%s)", type(exc).__name__)
@@ -13927,7 +13911,7 @@ def _web_search_images_suffix(client, query, wanted, cancel_event, website_polic
     if cancel_event is not None and cancel_event.is_set():
         return ""
     entries = register_images(
-        list(raw or []), website_policy, expected_generation=expected_generation
+        list(raw or []), website_policy, expected_generation = expected_generation
     )
     if not entries:
         return ""
@@ -14178,7 +14162,7 @@ def _check_signal_escape_patterns(code: str):
             return
         string_bindings[name] = value
 
-    def _extract_string_literal(node, _depth=0):
+    def _extract_string_literal(node, _depth = 0):
         """Strict literal-string extraction: no name binding lookup,
         no ``os.path.join`` resolution. Used at sites where conservative
         "dynamic means allow" behaviour is required for non-regression
@@ -14239,7 +14223,7 @@ def _check_signal_escape_patterns(code: str):
             return "".join(parts)
         return None
 
-    def _extract_string_from_node(node, _depth=0):
+    def _extract_string_from_node(node, _depth = 0):
         """Extract a plain string value from an AST node when it can be
         resolved statically.
 
@@ -14617,7 +14601,12 @@ def _check_signal_escape_patterns(code: str):
         }
     )
 
-    def _extract_pathlib_target(node, path_aliases, pathlib_aliases, _depth=0):
+    def _extract_pathlib_target(
+        node,
+        path_aliases,
+        pathlib_aliases,
+        _depth = 0,
+    ):
         """Statically resolve a pathlib expression to its target path
         string, or None if any subpart is not resolvable.
 
@@ -14999,7 +14988,7 @@ def _check_signal_escape_patterns(code: str):
                         )
                     else:
                         try:
-                            inner_tree = ast.parse(payload, mode="exec")
+                            inner_tree = ast.parse(payload, mode = "exec")
                         except SyntaxError:
                             inner_tree = None
                         if inner_tree is not None:
@@ -15895,7 +15884,7 @@ def _check_signal_escape_patterns(code: str):
                             )
                         else:
                             try:
-                                inner_tree = ast.parse(payload, mode="exec")
+                                inner_tree = ast.parse(payload, mode = "exec")
                             except SyntaxError:
                                 inner_tree = None
                             if inner_tree is not None:
@@ -16413,7 +16402,6 @@ def _adopt_tool_pid(pid: "int | None") -> None:
         return
     try:
         from utils.process_lifetime import adopt_pid
-
         adopt_pid(pid)
     except Exception:
         pass
@@ -16428,7 +16416,6 @@ def _forget_tool_pid(proc) -> None:
         if getattr(proc, "poll", lambda: None)() is None:
             return
         from utils.process_lifetime import forget_pid
-
         forget_pid(pid)
     except Exception:
         pass
@@ -16500,7 +16487,7 @@ def _windows_job_capture(proc) -> "_WindowsToolJob | None":
         from ctypes import wintypes
 
         H, BOOL, UINT = wintypes.HANDLE, wintypes.BOOL, wintypes.UINT
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
         # Explicit widths: without them ctypes truncates a 64-bit handle to
         # c_int and every call silently works on a bogus one.
         kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
@@ -16531,7 +16518,6 @@ def _windows_pid_identity(pid: int) -> "str | None":
         return None
     try:
         from utils.process_lifetime import _pid_identity
-
         return _pid_identity(pid)
     except Exception:
         return None
@@ -16554,9 +16540,9 @@ def _windows_taskkill_tree(pid: int, identity: "str | None" = None) -> bool:
     try:
         completed = subprocess.run(
             ["taskkill", "/PID", str(pid), "/T", "/F"],
-            capture_output=True,
-            timeout=15,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            capture_output = True,
+            timeout = 15,
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except (OSError, subprocess.SubprocessError):
         return False
@@ -16626,8 +16612,8 @@ def _killpg_captured(pgid) -> None:
 def _cancel_watcher(
     proc,
     cancel_event,
-    poll_interval=0.2,
-    pgid=None,
+    poll_interval = 0.2,
+    pgid = None,
 ):
     """Daemon thread that kills a process when cancel_event is set.
 
@@ -16654,7 +16640,7 @@ def _appended_by_the_loop(text: str) -> float:
     try:
         from .tool_call_parser import TOOL_ERROR_NUDGE, TOOL_ERROR_PREFIXES  # noqa: PLC0415
     except Exception:  # noqa: BLE001 -- an unpriced nudge, not a failed tool call
-        logger.debug("result budget: tool error nudge unavailable", exc_info=True)
+        logger.debug("result budget: tool error nudge unavailable", exc_info = True)
         return 0.0
     if not text.startswith(TOOL_ERROR_PREFIXES):
         return 0.0
@@ -16785,7 +16771,7 @@ def _truncate(
     return head + common + f" -- continue with:\n  {resume})" + hint
 
 
-def _fit_result_to_room(text, name=None):
+def _fit_result_to_room(text, name = None):
     """Cap a tool that does not cap its own output, when this request priced its room.
 
     `python` and `terminal` truncate against this same budget before they return, so this
@@ -16831,7 +16817,7 @@ def _split_frontend_suffix(text: str, name: "str | None") -> "tuple[str, str]":
     try:
         body = strip_result_for_model(text, name)
     except Exception:
-        logger.debug("frontend suffix split failed", exc_info=True)
+        logger.debug("frontend suffix split failed", exc_info = True)
         return text, ""
     # It only ever strips a suffix, so the remainder is the exact bytes that were removed
     # (including whatever whitespace the strip rstripped away).
@@ -16948,7 +16934,6 @@ def _spill_records_dir() -> str:
     """
     try:
         from utils.paths.storage_roots import studio_root  # noqa: PLC0415
-
         return os.path.join(str(studio_root()), "tool-output-records")
     except Exception:
         return os.path.join(
@@ -16998,7 +16983,7 @@ def _own_spill_root(root: str) -> bool:
             if not existed:
                 if os.path.exists(root):
                     return False
-                os.makedirs(root, exist_ok=True)
+                os.makedirs(root, exist_ok = True)
             identity = _spill_identity(root)
             if identity is None:
                 return False
@@ -17007,12 +16992,12 @@ def _own_spill_root(root: str) -> bool:
                 if existed and os.listdir(root):
                     # Not ours and not empty, so it came with the sandbox.
                     return False
-                os.makedirs(_spill_records_dir(), exist_ok=True)
-                _write_spill_manifest(root, {}, identity=identity)
+                os.makedirs(_spill_records_dir(), exist_ok = True)
+                _write_spill_manifest(root, {}, identity = identity)
                 recorded = identity
             return recorded == identity
     except OSError:
-        logger.debug("tool result spill ownership check failed", exc_info=True)
+        logger.debug("tool result spill ownership check failed", exc_info = True)
         return False
 
 
@@ -17057,8 +17042,8 @@ def _write_spill_file(target_dir: str, name: str, body: str) -> "str | None":
             with os.fdopen(
                 os.open(tmp, flags | getattr(os, "O_NOFOLLOW", 0), 0o600),
                 "w",
-                encoding="utf-8",
-                newline="",
+                encoding = "utf-8",
+                newline = "",
             ) as handle:
                 handle.write(body)
             installed = os.path.join(target_dir, name)
@@ -17066,7 +17051,7 @@ def _write_spill_file(target_dir: str, name: str, body: str) -> "str | None":
             _quiet_unlink(tmp)
             return _spill_stamp(installed)
         except OSError:
-            logger.debug("tool result spill write failed", exc_info=True)
+            logger.debug("tool result spill write failed", exc_info = True)
             _quiet_unlink(tmp)
             return None
     dir_fd = None
@@ -17074,34 +17059,34 @@ def _write_spill_file(target_dir: str, name: str, body: str) -> "str | None":
     try:
         dir_fd = os.open(target_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         with os.fdopen(
-            os.open(tmp_name, flags, 0o600, dir_fd=dir_fd), "w", encoding="utf-8", newline=""
+            os.open(tmp_name, flags, 0o600, dir_fd = dir_fd), "w", encoding = "utf-8", newline = ""
         ) as handle:
             handle.write(body)
         # `os.link` rather than a rename: rename replaces the destination silently on
         # POSIX, and the name may have been taken since the caller looked. link fails with
         # EEXIST instead, which is the answer this wants.
-        os.link(tmp_name, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
-        _quiet_unlink(tmp_name, dir_fd=dir_fd)
+        os.link(tmp_name, name, src_dir_fd = dir_fd, dst_dir_fd = dir_fd)
+        _quiet_unlink(tmp_name, dir_fd = dir_fd)
         # Through the same descriptor, so it is the file just linked rather than whatever
         # the name resolves to by the time this returns.
-        stat = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+        stat = os.stat(name, dir_fd = dir_fd, follow_symlinks = False)
         return ":".join(
             str(part)
             for part in (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
         )
     except OSError:
-        logger.debug("tool result spill write failed", exc_info=True)
+        logger.debug("tool result spill write failed", exc_info = True)
         if dir_fd is not None:
-            _quiet_unlink(tmp_name, dir_fd=dir_fd)
+            _quiet_unlink(tmp_name, dir_fd = dir_fd)
         return None
     finally:
         if dir_fd is not None:
             os.close(dir_fd)
 
 
-def _quiet_unlink(path: str, dir_fd=None) -> None:
+def _quiet_unlink(path: str, dir_fd = None) -> None:
     try:
-        os.unlink(path, dir_fd=dir_fd) if dir_fd is not None else os.unlink(path)
+        os.unlink(path, dir_fd = dir_fd) if dir_fd is not None else os.unlink(path)
     except OSError:
         pass
 
@@ -17200,7 +17185,7 @@ def _spill_record(root: str) -> "tuple[str | None, dict[str, tuple[str, str]]]":
     retains too much rather than deleting something that was never ours.
     """
     try:
-        with open(_spill_record_path(root), encoding="utf-8") as handle:
+        with open(_spill_record_path(root), encoding = "utf-8") as handle:
             lines = handle.read().splitlines()
     except OSError:
         return None, {}
@@ -17232,11 +17217,11 @@ def _write_spill_manifest(
     if identity is None:
         identity = _spill_record(root)[0]
     path = _spill_record_path(root)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    os.makedirs(os.path.dirname(path), exist_ok = True)
     tmp = None
     try:
-        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".tmp-record-")
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        fd, tmp = tempfile.mkstemp(dir = os.path.dirname(path), prefix = ".tmp-record-")
+        with os.fdopen(fd, "w", encoding = "utf-8") as handle:
             handle.write(f"{_SPILL_RECORD_HEADER}{identity or ''}\n")
             for name in sorted(entries):
                 stamp, digest = entries[name]
@@ -17261,10 +17246,10 @@ def _record_spill(root: str, relative: str, stamp: str, digest: str) -> None:
     """
     try:
         with _spill_lock(root):
-            with open(_spill_record_path(root), "a", encoding="utf-8") as handle:
+            with open(_spill_record_path(root), "a", encoding = "utf-8") as handle:
                 handle.write(f"{relative}\t{stamp}\t{digest}\n")
     except OSError:
-        logger.debug("tool result spill record append failed", exc_info=True)
+        logger.debug("tool result spill record append failed", exc_info = True)
 
 
 def _spill_scope(session_id: "str | None", thread_id: "str | None") -> "str | None":
@@ -17340,7 +17325,7 @@ def _spill_full_output(
             for n in range(len(relative.split("/")))
         ):
             return None, True
-        os.makedirs(target_dir, exist_ok=True)
+        os.makedirs(target_dir, exist_ok = True)
         expected = os.path.join(os.path.realpath(workdir), *relative.split("/"))
         if os.path.realpath(target_dir) != expected:
             return None, True
@@ -17403,7 +17388,7 @@ def _spill_full_output(
         # the absolute sandbox path never reaches the model.
         return f"{relative}/{name}", complete
     except Exception:
-        logger.debug("tool result spill failed", exc_info=True)
+        logger.debug("tool result spill failed", exc_info = True)
         return None, True
 
 
@@ -17539,7 +17524,7 @@ def _prune_spills(target_dir: str, root: "str | None" = None) -> None:
         with _spill_lock(root):
             _prune_spills_locked(target_dir, root)
     except Exception:
-        logger.debug("tool result spill prune failed", exc_info=True)
+        logger.debug("tool result spill prune failed", exc_info = True)
 
 
 def _prune_spills_locked(target_dir: str, root: str) -> None:
@@ -17551,7 +17536,7 @@ def _prune_spills_locked(target_dir: str, root: str) -> None:
         removed = set()
         # Newest first within this scope, so the count keeps the ones still being paged.
         for extra in sorted(
-            _spill_files(root, target_dir, owned), key=os.path.getmtime, reverse=True
+            _spill_files(root, target_dir, owned), key = os.path.getmtime, reverse = True
         )[_SPILL_KEEP:]:
             if _unlink_verified_spill(root, extra, owned):
                 removed.add(extra)
@@ -17562,7 +17547,7 @@ def _prune_spills_locked(target_dir: str, root: str) -> None:
             if os.path.isdir(scope) and not os.path.islink(scope):
                 everything.extend(p for p in _spill_files(root, scope, owned) if p not in removed)
         kept, total = 0, 0
-        for path in sorted(everything, key=os.path.getmtime, reverse=True):
+        for path in sorted(everything, key = os.path.getmtime, reverse = True):
             try:
                 size = os.path.getsize(path)
             except OSError:
@@ -17595,7 +17580,7 @@ def _prune_spills_locked(target_dir: str, root: str) -> None:
                 except OSError:
                     pass
     except Exception:
-        logger.debug("tool result spill prune failed", exc_info=True)
+        logger.debug("tool result spill prune failed", exc_info = True)
 
 
 # ChatGPT code-interpreter path conventions models write out of habit; none
@@ -17696,9 +17681,9 @@ def _drain_process_output(
     proc,
     timeout,
     output_callback,
-    cancel_event=None,
+    cancel_event = None,
     *,
-    pgid=None,
+    pgid = None,
 ) -> tuple[str, bool]:
     """``proc.communicate(timeout=...)`` equivalent that also streams each
     stdout line to ``output_callback`` as it is produced.
@@ -17726,16 +17711,16 @@ def _drain_process_output(
                     try:
                         output_callback(line)
                     except Exception:  # noqa: BLE001 - observer must never kill the tool
-                        logger.debug("tool output_callback raised", exc_info=True)
+                        logger.debug("tool output_callback raised", exc_info = True)
         except (ValueError, OSError):
             pass  # pipe closed during kill
 
-    reader = threading.Thread(target=_reader, daemon=True)
+    reader = threading.Thread(target = _reader, daemon = True)
     reader.start()
     started_at = time.monotonic()
     timed_out = False
     try:
-        proc.wait(timeout=timeout)
+        proc.wait(timeout = timeout)
     except subprocess.TimeoutExpired:
         timed_out = True
         _kill_process_tree(proc)
@@ -17744,7 +17729,7 @@ def _drain_process_output(
         # stdout-holding grandchild (matches the non-streaming timeout path).
         _killpg_captured(pgid)
         try:
-            proc.wait(timeout=5)
+            proc.wait(timeout = 5)
         except subprocess.TimeoutExpired:
             pass
     # A grandchild that inherited stdout can hold the pipe open past the main
@@ -17765,7 +17750,7 @@ def _drain_process_output(
                 if cancel_event is not None and cancel_event.is_set():
                     _killpg_captured(pgid)
                     break
-                reader.join(timeout=min(0.5, remaining))
+                reader.join(timeout = min(0.5, remaining))
         else:
             # Unlimited timeout: drain until the pipe closes (like
             # communicate(timeout=None)), stopping early only on cancellation.
@@ -17773,8 +17758,8 @@ def _drain_process_output(
                 if cancel_event is not None and cancel_event.is_set():
                     _killpg_captured(pgid)
                     break
-                reader.join(timeout=0.5)
-    reader.join(timeout=5)
+                reader.join(timeout = 0.5)
+    reader.join(timeout = 5)
     return "".join(chunks), timed_out
 
 
@@ -17842,7 +17827,7 @@ def _content_key(path: str, size: int) -> "str | None":
     if size > _MAX_HASHED_SNAPSHOT_BYTES:
         return None
     try:
-        digest = hashlib.blake2b(digest_size=16)
+        digest = hashlib.blake2b(digest_size = 16)
         with open(path, "rb") as handle:
             for chunk in iter(lambda: handle.read(1024 * 1024), b""):
                 digest.update(chunk)
@@ -18084,11 +18069,11 @@ def _created_file_sentinels(
 
 def _python_exec(
     code: str,
-    cancel_event=None,
+    cancel_event = None,
     timeout: int = _EXEC_TIMEOUT,
     session_id: str | None = None,
     disable_sandbox: bool = False,
-    output_callback=None,
+    output_callback = None,
     thread_id: str | None = None,
 ) -> str:
     """Execute Python code in a subprocess sandbox.
@@ -18138,13 +18123,13 @@ def _python_exec(
     try:
         # In the workdir: Python puts it on sys.path[0], so an earlier call's
         # helper.py stays importable and __file__ resolves inside the sandbox.
-        fd, tmp_path = tempfile.mkstemp(suffix=".py", prefix="studio_exec_", dir=workdir)
+        fd, tmp_path = tempfile.mkstemp(suffix = ".py", prefix = "studio_exec_", dir = workdir)
         # utf-8 so non-ASCII in model-written code survives the OS default codec
         # (Windows cp1252 would otherwise raise UnicodeEncodeError).
         _scratch_name = os.path.basename(tmp_path)
         with _scratch_lock:
             _active_scratch.add(_scratch_name)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        with os.fdopen(fd, "w", encoding = "utf-8") as f:
             f.write(code)
 
         safe_env = _build_bypass_env(workdir) if disable_sandbox else _build_safe_env(workdir)
@@ -18153,15 +18138,15 @@ def _python_exec(
             safe_env = dict(safe_env)
             safe_env["PYTHONIOENCODING"] = "utf-8"
         popen_kwargs = dict(
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
+            text = True,
             # Decode child output as utf-8 (it emits utf-8 via PYTHONIOENCODING);
             # replace so non-ASCII output never crashes the read on Windows.
-            encoding="utf-8",
-            errors="replace",
-            cwd=workdir,
-            env=safe_env,
+            encoding = "utf-8",
+            errors = "replace",
+            cwd = workdir,
+            env = safe_env,
         )
         if sys.platform != "win32":
             popen_kwargs["preexec_fn"] = _bypass_preexec if disable_sandbox else _sandbox_preexec
@@ -18181,9 +18166,9 @@ def _python_exec(
 
         if cancel_event is not None:
             watcher = threading.Thread(
-                target=_cancel_watcher,
-                args=(proc, cancel_event, 0.2, pgid),
-                daemon=True,
+                target = _cancel_watcher,
+                args = (proc, cancel_event, 0.2, pgid),
+                daemon = True,
             )
             watcher.start()
 
@@ -18192,7 +18177,7 @@ def _python_exec(
         # outlived the leader, and returns bytes identical to communicate() so
         # the streaming vs non-streaming result stays byte-identical.
         output, timed_out = _drain_process_output(
-            proc, timeout, output_callback, cancel_event, pgid=pgid
+            proc, timeout, output_callback, cancel_event, pgid = pgid
         )
         # A run that wrote its file and then hung still produced that file, so
         # report it: `printf data > report.csv; sleep 999` is downloadable.
@@ -18226,7 +18211,7 @@ def _python_exec(
         # is not an envelope.
         result = _defuse_sentinels(result)
         result = (
-            _truncate(result, workdir=spill_dir, scope=spill_scope, hint=hint)
+            _truncate(result, workdir = spill_dir, scope = spill_scope, hint = hint)
             if result.strip()
             else "(no output)" + hint
         )
@@ -18258,11 +18243,11 @@ def _python_exec(
 
 def _bash_exec(
     command: str,
-    cancel_event=None,
+    cancel_event = None,
     timeout: int = _EXEC_TIMEOUT,
     session_id: str | None = None,
     disable_sandbox: bool = False,
-    output_callback=None,
+    output_callback = None,
     thread_id: str | None = None,
 ) -> str:
     """Execute a bash command in a subprocess sandbox.
@@ -18318,16 +18303,16 @@ def _bash_exec(
         _before = _snapshot_workdir_files(workdir)
         safe_env = _build_bypass_env(workdir) if disable_sandbox else _build_safe_env(workdir)
         popen_kwargs = dict(
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
+            text = True,
             # Match _python_exec: decode utf-8 with "replace" so invalid output
             # bytes never raise UnicodeDecodeError (which the streaming reader
             # thread would swallow), keeping both paths byte-identical.
-            encoding="utf-8",
-            errors="replace",
-            cwd=workdir,
-            env=safe_env,
+            encoding = "utf-8",
+            errors = "replace",
+            cwd = workdir,
+            env = safe_env,
         )
         if sys.platform != "win32":
             popen_kwargs["preexec_fn"] = _bypass_preexec if disable_sandbox else _sandbox_preexec
@@ -18343,9 +18328,9 @@ def _bash_exec(
 
         if cancel_event is not None:
             watcher = threading.Thread(
-                target=_cancel_watcher,
-                args=(proc, cancel_event, 0.2, pgid),
-                daemon=True,
+                target = _cancel_watcher,
+                args = (proc, cancel_event, 0.2, pgid),
+                daemon = True,
             )
             watcher.start()
 
@@ -18353,7 +18338,7 @@ def _bash_exec(
         # captured group on cancellation and returns bytes identical to
         # communicate(), keeping streaming vs non-streaming byte-identical.
         output, timed_out = _drain_process_output(
-            proc, timeout, output_callback, cancel_event, pgid=pgid
+            proc, timeout, output_callback, cancel_event, pgid = pgid
         )
         # A run that wrote its file and then hung still produced that file, so
         # report it: `printf data > report.csv; sleep 999` is downloadable.
@@ -18375,7 +18360,7 @@ def _bash_exec(
         hint = _missing_path_hint(result, workdir)
         result = _defuse_sentinels(result)  # before the fit; see _python_exec
         result = (
-            _truncate(result, workdir=spill_dir, scope=spill_scope, hint=hint)
+            _truncate(result, workdir = spill_dir, scope = spill_scope, hint = hint)
             if result.strip()
             else "(no output)" + hint
         )

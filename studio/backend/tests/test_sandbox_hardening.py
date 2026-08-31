@@ -175,9 +175,9 @@ class TestPatchB_FindSensitivePathsHomeAnchored:
         ],
     )
     def test_legitimate_allowed(self, cmd):
-        assert not _find_sensitive_paths(cmd), (
-            f"expected to allow (would dumbify tool calling): {cmd!r}"
-        )
+        assert not _find_sensitive_paths(
+            cmd
+        ), f"expected to allow (would dumbify tool calling): {cmd!r}"
 
 
 class TestPatchB_FindSensitivePathsAbsolute:
@@ -222,9 +222,9 @@ class TestPatchB_FindSensitivePathsAbsolute:
         ],
     )
     def test_legitimate_absolute_allowed(self, cmd):
-        assert not _find_sensitive_paths(cmd), (
-            f"expected to allow (would dumbify tool calling): {cmd!r}"
-        )
+        assert not _find_sensitive_paths(
+            cmd
+        ), f"expected to allow (would dumbify tool calling): {cmd!r}"
 
 
 class TestPatchB_PythonShellExec:
@@ -538,9 +538,9 @@ class TestFinding7_NetworkHostStaticResolver:
         ],
     )
     def test_dynamic_trusted_host_allowed(self, code):
-        assert not _is_blocked(code), (
-            f"regression: trusted host with dynamic literal blocked: {code!r}"
-        )
+        assert not _is_blocked(
+            code
+        ), f"regression: trusted host with dynamic literal blocked: {code!r}"
 
 
 class TestFinding8_PathlibPathOpen:
