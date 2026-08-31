@@ -10333,7 +10333,6 @@ def test_the_two_seed_helpers_agree_on_which_seeds_are_random():
 
 
 class TestPassthroughImageNormalization:
-
     @staticmethod
     def _data_url(fmt: str) -> str:
         from io import BytesIO
