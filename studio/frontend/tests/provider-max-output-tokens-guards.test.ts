@@ -92,6 +92,8 @@ test("older OpenAI families carry their documented output cap", () => {
   // clamping, so every family under the 32,768 fallback needs a row. The 4,096
   // pair is also under the 8,192 in DEFAULT_INFERENCE_PARAMS, so those two
   // would fail on an untouched config.
+  // The bare `gpt-4` row is last, so this also pins the ordering: every more
+  // specific gpt-4.x family must keep its own cap rather than fall into 8,192.
   const caps: Array<[string, number]> = [
     ["gpt-3.5-turbo", 4096],
     ["gpt-3.5-turbo-16k", 4096],
@@ -99,17 +101,14 @@ test("older OpenAI families carry their documented output cap", () => {
     ["gpt-4-turbo-preview", 4096],
     ["gpt-4o", 16384],
     ["gpt-4o-mini", 16384],
+    ["gpt-4.5-preview", 16384],
+    ["gpt-4.1", 32768],
+    ["gpt-4.1-mini", 32768],
+    ["gpt-4", 8192],
   ];
   for (const [modelId, cap] of caps) {
     assert.equal(getExternalMaxOutputTokens("openai", modelId), cap);
-    assert.equal(getExternalMaxOutputTokens("openai", modelId, 32768), cap);
-  }
-  // The `gpt-4-turbo` and `gpt-4o` prefixes must not shadow these.
-  for (const modelId of ["gpt-4.1", "gpt-4.5-preview"]) {
-    assert.equal(
-      getExternalMaxOutputTokens("openai", modelId),
-      EXTERNAL_MAX_OUTPUT_TOKENS,
-    );
+    assert.equal(getExternalMaxOutputTokens("openai", modelId, 128000), cap);
   }
 });
 
@@ -117,7 +116,7 @@ test("a model with no documented cap takes the connection override", () => {
   // the reported case: a router id no capability row matches pinned at 32,768
   const undocumented: Array<[string, string | null]> = [
     ["openrouter", "minimax/minimax-m3"],
-    ["openai", "gpt-4.1"],
+    ["openai", "o3"],
     ["vllm", "some/local-model"],
     ["ollama", null],
     [LEGACY_CUSTOM_PROVIDER_TYPE, "any-model"],

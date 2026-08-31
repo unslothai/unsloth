@@ -100,16 +100,20 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
   { providerType: "openai", prefixes: ["gpt-5.3"], cap: 16384 },
   // Older families the picker now surfaces. The Responses API rejects an
   // over-limit max_output_tokens instead of clamping it, so a Max Tokens above
-  // the cap fails the request. 4,096 is under the 8,192 in
+  // the cap fails the request; 4,096 is under the 8,192 in
   // DEFAULT_INFERENCE_PARAMS, so those two fail on an untouched config.
-  // `gpt-4o` also covers gpt-4o-mini, which has the same cap. gpt-4.1 and
-  // gpt-4.5 need no row: their caps are the 32,768 fallback or above.
+  // Order matters here: the first matching prefix wins, so every gpt-4.x
+  // family needs its own row ahead of the bare `gpt-4` one, which would
+  // otherwise swallow all of them.
+  { providerType: "openai", prefixes: ["gpt-4.1"], cap: 32768 },
+  { providerType: "openai", prefixes: ["gpt-4.5"], cap: 16384 },
   { providerType: "openai", prefixes: ["gpt-4o"], cap: 16384 },
   {
     providerType: "openai",
     prefixes: ["gpt-3.5-turbo", "gpt-4-turbo"],
     cap: 4096,
   },
+  { providerType: "openai", prefixes: ["gpt-4"], cap: 8192 },
   // Anthropic
   {
     providerType: "anthropic",
