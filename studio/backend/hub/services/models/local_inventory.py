@@ -784,13 +784,26 @@ def _scan_custom_folder(
     # loose root payloads one by one so the exact file remains a loadable row even when the same
     # folder holds several checkpoints. The capability gate excludes adapters, Transformers
     # shards, and other rows that already carry architecture/runtime evidence.
-    root_candidates = [
-        model
-        for checkpoint in sorted(folder_path.iterdir(), key = lambda path: path.name.lower())
-        if checkpoint.is_file() and checkpoint.suffix.lower() == ".safetensors"
-        for model in _classify_local_path(checkpoint, "models_dir")
-        if _is_inert_safetensors(model)
-    ]
+    root_has_architecture_evidence = any(
+        (folder_path / name).is_file()
+        for name in (
+            "config.json",
+            "adapter_config.json",
+            "model_index.json",
+            "modular_model_index.json",
+        )
+    )
+    root_candidates = (
+        []
+        if root_has_architecture_evidence
+        else [
+            model
+            for checkpoint in sorted(folder_path.iterdir(), key = lambda path: path.name.lower())
+            if checkpoint.is_file() and checkpoint.suffix.lower() == ".safetensors"
+            for model in _classify_local_path(checkpoint, "models_dir")
+            if _is_inert_safetensors(model)
+        ]
+    )
 
     generic = root_candidates + [
         m

@@ -926,6 +926,7 @@ function VideoGenerator({
   // The recipe a pick optimistically claimed, until status confirms it or a failed load reverts
   // it. Without this the Default preset would read as "modified" for the whole download.
   const [pendingModelDefaults, setPendingModelDefaults] = useState<{
+    repoId: string;
     steps: number;
     guidance: number;
   } | null>(null);
@@ -1346,7 +1347,7 @@ function VideoGenerator({
       const claimedAt = videoFormClaimId();
       pickRecipeSuperseded.current = () => videoFormClaimId() !== claimedAt;
       const recommended = defaultsFor(repoId, familyOverride);
-      setPendingModelDefaults(recommended);
+      setPendingModelDefaults({ ...recommended, repoId });
       setSteps(recommended.steps);
       setGuidance(recommended.guidance);
       if (revert) {
@@ -3224,11 +3225,19 @@ function VideoGenerator({
         value={familyOverride}
         onValueChange={(v) => {
           setFamilyOverride(v);
-          if (v !== "auto") {
-            const d = defaultsFor("", v);
-            setSteps(d.steps);
-            setGuidance(d.guidance);
-          }
+          const recipeRepoId =
+            pendingModelDefaults?.repoId ??
+            status?.repo_id ??
+            status?.base_repo ??
+            lastLoad.current?.repoId ??
+            "";
+          const d =
+            v === "auto"
+              ? defaultsFor(recipeRepoId)
+              : defaultsFor("", v);
+          setPendingModelDefaults({ ...d, repoId: recipeRepoId });
+          setSteps(d.steps);
+          setGuidance(d.guidance);
         }}
         options={VIDEO_FAMILY_OPTIONS}
       />

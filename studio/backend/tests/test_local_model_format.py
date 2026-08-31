@@ -500,6 +500,19 @@ def test_custom_inventory_keeps_file_rows_in_a_multi_checkpoint_registration(tmp
     }
 
 
+def test_custom_inventory_does_not_detach_weights_from_parent_config(tmp_path):
+    """A configured Transformers root must not manufacture an inert loose-file candidate."""
+    from hub.services.models.local_inventory import _scan_custom_folder
+
+    root = tmp_path / "transformers-model"
+    _touch(root / "config.json")
+    weight = _touch(root / "model.safetensors")
+
+    rows = _scan_custom_folder(root)
+
+    assert all(Path(row.path) != weight for row in rows)
+
+
 def test_custom_inventory_keeps_configless_safetensors_shards_unknown(tmp_path):
     """The override fallback must not turn an arbitrary component/shard directory into a model."""
     from hub.services.models.local_inventory import _scan_custom_folder

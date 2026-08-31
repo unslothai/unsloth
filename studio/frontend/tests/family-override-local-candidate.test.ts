@@ -62,6 +62,11 @@ test("an explicit family surfaces only unclassified local safetensors", () => {
     false,
     "the modular H3 workflow cannot load a lone checkpoint",
   );
+  assert.equal(
+    isFamilyOverrideLocalCandidate(opaqueSafetensors, true, "wan2.2-t2v-a14b"),
+    false,
+    "the dual-expert Wan pipeline cannot load one checkpoint",
+  );
 });
 
 test("image and video family selectors opt all local inventories into the narrow fallback", () => {
@@ -97,10 +102,25 @@ test("image and video family selectors opt all local inventories into the narrow
     "LM Studio, ./models, and custom-folder rows must use the same fallback",
   );
   assert.equal(
-    picker.split("Boolean(task) || m.capabilities?.canChat !== false").length - 1,
+    picker.match(
+      /Boolean\(task\) \|\|\s*Boolean\(m\.task\) \|\|\s*m\.capabilities\?\.canChat !== false/g,
+    )?.length ?? 0,
     3,
-    "architecture-less rows stay out of chat while task-scoped media overrides may admit them",
+    "known media tasks stay routable from Chat while taskless inert rows remain hidden",
   );
+
+  for (const page of [
+    "../src/features/images/images-page.tsx",
+    "../src/features/video/video-page.tsx",
+  ]) {
+    const source = readFileSync(new URL(page, import.meta.url), "utf8");
+    const familyHandler = source.slice(
+      source.indexOf('label="Family"'),
+      source.indexOf("options=", source.indexOf('label="Family"')),
+    );
+    assert.match(familyHandler, /v === "auto"/);
+    assert.match(familyHandler, /pendingModelDefaults\?\.repoId/);
+  }
 
   const inventory = readFileSync(
     new URL(

@@ -20,8 +20,12 @@ export function isFamilyOverrideLocalCandidate(
   familyOverride?: string | null,
 ): boolean {
   const family = familyOverride?.trim().toLowerCase();
-  const supportsSingleFile =
-    family !== "ideogram-4" && family !== "minimax-h3" && family !== "h3";
+  const supportsSingleFile = ![
+    "ideogram-4",
+    "minimax-h3",
+    "h3",
+    "wan2.2-t2v-a14b",
+  ].includes(family ?? "");
   return (
     allowUnknownLocalModels &&
     supportsSingleFile &&

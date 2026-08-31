@@ -3888,7 +3888,7 @@ export function HubModelPicker({
         lmStudioModels.filter(
           (m) =>
             filesystemRowsSupportedForTask(task, m.task) &&
-            (Boolean(task) || m.capabilities?.canChat !== false) &&
+            (Boolean(task) || Boolean(m.task) || m.capabilities?.canChat !== false) &&
             // The same speech gate the cached GGUF rows get: a CSM file found in LM
             // Unsloth, ./models or a scan folder is just as undecodable, and routing it to
             // Audio evicts the chat model before the row is reported unsupported.
@@ -3943,7 +3943,7 @@ export function HubModelPicker({
         localDirModels.filter(
           (m) =>
             filesystemRowsSupportedForTask(task, m.task) &&
-            (Boolean(task) || m.capabilities?.canChat !== false) &&
+            (Boolean(task) || Boolean(m.task) || m.capabilities?.canChat !== false) &&
             // The same speech gate the cached GGUF rows get: a CSM file found in LM
             // Unsloth, ./models or a scan folder is just as undecodable, and routing it to
             // Audio evicts the chat model before the row is reported unsupported.
@@ -4001,7 +4001,7 @@ export function HubModelPicker({
         customFolderModels.filter(
           (m) =>
             filesystemRowsSupportedForTask(task, m.task) &&
-            (Boolean(task) || m.capabilities?.canChat !== false) &&
+            (Boolean(task) || Boolean(m.task) || m.capabilities?.canChat !== false) &&
             // The same speech gate the cached GGUF rows get: a CSM file found in LM
             // Unsloth, ./models or a scan folder is just as undecodable, and routing it to
             // Audio evicts the chat model before the row is reported unsupported.
