@@ -2972,6 +2972,20 @@ html[data-chat-font] .aui-root {
 	background: oklch(0.72 0 0 / 0.4);
 }
 
+/* Chromium ignores ::-webkit-scrollbar styling while scrollbar-width/color are
+   set; on Windows reset both (:hover too, or it flips back) to restore it. */
+@supports selector(::-webkit-scrollbar) {
+	:root.client-windows .sidebar-scroll-fade,
+	:root.client-windows .sidebar-scroll-fade:hover,
+	:root.client-windows .run-settings-scroll,
+	:root.client-windows .run-settings-scroll:hover,
+	:root.client-windows .hover-scrollbar,
+	:root.client-windows .hover-scrollbar:hover {
+		scrollbar-width: auto;
+		scrollbar-color: auto;
+	}
+}
+
 /* Run settings: always reserve the scrollbar gutter so the header close
    button keeps its position whether or not the scrollbar is showing. */
 .run-settings-scroll {

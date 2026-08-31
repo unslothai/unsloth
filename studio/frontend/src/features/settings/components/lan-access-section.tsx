@@ -75,8 +75,9 @@ function AccessStatus({ status }: { status: LanAccessStatus | null }) {
   );
 }
 
-function CopyLanUrlButton({ url }: { url: string }) {
+function CopyLanUrlButton({ url, label }: { url: string; label: string }) {
   const [copied, setCopied] = useState(false);
+  const text = copied ? "Copied" : label;
   const copyTimer = useRef<number | null>(null);
   useEffect(() => {
     return () => {
@@ -91,7 +92,7 @@ function CopyLanUrlButton({ url }: { url: string }) {
       size="sm"
       variant="outline"
       className="gap-1.5"
-      aria-label={`Copy ${url}`}
+      aria-label={`${text} ${url}`}
       onClick={async () => {
         if (!(await copyToClipboard(url))) {
           return;
@@ -107,7 +108,7 @@ function CopyLanUrlButton({ url }: { url: string }) {
         icon={copied ? Tick02Icon : Copy01Icon}
         className="size-3.5"
       />
-      {copied ? "Copied" : "Copy"}
+      {text}
     </Button>
   );
 }
@@ -116,7 +117,13 @@ function LanUrlQrButton({ url }: { url: string }) {
   return (
     <Dialog>
       <DialogTrigger asChild={true}>
-        <Button type="button" size="sm" variant="outline" className="gap-1.5">
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="gap-1.5"
+          aria-label={`Show QR code for ${url}`}
+        >
           <HugeiconsIcon icon={QrCodeIcon} className="size-3.5" />
           QR
         </Button>
@@ -161,25 +168,36 @@ function StatusMessage({
   );
 }
 
+function LanUrlActions({ url, copyLabel }: { url: string; copyLabel: string }) {
+  return (
+    <div className="flex shrink-0 items-center gap-2">
+      <LanUrlQrButton url={url} />
+      <CopyLanUrlButton url={url} label={copyLabel} />
+    </div>
+  );
+}
+
 function LanUrlPanel({ status }: { status: LanAccessStatus | null }) {
   if (!status || status.urls.length === 0) {
     return null;
   }
-  const [primary] = status.urls;
+  const single = status.urls.length === 1;
   return (
     <div className="flex flex-col gap-1.5 border-t border-border/60 p-4">
       <div className="flex items-center justify-between gap-3">
         <span className="text-sm font-medium text-foreground">
-          {status.urls.length > 1 ? "Network addresses" : "Network address"}
+          {single ? "Network address" : "Network addresses"}
         </span>
-        <LanUrlQrButton url={primary} />
+        {single ? (
+          <LanUrlActions url={status.urls[0]} copyLabel="Copy URL" />
+        ) : null}
       </div>
       {status.urls.map((url) => (
         <div key={url} className="flex items-center gap-2">
           <code className="block w-full min-w-0 break-all rounded-md border border-border bg-muted/40 px-3 py-2 font-mono text-xs text-foreground">
             {url}
           </code>
-          <CopyLanUrlButton url={url} />
+          {single ? null : <LanUrlActions url={url} copyLabel="Copy" />}
         </div>
       ))}
       {status.publicUrls.length > 0 ? (
@@ -298,10 +316,7 @@ export function LanAccessSection() {
   const setAutoStart = (enabled: boolean) =>
     perform("auto", () => updateLanAccessAutoStart(enabled));
 
-  const blockMessage = lanAccessBlockMessage(
-    status?.blockReason ?? null,
-    isTauri,
-  );
+  const blockMessage = lanAccessBlockMessage(status, isTauri);
   const errorMessage = lanAccessErrorMessage(status?.error ?? null);
   const stopAction = status?.state === "online";
   const actionDisabled =

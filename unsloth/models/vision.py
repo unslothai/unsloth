@@ -43,6 +43,7 @@ from ._utils import (
     set_task_config_attr,
 )
 from ._utils import *
+from ._custom_dtype import resolve_dtype, trusted_custom_dtype
 from .loader_utils import (
     DEFAULT_DEVICE_MAP,
     OFFLOAD_EMBEDDING_AUTO,
@@ -151,6 +152,150 @@ def _infer_device_map_from_loaded_model(model):
     return device_map
 
 
+def _repair_dispatch_hooks(model):
+    """Give a dispatched module its hook back after the load replaced it.
+
+    `dispatch_model` hooks every map entry; what drops the hook is our own
+    `post_patch` -> `patch_model_and_tokenizer`, which installs a NEW Embedding
+    and Linear over the same weights, so `_hf_hook` dies with the old module.
+    Not tied-specific: `tie_word_embeddings = False` fails identically.
+    Unrepaired, a split model raises `index is on cuda:0, different from other
+    tensors on cuda:1` at the first embedding lookup.
+    """
+    device_map = getattr(model, "hf_device_map", None)
+    if not device_map or len(set(device_map.values())) < 2:
+        return 0
+    try:
+        from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+    except ImportError:
+        return 0
+
+    # dispatch passes the model's skip keys, and sets io_same_device on the ROOT
+    # only; setting it on a submodule copies every result back and forth.
+    skip_keys = getattr(model, "_skip_keys_device_placement", None)
+    io_same_device = not hasattr(model, "_hf_hook")
+
+    targets = {name: device for name, device in device_map.items() if name}
+
+    # A coarse map covers an endpoint through an ANCESTOR and dispatch hooks it
+    # anyway, so iterating keys alone misses the rebuilt one. Endpoints only:
+    # repairing every covered descendant would hook thousands that never lost one.
+    for get in ("get_input_embeddings", "get_output_embeddings"):
+        try:
+            replaced = getattr(model, get, lambda: None)()
+        except Exception:
+            continue  # a model that cannot answer is not one to guess about
+        if replaced is None or hasattr(replaced, "_hf_hook"):
+            continue
+        name = next(
+            (n for n, m in model.named_modules() if m is replaced and n),
+            None,
+        )
+        if name is None or name in targets:
+            continue
+        covering = [
+            key for key in device_map if not key or name == key or name.startswith(key + ".")
+        ]
+        if covering:
+            targets[name] = device_map[max(covering, key = len)]
+
+    repaired = 0
+    for name, device in targets.items():
+        try:
+            module = model.get_submodule(name)
+        except AttributeError:
+            continue  # a name this build does not have; not ours to invent
+        if hasattr(module, "_hf_hook"):
+            continue
+        execution_device = (
+            f"{DEVICE_TYPE_TORCH}:{device}"
+            if isinstance(device, int) and not isinstance(device, bool)
+            else device
+        )
+        # `.type`, not `==`: a map may carry `torch.device("cpu", 0)`.
+        device_kind = (
+            execution_device.type
+            if isinstance(execution_device, torch.device)
+            else str(execution_device)
+        )
+        if device_kind in ("cpu", "disk"):
+            continue  # offload is a different mechanism, and has its own hooks
+        try:
+            add_hook_to_module(
+                module,
+                AlignDevicesHook(
+                    execution_device = execution_device,
+                    io_same_device = io_same_device,
+                    skip_keys = skip_keys,
+                ),
+            )
+        except Exception as exc:
+            warnings.warn(
+                f"Unsloth: could not re-attach a dispatch hook to {name!r} on "
+                f"{execution_device} ({type(exc).__name__}: {exc}). Training a "
+                "model split across devices may fail at the first tensor that "
+                "crosses one.",
+                RuntimeWarning,
+                stacklevel = 2,
+            )
+            continue
+        repaired += 1
+    return repaired
+
+
+def _lift_endpoint_hooks_onto_adapters(model):
+    """After PEFT wraps a repaired endpoint, lift its hook onto the wrapper.
+
+    The hook wraps the module's OWN forward, so it moves the input inside
+    `base_layer(x)`; `lora.Linear.forward` then feeds the CALLER's `x` to
+    `lora_A` (casting dtype, not device), whose weights PEFT placed on the base
+    layer's device. Split across cards, the adapter branch raises where the base
+    call did not. peft 0.20.0.
+    """
+    try:
+        from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+    except ImportError:
+        return 0
+
+    lifted = 0
+    for get in ("get_input_embeddings", "get_output_embeddings"):
+        try:
+            wrapper = getattr(model, get, lambda: None)()
+        except Exception:
+            continue  # a model that cannot answer is not one to guess about
+        if wrapper is None:
+            continue
+
+        if hasattr(wrapper, "_hf_hook"):
+            continue
+        base = getattr(wrapper, "base_layer", None)
+        hook = getattr(base, "_hf_hook", None) if base is not None else None
+        if hook is None or getattr(hook, "execution_device", None) is None:
+            continue  # not a wrapped endpoint, or one dispatch never placed
+        try:
+            add_hook_to_module(
+                wrapper,
+                AlignDevicesHook(
+                    execution_device = hook.execution_device,
+                    io_same_device = False,
+                    skip_keys = getattr(hook, "skip_keys", None),
+                ),
+            )
+        except Exception as exc:
+            warnings.warn(
+                f"Unsloth: could not lift the dispatch hook onto the adapter "
+                f"wrapping {get}() on {hook.execution_device} "
+                f"({type(exc).__name__}: {exc}). Training an adapter that "
+                "targets the embeddings on a split model may fail at the first "
+                "tensor that crosses a device.",
+                RuntimeWarning,
+                stacklevel = 2,
+            )
+            continue
+        lifted += 1
+    return lifted
+
+
 def _attach_bnb_multidevice_hooks(
     model, load_in_4bit, load_in_8bit, offload_embedding, fast_inference
 ):
@@ -161,6 +306,15 @@ def _attach_bnb_multidevice_hooks(
     """
     if fast_inference:
         return
+    # Before the bnb gate: the rebuild happens whatever the quantization. Not under
+    # offload, where `_embedding_dispatch_device` READS this hook to place the ids.
+    if not offload_embedding:
+        repaired = _repair_dispatch_hooks(model)
+        if repaired:
+            logger.info(
+                f"Unsloth: re-attached dispatch hooks to {repaired} module(s) "
+                "the load left unhooked, so a split model runs and trains."
+            )
     is_bnb = (
         load_in_4bit
         or load_in_8bit
@@ -1142,11 +1296,13 @@ class FastBaseModel:
         # Check for custom data-types
         custom_datatype = None
         correct_dtype = None
-        if os.environ.get("UNSLOTH_FORCE_CUSTOM_DTYPE", "") != "":
-            custom_datatype = os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"]
-            assert custom_datatype.count(";") >= 4
+        # `custom_datatype` has to stay None when unset: the consumer below tests
+        # `is not None` and would walk every module of every model to `exec("")`.
+        _raw_custom_dtype, _code_is_trusted = trusted_custom_dtype()
+        if _raw_custom_dtype != "":
+            assert _raw_custom_dtype.count(";") >= 4
             checker, _dtype, _bnb_compute_dtype, _custom_datatype, execute_code = (
-                custom_datatype.split(";", 4)
+                _raw_custom_dtype.split(";", 4)
             )
             # Allow custom dtypes on all runs
             allow_all_runs = checker == "all"
@@ -1155,15 +1311,27 @@ class FastBaseModel:
                 dtype == torch.float16 or os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
             )
             if allow_all_runs or allow_float16_runs:
-                if eval(_dtype) is not None:
-                    dtype = eval(_dtype)
-                if eval(_bnb_compute_dtype) is not None:
-                    bnb_compute_dtype = eval(_bnb_compute_dtype)
+                # A table lookup, not eval: these fields NAME a dtype.
+                _resolved_dtype = resolve_dtype(_dtype)
+                if _resolved_dtype is not None:
+                    dtype = _resolved_dtype
+                _resolved_bnb_compute_dtype = resolve_dtype(_bnb_compute_dtype)
+                if _resolved_bnb_compute_dtype is not None:
+                    bnb_compute_dtype = _resolved_bnb_compute_dtype
                 correct_dtype = bnb_compute_dtype
-                custom_datatype = _custom_datatype
-                # Execute code as well
-                if len(execute_code.strip()) != 0:
-                    exec(execute_code)
+                # The last two fields are code, run only when this process set the
+                # variable; an inherited environment picks dtypes but injects nothing.
+                if _code_is_trusted:
+                    custom_datatype = _custom_datatype
+                    # Execute code as well
+                    if len(execute_code.strip()) != 0:
+                        exec(execute_code)
+                else:
+                    logger.warning(
+                        "Unsloth: Ignoring the code in `UNSLOTH_FORCE_CUSTOM_DTYPE` "
+                        "because it was not set by Unsloth."
+                    )
+                    custom_datatype = None
             else:
                 custom_datatype = None
                 correct_dtype = None
@@ -1978,6 +2146,26 @@ class FastBaseModel:
         _mark_loaded_revision(tokenizer, _tokenizer_revision)
         model = _mark_forced_float32(model, do_forced_float32)
         model = _mark_full_finetuning(model, full_finetuning)
+
+        # LAST, for the reason the llama loader repairs last: the attach above
+        # runs during the load, and `patch_model_and_tokenizer` further down
+        # REPLACES the embedding and lm_head with freshly built modules, which
+        # carry the weights over but not the `_hf_hook`. A model this loader
+        # split across cards would otherwise still meet the original
+        # cross-device `index_select`. Idempotent, so the earlier attach stands.
+        if not fast_inference and not offload_embedding:
+            try:
+                _repaired = _repair_dispatch_hooks(model)
+                if _repaired:
+                    logger.info(
+                        f"Unsloth: re-attached dispatch hooks to {_repaired} module(s) "
+                        "the patching pass left unhooked, so the model trains."
+                    )
+            except Exception as _exc:
+                logger.warning(
+                    f"Unsloth: could not check the dispatch hooks "
+                    f"({type(_exc).__name__}: {_exc})."
+                )
         return _mark_requested_float32(model, user_float32), tokenizer
 
     @staticmethod
@@ -2276,6 +2464,18 @@ class FastBaseModel:
             _LoraModel._create_and_replace = _patched_car
 
         model = _get_peft_model(model, lora_config)
+
+        # PEFT may have wrapped an endpoint this load repaired; the hook stays on
+        # `base_layer` and the adapter branch reads the caller's tensor.
+        try:
+            _lifted = _lift_endpoint_hooks_onto_adapters(model)
+            if _lifted:
+                logger.info(
+                    f"Unsloth: lifted dispatch hooks onto {_lifted} adapter-wrapped "
+                    "embedding module(s), so a split model trains them."
+                )
+        except Exception as _exc:
+            logger.warning_once(f"Unsloth: could not lift adapter hooks: {_exc}")
 
         # Restore original PEFT method
         if _clippable_linear_cls is not None:

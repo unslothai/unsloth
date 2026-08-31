@@ -234,9 +234,15 @@ def cached_xet_health(**kwargs: Any) -> Any:
 
     Capability reads use this path so opening Hub cannot initialize Unsloth Zoo. A real
     download calls :func:`xet_health`, which loads the optional module and populates this cache.
+
+    Read without ``_load_lock`` on purpose. Taking it made this "already loaded?" question wait
+    on whatever import another thread was holding it for -- a torch-loading `import unsloth_zoo`
+    that runs for seconds -- so the one path guaranteed never to load Zoo was the one blocked by
+    loading it. A dict lookup keyed by a plain string is atomic under the GIL, and the only
+    writers publish a fully-built module (or ``None``) in a single assignment, so the worst
+    outcome is reading the pre-import value and correctly answering "not loaded yet".
     """
-    with _load_lock:
-        module = _optional_modules.get("unsloth_zoo.hf_xet_health", _UNTRIED)
+    module = _optional_modules.get("unsloth_zoo.hf_xet_health", _UNTRIED)
     return None if module is _UNTRIED else _xet_health_from(module, **kwargs)
 
 
