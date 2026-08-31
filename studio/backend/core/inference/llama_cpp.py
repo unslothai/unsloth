@@ -5169,10 +5169,8 @@ def _build_ngram_mod_flags(
     real (vs a removal-stub). Returns ``[]`` when neither is available so
     the caller can drop ngram-mod entirely.
 
-    Legacy binaries use the generic ``--draft-min`` and ``--draft-max``
-    names for ngram-mod. A chained MTP invocation owns those same names,
-    so omit the pair rather than clobbering the MTP draft depth or creating
-    an inverted range.
+    ``chain_with_mtp`` omits the legacy ``--draft-min``/``--draft-max`` pair,
+    which a chained MTP invocation owns and would otherwise invert.
     """
     flavor = caps.get("ngram_mod_flavor") if caps else None
     if flavor == "new":

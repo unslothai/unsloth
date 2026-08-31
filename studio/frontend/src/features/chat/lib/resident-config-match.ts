@@ -313,11 +313,9 @@ const SETTING_CHECKS: SettingCheck[] = [
         standing.speculativeType),
   },
   {
-    // Pinned like the rest: _runtime_matches_intent now treats the null-against-explicit
-    // flip as a difference, so an unset limit asks for the platform default rather than
-    // for whatever count the resident load was launched with. No spec-mode gate is needed
-    // to match the backend's `draft_depth_matters` arm, because the status carries a count
-    // only when a depth-consuming load recorded the user's own override.
+    // Pinned like the rest: _runtime_matches_intent reloads for the null-against-explicit
+    // flip, so an unset limit asks for the default. No `draft_depth_matters` gate here,
+    // as the status carries a count only when a depth-consuming load recorded an override.
     pinned: () => true,
     agrees: (c, s) => (c.specDraftNMax ?? null) === (s.spec_draft_n_max ?? null),
   },
