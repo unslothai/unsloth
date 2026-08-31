@@ -671,7 +671,9 @@ const DEVICE_TIGHT: FitVerdict = {
 const WONT_FIT: FitVerdict = {
   label: "Does not fit",
   tone: ORANGE,
-  hint: "Needs more VRAM than this device has. This model will not load.",
+  // "memory", not "VRAM": this also carries a diffusion refusal on a shared pool, where the two
+  // are the same bytes and calling it VRAM would read as a different number than the user has.
+  hint: "Needs more memory than this device has. This model will not load.",
 };
 
 /** What each fit verdict marks and says, keyed by the Hub's classes so one question has one
@@ -691,6 +693,25 @@ const VRAM_VERDICT: Record<GgufFitClass | VramFitStatus, FitVerdict | null> = {
   oom: OFFLOADS,
   exceeds: WONT_FIT,
 };
+
+/** Whether a diffusion `oom` is a REFUSAL rather than an offload.
+ *
+ *  On discrete VRAM an oversized pipeline still loads: `diffusion_memory.py` degrades it to group
+ *  or whole-module CPU offload and streams from host RAM. On a shared pool there is nowhere to
+ *  stream from, so `unified_memory_shortfall_message` refuses up front, and the docstring is blunt
+ *  about why: without the refusal the load "allocates past physical memory", with no torch OOM to
+ *  catch because the MPS high-watermark is disabled, so "the failure is the OS killing the process
+ *  with no Python exception".
+ *
+ *  Telling that user the model "still works with offloading" is the worst thing this badge could
+ *  say, so a diffusion oom on a shared pool takes the verdict that means it will not load. */
+function diffusionRefuses(
+  fit: GgufFitClass,
+  diffusionLoad: boolean,
+  sharedMemory: boolean,
+): boolean {
+  return fit === "oom" && diffusionLoad && sharedMemory;
+}
 
 /** The verdicts that read as over budget, which is what dims a row. `marginal` does not: it is
  *  a full GPU load, just without much room to spare. */
@@ -1469,13 +1490,17 @@ function GgufVariantExpander({
   onDevice = false,
   allowPin = false,
   onHasVision,
-  taskScoped = false,
+  diffusionLoad = false,
+  sharedMemory = false,
 }: {
   repoId: string;
   pipelineTag?: string | null;
-  /** True on Images / Video / Audio, where a GGUF is placed by the diffusion backend rather than
-   *  llama-server, so the llama.cpp budget does not apply. */
-  taskScoped?: boolean;
+  /** True on Images / Video, where a GGUF is placed by the diffusion backend rather than
+   *  llama-server, so the llama.cpp budget does not apply. Audio is task-scoped but not this. */
+  diffusionLoad?: boolean;
+  /** The GPU pool is host memory (Apple Silicon, an APU). Only matters for a diffusion load: see
+   *  `diffusionRefuses`. */
+  sharedMemory?: boolean;
   /** Snapshot the cached listing pinned this repo to, if any. */
   loadId?: string | null;
   /** Cache directory this downloaded row represents, if any. */
@@ -1642,7 +1667,7 @@ function GgufVariantExpander({
       // Permissive only when no budget was measured. A known zero Vulkan budget means every
       // non-empty variant is OOM, which classifyGgufFit cannot tell apart from "not probed yet".
       if (!anyBudgetGb) return budgetKnown ? "oom" : "fits";
-      if (taskScoped) {
+      if (diffusionLoad) {
         return classifyMediaGgufFit(sizeBytes, gpuGb ?? 0, systemRamGb ?? 0);
       }
       return classifyGgufFit(sizeBytes, {
@@ -1651,7 +1676,14 @@ function GgufVariantExpander({
         budgetFraction,
       });
     },
-    [budgetKnown, anyBudgetGb, gpuGb, systemRamGb, budgetFraction, taskScoped],
+    [
+      budgetKnown,
+      anyBudgetGb,
+      gpuGb,
+      systemRamGb,
+      budgetFraction,
+      diffusionLoad,
+    ],
   );
 
   const variantGroups = useMemo(
@@ -2023,7 +2055,13 @@ function GgufVariantExpander({
               ) : null}
             </span>
             <span className="flex items-center gap-1.5 shrink-0">
-              <VramBadge status={fit} />
+              <VramBadge
+                status={
+                  diffusionRefuses(fit, diffusionLoad, sharedMemory)
+                    ? "exceeds"
+                    : fit
+                }
+              />
               <span className="font-mono text-ui-10 text-muted-foreground tabular-nums">
                 {companionBytes === null ? (
                   <SizeText value={formatBytes(v.size_bytes)} />
@@ -2210,6 +2248,15 @@ export const VIDEO_GEN_TASKS = [
   "image-to-video",
   "image-text-to-video",
 ] as const;
+
+/** The tasks whose GGUFs are placed by the DIFFUSION backend, which is the only reason a picker
+ *  scores against `classifyMediaGgufFit`. Audio is task-scoped too but does not belong here: its
+ *  GGUFs go to llama.cpp (TTS) or the whisper sidecars (stt_ggml_sidecar.py, stt_mtmd_sidecar.py),
+ *  so scoring them at 70% hid runnable models and picked a smaller quant than needed. */
+const DIFFUSION_TASKS: ReadonlySet<string> = new Set([
+  ...IMAGE_GEN_TASKS,
+  ...VIDEO_GEN_TASKS,
+]);
 
 // Speech pipeline tasks: owned by the Audio page. TTS picks load there rather than into chat; ASR picks map to the dictation sidecar.
 export const AUDIO_GEN_TASKS = [
@@ -2554,6 +2601,12 @@ export function HubModelPicker({
   // rows alone left the parent rows and the "Fits on device" filter scoring against the 0.97
   // default, so lowering the setting moved one and not the other.
   const budgetFraction = useVramBudgetFraction() ?? undefined;
+  // Whether THIS picker's rows load through the diffusion backend. Not `Boolean(task)`: Audio is
+  // task-scoped for the single-device budget but runs its GGUFs under llama.cpp / whisper.
+  const diffusionLoad = useMemo(() => {
+    const tasks = task ? (typeof task === "string" ? [task] : task) : [];
+    return tasks.some((entry) => DIFFUSION_TASKS.has(entry));
+  }, [task]);
   // What the backend actually holds, not the dropdown highlight, which can be a
   // staged pick. The selection alone was wrong: an image or video load evicts
   // the chat model and leaves the pick untouched, so its rows kept the "Loaded"
@@ -3311,7 +3364,7 @@ export function HubModelPicker({
           // Not `&& r.isGguf`: on a task page a safetensors row is placed by the same backend, and
           // this rule IS the budget those rows had before the classifiers were merged. Restricting
           // it to GGUF left this gate disagreeing with searchRowFitsDevice about the same row.
-          mediaLoad: taskScoped,
+          mediaLoad: diffusionLoad,
         }));
     const unslothRows = orderRecommendedRows({
       seeds: catalogSeedRows,
@@ -3333,6 +3386,7 @@ export function HubModelPicker({
     return [...unslothRows, ...communityRows];
   }, [
     budgetFraction,
+    diffusionLoad,
     recommendedSearch.results,
     catalogSeedRows,
     downloadedSet,
@@ -3376,7 +3430,7 @@ export function HubModelPicker({
     const ggufRowFit = (
       sizeBytes: number | undefined,
       budget: typeof inferenceGpu,
-    ): GgufFitClass | null => {
+    ): GgufFitClass | VramFitStatus | null => {
       const anyBudget =
         budget.memoryTotalGb > 0 || budget.systemRamAvailableGb > 0;
       if (!budget.budgetKnown && !anyBudget) return null;
@@ -3386,7 +3440,7 @@ export function HubModelPicker({
       // Images / Video place this GGUF through the diffusion backend, so it takes the same rule
       // its quant rows take. Judging the parent by llama.cpp's budget and the children by the
       // media one let a row read as fitting while everything inside it read as oom.
-      const fit = Boolean(task)
+      const fit = diffusionLoad
         ? classifyMediaGgufFit(
             sizeBytes,
             budget.memoryTotalGb,
@@ -3397,7 +3451,10 @@ export function HubModelPicker({
             systemRamGb: budget.systemRamAvailableGb,
             budgetFraction,
           });
-      return fit === "fits" ? null : fit;
+      if (fit === "fits") return null;
+      return diffusionRefuses(fit, diffusionLoad, gpu.sharedMemory)
+        ? "exceeds"
+        : fit;
     };
     // A curated pipeline loads through torch, and a task load puts the whole thing on ONE
     // device, so it is judged there. inferenceGpu is the GGUF backend's inventory, which can
@@ -3474,6 +3531,7 @@ export function HubModelPicker({
     return map;
   }, [
     budgetFraction,
+    diffusionLoad,
     recommendedSearch.results,
     communityBrowse.results,
     catalogSeedRows,
@@ -4295,12 +4353,16 @@ export function HubModelPicker({
           gpu,
           inferenceGpu,
           taskScoped: Boolean(task),
+          // Separate from taskScoped: that picks the single-device budget for every task page,
+          // this picks the diffusion RULE, which only Images and Video use.
+          diffusionLoad,
           budgetFraction,
         },
       ),
     [
       budgetFraction,
       catalog,
+      diffusionLoad,
       catalogFit,
       gpu,
       inferenceGpu,
@@ -5268,7 +5330,8 @@ export function HubModelPicker({
         </div>
         {expanderOpen && (
           <GgufVariantExpander
-            taskScoped={Boolean(task)}
+            diffusionLoad={diffusionLoad}
+            sharedMemory={gpu.sharedMemory}
             repoId={c.repo_id}
             pipelineTag={c.task ?? null}
             loadId={c.load_id}
@@ -6160,7 +6223,8 @@ export function HubModelPicker({
                               !isDirectGguf &&
                               isGgufExpanded(m.id) && (
                                 <GgufVariantExpander
-                                  taskScoped={Boolean(task)}
+                                  diffusionLoad={diffusionLoad}
+                                  sharedMemory={gpu.sharedMemory}
                                   repoId={m.id}
                                   onDevice={true}
                                   onSelect={onSelect}
@@ -6304,7 +6368,8 @@ export function HubModelPicker({
                             </div>
                             {isGguf && !isGgufFile && isGgufExpanded(m.id) && (
                               <GgufVariantExpander
-                                taskScoped={Boolean(task)}
+                                diffusionLoad={diffusionLoad}
+                                sharedMemory={gpu.sharedMemory}
                                 repoId={m.id}
                                 onDevice={true}
                                 onSelect={onSelect}
@@ -6433,11 +6498,12 @@ export function HubModelPicker({
                             </div>
                             {isGguf && !isGgufFile && isGgufExpanded(m.id) && (
                               <GgufVariantExpander
-                                taskScoped={Boolean(task)}
+                                diffusionLoad={diffusionLoad}
+                                sharedMemory={gpu.sharedMemory}
                                 repoId={m.id}
                                 onDevice={true}
                                 onSelect={onSelect}
-                              resolveDownloadFootprint={resolveDownloadFootprint}
+                                resolveDownloadFootprint={resolveDownloadFootprint}
                                 onConfigure={onConfigure}
                                 parentOptionKey={optionKey}
                                 onNavigatePastStart={() =>
@@ -6527,7 +6593,8 @@ export function HubModelPicker({
                             />
                             {expandedGguf === id && (
                               <GgufVariantExpander
-                                taskScoped={Boolean(task)}
+                                diffusionLoad={diffusionLoad}
+                                sharedMemory={gpu.sharedMemory}
                                 repoId={id}
                                 pipelineTag={pipelineTagById.get(id) ?? null}
                                 onSelect={onSelect}
@@ -6650,11 +6717,12 @@ export function HubModelPicker({
                           />
                           {expandedGguf === id && (
                             <GgufVariantExpander
-                              taskScoped={Boolean(task)}
+                              diffusionLoad={diffusionLoad}
+                              sharedMemory={gpu.sharedMemory}
                               repoId={id}
                               pipelineTag={pipelineTagById.get(id) ?? null}
                               onSelect={onSelect}
-                                resolveDownloadFootprint={resolveDownloadFootprint}
+                              resolveDownloadFootprint={resolveDownloadFootprint}
                               onConfigure={onConfigure}
                               hfToken={hfToken || undefined}
                               parentOptionKey={optionKey}
@@ -6764,7 +6832,8 @@ export function HubModelPicker({
                             />
                             {expandedGguf === id && (
                               <GgufVariantExpander
-                                taskScoped={Boolean(task)}
+                                diffusionLoad={diffusionLoad}
+                                sharedMemory={gpu.sharedMemory}
                                 repoId={id}
                                 pipelineTag={pipelineTagById.get(id) ?? null}
                                 onSelect={onSelect}

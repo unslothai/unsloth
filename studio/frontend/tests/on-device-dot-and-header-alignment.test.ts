@@ -126,7 +126,10 @@ test("one fit badge, so a colour or reveal change cannot miss a list", () => {
   assert.ok(!PICKERS.includes(">\n        OOM\n"), "no OOM text pill left");
   // Variant rows hand the classifier's verdict straight to the badge, with no second mapping
   // between them to drift.
-  assert.ok(PICKERS.includes("<VramBadge status={fit} />"));
+  assert.match(
+    PICKERS,
+    /<VramBadge\n\s*status=\{\n\s*diffusionRefuses\(fit, diffusionLoad, sharedMemory\)/,
+  );
   assert.equal(
     PICKERS.split("<VramBadge status={vramStatus} revealOnHover={!selected} />")
       .length - 1,
@@ -163,17 +166,26 @@ test("chat and the Hub answer the fit question with one formula", () => {
   assert.ok(CATALOG.includes("export function classifyMediaGgufFit("));
   assert.match(
     PICKERS,
-    /if \(taskScoped\) \{\n\s*return classifyMediaGgufFit\(/,
+    /if \(diffusionLoad\) \{\n\s*return classifyMediaGgufFit\(/,
   );
+  // Diffusion tasks only. Audio is task-scoped too but runs its GGUFs under llama.cpp (TTS) and
+  // the whisper sidecars (ASR), so scoring it at 70% hid runnable models and shrank the quant.
+  assert.ok(PICKERS.includes("const DIFFUSION_TASKS: ReadonlySet<string>"));
+  assert.match(PICKERS, /\.\.\.IMAGE_GEN_TASKS,\n\s*\.\.\.VIDEO_GEN_TASKS,/);
+  assert.ok(
+    !PICKERS.includes("mediaLoad: taskScoped,"),
+    "no task-wide media rule",
+  );
+  assert.ok(RECOMMENDED.includes("mediaLoad: opts.diffusionLoad"));
   // Parent rows and the fit gate take the same rule as the quant rows under them, or a media row
   // reads as fitting while everything inside it reads as oom.
-  assert.match(PICKERS, /Boolean\(task\)\n\s*\? classifyMediaGgufFit\(/);
+  assert.match(PICKERS, /diffusionLoad\n\s*\? classifyMediaGgufFit\(/);
   // Both gates read the flag the same way, or one hides a row the other keeps.
-  assert.ok(PICKERS.includes("mediaLoad: taskScoped,"));
-  assert.ok(RECOMMENDED.includes("mediaLoad: opts.taskScoped }"));
+  assert.ok(PICKERS.includes("mediaLoad: diffusionLoad,"));
+  assert.ok(RECOMMENDED.includes("mediaLoad: opts.diffusionLoad }"));
   // And every media call site sets the flag, or the guard silently does nothing.
   assert.equal(
-    PICKERS.split("taskScoped={Boolean(task)}").length - 1,
+    PICKERS.split("diffusionLoad={diffusionLoad}").length - 1,
     7,
     "every task-scoped expander",
   );
@@ -211,7 +223,7 @@ test("each fit verdict is an info mark that explains itself", () => {
   assert.ok(PICKERS.includes("exceeds: WONT_FIT"));
   assert.ok(
     PICKERS.includes(
-      'hint: "Needs more VRAM than this device has. This model will not load."',
+      'hint: "Needs more memory than this device has. This model will not load."',
     ),
   );
   assert.ok(!PICKERS.includes("Larger than your VRAM and system RAM together"));
@@ -264,7 +276,7 @@ test("each fit verdict is an info mark that explains itself", () => {
   // handed to --fit instead, which is why it says the opposite.
   assert.ok(
     PICKERS.includes(
-      'hint: "Needs more VRAM than this device has. This model will not load."',
+      'hint: "Needs more memory than this device has. This model will not load."',
     ),
   );
   assert.ok(PICKERS.includes("aria-label={verdict.label}"));
@@ -287,7 +299,7 @@ test("a GGUF row takes the GGUF verdict, not the torch refusal", () => {
   assert.ok(!PICKERS.includes("exceedsSize"));
   assert.match(
     PICKERS,
-    /const ggufRowFit = \([\s\S]{0,200}\): GgufFitClass \| null =>/,
+    /const ggufRowFit = \([\s\S]{0,220}\): GgufFitClass \| VramFitStatus \| null =>/,
   );
   // Every surviving producer of "exceeds" is a curated torch pipeline, which has no --fit.
   const producers = PICKERS.split("\n").filter(
@@ -297,6 +309,37 @@ test("a GGUF row takes the GGUF verdict, not the torch refusal", () => {
   for (const line of producers) {
     assert.match(line, /curatedFits \? null : "exceeds"/);
   }
+});
+
+test("a diffusion model too big for a shared pool is refused, not offloaded", () => {
+  // diffusion_memory.py refuses up front on unified memory: offload "moves bytes within that pool
+  // and frees nothing", and without the refusal the load "allocates past physical memory" with
+  // "the failure is the OS killing the process with no Python exception". Saying it still works
+  // with offloading is the worst thing this badge could say there.
+  assert.ok(PICKERS.includes("function diffusionRefuses("));
+  assert.ok(
+    PICKERS.includes('return fit === "oom" && diffusionLoad && sharedMemory;'),
+  );
+  // Both the quant rows and the parent row take it.
+  assert.match(
+    PICKERS,
+    /diffusionRefuses\(fit, diffusionLoad, sharedMemory\)\n\s*\? "exceeds"/,
+  );
+  assert.match(
+    PICKERS,
+    /diffusionRefuses\(fit, diffusionLoad, gpu\.sharedMemory\)\n\s*\? "exceeds"/,
+  );
+  // On a shared pool "VRAM" would name a number the user does not have.
+  assert.ok(
+    PICKERS.includes(
+      'hint: "Needs more memory than this device has. This model will not load."',
+    ),
+  );
+  assert.equal(
+    PICKERS.split("sharedMemory={gpu.sharedMemory}").length - 1,
+    7,
+    "every task-scoped expander learns the pool kind",
+  );
 });
 
 test("aligned meta slots spend their slack on the name", () => {

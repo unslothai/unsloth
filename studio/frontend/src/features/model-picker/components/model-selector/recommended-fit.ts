@@ -235,6 +235,9 @@ export function searchRowFitsDevice<
     gpu: G;
     inferenceGpu: G;
     taskScoped: boolean;
+    /** Images / Video only. `taskScoped` picks the single-device budget for every task page; this
+     *  picks the diffusion RULE, which Audio must not get: its GGUFs run under llama.cpp. */
+    diffusionLoad?: boolean;
     budgetFraction?: number;
   },
 ): boolean {
@@ -248,7 +251,7 @@ export function searchRowFitsDevice<
     loadScopedGpu(source, opts.taskScoped),
     // A task-scoped row is a media load, so it takes the media rule as well as the single-device
     // budget. Without this the search gate disagreed with the quant rows it gates.
-    { budgetFraction: opts.budgetFraction, mediaLoad: opts.taskScoped },
+    { budgetFraction: opts.budgetFraction, mediaLoad: opts.diffusionLoad },
   );
 }
 
