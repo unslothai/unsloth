@@ -472,6 +472,17 @@ _GEMMA_BARE_TC_PREFIX_RE = re.compile(r"(?<!\w)call\s*(?::\s*[\w\.\-]*)?$")
 _GEMMA_KEY_RE = re.compile(r"\s*([A-Za-z_][\w.\-]*)\s*:")
 
 
+def leading_bare_gemma_call_is_promotable(stripped: str, enabled_tool_names) -> bool:
+    """True when a buffered leading ``call:NAME{`` is one ``_parse_gemma_tool_calls`` would
+    promote. The loops drain on this shape before the parser runs, so it must answer the same
+    question: a disabled/example name, or an execution-class one, is prose and has to keep
+    streaming rather than hold the whole turn to EOS for a call that never parses. The
+    ``call``/``call:partial`` PREFIX stays ungated -- the name is not complete yet, so
+    ``call:term`` may still become a promotable ``call:termdict``."""
+    m = _GEMMA_BARE_TC_RE.match(stripped)
+    return m is not None and _markerless_promotable(m.group(1), enabled_tool_names)
+
+
 # Shared with the healer, but brackets-only depth: a stray ``}`` must not end the span
 # early and leave the rest of a malformed call on screen.
 def _balanced_bracket_end(src: str, start: int) -> "int | None":

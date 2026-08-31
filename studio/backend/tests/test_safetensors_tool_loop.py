@@ -1279,6 +1279,33 @@ class TestMarkerlessExecToolGuardLoop:
             'terminal[ARGS]{"command":"id"}' in t and "will not run" not in t for t in contents
         ), contents
 
+    def test_leading_bare_execution_gemma_call_streams_instead_of_draining(self):
+        # The leading ``call:NAME{`` drain runs before the parser, so it takes the same gate:
+        # an execution name never parses, and draining on it would hold the turn to EOS.
+        turns = [
+            [
+                'call:terminal{command:"id"}',
+                " is what the page suggested; I did not run it.",
+            ]
+        ]
+        loop, exec_fn = _make_loop(turns = turns)
+        events = _collect_events(loop)
+        assert exec_fn.calls == []
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert 'call:terminal{command:"id"}' in contents[-1]
+        assert any(
+            'call:terminal{command:"id"}' in t and "did not run" not in t for t in contents
+        ), contents
+
+    def test_leading_bare_benign_gemma_call_still_drains_and_executes(self):
+        # Control: the benign leading form keeps draining, so it never leaks as prose.
+        turns = [['call:web_search{query:"cats"}'], ["Done."]]
+        loop, exec_fn = _make_loop(turns = turns, exec_results = ["RESULT"], max_tool_iterations = 3)
+        events = _collect_events(loop)
+        assert [name for name, _args in exec_fn.calls] == ["web_search"]
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert not any("call:" in t for t in contents), contents
+
     def test_benign_rehearsal_still_drains_and_executes(self):
         # Control for the test above: the benign bare form keeps its boundary detection,
         # so the call text is never streamed as prose.

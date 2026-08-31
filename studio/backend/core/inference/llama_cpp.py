@@ -385,8 +385,8 @@ def _fit_with_instruction_pins(
 # catches Llama-3 / Mistral / Gemma 4 (legacy helper only knew <tool_call> / <function=).
 from core.inference.tool_call_parser import (
     _GEMMA_BARE_TC_PREFIX_RE,
-    _GEMMA_BARE_TC_RE,
     _balanced_brace_end,
+    leading_bare_gemma_call_is_promotable,
     TOOL_XML_SIGNALS as _SHARED_TOOL_XML_SIGNALS,
     StreamingMarkupStripper as _StreamingMarkupStripper,
     RAG_MAX_SEARCHES_PER_TURN,
@@ -27814,6 +27814,10 @@ class LlamaCppBackend:
         # names stay visible). Set per iteration; None = pre-loop name-agnostic.
         _enabled_tool_names = None
 
+        def _gemma_lead_promotable(text: str) -> bool:
+            # Reads _enabled_tool_names at call time: it is rebound each tool iteration.
+            return leading_bare_gemma_call_is_promotable(text, _enabled_tool_names)
+
         def _strip_tool_markup(
             text: str,
             *,
@@ -29023,10 +29027,13 @@ class LlamaCppBackend:
                                                 "call:".startswith(stripped_buf)
                                                 or _GEMMA_BARE_TC_PREFIX_RE.match(stripped_buf)
                                                 is not None
-                                                or _GEMMA_BARE_TC_RE.match(stripped_buf) is not None
+                                                or _gemma_lead_promotable(stripped_buf)
                                             ):
-                                                # Whitespace-tolerant like the parser.
-                                                if _GEMMA_BARE_TC_RE.match(stripped_buf):
+                                                # Whitespace-tolerant like the parser, and gated
+                                                # on the same promotable check: a name the parser
+                                                # rejects is prose, so it streams instead of
+                                                # draining the turn for a call that never comes.
+                                                if _gemma_lead_promotable(stripped_buf):
                                                     _drain_silently = True
                                                 elif len(stripped_buf) < _MAX_BUFFER_CHARS:
                                                     _hold_buffer = True

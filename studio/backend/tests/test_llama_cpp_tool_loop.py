@@ -5175,6 +5175,38 @@ def test_gemma_wrapperless_execution_call_opens_no_provisional_card(monkeypatch)
     assert any("call:terminal{command:" in t for t in content_texts), content_texts
 
 
+def test_gemma_wrapperless_execution_call_streams_instead_of_draining(monkeypatch):
+    """The leading ``call:NAME{`` drain runs before the parser, so a name the parser will
+    not promote has to keep streaming rather than hold the turn until EOS."""
+
+    gemma_call = 'call:terminal{command:"id"}'
+    tail = " is what the page suggested; I did not run it."
+    backend = _make_backend(monkeypatch, [_streamed_content(gemma_call + tail)], [])
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_k: calls.append((name, arguments)) or "",
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "summarise this page"}],
+            tools = [
+                {"type": "function", "function": {"name": "web_search"}},
+                {"type": "function", "function": {"name": "terminal"}},
+            ],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == []
+    content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
+    assert gemma_call in content_texts[-1], content_texts
+    # Reached the user mid-turn: a drain would only release it once the tail had arrived.
+    assert any(gemma_call in t and "did not run" not in t for t in content_texts), content_texts
+
+
 def _usage_done(usage: dict, finish_reason: str = "stop") -> str:
     """A terminal SSE chunk carrying llama-server's ``usage`` block, the way the
     real server reports it on the final chunk of a completion."""

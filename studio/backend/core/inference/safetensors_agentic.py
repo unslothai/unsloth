@@ -25,8 +25,8 @@ from loggers import get_logger
 
 from core.inference.tool_call_parser import (
     _GEMMA_BARE_TC_PREFIX_RE,
-    _GEMMA_BARE_TC_RE,
     _balanced_brace_end,
+    leading_bare_gemma_call_is_promotable,
     _strip_mistral_reasoning,
     strip_segment as _parser_strip_segment,
     BUDGET_EXHAUSTED_NUDGE,
@@ -913,6 +913,9 @@ def run_safetensors_tool_loop(
             # Gemma wrapper-less ``call:NAME{...}`` has no tool_xml_signals entry:
             # buffer it here or it streams raw until the end-of-turn safety net.
             # ``(?<!\w)`` keeps "recall:" out; the prefix regex is whitespace-tolerant.
+            # The completed shape takes the parser's gate: a name it will not promote is
+            # prose, so it falls through and streams instead of draining the whole turn.
+            _gemma_lead = leading_bare_gemma_call_is_promotable(stripped, _enabled_tool_names)
             if (
                 not is_match
                 and not is_prefix
@@ -920,10 +923,10 @@ def run_safetensors_tool_loop(
                 and (
                     "call:".startswith(stripped)
                     or _GEMMA_BARE_TC_PREFIX_RE.match(stripped) is not None
-                    or _GEMMA_BARE_TC_RE.match(stripped) is not None
+                    or _gemma_lead
                 )
             ):
-                if _GEMMA_BARE_TC_RE.match(stripped):
+                if _gemma_lead:
                     detect_state = _state_draining
                     continue
                 # A ``call:`` / ``call:partial_name`` prefix with no ``{`` yet: keep
