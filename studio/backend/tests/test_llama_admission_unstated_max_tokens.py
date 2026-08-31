@@ -182,7 +182,9 @@ class TestTheAllowanceFitsTheAdvertisedSlots:
 
     def _cost(self, budget, capacity):
         return _openai_llama_admission_tokens(
-            _chat(max_tokens = budget), budget = budget, capacity = capacity,
+            _chat(max_tokens = budget),
+            budget = budget,
+            capacity = capacity,
             context_window = budget,
         )
 
