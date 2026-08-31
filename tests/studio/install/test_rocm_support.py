@@ -64,8 +64,7 @@ _install_bnb_windows_rocm = stack_mod._install_bnb_windows_rocm
 
 @pytest.fixture(autouse = True)
 def _reset_torch_runtime_probe():
-    """The torch classification and the host ROCm version are both memoized for the
-    life of an install run, so one test's mocked probes must not leak into the next."""
+    """Both probes are memoized per install run, so they must not leak between tests."""
     stack_mod._invalidate_torch_runtime_probe()
     stack_mod._invalidate_rocm_version_probe()
     yield
@@ -650,13 +649,7 @@ class TestDetectRocmVersion:
                 assert _detect_rocm_version() is None
 
     def test_debian_split_runtime_uses_installed_hsa_runtime(self, tmp_path):
-        """Debian can ship hipconfig 5.7 beside HSA 6.1 with no rocm-core.
-
-        The executable dpkg stub requires both package names and renders the
-        requested showformat, so this fails if production stops requesting
-        ${Status}, queries the packages separately, or discards HSA stdout just
-        because dpkg-query returns nonzero for absent rocm-core.
-        """
+        """Debian can ship hipconfig 5.7 beside HSA 6.1 with no rocm-core."""
         hipconfig = tmp_path / "hipconfig"
         hipconfig.write_text("#!/bin/sh\necho '5.7.31921-0'\n", encoding = "utf-8")
         hipconfig.chmod(0o755)
@@ -683,14 +676,7 @@ class TestDetectRocmVersion:
 
     def test_installed_rocm_core_outranks_the_distro_hsa_package(self, tmp_path):
         """rocm-core wins over libhsa-runtime64-1 even when the HSA reading is HIGHER.
-
-        They are not peers. rocm-core comes from AMD's repo and marks the ROCm release;
-        libhsa-runtime64-1 comes from the distro archive and tracks the archive. Ubuntu
-        24.04 with AMD's ROCm 7.2 repo really does carry rocm-core 7.2.1 beside Ubuntu's
-        libhsa-runtime64-1 5.7.1-2build1, so peer voting reports a disagreement on a
-        healthy host. HSA is emitted first here, so a parser that just takes the highest
-        reading, or the first line, fails this.
-        """
+        HSA is emitted first, so taking the highest reading or the first line fails this."""
         dpkg = tmp_path / "dpkg-query"
         _write_dpkg_query_stub(
             str(dpkg),
@@ -779,13 +765,7 @@ class TestDetectRocmVersion:
         assert "ROCm version sources disagree" not in capsys.readouterr().err
 
     def test_detection_is_memoized_so_the_warning_prints_once(self, tmp_path, capsys):
-        """_ensure_rocm_torch() runs twice on Linux (post-base repair and final repair).
-
-        The host ROCm stack cannot change between them, so the sources must be probed
-        once and the disagreement warning emitted once, matching install.sh which
-        resolves the tag a single time. Without the memo a split Debian stack, whose
-        sources disagree by construction, warns the user twice per install.
-        """
+        """_ensure_rocm_torch() runs twice on Linux, so the sources must be probed once."""
         info_dir = tmp_path / ".info"
         info_dir.mkdir()
         (info_dir / "version").write_text("5.7.0\n", encoding = "utf-8")
@@ -810,8 +790,7 @@ class TestDetectRocmVersion:
         assert capsys.readouterr().err.count("ROCm version sources disagree") == 1
 
     def test_memo_reset_reprobes(self, tmp_path):
-        """The invalidator has to actually clear the memo, or the autouse fixture
-        cannot keep one test's mocked host from leaking into the next."""
+        """The invalidator must actually clear the memo, or the autouse fixture is a no-op."""
         info_dir = tmp_path / ".info"
         info_dir.mkdir()
         (info_dir / "version").write_text("6.1.0\n", encoding = "utf-8")

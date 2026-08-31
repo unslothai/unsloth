@@ -3651,11 +3651,8 @@ _cap_cuda_family_for_pre_turing() {
 }
 
 # ── ROCm version sources ──
-# One helper per source, each returning 0 unconditionally: install.sh runs under
-# set -e, so a real AMD GPU with no ROCm userspace at all has to reach the
-# actionable warning at the end of the ROCm branch rather than have a failing
-# source kill the installer. The Debian package source can emit one line per
-# installed package.
+# One helper per source, each returning 0 unconditionally: under set -e a failing source
+# would kill the installer before the actionable warning at the end of the ROCm branch.
 _rocm_tag_from_amd_smi() {
     command -v amd-smi >/dev/null 2>&1 || return 0
     # Cut at the field separator and require digits: the line is pipe-delimited
@@ -3680,23 +3677,15 @@ _rocm_tag_from_hipconfig() {
 _rocm_tag_from_dpkg() {
     command -v dpkg-query >/dev/null 2>&1 || return 0
     # Require the status word "installed". dpkg-query -W lists every package in the
-    # status database except purged ones, so an `apt remove`d package remains
-    # queryable in state "deinstall ok config-files" with its old version. Under
-    # highest-wins, that dead reading could outrank the live runtime. Debian does
-    # not ship rocm-core, so its installed HSA runtime is the equivalent source.
+    # status database except purged ones, so a removed-but-not-purged package still
+    # reports the version it had and could outrank the live runtime under highest-wins.
     # ${Status} over ${db:Status-Status}: documented showformat field with no dpkg
     # version floor, and dpkg renders an unrecognised field as empty rather than
     # failing, so a dpkg lacking it goes silent instead of over-reporting.
-    # Query both in one invocation. dpkg-query returns nonzero when either requested
-    # package is absent, but still writes the installed package's line, so neutralize
-    # that status before pipefail sees it.
-    # rocm-core WINS OUTRIGHT when installed, and libhsa-runtime64-1 is consulted only
-    # in its absence, because the two are not peers. rocm-core comes from AMD's repo and
-    # marks the ROCm release; libhsa-runtime64-1 comes from the DISTRO archive and tracks
-    # that archive, not the stack you installed. AMD's own HSA package is hsa-rocr, under
-    # a different name and versioned 1.x. So on Ubuntu 24.04 with AMD's ROCm 7.2 repo the
-    # host carries rocm-core 7.2.1 next to Ubuntu's libhsa-runtime64-1 5.7.1-2build1, and
-    # letting both vote makes every healthy host report a disagreement it does not have.
+    # dpkg-query exits nonzero when either package is absent but still prints the other's
+    # line, so neutralize the status before pipefail sees it.
+    # rocm-core wins outright, and libhsa-runtime64-1 is read only in its absence (the
+    # Debian case): the HSA package comes from the distro archive and can be older.
     { dpkg-query -W -f='${Package} ${Status} ${Version}\n' rocm-core libhsa-runtime64-1 2>/dev/null || true; } \
         | awk '
             $4 == "installed" && $5 != "" {
@@ -3716,8 +3705,7 @@ _rocm_tag_from_dpkg() {
 
 _rocm_tag_from_rpm() {
     command -v rpm >/dev/null 2>&1 || return 0
-    # Bounded because highest-wins made this probe unconditional and it can
-    # block forever: it used to be LAST in a
+    # Bounded because highest-wins made this probe unconditional: it used to be LAST in a
     # first-answer-wins `||` chain, so /opt/rocm/.info/version answered at position
     # two and rpm was never invoked on a normal RHEL/SLES install. `rpm -q` is not a
     # lock-free read -- a leftover /var/lib/rpm/__db.00* from a killed rpm/yum wedges

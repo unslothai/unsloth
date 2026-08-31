@@ -351,10 +351,7 @@ assert_contains "the winning reading is named" "using the highest, rocm6.1" "$_w
 assert_eq "Radeon URL uses resolved Debian rocm6.1, not hipconfig 5.7" \
     "https://repo.radeon.com/rocm/manylinux/rocm-rel-6.1/" "$(run_radeon_url rocm6.1)"
 
-# rocm-core and libhsa-runtime64-1 are NOT peers, so rocm-core wins even when the HSA
-# reading is higher. rocm-core comes from AMD's repo and marks the ROCm release; the HSA
-# package comes from the distro archive and tracks the archive. HSA is emitted first,
-# ahead of the order install.sh requests them in, so passing by position is not possible.
+# rocm-core wins even when HSA reads higher, and HSA is emitted first, so position cannot pass this.
 reset_sources
 add_dpkg_packages \
     "libhsa-runtime64-1|installed|6.4.3+dfsg-4" \
