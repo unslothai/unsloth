@@ -3,22 +3,15 @@
 
 """routes/llama_compat.py: the discovery surface a third-party client probes.
 
-Reproduces a real user report. A client pointed at Studio's port ran this exact
-sequence and got these exact answers:
+Reproduces a real user report. A client pointed at Studio's port ran this sequence:
 
     GET  /api/v1/models  404      GET  /props    200 text/html
     GET  /api/tags       404      GET  /version  200 text/html
     GET  /v1/props       404      POST /api/show 405
 
-The two 200s are the bug. /props and /version are not Studio routes, so they fell
-through the SPA catch-all in main.py, which serves index.html for anything outside
-/api/ and /v1/. A probe that checks the status before the body reads that as
-"supported" and then fails on HTML it cannot parse -- strictly worse than the 404
-the other four returned.
-
-The module is loaded standalone and handed a double for routes.inference: the real
-one pulls the whole inference stack, and every catalog helper it needs is injected
-here anyway, so the wire shapes can be asserted without a loaded model.
+The two 200s are the bug: neither was a Studio route, so both fell through the SPA
+catch-all and returned index.html, which a probe reads as "supported" before failing
+on the body. The module is loaded standalone with a double for routes.inference.
 """
 
 from __future__ import annotations
@@ -88,12 +81,8 @@ def _inference_double(
     catalog,
     orchestrator = None,
 ):
-    """Stand-in for routes.inference, injected through llama_compat._inference().
-
-    Deliberately not a sys.modules entry: an earlier revision stubbed
-    routes.inference globally and every module imported while it was live captured
-    the stub, which broke two unrelated route tests when the suite ran in one process.
-    """
+    """Stand-in for routes.inference. Deliberately not a sys.modules entry: stubbing it
+    globally broke two unrelated route tests when the suite ran in one process."""
     inference = types.SimpleNamespace()
     inference.get_llama_cpp_backend = lambda: backend
     inference._llama_public_model_id = lambda b, fallback = None: b._openai_advertised_id
@@ -137,9 +126,8 @@ def _client(mod):
     app = FastAPI()
     app.include_router(mod.router)
 
-    # The SPA catch-all, reproduced in main.py's order: real routes first, then the
-    # fallback. A test that omitted it could not tell "serves JSON" from "serves the
-    # app shell with a 200", which is the whole defect.
+    # The SPA catch-all in main.py's order. Without it a test cannot tell "serves JSON"
+    # from "serves the app shell with a 200", which is the whole defect.
     @app.get("/{full_path:path}")
     async def _spa(full_path: str):
         if full_path in {"api", "v1"} or full_path.startswith(("api/", "v1/")):
@@ -163,10 +151,8 @@ def _teardown():
 
 
 def test_the_reported_probe_sequence_no_longer_returns_html():
-    """THE REGRESSION THIS FILE EXISTS FOR.
-
-    Every path the client probed must answer JSON or 404, never 200 text/html.
-    """
+    """THE REGRESSION THIS FILE EXISTS FOR: every probed path answers JSON or 404,
+    never 200 text/html."""
     mod = _load()
     with _client(mod) as c:
         # The two that used to answer with the app shell now answer with JSON.
@@ -190,11 +176,8 @@ def test_the_reported_probe_sequence_no_longer_returns_html():
 
 
 def test_the_html_fallback_is_what_used_to_answer_these():
-    """The control: an ordinary unknown path still gets the app shell.
-
-    Without this the test above would pass on a build that 404s everything, which
-    would break deep links into the UI.
-    """
+    """The control: without it the test above passes on a build that 404s everything,
+    which would break every deep link into the UI."""
     mod = _load()
     with _client(mod) as c:
         r = c.get("/some-ui-deep-link")
@@ -226,9 +209,7 @@ def test_probe_matching_ignores_case_and_stray_slashes():
 
 
 def test_props_never_echoes_the_on_disk_gguf_path():
-    """llama-server reports model_path as the absolute .gguf path. This endpoint is
-    reachable over LAN, so it publishes the public id instead, like every other
-    Studio response."""
+    """Upstream reports the absolute .gguf path and this is LAN reachable."""
     upstream = {
         "model_path": "/media/llm4/HDD-Models1/models/hub/models--unsloth--Qwen/model.gguf",
         "total_slots": 4,
@@ -245,8 +226,7 @@ def test_props_never_echoes_the_on_disk_gguf_path():
 
 
 def test_props_degrades_to_the_local_view_when_the_engine_cannot_be_read():
-    """_query_server_props returns None on a mid-restart engine. The probe must
-    still answer, from what the backend knows locally."""
+    """A mid-restart engine returns None; the probe still answers from the local view."""
     mod = _load(backend = _Backend(props = None))
     with _client(mod) as c:
         body = c.get("/props").json()
@@ -318,8 +298,7 @@ def test_props_never_500s_and_never_leaks_a_path_on_a_hostile_upstream(upstream)
 
 
 def test_props_survives_an_engine_query_that_raises():
-    """_query_server_props is documented to return None rather than raise. A probe is
-    the wrong place to find out that slipped, and the local view is always answerable."""
+    """A probe is the wrong place to find out that contract slipped."""
 
     class _Raises(_Backend):
         def _query_server_props(self):
@@ -333,8 +312,7 @@ def test_props_survives_an_engine_query_that_raises():
 
 
 def test_the_version_lookup_survives_an_import_failure(monkeypatch):
-    """The import sits inside the guard, not above it: an ImportError there would 500
-    a /props probe that has nothing to do with versions."""
+    """An ImportError above the guard would 500 a probe about something else."""
     mod = _load()
     mod._studio_version.cache_clear()
     monkeypatch.setitem(sys.modules, "utils.studio_version", None)
@@ -345,8 +323,7 @@ def test_the_version_lookup_survives_an_import_failure(monkeypatch):
 
 
 def test_the_version_lookup_is_resolved_once(monkeypatch):
-    """get_studio_version() shells out to git twice on a source checkout and /version
-    is an async handler, so an uncached call would put those spawns on the event loop."""
+    """Two git subprocesses per call, on the event loop, if uncached."""
     mod = _load()
     mod._studio_version.cache_clear()
     calls = []
@@ -362,8 +339,7 @@ def test_the_version_lookup_is_resolved_once(monkeypatch):
 
 
 def test_a_real_asset_wins_over_the_probe_deny_list(tmp_path):
-    """The guard runs after the static lookup, so a build that ever ships a file named
-    `metrics` still serves it rather than 404-ing with no obvious cause."""
+    """The guard runs after the static lookup, so a shipped file named `metrics` wins."""
     mod = _load()
     (tmp_path / "metrics").write_text("asset-body")
     app = FastAPI()
@@ -385,8 +361,8 @@ def test_a_real_asset_wins_over_the_probe_deny_list(tmp_path):
 
 
 def test_no_client_side_ui_route_is_shadowed_by_the_deny_list():
-    """Reads the routes the frontend actually declares, so adding a UI page named
-    /metrics or /health fails here instead of 404-ing in the browser."""
+    """Reads the routes the frontend declares, so a UI page named /metrics fails here
+    rather than 404-ing in the browser."""
     routes_dir = _BACKEND.parent / "frontend" / "src" / "app" / "routes"
     if not routes_dir.is_dir():
         pytest.skip("frontend sources not present in this checkout")
@@ -406,11 +382,9 @@ def test_no_client_side_ui_route_is_shadowed_by_the_deny_list():
 
 
 def test_the_ollama_surface_is_not_advertised():
-    """Answering /api/tags identifies this server as Ollama, and a client that
-    completes Ollama discovery then posts to /api/chat or /api/generate, which Studio
-    does not serve. The reporting user's client got 404 here, fell back to the OpenAI
-    surface, and worked; advertising a protocol we do not implement would have broken
-    exactly that client. Same defect as the HTML 200, one layer up."""
+    """Answering /api/tags makes a client select Ollama and then fail on /api/chat.
+    The reporting user's client got 404 here, fell back to OpenAI, and worked, so
+    advertising the pair would have broken the very client this started from."""
     mod = _load()
     routes = {r.path for r in mod.router.routes}
     assert "/api/tags" not in routes
@@ -436,10 +410,8 @@ def test_the_ollama_surface_is_not_advertised():
     ],
 )
 def test_unserved_engine_endpoints_404_on_their_real_method_not_405(method, path):
-    """These are POST endpoints in llama-server. The deny-list guard lives in the SPA's
-    GET catch-all, so before this a POST matched the GET-only route and returned 405,
-    which a discovery client reads as "exists, wrong method" -- the same false positive
-    the 404 exists to close."""
+    """POST endpoints in llama-server, so before this they returned 405 from the
+    GET-only catch-all, which reads as "exists, wrong method"."""
     mod = _load()
     with _client(mod) as c:
         r = c.request(method, path, json = {})
@@ -448,8 +420,7 @@ def test_unserved_engine_endpoints_404_on_their_real_method_not_405(method, path
 
 
 def test_get_on_a_probe_path_still_reaches_the_asset_lookup(tmp_path):
-    """The non-GET routes deliberately omit GET, or they would shadow the catch-all's
-    static lookup and re-break the asset case."""
+    """Omitting GET is what keeps the catch-all's static lookup reachable."""
     mod = _load()
     assert not any(
         "GET" in (getattr(r, "methods", None) or set()) and r.path == "/completion"
@@ -458,10 +429,8 @@ def test_get_on_a_probe_path_still_reaches_the_asset_lookup(tmp_path):
 
 
 def test_props_does_not_pair_an_orchestrator_model_with_llama_server_fields():
-    """With a Transformers or MLX model resident the llama backend is unloaded. Reading
-    its fields anyway advertised the orchestrator's model alongside n_ctx 0, an empty
-    template and total_slots 0: a self-contradictory description of a model that is in
-    fact serving."""
+    """With MLX resident the llama backend is unloaded, so reading its fields anyway
+    described a serving model as having no context and no slots."""
 
     class _Orchestrator:
         active_model_name = "unsloth/Llama-3.2-3B"
@@ -475,9 +444,8 @@ def test_props_does_not_pair_an_orchestrator_model_with_llama_server_fields():
 
 
 def test_the_probe_paths_are_admitted_under_keyless_inference_scope():
-    """keyless_api_access_scope="inference" lets a keyless client list models and chat.
-    A 401 on /props in front of that surface reads as an auth wall over the whole thing
-    and stops discovery, which is the opposite of what the scope grants."""
+    """A 401 on /props in front of a surface the scope grants reads as an auth wall
+    over the whole thing and stops discovery."""
     from utils.keyless_api_access import _INFERENCE_ROUTES
 
     assert ("GET", "/v1/models") in _INFERENCE_ROUTES, "baseline moved; re-derive this"
@@ -492,10 +460,8 @@ def test_the_probe_paths_are_admitted_under_keyless_inference_scope():
 
 
 def test_head_on_an_unserved_probe_path_is_404_not_405():
-    """Starlette does NOT admit HEAD on a GET route. Measured on the pinned
-    fastapi 0.141.1 / starlette 1.6.0: HEAD against a bare GET catch-all returns 405,
-    so a HEAD probe would read the endpoint as existing. A comment here previously
-    claimed the opposite."""
+    """Starlette does NOT admit HEAD on a GET route (measured on the pinned fastapi
+    0.141.1 / starlette 1.6.0). A comment here previously claimed the opposite."""
     mod = _load()
     with _client(mod) as c:
         for path in ("/completion", "/tokenize", "/metrics", "/slots"):
@@ -503,8 +469,7 @@ def test_head_on_an_unserved_probe_path_is_404_not_405():
 
 
 def test_head_is_405_on_a_plain_get_route_which_is_why_it_is_listed():
-    """Pins the framework behaviour the fix depends on, so a future FastAPI that starts
-    admitting HEAD does not leave the reason for this list unexplained."""
+    """Pins the framework behaviour the fix depends on."""
     app = FastAPI()
 
     @app.get("/{p:path}")
@@ -518,8 +483,7 @@ def test_head_is_405_on_a_plain_get_route_which_is_why_it_is_listed():
 
 @pytest.mark.parametrize("path", ["/slots/0", "/slots/3", "/slots/abc", "/slots/0/"])
 def test_the_nested_slot_endpoint_is_denied_too(path):
-    """/slots/:id_slot is a real llama-server route, and Studio calls it itself in
-    restore_slots_for_resume, so an exact-membership check on "slots" missed it."""
+    """A real llama-server route Studio calls itself, missed by exact membership."""
     mod = _load()
     assert mod.is_engine_probe_path(path.strip("/"))
     with _client(mod) as c:
@@ -529,9 +493,8 @@ def test_the_nested_slot_endpoint_is_denied_too(path):
 
 
 def test_the_deny_list_matches_llama_servers_own_route_table():
-    """Transcribed from tools/server/server.cpp rather than grown one client complaint
-    at a time. /props is the single bare route Studio serves, so it is the only
-    omission; anything else missing here means a probe still reaches the app shell."""
+    """Transcribed from tools/server/server.cpp. /props is the only bare route Studio
+    serves, so anything else missing means a probe still reaches the app shell."""
     mod = _load()
     bare_llama_routes = {
         "apply-template",
@@ -584,11 +547,8 @@ def test_a_bare_llama_route_404s_on_every_method_a_client_would_use():
 
 
 def test_props_does_not_advertise_child_endpoints_studio_denies():
-    """llama-server puts endpoint_slots / endpoint_props / endpoint_metrics in its props
-    (tools/server/server-context.cpp), and Studio launches it with --metrics, so
-    endpoint_metrics arrives true while public /metrics is one of the paths this module
-    deliberately 404s. Copying the child's route table onto the public surface is the
-    same over-claim as answering a probe with HTML."""
+    """tools/server/server-context.cpp puts all three flags in the payload, and Studio
+    launches with --metrics, so endpoint_metrics arrived true while /metrics 404s here."""
     upstream = {
         "endpoint_slots": True,
         "endpoint_props": True,
@@ -611,8 +571,7 @@ def test_props_does_not_advertise_child_endpoints_studio_denies():
 
 
 def test_the_denied_endpoints_props_advertises_really_are_denied():
-    """Ties the two halves together: every endpoint_* flag set to False above names a
-    path that actually 404s, so the props answer and the route table agree."""
+    """Every flag set False above names a path that really 404s."""
     mod = _load()
     with _client(mod) as c:
         for path in ("/slots", "/metrics"):
@@ -625,8 +584,8 @@ def test_the_denied_endpoints_props_advertises_really_are_denied():
 
 
 def test_a_transient_props_failure_does_not_report_zero_slots():
-    """The response still advertises the model and its context, so total_slots 0 tells a
-    client reading props for capacity that the serving model has no usable slots."""
+    """total_slots 0 beside a model this response advertises as loaded reads as
+    "cannot serve"."""
     mod = _load(backend = _Backend(props = None, slots = 8))
     with _client(mod) as c:
         body = c.get("/props").json()
@@ -683,8 +642,7 @@ def test_the_upstream_slot_count_still_wins_when_it_can_be_read():
 )
 @pytest.mark.parametrize("method", ["HEAD", "POST", "DELETE"])
 def test_unserved_v1_aliases_404_on_their_real_method(path, method):
-    """main.py already 404s an unknown GET under /v1/, so only the other methods could
-    still reach the GET-only catch-all and come back 405."""
+    """GET already 404s through main.py's /v1/ rule; the rest came back 405."""
     mod = _load()
     with _client(mod) as c:
         r = c.request(method, path, json = {} if method == "POST" else None)
@@ -693,8 +651,8 @@ def test_unserved_v1_aliases_404_on_their_real_method(path, method):
 
 
 def test_the_v1_deny_list_never_shadows_a_path_studio_serves():
-    """The drift guard. These are hardcoded, so if Studio ever implements one of them
-    this fails and says to delete the line rather than let a 404 shadow a real route."""
+    """The drift guard: implementing one of these must fail here rather than let a 404
+    shadow a real route."""
     import os
 
     os.environ.setdefault("TMPDIR", os.environ.get("UNSLOTH_WORKSPACE", "/tmp") + "/temp")
@@ -728,6 +686,6 @@ def test_the_v1_deny_list_never_shadows_a_path_studio_serves():
     assert "/v1/models" in served, "route walk found nothing; re-derive this"
     mod = _load()
     for probe in mod._UNSERVED_V1_PROBE_PATHS:
-        assert (
-            f"/{probe}" not in served
-        ), f"Studio now serves /{probe}; drop it from _UNSERVED_V1_PROBE_PATHS"
+        assert f"/{probe}" not in served, (
+            f"Studio now serves /{probe}; drop it from _UNSERVED_V1_PROBE_PATHS"
+        )

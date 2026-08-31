@@ -3,28 +3,15 @@
 
 """Answer engine discovery probes with JSON, or with a 404, but never with the app.
 
-Studio already answers the OpenAI surface (``GET /v1/models``,
-``POST /v1/chat/completions``), and clients that reach a local port probe the
-engine endpoints alongside it to work out what they are talking to. Those probes
-used to land on the SPA catch-all in main.py, which serves index.html for anything
-that is not under ``/api/`` or ``/v1/``: a client asking ``GET /props`` got 200 and
-a page of HTML. 200-with-HTML is worse than a 404, because a probe reads the status
-first and only then fails on the body.
+Probes for engine endpoints used to land on main.py's SPA catch-all, so ``GET /props``
+returned 200 and a page of HTML. That is worse than a 404: a probe reads the status
+before the body. Served here: ``/props``, ``/v1/props``, ``/version``. Everything else
+in llama-server's table gets an explicit 404, on its real method as well as GET.
 
-GET  /props, /v1/props  -> llama-server's props, with model_path replaced by the
-                           public model id (never the on-disk .gguf path)
-GET  /version           -> {"version": ...}
-
-Everything else llama-server serves and Studio does not -- /slots, /completion,
-/tokenize, ... -- gets an explicit 404 (``_ENGINE_PROBE_PATHS``), on the real HTTP
-method as well as GET.
-
-Deliberately NOT served: Ollama's ``/api/tags`` and ``/api/show``. Answering those
-identifies this server as Ollama, and a client that completes Ollama discovery then
-posts to ``/api/chat`` or ``/api/generate``, which Studio does not serve, so it would
-fail at generation instead of falling back to the OpenAI surface that does work. The
-reporting user's client did exactly that fallback and succeeded. Advertising a
-protocol we do not implement is the same defect as the HTML 200, one layer up.
+Deliberately NOT served: Ollama's ``/api/tags`` and ``/api/show``. Answering them makes
+a client select Ollama and then fail on ``/api/chat``, which Studio does not implement;
+the reporting user's client instead fell back to the OpenAI surface and worked.
+Advertising a protocol we do not have is the HTML 200 again, one layer up.
 """
 
 from __future__ import annotations
@@ -43,15 +30,8 @@ logger = get_logger(__name__)
 router = APIRouter()
 
 
-# Unprefixed endpoints llama-server and Ollama serve that Studio does not. The SPA
-# catch-all in main.py answers anything outside /api/ and /v1/ with index.html, so
-# without this a probe for /slots or /completion gets 200 plus a page of HTML --
-# which reads as "supported" to every client that checks the status before the body.
-# Transcribed from llama-server's own route table (tools/server/server.cpp,
-# ctx_http.get/post), minus /props, which this module serves. Enumerated from the
-# source rather than added one at a time as clients trip over them, so the set is
-# complete instead of merely growing. Bare paths only: Studio's own API lives under
-# /api/ and /v1/, so nothing here can shadow it.
+# llama-server's table (tools/server/server.cpp) minus /props, so the set is complete
+# rather than growing per complaint. Bare only, so it cannot shadow /api/ or /v1/.
 _ENGINE_PROBE_PATHS = frozenset(
     {
         "apply-template",
@@ -82,17 +62,11 @@ _ENGINE_PROBE_PATHS = frozenset(
     }
 )
 
-# /slots/:id_slot is a real llama-server route and Studio calls it itself
-# (restore_slots_for_resume), so the id has to be matched dynamically rather than
-# enumerated. Only this one prefix is dynamic in the table above.
+# /slots/:id_slot is the one dynamic entry in that table, and Studio calls it itself.
 _ENGINE_PROBE_PREFIXES = ("slots/",)
 
-# The /v1-prefixed entries in the same llama-server table that Studio does not
-# implement. Kept separate from the bare set because the two are checked differently:
-# main.py already 404s an unknown GET under /v1/, so only the other methods need a
-# route here. Hardcoded rather than derived from the live route table at import time,
-# with a test that asserts each really is absent from the assembled app -- if Studio
-# ever implements one, CI says to delete the line instead of silently shadowing it.
+# The /v1 entries Studio does not implement. A test asserts each is really absent from
+# the assembled app, so implementing one fails CI instead of being shadowed by a 404.
 _UNSERVED_V1_PROBE_PATHS = frozenset(
     {
         "v1/chat/completions/control",
@@ -114,31 +88,18 @@ def is_engine_probe_path(full_path: str) -> bool:
 
 
 def _inference():
-    """``routes.inference``, imported at call time.
-
-    routes.inference pulls the whole inference stack, and this module is imported
-    from main.py's route table, so the import has to be deferred. Everything here
-    goes through this one function rather than importing inline in each handler:
-    a test can then hand these handlers a double by replacing it, instead of
-    mutating sys.modules for the rest of the suite.
-    """
+    """``routes.inference``, deferred because it pulls the whole inference stack. One
+    indirection, so a test replaces this instead of mutating sys.modules."""
     from routes import inference
     return inference
 
 
 @functools.lru_cache(maxsize = 1)
 def _studio_version() -> str:
-    """The version string, resolved once.
-
-    Cached because get_studio_version() shells out to git twice on a source checkout,
-    and these handlers are the only ones that call it per request. The answer cannot
-    change inside a process, and uncached it would put two subprocess spawns on the
-    event loop for every /version probe: cheap on Linux, not on Windows, where
-    spawning costs an order of magnitude more.
-    """
+    """The version string, resolved once: get_studio_version() shells out to git twice
+    on a source checkout, and uncached that lands on the event loop per probe."""
     try:
-        # Inside the guard, not above it: an ImportError here would 500 a probe that
-        # has nothing to do with versions.
+        # Inside the guard: an ImportError here would 500 a probe about something else.
         from utils.studio_version import get_studio_version
         return get_studio_version()
     except Exception:  # noqa: BLE001 -- discovery must not 500 on a version lookup
@@ -151,34 +112,22 @@ def _loaded_public_model_id() -> Optional[str]:
     llama_backend = inf.get_llama_cpp_backend()
     if getattr(llama_backend, "is_loaded", False):
         return inf._llama_public_model_id(llama_backend)
-    # _peek_inference_backend does not force the orchestrator's cold build, which
-    # waits on hardware detection; a probe must not pay for that.
+    # peek, not get: the orchestrator's cold build waits on hardware detection.
     orchestrator = inf._peek_inference_backend()
     if orchestrator is not None and getattr(orchestrator, "active_model_name", None):
         return inf._orchestrator_public_model_id(orchestrator)
     return None
 
 
-# ── /props ────────────────────────────────────────────────────────────────────
-
-
 def _server_props() -> dict:
-    """llama-server's /props with the on-disk path stripped.
-
-    Upstream reports model_path as the absolute .gguf path. Every other Studio
-    response maps that to the public id (see core.inference.model_ids), and this
-    one is reachable over LAN, so it does the same rather than leaking the layout
-    of the user's disk.
-    """
+    """llama-server's /props, with model_path mapped to the public id like every other
+    Studio response: upstream reports the absolute .gguf path and this is LAN reachable."""
     llama_backend = _inference().get_llama_cpp_backend()
     public_id = _loaded_public_model_id()
     llama_loaded = bool(getattr(llama_backend, "is_loaded", False))
     props: dict[str, Any] = {}
     if llama_loaded:
-        # Bounded (5s) and documented to return None rather than raise, so an engine
-        # that is mid-restart degrades to the local view instead of failing the probe.
-        # Belt and braces anyway: a probe is the wrong place to discover that the
-        # contract slipped, and the local view is always answerable.
+        # Documented not to raise, but a probe is the wrong place to find out it does.
         try:
             upstream = llama_backend._query_server_props()
         except Exception:  # noqa: BLE001
@@ -190,23 +139,17 @@ def _server_props() -> dict:
     if public_id:
         props["model_path"] = public_id
 
-    # The child's props describe the CHILD's route table and its built-in web UI, none
-    # of which is reachable through Studio. Copying them verbatim points a client using
-    # props for capability discovery at endpoints that 404 here: Studio launches
-    # llama-server with --metrics, so endpoint_metrics arrives true while public
-    # /metrics is one of the paths this module deliberately denies (verified against
-    # tools/server/server-context.cpp, which puts all three flags in the payload).
+    # These describe the CHILD's route table and web UI, not ours: Studio launches with
+    # --metrics, so endpoint_metrics arrives true while public /metrics 404s here
+    # (tools/server/server-context.cpp puts all three flags in the payload).
     for _child_only in ("ui", "ui_settings", "cors_proxy_enabled"):
         props.pop(_child_only, None)
     props["endpoint_slots"] = False
     props["endpoint_props"] = False
     props["endpoint_metrics"] = False
 
-    # Only when llama-server owns the resident model. With a Transformers or MLX model
-    # loaded the llama backend is unloaded, and reading its fields anyway would pair the
-    # orchestrator's model_path with n_ctx 0, an empty template and total_slots 0 -- a
-    # self-contradictory description of a model that is in fact serving. Omitting them
-    # says "no llama-server props to report", which is true.
+    # Only when llama-server owns the resident model: with MLX loaded, reading the
+    # unloaded llama backend describes a serving model as having no context or slots.
     if llama_loaded:
         props.setdefault("default_generation_settings", {})
         settings = props["default_generation_settings"]
@@ -215,10 +158,7 @@ def _server_props() -> dict:
             if n_ctx:
                 settings["n_ctx"] = int(n_ctx)
         if "total_slots" not in props:
-            # A transient /props read failure must not report zero slots next to a model
-            # this same response advertises as loaded: a client reading props for
-            # capacity concludes the model cannot serve. The backend knows the number it
-            # launched with; if even that is unreadable, omit rather than claim zero.
+            # Not zero beside a model this response advertises as loaded.
             try:
                 slots = int(getattr(llama_backend, "effective_parallel_slots", 0) or 0)
             except Exception:  # noqa: BLE001
@@ -237,32 +177,21 @@ async def llama_props(current_subject: str = Depends(get_current_subject)):
     return await asyncio.to_thread(_server_props)
 
 
-# ── /version ──────────────────────────────────────────────────────────────────
-
-
 @router.get("/version", include_in_schema = False)
 async def studio_version(current_subject: str = Depends(get_current_subject)):
-    """Version probe. Bare /version only -- Ollama spells it /api/version, and
-    answering there is part of claiming to be Ollama."""
+    """Bare /version only: Ollama spells it /api/version, and answering there is part
+    of claiming to be Ollama."""
     return {"version": _studio_version()}
-
-
-# ── probe paths Studio does not serve ─────────────────────────────────────────
 
 
 async def _probe_not_found():
     raise HTTPException(status_code = 404, detail = "API endpoint not found")
 
 
-# GET is deliberately absent: it stays with the SPA catch-all, which looks for a real
-# asset first and only then applies is_engine_probe_path(). Registering GET here would
-# shadow that lookup. Without these, a POST to /completion or /tokenize matched the
-# GET-only catch-all and returned 405, which a discovery client reads as "the endpoint
-# exists, wrong method" -- the same false positive the 404 is meant to close, and these
-# endpoints are POST in llama-server. HEAD is listed explicitly: Starlette does NOT
-# admit HEAD on a GET route (measured on the pinned fastapi 0.141.1 / starlette 1.6.0,
-# HEAD /completion -> 405), so a HEAD probe would infer the endpoint exists. OPTIONS is
-# left alone so CORS preflight is unaffected.
+# Without these a POST hit the GET-only catch-all and returned 405, reading as "exists,
+# wrong method". HEAD is here because Starlette does not admit it on a GET route
+# (measured, fastapi 0.141.1). GET stays with the catch-all so its asset lookup wins;
+# OPTIONS is untouched for CORS preflight.
 _PROBE_DENIED_METHODS = ["HEAD", "POST", "PUT", "PATCH", "DELETE"]
 
 for _probe_path in sorted(_ENGINE_PROBE_PATHS):
@@ -273,12 +202,7 @@ for _probe_path in sorted(_ENGINE_PROBE_PATHS):
         include_in_schema = False,
     )
 
-# The one dynamic entry in llama-server's table, so it needs a path parameter rather
-# than a literal: without it POST /slots/0 falls through to the GET-only catch-all and
-# answers 405, which is the false positive again. Both slash forms, because FastAPI's
-# slash redirect does not apply to a path that matches no route at all.
-# main.py answers an unknown GET under /v1/ with a real 404 already, so only the other
-# methods can still reach the GET-only catch-all and come back 405.
+# main.py already 404s an unknown GET under /v1/, so only the other methods need these.
 for _v1_path in sorted(_UNSERVED_V1_PROBE_PATHS):
     router.add_api_route(
         f"/{_v1_path}",
@@ -287,6 +211,7 @@ for _v1_path in sorted(_UNSERVED_V1_PROBE_PATHS):
         include_in_schema = False,
     )
 
+# Both slash forms: FastAPI's slash redirect does not apply to a path matching no route.
 for _slots_form in ("/slots/{id_slot}", "/slots/{id_slot}/"):
     router.add_api_route(
         _slots_form,
