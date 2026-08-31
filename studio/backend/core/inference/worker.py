@@ -47,6 +47,24 @@ def _ensure_backend_on_path() -> None:
         sys.path.insert(0, _BACKEND_PATH)
 
 
+def _native_audio_security_targets_or_error(
+    model_name: str, hf_token: str | None, resp_queue: Any
+) -> list[str] | None:
+    try:
+        from core.inference.native_audio import native_audio_security_targets
+        return native_audio_security_targets(model_name, hf_token = hf_token)
+    except Exception as exc:
+        _send_response(
+            resp_queue,
+            {
+                "type": "error",
+                "error": f"Failed to inspect native audio security metadata: {exc}",
+                "stack": traceback.format_exc(limit = 20),
+            },
+        )
+        return None
+
+
 def _recorded_local_base(model_name) -> "tuple[str | None, bool]":
     """``(base, needs_hub)`` for the base this checkpoint records on disk.
 
@@ -341,6 +359,28 @@ def _run_security_gates(
     return True
 
 
+def _worker_reclaimable_gpu_gb(config: dict) -> dict[str, float] | None:
+    """Live allocator-owned VRAM this disposable worker will release."""
+    resolved_gpu_ids = config.get("resolved_gpu_ids")
+    device_backend = str(config.get("device_backend") or "")
+    if not resolved_gpu_ids or device_backend not in ("cuda", "xpu"):
+        return None
+    try:
+        import torch
+
+        device_module = torch.cuda if device_backend == "cuda" else torch.xpu
+        memory_reserved = getattr(device_module, "memory_reserved", None)
+        if not callable(memory_reserved):
+            return None
+        return {
+            str(int(physical_id)): int(memory_reserved(local_ordinal)) / float(1024**3)
+            for local_ordinal, physical_id in enumerate(resolved_gpu_ids)
+        }
+    except Exception as exc:
+        logger.warning("Could not report worker-owned GPU memory: %s", exc)
+        return None
+
+
 def _handle_load(backend, config: dict, resp_queue: Any) -> None:
     """Handle a load command: load a model into the backend."""
     try:
@@ -370,7 +410,11 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
 
         # Authoritative gates over the model + the LoRA base resolved via mc. Must run before
         # the SSM install so a blocked model never triggers a native kernel build.
-        targets = [config["model_name"]]
+        from core.inference.native_audio import native_audio_security_targets
+
+        targets = native_audio_security_targets(
+            config["model_name"], getattr(mc, "audio_type", None), hf_token
+        )
         if mc.is_lora and getattr(mc, "base_model", None):
             targets.append(str(mc.base_model))
         if not _run_security_gates(
@@ -773,6 +817,9 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
             repetition_penalty = cmd.get("repetition_penalty", 1.0),
             use_adapter = cmd.get("use_adapter"),
             cancel_event = cancel_event,
+            instructions = cmd.get("instructions"),
+            language = cmd.get("language"),
+            seed = cmd.get("seed"),
         )
 
         # Send WAV bytes as base64 (bytes can't go through mp.Queue directly).
@@ -999,6 +1046,13 @@ def run_inference_process(
 
     model_name = config["model_name"]
 
+    # These architectures use their publishers' native Transformers/Diffusers
+    # interfaces. Select that backend before the Apple MLX fast-path and before
+    # importing Unsloth; native_audio itself has no eager ML imports.
+    from core.inference.native_audio import is_native_audio_model
+
+    _native_audio_worker = is_native_audio_model(model_name)
+
     # ── 0. MLX fast-path — skip torch/transformers ──
     _ensure_backend_on_path()
 
@@ -1018,7 +1072,7 @@ def run_inference_process(
     from utils.hardware import hardware as _hw
 
     _hw.detect_hardware()
-    if _hw.DEVICE == _hw.DeviceType.MLX:
+    if _hw.DEVICE == _hw.DeviceType.MLX and not _native_audio_worker:
         try:
             from core.inference.mlx_inference import MLXInferenceBackend, _init_mlx_distributed
 
@@ -1126,6 +1180,15 @@ def run_inference_process(
                     cancel_event.set()
                     backend.reset_generation_state()
                     _send_response(resp_queue, {"type": "reset_ack"})
+                elif cmd_type == "gpu_memory":
+                    _send_response(
+                        resp_queue,
+                        {
+                            "type": "gpu_memory",
+                            "request_id": cmd.get("request_id"),
+                            "reclaimable_gpu_gb": _worker_reclaimable_gpu_gb(config),
+                        },
+                    )
                 elif cmd_type == "status":
                     _send_response(
                         resp_queue,
@@ -1236,7 +1299,9 @@ def run_inference_process(
     # are metadata-only, so run them first and refuse a blocked model before any native build.
     # Gate only the model + a genuine LoRA base (matching _handle_load), never a full fine-tune's
     # unloaded base; _handle_load re-runs the authoritative gates with the mc base.
-    _gate_targets = [model_name]
+    _gate_targets = _native_audio_security_targets_or_error(model_name, _hf_token, resp_queue)
+    if _gate_targets is None:
+        return
     if _lora_base:
         _gate_targets.append(_lora_base)
     _trust_remote_code = config.get("trust_remote_code", False) or _needs_nemotron_trust(
@@ -1266,18 +1331,24 @@ def run_inference_process(
             resp_queue,
             {
                 "type": "status",
-                "message": "Importing Unsloth...",
+                "message": (
+                    "Importing native audio runtime..."
+                    if _native_audio_worker
+                    else "Importing Unsloth..."
+                ),
             },
         )
 
         _ensure_backend_on_path()
 
-        # Recover from any namespace-package shadow before importing Unsloth.
-        from core.import_guards import ensure_real_packages
+        if _native_audio_worker:
+            from core.inference.native_audio import NativeAudioBackend as InferenceBackend
+        else:
+            # Recover from any namespace-package shadow before importing Unsloth.
+            from core.import_guards import ensure_real_packages
+            ensure_real_packages("unsloth_zoo", "unsloth")
 
-        ensure_real_packages("unsloth_zoo", "unsloth")
-
-        from core.inference.inference import InferenceBackend
+            from core.inference.inference import InferenceBackend
 
         import transformers
 
@@ -1385,6 +1456,16 @@ def run_inference_process(
                     resp_queue,
                     {
                         "type": "reset_ack",
+                    },
+                )
+
+            elif cmd_type == "gpu_memory":
+                _send_response(
+                    resp_queue,
+                    {
+                        "type": "gpu_memory",
+                        "request_id": cmd.get("request_id"),
+                        "reclaimable_gpu_gb": _worker_reclaimable_gpu_gb(config),
                     },
                 )
 

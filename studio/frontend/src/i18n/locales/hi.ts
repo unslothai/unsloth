@@ -692,7 +692,7 @@ export const hi = {
         sectionTitle: "मॉडल ऑटो-स्विच (OpenAI API)",
         enable: "अनुरोध के अनुसार मॉडल बदलें",
         enableDescription:
-          "API अनुरोध में दिए गए डाउनलोड किए गए GGUF को सेवा देने से पहले लोड करें। डिफ़ॉल्ट रूप से बंद।",
+          "API अनुरोध में दिए गए डाउनलोड किए गए मॉडल को सेवा देने से पहले लोड करें। डिफ़ॉल्ट रूप से बंद।",
         idleUnload: "निष्क्रिय ऑटो-अनलोड",
         idleUnloadDescription:
           "इतने सेकंड तक निष्क्रिय रहने के बाद VRAM खाली करें। 0 पर मॉडल लोड रहता है; न्यूनतम 60 सेकंड।",
@@ -1385,6 +1385,13 @@ export const hi = {
         collapseByDefaultDescription:
           "मॉडल के सोचते समय रीज़निंग अपने आप खुलने के बजाय संक्षिप्त रहती है। पढ़ने के लिए किसी भी ब्लॉक को विस्तृत करें।",
       },
+      currentDate: {
+        label: "मॉडल को आज की तारीख बताएँ",
+        description:
+          "प्रॉम्प्ट में मौजूदा तारीख जोड़ें ताकि वेब सर्च और Deep Research मॉडल की ट्रेनिंग कटऑफ मान लेने के बजाय हाल के स्रोत खोजें।",
+        loadError: "मौजूदा तारीख की सेटिंग्स लोड नहीं हो सकीं",
+        saveError: "मौजूदा तारीख की सेटिंग्स अपडेट नहीं हो सकीं",
+      },
       tools: {
         collapseByDefault: "टूल गतिविधि को डिफ़ॉल्ट रूप से संक्षिप्त रखें",
         collapseByDefaultDescription:
@@ -1485,6 +1492,8 @@ export const hi = {
       archivedImagesDescription: "आपके द्वारा संग्रहित की गई छवियाँ देखें और प्रबंधित करें।",
       archivedVideos: "संग्रहित वीडियो",
       archivedVideosDescription: "आपके द्वारा संग्रहित किए गए वीडियो देखें और प्रबंधित करें।",
+      archivedAudio: "संग्रहित ऑडियो",
+      archivedAudioDescription: "आपके द्वारा संग्रहित किए गए ऑडियो क्लिप देखें और प्रबंधित करें।",
       manageAction: "प्रबंधित करें",
       manageChats: "चैट प्रबंधित करें",
       manageChatsDescription:
@@ -1668,7 +1677,7 @@ export const hi = {
           "इसमें आम तौर पर कुछ सेकंड लगते हैं।",
         desktopAvailable: "डेस्कटॉप ऐप {version} उपलब्ध है",
         desktopAvailableDescription:
-          "अभी अपडेट करें। अपडेट पूरा होने पर डेस्कटॉप ऐप फिर से शुरू होगा।",
+          "अभी अपडेट करें, यह पृष्ठभूमि में तैयार होगा। आप काम करते रह सकते हैं और तैयार होने पर फिर से शुरू करें।",
         desktopExternalServer:
           "जिस टर्मिनल से सर्वर शुरू किया गया था, उसमें `unsloth studio update` चलाएँ।",
         desktopManualInstall:
@@ -1678,11 +1687,20 @@ export const hi = {
           "अपना कनेक्शन जाँचें और फिर से कोशिश करें।",
         desktopCurrent: "डेस्कटॉप ऐप नवीनतम संस्करण पर है",
         desktopCurrentDescription: "Unsloth अपने-आप जाँच करता रहेगा।",
+        desktopPreparingDescription:
+          "अपडेट पृष्ठभूमि में तैयार हो रहा है। आप काम करते रह सकते हैं।",
+        desktopReadyToRestartDescription:
+          "सब तैयार है। इंस्टॉल पूरा करने के लिए फिर से शुरू करें।",
+        desktopReadyToInstallDescription:
+          "ऐप अपडेट डाउनलोड हो गया है। इसे इंस्टॉल करने के लिए बैकएंड अपडेट पूरा करें।",
         checkForUpdates: "अपडेट की जाँच करें",
         checkAgain: "फिर से जाँचें",
         retryCheck: "फिर से कोशिश करें",
         checking: "जाँच हो रही है...",
+        preparing: "तैयार हो रहा है...",
         updateNow: "अभी अपडेट करें",
+        restartToUpdate: "अपडेट के लिए फिर से शुरू करें",
+        finishUpdate: "अपडेट पूरा करें",
         openReleasePage: "रिलीज़ पेज खोलें",
         unknownInstall:
           "यह पता नहीं लगाया जा सका कि Unsloth कैसे इंस्टॉल किया गया था। इंस्टॉलर या PyPI इंस्टॉल के लिए, ऊपर दिए गए कमांड का उपयोग करें।",

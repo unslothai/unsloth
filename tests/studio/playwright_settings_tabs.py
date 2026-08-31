@@ -54,6 +54,24 @@ CHUNK_DELAY_MS = int(os.environ.get("PW_CHUNK_DELAY_MS", "0"))
 CHUNK_FAIL = os.environ.get("PW_CHUNK_FAIL", "")
 SETTLE_MS = 600
 SETTLE_TIMEOUT_S = 25.0
+LAN_URLS = ("http://192.168.1.24:8888", "http://10.0.0.7:8888")
+LAN_STATUS = {
+    "state": "online",
+    "urls": list(LAN_URLS),
+    "public_urls": [],
+    "error": None,
+    "auto_start": False,
+    "managed_by": "settings",
+    "can_start": False,
+    "can_stop": True,
+    "block_reason": None,
+    "bind_host": "0.0.0.0",
+    "wildcard_bind": True,
+    "serves_web_ui": True,
+    "keyless_lan_eligible": True,
+    "keyless_scope": "off",
+    "keyless_tools": False,
+}
 # The panel scroller inside the dialog, the element `mainScrollRef` points at.
 PANEL = 'div[role="dialog"] main div.hover-scrollbar'
 # How long the Data module is held, and how far into that hold the deep-open is abandoned.
@@ -335,6 +353,52 @@ def run_chunk_fail(page) -> None:
         log("another tab still renders after the failure")
 
 
+def run_lan_address_actions(page) -> None:
+    """Every listed address must own the actions that operate on it."""
+    click_forced(page.locator('[data-testid="settings-tab-remote-lan"]'), timeout = 15000)
+    settle_panel(page)
+
+    rows = {}
+    for url in LAN_URLS:
+        address = page.get_by_text(url, exact = True)
+        if address.count() != 1:
+            fail(f"LAN address {url}: expected one visible row, found {address.count()}")
+            continue
+        labels = address.evaluate(
+            """(node) => [...node.parentElement.querySelectorAll('button')]
+                .map((button) => button.getAttribute('aria-label'))"""
+        )
+        rows[url] = labels
+        expected = [f"Show QR code for {url}", f"Copy {url}"]
+        if labels != expected:
+            fail(f"LAN address {url}: row actions {labels}, expected {expected}")
+
+    if len(rows) != len(LAN_URLS):
+        return
+
+    target = LAN_URLS[1]
+    click_forced(page.get_by_role("button", name = f"Show QR code for {target}", exact = True))
+    qr_dialog = page.locator('div[role="dialog"]').last
+    qr_dialog.wait_for(state = "visible", timeout = 15000)
+    qr_value = qr_dialog.locator("code").inner_text().strip()
+    if qr_value != target:
+        fail(f"LAN QR action opened {qr_value}, expected {target}")
+    page.keyboard.press("Escape")
+    page.get_by_role("heading", name = "Open on your phone").wait_for(state = "hidden", timeout = 15000)
+
+    page.evaluate(
+        """() => Object.defineProperty(navigator, 'clipboard', {
+            configurable: true,
+            value: { writeText: async (text) => { window.__copiedLanUrl = text; } },
+        })"""
+    )
+    click_forced(page.get_by_role("button", name = f"Copy {target}", exact = True))
+    page.wait_for_function("(url) => window.__copiedLanUrl === url", arg = target, timeout = 15000)
+    report["lan_address_actions"] = {"rows": rows, "qr": qr_value, "copied": target}
+    report["steps"].append("lan-address-actions")
+    log("each LAN address keeps its own QR and copy target")
+
+
 def run(page) -> None:
     if CHUNK_FAIL:
         run_chunk_fail(page)
@@ -366,7 +430,10 @@ def run(page) -> None:
             )
     report["steps"].append("all-tabs-render")
 
-    # --- 3. close/reopen, and deep-open straight to a tab ----------------------------
+    # --- 3. every lan address has actions bound to that address ----------------------
+    run_lan_address_actions(page)
+
+    # --- 4. close/reopen, and deep-open straight to a tab ----------------------------
     page.evaluate("() => window.__settingsSmoke.close()")
     page.wait_for_timeout(300)
     for tab in ("voice", "api-keys", "data", "about", "connections"):
@@ -389,7 +456,7 @@ def run(page) -> None:
         page.wait_for_timeout(200)
     report["steps"].append("deep-open")
 
-    # --- 4. search, then jump to a result and confirm the scroll target flashed ------
+    # --- 5. search, then jump to a result and confirm the scroll target flashed ------
     # A real setting well down a long panel, so a jump that never happens shows in scrollTop.
     target_tab = "general"
     target_label = report["tabs"][target_tab]["settled"]["labels"][-1]
@@ -463,12 +530,20 @@ def main() -> int:
                 reduced_motion = "reduce",
             )
             page = ctx.new_page()
+            page.route(
+                "**/api/settings/lan-access*",
+                lambda route: route.fulfill(
+                    status = 200,
+                    content_type = "application/json",
+                    body = json.dumps(LAN_STATUS),
+                ),
+            )
             if CHUNK_DELAY_MS or CHUNK_FAIL:
 
                 def handle(route):
                     path = route.request.url
                     if "/tabs/" not in path:
-                        return route.continue_()
+                        return route.fallback()
                     if CHUNK_FAIL and f"/{CHUNK_FAIL}-tab" in path:
                         return route.abort("failed")
                     if CHUNK_DELAY_MS:
