@@ -3320,8 +3320,6 @@ _amd_probe_arches() {
     printf '%s\n' "$1" | sed 's/:.*$//' | tr '[:upper:]' '[:lower:]' | awk 'NF' | sort -u
 }
 
-# Two questions, deliberately answered separately.
-#
 # The index family is a property of the whole host: the wheels have to work on every AMD GPU
 # in the box, so every agent must land in the same family before anything reroutes. An APU
 # beside a discrete card does not, and routing on whichever the kernel enumerated first would
@@ -3810,19 +3808,9 @@ _highest_rocm_tag() {
 # compatible +/- 2 releases, the normalisation below can only emit a leaf PyTorch
 # publishes, the one source that can report a tree that is not installed is
 # filtered above, and any disagreement is named on stderr for the install log.
-# get_torch_index_url runs inside a command substitution, so the version it read cannot
-# reach the runtime-less reroute below, and the reroute has to ask the same question. Both
-# calls land in one install run against a filesystem nothing is changing between them, so a
-# file-backed answer is the same answer -- and a wedged rpm database pays _rocm_tag_from_rpm's
-# 10s timeout once rather than twice. The path is set once in the parent shell (see the
-# mktemp -d beside the get_torch_index_url call) and left empty here so this file stays
-# sourceable on its own. Written only on compute, so "no file" and "computed empty" stay
-# distinguishable.
 _ROCM_TAG_MEMO=""
 
 _detect_rocm_version_tag() {
-    # Opt-in: a caller that never set the path (a test harness sourcing this function on its
-    # own) gets the uncached behaviour rather than a surprise cache it has to know about.
     if [ -n "${_ROCM_TAG_MEMO:-}" ] && [ -f "$_ROCM_TAG_MEMO" ]; then
         cat "$_ROCM_TAG_MEMO"
         return
@@ -3997,16 +3985,6 @@ get_torch_index_url() {
         # When the arch maps to a dedicated repo.amd.com/rocm/whl/gfx* index,
         # _amd_arch_index_family_for_gfx has the answer from the arch alone, so an
         # unreadable version is not a reason to fall back to CPU (unslothai#8731).
-        # This used to require UNSLOTH_ROCM_GFX_ARCH, which left readable-arch +
-        # unreadable-version -- Fedora's exact shape -- as the one combination
-        # nothing covered. The runtime-less reroute below installs the wheels; a
-        # CPU-only warning here would be false for that path, so defer like the
-        # inferable-arch branch does.
-        # Every probed agent has to agree on an index family, not just the first one:
-        # rocminfo names each agent twice, so "gfx1201\ngfx1201" is one device and routes,
-        # while an APU beside a discrete card is two and must not. The deferral is the
-        # family's call; the arch is only for naming a card in the warning, and it is empty
-        # when two cards share a family, so the text falls back to the family.
         _amd_gfx_family=$(_amd_agreed_index_family "$_amd_gfx_probe") || _amd_gfx_family=""
         if [ -n "$_amd_gfx_family" ]; then
             _amd_gfx_first=$(_amd_sole_index_arch "$_amd_gfx_probe") || _amd_gfx_first=""
@@ -4017,8 +3995,6 @@ get_torch_index_url() {
             fi
             echo "$_base/cpu"; return
         fi
-        # Arch unreadable, or readable with no per-arch index: the generic rocmX.Y
-        # leaves are all that is left and picking one needs a version.
         echo "[WARN] AMD GPU detected, but no ROCm version could be read to select the matching GPU PyTorch build -- falling back to CPU-only PyTorch." >&2
         if [ -d "${ROCM_PATH:-/opt/rocm}" ]; then
             # Saying "no ROCm install was found" on a host with /opt/rocm sent the
@@ -4613,10 +4589,6 @@ TORCH_INDEX_URL=$(get_torch_index_url)
 # gets its own way in below (unslothai#8731). An explicit UNSLOTH_ROCM_GFX_ARCH
 # override stays authoritative either way.
 
-# Readable arch, no readable ROCm version: get_torch_index_url deferred to this
-# reroute rather than settling on CPU. Computed here, behind the */cpu check,
-# because _detect_rocm_version_tag re-runs amd-smi and rpm and a healthy ROCm host
-# (whose index is not */cpu) must not pay for a question it already answered.
 _amd_no_rocm_version_reroute=false
 _amd_probed_gfx_first=""
 case "$TORCH_INDEX_URL" in
@@ -4624,13 +4596,6 @@ case "$TORCH_INDEX_URL" in
         if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
            [ -z "${UNSLOTH_ROCM_GFX_ARCH:-}" ] && \
            ! _has_usable_nvidia_gpu && _has_amd_rocm_gpu; then
-            # Same two questions get_torch_index_url asks, so the state means "that function
-            # deferred on THIS host" and the reroute below can act on it. A probe with no
-            # agreed family -- unmappable, or a mixed host whose agents want different
-            # wheels -- never made get_torch_index_url defer, so it must not claim this
-            # state either. The concrete arch stays empty on a same-family pair, which is
-            # what keeps an arbitrary member out of UNSLOTH_ROCM_GFX_ARCH below.
-            # _detect_rocm_version_tag last: it is the only expensive test.
             _amd_probe_out=$(_probe_amd_gfx_arch)
             _amd_probed_family=$(_amd_agreed_index_family "$_amd_probe_out") \
                 || _amd_probed_family=""
@@ -4668,14 +4633,9 @@ if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
             # lspci and can name a different card on a mixed APU + discrete host --
             # taking its answer here would install arch-specific wheels for a GPU the
             # decision never looked at, and export that arch to setup.sh as well.
-            # Only this path is affected: every host that reached the reroute before
-            # had an empty probe and still gets the inferred arch (unslothai#8731).
             if [ "${_amd_no_rocm_version_reroute:-false}" = true ]; then
                 _linux_inferred_gfx="${_amd_probed_gfx_first:-}"
             fi
-            # The family routes the wheels and is agreed across every agent. The arch is
-            # one device's and may be empty on a same-family pair, so it is only used
-            # where naming a single card is actually correct.
             _amd_family=""
             if [ "${_amd_no_rocm_version_reroute:-false}" = true ]; then
                 _amd_family="${_amd_probed_family:-}"
@@ -4695,11 +4655,6 @@ if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
                     # and install_llama_prebuilt.py both honor UNSLOTH_ROCM_GFX_ARCH,
                     # so exporting it is the whole handoff (a user-set override
                     # re-exports unchanged).
-                    # Skipped when the agents agreed on a family but not on a card
-                    # (gfx1200 beside gfx1201): setup.sh takes this over its own
-                    # visibility-aware pick, so naming one at random would overrule a
-                    # correct choice. That host reads its arch fine, which is how it
-                    # got here, so setup.sh answers it without the handoff anyway.
                     if [ -n "$_linux_inferred_gfx" ]; then
                         export UNSLOTH_ROCM_GFX_ARCH="$_linux_inferred_gfx"
                     fi
@@ -4716,9 +4671,6 @@ if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
                     # KFD-only hosts reach this reroute with /dev/kfd present
                     # (that's what detected them), so don't claim it's missing.
                     if [ "${_amd_no_rocm_version_reroute:-false}" = true ]; then
-                        # This host read its arch fine; only the VERSION was missing,
-                        # and a per-arch index does not need one. Saying the arch was
-                        # unreadable would send the user off repairing rocminfo.
                         echo "  [WARN] AMD ${_linux_inferred_gfx:-$_amd_family} detected, but no ROCm version could be read (checked amd-smi, /opt/rocm/.info/version, hipconfig, dpkg, rpm)." >&2
                         echo "  [WARN] The per-arch index is keyed on the arch alone, so the version is not needed." >&2
                     elif _has_amd_rocm_gpu; then

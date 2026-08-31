@@ -2745,8 +2745,6 @@ class TestInstallShStructure:
         fn = _extract_sh_function_body(source, "get_torch_index_url")
         probe_fn = _extract_sh_function_body(source, "_probe_amd_gfx_arch")
         family_fn = _extract_sh_function_body(source, "_amd_arch_index_family_for_gfx")
-        # Every helper get_torch_index_url and the reroute lean on. One blob so a new
-        # one is a single edit here rather than four.
         arch_fns = "\n".join(
             _extract_sh_function_body(source, _n)
             for _n in (
@@ -2842,8 +2840,6 @@ class TestInstallShStructure:
         fn = _extract_sh_function_body(source, "get_torch_index_url")
         probe_fn = _extract_sh_function_body(source, "_probe_amd_gfx_arch")
         family_fn = _extract_sh_function_body(source, "_amd_arch_index_family_for_gfx")
-        # Every helper get_torch_index_url and the reroute lean on. One blob so a new
-        # one is a single edit here rather than four.
         arch_fns = "\n".join(
             _extract_sh_function_body(source, _n)
             for _n in (
@@ -2950,11 +2946,8 @@ class TestInstallShStructure:
             assert (
                 "falling back to CPU-only PyTorch" in r2.stderr
             ), f"an unmappable override must keep the CPU warning: {r2.stderr!r}"
-            # Readable gfx that HAS a per-arch index, no override, no version.
-            # This used to keep the CPU warning, which is the unslothai#8731 bug:
-            # gfx1151 has its own repo.amd.com index and the version only chooses
-            # between the generic rocmX.Y leaves, so an unreadable version is a
-            # detection miss rather than a decision, and the arch alone routes.
+            # unslothai#8731: gfx1151 has its own index, so the version only picks
+            # between generic rocmX.Y leaves and is a detection miss, not a decision.
             r3 = run('echo "  Name:  gfx1151"\n')
             assert r3.returncode == 0, f"readable-gfx case aborted: {r3.stderr}"
             assert r3.stdout.strip().endswith("/cpu")
@@ -2964,8 +2957,7 @@ class TestInstallShStructure:
             assert (
                 "routing to AMD per-arch wheels" in r3.stderr
             ), f"a mapped arch with no version defers to the reroute: {r3.stderr!r}"
-            # Readable gfx with NO per-arch index: the generic leaves are all there
-            # is and picking one needs a version, so the CPU warning still stands.
+            # No per-arch index: picking a generic leaf needs a version.
             r4 = run('echo "  Name:  gfx906"\n')
             assert r4.returncode == 0, f"unmapped readable-gfx case aborted: {r4.stderr}"
             assert (
@@ -2989,8 +2981,6 @@ class TestInstallShStructure:
         )
         assert block, "could not extract the runtime-less reroute block"
         family_fn = _extract_sh_function_body(source, "_amd_arch_index_family_for_gfx")
-        # Every helper get_torch_index_url and the reroute lean on. One blob so a new
-        # one is a single edit here rather than four.
         arch_fns = "\n".join(
             _extract_sh_function_body(source, _n)
             for _n in (
@@ -3068,11 +3058,8 @@ class TestInstallShStructure:
         return {"gfx1151": "gfx1151", "gfx1100": "gfx110X-all"}.get(arch, "")
 
     def test_no_version_reroute_routes_on_the_probed_arch(self):
-        """A no-version reroute must use the arch rocminfo/amd-smi READ, not the one
-        inferred from lspci marketing names. The two disagree on a mixed APU +
-        discrete AMD host, and the decision to reroute was made on the probe, so
-        taking inference's answer would install arch-specific wheels for a GPU that
-        was never considered and export that arch to setup.sh (unslothai#8731)."""
+        """Routes on the arch rocminfo/amd-smi READ, not the lspci marketing-name
+        inference: the two disagree on a mixed APU + discrete host (unslothai#8731)."""
         shell = shutil.which("bash")
         if not shell:
             pytest.skip("bash needed to execute the reroute block")
@@ -3085,8 +3072,6 @@ class TestInstallShStructure:
         )
         assert block, "could not extract the runtime-less reroute block"
         family_fn = _extract_sh_function_body(source, "_amd_arch_index_family_for_gfx")
-        # Every helper get_torch_index_url and the reroute lean on. One blob so a new
-        # one is a single edit here rather than four.
         arch_fns = "\n".join(
             _extract_sh_function_body(source, _n)
             for _n in (
@@ -3114,7 +3099,6 @@ class TestInstallShStructure:
                     "_has_usable_nvidia_gpu() { return 1; }\n"
                     "_has_amd_rocm_gpu() { return 0; }\n"
                     f"_probe_amd_gfx_arch() {{ {probe_stub}; }}\n"
-                    # lspci names the discrete card; the probe named the APU.
                     f"_infer_linux_amd_gfx_arch() {{ echo {inferred}; }}\n"
                     "_strip_index_url_credentials() { printf '%s\\n' \"$1\"; }\n"
                     + family_fn
@@ -3124,9 +3108,6 @@ class TestInstallShStructure:
                     "_torch_index_pinned=false\nSKIP_TORCH=false\n_ARCH=x86_64\n"
                     f"_amd_no_rocm_version_reroute={no_version_state}\n"
                     f'_amd_probed_gfx_first="{probed_first}"\n'
-                    # The family routes; the arch only names a card. They come apart on
-                    # a same-family pair, so the harness has to be able to set them
-                    # independently or it can only ever test them agreeing.
                     f'_amd_probed_family="{probed_family if probed_family is not None else self._family_for_probed(probed_first)}"\n'
                     "TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu\n"
                     + block.group(0)
@@ -3138,9 +3119,7 @@ class TestInstallShStructure:
                 env = dict(os.environ, PATH = d + os.pathsep + os.environ.get("PATH", ""))
                 for var in ("UNSLOTH_ROCM_GFX_ARCH", "UNSLOTH_AMD_ROCM_MIRROR"):
                     env.pop(var, None)
-                # An explicit override is the FIRST disjunct of the reroute gate, and on
-                # a host whose probe reads fine it is the only way in. Without setting it
-                # the gate stays shut and an override case silently tests nothing.
+                # Gate's first disjunct: unset, an override case tests nothing.
                 if override:
                     env["UNSLOTH_ROCM_GFX_ARCH"] = override
                 return subprocess.run(
@@ -3152,34 +3131,25 @@ class TestInstallShStructure:
             assert (
                 "URL:https://repo.amd.com/rocm/whl/gfx1151/ GFX:gfx1151" in r.stdout
             ), f"the probed arch must win over lspci inference here: {r.stdout!r}"
-            # Two cards agreeing on a family but not on an arch. The wheels are right
-            # for both, so it still routes; the export names neither, because setup.sh
-            # takes UNSLOTH_ROCM_GFX_ARCH over its own visibility-aware pick and would
-            # then build llama.cpp for whichever card this guessed.
+            # A same-family pair must export no arch: setup.sh prefers
+            # UNSLOTH_ROCM_GFX_ARCH and would build llama.cpp for a guessed card.
             r_pair = run("true", "", probed_family = "gfx120X-all")
             assert r_pair.returncode == 0, f"same-family pair aborted: {r_pair.stderr}"
             assert (
                 "URL:https://repo.amd.com/rocm/whl/gfx120X-all/ GFX:\n" in r_pair.stdout
             ), f"a same-family pair routes but must not export a card: {r_pair.stdout!r}"
-            # The pre-existing path is untouched: an empty probe opens the gate on its
-            # own disjunct and the inferred arch still drives the reroute, unchanged.
             r2 = run("false", "", probe_stub = "printf '\\n'")
             assert r2.returncode == 0, f"inferred-arch case aborted: {r2.stderr}"
             assert (
                 "URL:https://repo.amd.com/rocm/whl/gfx110X-all/ GFX:gfx1100" in r2.stdout
             ), f"an empty-probe reroute keeps the inferred arch: {r2.stdout!r}"
-            # And a readable probe without the no-version state is still the deliberate
-            # CPU fallback, so widening the gate did not swallow that case.
             r3 = run("false", "")
             assert r3.returncode == 0, f"deliberate-fallback case aborted: {r3.stderr}"
             assert (
                 "URL:https://download.pytorch.org/whl/cpu GFX:" in r3.stdout
             ), f"a deliberate CPU fallback must stay un-rerouted: {r3.stdout!r}"
-            # An explicit UNSLOTH_ROCM_GFX_ARCH comes back from
-            # _infer_linux_amd_gfx_arch verbatim, and people copy it out of HIP, which
-            # reports gfx1201:sramecc+:xnack-. The index case table has no arm for the
-            # suffix, so it used to cost the reroute while get_torch_index_url, which
-            # strips it, had already promised per-arch wheels.
+            # HIP reports gfx1201:sramecc+:xnack- and the index case table has no arm
+            # for the suffix, so it cost the reroute get_torch_index_url promised.
             r4 = run(
                 "false",
                 "",

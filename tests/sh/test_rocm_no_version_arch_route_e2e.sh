@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # End-to-end routing assertions for the no-readable-version AMD reroute (issue #8731).
-#
 # Why this file exists, next to test_rocm_no_version_arch_route.sh: the reroute is
 # TOP-LEVEL code in install.sh, not a function. get_torch_index_url runs inside a
 # command substitution and cannot assign TORCH_INDEX_URL, so it deliberately returns
@@ -10,12 +9,6 @@
 # A harness that sources functions with `sed -n '/^name()/,/^}/p'` therefore never
 # executes the decision, and an assertion that greps install.sh for the reroute's
 # own variable names passes just as happily when the reroute is deleted.
-#
-# This file splices the top-level block out by stable text and RUNS it, so every
-# assertion below is the final TORCH_INDEX_URL an installer on that host would use.
-# Deleting the reroute, or making _amd_agreed_index_family answer "no family",
-# collapses the AMD rows back to */cpu and fails this suite.
-#
 # The splice deliberately runs PAST the reroute to the close of the whole index
 # decision region: two further top-level blocks (the Strix gfx115x reroute and the
 # gfx906 pin) can still rewrite TORCH_INDEX_URL, so stopping at the reroute would
@@ -75,9 +68,6 @@ _redirect() {
         -e "s|/proc/version|$_F_PROCVER|g"
 }
 
-# ---------------------------------------------------------------------------
-# Splice: every individually parseable top-level function, plus the block.
-# ---------------------------------------------------------------------------
 _FUNCS="$_ROOT/funcs.sh"
 _BLOCK="$_ROOT/block.sh"
 
@@ -104,7 +94,6 @@ awk '
 ' "$INSTALL_SH" > "$_ROOT/block.raw"
 _redirect < "$_ROOT/block.raw" > "$_BLOCK"
 
-# --- integrity: a silently empty or truncated splice must not look like a pass ---
 _fatal() { echo "  FAIL: $1"; echo ""; echo "  passed: $PASS, failed: 1"; exit 1; }
 
 for _fn in get_torch_index_url _has_amd_rocm_gpu _has_usable_nvidia_gpu \
@@ -139,9 +128,6 @@ assert_eq() {
     fi
 }
 
-# ---------------------------------------------------------------------------
-# Host fakery
-# ---------------------------------------------------------------------------
 reset_host() {
     rm -rf "$_FAKE" "$_MOCK"
     mkdir -p "$_FAKE" "$_MOCK" "$_F_PROCNV" "$_F_PCI" "$_F_ROCM"
@@ -173,9 +159,6 @@ MOCK
     chmod +x "$_MOCK/rocminfo"
 }
 
-# $1 = the "ROCm version" field ("N/A" on the reported host), rest = gfx arches.
-# Shaped like the real tool: `amd-smi list` shows BDF/UUID only, the arch comes from
-# `amd-smi static --asic` TARGET_GRAPHICS_VERSION.
 mock_amdsmi() {
     _ver="$1"; shift
     {
@@ -208,8 +191,6 @@ MOCK
     chmod +x "$_MOCK/amd-smi"
 }
 
-# hipconfig under $ROCM/bin, deliberately NOT on PATH (Fedora's layout).
-# $1 = what it prints; "" = present but answers nothing, which is the reported host.
 mock_hipconfig_offpath() {
     mkdir -p "$_F_ROCM/bin"
     cat > "$_F_ROCM/bin/hipconfig" <<MOCK
@@ -221,7 +202,6 @@ MOCK
     chmod +x "$_F_ROCM/bin/hipconfig"
 }
 
-# No args = rpm present but knows no ROCm package (Fedora ships no rocm-core).
 mock_rpm() {
     if [ $# -eq 2 ]; then
         printf '%s\n' "$1" > "$_MOCK/.rpm-pkg"; printf '%s\n' "$2" > "$_MOCK/.rpm-ver"
@@ -300,10 +280,6 @@ MOCK
     chmod +x "$_MOCK/lspci"
 }
 
-# ---------------------------------------------------------------------------
-# Runner: run the spliced functions AND the spliced top-level block, then report
-# the index the installer would actually have used.
-# ---------------------------------------------------------------------------
 _RUN_SHELL=bash
 run_installer() {   # $1 = _ARCH
     cat > "$_ROOT/run.sh" <<EOF
@@ -334,10 +310,6 @@ _AMD="https://repo.amd.com/rocm/whl"
 
 echo "=== test_rocm_no_version_arch_route_e2e ==="
 
-# ── 0. Pre-flight: the host redirect is load-bearing, so prove it took ──────
-# A broken redirect looks exactly like a working one from the outside: every AMD
-# scenario would quietly measure this machine's own GPU instead of the fake host.
-# Negative and positive control, so neither "always false" nor "always true" passes.
 reset_host
 cat > "$_ROOT/nvcheck.sh" <<EOF
 unset CUDA_VISIBLE_DEVICES 2>/dev/null || true
@@ -360,9 +332,6 @@ mock_kfd; mock_pci_amd_display
 assert_eq "and a faked KFD topology is seen" "SEEN" \
     "$(PATH="$_MOCK:$_TOOLS" bash "$_ROOT/amdcheck.sh" 2>/dev/null)"
 
-# The reported host: Bazzite/Fedora, RX 9070 XT. rocminfo and amd-smi both read
-# gfx1201, amd-smi reports no ROCm version, hipconfig lives under /opt/rocm rather
-# than on PATH and answers nothing, and Fedora ships no rocm-core for rpm to find.
 fedora_no_version_host() {   # $@ = gfx arches
     reset_host
     mock_rocminfo "$@"
@@ -373,9 +342,6 @@ fedora_no_version_host() {   # $@ = gfx arches
     mock_pci_amd_display
 }
 
-# ── 1. The reported host actually reaches the per-arch wheels ───────────────
-# This is the assertion the suite was missing: not "install.sh mentions the reroute"
-# but "a Fedora gfx1201 host with no readable version ends up at AMD's index".
 fedora_no_version_host gfx1201
 assert_eq "gfx1201 with no readable version routes to the per-arch index" \
     "$_AMD/gfx120X-all/" "$(run_index)"
@@ -383,32 +349,23 @@ fedora_no_version_host gfx1201
 assert_eq "and the single named card is handed to setup.sh" \
     "gfx1201" "$(run_gfx)"
 
-# ── 2. The same for an RDNA3 card, so the route is not one hardcoded family ─
 fedora_no_version_host gfx1100
 assert_eq "gfx1100 with no readable version routes to its own family" \
     "$_AMD/gfx110X-all/" "$(run_index)"
 
-# ── 3. An arch with no per-arch index still needs a version ─────────────────
 # gfx906 (MI50) is served only through a generic rocmX.Y leaf, so there is nothing
 # to reroute to and CPU torch is the correct answer.
 fedora_no_version_host gfx906
 assert_eq "gfx906 with no readable version stays on cpu" "$_BASE/cpu" "$(run_index)"
 
-# ── 4. A readable but unsupported version is a decision, not a detection miss ─
-# Same gfx1201 card. ROCm 5.7 is below the floor, so the CPU fallback is deliberate
-# and the reroute must not overturn it.
 fedora_no_version_host gfx1201
 mock_hipconfig_offpath "5.7.31921-0"
 assert_eq "gfx1201 on unsupported ROCm 5.7 stays on cpu" "$_BASE/cpu" "$(run_index)"
 
-# ── 5. Two AMD GPUs that want different wheels route to neither ─────────────
-# An APU beside a discrete card enumerates in kernel order, so routing on whichever
-# agent came first would put the wrong wheels on the box.
 fedora_no_version_host gfx1201 gfx1036
 mock_lspci "Navi 48 [Radeon RX 9070 XT]"
 assert_eq "gfx1201 beside gfx1036 stays on cpu" "$_BASE/cpu" "$(run_index)"
 
-# ── 6. Two AMD GPUs in ONE family do route, without naming a card ───────────
 # The wheels are right for both, so the index moves. UNSLOTH_ROCM_GFX_ARCH must stay
 # unset: setup.sh makes a visibility-aware pick that naming one at random overrules.
 fedora_no_version_host gfx1200 gfx1201
@@ -419,9 +376,6 @@ fedora_no_version_host gfx1200 gfx1201
 mock_lspci "Navi 48 [Radeon RX 9070 XT]"
 assert_eq "a same-family pair names no single card" "" "$(run_gfx)"
 
-# ── 7. The reroute must not reach past AMD hosts ────────────────────────────
-# Stale ROCm packages on an NVIDIA box are common (a dual-boot leftover, a container
-# image). The CUDA index has to survive them.
 reset_host
 mock_nvidia_smi "12.8" "9.0"
 mock_hipconfig_offpath "6.4.43483-0"
@@ -437,11 +391,9 @@ mock_dpkg "6.4.1-1"
 assert_eq "a GPU-less host with stale ROCm packages stays on cpu" \
     "$_BASE/cpu" "$(run_index)"
 
-# ── 8. ROCm wheels are x86_64-only ─────────────────────────────────────────
 fedora_no_version_host gfx1201
 assert_eq "the same host on aarch64 does not reroute" "$_BASE/cpu" "$(run_index aarch64)"
 
-# ── 9. Shell parity ─────────────────────────────────────────────────────────
 # install.sh is #!/bin/sh. bash is what CI runs these files with, so the block above
 # proves nothing about dash, where an accidental bashism in the reroute would only
 # surface on a Debian/Ubuntu host. Re-run the decision under /bin/sh as well.
