@@ -2091,7 +2091,9 @@ def test_a_vendor_that_did_not_answer_keeps_the_inventory_unknown(monkeypatch):
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
     monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     monkeypatch.setattr(
-        hw, "_linux_drm_sysfs_records", lambda **_kw: [{"vendor": "intel", "name": None, "index": 0}]
+        hw,
+        "_linux_drm_sysfs_records",
+        lambda **_kw: [{"vendor": "intel", "name": None, "index": 0}],
     )
 
     def _timeout(*_a, **_k):
@@ -2447,6 +2449,7 @@ def test_an_unreadable_drm_walk_is_not_a_host_without_amd_cards(monkeypatch, tmp
     cards", so nothing marked the vendor unanswered and the carry-forward had nothing
     to act on: the previously detected cards were dropped for a whole TTL.
     """
+
     def denied(_root):
         raise PermissionError("EACCES during driver restart")
 
@@ -2457,6 +2460,7 @@ def test_an_unreadable_drm_walk_is_not_a_host_without_amd_cards(monkeypatch, tmp
 
 def test_a_host_with_no_drm_subsystem_has_answered(monkeypatch):
     """Missing is not unreadable: a container or a machine with no DRM said "no cards"."""
+
     def absent(_root):
         raise FileNotFoundError("/sys/class/drm")
 
@@ -2497,7 +2501,8 @@ def test_the_inventory_marks_both_sysfs_vendors_unanswered(monkeypatch):
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
     monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     monkeypatch.setattr(
-        nvidia.subprocess, "run",
+        nvidia.subprocess,
+        "run",
         lambda *_a, **_k: (_ for _ in ()).throw(FileNotFoundError("nvidia-smi")),
     )
     monkeypatch.setattr(nvidia, "_linux_nvidia_procfs_gpu_count", lambda: 0)
@@ -2514,12 +2519,18 @@ def test_a_previously_seen_amd_card_survives_an_unreadable_walk(monkeypatch):
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
     monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     monkeypatch.setattr(
-        nvidia.subprocess, "run",
+        nvidia.subprocess,
+        "run",
         lambda *_a, **_k: (_ for _ in ()).throw(FileNotFoundError("nvidia-smi")),
     )
     monkeypatch.setattr(nvidia, "_linux_nvidia_procfs_gpu_count", lambda: 0)
-    card = {"vendor": "amd", "index": 0, "name": None, "memory_total_gb": 20.0,
-            "source": "sysfs-drm"}
+    card = {
+        "vendor": "amd",
+        "index": 0,
+        "name": None,
+        "memory_total_gb": 20.0,
+        "source": "sysfs-drm",
+    }
     monkeypatch.setattr(hw, "_linux_drm_sysfs_records", lambda **_kw: [dict(card)])
     good = hw.get_physical_gpu_inventory()
     assert [d["vendor"] for d in good["devices"]] == ["amd"]

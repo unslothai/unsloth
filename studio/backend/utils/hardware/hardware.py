@@ -604,9 +604,7 @@ def _adapter_name_is_live(name: Optional[str], live_names: list[str]) -> bool:
     )
 
 
-def _linux_drm_sysfs_records(
-    *, distinguish_failure: bool = False
-) -> "list[Dict[str, Any]] | None":
+def _linux_drm_sysfs_records(*, distinguish_failure: bool = False) -> "list[Dict[str, Any]] | None":
     """Every AMD or Intel card the DRM drivers have bound, from /sys/class/drm.
 
     ``vendor`` is 0x1002 for AMD/ATI and 0x8086 for Intel, and amdgpu's
