@@ -210,3 +210,39 @@ def test_every_planned_map_membership_test_is_guarded_against_a_dict():
                 f"{name}: a membership test on _PLANNED_DEVICE_MAPS with no isinstance "
                 f"guard beside it -- an explicit dict device_map raises TypeError here"
             )
+
+
+def test_sentence_transformer_declines_to_a_value_st_device_normalises():
+    """Whatever planned name is asked for, this loader declines to "sequential".
+
+    `st_device` only normalises dicts, "auto" and "sequential"; anything else reaches
+    `SentenceTransformer(device = ...)` and then `.to(...)`, so declining to "balanced"
+    -- the value that name declines to everywhere else -- would raise on a string that
+    is not a torch device. Nothing is sharded here, so the sharding fallback is wrong.
+    """
+    tree = ast.parse(_source("sentence_transformer.py"))
+    function = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "from_pretrained"
+    )
+
+    declines = [
+        ast.unparse(node.value)
+        for node in ast.walk(function)
+        if isinstance(node, ast.Assign)
+        and any(getattr(t, "id", None) == "device_map" for t in node.targets)
+        and ast.unparse(node.value) != "requested_device_map(device_map)"
+    ]
+    assert "'sequential'" in declines, "the decline is not a literal 'sequential'"
+    assert "_PLANNED_DEVICE_MAPS[device_map]" not in declines, (
+        "declining to the sharding fallback sends 'balanced' to SentenceTransformer(device=)"
+    )
+
+    whitelists = [
+        node
+        for node in ast.walk(function)
+        if isinstance(node, ast.List)
+        and [getattr(e, "value", None) for e in node.elts] == ["auto", "sequential"]
+    ]
+    assert whitelists, "the st_device whitelist changed; re-check what the decline may be"
