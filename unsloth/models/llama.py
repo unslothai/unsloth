@@ -3721,7 +3721,9 @@ class FastLlamaModel:
             assert hasattr(model.get_input_embeddings(), "modules_to_save")
 
             _offload_frozen_module_for_training(
-                model.get_input_embeddings(), DEVICE_TYPE_TORCH, offload_device = None,
+                model.get_input_embeddings(),
+                DEVICE_TYPE_TORCH,
+                offload_device = None,
                 original_device = input_embeddings_device,
             )
 
@@ -3730,7 +3732,9 @@ class FastLlamaModel:
             assert hasattr(model.get_output_embeddings(), "modules_to_save")
 
             _offload_frozen_module_for_training(
-                model.get_output_embeddings(), DEVICE_TYPE_TORCH, offload_device = None,
+                model.get_output_embeddings(),
+                DEVICE_TYPE_TORCH,
+                offload_device = None,
                 original_device = output_embeddings_device,
             )
 
