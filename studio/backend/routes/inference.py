@@ -4795,7 +4795,13 @@ def _apply_compaction_nudge(
     return nudge + " " + text
 
 
-async def _apply_rag_nudge(nudge: str, tools: list[dict], *, rag_scope) -> str:
+async def _apply_rag_nudge(
+    nudge: str,
+    tools: list[dict],
+    *,
+    rag_scope,
+    tool_choice = None,
+) -> str:
     """Append the RAG grounding nudge to ``nudge`` when the knowledge-base tool
     is active (search_knowledge_base present and a retrieval scope is set).
 
@@ -4804,9 +4810,9 @@ async def _apply_rag_nudge(nudge: str, tools: list[dict], *, rag_scope) -> str:
     ``web_search`` is present and a project scope is set, tells the model not
     to treat web_search as an automatic fallback after an empty document search.
 
-    Returns ``nudge`` unchanged when RAG isn't active."""
+    Returns ``nudge`` unchanged when RAG isn't active or the caller disabled tools."""
     tool_names = {(t.get("function") or {}).get("name") for t in (tools or [])}
-    if "search_knowledge_base" not in tool_names or not rag_scope:
+    if tool_choice == "none" or "search_knowledge_base" not in tool_names or not rag_scope:
         return nudge
     grounding = _RAG_GROUNDING_NUDGE + await _rag_roster_sentence(rag_scope)
     has_internet_tool = bool(tool_names & _RAG_INTERNET_TOOL_NAMES)
@@ -18537,6 +18543,7 @@ async def _proxy_to_external_provider(
                 _codex_nudge,
                 studio_tool_payloads,
                 rag_scope = payload.rag_scope,
+                tool_choice = payload.tool_choice,
             )
             if _codex_nudge:
                 chat_messages = _append_to_codex_instructions(chat_messages, _codex_nudge)
@@ -18861,6 +18868,7 @@ async def _proxy_to_external_provider(
             _external_nudge,
             external_studio_tools,
             rag_scope = payload.rag_scope,
+            tool_choice = payload.tool_choice,
         )
         if _external_nudge:
             chat_messages = _append_to_system_message(chat_messages, _external_nudge)
@@ -20438,7 +20446,12 @@ async def produce_openai_chat_completions(
             )
 
             # Nudge the model to ground in attached documents instead of memory.
-            _nudge = await _apply_rag_nudge(_nudge, tools_to_use, rag_scope = payload.rag_scope)
+            _nudge = await _apply_rag_nudge(
+                _nudge,
+                tools_to_use,
+                rag_scope = payload.rag_scope,
+                tool_choice = payload.tool_choice,
+            )
             # This path fits through `_fit_context`, the only fit that can reset the epoch,
             # and only when the request asked for truncation. Otherwise the checkpoint half
             # of the nudge would describe a reset that cannot happen.
@@ -22115,7 +22128,12 @@ async def produce_openai_chat_completions(
         )
 
         # RAG nudge, mirroring the GGUF path.
-        _sf_nudge = await _apply_rag_nudge(_sf_nudge, _sf_tools_to_use, rag_scope = payload.rag_scope)
+        _sf_nudge = await _apply_rag_nudge(
+            _sf_nudge,
+            _sf_tools_to_use,
+            rag_scope = payload.rag_scope,
+            tool_choice = payload.tool_choice,
+        )
         # No `checkpoint_fitted`: this path never calls `fit_checkpoint_context`, so there
         # is no reset and no carried_forward block to describe.
         _sf_nudge = _apply_compaction_nudge(_sf_nudge, _sf_tools_to_use)
@@ -27150,6 +27168,7 @@ async def chat_count_tokens(
                 ),
                 tools_to_use,
                 rag_scope = payload.rag_scope,
+                tool_choice = payload.tool_choice,
             )
             openai_messages = _append_to_system_message(openai_messages, _count_nudge)
 

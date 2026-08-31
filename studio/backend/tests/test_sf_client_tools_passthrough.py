@@ -402,6 +402,7 @@ def test_studio_tool_choice_none_reaches_safetensors_tool_loop(monkeypatch):
         "search_knowledge_base"
     ]
     assert backend.calls[0]["tool_choice"] == "none"
+    assert "call search_knowledge_base before answering" not in backend.calls[0]["system_prompt"]
 
 
 @pytest.mark.parametrize(
