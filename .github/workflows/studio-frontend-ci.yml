@@ -381,6 +381,16 @@ jobs:
           PW_BROWSER: chromium
         run: python3 tests/studio/playwright_strip_ansi_smoke.py
 
+      # No vite server: the fixture is served by Playwright's router, because what
+      # is under test is a browser rule (a sandboxed frame keeps its contentWindow
+      # and "null" origin across a navigation, and the new document's scripts run
+      # before the load event), not a Studio screen.
+      - name: Browser smoke for the MCP App tool bridge
+        working-directory: ${{ github.workspace }}
+        env:
+          PW_BROWSER: chromium
+        run: python3 tests/studio/playwright_mcp_app_bridge_smoke.py
+
       # Each harness owns its vite server: starting one here backgrounds npm, so $! is the
       # wrapper and killing it orphans the node child.
       - name: Browser smoke for chat autoscroll

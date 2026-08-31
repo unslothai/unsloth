@@ -14,8 +14,14 @@ import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import {
   formatMcpToolName,
+  mcpBareToolName,
   mcpServerFromProvenance,
+  mcpServerIdFromToolName,
 } from "@/features/chat/utils/mcp-tool-name";
+import { McpAppFrame } from "@/features/chat/mcp-apps/mcp-app-frame";
+import { sandboxSessionIdFor } from "@/components/assistant-ui/sandbox-files";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { useAuiState } from "@assistant-ui/react";
 import { stripAnsi, stringifyToolResult } from "@/lib/strip-ansi";
 import { cn } from "@/lib/utils";
 import {
@@ -317,22 +323,107 @@ function isMcpImageResult(val: unknown): val is McpImageResult {
   );
 }
 
+// The adapter's McpUiToolResult, declared locally like isMcpImageResult below
+// so this card does not pull the chat adapter in for a shape check.
+interface McpUiResult {
+  text: string;
+  ui: {
+    resourceUri: string;
+    structuredContent?: unknown;
+    _meta?: Record<string, unknown>;
+  };
+  images?: { data: string; mimeType: string }[];
+}
+
+function isMcpUiResult(val: unknown, toolName?: string): val is McpUiResult {
+  // Only an MCP result can be carrying the wrapper the backend writes; an
+  // imported conversation stores whatever object its own host kept.
+  if (toolName !== undefined && mcpServerIdFromToolName(toolName) === null) {
+    return false;
+  }
+  if (typeof val !== "object" || val === null) return false;
+  const v = val as { text?: unknown; ui?: unknown };
+  return (
+    typeof v.text === "string" &&
+    typeof v.ui === "object" &&
+    v.ui !== null &&
+    typeof (v.ui as { resourceUri?: unknown }).resourceUri === "string"
+  );
+}
+
+/**
+ * The widget an MCP Apps tool result renders through. Outside
+ * `ToolFallbackContent` so it stays on screen with the card collapsed.
+ */
+function ToolFallbackMcpApp({
+  toolName,
+  result,
+  argsText,
+}: {
+  toolName: string;
+  result: unknown;
+  argsText?: string;
+}) {
+  const threadId = useAuiState(
+    ({ threadListItem }) => threadListItem.remoteId,
+  );
+  const projectId = useChatRuntimeStore((state) => state.activeProjectId);
+  if (!isMcpUiResult(result, toolName)) return null;
+  const serverId = mcpServerIdFromToolName(toolName);
+  if (!serverId) return null;
+  let toolArgs: Record<string, unknown> | undefined;
+  if (argsText) {
+    try {
+      const parsed: unknown = JSON.parse(argsText);
+      if (typeof parsed === "object" && parsed !== null) {
+        toolArgs = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Streaming leaves argsText partial; send {} rather than a half-parse.
+    }
+  }
+  return (
+    <McpAppFrame
+      serverId={serverId}
+      toolName={mcpBareToolName(toolName) ?? toolName}
+      ui={result.ui as McpUiResult["ui"]}
+      toolArgs={toolArgs}
+      resultImages={result.images}
+      threadId={threadId}
+      // execute_tool's scope, so the widget reaches the same stdio process.
+      sessionId={sandboxSessionIdFor(threadId, projectId)}
+    />
+  );
+}
+
 function ToolFallbackResult({
   result,
+  toolName,
   className,
   ...props
 }: ComponentProps<"div"> & {
   result?: unknown;
+  toolName?: string;
 }) {
   if (result === undefined) {
     return null;
   }
 
-  const imageResult = isMcpImageResult(result) ? result : null;
+  const uiResult = isMcpUiResult(result, toolName) ? result : null;
+  // A widget result may carry images too; both panes read the same shape.
+  const imageResult = isMcpImageResult(result)
+    ? result
+    : uiResult?.images?.length
+      ? { text: uiResult.text, images: uiResult.images }
+      : null;
   // Colourised CLIs (ls --color, grep --color, npm, cargo, pytest) emit SGR
   // escapes that a plain <pre> cannot style; strip them so the pane stays
   // readable (#7962).
-  const resultText = imageResult ? null : stringifyToolResult(result);
+  const resultText = imageResult
+    ? null
+    : uiResult
+      ? stripAnsi(uiResult.text)
+      : stringifyToolResult(result);
 
   return (
     <div
@@ -433,13 +524,22 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
         mcpServer={mcpServer}
         status={status}
       />
+      {!isCancelled && (
+        <ToolFallbackMcpApp
+          toolName={toolName}
+          result={result}
+          argsText={argsText}
+        />
+      )}
       <ToolFallbackContent>
         <ToolFallbackError status={status} />
         <ToolFallbackArgs
           argsText={argsText}
           className={cn(isCancelled && "opacity-60")}
         />
-        {!isCancelled && <ToolFallbackResult result={result} />}
+        {!isCancelled && (
+          <ToolFallbackResult result={result} toolName={toolName} />
+        )}
       </ToolFallbackContent>
     </ToolFallbackRoot>
   );
