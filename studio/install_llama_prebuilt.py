@@ -2745,7 +2745,20 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
         # driver-only AMD host this branch exists for ships no rocminfo/amd-smi at all, so
         # a merely exported CUDA_VISIBLE_DEVICES must not cost it the Vulkan bundle. Intel
         # is not addressed by HIP masks and keeps its plain detection.
-        _amd_hidden_by_mask = _hip_visible_device_mask_set() and _rocm_probe_tool_present()
+        #
+        # ROCR_VISIBLE_DEVICES alone, not the three _hip_visible_device_mask_set() reads.
+        # HIP_VISIBLE_DEVICES and its CUDA_VISIBLE_DEVICES alias filter the HIP runtime's
+        # device list; rocminfo is an HSA tool, not a HIP application, so neither can be
+        # the reason the ROCm inventory came back empty and neither leaves anything
+        # ambiguous to guard against here (AMD's GPU-isolation docs, and the split
+        # guidance to use ROCR_VISIBLE_DEVICES on Linux). Counting them cost the Vulkan
+        # bundle to any AMD host that merely has rocminfo installed and CUDA_VISIBLE_DEVICES
+        # exported, which is a common shell default and exactly the host this widening
+        # exists for. The Windows probe is hipinfo, itself a HIP application, so
+        # _should_auto_vulkan_for_amd_windows keeps reading all three.
+        _amd_hidden_by_mask = (
+            os.environ.get("ROCR_VISIBLE_DEVICES") is not None and _rocm_probe_tool_present()
+        )
         if is_linux:
             # No early break: both vendors matter, and a laptop can pair an Intel iGPU
             # with an AMD dGPU. This is a handful of sysfs reads.

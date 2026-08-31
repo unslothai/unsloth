@@ -77,6 +77,20 @@ echo "=== an uncreatable cache falls back to uv's default, it does not stay expo
 assert_eq "uncreatable cache is dropped" "<unset>" "$(_run "$_TMP/blocked" '')"
 mkdir -p "$_TMP/rofile" && : > "$_TMP/rofile/cache"   # writable home, "cache" is a file
 assert_eq "cache-as-file is dropped"     "<unset>" "$(_run "$_TMP/rofile" '')"
+# mkdir -p exits 0 for a directory that ALREADY exists, so an unwritable leftover cache
+# -- an earlier install run under another account, on the shared second disk that is the
+# usual reason to redirect STUDIO_HOME at all -- passed the mkdir and then failed uv
+# exactly as an uncreatable path does. Writability has to be probed, not inferred.
+mkdir -p "$_TMP/leftover/cache/uv" && chmod 500 "$_TMP/leftover/cache/uv"
+if [ "$(id -u)" = "0" ]; then
+    echo "  SKIP: unwritable-cache case (root writes through the mode bits)"
+else
+    assert_eq "unwritable existing cache is dropped" "<unset>" "$(_run "$_TMP/leftover" '')"
+fi
+chmod 700 "$_TMP/leftover/cache/uv"
+# ...and the probe file it writes does not survive into the cache uv then fills.
+_run "$_TMP/probe" '' >/dev/null
+assert_eq "write probe cleaned up" "" "$(ls -A "$_TMP/probe/cache/uv")"
 # ... and the fallback really is usable, unlike the path we just refused.
 if command -v uv >/dev/null 2>&1; then
     _uv_rc=$("$_SH" -c "

@@ -6833,8 +6833,10 @@ class TestRocmMiscomputingArchDemotion:
         archs,
         env = None,
         codes_fn = None,
+        kfd = (),
     ):
         calls = []
+        monkeypatch.setattr(stack_mod, "_kfd_gfx_targets", lambda: list(kfd))
         monkeypatch.setattr(stack_mod, "NO_TORCH", False)
         monkeypatch.setattr(stack_mod, "IS_WINDOWS", False)
         monkeypatch.setattr(stack_mod, "IS_MACOS", False)
@@ -6878,6 +6880,33 @@ class TestRocmMiscomputingArchDemotion:
         calls = self._demotion_calls(monkeypatch, "2.10.0+rocm7.1", [], codes_fn = _codes)
         assert seen.get("ignore_hsa_override") is True
         assert len(calls) == 1
+
+    def test_kfd_topology_names_the_arch_when_no_runtime_does(self, monkeypatch):
+        """A Deck with ROCm torch but no working rocminfo is the host that most needs the
+        demotion, and it is the one where both runtime sources answer nothing:
+        _detect_amd_gfx_codes() has no probe to run and no Van Gogh product name maps
+        through _infer_linux_amd_gfx_arch(). amdkfd is in the kernel and still answers.
+        """
+        calls = self._demotion_calls(
+            monkeypatch, "2.10.0+rocm7.1", [], kfd = ["gfx1033"]
+        )
+        assert len(calls) == 1, "gfx1033 kept its ROCm torch with only KFD to name it"
+        assert "--force-reinstall" in calls[0][0]
+        assert "download.pytorch.org/whl/cpu" in str(calls[0])
+
+    def test_kfd_reports_every_node_so_a_mixed_host_keeps_rocm(self, monkeypatch):
+        """_kfd_gfx_targets() returns one entry per GPU node, so the all-archs rule reads
+        the same mixed host through this source as through the runtime probes."""
+        assert self._demotion_calls(
+            monkeypatch, "2.10.0+rocm7.1", [], kfd = ["gfx1033", "gfx1100"]
+        ) == []
+
+    def test_the_runtime_probe_still_wins_over_kfd(self, monkeypatch):
+        """KFD is the last resort, not an override: a runtime that answered keeps its
+        answer, so HSA_OVERRIDE handling and the mask semantics above are untouched."""
+        assert self._demotion_calls(
+            monkeypatch, "2.10.0+rocm7.1", ["gfx1100"], kfd = ["gfx1033"]
+        ) == []
 
     def test_env_override_names_the_arch(self, monkeypatch):
         calls = self._demotion_calls(
@@ -6925,6 +6954,7 @@ class TestRocmMiscomputingArchDemotion:
 
         monkeypatch.setattr(stack_mod, "_detect_amd_gfx_codes", _boom)
         monkeypatch.setattr(stack_mod, "_infer_linux_amd_gfx_arch", _boom)
+        monkeypatch.setattr(stack_mod, "_kfd_gfx_targets", _boom)
         for _var in ("UNSLOTH_TORCH_INDEX_URL", "UNSLOTH_TORCH_INDEX_FAMILY"):
             monkeypatch.delenv(_var, raising = False)
         assert stack_mod._rocm_miscomputing_host() is False

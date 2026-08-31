@@ -1425,6 +1425,15 @@ def _rocm_miscomputing_host() -> bool:
     The disk label is read first so the ROCm probes cost nothing on the overwhelming
     majority of hosts, which have no ROCm torch to demote. An explicit
     UNSLOTH_TORCH_INDEX_URL / _FAMILY stays the documented escape hatch and wins.
+
+    KFD topology sysfs is consulted after the runtime probes because a Van Gogh host can
+    reach here with neither answering: _detect_amd_gfx_codes() needs rocminfo or amd-smi,
+    and a Deck whose ROCm was uninstalled -- or whose user is not in the render group, so
+    rocminfo enumerates no GPU -- has neither, while _infer_linux_amd_gfx_arch() maps no
+    Van Gogh product name. _archs then came back empty and the host kept the very wheels
+    that produce the NaN, which is the failure this helper exists to end. amdkfd is in the
+    kernel driver, so it answers on exactly those hosts, and it is the same source
+    _hsa_probe_correction() already trusts over the runtime.
     """
     if IS_WINDOWS or IS_MACOS:
         return False
@@ -1445,6 +1454,8 @@ def _rocm_miscomputing_host() -> bool:
         if not _archs:
             _inferred = (_infer_linux_amd_gfx_arch() or "").strip().lower().split(":")[0]
             _archs = [_inferred] if _inferred else []
+        if not _archs:
+            _archs = [_code.strip().lower().split(":")[0] for _code in _kfd_gfx_targets()]
     return bool(_archs) and all(_arch in _ROCM_MISCOMPUTING_GFX for _arch in _archs)
 
 

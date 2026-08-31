@@ -42,7 +42,11 @@ assert_eq() {
 # every ROCm case to cpu). So exercise the real case block lifted from the function.
 _FN_FILE=$(mktemp)
 trap 'rm -f "$_FN_FILE"' EXIT
-awk '/# Archs measured to compute INCORRECTLY under ROCm/,/^        esac$/' "$INSTALL_SH" > "$_FN_FILE"
+# The block ends at the only 8-space `fi` in it: the per-token classification below is a
+# `case` and the all-bad arm a nested `if`, both indented deeper, so neither can end the
+# range early. A future edit that lifts one of them to this level truncates the extract,
+# which the "could not extract" guard and the fall-through cases below both catch.
+awk '/# Archs measured to compute INCORRECTLY under ROCm/,/^        fi$/' "$INSTALL_SH" > "$_FN_FILE"
 
 if ! grep -q 'gfx1033' "$_FN_FILE"; then
     echo "FAIL: could not extract the gfx gate from get_torch_index_url in install.sh"
@@ -89,6 +93,28 @@ done
 assert_eq "empty probe not intercepted"   "rocm" "$(_route '')"
 assert_eq "garbage not intercepted"       "rocm" "$(_route 'not-a-gfx')"
 assert_eq "gfx10330 is not gfx1033"       "rocm" "$(_route gfx10330)"
+
+echo "=== A healthy AMD GPU beside the APU keeps ROCm for the whole host ==="
+# _probe_amd_gfx_arch unsets the visible-device masks, so its output is the PHYSICAL
+# inventory: one bad token used to take a mixed host to CPU and leave the good card
+# unusable without a manual pin. install_python_stack.py's _rocm_miscomputing_host()
+# demotes an installed ROCm torch only when EVERY detected arch is bad, so gating on
+# `any` here also meant the two disagreed: CPU wheels chosen at install, ROCm wheels
+# reinstated on the next update.
+assert_eq "gfx1033 + gfx1100 keeps rocm"   "rocm" "$(_route 'gfx1033
+gfx1100')"
+assert_eq "gfx1100 + gfx1033 keeps rocm"   "rocm" "$(_route 'gfx1100
+gfx1033')"
+assert_eq "gfx1033 + gfx1030 keeps rocm"   "rocm" "$(_route 'gfx1033
+gfx1030')"
+# rocminfo names each agent twice (its Name line and its ISA Info line), so the real
+# single-GPU Deck probe repeats the token and must still be all-bad.
+assert_eq "repeated gfx1033 -> cpu" \
+    "https://download.pytorch.org/whl/cpu" "$(_route 'gfx1033
+gfx1033')"
+assert_eq "two Decks worth of gfx1033 -> cpu" \
+    "https://download.pytorch.org/whl/cpu" "$(_route 'gfx1033:xnack-
+GFX1033')"
 
 echo "=== The runtime-less reroute honours the same gate ==="
 # get_torch_index_url's gate is not enough on its own. The reroute below it fires when

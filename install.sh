@@ -678,14 +678,24 @@ VENV_DIR="$STUDIO_HOME/unsloth_studio"
 # with a writable STUDIO_HOME whose "cache" entry is a file or an unwritable directory
 # (a leftover from an install run under a different user). Fall back to uv's default by
 # restoring the unset state instead.
+#
+# mkdir -p succeeding is not the same question as uv being able to use the path: it
+# exits 0 for a directory that already exists, so a leftover cache owned by another
+# account passes the mkdir and then fails uv exactly as an uncreatable path does. Probe
+# with a real create, because -w answers "yes" for root on a directory root cannot
+# usefully share and reads the mode rather than the filesystem (a read-only mount or a
+# full quota refuses a write the mode bits permit).
 if [ -z "${UV_CACHE_DIR:-}" ]; then
     UV_CACHE_DIR="$STUDIO_HOME/cache/uv"
     export UV_CACHE_DIR
-    if ! mkdir -p "$UV_CACHE_DIR" 2>/dev/null; then
-        echo "[WARN] Cannot create $UV_CACHE_DIR -- using uv's default cache." >&2
+    _uv_cache_probe="$UV_CACHE_DIR/.unsloth-write-probe.$$"
+    if ! mkdir -p "$UV_CACHE_DIR" 2>/dev/null || ! (: > "$_uv_cache_probe") 2>/dev/null; then
+        echo "[WARN] Cannot write to $UV_CACHE_DIR -- using uv's default cache." >&2
         echo "[WARN] Wheels will be copied into the venv rather than hardlinked, costing extra disk." >&2
         unset UV_CACHE_DIR
     fi
+    rm -f "$_uv_cache_probe" 2>/dev/null || true
+    unset _uv_cache_probe
 fi
 _VENV_ROLLBACK_DIR=""
 _VENV_ROLLBACK_TARGET="$VENV_DIR"
@@ -3915,15 +3925,35 @@ get_torch_index_url() {
         # reads "gfx1033\ngfx1033". An exact-string case on that matched nothing and fell
         # through to the version-keyed ROCm index below. Flatten to one space-delimited,
         # lowercased, suffix-stripped line (the surrounding spaces keep gfx10330 out).
+        #
+        # EVERY arch, not any. _probe_amd_gfx_arch unsets the visible-device masks, so
+        # what it returns is the PHYSICAL inventory: on a host pairing a Van Gogh APU
+        # with a healthy AMD dGPU, gating on one token would take the whole install to
+        # CPU and leave the good card unusable without a manual pin. That also keeps this
+        # at the same verdict as _rocm_miscomputing_host() in install_python_stack.py,
+        # which demotes an installed ROCm torch only when every detected arch is bad --
+        # two implementations of one policy, and a host they disagreed about would be
+        # given CPU wheels here and then have ROCm wheels reinstated on the next update.
         _amd_gfx_tokens=" $(printf '%s\n' "$_amd_gfx_probe" | sed 's/:.*$//' \
             | tr '[:upper:]' '[:lower:]' | tr '\n' ' ')"
-        case "$_amd_gfx_tokens" in
-            *" gfx1033 "*)
+        _amd_gfx_bad=false
+        _amd_gfx_good=false
+        for _amd_gfx_token in $_amd_gfx_tokens; do
+            case "$_amd_gfx_token" in
+                gfx1033) _amd_gfx_bad=true ;;
+                *)       _amd_gfx_good=true ;;
+            esac
+        done
+        if [ "$_amd_gfx_bad" = true ]; then
+            if [ "$_amd_gfx_good" = false ]; then
                 echo "[WARN] AMD gfx1033 (Van Gogh) computes incorrect results under ROCm -- installing CPU-only PyTorch." >&2
                 echo "[WARN] ROCm wheels install on it but training diverges to NaN and gradcheck fails; forward math is fine." >&2
                 echo "[WARN] Details: studio/ROCM_RDNA2_APU.md. Override with UNSLOTH_TORCH_INDEX_URL if you want ROCm anyway." >&2
-                echo "$_base/cpu"; return ;;
-        esac
+                echo "$_base/cpu"; return
+            fi
+            echo "[WARN] AMD gfx1033 (Van Gogh) is present, but another AMD GPU on this host is not affected -- keeping ROCm PyTorch." >&2
+            echo "[WARN] gfx1033 computes incorrect results under ROCm (studio/ROCM_RDNA2_APU.md); pick the other GPU with ROCR_VISIBLE_DEVICES when you train." >&2
+        fi
         # detect ROCm version
         _rocm_tag=""
         _rocm_tag=$(_detect_rocm_version_tag) || _rocm_tag=""
