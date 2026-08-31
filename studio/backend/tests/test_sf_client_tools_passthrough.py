@@ -105,6 +105,9 @@ class _ScriptedBackend:
     def reset_generation_state(self, caller_cancel_event = None):
         self.reset_count += 1
 
+    def resize_image(self, image):
+        return image
+
 
 def _fixed(*snapshots):
     """Responder that always replays the given cumulative snapshots."""
@@ -1172,3 +1175,51 @@ def test_completion_details_are_summed_with_the_completion_they_describe():
     )
     assert folded["usage"]["completion_tokens"] == 50
     assert folded["usage"]["completion_tokens_details"] == {"reasoning_tokens": 10}
+
+
+_PNG_1x1 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk"
+    "+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+)
+
+
+def _vision_backend(*snapshots):
+    backend = _ScriptedBackend(_fixed(*snapshots))
+    backend.models["sf-model"]["is_vision"] = True
+    return backend
+
+
+def _image_message(text = "run the tests"):
+    return ChatMessage(
+        role = "user",
+        content = [
+            {"type": "text", "text": text},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_PNG_1x1}"}},
+        ],
+    )
+
+
+def test_image_turn_keeps_the_client_tool_catalog(monkeypatch):
+    backend = _vision_backend(_CALL_XML)
+    payload = _request(messages = [_image_message()], tools = [LOOKUP_TOOL], stream = False)
+    body = _json_body(_call(payload, monkeypatch, backend))
+
+    assert backend.calls[0]["tools"] == [LOOKUP_TOOL]
+    assert backend.calls[0]["image"] is not None
+    choice = body["choices"][0]
+    assert choice["finish_reason"] == "tool_calls"
+    assert choice["message"]["tool_calls"][0]["function"]["name"] == "lookup"
+
+
+def test_legacy_image_field_keeps_the_client_tool_catalog(monkeypatch):
+    backend = _vision_backend(_CALL_XML)
+    payload = _request(
+        messages = [ChatMessage(role = "user", content = "run the tests")],
+        image_base64 = _PNG_1x1,
+        tools = [LOOKUP_TOOL],
+        stream = False,
+    )
+    _call(payload, monkeypatch, backend)
+
+    assert backend.calls[0]["tools"] == [LOOKUP_TOOL]
+    assert backend.calls[0]["image"] is not None

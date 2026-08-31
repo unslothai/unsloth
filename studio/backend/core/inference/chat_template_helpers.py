@@ -2986,6 +2986,7 @@ def render_prompt_with_boundary(
     processor,
     messages: list,
     continue_final_message: bool = False,
+    tools: Optional[list] = None,
 ) -> str:
     """Render *messages* through a renderer's own chat template.
 
@@ -2994,19 +2995,23 @@ def render_prompt_with_boundary(
     partial from *messages* (which the caller already swept) rather than a separate copy:
     a raw partial could close the turn or open another role instead of resuming (#7066).
     """
+    extra = {"tools": tools} if tools else {}
     partial = trailing_assistant_text(messages) if continue_final_message else None
     if not partial:
-        return processor.apply_chat_template(messages, add_generation_prompt = True, tokenize = False)
+        return processor.apply_chat_template(
+            messages, add_generation_prompt = True, tokenize = False, **extra
+        )
     try:
         return processor.apply_chat_template(
             messages,
             add_generation_prompt = False,
             continue_final_message = True,
             tokenize = False,
+            **extra,
         )
     except TypeError:
         prefix = processor.apply_chat_template(
-            messages[:-1], add_generation_prompt = True, tokenize = False
+            messages[:-1], add_generation_prompt = True, tokenize = False, **extra
         )
         return f"{strip_open_reasoning_prefill(prefix)}{partial}"
 

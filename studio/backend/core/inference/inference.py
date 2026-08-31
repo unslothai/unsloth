@@ -1148,6 +1148,7 @@ class InferenceBackend:
                     cancel_event = cancel_event,
                     presence_penalty = presence_penalty,
                     continue_final_message = continue_final_message,
+                    tools = tools,
                 )
                 return
             else:
@@ -1292,6 +1293,7 @@ class InferenceBackend:
         cancel_event = None,
         presence_penalty: float = 0.0,
         continue_final_message: bool = False,
+        tools: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """Handle vision model generation with true token-by-token streaming."""
         # Reset so a failed or uncountable run cannot surface stale stats.
@@ -1357,10 +1359,33 @@ class InferenceBackend:
             )
             user_msg = next(m for m in reversed(vision_messages) if m.get("role") == "user")
 
+            if any(
+                isinstance(m, dict)
+                and (m.get("role") == "tool" or m.get("tool_calls") or m.get("tool_call_id"))
+                for m in messages
+            ):
+                raise RuntimeError(
+                    "This vision request cannot be rendered without dropping tool-call "
+                    "history."
+                )
+
+            if tools:
+                from core.inference.chat_template_helpers import _renders_tool_schema
+
+                if not _renders_tool_schema(processor, None, tools):
+                    raise RuntimeError(
+                        "This vision chat template cannot render an image alongside the "
+                        "requested tools, and the request cannot be served without "
+                        "dropping them."
+                    )
+
             def _render_vision(msgs):
                 # Partial taken from the swept msgs, not the raw pre-sweep capture.
                 return render_prompt_with_boundary(
-                    processor, msgs, continue_final_message = bool(continue_partial)
+                    processor,
+                    msgs,
+                    continue_final_message = bool(continue_partial),
+                    tools = tools,
                 )
 
             try:
