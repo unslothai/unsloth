@@ -748,9 +748,7 @@ def test_parked_metadata_survives_a_late_id_landing_on_the_call():
     # signature is still found. Pinned because the frontend keys the same wait
     # by card id, which a late id does rename, and the two have to agree.
     turn = _Turn()
-    turn.merge_structured(
-        [_delta(0, "lookup", '{"q":"a"}') | {"extra_content": {"sig": "A"}}]
-    )
+    turn.merge_structured([_delta(0, "lookup", '{"q":"a"}') | {"extra_content": {"sig": "A"}}])
     turn.merge_structured([_delta(0, "lookup", None) | {"extra_content": {"sig": "B"}}])
     turn.merge_structured([_delta(0, None, "") | {"id": "call_x"}])
 
