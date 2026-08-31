@@ -1339,7 +1339,12 @@ def test_an_unimportable_torch_still_reports_the_cards(monkeypatch, tmp_path):
             raise OSError("[WinError 126] cudart64_12.dll could not be loaded")
 
     class _Finder(importlib.abc.MetaPathFinder):
-        def find_spec(self, fullname, path = None, target = None):
+        def find_spec(
+            self,
+            fullname,
+            path = None,
+            target = None,
+        ):
             if fullname == "torch":
                 return importlib.util.spec_from_loader("torch", _WillNotLoad())
             return None
