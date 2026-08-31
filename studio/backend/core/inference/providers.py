@@ -104,8 +104,13 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             r"|^o1-mini\b"
             # Retired canonical id retained by /v1/models.
             r"|^gpt-5\.3$"
+            # Legacy bases and the first-generation embedding / search /
+            # similarity line (`text-search-ada-doc-001`, `code-search-ada-
+            # code-001`, `text-similarity-ada-001`). `^(?:text|code)-` needs
+            # the hyphen, so `codex-mini-latest` is untouched.
             r"|^(?:babbage|davinci|ada|curie)\b"
-            r"|^text-(?:embedding|moderation|davinci|curie|babbage|ada)\b"
+            r"|^(?:text|code)-(?:embedding|moderation|search|similarity"
+            r"|davinci|curie|babbage|ada|cushman)\b"
             r"|^dall-e\b"
             r"|^computer-use\b"
             # Fine-tunes carry the user's tenant in the id.

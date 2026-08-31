@@ -131,12 +131,19 @@ def test_openai_drops_non_chat_ids():
         "sora-2-pro",
         # Computer-use is an agentic harness, not a chat id.
         "computer-use-preview",
-        # Legacy bases.
+        # Legacy bases and the first-generation embedding / search /
+        # similarity line.
         "babbage-002",
         "davinci-002",
         "text-davinci-003",
         "text-curie-001",
         "text-ada-001",
+        "text-similarity-ada-001",
+        "text-search-ada-doc-001",
+        "text-search-curie-query-001",
+        "code-search-ada-code-001",
+        "code-davinci-002",
+        "code-cushman-001",
         # Fine-tunes.
         "ft:gpt-4o-mini:acme:abc:xyz",
         # Dated snapshots are still hidden.
@@ -235,6 +242,8 @@ def test_openai_legacy_completion_names_only_match_at_id_start():
             "gpt-7-ada-chat",
             "gpt-7-curie-pro",
             "gpt-7-babbage-mini",
+            # `^(?:text|code)-` needs the hyphen, so the codex family stays.
+            "codex-mini-latest",
         ],
     )
     assert kept == [
@@ -242,6 +251,7 @@ def test_openai_legacy_completion_names_only_match_at_id_start():
         "gpt-7-ada-chat",
         "gpt-7-curie-pro",
         "gpt-7-babbage-mini",
+        "codex-mini-latest",
     ], kept
     # ...but the actual legacy-base ids stay dropped.
     dropped = _apply(
