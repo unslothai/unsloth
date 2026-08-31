@@ -1699,18 +1699,22 @@ def test_a_generic_only_target_on_a_stale_tag_is_repaired_on_update_too():
         ("2.11.0+rocm7.2", "7.2.0", False),
     ):
         with (
-            patch.object(stack_mod, "_probe_torch_runtime",
-                         return_value = (True, True, _tag, _hip, "")),
+            patch.object(
+                stack_mod, "_probe_torch_runtime", return_value = (True, True, _tag, _hip, "")
+            ),
             patch.object(stack_mod, "_torch_requires_rocm_sdk", return_value = False),
             patch.object(stack_mod, "_installed_rocm_wheel_family", return_value = None),
         ):
-            assert stack_mod._rocm_torch_family_needs_repair(
-                "gfx950", (7, 2), ["gfx950"]
-            ) is _repair, _tag
+            assert (
+                stack_mod._rocm_torch_family_needs_repair("gfx950", (7, 2), ["gfx950"]) is _repair
+            ), _tag
     # An arch with a leaf is still judged by the reroute question, not by this one.
     with (
-        patch.object(stack_mod, "_probe_torch_runtime",
-                     return_value = (True, True, "2.11.0+rocm7.2", "7.2.0", "")),
+        patch.object(
+            stack_mod,
+            "_probe_torch_runtime",
+            return_value = (True, True, "2.11.0+rocm7.2", "7.2.0", ""),
+        ),
         patch.object(stack_mod, "_torch_requires_rocm_sdk", return_value = False),
         patch.object(stack_mod, "_installed_rocm_wheel_family", return_value = None),
     ):

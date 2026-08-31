@@ -1958,9 +1958,7 @@ def _generic_tag_lacks_kernels(gfx: "str | None", ver: "tuple[int, int]") -> boo
     return _tag_key is None or _tag_key < _min
 
 
-def _generic_only_target_below_floor(
-    gfx: "str | None", ver: "tuple[int, int] | None"
-) -> bool:
+def _generic_only_target_below_floor(gfx: "str | None", ver: "tuple[int, int] | None") -> bool:
     """Whether a target with NO per-arch index is on a generic tag that predates it.
 
     The repair question for gfx950 and the other parts AMD ships no per-arch leaf for.
