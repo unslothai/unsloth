@@ -238,9 +238,9 @@ class TestManualModeIsNotAnAbsentGpu:
     empty list there is this, not a probe that failed."""
 
     def test_the_warning_reads_detected_gpus_not_gpus(self):
-        assert "not _detected_gpus" in _load_site_guard(), (
-            "without this every Manual-mode load warns that it is running on the CPU"
-        )
+        assert (
+            "not _detected_gpus" in _load_site_guard()
+        ), "without this every Manual-mode load warns that it is running on the CPU"
 
     def test_detected_gpus_is_captured_before_manual_empties_the_pool(self):
         """The distinction only holds if the capture precedes the emptying."""
