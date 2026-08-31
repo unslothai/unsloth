@@ -777,12 +777,10 @@ def _run_llama_phase(
             ) from exc
         if exc.returncode == _EXIT_FALLBACK:
             message = str(exc)
-            lowered = message.lower()
-            if (
-                "github api returned 403" in lowered
-                or "rate limit" in lowered
-                or "gh_token" in lowered
-            ):
+            # Same predicate the formatter uses: exit 2 also carries failures
+            # like a rate-limited huggingface.co validation-model fetch, which
+            # GH_TOKEN cannot fix.
+            if _flow.is_github_rate_limit_text(message):
                 logger.warning("llama update: GitHub rate limit")
                 raise _LlamaPhaseError(
                     "Could not update llama.cpp: GitHub is rate-limiting release downloads. "

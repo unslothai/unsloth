@@ -62,16 +62,24 @@ _PREBUILT_VERDICT_RE = re.compile(
 )
 
 
-def _is_github_rate_limit_line(line: str) -> bool:
-    """A retry line naming a rate-limited api.github.com fetch.
+def is_github_rate_limit_text(text: str) -> bool:
+    """Whether installer output blames a GitHub API rate limit.
 
-    Weaker evidence than a verdict line: the installer retries and can still
-    succeed, and huggingface.co has its own 429, so the line has to name GitHub.
+    Both halves are required. huggingface.co rate-limits the validation model
+    download with its own 429, and that failure also reaches the updater as
+    installer exit 2, so rate-limit wording alone would hand a user GH_TOKEN
+    advice that cannot fix it. GitHub itself answers an exceeded primary or
+    secondary limit with 403 or 429.
     """
-    lowered = line.lower()
+    lowered = text.lower()
     if "github" not in lowered:
         return False
-    return "github api returned 403" in lowered or "rate limit exceeded" in lowered
+    return (
+        "rate limit" in lowered
+        or "too many requests" in lowered
+        or "returned 403" in lowered
+        or "returned 429" in lowered
+    )
 
 
 def _installer_actionable_detail(lines: Sequence[str]) -> str | None:
@@ -92,7 +100,7 @@ def _installer_actionable_detail(lines: Sequence[str]) -> str | None:
         return verdict
     for line in lines:
         stripped = line.strip()
-        if _is_github_rate_limit_line(stripped):
+        if is_github_rate_limit_text(stripped):
             return stripped
     return None
 
@@ -110,10 +118,7 @@ def format_installer_failure_message(
     """
     detail = _installer_actionable_detail(actionable_lines) or _installer_actionable_detail(lines)
     if detail:
-        lowered = detail.lower()
-        # Both signals: a reason that merely mentions a rate limit somewhere must
-        # not be replaced by rate-limit advice that does not fit it.
-        if "github" in lowered and ("returned 403" in lowered or "rate limit" in lowered):
+        if is_github_rate_limit_text(detail):
             return (
                 f"installer exited {returncode}: GitHub API rate limit exceeded while "
                 "fetching prebuilt releases. Set GH_TOKEN or GITHUB_TOKEN to avoid "
@@ -464,7 +469,7 @@ def stream_installer(
                 verdict_lines.append(line)
                 if len(verdict_lines) > 4:
                     del verdict_lines[0]
-            elif len(hint_lines) < 4 and _is_github_rate_limit_line(line):
+            elif len(hint_lines) < 4 and is_github_rate_limit_text(line):
                 hint_lines.append(line)
             child = CHILD_PID_LINE_RE.match(line.strip())
             if child is not None:
