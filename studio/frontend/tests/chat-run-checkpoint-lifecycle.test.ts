@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   RUN_CHECKPOINT_INTERVAL_MS,
+  RUN_CHECKPOINT_MAX_DURATION_MS,
   type RunCheckpointTimers,
   createRunCheckpointScheduler,
 } from "../src/features/chat/utils/run-checkpoint-scheduler.ts";
@@ -33,6 +34,10 @@ function createFakeTimers() {
     clearTimeout: (handle) => {
       scheduled.delete(handle);
     },
+    // The staleness bound reads a clock, and this harness already keeps one. Without
+    // this the bound would be measured against the real wall clock, so a test that
+    // advances an hour of fake time would take none of it and never reach the cap.
+    now: () => now,
   };
 
   const fireDue = async (): Promise<number> => {
@@ -92,14 +97,27 @@ function createGatedSave() {
 
 // A. backwards compatibility of the new options
 
-test("omitting isActive keeps checkpointing indefinitely while started", async () => {
+// This file used to assert that omitting isActive checkpoints INDEFINITELY, and called
+// that intentional. It is no longer true, deliberately. A run that never reaches a
+// terminal status never fires runEnd, and `isActive` reports the runtime's own
+// `isRunning`, which that same stuck run holds true, so the two agreed forever and the
+// schedule outlived the page: a real user log showed 160 four-request cycles at 8-9s
+// against one thread, unbroken by two full app reloads. An absent or always-true liveness
+// probe still must not END a live run, which is what the first twelve intervals below
+// pin; what it may no longer do is run without any bound at all.
+
+test("omitting isActive keeps checkpointing until the staleness bound, not forever", async () => {
   const clock = createFakeTimers();
   const saved: string[] = [];
   const scheduler = createRunCheckpointScheduler(
     async (threadId) => {
       saved.push(threadId);
     },
-    { intervalMs: INTERVAL, timers: clock.timers },
+    {
+      intervalMs: INTERVAL,
+      timers: clock.timers,
+      maxDurationMs: 20 * INTERVAL,
+    },
   );
 
   scheduler.start("thread-a");
@@ -109,9 +127,19 @@ test("omitting isActive keeps checkpointing indefinitely while started", async (
   assert.equal(
     saved.length,
     12,
-    "an absent liveness probe must not end the run",
+    "an absent liveness probe must not end the run early",
   );
   assert.equal(clock.pending(), 1, "the schedule is still armed");
+
+  for (let i = 0; i < 12; i += 1) {
+    await clock.advance(INTERVAL);
+  }
+  assert.equal(
+    saved.length,
+    20,
+    "the cap takes a final checkpoint on the way out and then writes no more",
+  );
+  assert.equal(clock.pending(), 0, "the schedule must not rearm past the cap");
   scheduler.stop("thread-a");
 });
 
@@ -122,7 +150,12 @@ test("an isActive that always returns true behaves like no isActive at all", asy
     async (threadId) => {
       saved.push(threadId);
     },
-    { intervalMs: INTERVAL, timers: clock.timers, isActive: () => true },
+    {
+      intervalMs: INTERVAL,
+      timers: clock.timers,
+      isActive: () => true,
+      maxDurationMs: 20 * INTERVAL,
+    },
   );
 
   scheduler.start("thread-a");
@@ -131,6 +164,40 @@ test("an isActive that always returns true behaves like no isActive at all", asy
   }
   assert.equal(saved.length, 12);
   assert.equal(clock.pending(), 1);
+  scheduler.stop("thread-a");
+});
+
+test("the staleness bound is generous enough for a long legitimate run", () => {
+  // Thirty minutes, held at the follow deadline. Tripping it costs only the periodic
+  // partial saves, never the run's own writes, so the bound is set to outlast any answer
+  // a user waits through, including a prefill the backend still allows 1200s for.
+  assert.equal(RUN_CHECKPOINT_MAX_DURATION_MS, 30 * 60_000);
+  assert.ok(
+    RUN_CHECKPOINT_MAX_DURATION_MS / RUN_CHECKPOINT_INTERVAL_MS >= 100,
+    "the cap must leave room for a hundred checkpoints before it fires",
+  );
+});
+
+test("a thread restarted after the bound gets a fresh window", async () => {
+  const clock = createFakeTimers();
+  let saves = 0;
+  const scheduler = createRunCheckpointScheduler(
+    async () => {
+      saves += 1;
+    },
+    { intervalMs: INTERVAL, timers: clock.timers, maxDurationMs: 3 * INTERVAL },
+  );
+
+  scheduler.start("thread-a");
+  for (let i = 0; i < 6; i += 1) {
+    await clock.advance(INTERVAL);
+  }
+  const afterFirstRun = saves;
+  assert.equal(clock.pending(), 0, "the first window closed");
+
+  scheduler.start("thread-a");
+  await clock.advance(INTERVAL);
+  assert.equal(saves, afterFirstRun + 1, "the next run checkpoints again");
   scheduler.stop("thread-a");
 });
 

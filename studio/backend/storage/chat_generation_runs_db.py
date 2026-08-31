@@ -22,6 +22,12 @@ _EVENTS_CHANGED = threading.Condition()
 _RUN_TOMBSTONE_PREFIX = "chat-generation-run-tombstone:"
 ChatGenerationEventInput = Union[tuple[str, dict[str, Any]], tuple[str, dict[str, Any], int]]
 
+# Progress lease columns, added here rather than in _ensure_schema so the base table
+# definition stays owned by studio_db. Named _schema_ready to match the flag the test
+# harness resets on every storage module when it swaps UNSLOTH_STUDIO_HOME.
+_schema_ready = False
+_schema_lock = threading.Lock()
+
 
 class ChatGenerationConflictError(RuntimeError):
     pass
@@ -29,6 +35,44 @@ class ChatGenerationConflictError(RuntimeError):
 
 def now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def _connect() -> sqlite3.Connection:
+    """get_connection plus the one-off progress-lease migration for this database."""
+    global _schema_ready
+    conn = get_connection()
+    if _schema_ready:
+        return conn
+    try:
+        with _schema_lock:
+            if not _schema_ready:
+                columns = {
+                    row[1]
+                    for row in conn.execute("PRAGMA table_info(chat_generation_runs)").fetchall()
+                }
+                for column, spec in (
+                    ("progress_at", "INTEGER"),
+                    ("progress_tokens", "INTEGER NOT NULL DEFAULT 0"),
+                ):
+                    if column in columns:
+                        continue
+                    try:
+                        conn.execute(f"ALTER TABLE chat_generation_runs ADD COLUMN {column} {spec}")
+                    except sqlite3.OperationalError as exc:
+                        # Another process migrated the same database first.
+                        if "duplicate column" not in str(exc).lower():
+                            raise
+                conn.commit()
+                _schema_ready = True
+    except sqlite3.OperationalError:
+        # A writer holds the database. The columns are additive, so let this call through
+        # and migrate later rather than turning contention into a failed history read;
+        # _without_lease_columns below covers the paths that then cannot assume them.
+        conn.rollback()
+    except Exception:
+        conn.close()
+        raise
+    return conn
 
 
 def _loads(value: str | None, fallback: Any) -> Any:
@@ -124,6 +168,52 @@ def _append_events_locked(
     return sequences
 
 
+def _missing_lease_columns(exc: sqlite3.OperationalError) -> bool:
+    """Whether `exc` is this database still waiting on the progress-lease migration.
+
+    _connect lets a call through when contention blocks the ALTER, so every statement
+    naming progress_at or progress_tokens can meet a table that predates them. Degrading
+    to the pre-migration behaviour keeps that window harmless: without it a blocked
+    migration would abort a generation with `no such column` the moment the writer let go.
+    """
+    message = str(exc).lower()
+    return "no such column" in message and (
+        "progress_at" in message or "progress_tokens" in message
+    )
+
+
+def _touch_progress_locked(conn: sqlite3.Connection, run_id: str, tokens: int) -> None:
+    """Stamp the progress lease for one flush of streamed output.
+
+    Monotonic in both fields, the same rule studio_db._safe_generation_assistant_update
+    applies to the assistant row this run owns: the token counter only ever accumulates,
+    and progress_at takes MAX(stored, now) so a wall-clock step backwards (NTP, suspend)
+    cannot age a live run into the sweep below. One chunk carries at most one token
+    delta, so the count of chunk events is the token count.
+
+    updated_at moves with it, as it already does on every event append. That is what the
+    follower's snapshot poll compares, so a client watching a run through a long model
+    preparation or an admission wait, neither of which emits events, sees the server is
+    alive and rearms its own no-progress deadline instead of reporting an interruption
+    over healthy work.
+    """
+    now = now_ms()
+    try:
+        conn.execute(
+            """UPDATE chat_generation_runs
+               SET progress_at=MAX(COALESCE(progress_at, 0), ?),
+                   updated_at=MAX(COALESCE(updated_at, 0), ?),
+                   progress_tokens=COALESCE(progress_tokens, 0) + ?
+               WHERE id=?""",
+            (now, now, max(0, int(tokens)), run_id),
+        )
+    except sqlite3.OperationalError as exc:
+        # The migration has not landed yet. The run keeps streaming and simply ages out
+        # on started_at/created_at, which the sweep already falls back to.
+        if not _missing_lease_columns(exc):
+            raise
+
+
 def _commit(conn: sqlite3.Connection, *, notify: bool = False) -> None:
     conn.commit()
     if notify:
@@ -183,7 +273,7 @@ def create_run(
     )
     created = now_ms()
     worker_token = secrets.token_hex(16)
-    conn = get_connection()
+    conn = _connect()
     try:
         conn.execute("BEGIN IMMEDIATE")
         existing = conn.execute(
@@ -328,7 +418,7 @@ def create_run(
 
 
 def get_run(run_id: str, owner_subject: str | None = None) -> dict[str, Any] | None:
-    conn = get_connection()
+    conn = _connect()
     try:
         if owner_subject is None:
             row = conn.execute(
@@ -346,7 +436,7 @@ def get_run(run_id: str, owner_subject: str | None = None) -> dict[str, Any] | N
 
 
 def get_worker_token(run_id: str) -> str | None:
-    conn = get_connection()
+    conn = _connect()
     try:
         row = conn.execute(
             "SELECT worker_token FROM chat_generation_runs WHERE id=?",
@@ -361,7 +451,7 @@ def get_worker_run(
     run_id: str, worker_token: str | None = None
 ) -> tuple[dict[str, Any], str, str] | None:
     """Return one fenced producer snapshot and its owner from the same row read."""
-    conn = get_connection()
+    conn = _connect()
     try:
         if worker_token is None:
             row = conn.execute(
@@ -380,8 +470,52 @@ def get_worker_run(
         conn.close()
 
 
+def touch_progress(run_id: str) -> None:
+    """Renew one run's progress lease without recording any streamed output.
+
+    For work the lease cannot see. Automatic model loading, idle reload and auto-download
+    all happen between mark_running and the first token, and the engine's own first-token
+    budget does not start until after them, so ageing a run from mark_running could reap a
+    legitimate load followed by a legitimate prefill.
+    """
+    conn = _connect()
+    try:
+        _touch_progress_locked(conn, run_id, 0)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_progress(run_id: str) -> tuple[int | None, int] | None:
+    """(last progress timestamp, tokens streamed) for one run, or None if unknown."""
+    conn = _connect()
+    try:
+        try:
+            row = conn.execute(
+                """SELECT COALESCE(progress_at, started_at, created_at) AS progress_at,
+                          COALESCE(progress_tokens, 0) AS progress_tokens
+                   FROM chat_generation_runs WHERE id=?""",
+                (run_id,),
+            ).fetchone()
+        except sqlite3.OperationalError as exc:
+            if not _missing_lease_columns(exc):
+                raise
+            row = conn.execute(
+                """SELECT COALESCE(started_at, created_at) AS progress_at,
+                          0 AS progress_tokens
+                   FROM chat_generation_runs WHERE id=?""",
+                (run_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        progress_at = row["progress_at"]
+        return (int(progress_at) if progress_at is not None else None, int(row["progress_tokens"]))
+    finally:
+        conn.close()
+
+
 def list_active(thread_id: str) -> list[dict[str, Any]]:
-    conn = get_connection()
+    conn = _connect()
     try:
         rows = conn.execute(
             """SELECT * FROM chat_generation_runs
@@ -401,7 +535,7 @@ def append_events(
     batch = list(events)
     if not batch:
         return []
-    conn = get_connection()
+    conn = _connect()
     try:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
@@ -414,6 +548,9 @@ def append_events(
             conn.commit()
             return []
         sequences = _append_events_locked(conn, run_id, batch)
+        # The producer's only regular write, so it is also the lease renewal: output
+        # reaching the database is the definition of progress this sweep reaps on.
+        _touch_progress_locked(conn, run_id, sum(1 for event in batch if event[0] == "chunk"))
         _commit(conn, notify = True)
         return sequences
     except Exception:
@@ -424,7 +561,7 @@ def append_events(
 
 
 def mark_running(run_id: str, worker_token: str) -> bool:
-    conn = get_connection()
+    conn = _connect()
     try:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
@@ -449,6 +586,7 @@ def mark_running(run_id: str, worker_token: str) -> bool:
         )
         _sync_assistant_status_locked(conn, run_id, "running")
         _append_events_locked(conn, run_id, [("run.started", {"status": "running"})])
+        _touch_progress_locked(conn, run_id, 0)
         _commit(conn, notify = True)
         return True
     except Exception:
@@ -459,7 +597,7 @@ def mark_running(run_id: str, worker_token: str) -> bool:
 
 
 def request_cancel(run_id: str, owner_subject: str | None = None) -> dict[str, Any] | None:
-    conn = get_connection()
+    conn = _connect()
     try:
         conn.execute("BEGIN IMMEDIATE")
         sql = "SELECT * FROM chat_generation_runs WHERE id=?"
@@ -521,7 +659,7 @@ def finish_run(
 ) -> dict[str, Any] | None:
     if status not in TERMINAL_STATUSES:
         raise ValueError(f"Invalid terminal status: {status}")
-    conn = get_connection()
+    conn = _connect()
     try:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
@@ -572,7 +710,7 @@ def list_events(
     after: int = 0,
     limit: int = 1000,
 ) -> list[dict[str, Any]]:
-    conn = get_connection()
+    conn = _connect()
     try:
         rows = conn.execute(
             """SELECT seq, event_type, payload_json, created_at
@@ -609,16 +747,50 @@ def wait_for_events(
     return list_events(run_id, after)
 
 
-def reconcile_orphaned_runs(error: str = "Studio restarted during generation") -> int:
-    conn = get_connection()
-    changed = 0
+def reconcile_runs(
+    *, error: str = "Studio restarted during generation", stale_after_ms: int | None = None
+) -> list[str]:
+    """Settle active runs, returning the ids settled.
+
+    ``stale_after_ms`` is what makes this safe to run while Studio is serving: with it,
+    only runs whose progress lease has not moved for that long are settled, so a slow
+    but advancing generation is never touched. Without it (process boot) every active
+    run is orphaned by definition and all of them are settled.
+
+    Partial output survives either way: only the run row and the assistant message's
+    status metadata are rewritten, never the streamed content or the event log.
+    """
+    conn = _connect()
+    settled: list[str] = []
     try:
         conn.execute("BEGIN IMMEDIATE")
-        rows = conn.execute(
-            """SELECT id, status, cancel_requested FROM chat_generation_runs
-               WHERE status IN ('queued','running','cancelling') ORDER BY created_at, id"""
-        ).fetchall()
         completed = now_ms()
+        sql = """SELECT id, status, cancel_requested FROM chat_generation_runs
+                 WHERE status IN ('queued','running','cancelling')"""
+        args: tuple[Any, ...] = ()
+        if stale_after_ms is not None:
+            # started_at/created_at carry a run that has not streamed anything yet,
+            # so a producer wedged before its first token still ages out.
+            sql += " AND COALESCE(progress_at, started_at, created_at) <= ?"
+            args = (completed - int(stale_after_ms),)
+        try:
+            rows = conn.execute(sql + " ORDER BY created_at, id", args).fetchall()
+        except sqlite3.OperationalError as exc:
+            if not _missing_lease_columns(exc):
+                raise
+            # Contention blocked the migration, so no run can persist progress. Falling
+            # back to started_at/created_at is not conservative but the opposite: those
+            # stamps are older by the whole life of the run, so one that streamed a chunk
+            # moments ago is reaped once its total AGE passes the timeout. Boot reconcile
+            # passes no stale_after_ms and is unaffected.
+            if stale_after_ms is not None:
+                conn.rollback()
+                return []
+            rows = conn.execute(
+                sql.replace(" AND COALESCE(progress_at, started_at, created_at) <= ?", "")
+                + " ORDER BY created_at, id",
+                (),
+            ).fetchall()
         for row in rows:
             run_id = row["id"]
             # A Stop that was already recorded outlives the restart. Reporting it as a
@@ -637,12 +809,18 @@ def reconcile_orphaned_runs(error: str = "Studio restarted during generation") -
                        updated_at=?, completed_at=? WHERE id=?""",
                 (status, finish_reason, message, completed, completed, run_id),
             )
+            # Stamps incomplete: {reason: "interrupted"} on the assistant message, which
+            # is what releases the frontend's "generating" state and restores Send.
             _sync_assistant_status_locked(conn, run_id, status)
-            changed += 1
-        _commit(conn, notify = bool(changed))
-        return changed
+            settled.append(str(run_id))
+        _commit(conn, notify = bool(settled))
+        return settled
     except Exception:
         conn.rollback()
         raise
     finally:
         conn.close()
+
+
+def reconcile_orphaned_runs(error: str = "Studio restarted during generation") -> int:
+    return len(reconcile_runs(error = error))

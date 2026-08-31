@@ -447,6 +447,76 @@ def test_annotation_only_network_entries_are_digest_pinned():
     assert seen == credential_adjacent, f"missing entries for {credential_adjacent - seen}"
 
 
+def test_context_dependent_unsloth_zoo_findings_are_digest_pinned():
+    """Require a new review when context around an approved finding changes."""
+    import json
+    import pathlib
+
+    path = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "scan_packages_baseline.json"
+    entries = json.loads(path.read_text(encoding = "utf-8"))["entries"]
+    expected = {
+        (
+            "unsloth_zoo/vision_utils.py",
+            "Harvests environment variables/secrets AND makes network calls",
+        ): "7c6266737b14cb08e136c0fcc5d63dc5047f416daa1fad4f16298a6269b73ce4",
+        (
+            "unsloth_zoo/vision_utils.py",
+            "Accesses cloud metadata/IMDS AND makes network calls",
+        ): "7c6266737b14cb08e136c0fcc5d63dc5047f416daa1fad4f16298a6269b73ce4",
+        (
+            "unsloth_zoo/compiler.py",
+            "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+        ): "58f43e3b6ddeefff69cb345baec7642eb10e3f081b0753f236be6571550d54e3",
+    }
+    actual = {
+        (entry["file"], entry["check"]): entry.get("file_sha256")
+        for entry in entries
+        if entry.get("package") == "unsloth-zoo"
+        and (entry.get("file"), entry.get("check")) in expected
+    }
+    assert actual == expected
+
+
+def test_context_dependent_unsloth_zoo_pins_reopen_on_other_file_changes():
+    """Unchanged matched lines cannot approve a changed surrounding file."""
+    import json
+    import pathlib
+
+    path = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "scan_packages_baseline.json"
+    entries = json.loads(path.read_text(encoding = "utf-8"))["entries"]
+    targets = [
+        entry
+        for entry in entries
+        if entry.get("package") == "unsloth-zoo"
+        and entry.get("file") in {"unsloth_zoo/vision_utils.py", "unsloth_zoo/compiler.py"}
+        and entry.get("file_sha256")
+    ]
+    assert len(targets) == 3
+    baseline = sp._load_baseline(str(path))
+    for entry in targets:
+        reviewed = _mk(
+            entry["severity"],
+            entry["package"],
+            entry["file"],
+            entry["check"],
+            entry["evidence"],
+        )
+        reviewed.file_sha256 = entry["file_sha256"]
+        changed = _mk(
+            entry["severity"],
+            entry["package"],
+            entry["file"],
+            entry["check"],
+            entry["evidence"],
+        )
+        changed.file_sha256 = "0" * 64
+
+        active, suppressed = sp._partition_baseline([reviewed], baseline)
+        assert active == [] and suppressed == [reviewed]
+        active, suppressed = sp._partition_baseline([changed], baseline)
+        assert active == [changed] and suppressed == []
+
+
 def test_the_hf_backoff_suppression_is_narrow():
     """The huggingface-hub `http_backoff` allowlist must not cover a second loop.
 
