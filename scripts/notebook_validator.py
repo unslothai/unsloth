@@ -633,9 +633,7 @@ def rule_inst_001_git_plus(install_cell: str, file: str, cell_idx: int) -> list[
     """
     findings: list[Finding] = []
     for line_no, line in _glue_line_continuations(install_cell):
-        commands = [
-            parse_pip_line(command, line_no) for command, _ in _split_chained(line)
-        ]
+        commands = [parse_pip_line(command, line_no) for command, _ in _split_chained(line)]
         if not any(inv is not None for inv in commands) and PIP_LINE_RE.match(line) is None:
             continue
         if "git+" not in line:
