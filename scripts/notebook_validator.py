@@ -656,21 +656,48 @@ def _compatible_release_ceiling(version: str) -> str | None:
     return ".".join(head)
 
 
+def _spec_window(sp: SpecParts) -> tuple[str | None, str | None, str | None, str | None]:
+    """`(exact, floor, cap, ceiling)` for one requirement.
+
+    `cap` is an inclusive `<=`, which names the version pip lands on; `ceiling` is an
+    exclusive `<` or the one `~=` implies, which does not. `>` counts as a floor: it names a
+    version pip will not install, but the callers compare minors, and a bound one release out
+    only shifts the minor when the window spans two of them, where the other bound decides.
+    """
+    exact = floor = cap = ceiling = None
+    for op, ver in sp.pins:
+        if op == "==":
+            exact = ver
+        elif op in (">=", ">", "~="):
+            if floor is None or cmp_versions(ver, floor) > 0:
+                floor = ver
+        elif op == "<=":
+            if cap is None or cmp_versions(ver, cap) < 0:
+                cap = ver
+        elif op == "<":
+            if ceiling is None or cmp_versions(ver, ceiling) < 0:
+                ceiling = ver
+        if op == "~=":
+            implied = _compatible_release_ceiling(ver)
+            if implied is not None and (ceiling is None or cmp_versions(implied, ceiling) < 0):
+                ceiling = implied
+    return exact, floor, cap, ceiling
+
+
 def _effective_version(install_cell: str, target: str, resolved: str | None) -> str | None:
-    """`resolved` walked forward through the cell's own bounds, in invocation order.
+    """`resolved` walked forward through the cell's own requirements, in invocation order.
 
-    resolved_set() drops `>=`, which does move pip when it lands above the current version,
-    and applies the `<=` bounds all at once at the end. Order is what decides between them:
-    a later `==` or `<=` downgrades past an earlier floor, and a later floor upgrades past
-    an earlier one. Without this R-INST-004's own `torchcodec>=0.12.0` remedy could not
-    clear the error it offers.
+    resolved_set() drops every bound but `==` and `<=`, and applies those all at once at the
+    end. Order is what decides between them: a later requirement overrides an earlier one
+    either way. Without this R-INST-004's own `torchcodec>=0.12.0` remedy could not clear the
+    error it offers, and `torchcodec>=0.10,<0.11` could not raise one.
 
-    Only `==` names a version. A range bound moves a version that is already known and
-    otherwise leaves it unknown, because pip resolves the newest release satisfying the
-    requirement and the bound does not name that. `~=` is the exception: both of its bounds
-    land the install in one minor, which is the granularity the callers compare on. `<` and
-    `>` stay out, as resolved_set leaves `<` out, because neither names a version pip can
-    install; and a bound on an absent package leaves it absent rather than naming it.
+    Each requirement is a window. An install moves the version into that window when it falls
+    outside and leaves it alone when it does not, which is what pip does. Where it moves to is
+    the window's floor, or an inclusive `<=` when the move is downwards: `>=0.10,<0.11` and
+    `~=0.10.0` both land inside one minor, the granularity the callers compare on. A window
+    that only closes from above with a `<` cannot say where it lands, so it clears the version
+    rather than keeping a stale one, and a bound on an absent package leaves it absent.
     """
     current = resolved
     for inv in iter_pip_invocations(install_cell):
@@ -681,21 +708,17 @@ def _effective_version(install_cell: str, target: str, resolved: str | None) -> 
             if inv.action == "uninstall":
                 current = None  # removed; a later install can put it back
                 continue
-            for op, ver in sp.pins:
-                if op == "==":
-                    current = ver
-                elif current is None:
-                    continue
-                elif op == "~=":
-                    ceiling = _compatible_release_ceiling(ver)
-                    if cmp_versions(ver, current) > 0 or (
-                        ceiling is not None and cmp_versions(current, ceiling) >= 0
-                    ):
-                        current = ver  # pip moves into the window from either side
-                elif op == ">=" and cmp_versions(ver, current) > 0:
-                    current = ver
-                elif op == "<=" and cmp_versions(ver, current) < 0:
-                    current = ver
+            exact, floor, cap, ceiling = _spec_window(sp)
+            if exact is not None:
+                current = exact
+            elif current is None:
+                continue  # nothing to move, and a bound does not name a version
+            elif floor is not None and cmp_versions(floor, current) > 0:
+                current = floor
+            elif cap is not None and cmp_versions(current, cap) > 0:
+                current = cap  # `<=V` allows V, so V is what pip picks
+            elif ceiling is not None and cmp_versions(current, ceiling) >= 0:
+                current = floor  # None when the window is open below: unresolved
     return current
 
 

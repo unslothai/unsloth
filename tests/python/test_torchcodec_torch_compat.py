@@ -489,6 +489,38 @@ def test_notebook_validator_reads_compatible_release_pins():
     assert nv.rule_inst_004_torchcodec_torch(remedied, COLAB_TORCH211, "nb.ipynb", 0) == []
 
 
+def test_notebook_validator_reads_a_range_as_one_window():
+    """A `>=X,<Y` pair is the same constraint as `~=X`, and the guard's own remedy is
+    spelled that way (`pip install 'torchcodec>=0.11,<0.12.0'`), so the rule has to read it
+    back. A `<` with nothing under it names no version and leaves the pairing unknown."""
+    nv = _load_notebook_validator_module()
+
+    # Colab is on 0.11, which this window excludes, so pip drops into the 0.10 line.
+    narrowed = '!pip install "torchcodec>=0.10,<0.11"'
+    assert len(nv.rule_inst_004_torchcodec_torch(narrowed, COLAB_TORCH211, "nb.ipynb", 0)) == 1
+
+    # The window torch 2.11 actually wants is a no-op on the same baseline.
+    matching = '!pip install "torchcodec>=0.11,<0.12.0"'
+    assert nv.rule_inst_004_torchcodec_torch(matching, COLAB_TORCH211, "nb.ipynb", 0) == []
+
+    # Open below: the release pip picks is unnamed, so no stale baseline is kept either.
+    assert nv.rule_inst_004_torchcodec_torch(
+        '!pip install "torch<2.11"', COLAB_TORCH211, "nb.ipynb", 0
+    ) == []
+
+    # An inclusive cap does name one, so it still clamps rather than clearing.
+    capped = '!pip install "torch==2.12.0" "torchcodec>=0.12"\n!pip install "torchcodec<=0.11"'
+    assert len(nv.rule_inst_004_torchcodec_torch(capped, COLAB_TORCH211, "nb.ipynb", 0)) == 1
+
+    # `>` is a floor like `>=`: it only shifts the minor when the window spans two.
+    assert len(nv.rule_inst_004_torchcodec_torch(
+        '!pip install "torch>2.12"', COLAB_TORCH211, "nb.ipynb", 0
+    )) == 1
+    assert nv.rule_inst_004_torchcodec_torch(
+        '!pip install "torch>2.11.999"', COLAB_TORCH211, "nb.ipynb", 0
+    ) == []
+
+
 def test_notebook_validator_reads_the_compatible_release_ceiling():
     """`~=` pins a window, so it moves the baseline down as well as up. PEP 440 drops the
     last component: `~=2.10.0` allows `<2.11`, `~=2.10` allows `<3`."""
