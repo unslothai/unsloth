@@ -1376,6 +1376,13 @@ export const ko = {
         collapseByDefaultDescription:
           "모델이 생각하는 동안 사고 과정을 자동으로 펼치지 않고 접어 둡니다. 읽으려면 블록을 펼치세요.",
       },
+      currentDate: {
+        label: "모델에 오늘 날짜 알려주기",
+        description:
+          "프롬프트에 현재 날짜를 추가해 웹 검색과 Deep Research가 모델의 학습 데이터 기준 시점을 가정하지 않고 최신 출처를 찾도록 합니다.",
+        loadError: "현재 날짜 설정을 불러오지 못했습니다",
+        saveError: "현재 날짜 설정을 업데이트하지 못했습니다",
+      },
       tools: {
         collapseByDefault: "기본적으로 도구 활동 접기",
         collapseByDefaultDescription:
@@ -1476,6 +1483,8 @@ export const ko = {
       archivedImagesDescription: "보관한 이미지를 확인하고 관리합니다.",
       archivedVideos: "보관된 동영상",
       archivedVideosDescription: "보관한 동영상을 확인하고 관리합니다.",
+      archivedAudio: "보관된 오디오",
+      archivedAudioDescription: "보관한 오디오 클립을 확인하고 관리합니다.",
       manageAction: "관리",
       manageChats: "채팅 관리",
       manageChatsDescription:
@@ -1658,7 +1667,7 @@ export const ko = {
         desktopCheckingDescription: "보통 몇 초 정도 걸립니다.",
         desktopAvailable: "데스크톱 앱 {version} 버전을 사용할 수 있습니다",
         desktopAvailableDescription:
-          "지금 업데이트하면 완료 후 데스크톱 앱이 다시 시작됩니다.",
+          "지금 업데이트하면 백그라운드에서 준비됩니다. 계속 작업하다가 준비되면 다시 시작하세요.",
         desktopExternalServer:
           "서버를 시작한 터미널에서 `unsloth studio update`를 실행하세요.",
         desktopManualInstall:
@@ -1668,11 +1677,17 @@ export const ko = {
           "연결 상태를 확인한 후 다시 시도하세요.",
         desktopCurrent: "데스크톱 앱이 최신 버전입니다",
         desktopCurrentDescription: "Unsloth가 계속 자동으로 확인합니다.",
+        desktopPreparingDescription: "업데이트를 백그라운드에서 준비하고 있습니다. 계속 작업할 수 있습니다.",
+        desktopReadyToRestartDescription: "모두 준비되었습니다. 다시 시작하면 업데이트 설치가 완료됩니다.",
+        desktopReadyToInstallDescription: "앱 업데이트를 다운로드했습니다. 설치하려면 백엔드 업데이트를 완료하세요.",
         checkForUpdates: "업데이트 확인",
         checkAgain: "다시 확인",
         retryCheck: "다시 시도",
         checking: "확인 중...",
+        preparing: "준비 중...",
         updateNow: "지금 업데이트",
+        restartToUpdate: "다시 시작하여 업데이트",
+        finishUpdate: "업데이트 완료",
         openReleasePage: "릴리스 페이지 열기",
         unknownInstall:
           "Unsloth 설치 방식을 감지할 수 없습니다. 설치 프로그램 또는 PyPI 설치의 경우 위 명령을 사용하세요.",

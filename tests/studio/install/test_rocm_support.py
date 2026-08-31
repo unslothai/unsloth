@@ -601,8 +601,37 @@ class TestDetectRocmVersion:
 # TEST: install_python_stack.py -- _ensure_rocm_torch
 
 
+def _named_arch_only():
+    """_infer_linux_amd_gfx_arch with the product-name half removed.
+
+    The function answers UNSLOTH_ROCM_GFX_ARCH first and infers from the board only after,
+    and a real AMD host decides that second half. Cases naming an arch still get it; the
+    rest get None instead of whatever board the runner happens to have."""
+    return (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower() or None
+
+
 class TestEnsureRocmTorch:
     """Verify ROCm torch reinstall logic."""
+
+    @pytest.fixture(autouse = True)
+    def _isolate_host(self, monkeypatch):
+        """Describe the host by mocks alone: hide KFD topology and any ambient GPU mask.
+
+        Both are read by _runtime_gfx_target and neither is covered by the per-case mocks.
+        KFD sysfs is filtered by nothing, so on a real AMD machine it supplies a GPU no case
+        asked for; an inherited empty HIP/ROCR/CUDA mask means "no GPU" and suppresses the
+        very reroute a case asserts. A masked CI job hits both at once. The product-name
+        inference is the third: on a Strix box /proc/cpuinfo names gfx1151 and the Strix
+        route then answers before the tag these cases assert, which is what the gfx1151
+        runner sees. Cases that mean to exercise any of the three set it themselves and win,
+        since that happens inside this fixture."""
+        for _mask in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+            monkeypatch.delenv(_mask, raising = False)
+        with (
+            patch.object(stack_mod, "_kfd_gfx_targets", return_value = []),
+            patch.object(stack_mod, "_infer_linux_amd_gfx_arch", _named_arch_only),
+        ):
+            yield
 
     # _infer_linux_amd_gfx_arch mocked to None: on a real Strix host the live
     # /proc/cpuinfo would otherwise take the inferred-install path and break
@@ -934,8 +963,18 @@ class TestEnsureRocmTorch:
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_infer_linux_amd_gfx_arch", return_value = None)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = None)
+    @patch.object(stack_mod, "_installed_rocm_wheel_family", return_value = None)
+    @patch.object(stack_mod, "_torch_requires_rocm_sdk", return_value = False)
     def test_version_unreadable_prints_warning(
-        self, mock_ver, mock_infer, mock_gpu, mock_nvidia, mock_pip, capsys
+        self,
+        _mock_owns_sdk,
+        _mock_family,
+        mock_ver,
+        mock_infer,
+        mock_gpu,
+        mock_nvidia,
+        mock_pip,
+        capsys,
     ):
         """ROCm detected but version unreadable should print warning and skip."""
         with patch("os.path.isdir", return_value = True):
@@ -1013,6 +1052,12 @@ class TestEnsureRocmTorch:
         assert "gfx1151" not in calls
         assert "non-Strix runtime target (gfx1100)" in buf.getvalue()
 
+    # The venv is described by mocks like the hardware: the Strix skip arm asks
+    # _already_on_amd_arch_leaf, which reads this interpreter's own metadata, so on a host
+    # that already runs AMD gfx1151 torch it keeps the wheels and the reroute never fires.
+    # Passed as `new` rather than return_value so no mock argument joins the signature.
+    @patch.object(stack_mod, "_installed_rocm_wheel_family", lambda: None)
+    @patch.object(stack_mod, "_torch_requires_rocm_sdk", lambda: False)
     @patch.object(stack_mod, "IS_MACOS", False)
     @patch("platform.machine", return_value = "x86_64")
     @patch.object(stack_mod, "IS_WINDOWS", False)
@@ -1137,6 +1182,11 @@ Agent 4
         assert "gfx1151" in torch_call
         assert "torch>=2.11.0,<2.12.0" in torch_call
 
+    # A gfx pin is compared against the installed `rocm` meta-package before the version
+    # heuristics run, and that read goes to THIS interpreter's metadata. Unpinned, the
+    # gfx120X-all and gfx1150 cases below flip on any host that already has AMD per-arch
+    # torch, because the family it reads back is that host's, not the pin's.
+    @patch.object(stack_mod, "_installed_rocm_wheel_family", lambda: None)
     def test_rocm_pin_family_mismatch_helper(self):
         """_rocm_pin_family_mismatch: exact rocm compare, else the 2.11 line."""
         f = stack_mod._rocm_pin_family_mismatch
@@ -1271,6 +1321,11 @@ Agent 4
             any(str(a).startswith("torch") for a in _c.args) for _c in mock_pip.call_args_list
         )
 
+    # Same reason as test_rocm_pin_family_mismatch_helper: the pin's staleness is judged
+    # against the installed family first, so an unpinned read makes this assert something
+    # about the machine running the suite.
+    @patch.object(stack_mod, "_installed_rocm_wheel_family", lambda: None)
+    @patch.object(stack_mod, "_torch_requires_rocm_sdk", lambda: False)
     @patch.object(stack_mod, "IS_WINDOWS", False)
     @patch.object(stack_mod, "pip_install_try", return_value = True)
     @patch.object(stack_mod, "pip_install")
@@ -1455,6 +1510,24 @@ Agent 4
 class TestGfx906LegacyReroute:
     """gfx906 hosts on ROCm >= 6.4 must be rerouted to the rocm6.3 torch index;
     hosts already on gfx906-capable wheels are left alone."""
+
+    @pytest.fixture(autouse = True)
+    def _isolate_host(self, monkeypatch):
+        """Hide KFD topology and any ambient GPU mask, for the reason given on
+        TestEnsureRocmTorch: a real AMD test machine's sysfs would otherwise supply a GPU
+        these gfx906 cases did not ask for, its product name would infer an arch none of them
+        named, and an inherited empty mask would suppress the reroute they assert."""
+        for _mask in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+            monkeypatch.delenv(_mask, raising = False)
+        with (
+            patch.object(stack_mod, "_kfd_gfx_targets", return_value = []),
+            patch.object(stack_mod, "_infer_linux_amd_gfx_arch", _named_arch_only),
+            # No per-arch wheel is installed in any of these cases; on the gfx1151 runner
+            # both read a real one out of the venv and answer for a host none described.
+            patch.object(stack_mod, "_installed_rocm_wheel_family", return_value = None),
+            patch.object(stack_mod, "_torch_requires_rocm_sdk", return_value = False),
+        ):
+            yield
 
     @staticmethod
     def _gfx906_reroute_block(source: str) -> str:
@@ -5636,6 +5709,61 @@ class TestStrixRocm71Override:
         with patch.object(m, "IS_WINDOWS", True):
             assert m._amd_arch_index_url("gfx1151") == m._windows_rocm_index_url("gfx1151")
 
+    def test_a_windows_mirror_token_ending_in_a_slash_survives_the_join(self):
+        """_index_url_join trims the path head and leaves the query alone, which is the whole
+        point of it: "/" is in the base64 alphabet, so a token may legitimately end with one.
+        The Windows base trimmed the raw env value first, which ate that character before the
+        join could protect it, so the two platforms built different URLs from one mirror."""
+        _mirror = "https://mirror.example/whl?token=YWJj/"
+        # The Windows base is read once at import, so the env has to be set before the load.
+        with patch.dict(os.environ, {"UNSLOTH_ROCM_WINDOWS_MIRROR": _mirror}):
+            _spec = importlib.util.spec_from_file_location("stack_mirror_query", _STACK_PATH)
+            m = importlib.util.module_from_spec(_spec)
+            _spec.loader.exec_module(m)
+        with patch.object(m, "IS_WINDOWS", True):
+            assert m._windows_rocm_index_url("gfx1151") == (
+                "https://mirror.example/whl/gfx1151/?token=YWJj/"
+            )
+        # Linux reads its own var at call time and always agreed; the two must now match.
+        with (
+            patch.object(m, "IS_WINDOWS", False),
+            patch.dict(os.environ, {"UNSLOTH_AMD_ROCM_MIRROR": _mirror}),
+        ):
+            assert m._amd_arch_index_url("gfx1151") == (
+                "https://mirror.example/whl/gfx1151/?token=YWJj/"
+            )
+        # A trailing slash on a plain path is still not doubled.
+        with patch.object(stack_mod, "_ROCM_WINDOWS_INDEX_BASE", "https://mirror.example/whl/"):
+            assert stack_mod._windows_rocm_index_url("gfx1151") == (
+                "https://mirror.example/whl/gfx1151/"
+            )
+
+    def test_a_query_authenticated_mirror_says_pip_cannot_use_it(self):
+        """Keeping the token whole is the lesser of two corruptions, not a working index: pip
+        joins the package name onto the index URL as text (posixpath.join in
+        SearchScope.get_index_urls_locations), so ".../gfx1151/?token=x" asks the index ROOT
+        for a page whose name is inside the token, and a fragment never reaches the server at
+        all. A mirror that can resolve nothing has to say why rather than 404 per package."""
+        m = stack_mod
+        for _base in ("https://mirror.example/whl?token=x", "https://mirror.example/whl#tok"):
+            m._WARNED_QUERY_INDEX_BASES.discard(_base)
+            _said = []
+            with patch.object(m, "_safe_print", side_effect = _said.append):
+                m._index_url_join(_base, "gfx110X-all")
+                # Once per mirror, however many repairs consult it.
+                m._index_url_join(_base, "gfx110X-all")
+            assert len(_said) == 1, _said
+            assert "netrc" in _said[0] and "credential" in _said[0], _said
+        # A mirror pip CAN authenticate says nothing: userinfo lives in the netloc, which
+        # the join never touches and pip carries onto every project URL.
+        _plain = "https://user:token@mirror.example/whl"
+        _quiet = []
+        with patch.object(m, "_safe_print", side_effect = _quiet.append):
+            assert m._index_url_join(_plain, "gfx110X-all") == (
+                "https://user:token@mirror.example/whl/gfx110X-all/"
+            )
+        assert _quiet == [], _quiet
+
     def test_strix_gfx_detection_in_install_sh(self):
         """install.sh must detect gfx1151 and gfx1150 for the override."""
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
@@ -5791,7 +5919,9 @@ class TestStrixRocm71Override:
         assert stack_mod._strix_needs_amd_arch_index((7, 14)) is True
         assert stack_mod._strix_needs_amd_arch_index((7, 0)) is True
         assert stack_mod._strix_needs_amd_arch_index((6, 0)) is True
-        assert stack_mod._strix_needs_amd_arch_index((5, 0)) is False
+        # No generic tag resolves below 6.0, so there is no wheel to prefer and the per-arch
+        # index, needing no host ROCm, is the only route. Same answer as an unreadable version.
+        assert stack_mod._strix_needs_amd_arch_index((5, 0)) is True
 
     def test_torch_constraint_updated_for_strix_amd_index(self):
         """install.sh must set TORCH_CONSTRAINT>=2.11 when routing Strix to AMD index."""

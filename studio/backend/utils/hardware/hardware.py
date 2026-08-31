@@ -4425,6 +4425,7 @@ def auto_select_gpu_ids(
     target_modules: Optional[list] = None,
     gradient_checkpointing: str = "unsloth",
     optimizer: str = "adamw_8bit",
+    required_override_gb: Optional[float] = None,
 ) -> tuple[Optional[list[int]], Dict[str, Any]]:
     metadata: Dict[str, Any] = {"selection_mode": "auto"}
 
@@ -4435,18 +4436,26 @@ def auto_select_gpu_ids(
         metadata["selection_mode"] = "non_accelerator"
         return None, metadata
 
-    required_gb, estimate_metadata = estimate_required_model_memory_gb(
-        model_name,
-        hf_token = hf_token,
-        training_type = training_type,
-        load_in_4bit = load_in_4bit,
-        batch_size = batch_size,
-        max_seq_length = max_seq_length,
-        lora_rank = lora_rank,
-        target_modules = target_modules,
-        gradient_checkpointing = gradient_checkpointing,
-        optimizer = optimizer,
-    )
+    if required_override_gb is None:
+        required_gb, estimate_metadata = estimate_required_model_memory_gb(
+            model_name,
+            hf_token = hf_token,
+            training_type = training_type,
+            load_in_4bit = load_in_4bit,
+            batch_size = batch_size,
+            max_seq_length = max_seq_length,
+            lora_rank = lora_rank,
+            target_modules = target_modules,
+            gradient_checkpointing = gradient_checkpointing,
+            optimizer = optimizer,
+        )
+    else:
+        required_gb = float(required_override_gb)
+        estimate_metadata = {
+            "mode": "inference" if training_type is None else "training",
+            "model_size_source": "override",
+            "required_gb": round(required_gb, 3),
+        }
     metadata.update(estimate_metadata)
     parent_visible_spec = _get_parent_visible_gpu_spec()
     metadata["parent_cuda_visible_devices"] = parent_visible_spec["raw"]
@@ -4592,6 +4601,7 @@ def prepare_gpu_selection(
     target_modules: Optional[list] = None,
     gradient_checkpointing: str = "unsloth",
     optimizer: str = "adamw_8bit",
+    required_override_gb: Optional[float] = None,
 ) -> tuple[Optional[list[int]], Dict[str, Any]]:
     """Resolve which physical GPUs to use for a model load.
 
@@ -4633,6 +4643,7 @@ def prepare_gpu_selection(
         target_modules = target_modules,
         gradient_checkpointing = gradient_checkpointing,
         optimizer = optimizer,
+        required_override_gb = required_override_gb,
     )
     return selected_gpu_ids, metadata
 
@@ -5117,11 +5128,28 @@ def apply_gpu_ids(gpu_ids, backend: Optional[str] = None) -> None:
 def get_device_map(gpu_ids: Optional[list[int]] = None) -> str:
     """Return the Hugging Face ``device_map`` string for model loading.
 
-    Returns ``"balanced"`` (shard evenly across GPUs) when:
+    Returns ``"unsloth_balanced"`` on CUDA, or ``"balanced"`` on XPU, to shard
+    across GPUs when:
       - ``gpu_ids`` explicitly lists >1 GPU, **or**
       - ``CUDA_VISIBLE_DEVICES``/``ZE_AFFINITY_MASK`` uses non-numeric
         identifiers (UUID/MIG/wildcard) and >1 GPU is visible (fallback:
         numeric IDs unresolvable, so assume multi-GPU is intended).
+
+    CUDA asks for unsloth's head-aware planner instead of accelerate's
+    ``"balanced"``, which caps every device but the last at about
+    ``model_size / n_devices``. On a quantized model the unquantized ``lm_head``
+    then does not fit on cuda:0, every module lands on the last card, and a 4bit
+    model wholly on a non-zero card cannot be trained: ``prepare_model`` refuses it.
+
+    ``"unsloth_balanced"`` rather than ``"unsloth"`` because the planner declines
+    several shapes -- a full finetune, an ``auto_model`` with no ``_model_mapping``,
+    a Falcon-H1 checkpoint missing the mamba exclusions, and any added later -- and
+    the plain name falls back to ``"sequential"``, which fills cuda:0 to its whole
+    free budget: a 7B in bf16 across 2x16 GiB lands entirely on cuda:0 against 13/19
+    for ``balanced``. Naming the fallback keeps every declined shape sharded without
+    Studio enumerating a list that belongs to unsloth.
+
+    XPU keeps plain ``"balanced"``: the planner has no non-CUDA memory budgets.
 
     Returns ``"sequential"`` (single device) otherwise, including CPU/MLX
     backends.
@@ -5156,7 +5184,7 @@ def get_device_map(gpu_ids: Optional[list[int]] = None) -> str:
                     multi_gpu = True
 
         if multi_gpu:
-            return "balanced"
+            return "unsloth_balanced" if device == DeviceType.CUDA else "balanced"
 
     return "sequential"
 

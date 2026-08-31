@@ -397,6 +397,7 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
         _resolve_hf_cache_dir,
         _is_hidden_model,
     )
+    from hub.utils.gguf import dedupe_custom_gguf_rows, suppress_grouped_gguf_file_rows
     from utils.paths import legacy_hf_cache_dir, hf_default_cache_dir, lmstudio_model_dirs
     from utils.hf_cache_settings import known_hf_hub_caches
     from core.inference.model_ids import public_model_id
@@ -455,14 +456,17 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
         logger.debug("auto-switch: LM Studio scan failed: %s", exc)
     try:
         from storage.studio_db import list_scan_folders
+
+        custom_found = []
         for folder in list_scan_folders():
             try:
                 fp = Path(folder["path"])
-                found += (
+                custom_found += dedupe_custom_gguf_rows(
                     _scan_models_dir(fp, limit = 200) + _scan_hf_once(fp) + _scan_lmstudio_dir(fp)
                 )
             except Exception as exc:
                 logger.debug("auto-switch: scan folder %r failed: %s", folder, exc)
+        found += suppress_grouped_gguf_file_rows(custom_found)
     except Exception as exc:
         logger.debug("auto-switch: scan folders enumerate failed: %s", exc)
     for info in found:
@@ -573,6 +577,17 @@ def _snapshot_is_trusted(timestamp: float, now: float) -> bool:
     return False
 
 
+# Bumped by every invalidate_index() call. A cache built on top of this index can key
+# on it and be dropped by the same call that drops the index, rather than each new
+# invalidation site having to remember one more cache to clear.
+_generation = 0
+
+
+def index_generation() -> int:
+    """How many times the local scan has been invalidated since this process started."""
+    return _generation
+
+
 def invalidate_index(*, additions_only: bool = False) -> None:
     """Mark the cached scan stale.
 
@@ -581,9 +596,10 @@ def invalidate_index(*, additions_only: bool = False) -> None:
     Other invalidations retain the allocation but revoke that trust, since a scan
     root may have been removed. Ordinary TTL expiry is likewise not additions-only.
     """
-    global _scan, _warm_pending
+    global _scan, _warm_pending, _generation
     with _lock:
         now = time.monotonic()
+        _generation += 1
         timestamp, retained = _scan
         # Publish entries and their trust state together. A lock-free reader sees
         # either the complete old snapshot or the complete invalidated one, never a

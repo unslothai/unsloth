@@ -46,6 +46,8 @@ def _host(
     linux = True,
     no_torch = False,
     env = None,
+    probe_source = "kfd",
+    installed_family = None,
 ):
     """A ROCm host with a CPU wheel by default; each argument moves one thing."""
     for name in _ROUTING_ENV:
@@ -58,7 +60,20 @@ def _host(
     monkeypatch.setattr(stack.platform, "machine", lambda: machine)
     monkeypatch.setattr(stack, "_has_usable_nvidia_gpu", lambda: nvidia)
     monkeypatch.setattr(stack, "_has_rocm_gpu", lambda: rocm_gpu and not nvidia)
-    monkeypatch.setattr(stack, "_detect_amd_gfx_codes", lambda dedup = True: list(gfx))
+
+    def _detect(dedup = True, **_kw):
+        # The real probe records which tool answered; callers read it to decide whether the
+        # list is ROCr-filtered and in the masks' order. Leaving the global at whatever ran
+        # last makes that depend on test order, and on a real AMD box on the machine.
+        stack._LAST_AMD_GFX_PROBE = probe_source if gfx else None
+        return list(dict.fromkeys(gfx)) if dedup else list(gfx)
+
+    monkeypatch.setattr(stack, "_detect_amd_gfx_codes", _detect)
+    monkeypatch.setattr(stack, "_kfd_gfx_targets", lambda: [], raising = False)
+    # No AMD per-arch wheel is installed unless a case says so: on the gfx1151 runner these
+    # two read a real one out of the venv and decide gates no case here described.
+    monkeypatch.setattr(stack, "_installed_rocm_wheel_family", lambda: installed_family)
+    monkeypatch.setattr(stack, "_torch_requires_rocm_sdk", lambda: installed_family is not None)
     monkeypatch.setattr(stack, "_detect_rocm_version", lambda: rocm_ver)
     monkeypatch.setattr(stack, "_infer_linux_amd_gfx_arch", lambda: inferred)
     version, hip = torch
@@ -119,7 +134,32 @@ def test_a_real_device_selection_is_not_a_hidden_host(monkeypatch):
     ],
 )
 def test_a_rocm_wheel_keeps_the_fast_path(monkeypatch, torch):
-    _host(monkeypatch, torch = torch)
+    # gfx1100 rather than the default gfx1151: the question here is whether a ROCm wheel is
+    # left alone, and only an arch every one of these wheels actually carries asks it. Strix
+    # is not that arch on the older tags, and the case below is where it is answered.
+    _host(monkeypatch, torch = torch, gfx = ("gfx1100",))
+    assert _needs_pass() is False
+
+
+@pytest.mark.parametrize("gfx", ["gfx1150", "gfx1151"])
+def test_a_strix_host_on_a_wheel_without_its_kernels_forces_the_pass(monkeypatch, gfx):
+    """rocm6.4 does not carry gfx1150/gfx1151 (AMD dates support to 7.1), and
+    _ensure_rocm_torch already reroutes such a host on a fresh install. Keeping the fast path
+    is the preflight declining a repair the repair itself performs."""
+    _host(monkeypatch, torch = ("2.9.0+rocm6.4", "6.4"), gfx = (gfx,))
+    assert _needs_pass() is True
+    # A generic tag that does carry them is still not the build Strix wants: the reroute
+    # prefers AMD's 7.13 fixes over every generic index below the floor, so the pass is due
+    # until torch IS that build.
+    _host(monkeypatch, torch = ("2.11.0+rocm7.2", "7.2"), gfx = (gfx,), rocm_ver = (7, 2))
+    assert _needs_pass() is True
+    _host(
+        monkeypatch,
+        torch = ("2.11.0+rocm7.13.0", "7.13"),
+        gfx = (gfx,),
+        rocm_ver = (7, 2),
+        installed_family = gfx,
+    )
     assert _needs_pass() is False
 
 
@@ -140,9 +180,36 @@ def test_an_unreadable_torch_keeps_the_fast_path(monkeypatch, kwargs):
     assert _needs_pass() is False
 
 
-def test_a_mixed_arch_host_keeps_the_fast_path(monkeypatch):
-    _host(monkeypatch, torch = ("2.9.0+cpu", ""), gfx = ("gfx1151", "gfx1100"))
+def test_a_mixed_arch_host_keeps_the_fast_path_only_while_it_is_ambiguous(monkeypatch):
+    """Being mixed is not being unreadable. Unpinned, probe and mask order can disagree with
+    nothing to resolve it, so the fast path stands. Pinned, _runtime_gfx_target composes both
+    layers and names a card whose generic wheel can still lack kernels for it."""
+    # Ambiguous: amd-smi enumerates in discovery order and a mask indexes HIP order.
+    _host(
+        monkeypatch,
+        torch = ("2.9.0+cpu", ""),
+        gfx = ("gfx1151", "gfx1103"),
+        probe_source = "amd-smi",
+        env = {"HIP_VISIBLE_DEVICES": "1"},
+    )
     assert _needs_pass() is False
+    # Ambiguous: a UUID names a device but no position in a list of arches.
+    _host(
+        monkeypatch,
+        torch = ("2.9.0+cpu", ""),
+        gfx = ("gfx1151", "gfx1103"),
+        env = {"ROCR_VISIBLE_DEVICES": "GPU-8d1f2e3a4b5c6d7e"},
+    )
+    assert _needs_pass() is False
+    # Not ambiguous: KFD node order IS the order the mask indexes, so this names gfx1103,
+    # whose generic wheel carries no kernels for it.
+    _host(
+        monkeypatch,
+        torch = ("2.9.0+cpu", ""),
+        gfx = ("gfx1100", "gfx1103"),
+        env = {"HIP_VISIBLE_DEVICES": "1"},
+    )
+    assert _needs_pass() is True
 
 
 def test_two_cards_of_one_arch_are_not_ambiguous(monkeypatch):
@@ -187,7 +254,7 @@ def test_a_set_hip_mask_shadows_the_cuda_alias(monkeypatch, cuda):
     """CUDA_VISIBLE_DEVICES is HIP's alias, not a layer under it (_pick_visible_index).
 
     Hiding NVIDIA with CUDA_VISIBLE_DEVICES=-1 while pinning HIP is a real mixed-host
-    pattern; the HIP mask wins, so the GPU is visible and the wheel is repairable.
+    pattern: the HIP mask wins, so the GPU is visible and the wheel repairable.
     """
     _host(
         monkeypatch,
@@ -308,8 +375,8 @@ def _decision(result):
     """The CLI's own account of which input produced its exit code.
 
     Exit 1 alone is five states (no-torch venv, resolved backend, non-ROCm pin, absent or
-    masked AMD host, unreadable torch), so the code cannot say which one it saw. Asserting
-    the line back against the code keeps the diagnostic from drifting off the decision.
+    masked AMD host, unreadable torch), so the code cannot say which it saw. Asserting the
+    line back against the code keeps the diagnostic from drifting.
     """
     stdout = result.stdout.decode(errors = "replace")
     marked = [
@@ -459,10 +526,18 @@ def _repair_installs(monkeypatch):
             dict(rocm_ver = (6, 4), inferred = None, gfx = ("gfx1030",)),
             True,
         ),
-        # The repair prints "skipping torch reinstall" and returns for all three.
+        # The default host here is Strix, whose per-arch index needs no host ROCm version, so
+        # an unreadable one is the shape that route exists for rather than a reason to stop.
+        (
+            "a visible Strix GPU whose ROCm version cannot be read",
+            dict(rocm_ver = None, inferred = None),
+            True,
+        ),
+        # A non-Strix arch the generic wheel does carry: the repair prints "skipping torch
+        # reinstall" and returns, so the preflight must keep the fast path.
         (
             "a visible GPU whose ROCm version cannot be read",
-            dict(rocm_ver = None, inferred = None),
+            dict(rocm_ver = None, inferred = None, gfx = ("gfx1100",)),
             False,
         ),
         (
@@ -489,3 +564,217 @@ def test_the_preflight_and_the_repair_agree(monkeypatch, label, host, expected):
         assert installs, f"{label}: preflight forced a pass the repair declined"
     else:
         assert not installs, f"{label}: the repair acts but the preflight kept the fast path"
+
+
+# Right wheel family, wrong architecture
+
+
+def _rocm_torch(
+    monkeypatch,
+    *,
+    family,
+    owns_sdk = None,
+    **kw,
+):
+    """A host whose torch IS a ROCm build.
+
+    ``family`` is the per-arch family it reads back as; None means unknowable.
+    ``owns_sdk`` is whether torch requires AMD's rocm[libraries], separating a generic wheel
+    (False, no family to read) from a per-arch install whose family will not read back.
+    """
+    _host(monkeypatch, torch = ("2.11.0+rocm7.13.0", "7.13"), **kw)
+    _owns = family is not None if owns_sdk is None else owns_sdk
+    monkeypatch.setattr(stack, "_torch_requires_rocm_sdk", lambda: _owns)
+    monkeypatch.setattr(stack, "_installed_rocm_wheel_family", lambda: family)
+
+
+def test_a_generic_wheel_without_kernels_for_this_gpu_forces_the_pass(monkeypatch):
+    """The reported host on an update. Torch is a ROCm build, which used to end the probe
+    for all of them, so the repair was reachable on a fresh install and never on update."""
+    _rocm_torch(monkeypatch, family = None, gfx = ("gfx1103",))
+    assert _needs_pass() is True
+
+
+def test_a_per_arch_wheel_built_for_another_gpu_forces_the_pass(monkeypatch):
+    """A per-arch install outlives the card it was made for: the gfx110X-all wheels carry
+    no gfx1200 kernels, and no update would ever notice."""
+    _rocm_torch(monkeypatch, family = "gfx110x-all", gfx = ("gfx1200",))
+    assert _needs_pass() is True
+
+
+def test_that_repair_is_reachable_with_no_readable_rocm_version(monkeypatch):
+    """Both per-arch repairs are version-independent, and a bundled-runtime host has no
+    system ROCm to read a version from -- the very host they exist for."""
+    _rocm_torch(monkeypatch, family = "gfx110x-all", gfx = ("gfx1200",), rocm_ver = None)
+    assert _needs_pass() is True
+
+
+@pytest.mark.parametrize(
+    "family, gfx",
+    [
+        ("gfx1152", ("gfx1152",)),  # already on its own leaf
+        ("gfx110x-all", ("gfx1103",)),  # already on the leaf this GPU needs
+        (None, ("gfx1100",)),  # generic wheels do carry kernels for it
+    ],
+)
+def test_a_healthy_rocm_install_still_keeps_the_fast_path(monkeypatch, family, gfx):
+    """The cost of a wrong True is only a dependency pass, but an update that runs one every
+    time is the reason this probe exists."""
+    _rocm_torch(monkeypatch, family = family, gfx = gfx)
+    assert _needs_pass() is False
+
+
+def test_an_unknowable_family_keeps_the_fast_path(monkeypatch):
+    """_installed_rocm_wheel_family answers None for two runtimes with no `rocm` to
+    arbitrate. _ensure_rocm_torch cannot skip on a family it never read, so forcing the pass
+    would reinstall the multi-GB stack on every single update rather than once."""
+    _rocm_torch(monkeypatch, family = None, owns_sdk = True, gfx = ("gfx1152",))
+    assert _needs_pass() is False
+
+
+def test_a_matching_family_below_its_torch_floor_forces_the_pass(monkeypatch):
+    """The family is the right SHAPE, not a working build: below 2.11 these leaves carry the
+    _grouped_mm bug, and _already_on_leaf keeps a matching family only above that floor.
+    Keeping the fast path here leaves the broken build in place on every update."""
+    _rocm_torch(monkeypatch, family = "gfx1152", gfx = ("gfx1152",))
+    monkeypatch.setattr(
+        stack, "_probe_torch_runtime", lambda: (True, True, "2.10.0+rocm7.13.0", "7.13", "")
+    )
+    assert _needs_pass() is True
+
+
+def test_a_leaf_with_no_torch_floor_keeps_the_fast_path_below_211(monkeypatch):
+    """Only the leaves in _ROCM_GFX_TORCH211_LEAVES have that bug; the rest ship <2.11 builds
+    and are correct as they are, so the floor must not be applied to them."""
+    _rocm_torch(monkeypatch, family = "gfx110x-all", gfx = ("gfx1103",))
+    monkeypatch.setattr(
+        stack, "_probe_torch_runtime", lambda: (True, True, "2.10.0+rocm7.13.0", "7.13", "")
+    )
+    assert _needs_pass() is False
+
+
+def test_a_named_arch_resolves_a_host_no_ordinal_can(monkeypatch):
+    """The decline message offers UNSLOTH_ROCM_GFX_ARCH as the way through, so it has to be
+    one: the user naming the arch outright is the reading no ordinal or UUID can contradict.
+    Without it the same host stays ambiguous and keeps the fast path."""
+    _host(
+        monkeypatch,
+        torch = ("2.9.0+cpu", ""),
+        gfx = ("gfx1151", "gfx1103"),
+        probe_source = "amd-smi",
+        env = {"HIP_VISIBLE_DEVICES": "1", "UNSLOTH_ROCM_GFX_ARCH": "gfx1103"},
+    )
+    assert _needs_pass() is True
+
+
+def test_a_rocm_pin_is_not_asked_a_hardware_question(monkeypatch):
+    """A pin commits to an index regardless of the visible GPU, which is why every hardware
+    gate above it is skipped. Asked under a pin, the family question answers for whatever card
+    the probing machine has -- how the end-to-end CLI case began failing on an AMD box."""
+    # The pin names the family torch already carries, so nothing is due for it either.
+    _rocm_torch(
+        monkeypatch,
+        family = "gfx110x-all",
+        gfx = ("gfx1151",),
+        env = {"UNSLOTH_TORCH_INDEX_URL": "https://download.pytorch.org/whl/rocm7.13"},
+    )
+    assert _needs_pass() is False
+    # A pin that no longer matches the installed wheel is the pin's own question, not a
+    # hardware one, and _ensure_rocm_torch reinstalls for it.
+    _rocm_torch(
+        monkeypatch,
+        family = "gfx110x-all",
+        gfx = ("gfx1151",),
+        env = {"UNSLOTH_TORCH_INDEX_URL": "https://download.pytorch.org/whl/rocm6.4"},
+    )
+    assert _needs_pass() is True
+    # The same stale family without a pin is exactly what the repair is for.
+    _rocm_torch(monkeypatch, family = "gfx110x-all", gfx = ("gfx1151",))
+    assert _needs_pass() is True
+
+
+def test_a_stale_family_no_index_can_repair_keeps_the_fast_path(monkeypatch):
+    """The preflight must not promise a repair the repair declines. gfx1010 has no AMD leaf
+    and no generic kernels, so _ensure_rocm_torch refuses on the same routability question,
+    and answering True here buys a dependency pass per update and never a working torch."""
+    _rocm_torch(monkeypatch, family = "gfx110x-all", gfx = ("gfx1010",))
+    assert _needs_pass() is False
+    # An empty leaf is not the test: the datacentre parts have none and the generic index
+    # serves them, so their stale family is still worth the pass.
+    for _gfx in ("gfx942", "gfx950"):
+        _rocm_torch(monkeypatch, family = "gfx110x-all", gfx = (_gfx,))
+        assert _needs_pass() is True, _gfx
+
+
+def test_a_mixed_host_gfx906_keeps_the_fast_path(monkeypatch):
+    """gfx906 answers the abstract routability question yes, but its one usable route is the
+    rocm6.3 tag, which opens only when it is the sole detected arch. _ensure_rocm_torch
+    declines the demotion there, so asking the abstract question buys a pass and no repair."""
+    _rocm_torch(
+        monkeypatch,
+        family = "gfx110x-all",
+        gfx = ("gfx1100", "gfx906"),
+        env = {"HIP_VISIBLE_DEVICES": "1"},
+    )
+    assert _needs_pass() is False
+    # Alone, gfx906 does have a route, and the same stale family is worth the pass.
+    _rocm_torch(monkeypatch, family = "gfx110x-all", gfx = ("gfx906",))
+    assert _needs_pass() is True
+
+
+def test_a_confirmed_spoof_forces_the_pass_even_on_a_matching_family(monkeypatch):
+    """_clear_confirmed_hsa_spoof runs only inside _ensure_rocm_torch, so a fast path taken
+    on the wheel question alone leaves HSA_OVERRIDE_GFX_VERSION set: ROCr keeps presenting an
+    ISA the installed wheels have no code for (#7331), however well the family matches."""
+    _rocm_torch(
+        monkeypatch,
+        family = "gfx1152",
+        gfx = (),
+        rocm_ver = None,
+        env = {"HSA_OVERRIDE_GFX_VERSION": "11.0.0"},
+    )
+    monkeypatch.setattr(stack, "_kfd_gfx_targets", lambda: ["gfx1152"], raising = False)
+    assert _needs_pass() is True
+
+
+def test_a_sole_gfx906_above_its_legacy_tag_forces_the_pass(monkeypatch):
+    """The gfx906 reroute is a compatibility reroute, not a missing-kernel one, so the wheel
+    question never saw it and the rocm6.3 downgrade was unreachable from `studio update`."""
+    _rocm_torch(monkeypatch, family = None, gfx = ("gfx906",), rocm_ver = (6, 4))
+    assert _needs_pass() is True
+    # Already on the legacy tag: nothing left to do.
+    _host(monkeypatch, torch = ("2.9.0+rocm6.3", "6.3"), gfx = ("gfx906",), rocm_ver = (6, 4))
+    assert _needs_pass() is False
+
+
+def test_a_repin_to_another_per_arch_leaf_forces_the_pass(monkeypatch):
+    """Both leaves are torch 2.11 with a three-part +rocm7.13.0 tag, so the pin arm's version
+    comparison sees no change and would keep the fast path over an edited pin -- the update
+    that was supposed to move the card onto its own wheels."""
+    _rocm_torch(
+        monkeypatch,
+        family = "gfx110x-all",
+        env = {"UNSLOTH_TORCH_INDEX_URL": "https://repo.amd.com/rocm/whl/gfx120X-all/"},
+    )
+    assert _needs_pass() is True
+
+
+def test_a_pin_naming_the_installed_leaf_keeps_the_fast_path(monkeypatch):
+    """The same comparison the other way: nothing to apply, so nothing to pass for."""
+    _rocm_torch(
+        monkeypatch,
+        family = "gfx120x-all",
+        env = {"UNSLOTH_TORCH_INDEX_URL": "https://repo.amd.com/rocm/whl/gfx120X-all/"},
+    )
+    assert _needs_pass() is False
+
+
+def test_a_pin_at_a_non_floor_leaf_already_satisfied_keeps_the_fast_path(monkeypatch):
+    """The pin arm now answers the preflight, so a heuristic that calls a valid environment
+    stale costs a dependency pass on every update as well as the reinstall behind it."""
+    _rocm_torch(
+        monkeypatch,
+        family = "gfx110x-all",
+        env = {"UNSLOTH_TORCH_INDEX_URL": "https://repo.amd.com/rocm/whl/gfx110X-all/"},
+    )
+    assert _needs_pass() is False
