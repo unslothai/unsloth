@@ -71,6 +71,18 @@ test("matches family overrides to family defaults without selecting more-specifi
   });
 });
 
+test("a matching canonical family keeps variant-specific repository defaults", () => {
+  for (const [repoId, family, expected] of [
+    ["stabilityai/sdxl-turbo", "sdxl", { steps: 3, guidance: 0 }],
+    ["black-forest-labs/FLUX.1-schnell", "flux.1", { steps: 4, guidance: 0 }],
+    ["Tongyi-MAI/Z-Image-Turbo", "z-image", { steps: 9, guidance: 0 }],
+    ["krea/Krea-2-Raw", "krea-2", { steps: 52, guidance: 3.5 }],
+    ["unsloth/FLUX.2-klein-base-4B", "flux.2-klein", { steps: 50, guidance: 4 }],
+  ] as const) {
+    assert.deepEqual(defaultsFor(repoId, family), expected, repoId);
+  }
+});
+
 test("video defaults also prefer the explicit family over a misleading repo name", () => {
   const source = readFileSync(
     new URL("../src/features/video/video-page.tsx", import.meta.url),
@@ -98,9 +110,20 @@ test("the image Default preset keeps the resolved family after load completion",
   const recipe = source.slice(recipeStart, recipeEnd);
   assert.match(
     recipe,
-    /defaultsFor\(status\?\.base_repo \?\? status\?\.repo_id \?\? "", status\?\.family\)/,
+    /defaultsFor\(status\?\.repo_id \?\? status\?\.base_repo \?\? "", status\?\.family\)/,
   );
   assert.match(recipe, /status\?\.family/);
+});
+
+test("loaded-model slider seeding also keeps the selected repository variant", () => {
+  const source = readFileSync(
+    new URL("../src/features/images/images-page.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /defaultsFor\(status\?\.repo_id \?\? status\?\.base_repo \?\? repoId, status\?\.family\)/,
+  );
 });
 
 test("routed image picks apply and transactionally roll back model defaults", () => {

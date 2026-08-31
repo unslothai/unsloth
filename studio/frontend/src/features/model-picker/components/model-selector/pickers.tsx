@@ -135,6 +135,7 @@ import {
   taskPickerRowMatches,
 } from "./audio-picker-policy";
 import { isFamilyOverrideLocalCandidate } from "./family-override-local-candidate";
+import { familyTokenMatches } from "@/lib/family-token-matching";
 import { FolderBrowser } from "./folder-browser";
 import {
   type ModelCapabilities,
@@ -2333,7 +2334,7 @@ const SUPPORTED_EDIT_KEYWORDS = ["qwen-image-edit", "kontext"] as const;
 // Match a keyword as a whole path/name segment, not a raw substring, so "edit" does not hide ".../edited/..." and "kontext"
 // does not hide ".../kontextual/...". The keywords are [a-z-] literals, so no escaping. Mirrors _token_in_needle.
 function idHasSegment(id: string, keyword: string): boolean {
-  return new RegExp(`(?:^|[-_./\\\\])${keyword}(?:$|[-_./\\\\])`).test(id);
+  return familyTokenMatches(keyword, id);
 }
 function isImageEditModel(repoId: string | null | undefined): boolean {
   if (!repoId) return false;
@@ -2603,6 +2604,7 @@ export function HubModelPicker({
   task,
   catalog,
   allowUnknownLocalModels = false,
+  unknownLocalModelFamily,
   communityModelPolicy = "none",
 }: {
   models: ModelOption[];
@@ -2634,6 +2636,7 @@ export function HubModelPicker({
   catalog?: CatalogGroup[];
   /** Show unclassified local safetensors when a media page has an explicit family override. */
   allowUnknownLocalModels?: boolean;
+  unknownLocalModelFamily?: string | null;
   /** Also surface community (non-unsloth) models carrying `task`'s pipeline tags, below
    *  the unsloth rows and in search. Opt-in, since the runtime has to load an arbitrary
    *  publisher's checkpoint: true of audio, not of the curated pages. */
@@ -3907,7 +3910,11 @@ export function HubModelPicker({
               catalog,
               activeCatalogArtifactIds,
             ) ||
-              isFamilyOverrideLocalCandidate(m, allowUnknownLocalModels)) &&
+              isFamilyOverrideLocalCandidate(
+                m,
+                allowUnknownLocalModels,
+                unknownLocalModelFamily,
+              )) &&
             localModelMatchesFormat(m, formatFilter) &&
             matchesLocalQuery(m),
         ),
@@ -3925,6 +3932,7 @@ export function HubModelPicker({
       catalog,
       activeCatalogArtifactIds,
       allowUnknownLocalModels,
+      unknownLocalModelFamily,
     ],
   );
   // Local ./models entries. Chat-only Unsloth runs GGUF (any host) and MLX (Mac only), so raw checkpoints there are hidden (mirrors the cached
@@ -3956,7 +3964,11 @@ export function HubModelPicker({
               catalog,
               activeCatalogArtifactIds,
             ) ||
-              isFamilyOverrideLocalCandidate(m, allowUnknownLocalModels)) &&
+              isFamilyOverrideLocalCandidate(
+                m,
+                allowUnknownLocalModels,
+                unknownLocalModelFamily,
+              )) &&
             (!chatOnly ||
               Boolean(task) ||
               localModelIsGguf(m) ||
@@ -3980,6 +3992,7 @@ export function HubModelPicker({
       catalog,
       activeCatalogArtifactIds,
       allowUnknownLocalModels,
+      unknownLocalModelFamily,
     ],
   );
   const sortedCustomFolderModels = useMemo(
@@ -4009,7 +4022,11 @@ export function HubModelPicker({
               catalog,
               activeCatalogArtifactIds,
             ) ||
-              isFamilyOverrideLocalCandidate(m, allowUnknownLocalModels)) &&
+              isFamilyOverrideLocalCandidate(
+                m,
+                allowUnknownLocalModels,
+                unknownLocalModelFamily,
+              )) &&
             localModelMatchesFormat(m, formatFilter) &&
             matchesLocalQuery(m),
         ),
@@ -4027,6 +4044,7 @@ export function HubModelPicker({
       catalog,
       activeCatalogArtifactIds,
       allowUnknownLocalModels,
+      unknownLocalModelFamily,
     ],
   );
 

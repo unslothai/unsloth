@@ -3164,6 +3164,7 @@ def test_direct_h3_native_load_uses_sd_cpp_path(monkeypatch):
     assert len(calls) == 1
     assert calls[0]["fam"].name == "minimax-h3"
     assert calls[0]["gguf_filename"] == "minimax_h3_fl2va-Q4_K_M.gguf"
+    assert calls[0]["family_override"] == "minimax-h3"
 
 
 def test_h3_native_load_claims_the_companion_repos_before_the_preflight(monkeypatch, tmp_path):
@@ -3577,6 +3578,7 @@ def _load_h3_native_offload(
     help_text,
     accelerator = True,
     memory_mode = None,
+    family_override = None,
 ):
     """Run the native H3 load against a stubbed sd-cli and hand back its committed offload flags.
 
@@ -3638,9 +3640,23 @@ def _load_h3_native_offload(
         repo_id = "leejet/MiniMax-H3-GGUF",
         gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
         memory_mode = memory_mode,
+        family_override = family_override,
     )
     assert backend._state is not None
     return backend._state, list(backend._state.pipe.offload_flags)
+
+
+def test_h3_native_status_preserves_an_explicit_family_override(monkeypatch, tmp_path):
+    state, _offload = _load_h3_native_offload(
+        monkeypatch,
+        tmp_path,
+        help_text = _H3_HELP,
+        family_override = "minimax-h3",
+    )
+    resolved = state.resolved["family_override"]
+    assert resolved["requested"] == "minimax-h3"
+    assert resolved["value"] == "minimax-h3"
+    assert resolved["source"] == "explicit"
 
 
 # Both fixtures carry the project banner the identity gate reads and the H3 marker

@@ -45,16 +45,19 @@ test("an on-device copy of the pipeline reaches the same dialog", () => {
     source.indexOf("function isH3PipelinePick("),
     source.indexOf("// What a pick optimistically replaced"),
   );
-  // Not a Hub-id equality test any more: the local directory never matches one.
+  // Not a Hub-id equality test any more: the local directory never matches one. Match only the
+  // repository/directory basename so an owner named minimax-h3 cannot classify an unrelated repo.
+  assert.match(predicate, /replace\(\/\\\\\/g, "\/"\)/);
   assert.match(predicate, /split\("\/"\)\.at\(-1\)/);
-  assert.match(predicate, /H3_BF16_REPO\.split\("\/"\)\[1\]\.toLowerCase\(\)/);
+  assert.match(predicate, /familyTokenMatches\("minimax-h3", leaf\)/);
   // And the generic local-pipeline branch consults it, not only the curated branch.
   assert.equal(
     source.split('isH3PipelinePick(id, "pipeline", familyOverride)').length - 1,
     1,
     "the local-pipeline branch must intercept an H3 pick exactly once",
   );
-  assert.match(predicate, /familyOverride === "minimax-h3"/);
+  assert.match(predicate, /familyTokenMatches\("minimax-h3", familyOverride\)/);
+  assert.match(predicate, /familyOverride\.toLowerCase\(\) === "h3"/);
 });
 
 test("hiding the page cancels the pending pick rather than dropping it", () => {

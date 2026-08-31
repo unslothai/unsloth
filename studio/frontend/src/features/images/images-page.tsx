@@ -1403,7 +1403,7 @@ export function ImagesPage({
   const imageDefaultRecipe = useMemo<ImageGenerationPresetParams>(() => {
     const recommended =
       pendingModelDefaults ??
-      defaultsFor(status?.base_repo ?? status?.repo_id ?? "", status?.family);
+      defaultsFor(status?.repo_id ?? status?.base_repo ?? "", status?.family);
     return {
       negativePrompt: "",
       width: 1024,
@@ -2365,9 +2365,9 @@ export function ImagesPage({
       residentSeeded.current = true;
       if (imagePresets.storedRecipe) return;
     }
-    // Seed from base_repo (the resolved diffusers base, holding the family), not repo_id: a GGUF resident has no family substring.
-    // Status is the authority for a resident model, so this is not a pick's optimistic claim.
-    const d = defaultsFor(status?.base_repo ?? status?.family ?? repoId, status?.family);
+    // Prefer the selected repository so a family variant keeps its specific schedule. The resolved
+    // base remains the fallback, and status is authoritative rather than the optimistic pick.
+    const d = defaultsFor(status?.repo_id ?? status?.base_repo ?? repoId, status?.family);
     setPendingModelDefaults(null);
     setSteps(d.steps);
     setGuidance(d.guidance);
@@ -3737,6 +3737,7 @@ export function ImagesPage({
                 task={IMAGE_GEN_TASKS}
                 catalog={IMAGE_CATALOG}
                 allowUnknownLocalModels={familyOverride !== "auto"}
+                unknownLocalModelFamily={familyOverride}
                 placeholder="Select image model"
                 open={active && selectorOpen}
                 onOpenChange={(o) => setSelectorOpen(active && o)}

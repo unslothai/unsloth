@@ -468,6 +468,22 @@ def test_custom_inventory_classifies_an_opaque_single_file_safetensors_checkpoin
     assert rows[0].capabilities.supports_lora is False
 
 
+def test_custom_inventory_surfaces_a_safetensors_file_registered_by_path(tmp_path):
+    """The registry stores the file's parent, so the scan root itself must be classified."""
+    from hub.services.models.local_inventory import _coerce_scan_folder_path, _scan_custom_folder
+
+    root = tmp_path / "custom"
+    checkpoint = _touch(root / "portrait.safetensors")
+
+    registered = Path(_coerce_scan_folder_path(str(checkpoint)))
+    assert registered == root
+    rows = _scan_custom_folder(registered)
+
+    assert [(Path(row.path), row.model_format, row.task) for row in rows] == [
+        (root, "safetensors", None)
+    ]
+
+
 def test_custom_inventory_keeps_configless_safetensors_shards_unknown(tmp_path):
     """The override fallback must not turn an arbitrary component/shard directory into a model."""
     from hub.services.models.local_inventory import _scan_custom_folder

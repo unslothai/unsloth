@@ -182,6 +182,8 @@ interface ModelSelectorProps {
   catalog?: CatalogGroup[];
   /** Allow unclassified local safetensors when the caller supplies explicit architecture evidence. */
   allowUnknownLocalModels?: boolean;
+  /** Resolved family used to reject overrides whose backend is pipeline-only. */
+  unknownLocalModelFamily?: string | null;
   /** Also list community (non-unsloth) models for `task`. Opt-in: only pages
    *  whose runtime loads arbitrary publishers. */
   communityModelPolicy?: CommunityModelPolicy;
@@ -380,6 +382,7 @@ function ModelSelectorContent({
   task,
   catalog,
   allowUnknownLocalModels,
+  unknownLocalModelFamily,
   communityModelPolicy,
 }: {
   open: boolean;
@@ -406,6 +409,7 @@ function ModelSelectorContent({
   task?: HfTaskFilter;
   catalog?: CatalogGroup[];
   allowUnknownLocalModels?: boolean;
+  unknownLocalModelFamily?: string | null;
   communityModelPolicy?: CommunityModelPolicy;
 }) {
   const t = useT();
@@ -622,6 +626,7 @@ function ModelSelectorContent({
               task={task}
               catalog={catalog}
               allowUnknownLocalModels={allowUnknownLocalModels}
+              unknownLocalModelFamily={unknownLocalModelFamily}
               communityModelPolicy={communityModelPolicy}
               section={effectiveHubSection}
               sectionToggle={
@@ -678,6 +683,7 @@ export function ModelSelector({
   task,
   catalog,
   allowUnknownLocalModels = false,
+  unknownLocalModelFamily,
   communityModelPolicy = "none",
   placeholder,
   loaded,
@@ -849,6 +855,7 @@ export function ModelSelector({
         task={task}
         catalog={catalog}
         allowUnknownLocalModels={allowUnknownLocalModels}
+        unknownLocalModelFamily={unknownLocalModelFamily}
         communityModelPolicy={communityModelPolicy}
       />
     </Popover>

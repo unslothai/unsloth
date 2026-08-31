@@ -115,6 +115,7 @@ import { cn } from "@/lib/utils";
 import { resolveDiffusionGgufFilename } from "@/lib/diffusion-gguf-filename";
 import { createPickGuard, runGgufRepoPick } from "@/lib/diffusion-gguf-pick";
 import { diffusionRoutePick } from "@/lib/diffusion-route-pick";
+import { familyTokenMatches } from "@/lib/family-token-matching";
 import {
   PRECISION_REFUSAL_TITLE,
   denseTextEncoderBuildLabel,
@@ -790,8 +791,6 @@ type PendingH3Load = {
   token: number;
 };
 
-const H3_BF16_REPO = "MiniMaxAI/MiniMax-H3";
-
 /** Whether a pick is the H3 base pipeline, whose denoiser partition the user must choose.
  *  Shared by both entry points: a chat-picker pick arrives as ?model= and reaches loadOrStage
  *  without passing through handleModelSelect, so checking it in one place staged the default
@@ -808,11 +807,15 @@ function isH3PipelinePick(
   familyOverride?: string | null,
 ): boolean {
   if (kind !== "pipeline") return false;
-  if (familyOverride === "minimax-h3" || familyOverride === "h3") return true;
-  const id = repoId.toLowerCase();
-  if (id === H3_BF16_REPO.toLowerCase()) return true;
-  const leaf = id.replace(/\\/g, "/").replace(/\/+$/, "").split("/").at(-1) ?? "";
-  return leaf === H3_BF16_REPO.split("/")[1].toLowerCase();
+  if (
+    familyOverride &&
+    (familyTokenMatches("minimax-h3", familyOverride) ||
+      familyOverride.toLowerCase() === "h3")
+  ) {
+    return true;
+  }
+  const leaf = repoId.replace(/\\/g, "/").replace(/\/+$/, "").split("/").at(-1) ?? repoId;
+  return familyTokenMatches("minimax-h3", leaf);
 }
 
 // What a pick optimistically replaced, so a load that never takes can put all of it back. The quant
@@ -3466,6 +3469,7 @@ function VideoGenerator({
             task={VIDEO_GEN_TASKS}
             catalog={VIDEO_CATALOG}
             allowUnknownLocalModels={familyOverride !== "auto"}
+            unknownLocalModelFamily={familyOverride}
             placeholder="Select video model"
             open={active && selectorOpen}
             onOpenChange={(o) => setSelectorOpen(active && o)}

@@ -117,7 +117,9 @@ test("a routed H3 pipeline pick asks for the task instead of loading a default",
     source.indexOf("function isH3PipelinePick("),
     source.indexOf("type PickRevert"),
   );
-  assert.ok(predicate.includes('familyOverride === "minimax-h3"'));
+  assert.ok(
+    predicate.includes('familyTokenMatches("minimax-h3", familyOverride)'),
+  );
 });
 
 test("reapply preserves the loaded H3 task", () => {

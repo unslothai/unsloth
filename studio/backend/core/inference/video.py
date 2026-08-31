@@ -1667,6 +1667,7 @@ class VideoBackend:
         cancel_event: threading.Event,
         repo_id: str,
         gguf_filename: Optional[str] = None,
+        family_override: Optional[str] = None,
         hf_token: Optional[str] = None,
         memory_mode: Optional[str] = None,
         gpu_ordinal: Optional[int] = None,
@@ -2031,6 +2032,13 @@ class VideoBackend:
                                     None,
                                     "flash",
                                     "sd.cpp diffusion flash attention",
+                                ),
+                                "family_override": (
+                                    family_override,
+                                    fam.name,
+                                    "explicit family override applied"
+                                    if family_override
+                                    else "auto-detected from repository name and metadata",
                                 ),
                             }
                         ),
@@ -3488,6 +3496,7 @@ class VideoBackend:
                 cancel_event = threading.Event(),
                 repo_id = repo_id,
                 gguf_filename = gguf_filename,
+                family_override = family_override,
                 hf_token = hf_token,
                 memory_mode = memory_mode,
                 # Carried, not defaulted: load_pipeline is also reached directly (no _run_load),

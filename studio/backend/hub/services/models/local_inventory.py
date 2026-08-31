@@ -772,7 +772,20 @@ def _scan_custom_folder(
             return True
         return _is_diffusers_pipeline_dir(Path(m.path))
 
-    generic = [
+    # A registered weight-file path is intentionally stored as its parent directory. Classify the
+    # root's inert bare-checkpoint signature too, or the child-only scanner below silently loses
+    # the exact file the user registered. Keep this narrower than arbitrary root weights: the
+    # classifier grants this signature only to one configless non-adapter safetensors payload.
+    root_candidates = [
+        model
+        for model in _classify_local_path(folder_path, "models_dir")
+        if model.model_format == "safetensors"
+        and not model.capabilities.can_chat
+        and not model.capabilities.can_train
+        and not model.capabilities.supports_lora
+    ]
+
+    generic = root_candidates + [
         m
         for m in (
             _scan_models_dir(

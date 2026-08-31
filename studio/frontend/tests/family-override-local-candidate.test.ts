@@ -36,6 +36,16 @@ test("an explicit family surfaces only unclassified local safetensors", () => {
     ),
     false,
   );
+  assert.equal(
+    isFamilyOverrideLocalCandidate(opaqueSafetensors, true, "ideogram-4"),
+    false,
+    "pipeline-only image families cannot load a lone checkpoint",
+  );
+  assert.equal(
+    isFamilyOverrideLocalCandidate(opaqueSafetensors, true, "minimax-h3"),
+    false,
+    "the modular H3 workflow cannot load a lone checkpoint",
+  );
 });
 
 test("image and video family selectors opt all local inventories into the narrow fallback", () => {
@@ -48,6 +58,7 @@ test("image and video family selectors opt all local inventories into the narrow
       source,
       /allowUnknownLocalModels=\{familyOverride !== "auto"\}/,
     );
+    assert.match(source, /unknownLocalModelFamily=\{familyOverride\}/);
     assert.match(
       source,
       CANONICAL_FAMILY_RESEED,
@@ -63,8 +74,9 @@ test("image and video family selectors opt all local inventories into the narrow
     "utf8",
   );
   assert.equal(
-    picker.split("isFamilyOverrideLocalCandidate(m, allowUnknownLocalModels)")
-      .length - 1,
+    picker.match(
+      /isFamilyOverrideLocalCandidate\(\s*m,\s*allowUnknownLocalModels,\s*unknownLocalModelFamily,\s*\)/g,
+    )?.length ?? 0,
     3,
     "LM Studio, ./models, and custom-folder rows must use the same fallback",
   );

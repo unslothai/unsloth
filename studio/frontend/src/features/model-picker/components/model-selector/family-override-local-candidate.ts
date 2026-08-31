@@ -12,9 +12,14 @@ export function isFamilyOverrideLocalCandidate(
     task?: string | null;
   },
   allowUnknownLocalModels: boolean,
+  familyOverride?: string | null,
 ): boolean {
+  const family = familyOverride?.trim().toLowerCase();
+  const supportsSingleFile =
+    family !== "ideogram-4" && family !== "minimax-h3" && family !== "h3";
   return (
     allowUnknownLocalModels &&
+    supportsSingleFile &&
     model.task == null &&
     model.model_format === "safetensors"
   );
