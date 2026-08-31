@@ -122,17 +122,18 @@ export type MismatchStartAction = ResolvedTransport | "conflict";
  *
  * Xet cannot byte-resume. Auto and HTTP follow the stall watchdog's HTTP
  * fallback instead of parking the start on a Hub dialog Chat/Video cannot
- * resolve. Only an explicit Xet preference versus an HTTP partial is a real
- * choice (keep resumable bytes, or restart on Xet). */
+ * resolve. Only an explicit Xet preference versus a resumable HTTP partial is
+ * a real choice (keep resumable bytes, or restart on Xet). */
 export function mismatchStartAction(
   preferred: TransportMode,
   resolved: ResolvedTransport,
   lastTransport: ResolvedTransport,
+  resumable = true,
 ): MismatchStartAction {
   if (lastTransport === resolved) return resolved;
   if (lastTransport === TRANSPORT.HTTP) {
     if (preferred === TRANSPORT.XET && resolved === TRANSPORT.XET) {
-      return "conflict";
+      return resumable ? "conflict" : resolved;
     }
     return TRANSPORT.HTTP;
   }

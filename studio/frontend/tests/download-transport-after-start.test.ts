@@ -139,6 +139,13 @@ test("an explicit Xet preference still asks before throwing away HTTP bytes", ()
   );
 });
 
+test("an explicit Xet preference restarts an unresumable HTTP partial", () => {
+  assert.equal(
+    mismatchStartAction(TRANSPORT.XET, TRANSPORT.XET, TRANSPORT.HTTP, false),
+    TRANSPORT.XET,
+  );
+});
+
 test("unavailable Xet with an HTTP partial continues over HTTP", () => {
   // Preference is Xet, but the machine already demoted the resolved transport.
   assert.equal(
@@ -162,7 +169,10 @@ test("a transport mismatch start uses the mismatch helper", () => {
     ),
     "utf8",
   );
-  assert.match(source, /mismatchStartAction\(preferred, resolved, last\)/);
+  assert.match(
+    source,
+    /mismatchStartAction\(\s*preferred,\s*resolved,\s*last,\s*status\.resumable,\s*\)/,
+  );
 });
 
 test("staging an idle repo does not drop a recorded transport conflict", () => {

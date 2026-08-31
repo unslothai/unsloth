@@ -192,7 +192,12 @@ export async function requestStart(
       const last = asTransportMode(status.last_transport);
       const resolved = asTransportMode(mode);
       if (status.has_partial && last && resolved && last !== resolved) {
-        const action = mismatchStartAction(preferred, resolved, last);
+        const action = mismatchStartAction(
+          preferred,
+          resolved,
+          last,
+          status.resumable,
+        );
         if (action === "conflict") {
           setConflict(jobKeyOf(req.kind, req.repoId, req.variant), {
             info: {
