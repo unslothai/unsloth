@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from functools import wraps
 from typing import Any, Optional
 from urllib.parse import urlsplit, urlunsplit
@@ -141,16 +142,24 @@ def _windows_batch_argument_is_unsafe(argument: str) -> bool:
     )
 
 
-def _stdio_log_id(url: str) -> str:
+def _session_log_id(url: str) -> str:
     """A non-secret label for logs. stdio commands can embed credentials in argv
-    (e.g. ``npx server --token sk-...``), so never log the raw command; use the
-    executable basename plus a short digest of the full command instead."""
+    (e.g. ``npx server --token sk-...``) and HTTP URLs in their query string, so
+    never log the raw address; use the executable basename (or the host) plus a
+    short digest of the full address instead."""
+    digest = hashlib.sha256(url.encode()).hexdigest()[:12]
+    if not is_stdio(url):
+        try:
+            label = urlsplit(url).hostname or "<url>"
+        except Exception:  # noqa: BLE001
+            label = "<invalid>"
+        return f"{label}#{digest}"
     try:
         parts = parse_stdio_command(url)
         exe = os.path.basename(parts[0]) if parts else "<empty>"
     except Exception:  # noqa: BLE001
         exe = "<invalid>"
-    return f"{exe}#{hashlib.sha256(url.encode()).hexdigest()[:12]}"
+    return f"{exe}#{digest}"
 
 
 def stdio_mcp_enabled() -> bool:
@@ -450,24 +459,17 @@ def _client(
     return Client(transport_cls(url = url, headers = headers or None, auth = auth))
 
 
-# Persistent stdio sessions: a stdio MCP server owns live state (a browser, a
-# DB handle), so keep one connected client per (command, env, chat session) on
-# a dedicated event-loop thread instead of respawning per call.
-
-_STDIO_SESSION_IDLE_TTL = 300.0
-_STDIO_SESSION_REAP_INTERVAL = 30.0
-_STDIO_CONNECT_TIMEOUT = 60.0  # allows first-run `npx -y ...` package download
-_STDIO_CLOSE_TIMEOUT = 10.0
-_STDIO_WEDGE_MARGIN = 15.0
-_STDIO_LIVENESS_TIMEOUT = 5.0
+_SESSION_IDLE_TTL = 300.0
+_SESSION_REAP_INTERVAL = 30.0
+_SESSION_CONNECT_TIMEOUT = 60.0  # allows first-run `npx -y ...` package download
+_SESSION_CLOSE_TIMEOUT = 10.0
+_SESSION_WEDGE_MARGIN = 15.0
+_SESSION_LIVENESS_TIMEOUT = 5.0
 _CANCEL_UNWIND_TIMEOUT = 2.0
-# Cap concurrent persistent sessions: each owns a subprocess + loop thread, and
-# the scope includes a caller-supplied thread_id, so an unbounded cache is a
-# resource-exhaustion surface. Overridable via env for large deployments.
 try:
-    _STDIO_MAX_SESSIONS = max(1, int(os.environ.get("UNSLOTH_STUDIO_MAX_STDIO_MCP_SESSIONS", "32")))
+    _MAX_SESSIONS = max(1, int(os.environ.get("UNSLOTH_STUDIO_MAX_STDIO_MCP_SESSIONS", "32")))
 except ValueError:
-    _STDIO_MAX_SESSIONS = 32
+    _MAX_SESSIONS = 32
 
 
 def _is_tool_error(exc: BaseException) -> bool:
@@ -482,10 +484,11 @@ def _is_tool_error(exc: BaseException) -> bool:
 
 
 def _transport_dead(session) -> bool:
-    """Best-effort, version-adaptive liveness probe for a cached stdio client.
+    """Best-effort, version-adaptive liveness probe for a cached client.
     ``Client.is_connected()`` only checks a session object exists, not that the
-    subprocess is alive, so it is never used here. Returns True only when the
-    transport is positively gone; unknown returns False (the call surfaces it)."""
+    subprocess (or the server's HTTP session) is alive, so it is never used here.
+    Returns True only when the transport is positively gone; unknown returns
+    False (the call surfaces it)."""
     client = getattr(session, "client", None)
     if client is None:
         return True
@@ -521,7 +524,7 @@ def _session_responsive(
     client = session.client
     if client is None:
         return False
-    window = _STDIO_LIVENESS_TIMEOUT if budget is None else min(_STDIO_LIVENESS_TIMEOUT, budget)
+    window = _SESSION_LIVENESS_TIMEOUT if budget is None else min(_SESSION_LIVENESS_TIMEOUT, budget)
     if window <= 0:
         return False
     probe = getattr(client, "list_tools_mcp", None) or client.list_tools
@@ -553,7 +556,7 @@ def _abort_future(future) -> None:
         pass
 
 
-class _StdioSession:
+class _McpSession:
     def __init__(self, url: str, headers: Optional[dict]):
         self.url = url
         self.headers = headers
@@ -564,7 +567,7 @@ class _StdioSession:
         self._close_lock = threading.Lock()
         self.call_lock = threading.Lock()  # serializes tool calls on this session
         self.last_used = time.monotonic()
-        self.in_flight = 0  # guarded by _stdio_sessions_lock
+        self.in_flight = 0  # guarded by _mcp_sessions_lock
         # On Windows a bare new_event_loop() can be a SelectorEventLoop (if any
         # component set that policy), which cannot spawn subprocesses natively;
         # force a ProactorEventLoop so the stdio transport always works.
@@ -573,7 +576,7 @@ class _StdioSession:
         else:
             self.loop = asyncio.new_event_loop()
         self._thread = threading.Thread(
-            target = self._run_loop, name = "mcp-stdio-session", daemon = True
+            target = self._run_loop, name = "mcp-session", daemon = True
         )
         self._thread.start()
 
@@ -596,8 +599,7 @@ class _StdioSession:
 
         future = asyncio.run_coroutine_threadsafe(_open(), self.loop)
         # timeout=None means unlimited (no connect deadline); a finite caller
-        # timeout still bounds connect by min(timeout, _STDIO_CONNECT_TIMEOUT).
-        window = None if timeout is None else min(timeout, _STDIO_CONNECT_TIMEOUT)
+        window = None if timeout is None else min(timeout, _SESSION_CONNECT_TIMEOUT)
         deadline = None if window is None else time.monotonic() + window
         while True:
             if cancel_event is not None and cancel_event.is_set():
@@ -627,7 +629,7 @@ class _StdioSession:
         self,
         coro,
         timeout: Optional[float],
-        margin: float = _STDIO_WEDGE_MARGIN,
+        margin: float = _SESSION_WEDGE_MARGIN,
     ):
         self.last_used = time.monotonic()
         future = asyncio.run_coroutine_threadsafe(coro, self.loop)
@@ -657,7 +659,6 @@ class _StdioSession:
             self.last_used = time.monotonic()
 
     def close(self) -> None:
-        # Idempotent: a discard racing close_stdio_sessions() may close twice.
         # Setting `closed` first also unblocks run() waiters (they poll it).
         with self._close_lock:
             if self.closed.is_set():
@@ -680,11 +681,11 @@ class _StdioSession:
                         task.cancel()
 
             try:
-                asyncio.run_coroutine_threadsafe(_shutdown(), loop).result(_STDIO_CLOSE_TIMEOUT)
+                asyncio.run_coroutine_threadsafe(_shutdown(), loop).result(_SESSION_CLOSE_TIMEOUT)
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
-                    "MCP stdio session close failed for %s: %s",
-                    _stdio_log_id(getattr(self, "url", "")),
+                    "MCP session close failed for %s: %s",
+                    _session_log_id(getattr(self, "url", "")),
                     exc,
                 )
             try:
@@ -698,31 +699,28 @@ class _StdioSession:
             thread.join(timeout = 5.0)
 
 
-_stdio_sessions: dict[tuple, _StdioSession] = {}
+_mcp_sessions: dict[tuple, _McpSession] = {}
 
 
 # Per-key locks so a slow connect/close never blocks unrelated servers; the
 # global lock only guards the dicts.
-class _StdioKeyLock:
+class _McpKeyLock:
     """A per-key lock that can be removed once nobody references it."""
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
-        self.users = 0  # guarded by _stdio_sessions_lock
+        self.users = 0  # guarded by _mcp_sessions_lock
 
 
-_stdio_key_locks: dict[tuple, _StdioKeyLock] = {}
-_stdio_sessions_lock = threading.Lock()
-_stdio_reaper_started = False
-# close_stdio_sessions() can only close sessions already published in
-# _stdio_sessions; one still inside connect() would be missed and cached
+_mcp_key_locks: dict[tuple, _McpKeyLock] = {}
+_mcp_sessions_lock = threading.Lock()
+_mcp_reaper_started = False
 # stale. Bump a generation on every close so that connect discards its
-# session instead of publishing it. Guarded by _stdio_sessions_lock.
-_stdio_close_all_gen = 0
-_stdio_url_close_gen: dict[str, int] = {}
-_stdio_cfg_close_gen: dict[tuple, int] = {}
+_mcp_close_all_gen = 0
+_mcp_url_close_gen: dict[str, int] = {}
+_mcp_cfg_close_gen: dict[tuple, int] = {}
+_mcp_connects_in_flight = 0
 
-# close_stdio_sessions(url): match any env for that command.
 _ANY_HEADERS = object()
 
 
@@ -741,11 +739,11 @@ def _cfg_close_key(url: str, headers: Optional[dict]) -> str:
     return hashlib.sha256(repr((url, _headers_key(headers))).encode()).hexdigest()
 
 
-def _stdio_close_generation(url: str, headers: Optional[dict]) -> tuple[int, int, int]:
+def _mcp_close_generation(url: str, headers: Optional[dict]) -> tuple[int, int, int]:
     return (
-        _stdio_close_all_gen,
-        _stdio_url_close_gen.get(_url_close_key(url), 0),
-        _stdio_cfg_close_gen.get(_cfg_close_key(url, headers), 0),
+        _mcp_close_all_gen,
+        _mcp_url_close_gen.get(_url_close_key(url), 0),
+        _mcp_cfg_close_gen.get(_cfg_close_key(url, headers), 0),
     )
 
 
@@ -753,8 +751,8 @@ def _session_key(url: str, headers: Optional[dict], scope: Optional[str]) -> tup
     return (url, _headers_key(headers), scope or "")
 
 
-def _checkout_stdio_session(key: tuple) -> Optional[_StdioSession]:
-    session = _stdio_sessions.get(key)
+def _checkout_session(key: tuple) -> Optional[_McpSession]:
+    session = _mcp_sessions.get(key)
     if session is not None and session.is_connected():
         session.last_used = time.monotonic()
         session.in_flight += 1
@@ -762,45 +760,58 @@ def _checkout_stdio_session(key: tuple) -> Optional[_StdioSession]:
     return None
 
 
-def _borrow_stdio_key_lock(key: tuple) -> _StdioKeyLock:
+def _borrow_key_lock(key: tuple) -> _McpKeyLock:
     """Return a stable per-key lock while a caller waits for/connects it."""
-    key_lock = _stdio_key_locks.setdefault(key, _StdioKeyLock())
+    key_lock = _mcp_key_locks.setdefault(key, _McpKeyLock())
     key_lock.users += 1
     return key_lock
 
 
-def _discard_stdio_key_lock(key: tuple) -> None:
-    key_lock = _stdio_key_locks.get(key)
-    if key_lock is not None and key_lock.users == 0 and key not in _stdio_sessions:
-        _stdio_key_locks.pop(key, None)
+def _discard_key_lock(key: tuple) -> None:
+    key_lock = _mcp_key_locks.get(key)
+    if key_lock is not None and key_lock.users == 0 and key not in _mcp_sessions:
+        _mcp_key_locks.pop(key, None)
 
 
-def _return_stdio_key_lock(key: tuple, key_lock: _StdioKeyLock) -> None:
-    with _stdio_sessions_lock:
+def _return_key_lock(key: tuple, key_lock: _McpKeyLock) -> None:
+    with _mcp_sessions_lock:
         key_lock.users -= 1
-        _discard_stdio_key_lock(key)
+        _discard_key_lock(key)
 
 
-def _get_stdio_session(
+@contextmanager
+def _connect_slot(url: str, headers: Optional[dict]):
+    global _mcp_connects_in_flight
+    with _mcp_sessions_lock:
+        generation = _mcp_close_generation(url, headers)
+        _mcp_connects_in_flight += 1
+    try:
+        yield generation
+    finally:
+        with _mcp_sessions_lock:
+            _mcp_connects_in_flight -= 1
+
+
+def _get_session(
     url: str, headers: Optional[dict], scope: Optional[str], deadline, cancel_event, config_check
-) -> _StdioSession:
+) -> _McpSession:
     """``deadline`` is the caller's absolute monotonic budget (None = no limit):
     the key-lock wait and the connect share it, so a slow startup can't stack
-    full timeout windows (see _call_stdio_tool)."""
-    global _stdio_reaper_started
+    full timeout windows (see _call_session_tool)."""
+    global _mcp_reaper_started
     key = _session_key(url, headers, scope)
-    with _stdio_sessions_lock:
-        session = _checkout_stdio_session(key)
+    with _mcp_sessions_lock:
+        session = _checkout_session(key)
         if session is not None:
             return session
-        key_lock = _borrow_stdio_key_lock(key)
+        key_lock = _borrow_key_lock(key)
     try:
         # Poll the acquire with connect()'s deadline/cancel semantics: a second
         # same-scope call must not block uncancellably behind another caller's
         # slow startup (e.g. a first-run npx download).
         remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
         # timeout=None means no key-lock deadline (only cancel unblocks it).
-        window = None if remaining is None else min(remaining, _STDIO_CONNECT_TIMEOUT)
+        window = None if remaining is None else min(remaining, _SESSION_CONNECT_TIMEOUT)
         lock_deadline = None if window is None else time.monotonic() + window
         while not key_lock.lock.acquire(timeout = 0.05):
             if cancel_event is not None and cancel_event.is_set():
@@ -809,64 +820,61 @@ def _get_stdio_session(
                 raise asyncio.TimeoutError
         try:
             stale = None
-            with _stdio_sessions_lock:
-                session = _checkout_stdio_session(key)
+            with _mcp_sessions_lock:
+                session = _checkout_session(key)
                 if session is not None:
                     return session
-                if key in _stdio_sessions:
-                    stale = _stdio_sessions.pop(key)
-                generation = _stdio_close_generation(url, headers)
+                if key in _mcp_sessions:
+                    stale = _mcp_sessions.pop(key)
             if stale is not None:
-                _retire_stdio_session(stale)
-            session = _StdioSession(url, headers)
-            try:
-                session.connect(
-                    None if deadline is None else max(0.0, deadline - time.monotonic()),
-                    cancel_event,
-                )
-            except Exception:
-                session.close()
-                raise
-            # A caller can read the server row, then lose to an update/delete whose close ran
-            # before our generation snapshot. Re-verify the row after connect; the generation check
-            # below covers a close landing between this check and publish.
-            if config_check is not None:
+                _retire_session(stale)
+            with _connect_slot(url, headers) as generation:
+                session = _McpSession(url, headers)
                 try:
-                    current = bool(config_check())
-                except Exception:  # noqa: BLE001
-                    current = False
-                if not current:
+                    session.connect(
+                        None if deadline is None else max(0.0, deadline - time.monotonic()),
+                        cancel_event,
+                    )
+                except Exception:
+                    session.close()
+                    raise
+                if config_check is not None:
+                    try:
+                        current = bool(config_check())
+                    except Exception:  # noqa: BLE001
+                        current = False
+                    if not current:
+                        session.close()
+                        raise RuntimeError("MCP server was updated or removed while connecting")
+                evicted: list = []
+                with _mcp_sessions_lock:
+                    closed_while_connecting = _mcp_close_generation(url, headers) != generation
+                    if not closed_while_connecting:
+                        session.in_flight = 1
+                        evicted = _evict_lru_locked()  # bound the cache (LRU idle)
+                        _mcp_sessions[key] = session
+                        if not _mcp_reaper_started:
+                            _mcp_reaper_started = True
+                            threading.Thread(
+                                target = _session_reaper, name = "mcp-session-reaper", daemon = True
+                            ).start()
+                            atexit.register(close_mcp_sessions)
+                for victim in evicted:
+                    logger.info("Evicting LRU idle MCP session: %s", _session_log_id(victim.url))
+                    victim.close()
+                if closed_while_connecting:
                     session.close()
                     raise RuntimeError("MCP server was updated or removed while connecting")
-            evicted: list = []
-            with _stdio_sessions_lock:
-                closed_while_connecting = _stdio_close_generation(url, headers) != generation
-                if not closed_while_connecting:
-                    session.in_flight = 1
-                    evicted = _evict_stdio_lru_locked()  # bound the cache (LRU idle)
-                    _stdio_sessions[key] = session
-                    if not _stdio_reaper_started:
-                        _stdio_reaper_started = True
-                        threading.Thread(
-                            target = _stdio_session_reaper, name = "mcp-stdio-reaper", daemon = True
-                        ).start()
-                        atexit.register(close_stdio_sessions)
-            for victim in evicted:
-                logger.info("Evicting LRU idle stdio MCP session: %s", _stdio_log_id(victim.url))
-                victim.close()
-            if closed_while_connecting:
-                session.close()
-                raise RuntimeError("MCP server was updated or removed while connecting")
-            return session
+                return session
         finally:
             key_lock.lock.release()
     finally:
-        _return_stdio_key_lock(key, key_lock)
+        _return_key_lock(key, key_lock)
 
 
-def _release_stdio_session(session: _StdioSession) -> None:
+def _release_session(session: _McpSession) -> None:
     victims: list = []
-    with _stdio_sessions_lock:
+    with _mcp_sessions_lock:
         session.in_flight = max(0, session.in_flight - 1)
         session.last_used = time.monotonic()
         close_now = session.defunct and session.in_flight == 0
@@ -874,114 +882,107 @@ def _release_stdio_session(session: _StdioSession) -> None:
         # only trims idle sessions, so it can overshoot while every cached session
         # is busy; reclaim that overshoot here instead of waiting for the idle
         # reaper. Never evict the session we just used (its last_used is newest).
-        while len(_stdio_sessions) > _STDIO_MAX_SESSIONS:
+        while len(_mcp_sessions) > _MAX_SESSIONS:
             idle = [
                 (s.last_used, k)
-                for k, s in _stdio_sessions.items()
+                for k, s in _mcp_sessions.items()
                 if s.in_flight == 0 and s is not session
             ]
             if not idle:
                 break
             _, oldest = min(idle, key = lambda item: item[0])
-            victims.append(_stdio_sessions.pop(oldest))
-            _discard_stdio_key_lock(oldest)
+            victims.append(_mcp_sessions.pop(oldest))
+            _discard_key_lock(oldest)
     if close_now:
         session.close()
     for victim in victims:
         victim.close()
 
 
-def _retire_stdio_session(session: _StdioSession) -> None:
+def _retire_session(session: _McpSession) -> None:
     """Close a discarded session, but only once no other borrower is mid-call
     on it -- overlapping same-scope calls share one client, and one call's
     timeout must not kill another's in-flight request. The last borrower's
-    _release_stdio_session() performs the deferred close."""
-    with _stdio_sessions_lock:
+    _release_session() performs the deferred close."""
+    with _mcp_sessions_lock:
         session.defunct = True
         busy = session.in_flight > 0
     if not busy:
         session.close()
 
 
-def _drop_stdio_session(key: tuple, session: _StdioSession) -> None:
-    with _stdio_sessions_lock:
-        if _stdio_sessions.get(key) is session:
-            _stdio_sessions.pop(key)
-        _discard_stdio_key_lock(key)
-    _retire_stdio_session(session)
+def _drop_session(key: tuple, session: _McpSession) -> None:
+    with _mcp_sessions_lock:
+        if _mcp_sessions.get(key) is session:
+            _mcp_sessions.pop(key)
+        _discard_key_lock(key)
+    _retire_session(session)
 
 
-def _evict_stdio_lru_locked() -> list:
-    """Caller holds _stdio_sessions_lock. Evict least-recently-used *idle*
+def _evict_lru_locked() -> list:
+    """Caller holds _mcp_sessions_lock. Evict least-recently-used *idle*
     sessions until the cache is under the cap. Returns the evicted sessions so
     the caller can close them OUTSIDE the lock. If every session is busy the
     cache may transiently overshoot rather than kill an in-flight call."""
     victims: list = []
-    while len(_stdio_sessions) >= _STDIO_MAX_SESSIONS:
-        idle = [(s.last_used, k) for k, s in _stdio_sessions.items() if s.in_flight == 0]
+    while len(_mcp_sessions) >= _MAX_SESSIONS:
+        idle = [(s.last_used, k) for k, s in _mcp_sessions.items() if s.in_flight == 0]
         if not idle:
             break
         _, oldest = min(idle, key = lambda item: item[0])
-        victims.append(_stdio_sessions.pop(oldest))
-        _discard_stdio_key_lock(oldest)
+        victims.append(_mcp_sessions.pop(oldest))
+        _discard_key_lock(oldest)
     return victims
 
 
-def close_stdio_sessions(url: Optional[str] = None, headers = _ANY_HEADERS) -> None:
-    """Close persistent stdio sessions: all of them (``url`` None), every env
-    for one command (``headers`` omitted), or one server config (url + headers).
-    Two server rows can share a command with different envs; editing one must
-    not kill the other's live state, so the routes pass the edited row's env."""
-    global _stdio_close_all_gen
-    # HTTP/SSE servers are never cached as stdio sessions, so a specific non-stdio
-    # url has nothing to close and must not accrue a close-generation entry.
-    if url is not None and not is_stdio(url):
-        return
+def close_mcp_sessions(url: Optional[str] = None, headers = _ANY_HEADERS) -> None:
+    global _mcp_close_all_gen
     hk = None if headers is _ANY_HEADERS else _headers_key(headers)
-    with _stdio_sessions_lock:
-        if url is None:
-            _stdio_close_all_gen += 1
-        elif hk is None:
-            uk = _url_close_key(url)
-            _stdio_url_close_gen[uk] = _stdio_url_close_gen.get(uk, 0) + 1
-        else:
-            cfg = _cfg_close_key(url, headers)
-            _stdio_cfg_close_gen[cfg] = _stdio_cfg_close_gen.get(cfg, 0) + 1
+    with _mcp_sessions_lock:
         keys = [
             k
-            for k in _stdio_sessions
+            for k in _mcp_sessions
             if (url is None or k[0] == url) and (hk is None or k[1] == hk)
         ]
-        sessions = [_stdio_sessions.pop(k) for k in keys]
+        sessions = [_mcp_sessions.pop(k) for k in keys]
         for key in keys:
-            _discard_stdio_key_lock(key)
+            _discard_key_lock(key)
+        if sessions or _mcp_connects_in_flight:
+            if url is None:
+                _mcp_close_all_gen += 1
+            elif hk is None:
+                uk = _url_close_key(url)
+                _mcp_url_close_gen[uk] = _mcp_url_close_gen.get(uk, 0) + 1
+            else:
+                cfg = _cfg_close_key(url, headers)
+                _mcp_cfg_close_gen[cfg] = _mcp_cfg_close_gen.get(cfg, 0) + 1
     for session in sessions:
         session.close()
 
 
-def _reap_idle_stdio_sessions(now: Optional[float] = None) -> None:
+def _reap_idle_sessions(now: Optional[float] = None) -> None:
     now = time.monotonic() if now is None else now
-    with _stdio_sessions_lock:
+    with _mcp_sessions_lock:
         expired = [
             key
-            for key, session in _stdio_sessions.items()
-            if session.in_flight == 0 and now - session.last_used >= _STDIO_SESSION_IDLE_TTL
+            for key, session in _mcp_sessions.items()
+            if session.in_flight == 0 and now - session.last_used >= _SESSION_IDLE_TTL
         ]
-        sessions = [_stdio_sessions.pop(key) for key in expired]
+        sessions = [_mcp_sessions.pop(key) for key in expired]
         for key in expired:
-            _discard_stdio_key_lock(key)
+            _discard_key_lock(key)
     for session in sessions:
-        logger.info("Closing idle stdio MCP session: %s", _stdio_log_id(session.url))
+        logger.info("Closing idle MCP session: %s", _session_log_id(session.url))
         session.close()
 
 
-def _stdio_session_reaper() -> None:
+def _session_reaper() -> None:
     while True:
-        time.sleep(_STDIO_SESSION_REAP_INTERVAL)
+        time.sleep(_SESSION_REAP_INTERVAL)
         try:
-            _reap_idle_stdio_sessions()
+            _reap_idle_sessions()
         except Exception as exc:  # noqa: BLE001
-            logger.debug("stdio session reaper iteration failed: %s", exc)
+            logger.debug("MCP session reaper iteration failed: %s", exc)
 
 
 async def list_tools_async(
@@ -1269,7 +1270,7 @@ async def _race_tool_call(
     raise _MCPCancelled
 
 
-def _call_stdio_tool(
+def _call_session_tool(
     url: str,
     headers: Optional[dict],
     name: str,
@@ -1282,8 +1283,6 @@ def _call_stdio_tool(
     if cancel_event is not None and cancel_event.is_set():
         raise _MCPCancelled
     # One deadline covers the key-lock wait, connect, call-lock wait, and the
-    # call itself, matching the one-shot/HTTP paths where the timeout wrapped
-    # connect plus call in a single window.
     deadline = None if timeout is None else time.monotonic() + timeout
 
     def _remaining() -> Optional[float]:
@@ -1308,7 +1307,7 @@ def _call_stdio_tool(
     # attempt 0 may find the cached session stale/dead *before* dispatch and
     # reconnect once (safe); attempt 1 is a freshly connected session.
     for attempt in (0, 1):
-        session = _get_stdio_session(url, headers, scope, deadline, cancel_event, config_check)
+        session = _get_session(url, headers, scope, deadline, cancel_event, config_check)
         try:
             # Serialize calls per session: overlapping same-scope calls must
             # not interleave operations on one stateful server (browser, REPL).
@@ -1320,9 +1319,9 @@ def _call_stdio_tool(
                     raise asyncio.TimeoutError
         except BaseException:
             # Never touched the transport: keep the session for its borrower.
-            _release_stdio_session(session)
+            _release_session(session)
             if ephemeral:
-                _drop_stdio_session(key, session)
+                _drop_session(key, session)
             raise
         discard_session = ephemeral
         retry = False
@@ -1379,7 +1378,6 @@ def _call_stdio_tool(
             discard_session = True
             raise asyncio.TimeoutError
         except _SessionClosed:
-            # close_stdio_sessions() shut this session mid-call (server
             # update/delete/shutdown); don't retry on the stale config.
             discard_session = True
             raise RuntimeError("MCP server was updated or removed during the call")
@@ -1391,7 +1389,6 @@ def _call_stdio_tool(
                 raise RuntimeError("MCP server was updated or removed during the call")
             # ToolError leaves the transport alive -> keep the session so its state
             # survives. Any other exception is transport-level (dead subprocess,
-            # broken pipe): evict so it can't poison the scope, but DO NOT replay
             # (the tool may already have run); the next call opens a fresh session.
             if not _is_tool_error(exc):
                 discard_session = True
@@ -1400,9 +1397,9 @@ def _call_stdio_tool(
             # Set defunct + remove from the cache BEFORE releasing the call lock,
             # so a queued same-scope borrower observes the retirement and opens a
             # fresh session instead of reusing this one.
-            _release_stdio_session(session)
+            _release_session(session)
             if discard_session:
-                _drop_stdio_session(key, session)
+                _drop_session(key, session)
             session.call_lock.release()
         if not retry:
             break
@@ -1420,12 +1417,6 @@ def call_tool_sync(
     scope: Optional[str] = None,
     config_check = None,
 ) -> str:
-    """Synchronously call an MCP tool. stdio servers reuse a persistent session
-    keyed by (command, env, scope) only when ``scope`` is provided; calls
-    without one stay one-shot. HTTP servers always stay one-shot.
-    ``cancel_event`` (threading.Event) cancels the in-flight call when set.
-    ``config_check`` (callable -> bool) re-validates the caller's server config
-    before a fresh stdio session is cached; False fails the call."""
 
     async def _one_shot() -> Any:
         async with _client(url, headers, use_oauth) as client:
@@ -1435,8 +1426,8 @@ def call_tool_sync(
             return await client.call_tool(name, args, raise_on_error = False)
 
     try:
-        if is_stdio(url):
-            result = _call_stdio_tool(
+        if is_stdio(url) or (scope and not use_oauth):
+            result = _call_session_tool(
                 url, headers, name, args, timeout, cancel_event, scope, config_check
             )
         else:
