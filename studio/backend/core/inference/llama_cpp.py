@@ -913,10 +913,9 @@ def _has_unclosed_code_fence(text: str) -> bool:
             indent = len(prefix.expandtabs(4))
             blank_prefix = not prefix.strip()
             if active_char is not None:
-                # CommonMark closes only on a delimiter that starts its own line and
-                # ends it, so "Use three backticks: ```" inside a block is body. The
-                # 3-column allowance is measured from the container, not cumulatively
-                # with any indentation the opener chose. Everything else here is body.
+                # A closer starts and ends its own line, within 3 columns of the
+                # CONTAINER, not of whatever indentation the opener chose. Anything
+                # else, "Use three backticks: ```" included, is body.
                 if (
                     blank_prefix
                     and indent <= active_base + 3
@@ -929,19 +928,17 @@ def _has_unclosed_code_fence(text: str) -> bool:
                     closed_any = True
                 continue
             if blank_prefix:
-                # Optional indentation of its own, so the container baseline is 0 and
-                # the closer gets the plain three columns. Past three the run is an
-                # indented code line, a literal, and opens nothing.
+                # Its own indentation, so the baseline is 0. Past three columns it
+                # is an indented code line and opens nothing.
                 if indent <= 3:
                     active_char, active_len = ch, len(fence)
                     active_quote, active_base = quote_depth, 0
                 continue
-            # A run mid-prose is not a fence at all, but models do open one there.
-            # Only the last run on the line can be that opener: an earlier one is
-            # closed by the later ("the marker is ```python```"), and only a bare info
-            # string tells an opener from prose. A bare delimiter once a block has
-            # closed is a literal ("wrap it in ```"); before any close, "here is code:
-            # ```" still opens.
+            # CommonMark has no mid-prose fence, but models open one anyway. Only
+            # the last run can be it (an earlier one is closed by the later, "the
+            # marker is ```python```"), and only a bare info string separates an
+            # opener from prose. Bare, after something closed, it is a literal ("wrap
+            # it in ```"); before any close, "here is code: ```" still opens.
             if index != len(runs) - 1:
                 continue
             if trailing and not _FENCE_INFO_STRING_RE.fullmatch(trailing):
@@ -29396,21 +29393,18 @@ class LlamaCppBackend:
                         )
                         _reasoning = reasoning_accum.strip()
                         _stripped = _visible if _visible else _reasoning
-                        # A model whose template renders thinking as <think> in the
-                        # content channel keeps those blocks in _visible, and a fence
-                        # inside one is rehearsal, not an answer the user was shown.
+                        # Thinking rendered as <think> in the CONTENT channel stays
+                        # in _visible, and a fence inside one was never shown.
                         _visible_answer = _text_outside_think(_visible).strip()
                         _artifact_text = (
                             _visible_answer
                             if _visible_answer
                             else (_reasoning if not has_content_tokens else "")
                         )
-                        # Classified on the answer for the same reason. A plan the model
-                        # only thought is not one it announced, so "<think>I will search
-                        # </think>The answer is Paris." is finished, not a stall. With
-                        # nothing outside the block the turn showed nothing and the whole
-                        # text is the stall. _stripped stays intact: it is what gets
-                        # replayed as the assistant turn and compared for a repeat.
+                        # Same for intent: a plan only thought is not one announced.
+                        # With nothing outside the block the turn showed nothing, which
+                        # IS the stall. _stripped stays whole; it is what gets replayed
+                        # as the assistant turn and compared for a repeat.
                         _intent_text = _visible_answer if _visible_answer else _stripped
 
                         # ── Continue an answer the window cut in half ──
