@@ -6887,9 +6887,7 @@ class TestRocmMiscomputingArchDemotion:
         _detect_amd_gfx_codes() has no probe to run and no Van Gogh product name maps
         through _infer_linux_amd_gfx_arch(). amdkfd is in the kernel and still answers.
         """
-        calls = self._demotion_calls(
-            monkeypatch, "2.10.0+rocm7.1", [], kfd = ["gfx1033"]
-        )
+        calls = self._demotion_calls(monkeypatch, "2.10.0+rocm7.1", [], kfd = ["gfx1033"])
         assert len(calls) == 1, "gfx1033 kept its ROCm torch with only KFD to name it"
         assert "--force-reinstall" in calls[0][0]
         assert "download.pytorch.org/whl/cpu" in str(calls[0])
@@ -6897,16 +6895,17 @@ class TestRocmMiscomputingArchDemotion:
     def test_kfd_reports_every_node_so_a_mixed_host_keeps_rocm(self, monkeypatch):
         """_kfd_gfx_targets() returns one entry per GPU node, so the all-archs rule reads
         the same mixed host through this source as through the runtime probes."""
-        assert self._demotion_calls(
-            monkeypatch, "2.10.0+rocm7.1", [], kfd = ["gfx1033", "gfx1100"]
-        ) == []
+        assert (
+            self._demotion_calls(monkeypatch, "2.10.0+rocm7.1", [], kfd = ["gfx1033", "gfx1100"])
+            == []
+        )
 
     def test_the_runtime_probe_still_wins_over_kfd(self, monkeypatch):
         """KFD is the last resort, not an override: a runtime that answered keeps its
         answer, so HSA_OVERRIDE handling and the mask semantics above are untouched."""
-        assert self._demotion_calls(
-            monkeypatch, "2.10.0+rocm7.1", ["gfx1100"], kfd = ["gfx1033"]
-        ) == []
+        assert (
+            self._demotion_calls(monkeypatch, "2.10.0+rocm7.1", ["gfx1100"], kfd = ["gfx1033"]) == []
+        )
 
     def test_env_override_names_the_arch(self, monkeypatch):
         calls = self._demotion_calls(
