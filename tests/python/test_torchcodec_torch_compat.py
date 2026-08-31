@@ -398,15 +398,11 @@ def test_notebook_validator_honours_a_torchcodec_uninstall():
 
     # Put back incompatibly and it is a finding again; put back compatibly and it is not.
     back_stale = (
-        '!pip uninstall -y torchcodec\n'
-        '!pip install "torch==2.12.0" "torchcodec==0.11.1"'
+        "!pip uninstall -y torchcodec\n" '!pip install "torch==2.12.0" "torchcodec==0.11.1"'
     )
     assert len(nv.rule_inst_004_torchcodec_torch(back_stale, COLAB_TORCH211, "nb.ipynb", 0)) == 1
 
-    back_ok = (
-        '!pip uninstall -y torchcodec\n'
-        '!pip install "torch==2.12.0" "torchcodec==0.13.0"'
-    )
+    back_ok = "!pip uninstall -y torchcodec\n" '!pip install "torch==2.12.0" "torchcodec==0.13.0"'
     assert nv.rule_inst_004_torchcodec_torch(back_ok, COLAB_TORCH211, "nb.ipynb", 0) == []
 
     # Uninstalling after a good install still leaves nothing to flag.
