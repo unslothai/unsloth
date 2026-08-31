@@ -32,6 +32,7 @@ export interface ThreadRecord {
   title: string;
   modelType: ModelType;
   modelId?: string;
+  modelGgufVariant?: string | null;
   pairId?: string;
   projectId?: string | null;
   archived: boolean;
@@ -66,6 +67,10 @@ export interface ThreadRecord {
    */
   forkedFromThreadId?: string | null;
   forkedFromMessageId?: string | null;
+  /** this chat's own settings, applied when it is opened; absent means the global ones. */
+  settings?:
+    | import("./utils/thread-scoped-settings").ThreadScopedSettings
+    | null;
 }
 
 export interface MessageRecord {

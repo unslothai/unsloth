@@ -840,3 +840,13 @@ def test_error_sse_line_carries_no_json_blob(monkeypatch):
     assert error["message"] == "Rate limit reached. (rate_limit_exceeded)"
     assert "{" not in error["message"]
     assert error["code"] == "429"
+
+
+def test_error_sse_line_forwards_retry_after():
+    """The 200 this rides on has no status line left, so the delay has to travel in the body."""
+    body = '{"error": {"message": "Rate limit reached."}}'
+    error = json.loads(ep_mod._error_sse_line(429, body, "openai", "30")[len("data:") :])["error"]
+    assert error["retry_after"] == "30"
+    # Absent upstream, absent here: never invent a delay the provider did not ask for.
+    plain = json.loads(ep_mod._error_sse_line(429, body, "openai")[len("data:") :])["error"]
+    assert "retry_after" not in plain

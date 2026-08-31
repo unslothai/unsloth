@@ -6,7 +6,7 @@
 ``tests/test_external_tool_edge_cases.py`` covers malformed and adversarial
 *chunks*. This file covers the channel itself: the loop relays provider bytes on
 the very same SSE stream it writes its own control frames to, so anything the
-provider can put on that stream is a candidate for impersonating Studio. It also
+provider can put on that stream is a candidate for impersonating Unsloth. It also
 covers the framing layer underneath (CRLF, comments, multi-line ``data:``,
 frames after ``[DONE]``), the tool-call fields the loop trusts to name a tool,
 and the liveness properties the loop has to hold against an endpoint that simply
@@ -19,8 +19,10 @@ failure names a defect rather than a preference.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import threading
+import time
 
 import pytest
 
@@ -364,10 +366,10 @@ def test_studio_own_control_frames_still_reach_the_client(executed):
 
 
 def test_a_provider_cannot_forge_studio_private_chunk_keys(executed):
-    """``_toolEvent`` and friends are Studio extensions, not provider fields.
+    """``_toolEvent`` and friends are Unsloth extensions, not provider fields.
 
     The same card can be painted from inside an otherwise ordinary chunk, because
-    the client also lifts ``_toolEvent`` straight out of one. Studio stamps that
+    the client also lifts ``_toolEvent`` straight out of one. Unsloth stamps that
     key itself on the provider-hosted tool events it synthesises, so a copy
     arriving from the endpoint is indistinguishable downstream.
     """
@@ -590,7 +592,7 @@ def test_a_tool_marker_split_around_a_multibyte_char_still_heals(executed):
 def test_a_tool_the_user_did_not_enable_is_never_executed(executed):
     """The catalog is the authorization list, not a suggestion.
 
-    ``python`` exists in Studio, but this request only offered ``web_search``.
+    ``python`` exists in Unsloth, but this request only offered ``web_search``.
     Executing it because the provider named it would let any endpoint run
     arbitrary code the user never switched on. It is a no-op, not an error, so no
     card is painted; the model is told in the conversation instead, which is what
@@ -776,7 +778,7 @@ def test_no_enabled_tool_names_never_means_any_tool(executed):
 
     ``heal_gate`` is handed the selected catalog precisely so a ``None``
     allowlist can never reach the parser: ``None`` there means "match anything",
-    which turns a marked block naming any Studio tool into an execution.
+    which turns a marked block naming any Unsloth tool into an execution.
     """
     payload = json.dumps({"name": "python", "arguments": {"code": "import os"}})
     body = f"<tool_call>{payload}</tool_call>"
@@ -879,19 +881,29 @@ def test_an_endless_content_stream_is_closed_on_cancellation(executed):
 
 
 def test_no_asyncio_task_is_orphaned_when_the_loop_is_closed_mid_tool(executed, monkeypatch):
-    """Closing the stream while a tool runs must leave no pending task behind."""
+    """Closing the stream while a tool runs must leave no pending task behind.
+
+    The step worker is only ever pending across a suspension when the consumer is cancelled
+    inside ``__anext__``: the loop drops its handle before every yield, so a consumer that
+    merely breaks out of the ``async for`` and closes hands the drain nothing to join. The
+    cancellation here is therefore what puts a live ``to_thread`` task into the drain, which
+    is the shape the request task takes when a client disconnects mid tool call.
+    """
     started = threading.Event()
     release = threading.Event()
+    cancel_event = threading.Event()
 
     def _slow_execute(name, arguments, **kwargs):
         started.set()
-        release.wait(timeout = 10.0)
+        # Returns on the cancel flag, which is what the drain sets to let a pending worker
+        # finish. ``release`` is only the harness's escape hatch if it never does.
+        while not (release.is_set() or cancel_event.is_set()):
+            time.sleep(0.01)
         return "late"
 
     monkeypatch.setattr(loop_mod, "execute_tool", _slow_execute)
 
     transport = FakeTransport([_call_turn(), _answer_turn()])
-    cancel_event = threading.Event()
 
     async def _drive():
         # Tasks already running belong to this harness, not the tool loop, so the census is taken
@@ -906,22 +918,31 @@ def test_no_asyncio_task_is_orphaned_when_the_loop_is_closed_mid_tool(executed, 
             policy = _policy(),
             cancel_event = cancel_event,
         )
-        seen = 0
-        async for _line in agen:
-            seen += 1
-            if started.is_set():
-                break
-        release.set()
+
+        async def _pump():
+            async for _line in agen:
+                pass
+
+        pump = asyncio.create_task(_pump())
+        while not started.is_set():
+            await asyncio.sleep(0.01)
+        # A tick for the loop to re-enter the step await it is cancelled out of.
+        await asyncio.sleep(0.05)
+        pump.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await pump
         await agen.aclose()
-        # Give the drain a tick to join its worker before the task census.
-        await asyncio.sleep(0)
-        # ``not task.done()``, not "no tasks exist": a finished task was joined and is no leak,
-        # what must not survive is one still running with nobody left to await it.
-        return [
+        # Census BEFORE the escape hatch, so a worker that only the harness could free still
+        # counts as pending. ``not task.done()``, not "no tasks exist": a finished task was
+        # joined and is no leak, what must not survive is one still running with nobody left
+        # to await it.
+        pending = [
             task
             for task in asyncio.all_tasks()
             if task not in harness and task is not asyncio.current_task() and not task.done()
         ]
+        release.set()
+        return pending
 
     pending = asyncio.run(asyncio.wait_for(_drive(), timeout = 30.0))
 

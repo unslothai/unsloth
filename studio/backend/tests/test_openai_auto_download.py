@@ -15,6 +15,7 @@ import pytest
 from fastapi import HTTPException
 
 import routes.inference as inference_route
+from core.inference import llama_keepwarm
 from core.inference import openai_auto_download as auto_dl
 from core.inference.local_model_resolver import warm_index_soon as _real_warm_index_soon
 from utils import openai_auto_switch_settings as settings
@@ -66,10 +67,14 @@ def _clean_slot():
     from core.inference import local_model_resolver
 
     auto_dl.reset_for_tests()
+    with llama_keepwarm._lock:
+        llama_keepwarm._admitted_inference = 0
     # The hook warms the index in the background; drop it so a scan never leaks between tests.
     local_model_resolver.invalidate_index()
     yield
     auto_dl.reset_for_tests()
+    with llama_keepwarm._lock:
+        llama_keepwarm._admitted_inference = 0
     local_model_resolver.invalidate_index()
 
 
@@ -417,7 +422,7 @@ def test_the_cache_is_per_token(hub):
 
 
 def test_the_gated_message_names_the_header_that_actually_works(hub):
-    # Auto-download never uses the server's token, so a Studio setting would loop the caller.
+    # Auto-download never uses the server's token, so an Unsloth setting would loop the caller.
     hub["info"] = _Info(_gguf_repo_info().siblings, gated = "manual")
     hub["auth_denied"] = True
     refusal = _run("meta-llama/Llama-2-7b-hf")
@@ -809,7 +814,7 @@ def _download_rows():
 
 def test_a_ui_session_download_is_not_marked_as_api_traffic(hub):
     """The monitor overlay auto-opens on via_api_key, which exists to separate
-    "someone is serving other clients" from "someone is using Unsloth". Studio's
+    "someone is serving other clients" from "someone is using Unsloth". Unsloth's
     own chat hits these same /v1 endpoints with a session JWT, so hardcoding the
     flag on the download row popped the panel open mid-chat."""
     from fastapi import HTTPException
@@ -847,18 +852,18 @@ def test_an_api_key_download_keeps_the_attribution_and_names_its_caller(hub):
 
 
 def test_an_api_key_caller_waiting_on_someone_elses_download_gets_a_row(hub):
-    """A download started by Studio's own chat is attributed to the session, so an
+    """A download started by Unsloth's own chat is attributed to the session, so an
     API-key client that asks for the same repo while it runs is refused before the
     handler's own api_monitor.start. Without a row of its own that call is invisible:
     the only row is the session's via_api_key=False download, so the overlay stays
-    shut and the monitor presents API traffic as Studio's own."""
+    shut and the monitor presents API traffic as Unsloth's own."""
     from fastapi import HTTPException
     from auth.authentication import API_KEY_PREFIX
     from core.inference.api_monitor import api_monitor
 
     api_monitor.clear()
     with pytest.raises(HTTPException):
-        # Studio's chat (session JWT) starts the download and takes the slot.
+        # Unsloth's chat (session JWT) starts the download and takes the slot.
         _hook("unsloth/x-GGUF", _Req(), enabled = True, current_subject = "unsloth")
     seeded = {row["id"] for row in api_monitor.snapshot(subject = "unsloth")}
 
@@ -1172,7 +1177,7 @@ def test_setter_round_trips_auto_download_in_one_transaction(monkeypatch):
     monkeypatch.setattr(settings, "_cached_setting", lambda k, d = None: store.get(k, d))
 
     result = settings.set_openai_auto_switch(True, 120, None, True)
-    assert result == (True, 120, True, True, False, 0)
+    assert result == (True, 120, True, True, False, 0, False)
     assert len(calls) == 1
     assert calls[0][settings.OPENAI_AUTO_DOWNLOAD_SETTING_KEY] is True
 
@@ -1479,7 +1484,14 @@ def test_a_cold_scan_that_never_finishes_says_so_instead_of_guessing(monkeypatch
     monkeypatch.setattr(resolver, "_scan", (0.0, {}))
     monkeypatch.setattr(inference_route, "_COLD_INDEX_WAIT_S", 0.05)
     released = threading.Event()
-    monkeypatch.setattr(resolver, "_build_index", lambda: (released.wait(5), {})[1])
+    # 0.5, not 5. The scan runs on the event loop's default executor, so the
+    # `asyncio.run` below does not return until it finishes -- and the
+    # `released.set()` that would end it early sits in this test's `finally`, which
+    # cannot run until `asyncio.run` has returned. The stall is therefore always
+    # waited out in full, and 5s of it was spent after every assertion in the test
+    # had already been checked. 0.5s is still 10x the 0.05s budget the route is
+    # given, so the scan is exactly as unfinished when the 503 is asserted.
+    monkeypatch.setattr(resolver, "_build_index", lambda: (released.wait(0.5), {})[1])
     warmed = []
     monkeypatch.setattr(resolver, "warm_index_soon", lambda: warmed.append(1))
     loaded = _Loaded("unsloth/A-GGUF", "UD-Q4_K_XL")

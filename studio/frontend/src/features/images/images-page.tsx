@@ -56,11 +56,13 @@ import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
 import { IMAGE_GEN_TASKS } from "@/features/model-picker/components/model-selector/pickers";
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
+import type { HostClass } from "@/features/model-picker/components/model-selector/host-artifact-policy";
 import {
   IMAGE_CATALOG,
   catalogToModelOptions,
   loadSpecFor,
 } from "@/features/model-picker/components/model-selector/model-catalog";
+import { useHostClass } from "@/hooks/use-host-class";
 import type {
   ModelOption,
   ModelSelectorChangeMeta,
@@ -171,7 +173,11 @@ import {
 } from "./train/train-base-selector";
 
 // Curated models come from the shared catalog: one canonical group per model with its artifacts (GGUF / FP8 / bnb-4bit / BF16) as data, and the load kind per artifact via loadSpecFor.
-const MODELS: ModelOption[] = catalogToModelOptions(IMAGE_CATALOG);
+// Host-dependent, so it is built per render rather than once at module load: a host that can
+// only run the native engine is not offered the pipeline rows it would be refused at load.
+function useImageModels(host: HostClass): ModelOption[] {
+  return useMemo(() => catalogToModelOptions(IMAGE_CATALOG, host), [host]);
+}
 
 // Workflow tabs. `requires` is the backend workflow id (status.workflows) the loaded model must support; null = always available.
 // The images each conditioned workflow consumed, named for the restore toast: a recipe keeps the scalar settings but not the uploads.
@@ -595,7 +601,7 @@ function SliderField({
   );
 }
 
-// Matches the field-label style used across Studio (export/chat settings).
+// Matches the field-label style used across Unsloth (export/chat settings).
 function Field({
   label,
   hint,
@@ -1168,8 +1174,17 @@ type LoadAdvanced = Pick<
   | "gpu_ids"
 >;
 
-export function ImagesPage({ active = true }: { active?: boolean }) {
+export function ImagesPage({
+  active = true,
+  onInitialReady,
+}: {
+  active?: boolean;
+  onInitialReady?: () => void;
+}) {
+  const initialReadySent = useRef(false);
   const { isMobile, pinned } = useSidebar();
+  const hostClass = useHostClass();
+  const imageModels = useImageModels(hostClass);
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
   const [prompt, setPrompt] = useState(
     "Cinematic wide shot of a whimsical Alice in Wonderland tea party in an overgrown Victorian garden. Exactly three figures at a long white lace-draped table: a tall eccentric gentleman in an oversized emerald velvet top hat pouring tea from a silver pot mid-motion; a young woman in a pale blue Victorian dress seated left, holding a porcelain teacup with both hands, looking up and laughing; an older woman in deep burgundy seated right in profile, reaching for a tiered cake stand. Detailed embroidered fabrics, realistic skin texture, natural expressions. The table holds mismatched porcelain, antique silverware, towering pastel cakes, and wildflowers. Giant red-capped mushrooms rise behind the table, with ancient trees overhead and golden sunlight streaming through leaves. Shot on 85mm, f/2.8, focus on the gentleman, soft background falloff. Photorealistic, saturated storybook color, warm amber and deep green palette.",
@@ -1761,11 +1776,6 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     })();
   }, [selected, ensureSrc]);
 
-  useEffect(() => {
-    void loadGallery();
-  }, [loadGallery]);
-
-
   // Drop an image from the strip. `discardBlob` is for a real delete: the bytes are gone, so the
   // cached object URL must be revoked and any in-flight fetch told to throw its blob away. An
   // archived image keeps both, since the archived view shows the same thumbnail.
@@ -2088,10 +2098,31 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // Re-sync model status when the tab becomes active: the model may have been evicted while off-tab.
   useEffect(() => {
     if (!active) return;
+    if (initialReadySent.current) {
+      void refreshStatus();
+      return;
+    }
+    let cancelled = false;
     void (async () => {
-      await refreshStatus();
+      await Promise.all([
+        refreshStatus(),
+        (async () => {
+          await loadGallery();
+          const initialSelection =
+            galleryCache.images.find(
+              (image) => image.id === galleryCache.selectedId,
+            ) ?? galleryCache.images[0];
+          if (initialSelection) await ensureSrc(initialSelection);
+        })(),
+      ]);
+      if (cancelled || initialReadySent.current) return;
+      initialReadySent.current = true;
+      onInitialReady?.();
     })();
-  }, [active, refreshStatus]);
+    return () => {
+      cancelled = true;
+    };
+  }, [active, ensureSrc, loadGallery, onInitialReady, refreshStatus]);
 
   // Ejected from the loaded models indicator, which does not run handleUnload:
   // without this the controls keep offering to generate on a freed runtime, and
@@ -3616,7 +3647,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
               (d) =>
                 [
                   String(d.index),
-                  `GPU ${d.index}${d.memoryTotalGb ? ` · ${Math.round(d.memoryTotalGb)} GB` : ""}`,
+                  `GPU ${d.index}${d.memoryTotalGb ? ` · ${Math.round(d.memoryTotalGb)} GiB` : ""}`,
                 ] as [string, string],
             ),
           ]}
@@ -3693,7 +3724,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
               />
             ) : (
               <ModelSelector
-                models={MODELS}
+                models={imageModels}
                 value={status?.loaded ? status.repo_id ?? undefined : undefined}
                 activeGgufVariant={quant}
                 onValueChange={handleModelSelect}

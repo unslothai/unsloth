@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ModelMemoryBar } from "@/components/model-memory-bar";
 import { shouldRefreshPickerInventoryOnMount } from "@/components/resource-picker/picker-tab-policy";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -56,13 +57,25 @@ import {
   hfApiToken,
   isHiddenModelId,
   jobKeyOf,
+  scanFolderStatusCopy,
   useDownloadManagerStore,
   useHfTokenStore,
   useOnlineStatus,
 } from "@/features/hub";
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
-import { useDebouncedValue, useGpuInfo, useInferenceGpuInfo } from "@/hooks";
+import {
+  useDebouncedValue,
+  useGpuInfo,
+  useHostClass,
+  useInferenceGpuInfo,
+} from "@/hooks";
+import {
+  type ModelMemorySource,
+  useModelMemory,
+} from "@/hooks/use-model-memory";
+import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
+import { type GgufFitClass, requiredGgufMemoryGb } from "@/lib/gguf-fit";
 import { extractParamLabel } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
 import { cn, formatCompact } from "@/lib/utils";
@@ -74,11 +87,11 @@ import {
   AudioWave01Icon,
   Cancel01Icon,
   DashboardCircleIcon,
-  Download01Icon,
   Flag01Icon,
   FlimSlateIcon,
   Folder02Icon,
   HelpCircleIcon,
+  InformationCircleIcon,
   Image03Icon,
   PinIcon,
   RemoveCircleIcon,
@@ -106,12 +119,15 @@ import { useChatPickerInventory } from "../../inventory/use-chat-picker-inventor
 import {
   type CommunityModelPolicy,
   allowedHiddenModelIdMatches,
+  audioPipelineTagFor,
   audioPickIsRoutable,
+  localAudioRowIsUndecodableGguf,
   communityAudioRowIsRunnable,
   curatedAudioInventoryMatches,
   curatedAudioInventoryTask,
   filesystemRowsSupportedForTask,
   macTtsHubRowIsRunnable,
+  nativeAudioCheckpointIsLoadable,
   shouldDiscoverCommunityModels,
   shouldRecommendCommunityModels,
   taskCatalogFormatMatches,
@@ -129,6 +145,8 @@ import {
   type CatalogGroup,
   type DeviceBudget,
   artifactForRepoId,
+  classifyGgufFit,
+  classifyMediaGgufFit,
   curatedArtifactFitsDevice,
   curatedCapabilitiesFor,
   curatedRowLabelFor,
@@ -136,6 +154,8 @@ import {
   curatedTotalParamsFor,
   groupForRepoId,
 } from "./model-catalog";
+import { curatedArtifactIsOfferable } from "./host-artifact-policy";
+import { localGgufKindFor } from "./local-gguf-policy";
 import { ModelDeleteAction } from "./model-delete-action";
 import { ModelLoadSettingsAction } from "./model-load-settings-action";
 import { ModelRowMenu } from "./model-row-menu";
@@ -153,7 +173,6 @@ import {
 import {
   type FormatFilter,
   estimateQuantBytes,
-  fitsDevice,
   hfModelFitsDevice,
   isMlxId,
   isMobileVariant,
@@ -593,40 +612,181 @@ function FormatTag({ tone, label }: { tone: FormatTone; label: string }) {
   );
 }
 
-/** "Already on disk", shown on Hub rows that are also downloaded. */
+/** "Already on disk", shown on Hub rows that are also downloaded. The Hub's own
+ *  on-device dot: a download arrow read as "click to fetch" on the one row that
+ *  needs no fetching. Hit area and tooltip as FormatTag. */
 function DownloadedBadge() {
   return (
-    <span
-      title="Already downloaded"
-      aria-label="Already downloaded"
-      className="flex h-[18px] shrink-0 items-center justify-center text-status-success"
-    >
-      <HugeiconsIcon
-        icon={Download01Icon}
-        className="size-3"
-        strokeWidth={1.8}
-      />
-    </span>
+    <Tooltip delayDuration={0}>
+      <TooltipTrigger asChild={true}>
+        <span
+          aria-label="On device"
+          className="flex h-[18px] w-[14px] shrink-0 items-center justify-center"
+        >
+          <span
+            aria-hidden="true"
+            className="size-[5px] rounded-full bg-status-success"
+          />
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="tooltip-compact">
+        On device
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
-/** VRAM verdict for Hub rows: over budget, or a tight fit. */
-function VramBadge({ status }: { status?: VramFitStatus | null }) {
-  if (status === "exceeds") {
-    return (
-      <span className="whitespace-nowrap text-ui-9 font-medium !text-red-700 !bg-red-50 dark:!text-red-300 dark:!bg-red-500/15 px-1.5 py-0.5 rounded">
-        OOM
-      </span>
-    );
-  }
-  if (status === "tight") {
-    return (
-      <span className="whitespace-nowrap text-ui-9 font-medium !text-amber-400">
-        TIGHT
-      </span>
-    );
-  }
-  return null;
+interface FitVerdict {
+  label: string;
+  tone: string;
+  hint: string;
+}
+
+const AMBER = "!text-yellow-600 dark:!text-yellow-400";
+const ORANGE = "!text-orange-600 dark:!text-orange-300";
+
+/** Over budget but still card-sized. `_select_gpus` scores against FREE VRAM, so whether this
+ *  lands on the GPU depends on what else is resident; missing it costs speed, not the load. */
+/** Over the VRAM Budget, still smaller than the card. Not conditional: `_vram_usable_mib` gives
+ *  `free - reserve`, which on a completely idle card IS the budget this tier has already passed,
+ *  so `_select_gpus` hands it to --fit every time. Other apps only shrink `free` further. Raising
+ *  the budget is the lever that keeps it resident, which is why the card size is worth saying. */
+const MIGHT_FIT: FitVerdict = {
+  label: "Over budget",
+  tone: AMBER,
+  hint: "Larger than your VRAM Budget allows, so part of it offloads even on an idle GPU. It is still smaller than the card, so raising the budget can keep it resident.",
+};
+/** Past the card. Every GGUF over budget lands here, however far over, because llama-server never
+ *  refuses one on size: `_select_gpus` returns `(None, use_fit=True)` and `--fit` offloads the
+ *  rest to CPU. Splitting this by how far over only mattered on hosts where the RAM tier exists,
+ *  and it cost the honest answer on the ones where it does not. */
+const OFFLOADS: FitVerdict = {
+  label: "Does not fit",
+  tone: ORANGE,
+  hint: "Model may not fit but still works with offloading. Expect slower inference.",
+};
+/** checkVramFit's 75-100% band, which is the ONLY source of `tight` here: a torch estimate that
+ *  still fits on the card entirely. It has no --fit, so it neither spills nor offloads. */
+const DEVICE_TIGHT: FitVerdict = {
+  label: "Tight fit",
+  tone: AMBER,
+  hint: "Uses nearly all your VRAM, with little headroom for anything else.",
+};
+/** A torch load, which has no --fit to fall back on: the pipeline goes wholly on the device. */
+const WONT_FIT: FitVerdict = {
+  label: "Does not fit",
+  tone: ORANGE,
+  // "memory", not "VRAM": this also carries a diffusion refusal on a shared pool, where the two
+  // are the same bytes and calling it VRAM would read as a different number than the user has.
+  hint: "Needs more memory than this device has. This model will not load.",
+};
+
+/** What each fit verdict marks and says, keyed by the Hub's classes so one question has one
+ *  vocabulary. `tight` and `exceeds` are the training estimator's words and reach here ONLY from a
+ *  torch pipeline or the QLoRA estimate, never from a GGUF, so both describe a load with no --fit
+ *  to fall back on. That is why neither says anything about offloading. */
+const VRAM_VERDICT: Record<GgufFitClass | VramFitStatus, FitVerdict | null> = {
+  fits: null,
+  marginal: MIGHT_FIT,
+  tight: DEVICE_TIGHT,
+  partial: OFFLOADS,
+  ram: {
+    label: "RAM fallback",
+    tone: ORANGE,
+    hint: "No GPU detected. Runs on system RAM and CPU. Expect much slower inference.",
+  },
+  oom: OFFLOADS,
+  exceeds: WONT_FIT,
+};
+
+/** Whether a diffusion `oom` is a REFUSAL rather than an offload.
+ *
+ *  On discrete VRAM an oversized pipeline still loads: `diffusion_memory.py` degrades it to group
+ *  or whole-module CPU offload and streams from host RAM. On a shared pool there is nowhere to
+ *  stream from, so `unified_memory_shortfall_message` refuses up front, and the docstring is blunt
+ *  about why: without the refusal the load "allocates past physical memory", with no torch OOM to
+ *  catch because the MPS high-watermark is disabled, so "the failure is the OS killing the process
+ *  with no Python exception".
+ *
+ *  Telling that user the model "still works with offloading" is the worst thing this badge could
+ *  say, so a diffusion oom on a host pool takes the verdict that means it will not load.
+ *
+ *  `hostPooled` is the LOAD DEVICE's answer, and folds unified_memory in: hardware.py sets
+ *  shared_memory only on Windows, so a Linux ROCm APU arrives as unified true / shared false while
+ *  `diffusion_memory.py` still classifies it `unified_memory` and refuses. Reading the aggregate
+ *  shared flag missed that host, and reading a plain some(unified) would refuse on a discrete card
+ *  that merely sits beside an iGPU. */
+function diffusionRefuses(
+  fit: GgufFitClass,
+  diffusionLoad: boolean,
+  hostPooled: boolean,
+): boolean {
+  return fit === "oom" && diffusionLoad && hostPooled;
+}
+
+/** The RAM a DIFFUSION verdict may add to the GPU budget. Zero on a host pool: offload there
+ *  moves bytes inside the one pool and frees nothing, so `classifyMediaGgufFit` adding a RAM tier
+ *  promised an offload the planner refuses. llama.cpp is not this case -- a GGUF really does spill
+ *  into whatever host RAM the GPU window does not already cover, and `systemRamAvailableGb` now
+ *  has that window subtracted out. */
+function mediaRamBudgetGb(systemRamGb: number, hostPooled: boolean): number {
+  return hostPooled ? 0 : systemRamGb;
+}
+
+/** The verdicts that read as over budget, which is what dims a row. `marginal` does not: it is
+ *  a full GPU load, just without much room to spare. */
+function isOverBudget(status?: GgufFitClass | VramFitStatus | null): boolean {
+  return (
+    status === "partial" ||
+    status === "ram" ||
+    status === "oom" ||
+    status === "exceeds"
+  );
+}
+
+/** VRAM verdict: an info mark that names itself on hover, rather than a shouted pill. */
+function VramBadge({
+  status,
+  /** Model rows hold the mark in the layout and paint it on hover; variant rows always show it. */
+  revealOnHover = false,
+}: {
+  status?: GgufFitClass | VramFitStatus | null;
+  revealOnHover?: boolean;
+}) {
+  const verdict = status ? VRAM_VERDICT[status] : null;
+  if (!verdict) return null;
+  return (
+    <Tooltip delayDuration={0}>
+      <TooltipTrigger asChild={true}>
+        {/* The mark sits inside the row/variant button, so a tap meant to read the explanation
+            would otherwise select the model or start its download. */}
+        {/* biome-ignore lint/a11y/useKeyWithClickEvents: the handler suppresses the enclosing
+            button, it does not add an interaction of its own */}
+        <span
+          aria-label={verdict.label}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+          }}
+          className={cn(
+            "flex size-[18px] shrink-0 items-center justify-center",
+            verdict.tone,
+            revealOnHover &&
+              "opacity-0 transition-opacity group-hover/row:opacity-100 group-focus-visible/row:opacity-100",
+          )}
+        >
+          <HugeiconsIcon
+            icon={InformationCircleIcon}
+            className="size-3.5"
+            strokeWidth={1.8}
+          />
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="tooltip-compact">
+        {verdict.hint}
+      </TooltipContent>
+    </Tooltip>
+  );
 }
 
 const SIZE_PARTS_RE = /^(~?)([\d.]+)\s*([A-Za-z]+)$/;
@@ -752,22 +912,27 @@ const META_COLUMN = {
   // Fits "UD-Q4_K_XL"; a hard cap, so longer quants clip.
   quant: "min-[560px]:w-[7.2em]",
   // The badge slot holds capability glyphs (18px), the vision badge (24px) and the Hub lists'
-  // "on disk" mark (12px), gap-1 between them. Each width below is the widest set its scope can
+  // "on disk" mark (14px), gap-1 between them. Each width below is the widest set its scope can
   // draw, since anything wider makes min-w-min expand the slot and shift every column after it.
   // Scope draws no glyph: the vision badge alone, or the disk mark alone.
   badge: "min-w-min min-[560px]:w-[24px]",
-  // One glyph plus the disk mark (18 + 4 + 12).
-  badgeMid: "min-w-min min-[560px]:w-[34px]",
-  // Unscoped chat: a generation glyph and audio, plus whichever of vision (On Device rows) or the
-  // disk mark (Hub rows) that list carries -- the two never appear on the same row (18+4+18+4+24).
-  badgeWide: "min-w-min min-[560px]:w-[68px]",
-  // The "OOM" pill, wider than bare "TIGHT" (Hub rows).
-  vram: "min-w-min min-[560px]:w-[4em]",
-  // "235B" on device rows; Hub rows report "2779.5B", hence paramWide.
-  param: "min-w-min min-[560px]:w-[3.6em]",
+  // One glyph plus the disk mark (18 + 4 + 14).
+  badgeMid: "min-w-min min-[560px]:w-[36px]",
+  // On Device draws the vision badge and no disk mark: 26px is that badge measured, so rows with
+  // and without one still line up. One slot sized for both lists left ~44px empty on every row.
+  badgeDevice: "min-w-min min-[560px]:w-[26px]",
+  // Hub draws the disk mark and no vision badge (18+4+14). A second glyph grows it via min-w-min.
+  badgeWide: "min-w-min min-[560px]:w-[36px]",
+  // The fit mark (Hub rows), one 18px glyph.
+  vram: "min-w-min min-[560px]:w-[18px]",
+  // Device rows hug the chip. A column sized for "235B" spends 6.1px in front of a "30B", and that
+  // leftover IS the gap to the modality mark; -ml-0.5 against the cluster's gap-1 makes it 2px. In
+  // exchange a wider label pulls that row's name and quant chip left. Hub keeps its "2779.5B".
+  param: "min-w-min -ml-0.5",
   paramWide: "min-w-min min-[560px]:w-[5.2em]",
-  // "536 MB".
-  size: "min-w-min min-[560px]:w-[4.2em]",
+  // formatBytes writes no space ("536MB"), so the widest this holds is 29.5px, not the ~40px a
+  // spaced "536 MB" needs. The surplus sat between the parameter chip and the size.
+  size: "min-w-min min-[560px]:w-[3.2em]",
   // The format dot that leads the row; the name lives in its tooltip.
   format: "min-[560px]:w-[14px]",
 } as const;
@@ -799,6 +964,7 @@ function ModelRow({
   tags,
   alignMeta,
   showSize,
+  memory,
   className,
 }: {
   label: string;
@@ -807,7 +973,7 @@ function ModelRow({
   /** Override badge state when authoritative runtime state is available. */
   loaded?: boolean;
   onClick: () => void;
-  vramStatus?: VramFitStatus | null;
+  vramStatus?: GgufFitClass | VramFitStatus | null;
   vramEst?: number;
   gpuGb?: number;
   tooltipText?: ReactNode;
@@ -836,16 +1002,23 @@ function ModelRow({
   /** Hold the size column open. Hub rows pass this on the MLX and Safetensors
    *  filters, where a repo is one download with one size. */
   showSize?: boolean;
+  /** Identifies the on-disk model whose VRAM split the row should chart.
+   *  Omit for rows that are not downloaded -- there is nothing to size until
+   *  the weights exist locally. */
+  memory?: ModelMemorySource;
   className?: string;
 }) {
-  const exceeds = vramStatus === "exceeds";
+  const exceeds = isOverBudget(vramStatus);
   const showVramTooltip =
     vramEst != null && vramEst > 0 && gpuGb != null && gpuGb > 0;
   const vramTooltipText =
     showVramTooltip && vramStatus
       ? exceeds
-        ? `Needs ~${vramEst}GB VRAM (GPU: ${gpuGb}GB)`
-        : vramStatus === "tight"
+        ? // "memory", not "VRAM": every over-budget verdict here is a total. A GGUF at
+          // `partial` splits across VRAM and RAM, and the figure is weights plus activations
+          // plus KV, so "Needs ~47GB VRAM" contradicted the offload verdict beside it.
+          `Needs ~${vramEst}GB memory (GPU: ${gpuGb}GB)`
+        : vramStatus === "tight" || vramStatus === "marginal"
           ? `~${vramEst}GB VRAM (tight fit on ${gpuGb}GB)`
           : `~${vramEst}GB VRAM`
       : null;
@@ -862,15 +1035,18 @@ function ModelRow({
   const capabilityScope = useContext(CapabilityScope);
   const capabilityBadges = visibleCapabilityBadges(caps, capabilityScope);
   const showCaps = capabilityBadges.length > 0;
+  const aligned = alignMeta !== undefined;
   // Reserve only what this picker's scope can draw. The Images and Audio pickers draw no glyph and
   // Video draws one, so holding the chat row's slot open there is dead space on every row.
+  // Unscoped chat splits again by list: On Device marks vision, Hub marks the disk.
   const badgeColumn =
     capabilityScope === null || capabilityScope.length > 1
-      ? META_COLUMN.badgeWide
+      ? alignMeta === "device"
+        ? META_COLUMN.badgeDevice
+        : META_COLUMN.badgeWide
       : capabilityScope.length === 1
         ? META_COLUMN.badgeMid
         : META_COLUMN.badge;
-  const aligned = alignMeta !== undefined;
   // One dot per row. A second format shares the first's colour anyway, so it
   // rides along in the tooltip instead of pushing the name out of line.
   const formatDot = parsed.formats[0]
@@ -879,6 +1055,12 @@ function ModelRow({
         label: parsed.formats.map((f) => f.label).join(" · "),
       }
     : null;
+
+  // Only the selected row charts itself. A meter under every row turns a list
+  // you scan into a wall of charts, and a model that comfortably fits is not
+  // news; the one you are actually considering is. At most one bar is on screen.
+  const memorySegments = useModelMemory(selected ? memory : undefined, gpuGb);
+  const showMemoryBar = memorySegments.status !== "unknown";
 
   const content = (
     <button
@@ -893,147 +1075,169 @@ function ModelRow({
       }}
       onClick={onClick}
       className={cn(
-        "flex w-full items-center gap-2 rounded-full px-2 py-1.5 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
+        // pl-[5.5px]: the dot is centred in a 14px hover target, so 5.5 + (14 - 5) / 2 lands it
+        // on 10px, level with the section labels at px-2.5. Inside a w-full button, so the hover
+        // pill itself does not move.
+        "group/row flex w-full flex-col items-stretch py-1.5 pl-[5.5px] pr-2 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
+        showMemoryBar ? "rounded-2xl" : "rounded-full",
         selected && "bg-[#ececec] dark:bg-[var(--sidebar-accent)]",
         className,
       )}
     >
-      <span className="flex min-w-0 flex-1 items-baseline">
-        {/* Fixed slot, so names start on one line with or without a dot. */}
-        {aligned ? (
-          <span
-            className={cn(
-              "mr-1 flex shrink-0 items-center self-center",
-              META_COLUMN.format,
-            )}
-          >
-            {formatDot ? <FormatTag {...formatDot} /> : null}
-          </span>
-        ) : formatDot ? (
-          <span className="mr-1 flex shrink-0 items-center self-center">
-            <FormatTag {...formatDot} />
-          </span>
-        ) : null}
-        {showOwner ? (
-          <span className="inline-flex min-w-0 max-w-[45%] shrink items-baseline text-ui-13 text-muted-foreground/90">
-            <span className="truncate">{owner}</span>
-            <span className="shrink-0 text-muted-foreground/45">/</span>
-          </span>
-        ) : null}
-        <span className="min-w-0 flex-1 truncate">{name}</span>
-        {/* Here it eats name width instead of moving the meta columns. */}
-        {aligned && loaded && (
-          <DotTag
-            tone="success"
-            label="Loaded"
-            className="ml-2 h-[18px] shrink-0 gap-1 rounded-md px-1.5"
-            dotClassName="size-[5px]"
-          />
-        )}
-        {alignMeta === "device" ? (
-          <span
-            className={cn(
-              "ml-1.5 flex shrink-0 items-center self-center text-ui-9",
-              META_COLUMN.quant,
-            )}
-          >
-            {quantChip ? <QuantChip label={quantChip} /> : null}
-          </span>
-        ) : quantChip ? (
-          <span className="ml-2 shrink-0 rounded-md bg-black/[0.06] px-1.5 py-px font-mono text-ui-10 text-muted-foreground dark:bg-white/[0.1]">
-            {quantChip}
-          </span>
-        ) : null}
-        {tags && tags.length > 0 ? (
-          <span className="ml-1.5 flex shrink-0 items-center gap-1 self-center">
-            {tags.map((tag) => (
-              <QuantChip key={tag} label={tag} />
-            ))}
-          </span>
-        ) : null}
-      </span>
+      {/* gap-1: the quant chip ends the name group, so what this separates is that chip from the
+          first meta mark. 4px is the rhythm the meta columns already keep among themselves. */}
       <span
         className={cn(
-          "ml-auto flex shrink-0 items-center",
-          aligned ? "gap-1" : "gap-1.5",
+          "flex w-full items-center gap-1",
+          // Over budget reads as a dimmed row, which scans; hover restores it and shows the pill.
+          // The selected row keeps full weight, since it is the one being considered.
+          exceeds &&
+            !selected &&
+            "opacity-60 transition-opacity group-hover/row:opacity-100 group-focus-visible/row:opacity-100",
         )}
       >
-        {/* Capabilities, vision and the Hub lists' "on disk" mark share one
-            column; two of them widen the slot rather than overlap. */}
-        {aligned ? (
-          <span
-            className={cn(
-              "flex shrink-0 items-center justify-center gap-1 text-ui-10",
-              badgeColumn,
-            )}
-          >
-            {showCaps && <CapabilityIcons caps={caps} />}
-            {showVision && <VisionBadge />}
-            {downloaded && !loaded ? <DownloadedBadge /> : null}
-          </span>
-        ) : (
-          <>
-            {showCaps && <CapabilityIcons caps={caps} />}
-            {showVision && <VisionBadge />}
-            {loaded && (
-              <DotTag
-                tone="success"
-                label="Loaded"
-                className="h-[18px] gap-1 rounded-md px-1.5"
-                dotClassName="size-[5px]"
-              />
-            )}
-            {downloaded && !loaded ? <DownloadedBadge /> : null}
-          </>
-        )}
-        {alignMeta === "hub" ? (
-          <span
-            className={cn(
-              "flex shrink-0 items-center justify-end text-ui-9",
-              META_COLUMN.vram,
-            )}
-          >
-            <VramBadge status={vramStatus} />
-          </span>
-        ) : (
-          <VramBadge status={vramStatus} />
-        )}
-        {aligned ? (
-          <span
-            className={cn(
-              "flex shrink-0 justify-end text-ui-10",
-              alignMeta === "hub" ? META_COLUMN.paramWide : META_COLUMN.param,
-            )}
-          >
-            {paramLabel ? <ParamChip label={paramLabel} /> : null}
-          </span>
-        ) : paramLabel ? (
-          <ParamChip label={paramLabel} />
-        ) : null}
-        {parsed.texts.map((text) => (
-          <span key={text} className="text-ui-10 text-muted-foreground">
-            {text}
-          </span>
-        ))}
-        {/* GGUF repos hold several quants of different sizes, so their rows
-            report one only once expanded, leaving the column an empty gap. */}
-        {alignMeta === "device" || showSize ? (
-          <span
-            className={cn(
-              "shrink-0 whitespace-nowrap text-right font-mono text-ui-10 text-muted-foreground tabular-nums",
-              META_COLUMN.size,
-            )}
-          >
-            {parsed.size === undefined ? null : (
+        <span className="flex min-w-0 flex-1 items-baseline">
+          {/* Fixed slot, so names start on one line with or without a dot. */}
+          {aligned ? (
+            <span
+              className={cn(
+                "mr-1 flex shrink-0 items-center self-center",
+                META_COLUMN.format,
+              )}
+            >
+              {formatDot ? <FormatTag {...formatDot} /> : null}
+            </span>
+          ) : formatDot ? (
+            <span className="mr-1 flex shrink-0 items-center self-center">
+              <FormatTag {...formatDot} />
+            </span>
+          ) : null}
+          {showOwner ? (
+            <span className="inline-flex min-w-0 max-w-[45%] shrink items-baseline text-ui-13 text-muted-foreground/90">
+              <span className="truncate">{owner}</span>
+              <span className="shrink-0 text-muted-foreground/45">/</span>
+            </span>
+          ) : null}
+          <span className="min-w-0 flex-1 truncate">{name}</span>
+          {/* Here it eats name width instead of moving the meta columns. */}
+          {aligned && loaded && (
+            <DotTag
+              tone="success"
+              label="Loaded"
+              className="ml-2 h-[18px] shrink-0 gap-1 rounded-md px-1.5"
+              dotClassName="size-[5px]"
+            />
+          )}
+          {alignMeta === "device" ? (
+            <span
+              className={cn(
+                // ml-0.5: the chip carries px-1 of its own, so 2px still leaves 6px of air.
+                "ml-0.5 flex shrink-0 items-center self-center text-ui-9",
+                META_COLUMN.quant,
+              )}
+            >
+              {quantChip ? <QuantChip label={quantChip} /> : null}
+            </span>
+          ) : quantChip ? (
+            <span className="ml-2 shrink-0 rounded-md bg-black/[0.06] px-1.5 py-px font-mono text-ui-10 text-muted-foreground dark:bg-white/[0.1]">
+              {quantChip}
+            </span>
+          ) : null}
+          {tags && tags.length > 0 ? (
+            <span className="ml-1.5 flex shrink-0 items-center gap-1 self-center">
+              {tags.map((tag) => (
+                <QuantChip key={tag} label={tag} />
+              ))}
+            </span>
+          ) : null}
+        </span>
+        <span
+          className={cn(
+            "ml-auto flex shrink-0 items-center",
+            aligned ? "gap-1" : "gap-1.5",
+          )}
+        >
+          {/* Capabilities, vision and the Hub lists' "on disk" mark share one
+              column; two of them widen the slot rather than overlap. */}
+          {aligned ? (
+            <span
+              className={cn(
+                // Right, not centre: slack belongs to the name, not split either side of a glyph.
+                "flex shrink-0 items-center justify-end gap-1 text-ui-10",
+                badgeColumn,
+              )}
+            >
+              {showCaps && <CapabilityIcons caps={caps} />}
+              {showVision && <VisionBadge />}
+              {downloaded && !loaded ? <DownloadedBadge /> : null}
+            </span>
+          ) : (
+            <>
+              {showCaps && <CapabilityIcons caps={caps} />}
+              {showVision && <VisionBadge />}
+              {loaded && (
+                <DotTag
+                  tone="success"
+                  label="Loaded"
+                  className="h-[18px] gap-1 rounded-md px-1.5"
+                  dotClassName="size-[5px]"
+                />
+              )}
+              {downloaded && !loaded ? <DownloadedBadge /> : null}
+            </>
+          )}
+          {alignMeta === "hub" ? (
+            <span
+              className={cn(
+                "flex shrink-0 items-center justify-end text-ui-9",
+                META_COLUMN.vram,
+              )}
+            >
+              <VramBadge status={vramStatus} revealOnHover={!selected} />
+            </span>
+          ) : (
+            <VramBadge status={vramStatus} revealOnHover={!selected} />
+          )}
+          {aligned ? (
+            <span
+              className={cn(
+                "flex shrink-0 justify-end text-ui-10",
+                alignMeta === "hub" ? META_COLUMN.paramWide : META_COLUMN.param,
+              )}
+            >
+              {paramLabel ? <ParamChip label={paramLabel} /> : null}
+            </span>
+          ) : paramLabel ? (
+            <ParamChip label={paramLabel} />
+          ) : null}
+          {parsed.texts.map((text) => (
+            <span key={text} className="text-ui-10 text-muted-foreground">
+              {text}
+            </span>
+          ))}
+          {/* GGUF repos hold several quants of different sizes, so their rows
+              report one only once expanded, leaving the column an empty gap. */}
+          {alignMeta === "device" || showSize ? (
+            <span
+              className={cn(
+                "shrink-0 whitespace-nowrap text-right font-mono text-ui-10 text-muted-foreground tabular-nums",
+                META_COLUMN.size,
+              )}
+            >
+              {parsed.size === undefined ? null : (
+                <SizeText value={parsed.size} />
+              )}
+            </span>
+          ) : aligned ? null : parsed.size !== undefined ? (
+            <span className="font-mono text-ui-10 text-muted-foreground tabular-nums">
               <SizeText value={parsed.size} />
-            )}
-          </span>
-        ) : aligned ? null : parsed.size !== undefined ? (
-          <span className="font-mono text-ui-10 text-muted-foreground tabular-nums">
-            <SizeText value={parsed.size} />
-          </span>
-        ) : null}
+            </span>
+          ) : null}
+        </span>
       </span>
+      {showMemoryBar ? (
+        <ModelMemoryBar segments={memorySegments} compact={true} />
+      ) : null}
     </button>
   );
 
@@ -1106,6 +1310,9 @@ function isValidGgufVariant(variant: unknown): variant is GgufVariantDetail {
     typeof candidate.size_bytes === "number" &&
     Number.isFinite(candidate.size_bytes) &&
     candidate.size_bytes >= 0 &&
+    (candidate.shard_count === undefined ||
+      (Number.isSafeInteger(candidate.shard_count) &&
+        candidate.shard_count >= 0)) &&
     (candidate.downloaded === undefined ||
       typeof candidate.downloaded === "boolean") &&
     // Carried through so each row can look up its own dependency group's
@@ -1309,9 +1516,20 @@ function GgufVariantExpander({
   onDevice = false,
   allowPin = false,
   onHasVision,
+  diffusionLoad = false,
+  hostPooledMemory = false,
+  gpuCount,
 }: {
   repoId: string;
   pipelineTag?: string | null;
+  /** True on Images / Video, where a GGUF is placed by the diffusion backend rather than
+   *  llama-server, so the llama.cpp budget does not apply. Audio is task-scoped but not this. */
+  diffusionLoad?: boolean;
+  /** The LOAD DEVICE's memory is a window into host RAM (Apple Silicon, a ROCm APU). Only a
+   *  diffusion load reads it: see `diffusionRefuses`. */
+  hostPooledMemory?: boolean;
+  /** How many GPUs gpuGb is the sum of, for the loader's per-card VRAM reserve. */
+  gpuCount?: number;
   /** Snapshot the cached listing pinned this repo to, if any. */
   loadId?: string | null;
   /** Cache directory this downloaded row represents, if any. */
@@ -1468,27 +1686,40 @@ function GgufVariantExpander({
     ],
   );
 
-  // GGUF fit classification matching llama-server's _select_gpus logic:
-  //   fits  = model <= 0.7 * total GPU memory
-  //   tight = model > 0.7 * GPU but <= 0.7 * GPU + 0.7 * system RAM (--fit uses CPU offload)
-  //   oom   = model > 0.7 * GPU + 0.7 * system RAM
-  const gpuBudgetGb = (gpuGb ?? 0) * 0.7;
-  const totalBudgetGb = gpuBudgetGb + (systemRamGb ?? 0) * 0.7;
+  // The user's saved VRAM Budget, which is what the loader admits against. The picker used to
+  // ignore it, so moving the slider changed the Hub's verdicts and left chat's untouched.
+  const budgetFraction = useVramBudgetFraction() ?? undefined;
+  const anyBudgetGb = (gpuGb ?? 0) > 0 || (systemRamGb ?? 0) > 0;
 
   const getGgufFit = useCallback(
-    (sizeBytes: number): "fits" | "tight" | "oom" => {
-      // Preserve permissive behavior only when no budget was measured. A known
-      // zero Vulkan budget means every non-empty variant is OOM.
-      if (totalBudgetGb <= 0) return budgetKnown ? "oom" : "fits";
-      const gb = sizeBytes / 1024 ** 3;
-      if (gb <= 0 || gb <= gpuBudgetGb) return "fits";
-      // No-GPU / unified-memory hosts (Mac) have only the RAM budget, so the tier
-      // collapses to fit-or-oom against system RAM.
-      if (gpuBudgetGb <= 0) return gb <= totalBudgetGb ? "fits" : "oom";
-      if (gb <= totalBudgetGb) return "tight";
-      return "oom";
+    (sizeBytes: number): GgufFitClass => {
+      // Permissive only when no budget was measured. A known zero Vulkan budget means every
+      // non-empty variant is OOM, which classifyGgufFit cannot tell apart from "not probed yet".
+      if (!anyBudgetGb) return budgetKnown ? "oom" : "fits";
+      if (diffusionLoad) {
+        return classifyMediaGgufFit(
+          sizeBytes,
+          gpuGb ?? 0,
+          mediaRamBudgetGb(systemRamGb ?? 0, hostPooledMemory),
+        );
+      }
+      return classifyGgufFit(sizeBytes, {
+        gpuGb: gpuGb ?? 0,
+        systemRamGb: systemRamGb ?? 0,
+        budgetFraction,
+        gpuCount,
+      });
     },
-    [budgetKnown, gpuBudgetGb, totalBudgetGb],
+    [
+      budgetKnown,
+      anyBudgetGb,
+      gpuGb,
+      systemRamGb,
+      budgetFraction,
+      diffusionLoad,
+      hostPooledMemory,
+      gpuCount,
+    ],
   );
 
   const variantGroups = useMemo(
@@ -1506,7 +1737,7 @@ function GgufVariantExpander({
     const recommended = new Map<string, string>();
     for (const group of variantGroups) {
       const preferred = preferredByGroup.get(group.key) ?? null;
-      if (totalBudgetGb <= 0 && !budgetKnown) {
+      if (!anyBudgetGb && !budgetKnown) {
         if (preferred) recommended.set(group.key, preferred.quant);
         continue;
       }
@@ -1527,7 +1758,7 @@ function GgufVariantExpander({
       if (smallest) recommended.set(group.key, smallest.quant);
     }
     return recommended;
-  }, [variantGroups, preferredByGroup, totalBudgetGb, budgetKnown, getGgufFit]);
+  }, [variantGroups, preferredByGroup, anyBudgetGb, budgetKnown, getGgufFit]);
   // The same recommendations, reachable from a row. `effectiveRecommendedByGroup`
   // is keyed by PRESENTATION group ("quantizations", "text-frames",
   // "reference-media"); the footprint pass below buckets by the backend's
@@ -1803,7 +2034,6 @@ function GgufVariantExpander({
           effectiveRecommendedByGroup.get(group.key) === v.quant;
         const fit = getGgufFit(v.size_bytes);
         const oom = fit === "oom";
-        const tight = fit === "tight";
         const expectedBytes = ggufVariantExpectedBytes(v);
         // This row's own dependency group, never the listing's: see the
         // footprintVariants comment above.
@@ -1839,6 +2069,11 @@ function GgufVariantExpander({
                   hideH3PrunedBuild,
                 })}
               </span>
+              {(v.shard_count ?? 0) > 1 ? (
+                <span className="ml-1.5 text-ui-9 font-sans font-medium text-sky-700 dark:text-sky-300">
+                  Sharded · {v.shard_count} parts
+                </span>
+              ) : null}
               {unusableLocal ? (
                 <span className="ml-1.5 text-ui-9 font-sans font-medium text-amber-700 dark:text-amber-300">
                   incomplete
@@ -1861,16 +2096,13 @@ function GgufVariantExpander({
               ) : null}
             </span>
             <span className="flex items-center gap-1.5 shrink-0">
-              {oom && (
-                <span className="text-ui-9 font-medium !text-red-700 !bg-red-50 dark:!text-red-300 dark:!bg-red-500/15 px-1.5 py-0.5 rounded">
-                  OOM
-                </span>
-              )}
-              {tight && (
-                <span className="text-ui-9 font-medium !text-amber-400">
-                  TIGHT
-                </span>
-              )}
+              <VramBadge
+                status={
+                  diffusionRefuses(fit, diffusionLoad, hostPooledMemory)
+                    ? "exceeds"
+                    : fit
+                }
+              />
               <span className="font-mono text-ui-10 text-muted-foreground tabular-nums">
                 {companionBytes === null ? (
                   <SizeText value={formatBytes(v.size_bytes)} />
@@ -2058,6 +2290,15 @@ export const VIDEO_GEN_TASKS = [
   "image-text-to-video",
 ] as const;
 
+/** The tasks whose GGUFs are placed by the DIFFUSION backend, which is the only reason a picker
+ *  scores against `classifyMediaGgufFit`. Audio is task-scoped too but does not belong here: its
+ *  GGUFs go to llama.cpp (TTS) or the whisper sidecars (stt_ggml_sidecar.py, stt_mtmd_sidecar.py),
+ *  so scoring them at 70% hid runnable models and picked a smaller quant than needed. */
+const DIFFUSION_TASKS: ReadonlySet<string> = new Set([
+  ...IMAGE_GEN_TASKS,
+  ...VIDEO_GEN_TASKS,
+]);
+
 // Speech pipeline tasks: owned by the Audio page. TTS picks load there rather than into chat; ASR picks map to the dictation sidecar.
 export const AUDIO_GEN_TASKS = [
   "text-to-speech",
@@ -2075,8 +2316,6 @@ const MEDIA_PAGE_TASKS: readonly string[] = [
 ];
 
 /** The page that runs this task, or null when chat should handle the pick. */
-const TTS_CODECS = new Set(["snac", "csm", "bicodec", "dac"]);
-
 function mediaPageForTask(
   task: string | null | undefined,
 ): "images" | "video" | "audio" | null {
@@ -2301,6 +2540,7 @@ function localPathTooltip(
 function localModelMeta(
   isGguf = false,
   pipelineTag?: string | null,
+  audioType?: string | null,
 ): ModelSelectorChangeMeta {
   return {
     source: "local",
@@ -2308,6 +2548,7 @@ function localModelMeta(
     isDownloaded: true,
     ...(isGguf ? { isGguf: true } : {}),
     pipelineTag: pipelineTag ?? null,
+    audioType: audioType ?? null,
   };
 }
 
@@ -2400,6 +2641,16 @@ export function HubModelPicker({
 }) {
   const gpu = useGpuInfo();
   const inferenceGpu = useInferenceGpuInfo();
+  // The saved VRAM Budget, threaded into every fit call in this component. Passing it to the quant
+  // rows alone left the parent rows and the "Fits on device" filter scoring against the 0.97
+  // default, so lowering the setting moved one and not the other.
+  const budgetFraction = useVramBudgetFraction() ?? undefined;
+  // Whether THIS picker's rows load through the diffusion backend. Not `Boolean(task)`: Audio is
+  // task-scoped for the single-device budget but runs its GGUFs under llama.cpp / whisper.
+  const diffusionLoad = useMemo(() => {
+    const tasks = task ? (typeof task === "string" ? [task] : task) : [];
+    return tasks.some((entry) => DIFFUSION_TASKS.has(entry));
+  }, [task]);
   // What the backend actually holds, not the dropdown highlight, which can be a
   // staged pick. The selection alone was wrong: an image or video load evicts
   // the chat model and leaves the pick untouched, so its rows kept the "Loaded"
@@ -2693,8 +2944,14 @@ export function HubModelPicker({
     () => pickerInventory.localModels.filter((m) => m.source === "models_dir"),
     [pickerInventory.localModels],
   );
+  // Ollama rows list alongside custom folders: both are user-managed stores
+  // outside ./models, and an Ollama root added as a custom folder is where
+  // the missing rows were expected (#9226).
   const customFolderModels = useMemo(
-    () => pickerInventory.localModels.filter((m) => m.source === "custom"),
+    () =>
+      pickerInventory.localModels.filter(
+        (m) => m.source === "custom" || m.source === "ollama",
+      ),
     [pickerInventory.localModels],
   );
   useEffect(() => {
@@ -2887,6 +3144,7 @@ export function HubModelPicker({
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const deviceType = usePlatformStore((s) => s.deviceType);
   const isMac = deviceType === "mac";
+  const hostClass = useHostClass();
 
   // Drop models Unsloth cannot run for chat. A task-scoped picker wants exactly the tasks the chat classifier calls unsupported, so it gates on the task.
   const isChatSupported = useCallback(
@@ -3020,8 +3278,25 @@ export function HubModelPicker({
   // raw repo id exactly as before.
   const curatedRow = useCallback(
     (id: string) =>
-      (catalog && curatedRowLabelFor(id, catalog)) ?? { name: id, tags: [] as string[] },
-    [catalog],
+      (catalog && curatedRowLabelFor(id, catalog, hostClass)) ?? {
+        name: id,
+        tags: [] as string[],
+      },
+    [catalog, hostClass],
+  );
+
+  /** Whether this host can run a curated id at all, as opposed to whether it has room for it.
+   *  Browse rows only: an id already on disk keeps its row wherever it came from. */
+  const curatedOfferable = useCallback(
+    (id: string) => {
+      if (!catalog) return true;
+      // Downloaded weights keep their row. They may have been pulled on a machine that could run
+      // them, and hiding what is already on disk reads as Unsloth having lost the model.
+      if (downloadedSet.has(id.toLowerCase())) return true;
+      const hit = artifactForRepoId(id, catalog);
+      return hit ? curatedArtifactIsOfferable(hit.artifact.repoId, hostClass) : true;
+    },
+    [catalog, downloadedSet, hostClass],
   );
 
   // Paint curated rows before any request, so a task-scoped picker whose models
@@ -3031,6 +3306,7 @@ export function HubModelPicker({
     return dedupe(models.map((model) => model.id))
       .filter((id) => !isMobileVariant(id))
       .filter((id) => !isImageEditModel(id))
+      .filter(curatedOfferable)
       .filter((id) => {
         const isG = isKnownGgufRepo(id);
         return taskCatalogFormatMatches(
@@ -3051,7 +3327,7 @@ export function HubModelPicker({
         // other source for its param chip, and most curated ids carry no "<n>B" token.
         totalParams: catalog ? curatedTotalParamsFor(id, catalog) : undefined,
       }));
-  }, [catalog, models, formatFilter, isKnownGgufRepo, task]);
+  }, [catalog, models, formatFilter, isKnownGgufRepo, task, curatedOfferable]);
 
   /** The catalog's own fit verdict for a curated artifact, or undefined where it has none.
    *  Every list that judges a row against the device goes through this, so a badge and the
@@ -3104,6 +3380,7 @@ export function HubModelPicker({
     };
     const keep = (r: HfModelResult) =>
       keepCommon(r) &&
+      curatedOfferable(r.id) &&
       // Task pages load single-file GGUF, plus curated artifacts in any format.
       (!task ||
         r.isGguf ||
@@ -3126,7 +3403,16 @@ export function HubModelPicker({
       // The catalog's own verdict where it has one, so this list and the OOM badge on its rows
       // cannot disagree: hfModelFitsDevice counts RAM toward a load that never leaves the card.
       (catalogFit(r.id, pipelineBudget) ??
-        hfModelFitsDevice(r, r.isGguf ? rowInferenceGpu : rowGpu));
+        hfModelFitsDevice(r, diffusionLoad || !r.isGguf ? rowGpu : rowInferenceGpu, {
+          budgetFraction,
+          // Not `&& r.isGguf`: on a task page a safetensors row is placed by the same backend, and
+          // this rule IS the budget those rows had before the classifiers were merged. Restricting
+          // it to GGUF left this gate disagreeing with searchRowFitsDevice about the same row.
+          mediaLoad: diffusionLoad,
+          hostPooledMemory: gpu.loadDeviceSharesHostMemory,
+          // The scoped inventory's own count, so it always describes rowInferenceGpu's capacity.
+          gpuCount: rowInferenceGpu.deviceCount,
+        }));
     const unslothRows = orderRecommendedRows({
       seeds: catalogSeedRows,
       results: recommendedSearch.results,
@@ -3146,6 +3432,8 @@ export function HubModelPicker({
       .filter((r) => !deviceFiltered || fits(r));
     return [...unslothRows, ...communityRows];
   }, [
+    budgetFraction,
+    diffusionLoad,
     recommendedSearch.results,
     catalogSeedRows,
     downloadedSet,
@@ -3160,6 +3448,7 @@ export function HubModelPicker({
     task,
     catalog,
     catalogFit,
+    curatedOfferable,
     communityRecommendedEnabled,
     communityBrowse.results,
     isLoadableCommunityRepo,
@@ -3171,29 +3460,65 @@ export function HubModelPicker({
   const recommendedMeta = useMemo(() => {
     const map = new Map<
       string,
-      { meta: string | null; status: VramFitStatus | null; est: number }
+      {
+        meta: string | null;
+        /** GGUF rows carry the classifier's own verdict; curated torch rows carry "exceeds". */
+        status: GgufFitClass | VramFitStatus | null;
+        est: number;
+      }
     >();
     /** Size-based verdict for a row whose real footprint we know, against the budget that row
-     *  actually loads into. Same split as the list's own fit filter, so the badge and the
-     *  "Fits on device" gate cannot disagree about one row. */
-    const exceedsSize = (
+     *  actually loads into. Same classifier as the quant rows below it, so the badge and the
+     *  "Fits on device" gate cannot disagree about one row.
+     *
+     *  Returns the verdict, not a boolean. A boolean collapsed `marginal` and `partial` into "no
+     *  badge", so a repo whose SMALLEST quant already needs offload rendered as a clean fit beside
+     *  expanded rows saying the opposite. */
+    const ggufRowFit = (
       sizeBytes: number | undefined,
       budget: typeof inferenceGpu,
-    ) =>
-      (budget.budgetKnown ||
-        budget.memoryTotalGb > 0 ||
-        budget.systemRamAvailableGb > 0) &&
-      sizeBytes != null &&
-      !fitsDevice({
-        sizeBytes,
-        gpuGb: budget.memoryTotalGb,
-        systemRamGb: budget.systemRamAvailableGb,
-        budgetKnown: budget.budgetKnown,
-      });
+    ): GgufFitClass | VramFitStatus | null => {
+      const anyBudget =
+        budget.memoryTotalGb > 0 || budget.systemRamAvailableGb > 0;
+      if (!budget.budgetKnown && !anyBudget) return null;
+      if (sizeBytes == null) return null;
+      // Probed and genuinely zero (a Vulkan device reporting nothing) means nothing fits.
+      if (!anyBudget) return "oom";
+      // Images / Video place this GGUF through the diffusion backend, so it takes the same rule
+      // its quant rows take. Judging the parent by llama.cpp's budget and the children by the
+      // media one let a row read as fitting while everything inside it read as oom.
+      const fit = diffusionLoad
+        ? classifyMediaGgufFit(
+            sizeBytes,
+            budget.memoryTotalGb,
+            mediaRamBudgetGb(
+              budget.systemRamAvailableGb,
+              gpu.loadDeviceSharesHostMemory,
+            ),
+          )
+        : classifyGgufFit(sizeBytes, {
+            gpuGb: budget.memoryTotalGb,
+            systemRamGb: budget.systemRamAvailableGb,
+            budgetFraction,
+            gpuCount: budget.deviceCount,
+          });
+      if (fit === "fits") return null;
+      return diffusionRefuses(fit, diffusionLoad, gpu.loadDeviceSharesHostMemory)
+        ? "exceeds"
+        : fit;
+    };
     // A curated pipeline loads through torch, and a task load puts the whole thing on ONE
     // device, so it is judged there. inferenceGpu is the GGUF backend's inventory, which can
     // be a different install (Vulkan llama.cpp) or the sum of several cards.
-    const pipelineBudget = artifactBudget(loadScopedGpu(gpu, Boolean(task)));
+    const rowGpu = loadScopedGpu(gpu, Boolean(task));
+    const pipelineBudget = artifactBudget(rowGpu);
+    // The inventory of the runtime that PLACES the row, not of its file format. An Images or
+    // Video GGUF goes to the diffusion backend, which is torch, and on a Vulkan chat build
+    // inferenceGpu is a different device set entirely: it can see a card torch cannot, so the
+    // media rule was scoring against capacity the diffusion loader never gets to use.
+    const rowInferenceGpu = diffusionLoad
+      ? rowGpu
+      : loadScopedGpu(inferenceGpu, Boolean(task));
     // Community rows come from their own listing; without them folded in here
     // they render with no size or VRAM chip.
     for (const r of [
@@ -3233,8 +3558,23 @@ export function HubModelPicker({
           (params ? estimateQuantBytes(params) : undefined);
         map.set(r.id, {
           meta,
-          status: exceedsSize(sizeBytes, inferenceGpu) ? "exceeds" : null,
-          est: sizeBytes ? Math.round(sizeBytes / 1024 ** 3) : 0,
+          // The classifier's own verdict, so a GGUF row never borrows "exceeds", which is the
+          // torch-only refusal used by the curated branch below.
+          // The device the load LANDS on, same as the quant rows under it and the fit filter
+          // beside it. The curated branch below already scoped; this one did not, so a downloaded
+          // media parent could read as safe while every variant inside it read as oom.
+          status: ggufRowFit(sizeBytes, rowInferenceGpu),
+          // The figure the verdict was reached with, not the raw file size. classifyGgufFit scores
+          // weights PLUS activations and KV, so a 20 GiB quant needing 24 GiB read "tight fit"
+          // beside a tooltip saying "~20GB VRAM". The media rule scores the raw size, so that one
+          // keeps it.
+          est: sizeBytes
+            ? Math.round(
+                diffusionLoad
+                  ? sizeBytes / 1024 ** 3
+                  : requiredGgufMemoryGb(sizeBytes),
+              )
+            : 0,
         });
         continue;
       }
@@ -3262,6 +3602,8 @@ export function HubModelPicker({
     }
     return map;
   }, [
+    budgetFraction,
+    diffusionLoad,
     recommendedSearch.results,
     communityBrowse.results,
     catalogSeedRows,
@@ -3299,7 +3641,12 @@ export function HubModelPicker({
   const hubEvidenceById = useMemo(() => {
     const map = new Map<
       string,
-      { baseModel?: string | null; tags?: string[]; libraryName?: string | null }
+      {
+        baseModel?: string | null;
+        tags?: string[];
+        libraryName?: string | null;
+        audioType?: string | null;
+      }
     >();
     for (const r of [
       ...results,
@@ -3319,12 +3666,31 @@ export function HubModelPicker({
     // here the same row picked from the unscoped Chat picker was judged on its id alone
     // and refused routing to the page that does list it.
     for (const c of cachedModels) {
-      if (map.has(c.repo_id)) continue;
+      const existing = map.get(c.repo_id);
+      if (existing) {
+        map.set(c.repo_id, {
+          ...existing,
+          audioType: existing.audioType ?? c.audio_type,
+        });
+        continue;
+      }
       map.set(c.repo_id, {
         baseModel: null,
         tags: c.tags,
         libraryName: c.library_name,
+        audioType: c.audio_type,
       });
+    }
+    for (const c of cachedGguf) {
+      const existing = map.get(c.repo_id);
+      if (existing) {
+        map.set(c.repo_id, {
+          ...existing,
+          audioType: existing.audioType ?? c.audio_type,
+        });
+        continue;
+      }
+      map.set(c.repo_id, { audioType: c.audio_type });
     }
     return map;
   }, [
@@ -3333,6 +3699,7 @@ export function HubModelPicker({
     communityQuerySearch.results,
     communityBrowse.results,
     cachedModels,
+    cachedGguf,
   ]);
 
   // Tag-accurate capabilities keyed by repo id, pooled from both HF listings, then the
@@ -3394,14 +3761,27 @@ export function HubModelPicker({
   const sortedCachedGguf = useMemo(
     () =>
       sortCachedRepos(
-        cachedGguf.filter((c) =>
-          passesTaskGate(
-            c.task,
-            c.repo_id,
-            task,
-            catalog,
-            activeCatalogArtifactIds,
-          ),
+        cachedGguf.filter(
+          (c) =>
+            passesTaskGate(
+              c.task,
+              c.repo_id,
+              task,
+              catalog,
+              activeCatalogArtifactIds,
+            ) &&
+            // A speech GGUF no backend here can decode (CSM) would otherwise be listed as
+            // a chat model and only fail in llama-server. Non-audio rows always pass.
+            audioPickIsRoutable({
+              id: c.repo_id,
+              task: c.task,
+              audioType: c.audio_type,
+              isGguf: true,
+              isCurated: artifactForRepoId(c.repo_id, AUDIO_CATALOG) !== null,
+              // The task and codec both came from GGUF classification; codec provenance
+              // separates runnable Orpheus from unsupported CSM.
+              taskFromGgufArch: true,
+            }),
         ),
         downloadedSort,
         loadTimes,
@@ -3443,6 +3823,7 @@ export function HubModelPicker({
                   id: c.repo_id,
                   tags: c.tags,
                   libraryName: c.library_name,
+                  audioType: c.audio_type,
                 }) &&
                 macTtsHubRowIsRunnable({
                   isMac,
@@ -3454,6 +3835,7 @@ export function HubModelPicker({
                         (artifact) => artifact.format === "gguf",
                       ),
                   ),
+                  audioType: c.audio_type,
                 })) ||
               (catalog
                 ? artifactForRepoId(c.repo_id, catalog) !== null
@@ -3478,8 +3860,17 @@ export function HubModelPicker({
     info.available
       ? loadScopedGpu(info, Boolean(task)).memoryTotalGb
       : undefined;
-  const expanderGpuGb = expanderGpuGbFrom(inferenceGpu);
+  // Images / Video place through torch even where llama.cpp is a Vulkan build, so their budget
+  // comes from the torch inventory. Everything else keeps the GGUF backend's own.
+  const expanderBudgetGpu = diffusionLoad ? gpu : inferenceGpu;
+  const expanderGpuGb = expanderGpuGbFrom(expanderBudgetGpu);
   const expanderSystemGpuGb = expanderGpuGbFrom(gpu);
+  // From the SAME scoping decision as the capacity above: loadScopedGpu narrows the count to 1
+  // with memoryTotalGb, so the per-card reserve is never charged host-wide against one card,
+  // and the RAM tier is the one that belongs to the device the load lands on.
+  const expanderScopedGpu = loadScopedGpu(expanderBudgetGpu, Boolean(task));
+  const expanderGpuCount = expanderScopedGpu.deviceCount;
+  const expanderRamGb = expanderScopedGpu.systemRamAvailableGb;
 
   // Each local section's search is scoped to its own models (matched by name).
   const localQuery = normalizeForSearch(debouncedQuery.trim());
@@ -3494,6 +3885,19 @@ export function HubModelPicker({
         lmStudioModels.filter(
           (m) =>
             filesystemRowsSupportedForTask(task, m.task) &&
+            // The same speech gate the cached GGUF rows get: a CSM file found in LM
+            // Unsloth, ./models or a scan folder is just as undecodable, and routing it to
+            // Audio evicts the chat model before the row is reported unsupported.
+            audioPickIsRoutable({
+              id: m.model_id ?? m.id,
+              task: m.task,
+              audioType: m.audio_type,
+              isGguf: localModelIsGguf(m),
+              isCurated: artifactForRepoId(m.model_id ?? m.id, AUDIO_CATALOG) !== null,
+              // Task and codec came from the filesystem classifier, so a renamed CSM file
+              // cannot borrow an Orpheus-looking path to clear the gate.
+              taskFromGgufArch: true,
+            }) &&
             // The backend tags every local model with its task for exactly this: on the Images/Video pages a chat GGUF must not be offered.
             (passesTaskGate(
               m.task,
@@ -3530,6 +3934,19 @@ export function HubModelPicker({
         localDirModels.filter(
           (m) =>
             filesystemRowsSupportedForTask(task, m.task) &&
+            // The same speech gate the cached GGUF rows get: a CSM file found in LM
+            // Unsloth, ./models or a scan folder is just as undecodable, and routing it to
+            // Audio evicts the chat model before the row is reported unsupported.
+            audioPickIsRoutable({
+              id: m.model_id ?? m.id,
+              task: m.task,
+              audioType: m.audio_type,
+              isGguf: localModelIsGguf(m),
+              isCurated: artifactForRepoId(m.model_id ?? m.id, AUDIO_CATALOG) !== null,
+              // Task and codec came from the filesystem classifier, so a renamed CSM file
+              // cannot borrow an Orpheus-looking path to clear the gate.
+              taskFromGgufArch: true,
+            }) &&
             (passesTaskGate(
               m.task,
               m.model_id ?? m.id,
@@ -3569,6 +3986,19 @@ export function HubModelPicker({
         customFolderModels.filter(
           (m) =>
             filesystemRowsSupportedForTask(task, m.task) &&
+            // The same speech gate the cached GGUF rows get: a CSM file found in LM
+            // Unsloth, ./models or a scan folder is just as undecodable, and routing it to
+            // Audio evicts the chat model before the row is reported unsupported.
+            audioPickIsRoutable({
+              id: m.model_id ?? m.id,
+              task: m.task,
+              audioType: m.audio_type,
+              isGguf: localModelIsGguf(m),
+              isCurated: artifactForRepoId(m.model_id ?? m.id, AUDIO_CATALOG) !== null,
+              // Task and codec came from the filesystem classifier, so a renamed CSM file
+              // cannot borrow an Orpheus-looking path to clear the gate.
+              taskFromGgufArch: true,
+            }) &&
             (passesTaskGate(
               m.task,
               m.model_id ?? m.id,
@@ -3651,6 +4081,7 @@ export function HubModelPicker({
             task: pickedTask,
             isGguf: Boolean(meta.isGguf || meta.ggufFilename),
             isCurated: artifactForRepoId(id, AUDIO_CATALOG) !== null,
+            audioType: meta.audioType,
             isLocalCheckpoint:
               meta.source === "lora" ||
               meta.source === "exported" ||
@@ -3680,6 +4111,8 @@ export function HubModelPicker({
                       : (meta.ggufVariant ?? undefined),
                     // pickedTask, not meta.pipelineTag: a cached row carries no tag to forward.
                     task: pickedTask ?? undefined,
+                    audioType: meta.audioType ?? undefined,
+                    loadId: meta.loadId ?? undefined,
                   }
                 : diffusionRouteSearch(id, meta),
           });
@@ -3696,6 +4129,21 @@ export function HubModelPicker({
   const fineTunedRows = useMemo(() => {
     const needle = normalizeForSearch(debouncedQuery.trim());
     return loraModels
+      .filter(
+        (m) =>
+          // A CSM export in a GGUF container loads nowhere: llama.cpp has no decoder and the
+          // Audio page does not list speech GGUFs either. audioType comes off the checkpoint,
+          // so it catches an exported row regardless of path; local rows have no audioType
+          // and are refused at load instead.
+          !localAudioRowIsUndecodableGguf({
+            audioType: m.audioType,
+            exportType: m.exportType,
+            isDirectGguf: m.isDirectGguf,
+          }),
+      )
+      .filter((m) =>
+        nativeAudioCheckpointIsLoadable(m.audioType, m.exportType),
+      )
       .filter((m) => {
         const text = normalizeForSearch(
           `${m.name} ${m.baseModel ?? ""} ${m.id}`,
@@ -3992,10 +4440,17 @@ export function HubModelPicker({
           gpu,
           inferenceGpu,
           taskScoped: Boolean(task),
+          // Separate from taskScoped: that picks the single-device budget for every task page,
+          // this picks the diffusion RULE, which only Images and Video use.
+          diffusionLoad,
+          budgetFraction,
+          hostPooledMemory: gpu.loadDeviceSharesHostMemory,
         },
       ),
     [
+      budgetFraction,
       catalog,
+      diffusionLoad,
       catalogFit,
       gpu,
       inferenceGpu,
@@ -4060,6 +4515,11 @@ export function HubModelPicker({
         .map((result) => result.id)
         .filter((id) => !isHiddenModelId(id))
         .filter(owned)
+        // Search reaches the live Hub, so without this a query re-lands the exact curated row the
+        // seed and Recommended filters just dropped: the Mac format check below admits
+        // safetensors, so MiniMaxAI/MiniMax-H3 would come back clickable and still be refused at
+        // load. Same predicate as the other two lists, downloaded exception included.
+        .filter(curatedOfferable)
         .filter((id) => !recommendedSet.has(id))
         // Chat-only keeps runnable formats: GGUF anywhere, plus MLX/safetensors
         // on Mac (matches the empty Recommended view so search stays consistent).
@@ -4082,6 +4542,7 @@ export function HubModelPicker({
       downloadedSet,
       searchRowFits,
       isMac,
+      curatedOfferable,
     ],
   );
 
@@ -4650,9 +5111,17 @@ export function HubModelPicker({
   // Not focus-within: the dots menu returns focus to its trigger on close, so
   // the row stayed lit after the pointer left. Keyboard focus and an open menu
   // still light it.
-  const downloadedRowShellClassName = (selected: boolean) =>
+  //
+  // A row carrying a memory bar is two lines tall, and the shell paints the
+  // hover and selected background (the inner button is transparent at these
+  // sites), so the radius relaxes with it or the row renders as a stadium.
+  const downloadedRowShellClassName = (
+    selected: boolean,
+    hasMemoryBar = false,
+  ) =>
     cn(
-      "group flex items-center rounded-full transition-colors hover:bg-[#ececec] has-[:focus-visible]:bg-[#ececec] has-[[data-state=open]]:bg-[#ececec] dark:hover:bg-[var(--sidebar-accent)] dark:has-[:focus-visible]:bg-[var(--sidebar-accent)] dark:has-[[data-state=open]]:bg-[var(--sidebar-accent)]",
+      "group flex items-center transition-colors hover:bg-[#ececec] has-[:focus-visible]:bg-[#ececec] has-[[data-state=open]]:bg-[#ececec] dark:hover:bg-[var(--sidebar-accent)] dark:has-[:focus-visible]:bg-[var(--sidebar-accent)] dark:has-[[data-state=open]]:bg-[var(--sidebar-accent)]",
+      hasMemoryBar ? "rounded-2xl" : "rounded-full",
       selected && "bg-[#ececec] dark:bg-[var(--sidebar-accent)]",
     );
 
@@ -4670,7 +5139,10 @@ export function HubModelPicker({
       !ggufVariantsMatchForPicker(activeGgufVariant, null) &&
       ggufVariantsMatchForPicker(activeGgufVariant, entry.quant);
     return (
-      <div key={optionKey} className={downloadedRowShellClassName(isSelected)}>
+      <div
+        key={optionKey}
+        className={downloadedRowShellClassName(isSelected, true)}
+      >
         {/* Through ModelRow, so a pinned quant lands in the same columns as
             the rows below it. */}
         <div className="min-w-0 flex-1">
@@ -4681,6 +5153,20 @@ export function HubModelPicker({
             )})`}
             meta="GGUF"
             quantChip={ggufQuantChipLabel(entry.quant)}
+            // Same runtime gate the sole-quant row below applies. A pinned quant
+            // can belong to an image, video or audio task, and those load through
+            // the media planner rather than llama.cpp, so the KV estimator is
+            // measuring the wrong runtime -- and it falls back to the file size
+            // when it cannot size the model, so the row draws a confident
+            // weights-only verdict rather than nothing.
+            memory={
+              mediaPageForTask(
+                diffusionTaskById.get(entry.repoId.toLowerCase()),
+              )
+                ? undefined
+                : { repoId: entry.repoId, quant: entry.quant }
+            }
+            gpuGb={expanderGpuGb}
             alignMeta="device"
             selected={isSelected}
             loaded={isLoaded}
@@ -4794,7 +5280,10 @@ export function HubModelPicker({
       pipelineTag: c.task ?? null,
     };
     return (
-      <div key={c.repo_id} className={downloadedRowShellClassName(isSelected)}>
+      <div
+        key={c.repo_id}
+        className={downloadedRowShellClassName(isSelected, true)}
+      >
         <div className="min-w-0 flex-1">
           <ModelRow
             label={c.repo_id}
@@ -4805,6 +5294,25 @@ export function HubModelPicker({
             )}
             meta={`GGUF · ${formatBytes(variant.size_bytes)}`}
             quantChip={ggufQuantChipLabel(variant.quant)}
+            // Only for models the llama.cpp path actually loads. The Images and
+            // Video pickers deliberately keep diffusion GGUFs listed, and those
+            // run on the diffusion planner with different runtime buffers, on a
+            // single torch device rather than the aggregate inference pool. The
+            // KV estimator has nothing to say about them, and when it returns
+            // unsized the bar falls back to the file size and draws a
+            // weights-only verdict anyway -- a confident number about the wrong
+            // runtime, which is the failure this bar exists to avoid.
+            memory={
+              mediaPageForTask(c.task)
+                ? undefined
+                : {
+                    repoId: c.repo_id,
+                    quant: variant.quant,
+                    sizeBytes: variant.size_bytes,
+                    loadId: c.load_id,
+                  }
+            }
+            gpuGb={expanderGpuGb}
             showVision={c.has_vision || sole.hasVision}
             selected={isSelected}
             loaded={rowState.loaded}
@@ -4910,6 +5418,9 @@ export function HubModelPicker({
         </div>
         {expanderOpen && (
           <GgufVariantExpander
+            diffusionLoad={diffusionLoad}
+            hostPooledMemory={gpu.loadDeviceSharesHostMemory}
+            gpuCount={expanderGpuCount}
             repoId={c.repo_id}
             pipelineTag={c.task ?? null}
             loadId={c.load_id}
@@ -4925,8 +5436,8 @@ export function HubModelPicker({
             onNavigatePastStart={() => hubModelList.focusOption(optionKey)}
             onNavigatePastEnd={() => hubModelList.moveFocus(optionKey, "next")}
             gpuGb={expanderGpuGb}
-            systemRamGb={inferenceGpu.systemRamAvailableGb || undefined}
-            budgetKnown={inferenceGpu.budgetKnown}
+            systemRamGb={expanderRamGb || undefined}
+            budgetKnown={expanderBudgetGpu.budgetKnown}
             variantActions={{
               onUpdate: (quant, expectedBytes) =>
                 updateGgufVariant(c.repo_id, quant, expectedBytes),
@@ -4977,6 +5488,7 @@ export function HubModelPicker({
                 loadId: c.load_id,
                 isDownloaded: true,
                 pipelineTag: c.task ?? null,
+                audioType: c.audio_type ?? null,
               })
             }
             vramStatus={null}
@@ -4995,6 +5507,7 @@ export function HubModelPicker({
                   isDownloaded: true,
                   isGguf: false,
                   pipelineTag: c.task ?? null,
+                  audioType: c.audio_type ?? null,
                 })
               }
             />
@@ -5075,6 +5588,7 @@ export function HubModelPicker({
                 isDownloaded: true,
                 isGguf: model.isGguf === true,
                 pipelineTag,
+                audioType: model.audioType ?? null,
               })
             }
             vramStatus={null}
@@ -5537,34 +6051,47 @@ export function HubModelPicker({
 
                     {/* Folder paths */}
                     {!customFoldersCollapsed &&
-                      scanFolders.map((f) => (
-                        <div
-                          key={f.id}
-                          className="group flex items-center gap-1.5 px-2.5 py-0.5"
-                        >
-                          <HugeiconsIcon
-                            icon={Folder02Icon}
-                            className="size-3 shrink-0 text-muted-foreground/40"
-                          />
-                          <span
-                            className="min-w-0 flex-1 truncate font-mono text-ui-10 text-muted-foreground/70"
-                            title={f.path}
-                          >
-                            {f.path}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => handleRemoveFolder(f.id)}
-                            aria-label={`Remove folder ${f.path}`}
-                            className="shrink-0 rounded p-1 text-foreground/70 transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive"
+                      scanFolders.map((f) => {
+                        const problem = scanFolderStatusCopy(f.status);
+                        return (
+                          <div
+                            key={f.id}
+                            className="group flex items-center gap-1.5 px-2.5 py-0.5"
                           >
                             <HugeiconsIcon
-                              icon={Cancel01Icon}
-                              className="size-3"
+                              icon={Folder02Icon}
+                              className="size-3 shrink-0 text-muted-foreground/40"
                             />
-                          </button>
-                        </div>
-                      ))}
+                            <div className="min-w-0 flex-1">
+                              <span
+                                className="block truncate font-mono text-ui-10 text-muted-foreground/70"
+                                title={f.path}
+                              >
+                                {f.path}
+                              </span>
+                              {problem ? (
+                                <span
+                                  className="block truncate text-ui-10 text-amber-600 dark:text-amber-500"
+                                  title={problem.hint}
+                                >
+                                  {problem.title}
+                                </span>
+                              ) : null}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveFolder(f.id)}
+                              aria-label={`Remove folder ${f.path}`}
+                              className="shrink-0 rounded p-1 text-foreground/70 transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive"
+                            >
+                              <HugeiconsIcon
+                                icon={Cancel01Icon}
+                                className="size-3"
+                              />
+                            </button>
+                          </div>
+                        );
+                      })}
 
                     {/* Recommended folders */}
                     {!customFoldersCollapsed &&
@@ -5684,9 +6211,12 @@ export function HubModelPicker({
                         // folders) in addition to name/path so the row classifies
                         // and loads through the same GGUF path as the filter.
                         const isGguf = localModelIsGguf(m);
-                        // Single .gguf files (e.g. Ollama blobs) load directly;
-                        // GGUF repos/directories expand to pick a variant.
-                        const isDirectGguf = isGgufFile;
+                        // Single .gguf files load directly; GGUF repos and
+                        // directories expand to pick a variant. An Ollama
+                        // manifest reference names one blob, so it is direct
+                        // too: POST /load materializes its .gguf link.
+                        const isDirectGguf =
+                          isGgufFile || m.source === "ollama";
                         const optionKey = makeModelOptionKey(
                           "custom-folder",
                           m.id,
@@ -5707,7 +6237,9 @@ export function HubModelPicker({
                                     loadedModelId,
                                     activeGgufVariant,
                                     m.id,
-                                    isGgufFile
+                                    // Direct loads set no active variant, so
+                                    // requiring one never reads as loaded.
+                                    isDirectGguf
                                       ? "ignore"
                                       : isGguf
                                         ? "required"
@@ -5728,7 +6260,7 @@ export function HubModelPicker({
                                     } else {
                                       onSelect(
                                         m.id,
-                                        localModelMeta(false, m.task),
+                                        localModelMeta(false, m.task, m.audio_type),
                                       );
                                     }
                                   }}
@@ -5769,7 +6301,7 @@ export function HubModelPicker({
                                     onConfigure={() =>
                                       onConfigure(
                                         m.id,
-                                        localModelMeta(false, m.task),
+                                        localModelMeta(false, m.task, m.audio_type),
                                       )
                                     }
                                   />
@@ -5780,6 +6312,9 @@ export function HubModelPicker({
                               !isDirectGguf &&
                               isGgufExpanded(m.id) && (
                                 <GgufVariantExpander
+                                  diffusionLoad={diffusionLoad}
+                                  hostPooledMemory={gpu.loadDeviceSharesHostMemory}
+                                  gpuCount={expanderGpuCount}
                                   repoId={m.id}
                                   onDevice={true}
                                   onSelect={onSelect}
@@ -5792,16 +6327,9 @@ export function HubModelPicker({
                                   onNavigatePastEnd={() =>
                                     hubModelList.moveFocus(optionKey, "next")
                                   }
-                                  gpuGb={
-                                    inferenceGpu.available
-                                      ? inferenceGpu.memoryTotalGb
-                                      : undefined
-                                  }
-                                  systemRamGb={
-                                    inferenceGpu.systemRamAvailableGb ||
-                                    undefined
-                                  }
-                                  budgetKnown={inferenceGpu.budgetKnown}
+                                  gpuGb={expanderGpuGb}
+                                  systemRamGb={expanderRamGb || undefined}
+                                  budgetKnown={expanderBudgetGpu.budgetKnown}
                                 />
                               )}
                           </div>
@@ -5873,7 +6401,7 @@ export function HubModelPicker({
                                     } else {
                                       onSelect(
                                         m.id,
-                                        localModelMeta(false, m.task),
+                                        localModelMeta(false, m.task, m.audio_type),
                                       );
                                     }
                                   }}
@@ -5914,7 +6442,7 @@ export function HubModelPicker({
                                     onConfigure={() =>
                                       onConfigure(
                                         m.id,
-                                        localModelMeta(false, m.task),
+                                        localModelMeta(false, m.task, m.audio_type),
                                       )
                                     }
                                   />
@@ -5923,6 +6451,9 @@ export function HubModelPicker({
                             </div>
                             {isGguf && !isGgufFile && isGgufExpanded(m.id) && (
                               <GgufVariantExpander
+                                diffusionLoad={diffusionLoad}
+                                hostPooledMemory={gpu.loadDeviceSharesHostMemory}
+                                gpuCount={expanderGpuCount}
                                 repoId={m.id}
                                 onDevice={true}
                                 onSelect={onSelect}
@@ -5936,10 +6467,8 @@ export function HubModelPicker({
                                   hubModelList.moveFocus(optionKey, "next")
                                 }
                                 gpuGb={expanderGpuGb}
-                                systemRamGb={
-                                  inferenceGpu.systemRamAvailableGb || undefined
-                                }
-                                budgetKnown={inferenceGpu.budgetKnown}
+                                systemRamGb={expanderRamGb || undefined}
+                                budgetKnown={expanderBudgetGpu.budgetKnown}
                               />
                             )}
                           </div>
@@ -6005,7 +6534,7 @@ export function HubModelPicker({
                                     } else {
                                       onSelect(
                                         m.id,
-                                        localModelMeta(false, m.task),
+                                        localModelMeta(false, m.task, m.audio_type),
                                       );
                                     }
                                   }}
@@ -6042,7 +6571,7 @@ export function HubModelPicker({
                                     onConfigure={() =>
                                       onConfigure(
                                         m.id,
-                                        localModelMeta(false, m.task),
+                                        localModelMeta(false, m.task, m.audio_type),
                                       )
                                     }
                                   />
@@ -6051,6 +6580,9 @@ export function HubModelPicker({
                             </div>
                             {isGguf && !isGgufFile && isGgufExpanded(m.id) && (
                               <GgufVariantExpander
+                                diffusionLoad={diffusionLoad}
+                                hostPooledMemory={gpu.loadDeviceSharesHostMemory}
+                                gpuCount={expanderGpuCount}
                                 repoId={m.id}
                                 onDevice={true}
                                 onSelect={onSelect}
@@ -6064,10 +6596,8 @@ export function HubModelPicker({
                                   hubModelList.moveFocus(optionKey, "next")
                                 }
                                 gpuGb={expanderGpuGb}
-                                systemRamGb={
-                                  inferenceGpu.systemRamAvailableGb || undefined
-                                }
-                                budgetKnown={inferenceGpu.budgetKnown}
+                                systemRamGb={expanderRamGb || undefined}
+                                budgetKnown={expanderBudgetGpu.budgetKnown}
                               />
                             )}
                           </div>
@@ -6144,6 +6674,9 @@ export function HubModelPicker({
                             />
                             {expandedGguf === id && (
                               <GgufVariantExpander
+                                diffusionLoad={diffusionLoad}
+                                hostPooledMemory={gpu.loadDeviceSharesHostMemory}
+                                gpuCount={expanderGpuCount}
                                 repoId={id}
                                 pipelineTag={pipelineTagById.get(id) ?? null}
                                 onSelect={onSelect}
@@ -6158,10 +6691,8 @@ export function HubModelPicker({
                                   hubModelList.moveFocus(optionKey, "next")
                                 }
                                 gpuGb={expanderGpuGb}
-                                systemRamGb={
-                                  inferenceGpu.systemRamAvailableGb || undefined
-                                }
-                                budgetKnown={inferenceGpu.budgetKnown}
+                                systemRamGb={expanderRamGb || undefined}
+                                budgetKnown={expanderBudgetGpu.budgetKnown}
                                 variantActions={{
                                   onDelete: async (quant) => {
                                     await deleteCachedModel(
@@ -6266,6 +6797,9 @@ export function HubModelPicker({
                           />
                           {expandedGguf === id && (
                             <GgufVariantExpander
+                              diffusionLoad={diffusionLoad}
+                              hostPooledMemory={gpu.loadDeviceSharesHostMemory}
+                              gpuCount={expanderGpuCount}
                               repoId={id}
                               pipelineTag={pipelineTagById.get(id) ?? null}
                               onSelect={onSelect}
@@ -6280,10 +6814,8 @@ export function HubModelPicker({
                                 hubModelList.moveFocus(optionKey, "next")
                               }
                               gpuGb={expanderGpuGb}
-                              systemRamGb={
-                                inferenceGpu.systemRamAvailableGb || undefined
-                              }
-                              budgetKnown={inferenceGpu.budgetKnown}
+                              systemRamGb={expanderRamGb || undefined}
+                              budgetKnown={expanderBudgetGpu.budgetKnown}
                               variantActions={{
                                 onDelete: async (quant) => {
                                   await deleteCachedModel(
@@ -6379,6 +6911,9 @@ export function HubModelPicker({
                             />
                             {expandedGguf === id && (
                               <GgufVariantExpander
+                                diffusionLoad={diffusionLoad}
+                                hostPooledMemory={gpu.loadDeviceSharesHostMemory}
+                                gpuCount={expanderGpuCount}
                                 repoId={id}
                                 pipelineTag={pipelineTagById.get(id) ?? null}
                                 onSelect={onSelect}
@@ -6393,10 +6928,8 @@ export function HubModelPicker({
                                   hubModelList.moveFocus(optionKey, "next")
                                 }
                                 gpuGb={expanderGpuGb}
-                                systemRamGb={
-                                  inferenceGpu.systemRamAvailableGb || undefined
-                                }
-                                budgetKnown={inferenceGpu.budgetKnown}
+                                systemRamGb={expanderRamGb || undefined}
+                                budgetKnown={expanderBudgetGpu.budgetKnown}
                                 variantActions={{
                                   onDelete: async (quant) => {
                                     await deleteCachedModel(
@@ -6452,22 +6985,6 @@ export function HubModelPicker({
 
 /** Fine-tuned model rows for the On Device tab's Fine-tuned section. Plugs into
  * that section's roving list and shared GGUF-expand state. */
-/** Codec -> the Hub pipeline tag the media routing understands, else undefined.
- *
- * A local checkpoint never gets the ASR tag: it would route to the Audio page, which hands
- * the filesystem path to /audio/stt/load, and the sidecar's resolve_model_id takes only a
- * curated key or an `owner/model` Hub id, so the row is advertised and then 422s. TTS is
- * fine, since that loads through the main slot, which does accept a local path. */
-function audioPipelineTagFor(
-  audioType?: string | null,
-  isLocalCheckpoint = false,
-): string | undefined {
-  if (!audioType) return undefined;
-  if (audioType === "whisper")
-    return isLocalCheckpoint ? undefined : "automatic-speech-recognition";
-  return TTS_CODECS.has(audioType) ? "text-to-speech" : undefined;
-}
-
 function FineTunedRows({
   adapters,
   value,
@@ -6497,6 +7014,8 @@ function FineTunedRows({
     available: boolean;
     budgetKnown: boolean;
     memoryTotalGb: number;
+    /** GPUs memoryTotalGb sums, for the loader's per-card VRAM reserve. */
+    deviceCount?: number;
     systemRamAvailableGb: number;
   };
 }) {
@@ -6508,25 +7027,31 @@ function FineTunedRows({
         const isExported = adapter.source === "exported";
         const isMerged = adapter.exportType === "merged";
         const isGguf = adapter.exportType === "gguf";
+        const isLora = !isLocal && !isMerged && !isGguf;
         const isExportedGguf = isExported && isGguf;
         const canDelete = canDeleteLoraModel(adapter);
         const isTrainingFull = isTraining && isMerged;
-        const isLocalGgufDir =
-          isLocal && (isGgufRepo(adapter.id) || isGgufRepo(adapter.name));
+        const localGgufKind = localGgufKindFor(
+          adapter,
+          isGgufRepo(adapter.id) || isGgufRepo(adapter.name),
+        );
+        const isLocalGgufDir = localGgufKind === "variants";
+        const isLocalDirectGguf = localGgufKind === "direct";
         // A checkpoint that fine-tunes a TTS/STT model has to reach the Audio page:
         // chat/completions cannot serve it and reports the adapter as "not downloaded".
         // The pipeline tag is what onSelect routes on, so carry the detected codec as one.
         const selectionMeta: ModelSelectorChangeMeta = {
           source: isLocal ? "local" : isExported ? "exported" : "lora",
-          isLora: !isLocal && !isMerged && !isGguf,
+          isLora,
           isDownloaded: true,
-          isGguf: false,
-          pipelineTag: audioPipelineTagFor(adapter.audioType, true),
+          isGguf: isLocalDirectGguf,
+          pipelineTag: audioPipelineTagFor(adapter.audioType, true, isLora),
+          audioType: adapter.audioType ?? null,
         };
         const canConfigure = !(isLocalGgufDir || isExportedGguf);
         const optionKey = makeModelOptionKey("lora", adapter.id);
         const tag = isLocal
-          ? isLocalGgufDir
+          ? isLocalGgufDir || isLocalDirectGguf
             ? "GGUF"
             : "Local"
           : isGguf
@@ -6539,7 +7064,7 @@ function FineTunedRows({
                   : "LoRA"
                 : "LoRA";
         const meta = isLocal
-          ? isLocalGgufDir
+          ? isLocalGgufDir || isLocalDirectGguf
             ? "GGUF"
             : "Local"
           : isTrainingFull
@@ -6559,7 +7084,11 @@ function FineTunedRows({
                     loadedModelId,
                     activeGgufVariant,
                     adapter.id,
-                    isLocalGgufDir || isExportedGguf ? "required" : "none",
+                    isLocalDirectGguf
+                      ? "ignore"
+                      : isLocalGgufDir || isExportedGguf
+                        ? "required"
+                        : "none",
                   )}
                   optionProps={loraModelList.getOptionProps(
                     optionKey,
@@ -6638,6 +7167,7 @@ function FineTunedRows({
                   loraModelList.moveFocus(optionKey, "next")
                 }
                 gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
+                gpuCount={gpu.deviceCount}
                 systemRamGb={gpu.systemRamAvailableGb || undefined}
                 budgetKnown={gpu.budgetKnown}
                 sourceOverride={isExportedGguf ? "exported" : undefined}

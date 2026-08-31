@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The provider-agnostic Studio tool loop.
+"""The provider-agnostic Unsloth tool loop.
 
 The transport is faked so these exercise the loop itself: turn cycling, the
 budget, approvals, and the text-form healing that self-hosted models need. The
@@ -216,6 +216,56 @@ def test_structured_call_executes_and_continues(executed):
     follow_up = transport.requests[1]["messages"]
     assert [message["role"] for message in follow_up[-2:]] == ["assistant", "tool"]
     assert follow_up[-1]["content"] == "RESULT<web_search>"
+
+
+def test_a_conversation_search_here_gets_the_active_branch(executed):
+    """The provider loops share the local paths' tool catalogue.
+
+    So search_conversation is advertised here once a thread has an archive, and needs the
+    branch for the same reason: the stored rows are the whole DAG, Retry included.
+    """
+    branch = [
+        {"role": "user", "content": "what was the code"},
+        {"role": "assistant", "content": "let me look"},
+        {"role": "user", "content": "please"},
+    ]
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_c",
+                                "function": {
+                                    "name": "search_conversation",
+                                    "arguments": '{"query":"the code"}',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "It was 5150."}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+
+    _run(transport, tools = [_tool("search_conversation")], messages = branch)
+
+    assert [call["name"] for call in executed] == ["search_conversation"]
+    assert executed[0]["conversation_branch"] == branch
+    # And a budget, or the tool's clamp is skipped and a model-chosen top_k of 8 appends
+    # roughly 4K tokens to a prompt this loop replays. Unsloth cannot measure an external
+    # model's window, so the cap is one ordinary recall's worth.
+    from core.rag import config as rag_config
+
+    assert (
+        executed[0]["conversation_budget_tokens"]
+        == rag_config.CHUNK_TOKENS * rag_config.CONVERSATION_ARCHIVE_TOP_K
+    )
 
 
 def test_streamed_tool_name_fragments_are_not_concatenated(executed):
@@ -721,12 +771,27 @@ def test_a_stalled_model_is_nudged_to_act(executed):
             [_sse({"content": "answer"}), _sse(finish = "stop"), _DONE],
         ]
     )
-    _run(transport)
+    _run(transport, nudge_tool_calls = True)
 
     assert [c["name"] for c in executed] == ["web_search"]
     # The nudge is a user turn appended after the stall.
     second = transport.requests[1]["messages"]
     assert second[-1]["role"] == "user"
+
+
+def test_a_stalled_model_is_not_nudged_by_default(executed):
+    """The external loop must not invent a retry for an omitted opt-in flag."""
+    transport = FakeTransport(
+        [
+            [_sse({"content": "I'll search for that now."}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "SHOULD NOT APPEAR"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    lines = _run(transport)
+
+    assert executed == []
+    assert len(transport.requests) == 1
+    assert "SHOULD NOT APPEAR" not in _visible_text(lines)
 
 
 def test_a_finished_answer_is_not_nudged(executed):
@@ -1028,7 +1093,7 @@ def test_a_skipped_duplicate_closes_the_card_the_provider_already_painted(execut
     ends = _events(lines, "tool_end")
     assert len(ends) == 2
     assert [end["tool_call_id"] for end in ends] == ["call_a", "call_a"]
-    assert ends[1]["result"].startswith("Studio did not run this call")
+    assert ends[1]["result"].startswith("Unsloth did not run this call")
     # Opened as well as closed. The client retires a card id when it closes it,
     # so a second tool_end on the same id resolves to no card and the adapter
     # drops it -- the skip would be invisible again. Announcing it first draws
@@ -1036,3 +1101,71 @@ def test_a_skipped_duplicate_closes_the_card_the_provider_already_painted(execut
     # every tool_end has a matching tool_start.
     starts = _events(lines, "tool_start")
     assert [start["tool_call_id"] for start in starts] == ["call_a", "call_a"]
+
+
+def test_a_second_call_at_one_index_keeps_its_own_argument_fragments(executed):
+    """Two tool rounds in one response, both streamed at index 0.
+
+    Providers restart ``delta.tool_calls[].index`` at 0 for every round while
+    giving each call its own id, and the continuation fragments carrying the
+    rest of the arguments are sent bare. Routing those by index alone appended
+    round two's tail to round one, producing an unparseable blob and running
+    both tools on the wrong arguments.
+    """
+    transport = FakeTransport(
+        [
+            [
+                _sse({"tool_calls": [_call_delta(0, "call_a", "web_search", '{"query":')]}),
+                _sse({"tool_calls": [{"index": 0, "function": {"arguments": '"first"}'}}]}),
+                _sse({"tool_calls": [_call_delta(0, "call_b", "web_search", '{"query":')]}),
+                _sse({"tool_calls": [{"index": 0, "function": {"arguments": '"second"}'}}]}),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    _run(transport)
+
+    assert [call["arguments"] for call in executed] == [{"query": "first"}, {"query": "second"}]
+
+
+def test_a_fragment_naming_its_call_goes_back_to_that_call(executed):
+    """Two calls at index 0 with the id repeated on every argument fragment.
+
+    The latest-index mapping only exists to place fragments that carry no id, so
+    a fragment that names the call the index opened first has to go back to it
+    rather than fork a third slot. Forking left that call with truncated JSON,
+    which reaches the tool as ``_raw``, and dropped the fragment for having no
+    function name.
+    """
+    transport = FakeTransport(
+        [
+            [
+                _sse({"tool_calls": [_call_delta(0, "call_a", "web_search", '{"query":')]}),
+                _sse({"tool_calls": [_call_delta(0, "call_b", "web_search", '{"query":')]}),
+                _sse(
+                    {
+                        "tool_calls": [
+                            {"index": 0, "id": "call_a", "function": {"arguments": '"first"}'}}
+                        ]
+                    }
+                ),
+                _sse(
+                    {
+                        "tool_calls": [
+                            {"index": 0, "id": "call_b", "function": {"arguments": '"second"}'}}
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    _run(transport)
+
+    assert [call["arguments"] for call in executed] == [{"query": "first"}, {"query": "second"}]

@@ -1730,6 +1730,72 @@ class TestIpv6Endpoint:
         assert dns_host_dead("no-such-host.invalid", timeout = 2.0) is True
 
 
+class TestCallWithDeadline:
+    """A connect timeout applies per address and no family is raced, so a blackholed host
+    multiplies any nominal cap by the address count."""
+
+    def test_a_stalled_call_raises_rather_than_waiting(self):
+        import time as _time
+
+        from utils.utils import call_with_deadline
+
+        started = _time.monotonic()
+        with pytest.raises(TimeoutError):
+            call_with_deadline(lambda: _time.sleep(30), 0.2)
+        assert _time.monotonic() - started < 2.0
+
+    def test_a_completed_call_returns_its_value(self):
+        from utils.utils import call_with_deadline
+        assert call_with_deadline(lambda: "done", 5.0) == "done"
+
+    def test_slow_but_finished_work_is_not_cut_off(self):
+        """The bound is the deadline given, not a shorter internal one: a first download on
+        a slow link must not be killed for being slow."""
+        import time as _time
+
+        from utils.utils import call_with_deadline
+
+        def _slow():
+            _time.sleep(1.4)
+            return "done"
+
+        # Longer than any plausible internal floor, so a deadline quietly clamped to a
+        # shorter one would cut this off.
+        assert call_with_deadline(_slow, 5.0) == "done"
+
+    def test_the_caller_s_log_context_follows_the_work(self):
+        """Context is per-thread: without the copy, logging inside the call loses the
+        request fields it carries when the same code runs inline."""
+        import contextvars
+
+        from utils.utils import call_with_deadline
+
+        request_id = contextvars.ContextVar("request_id")
+        request_id.set("abc-123")
+        assert call_with_deadline(lambda: request_id.get("missing"), 5.0) == "abc-123"
+
+    def test_a_base_exception_from_the_callable_also_reaches_the_caller(self):
+        """Catching only Exception would let SystemExit die with the worker and read as a
+        silent None: an unreachable network that never happened."""
+        from utils.utils import call_with_deadline
+
+        def _exits():
+            raise SystemExit(3)
+
+        with pytest.raises(SystemExit):
+            call_with_deadline(_exits, 5.0)
+
+    def test_the_callable_s_own_error_reaches_the_caller(self):
+        """Otherwise a deadline turns a bug into an apparent unreachable network."""
+        from utils.utils import call_with_deadline
+
+        def _boom():
+            raise ValueError("from the worker")
+
+        with pytest.raises(ValueError, match = "from the worker"):
+            call_with_deadline(_boom, 5.0)
+
+
 class TestGuardSkipsLocalPaths:
     """A local path never reaches the hub, so probing costs time and prevents nothing."""
 

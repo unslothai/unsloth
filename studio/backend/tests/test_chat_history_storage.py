@@ -205,6 +205,22 @@ def test_chat_thread_updated_at_survives_thread_resave(tmp_path, monkeypatch):
     assert studio_db.get_chat_thread("thread-1")["updatedAt"] == 1_700_000_000_500
 
 
+def test_chat_thread_preserves_gguf_variant(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    thread = {**_thread(), "modelGgufVariant": "Q6_K"}
+
+    assert studio_db.upsert_chat_thread(thread)["modelGgufVariant"] == "Q6_K"
+    studio_db.upsert_chat_thread(_thread())
+    assert studio_db.get_chat_thread("thread-1")["modelGgufVariant"] == "Q6_K"
+
+    updated = studio_db.update_chat_thread("thread-1", {"modelGgufVariant": "Q8_0"})
+    assert updated is not None
+    assert updated["modelGgufVariant"] == "Q8_0"
+
+    replacement = {**_thread(), "modelId": "other-model"}
+    assert studio_db.upsert_chat_thread(replacement)["modelGgufVariant"] is None
+
+
 def test_list_chat_threads_orders_by_last_activity(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     older = _thread("thread-old")
@@ -282,6 +298,7 @@ def test_chat_threads_updated_at_migration_backfills_from_messages(tmp_path, mon
     assert studio_db.get_chat_thread("thread-with-msgs")["updatedAt"] == 1_700_000_002_000
     assert studio_db.get_chat_thread("thread-empty")["updatedAt"] == 1_700_000_050_000
     assert studio_db.get_chat_thread("thread-fork")["updatedAt"] == 1_700_000_100_000
+    assert studio_db.get_chat_thread("thread-with-msgs")["modelGgufVariant"] is None
 
 
 def test_chat_projects_delete_cascades_threads_and_messages(tmp_path, monkeypatch):
@@ -471,6 +488,24 @@ def test_settings_merge_preserves_nested_keys(tmp_path, monkeypatch):
     assert params == {"temperature": 0.9, "topP": 0.8}
 
 
+def test_settings_merge_keeps_each_model_s_remembered_params(tmp_path, monkeypatch):
+    """Per-model memory patches one model at a time, so the merge has to keep the
+    others. Without this, tuning a second model would wipe the first one's settings
+    and the switch back would land on whatever the last edit happened to be."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_settings_merge(
+        {"inferenceParamsByModel": {"qwen": {"temperature": 0.2, "topP": 0.8}}}
+    )
+    studio_db.upsert_chat_settings_merge(
+        {"inferenceParamsByModel": {"llama": {"temperature": 0.9}}}
+    )
+    # A second edit to the first model merges into its own entry.
+    studio_db.upsert_chat_settings_merge({"inferenceParamsByModel": {"qwen": {"temperature": 0.4}}})
+
+    by_model = studio_db.list_chat_settings()["inferenceParamsByModel"]
+    assert by_model == {"qwen": {"temperature": 0.4, "topP": 0.8}, "llama": {"temperature": 0.9}}
+
+
 def test_settings_merge_quarantines_corrupt_json_and_rejects_partial_patch(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_settings_merge({"inferenceParams": {"temperature": 0.5, "topP": 0.8}})
@@ -632,7 +667,12 @@ def _msg(mid: str, parent: str | None, t: int) -> dict:
 def test_fork_chat_thread_copies_ancestry_with_fresh_ids(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(
-        {**_thread("src"), "title": "Original", "openaiCodeExecContainerId": "cnt-x"}
+        {
+            **_thread("src"),
+            "title": "Original",
+            "modelGgufVariant": "Q6_K",
+            "openaiCodeExecContainerId": "cnt-x",
+        }
     )
     # Linear chain: m1 -> m2 -> m3. Plus a sibling m4 off m2 (should NOT
     # be copied since we fork at m3).
@@ -664,6 +704,7 @@ def test_fork_chat_thread_copies_ancestry_with_fresh_ids(tmp_path, monkeypatch):
     assert forked["id"] == "fork-1"
     assert forked["forkedFromThreadId"] == "src"
     assert forked["forkedFromMessageId"] == "m3"
+    assert forked["modelGgufVariant"] == "Q6_K"
     # Container ids reset on fork.
     assert forked["openaiCodeExecContainerId"] is None
 
@@ -761,10 +802,11 @@ def test_fork_chat_thread_detaches_research_run_metadata(tmp_path, monkeypatch):
 def test_fork_detachment_detects_non_id_research_content_keys():
     content_json, metadata_json = studio_db._detach_research_message_json(
         '[{"type":"text","text":"Report","serverManaged":true}]',
-        '{"model":"local-model"}',
+        '{"model":"local-model","generationRunId":"run-1","generationSeq":3}',
     )
 
     assert "serverManaged" not in content_json
+    assert "generationRunId" not in metadata_json
     assert metadata_json == '{"model": "local-model"}'
 
 
@@ -828,6 +870,40 @@ def test_count_forks_for_message(tmp_path, monkeypatch):
         id_factory = id_factory,
     )
     assert studio_db.count_forks_for_message("src", "m1") == 2
+
+
+def test_fork_counts_for_thread(tmp_path, monkeypatch):
+    """One read for the whole thread, so a rendered thread costs one request, not one per message."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread("src"))
+    studio_db.sync_chat_messages(
+        "src", [_msg("m1", None, 1), _msg("m2", "m1", 2), _msg("m3", "m2", 3)]
+    )
+    assert studio_db.fork_counts_for_thread("src") == {}
+
+    counter = {"i": 0}
+
+    def id_factory():
+        counter["i"] += 1
+        return f"id-{counter['i']}"
+
+    for index, (branch, new_id) in enumerate([("m1", "f1"), ("m1", "f2"), ("m2", "f3")]):
+        studio_db.fork_chat_thread(
+            source_thread_id = "src",
+            branch_message_id = branch,
+            new_thread_id = new_id,
+            new_title = new_id,
+            created_at = 10 + index,
+            id_factory = id_factory,
+        )
+
+    counts = studio_db.fork_counts_for_thread("src")
+    assert counts == {"m1": 2, "m2": 1}
+    # Same answer as the per-message read it replaces, message for message.
+    for message_id in ["m1", "m2", "m3"]:
+        assert counts.get(message_id, 0) == studio_db.count_forks_for_message("src", message_id)
+    # Another thread's forks never leak in.
+    assert studio_db.fork_counts_for_thread("f1") == {}
 
 
 def _research_thread(

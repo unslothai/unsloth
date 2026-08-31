@@ -8,7 +8,7 @@ reloaded the multi-GB GGUF from disk every generation. ``sd-server`` (the upstre
 ``examples/server`` target) loads the model once at spawn and serves many generations
 over HTTP, exactly like the chat backend's persistent ``llama-server``. This manager
 owns ONLY the process + HTTP lifecycle; the backend (``sd_cpp_backend.py``) still owns
-asset resolution, request validation, and the public Studio surface.
+asset resolution, request validation, and the public Unsloth surface.
 
 Shape mirrors ``core/rag/embed_llama_server.py``:
   * ``start``      -- pick a free loopback port, spawn the server (model loads here),
@@ -34,6 +34,7 @@ from __future__ import annotations
 import atexit
 import base64
 import logging
+import re
 import shutil
 import socket
 import subprocess
@@ -70,6 +71,14 @@ _READY_PATH = "/v1/models"
 # Native async sdcpp API.
 _IMG_GEN_PATH = "/sdcpp/v1/img_gen"
 _JOBS_PATH = "/sdcpp/v1/jobs"
+
+# Stable parameter residency reported once during startup. Compute-buffer
+# lines are deliberately excluded: those allocations can change between
+# generations, while this floor lives until the server process exits.
+_TOTAL_PARAMS_VRAM_RE = re.compile(
+    r"total params memory size\s*=\s*[0-9.]+\s*MB\s*\(\s*VRAM\s+([0-9]+(?:\.[0-9]+)?)\s*MB\b",
+    re.IGNORECASE,
+)
 
 _TERMINAL_OK = "completed"
 _TERMINAL_FAIL = "failed"
@@ -151,6 +160,7 @@ class SdCppServer:
         self.host = host
         self.port: Optional[int] = None
         self._process: Optional[subprocess.Popen] = None
+        self._resident_params_vram_gb: Optional[float] = None
         # Bounded tail buffer shared by the drain thread (appends) and readers (diagnostics).
         self._tail: deque[str] = deque(maxlen = 200)
         self._stdout_thread: Optional[threading.Thread] = None
@@ -234,6 +244,7 @@ class SdCppServer:
             logger.info("starting sd-server: %s", " ".join(cmd))
             # Clear in place; reassigning [] would drop the maxlen bound and grow unbounded.
             self._tail.clear()
+            self._resident_params_vram_gb = None
             self._spawn_error: Optional[Exception] = None
             spawned = threading.Event()
 
@@ -318,7 +329,7 @@ class SdCppServer:
         ``_find_free_port`` binds an ephemeral port, reads it and closes the socket, and sd-server
         binds it only AFTER loading the model -- minutes for a multi-gigabyte checkpoint. Another
         local process can take the port inside that window, and ``/v1/models`` is a stock
-        OpenAI-compatible route that llama.cpp's own server (and a second Studio) answers 200 on,
+        OpenAI-compatible route that llama.cpp's own server (and a second Unsloth) answers 200 on,
         so readiness would pass and every generation would be posted to an unrelated listener.
 
         Verifying the listener really belongs to our child closes that. Best-effort by design:
@@ -366,6 +377,11 @@ class SdCppServer:
                 if not line:
                     continue
                 self._tail.append(line)
+                match = _TOTAL_PARAMS_VRAM_RE.search(line)
+                if match is not None:
+                    value = float(match.group(1)) / 1024.0
+                    if value > 0:
+                        self._resident_params_vram_gb = value
                 logger.debug("[sd-server] %s", line)
                 cb = self._step_listener
                 if cb is not None:
@@ -375,6 +391,25 @@ class SdCppServer:
                         pass
         except Exception:  # noqa: BLE001 -- drain thread must never raise (pipe closed at teardown)
             pass
+
+    def reclaimable_params_vram_gb(
+        self, physical_gpu_id: Optional[int]
+    ) -> Optional[dict[int, float]]:
+        """Stable resident parameter floor released when this server stops.
+
+        Device attribution is supplied by the backend that resolved the
+        CUDA/ROCm child pin. Missing attribution or a changing/dead process
+        fails closed.
+        """
+        process = self._process
+        if physical_gpu_id is None or process is None or process.poll() is not None:
+            return None
+        value = self._resident_params_vram_gb
+        if value is None or value <= 0:
+            return None
+        if self._process is not process or process.poll() is not None:
+            return None
+        return {int(physical_gpu_id): float(value)}
 
     def stop(self) -> None:
         """Terminate the server (SIGTERM -> SIGKILL), join the drain, and release the HTTP

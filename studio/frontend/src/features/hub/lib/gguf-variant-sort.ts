@@ -2,12 +2,19 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { GgufVariantDetail } from "@/features/hub/inventory";
-import { classifyGgufFit } from "@/features/hub/lib/gguf-fit";
+import { formatBytes } from "@/features/hub/lib/format";
+import { classifyGgufFit } from "@/lib/gguf-fit";
 import { ggufVariantsMatch } from "@/features/hub/lib/model-identity";
 
 type GgufVariantResources = {
   gpuGb?: number;
   systemRamGb?: number;
+  /** The saved VRAM Budget, so the sort ranks against the line the loader will
+   *  actually admit at rather than against the default. */
+  budgetFraction?: number;
+  /** GPUs gpuGb sums, so the sort charges the loader's per-card VRAM reserve as
+   *  many times as the loader does. */
+  gpuCount?: number;
 };
 
 export function ggufVariantDisplayLabel(
@@ -20,6 +27,29 @@ export function ggufVariantDownloadSizeBytes(
   variant: Pick<GgufVariantDetail, "download_size_bytes" | "size_bytes">,
 ): number {
   return variant.download_size_bytes ?? variant.size_bytes;
+}
+
+type GgufVariantTransfer = Pick<
+  GgufVariantDetail,
+  "download_size_bytes" | "size_bytes" | "download_remaining_bytes" | "partial"
+>;
+
+/** What starting this variant now would transfer. On a partial that is the
+ * remainder the backend measured; everywhere else it is the full size. An
+ * unmeasured partial falls back to the total, the costlier of the two. */
+export function ggufVariantTransferBytes(variant: GgufVariantTransfer): number {
+  const total = ggufVariantDownloadSizeBytes(variant);
+  if (!variant.partial) return total;
+  const remaining = variant.download_remaining_bytes;
+  return typeof remaining === "number" && remaining >= 0 ? remaining : total;
+}
+
+/** Labelled form of the above. A partial says what is LEFT: the full size there
+ * reads as "this downloads all over again", which is only true for a one-file
+ * quant. */
+export function ggufVariantTransferLabel(variant: GgufVariantTransfer): string {
+  const label = formatBytes(ggufVariantTransferBytes(variant));
+  return variant.partial ? `${label} left` : label;
 }
 
 export function ggufVariantFitRank(
