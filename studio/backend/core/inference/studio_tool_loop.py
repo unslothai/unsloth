@@ -965,9 +965,7 @@ class _Turn:
         painted.update(
             call["id"]
             for _, call in ordered
-            if isinstance(call.get("id"), str)
-            and call["id"]
-            and _normalized_call(call) is not None
+            if isinstance(call.get("id"), str) and call["id"] and _normalized_call(call) is not None
         )
         for position, (index, call) in enumerate(ordered + [(None, call) for call in self.healed]):
             streamed_id = call.get("id")

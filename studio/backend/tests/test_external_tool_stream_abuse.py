@@ -1131,11 +1131,7 @@ def test_a_turn_whose_only_call_is_refused_still_ends(executed):
         [
             [
                 _sse(
-                    delta = {
-                        "tool_calls": [
-                            {"index": 0, "function": {"arguments": '{"query":"a"}'}}
-                        ]
-                    }
+                    delta = {"tool_calls": [{"index": 0, "function": {"arguments": '{"query":"a"}'}}]}
                 ),
                 _DONE,
             ]
@@ -1144,6 +1140,4 @@ def test_a_turn_whose_only_call_is_refused_still_ends(executed):
     lines = _run(transport, tools = [WEB])
 
     assert not executed
-    assert any(
-        event.get("content") == "" for event in _events(lines, "tool_status")
-    )
+    assert any(event.get("content") == "" for event in _events(lines, "tool_status"))
