@@ -2546,19 +2546,23 @@ def test_a_previously_seen_amd_card_survives_an_unreadable_walk(monkeypatch):
 
 # =========================== the URL outranks the family, as install.sh's resolver does
 
-@pytest.mark.parametrize("chosen,url,family", [
-    # install.sh returns on UNSLOTH_TORCH_INDEX_URL without ever reading the family, so
-    # when the two disagree the family is not a second opinion, it is dead. A stale
-    # ..._FAMILY=cpu beside a new ..._URL=.../cu128 suppressed a real CPU-wheel mismatch.
-    (False, "https://download.pytorch.org/whl/cu128", "cpu"),
-    (True, "https://download.pytorch.org/whl/cpu", "cu128"),
-    (True, "", "cpu"),
-    (True, "https://download.pytorch.org/whl/cpu", ""),
-    (False, "", "cu128"),
-    (False, "", ""),
-    # Whitespace-only is unset, the way install.sh trims it.
-    (True, "   ", "cpu"),
-])
+
+@pytest.mark.parametrize(
+    "chosen,url,family",
+    [
+        # install.sh returns on UNSLOTH_TORCH_INDEX_URL without ever reading the family, so
+        # when the two disagree the family is not a second opinion, it is dead. A stale
+        # ..._FAMILY=cpu beside a new ..._URL=.../cu128 suppressed a real CPU-wheel mismatch.
+        (False, "https://download.pytorch.org/whl/cu128", "cpu"),
+        (True, "https://download.pytorch.org/whl/cpu", "cu128"),
+        (True, "", "cpu"),
+        (True, "https://download.pytorch.org/whl/cpu", ""),
+        (False, "", "cu128"),
+        (False, "", ""),
+        # Whitespace-only is unset, the way install.sh trims it.
+        (True, "   ", "cpu"),
+    ],
+)
 def test_a_cpu_choice_reads_the_url_before_the_family(monkeypatch, chosen, url, family):
     monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", url)
     monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", family)
@@ -2566,19 +2570,26 @@ def test_a_cpu_choice_reads_the_url_before_the_family(monkeypatch, chosen, url, 
     assert hw._expected_cpu_flavor_was_chosen() is chosen
 
 
-@pytest.mark.parametrize("helper,url,family,chosen", [
-    ("_expected_rocm_flavor_was_chosen", "https://download.pytorch.org/whl/cu128",
-     "rocm6.4", False),
-    ("_expected_rocm_flavor_was_chosen", "https://download.pytorch.org/whl/rocm6.4",
-     "cpu", True),
-    ("_expected_xpu_flavor_was_chosen", "https://download.pytorch.org/whl/cu128",
-     "xpu", False),
-    ("_expected_xpu_flavor_was_chosen", "https://download.pytorch.org/whl/xpu",
-     "cpu", True),
-])
-def test_the_rocm_and_xpu_helpers_use_the_same_precedence(
-    monkeypatch, helper, url, family, chosen
-):
+@pytest.mark.parametrize(
+    "helper,url,family,chosen",
+    [
+        (
+            "_expected_rocm_flavor_was_chosen",
+            "https://download.pytorch.org/whl/cu128",
+            "rocm6.4",
+            False,
+        ),
+        (
+            "_expected_rocm_flavor_was_chosen",
+            "https://download.pytorch.org/whl/rocm6.4",
+            "cpu",
+            True,
+        ),
+        ("_expected_xpu_flavor_was_chosen", "https://download.pytorch.org/whl/cu128", "xpu", False),
+        ("_expected_xpu_flavor_was_chosen", "https://download.pytorch.org/whl/xpu", "cpu", True),
+    ],
+)
+def test_the_rocm_and_xpu_helpers_use_the_same_precedence(monkeypatch, helper, url, family, chosen):
     monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", url)
     monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", family)
     monkeypatch.setattr(hw.sys, "prefix", "/nonexistent-prefix-for-this-test")
@@ -2587,17 +2598,18 @@ def test_the_rocm_and_xpu_helpers_use_the_same_precedence(
 
 def test_the_backend_precedence_matches_install_sh():
     """One rule, two languages: install.sh returns on the URL and never reads the family."""
-    source = (
-        pathlib.Path(hw.__file__).resolve().parents[4] / "install.sh"
-    ).read_text(encoding = "utf-8")
+    source = (pathlib.Path(hw.__file__).resolve().parents[4] / "install.sh").read_text(
+        encoding = "utf-8"
+    )
     block = source[source.index('_url="${UNSLOTH_TORCH_INDEX_URL:-}"') :]
     block = block[: block.index('_family="${UNSLOTH_TORCH_INDEX_FAMILY:-}"')]
-    assert 'echo "$_url"; return' in block, (
-        "install.sh no longer short-circuits on the URL; the backend mirrors that rule"
-    )
+    assert (
+        'echo "$_url"; return' in block
+    ), "install.sh no longer short-circuits on the URL; the backend mirrors that rule"
 
 
 # ================== a deliberate CPU install whose torch will not import is not broken
+
 
 @pytest.fixture
 def _broken_torch_on_a_gpu_host(monkeypatch):
@@ -2609,15 +2621,21 @@ def _broken_torch_on_a_gpu_host(monkeypatch):
         hw, "_installed_torch_markers_on_disk", lambda: {"hip": "", "cuda": "", "xpu": ""}
     )
     monkeypatch.setattr(
-        hw, "get_physical_gpu_inventory",
+        hw,
+        "get_physical_gpu_inventory",
         lambda **_kw: {
             "devices": [{"vendor": "nvidia", "name": "NVIDIA RTX A4000"}],
             "unknown": False,
         },
     )
-    for var in ("UNSLOTH_TORCH_INDEX_URL", "UNSLOTH_TORCH_INDEX_FAMILY",
-                "CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES",
-                "ROCR_VISIBLE_DEVICES", "ZE_AFFINITY_MASK"):
+    for var in (
+        "UNSLOTH_TORCH_INDEX_URL",
+        "UNSLOTH_TORCH_INDEX_FAMILY",
+        "CUDA_VISIBLE_DEVICES",
+        "HIP_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
+        "ZE_AFFINITY_MASK",
+    ):
         monkeypatch.delenv(var, raising = False)
     monkeypatch.setattr(hw.sys, "prefix", "/nonexistent-prefix-for-this-test")
 
@@ -2641,9 +2659,9 @@ def test_a_deliberate_cpu_install_is_not_offered_a_gpu_repair(
     assert hw._expected_cpu_flavor_was_chosen() is True
 
     source = inspect.getsource(hw._detect_hardware_locked).replace(" ", "")
-    assert "_expected_cpu_flavor_was_chosen()" in source, (
-        "the disk-only branch has to apply the same suppression classify_torch_build does"
-    )
-    assert "_masks_hide_every_accelerator" in source, (
-        "and the mask suppression beside it: an emptied mask is a deliberate CPU pin too"
-    )
+    assert (
+        "_expected_cpu_flavor_was_chosen()" in source
+    ), "the disk-only branch has to apply the same suppression classify_torch_build does"
+    assert (
+        "_masks_hide_every_accelerator" in source
+    ), "and the mask suppression beside it: an emptied mask is a deliberate CPU pin too"

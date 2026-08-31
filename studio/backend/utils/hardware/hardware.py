@@ -1875,8 +1875,7 @@ def _detect_hardware_locked() -> DeviceType:
         # import that already failed.
         _disk_reason = None
         if not (
-            _masks_hide_every_accelerator(block_inventory = True)
-            or _expected_cpu_flavor_was_chosen()
+            _masks_hide_every_accelerator(block_inventory = True) or _expected_cpu_flavor_was_chosen()
         ):
             _disk_reason = _classification_from_disk_label()
         _seed_torch_build_snapshot(_disk_reason)
