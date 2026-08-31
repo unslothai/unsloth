@@ -256,13 +256,11 @@ def test_a_damaged_payload_invalidates_an_otherwise_complete_install(
     _record(dist_info, rows)
     req_root = _complete_install(tmp_path, monkeypatch, site_packages)
 
-    ok_state = install_manifest.verify_install(
-        root = tmp_path, req_root = req_root, deep = True)
+    ok_state = install_manifest.verify_install(root = tmp_path, req_root = req_root, deep = True)
     assert ok_state["ok"] is True and ok_state["reason"] is None
 
     (site_packages / PKG / "__init__.py").unlink()
-    state = install_manifest.verify_install(
-        root = tmp_path, req_root = req_root, deep = True)
+    state = install_manifest.verify_install(root = tmp_path, req_root = req_root, deep = True)
     assert state["ok"] is False
     assert state["reason"] == "studio_install_damaged"
     # The deps walk still succeeded; only the payload is at fault.
@@ -282,8 +280,7 @@ def test_the_scan_is_off_unless_asked_for(tmp_path, monkeypatch, site_packages):
     (site_packages / PKG / "__init__.py").unlink()
 
     for kwargs in ({}, {"deep": False}):
-        state = install_manifest.verify_install(
-            root = tmp_path, req_root = req_root, **kwargs)
+        state = install_manifest.verify_install(root = tmp_path, req_root = req_root, **kwargs)
         assert state["ok"] is True and state["reason"] is None, kwargs
 
 
@@ -295,7 +292,8 @@ def test_describing_a_foreign_venv_never_scans_this_one(tmp_path, monkeypatch, s
     (site_packages / PKG / "__init__.py").unlink()
 
     state = install_manifest.verify_install(
-        root = tmp_path, req_root = req_root, installed = {PKG: VER}, deep = True)
+        root = tmp_path, req_root = req_root, installed = {PKG: VER}, deep = True
+    )
     assert state["reason"] != "studio_install_damaged"
 
 
@@ -310,6 +308,7 @@ def test_the_scan_runs_last_and_diverts_no_existing_reason(tmp_path, monkeypatch
 
 
 # ------------------------------------------------------- who asks for the scan
+
 
 def test_the_installers_ask_for_the_scan():
     """setup.sh and setup.ps1 are the two callers that want it.

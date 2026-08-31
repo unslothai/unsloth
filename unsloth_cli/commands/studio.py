@@ -678,7 +678,8 @@ def _install_state(deep: bool = False) -> dict:
     venv still inspects the venv the desktop app launches.
     """
     return _studio_deps.install_state(
-        extra_roots = (STUDIO_HOME / "unsloth_studio",), deep = deep,
+        extra_roots = (STUDIO_HOME / "unsloth_studio",),
+        deep = deep,
     )
 
 
