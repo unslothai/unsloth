@@ -466,15 +466,23 @@ def test_zero_budget_withdraws_the_catalog(executed):
     assert transport.requests[0]["tool_choice"] == "none"
 
 
-def test_tool_choice_none_skips_rag_autoinject(executed, monkeypatch):
+@pytest.mark.parametrize(
+    ("tool_choice", "tools"),
+    [
+        pytest.param("none", [WEB], id = "tool_choice_none"),
+        pytest.param(None, [WEB], id = "rag_tool_not_selected"),
+    ],
+)
+def test_autoinject_honors_request_tool_constraints(executed, monkeypatch, tool_choice, tools):
     def fail_autoinject(*_args, **_kwargs):
-        raise AssertionError("tool_choice none must not run RAG retrieval")
+        raise AssertionError("request constraints must prevent RAG retrieval")
 
     monkeypatch.setattr(loop_mod, "build_rag_autoinject", fail_autoinject)
     transport = FakeTransport([[_sse({"content": "plain answer"}), _sse(finish = "stop"), _DONE]])
     lines = _run(
         transport,
-        tool_choice = "none",
+        tools = tools,
+        tool_choice = tool_choice,
         rag_scope = {"project_id": "p1", "autoinject": False},
     )
 
