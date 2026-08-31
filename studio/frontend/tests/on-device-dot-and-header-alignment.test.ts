@@ -22,6 +22,7 @@ const CATALOG = read(
 const RECOMMENDED = read(
   "../src/features/model-picker/components/model-selector/recommended-fit.ts",
 );
+const GPU_INFO = read("../src/hooks/use-gpu-info.ts");
 const SIDEBAR = read("../src/components/app-sidebar.tsx");
 const CSS = read("../src/index.css");
 
@@ -128,7 +129,7 @@ test("one fit badge, so a colour or reveal change cannot miss a list", () => {
   // between them to drift.
   assert.match(
     PICKERS,
-    /<VramBadge\n\s*status=\{\n\s*diffusionRefuses\(fit, diffusionLoad, sharedMemory\)/,
+    /<VramBadge\n\s*status=\{\n\s*diffusionRefuses\(fit, diffusionLoad, hostPooledMemory\)/,
   );
   assert.equal(
     PICKERS.split("<VramBadge status={vramStatus} revealOnHover={!selected} />")
@@ -182,12 +183,22 @@ test("chat and the Hub answer the fit question with one formula", () => {
   assert.match(PICKERS, /diffusionLoad\n\s*\? classifyMediaGgufFit\(/);
   // Both gates read the flag the same way, or one hides a row the other keeps.
   assert.ok(PICKERS.includes("mediaLoad: diffusionLoad,"));
-  assert.ok(RECOMMENDED.includes("mediaLoad: opts.diffusionLoad }"));
   // And every media call site sets the flag, or the guard silently does nothing.
   assert.equal(
     PICKERS.split("diffusionLoad={diffusionLoad}").length - 1,
     7,
     "every task-scoped expander",
+  );
+  // The RAM tier is dropped on a host pool, or the media rule adds the APU's window to the very
+  // RAM it is a window INTO and returns partial for a load the planner refuses.
+  assert.ok(PICKERS.includes("function mediaRamBudgetGb("));
+  assert.ok(
+    PICKERS.includes("return hostPooled ? 0 : systemRamGb;"),
+    "no RAM budget beside a host pool",
+  );
+  assert.ok(
+    RECOMMENDED.includes("hostPooledMemory ? 0 : (systemRamGb ?? 0)"),
+    "the gate drops it too",
   );
   // The saved VRAM Budget now reaches chat. Moving the slider used to change the Hub's verdicts
   // and leave the picker's untouched.
@@ -198,13 +209,22 @@ test("chat and the Hub answer the fit question with one formula", () => {
   assert.ok(HUB_PAGE.includes("useVramBudgetFraction()"));
   assert.match(
     HUB_PAGE,
-    /hfModelFitsDevice\(row\.result, inferenceGpu, \{ budgetFraction \}\)/,
+    /hfModelFitsDevice\(row\.result, inferenceGpu, \{\n\s*budgetFraction,/,
   );
+  assert.ok(RECOMMENDED.includes("budgetFraction?: number;"));
+  // Both surfaces count the cards, or the Hub badge and the picker badge diverge again the moment
+  // the VRAM Budget goes above the default on a multi-GPU host.
+  assert.equal(
+    HUB_PAGE.split("gpuCount: inferenceGpu.deviceCount").length - 1,
+    3,
+    "every Hub gate and the inspector",
+  );
+  assert.ok(PICKERS.includes("gpuCount: inferenceGpu.deviceCount"));
   assert.ok(
-    RECOMMENDED.includes(
-      "opts: { budgetFraction?: number; mediaLoad?: boolean } = {},",
-    ),
+    PICKERS.includes("gpuCount: taskScoped ? 1 : inferenceGpu.deviceCount"),
+    "one device on a task page, so one reserve",
   );
+  assert.ok(HUB_CARD.includes("gpuCount?: number;"));
   assert.ok(RECOMMENDED.includes("budgetFraction: opts.budgetFraction,"));
 });
 
@@ -318,16 +338,25 @@ test("a diffusion model too big for a shared pool is refused, not offloaded", ()
   // with offloading is the worst thing this badge could say there.
   assert.ok(PICKERS.includes("function diffusionRefuses("));
   assert.ok(
-    PICKERS.includes('return fit === "oom" && diffusionLoad && sharedMemory;'),
+    PICKERS.includes('return fit === "oom" && diffusionLoad && hostPooled;'),
+  );
+  // The LOAD DEVICE's pool, folding unified_memory in. hardware.py sets shared_memory only on
+  // Windows, so a Linux ROCm APU arrives unified true / shared false while diffusion_memory.py
+  // still calls it unified_memory and refuses. The aggregate shared flag missed that host.
+  assert.ok(!PICKERS.includes("gpu.sharedMemory"), "not the aggregate flag");
+  assert.ok(
+    GPU_INFO.includes("loadDeviceSharesHostMemory: sharesHostMemory({"),
+    "the flag is the load device's, folded",
   );
   // Both the quant rows and the parent row take it.
   assert.match(
     PICKERS,
-    /diffusionRefuses\(fit, diffusionLoad, sharedMemory\)\n\s*\? "exceeds"/,
+    /diffusionRefuses\(fit, diffusionLoad, hostPooledMemory\)\n\s*\? "exceeds"/,
   );
-  assert.match(
-    PICKERS,
-    /diffusionRefuses\(fit, diffusionLoad, gpu\.sharedMemory\)\n\s*\? "exceeds"/,
+  assert.ok(
+    PICKERS.includes(
+      "diffusionRefuses(fit, diffusionLoad, gpu.loadDeviceSharesHostMemory)",
+    ),
   );
   // On a shared pool "VRAM" would name a number the user does not have.
   assert.ok(
@@ -336,7 +365,8 @@ test("a diffusion model too big for a shared pool is refused, not offloaded", ()
     ),
   );
   assert.equal(
-    PICKERS.split("sharedMemory={gpu.sharedMemory}").length - 1,
+    PICKERS.split("hostPooledMemory={gpu.loadDeviceSharesHostMemory}").length -
+      1,
     7,
     "every task-scoped expander learns the pool kind",
   );

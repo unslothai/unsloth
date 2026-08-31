@@ -704,13 +704,26 @@ const VRAM_VERDICT: Record<GgufFitClass | VramFitStatus, FitVerdict | null> = {
  *  with no Python exception".
  *
  *  Telling that user the model "still works with offloading" is the worst thing this badge could
- *  say, so a diffusion oom on a shared pool takes the verdict that means it will not load. */
+ *  say, so a diffusion oom on a host pool takes the verdict that means it will not load.
+ *
+ *  `hostPooled` is the LOAD DEVICE's answer, and folds unified_memory in: hardware.py sets
+ *  shared_memory only on Windows, so a Linux ROCm APU arrives as unified true / shared false while
+ *  `diffusion_memory.py` still classifies it `unified_memory` and refuses. Reading the aggregate
+ *  shared flag missed that host, and reading a plain some(unified) would refuse on a discrete card
+ *  that merely sits beside an iGPU. */
 function diffusionRefuses(
   fit: GgufFitClass,
   diffusionLoad: boolean,
-  sharedMemory: boolean,
+  hostPooled: boolean,
 ): boolean {
-  return fit === "oom" && diffusionLoad && sharedMemory;
+  return fit === "oom" && diffusionLoad && hostPooled;
+}
+
+/** The RAM a media verdict may add to the GPU budget. Zero on a host pool, where the two are the
+ *  same bytes: `classifyMediaGgufFit` adds them, so an APU counted its GTT window AND the host RAM
+ *  behind it and returned `partial` (offload) for a load the planner refuses outright. */
+function mediaRamBudgetGb(systemRamGb: number, hostPooled: boolean): number {
+  return hostPooled ? 0 : systemRamGb;
 }
 
 /** The verdicts that read as over budget, which is what dims a row. `marginal` does not: it is
@@ -1491,16 +1504,19 @@ function GgufVariantExpander({
   allowPin = false,
   onHasVision,
   diffusionLoad = false,
-  sharedMemory = false,
+  hostPooledMemory = false,
+  gpuCount,
 }: {
   repoId: string;
   pipelineTag?: string | null;
   /** True on Images / Video, where a GGUF is placed by the diffusion backend rather than
    *  llama-server, so the llama.cpp budget does not apply. Audio is task-scoped but not this. */
   diffusionLoad?: boolean;
-  /** The GPU pool is host memory (Apple Silicon, an APU). Only matters for a diffusion load: see
-   *  `diffusionRefuses`. */
-  sharedMemory?: boolean;
+  /** The LOAD DEVICE's memory is a window into host RAM (Apple Silicon, a ROCm APU). Only a
+   *  diffusion load reads it: see `diffusionRefuses`. */
+  hostPooledMemory?: boolean;
+  /** How many GPUs gpuGb is the sum of, for the loader's per-card VRAM reserve. */
+  gpuCount?: number;
   /** Snapshot the cached listing pinned this repo to, if any. */
   loadId?: string | null;
   /** Cache directory this downloaded row represents, if any. */
@@ -1668,12 +1684,17 @@ function GgufVariantExpander({
       // non-empty variant is OOM, which classifyGgufFit cannot tell apart from "not probed yet".
       if (!anyBudgetGb) return budgetKnown ? "oom" : "fits";
       if (diffusionLoad) {
-        return classifyMediaGgufFit(sizeBytes, gpuGb ?? 0, systemRamGb ?? 0);
+        return classifyMediaGgufFit(
+          sizeBytes,
+          gpuGb ?? 0,
+          mediaRamBudgetGb(systemRamGb ?? 0, hostPooledMemory),
+        );
       }
       return classifyGgufFit(sizeBytes, {
         gpuGb: gpuGb ?? 0,
         systemRamGb: systemRamGb ?? 0,
         budgetFraction,
+        gpuCount,
       });
     },
     [
@@ -1683,6 +1704,8 @@ function GgufVariantExpander({
       systemRamGb,
       budgetFraction,
       diffusionLoad,
+      hostPooledMemory,
+      gpuCount,
     ],
   );
 
@@ -2057,7 +2080,7 @@ function GgufVariantExpander({
             <span className="flex items-center gap-1.5 shrink-0">
               <VramBadge
                 status={
-                  diffusionRefuses(fit, diffusionLoad, sharedMemory)
+                  diffusionRefuses(fit, diffusionLoad, hostPooledMemory)
                     ? "exceeds"
                     : fit
                 }
@@ -3365,6 +3388,9 @@ export function HubModelPicker({
           // this rule IS the budget those rows had before the classifiers were merged. Restricting
           // it to GGUF left this gate disagreeing with searchRowFitsDevice about the same row.
           mediaLoad: diffusionLoad,
+          hostPooledMemory: gpu.loadDeviceSharesHostMemory,
+          // One device on a task page, so the per-card reserve is charged once there.
+          gpuCount: taskScoped ? 1 : inferenceGpu.deviceCount,
         }));
     const unslothRows = orderRecommendedRows({
       seeds: catalogSeedRows,
@@ -3444,15 +3470,19 @@ export function HubModelPicker({
         ? classifyMediaGgufFit(
             sizeBytes,
             budget.memoryTotalGb,
-            budget.systemRamAvailableGb,
+            mediaRamBudgetGb(
+              budget.systemRamAvailableGb,
+              gpu.loadDeviceSharesHostMemory,
+            ),
           )
         : classifyGgufFit(sizeBytes, {
             gpuGb: budget.memoryTotalGb,
             systemRamGb: budget.systemRamAvailableGb,
             budgetFraction,
+            gpuCount: budget.deviceCount,
           });
       if (fit === "fits") return null;
-      return diffusionRefuses(fit, diffusionLoad, gpu.sharedMemory)
+      return diffusionRefuses(fit, diffusionLoad, gpu.loadDeviceSharesHostMemory)
         ? "exceeds"
         : fit;
     };
@@ -4367,6 +4397,8 @@ export function HubModelPicker({
           // this picks the diffusion RULE, which only Images and Video use.
           diffusionLoad,
           budgetFraction,
+          gpuCount: inferenceGpu.deviceCount,
+          hostPooledMemory: gpu.loadDeviceSharesHostMemory,
         },
       ),
     [
@@ -5341,7 +5373,8 @@ export function HubModelPicker({
         {expanderOpen && (
           <GgufVariantExpander
             diffusionLoad={diffusionLoad}
-            sharedMemory={gpu.sharedMemory}
+            hostPooledMemory={gpu.loadDeviceSharesHostMemory}
+            gpuCount={inferenceGpu.deviceCount}
             repoId={c.repo_id}
             pipelineTag={c.task ?? null}
             loadId={c.load_id}
@@ -6234,7 +6267,8 @@ export function HubModelPicker({
                               isGgufExpanded(m.id) && (
                                 <GgufVariantExpander
                                   diffusionLoad={diffusionLoad}
-                                  sharedMemory={gpu.sharedMemory}
+                                  hostPooledMemory={gpu.loadDeviceSharesHostMemory}
+                                  gpuCount={inferenceGpu.deviceCount}
                                   repoId={m.id}
                                   onDevice={true}
                                   onSelect={onSelect}
@@ -6379,7 +6413,8 @@ export function HubModelPicker({
                             {isGguf && !isGgufFile && isGgufExpanded(m.id) && (
                               <GgufVariantExpander
                                 diffusionLoad={diffusionLoad}
-                                sharedMemory={gpu.sharedMemory}
+                                hostPooledMemory={gpu.loadDeviceSharesHostMemory}
+                                gpuCount={inferenceGpu.deviceCount}
                                 repoId={m.id}
                                 onDevice={true}
                                 onSelect={onSelect}
@@ -6509,7 +6544,8 @@ export function HubModelPicker({
                             {isGguf && !isGgufFile && isGgufExpanded(m.id) && (
                               <GgufVariantExpander
                                 diffusionLoad={diffusionLoad}
-                                sharedMemory={gpu.sharedMemory}
+                                hostPooledMemory={gpu.loadDeviceSharesHostMemory}
+                                gpuCount={inferenceGpu.deviceCount}
                                 repoId={m.id}
                                 onDevice={true}
                                 onSelect={onSelect}
@@ -6604,7 +6640,8 @@ export function HubModelPicker({
                             {expandedGguf === id && (
                               <GgufVariantExpander
                                 diffusionLoad={diffusionLoad}
-                                sharedMemory={gpu.sharedMemory}
+                                hostPooledMemory={gpu.loadDeviceSharesHostMemory}
+                                gpuCount={inferenceGpu.deviceCount}
                                 repoId={id}
                                 pipelineTag={pipelineTagById.get(id) ?? null}
                                 onSelect={onSelect}
@@ -6728,7 +6765,8 @@ export function HubModelPicker({
                           {expandedGguf === id && (
                             <GgufVariantExpander
                               diffusionLoad={diffusionLoad}
-                              sharedMemory={gpu.sharedMemory}
+                              hostPooledMemory={gpu.loadDeviceSharesHostMemory}
+                              gpuCount={inferenceGpu.deviceCount}
                               repoId={id}
                               pipelineTag={pipelineTagById.get(id) ?? null}
                               onSelect={onSelect}
@@ -6843,7 +6881,8 @@ export function HubModelPicker({
                             {expandedGguf === id && (
                               <GgufVariantExpander
                                 diffusionLoad={diffusionLoad}
-                                sharedMemory={gpu.sharedMemory}
+                                hostPooledMemory={gpu.loadDeviceSharesHostMemory}
+                                gpuCount={inferenceGpu.deviceCount}
                                 repoId={id}
                                 pipelineTag={pipelineTagById.get(id) ?? null}
                                 onSelect={onSelect}

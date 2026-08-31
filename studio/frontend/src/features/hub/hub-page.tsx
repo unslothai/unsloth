@@ -900,6 +900,7 @@ export function ModelsPage() {
           row.isAvailableOnDevice ||
           hfModelFitsDevice(row.result, row.result.isGguf ? inferenceGpu : gpu, {
             budgetFraction,
+            gpuCount: inferenceGpu.deviceCount,
           })),
     );
   }, [
@@ -943,7 +944,10 @@ export function ModelsPage() {
           (row) =>
             !fitOnDeviceOnly ||
             row.isAvailableOnDevice ||
-            hfModelFitsDevice(row.result, inferenceGpu, { budgetFraction }),
+            hfModelFitsDevice(row.result, inferenceGpu, {
+              budgetFraction,
+              gpuCount: inferenceGpu.deviceCount,
+            }),
         ),
     [
       budgetFraction,
@@ -1664,6 +1668,7 @@ export function ModelsPage() {
       minMemory,
       vramInfo,
       gpuGb: inferenceGpu.available ? inferenceGpu.memoryTotalGb : undefined,
+      gpuCount: inferenceGpu.deviceCount,
       systemRamGb:
         inferenceGpu.systemRamAvailableGb > 0
           ? inferenceGpu.systemRamAvailableGb
@@ -1678,6 +1683,7 @@ export function ModelsPage() {
       vramInfo,
       inferenceGpu.available,
       inferenceGpu.memoryTotalGb,
+      inferenceGpu.deviceCount,
       inferenceGpu.systemRamAvailableGb,
     ],
   );

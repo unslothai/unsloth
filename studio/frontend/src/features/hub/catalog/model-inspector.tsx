@@ -396,6 +396,8 @@ export type ModelInspectorRuntime = {
     status: "fits" | "tight" | "exceeds";
   } | null;
   gpuGb?: number;
+  /** GPUs gpuGb sums, for the loader's per-card VRAM reserve. */
+  gpuCount?: number;
   systemRamGb?: number;
 };
 
@@ -443,6 +445,7 @@ export const ModelInspector = memo(function ModelInspector({
     minMemory,
     vramInfo,
     gpuGb,
+    gpuCount,
     systemRamGb,
   } = runtime;
   const {
@@ -730,6 +733,7 @@ export const ModelInspector = memo(function ModelInspector({
               isLoading={isLoadingThisModel}
               loadingPhase={loadingPhase}
               gpuGb={gpuGb}
+              gpuCount={gpuCount}
               systemRamGb={systemRamGb}
 
               preferredFile={preferredGgufFile}
@@ -766,6 +770,7 @@ export const ModelInspector = memo(function ModelInspector({
               preferredGgufFileIntent={preferredGgufFileIntent}
               isLoadingThisModel={isLoadingThisModel}
               gpuGb={gpuGb}
+              gpuCount={gpuCount}
               systemRamGb={systemRamGb}
               cachePath={model.path}
               knownBytes={model.cachedBytes}

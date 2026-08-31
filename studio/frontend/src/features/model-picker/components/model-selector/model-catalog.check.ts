@@ -502,6 +502,34 @@ assert.equal(
   classifyGgufFit(19 * GB, { gpuGb: 24, systemRamGb: 0, budgetFraction: 0.97 }),
   "fits",
 );
+// The floor is charged once per CARD: _select_gpus calls _vram_usable_mib for every device and
+// sums, so two 24 GiB cards at 1.0 offer 47.0 GiB, not 47.5. A 40.2 GiB file needs 47.23.
+assert.equal(
+  classifyGgufFit(40.2 * GB, {
+    gpuGb: 48,
+    systemRamGb: 0,
+    budgetFraction: 1,
+    gpuCount: 2,
+  }),
+  "marginal",
+);
+// Same file, same cards, counted as one box: the verdict this correction exists to remove.
+assert.equal(
+  classifyGgufFit(40.2 * GB, { gpuGb: 48, systemRamGb: 0, budgetFraction: 1 }),
+  "fits",
+);
+// Below the default the percentage term still wins on either count, so nothing moves.
+for (const gpuCount of [1, 2, 4]) {
+  assert.equal(
+    classifyGgufFit(39 * GB, {
+      gpuGb: 48,
+      systemRamGb: 0,
+      budgetFraction: 0.97,
+      gpuCount,
+    }),
+    "fits",
+  );
+}
 
 // ── classifyMediaGgufFit ──────────────────────────────────────────────────────
 // Images / Video place a GGUF through the diffusion backend, whose budget on a 64 GiB unified host

@@ -255,7 +255,12 @@ interface GgufVariantMenuItem {
 
 function createGgufVariantMenuItems(
   variants: readonly GgufVariantDetail[] | null,
-  resources: { gpuGb?: number; systemRamGb?: number; budgetFraction?: number },
+  resources: {
+    gpuGb?: number;
+    gpuCount?: number;
+    systemRamGb?: number;
+    budgetFraction?: number;
+  },
 ): GgufVariantMenuItem[] {
   if (!variants) return [];
   return variants.map((variant) => ({
@@ -556,6 +561,7 @@ export function GgufDownloadCard({
   preferredFileIntent = 0,
   isLoadingThisModel,
   gpuGb,
+  gpuCount,
   systemRamGb,
   cachePath,
   preferLocalCache = false,
@@ -573,6 +579,8 @@ export function GgufDownloadCard({
   preferredFileIntent?: number;
   isLoadingThisModel: boolean;
   gpuGb?: number;
+  /** GPUs gpuGb sums, for the loader's per-card VRAM reserve. */
+  gpuCount?: number;
   systemRamGb?: number;
   cachePath?: string | null;
   preferLocalCache?: boolean;
@@ -640,10 +648,11 @@ export function GgufDownloadCard({
     if (!variants) return null;
     return sortDownloadableGgufVariants(variants, {
       gpuGb,
+      gpuCount,
       systemRamGb,
       budgetFraction,
     });
-  }, [variants, gpuGb, systemRamGb, budgetFraction]);
+  }, [variants, gpuGb, gpuCount, systemRamGb, budgetFraction]);
   const selectLiveGgufVariantStates = useMemo(
     () => createLiveGgufVariantStatesSelector(repoId),
     [repoId],
@@ -668,10 +677,11 @@ export function GgufDownloadCard({
     () =>
       createGgufVariantMenuItems(sortedVariants, {
         gpuGb,
+        gpuCount,
         systemRamGb,
         budgetFraction,
       }),
-    [gpuGb, sortedVariants, systemRamGb, budgetFraction],
+    [gpuGb, gpuCount, sortedVariants, systemRamGb, budgetFraction],
   );
 
   const selectedQuant =
@@ -769,11 +779,12 @@ export function GgufDownloadCard({
       selected
         ? classifyGgufFit(selected.size_bytes, {
             gpuGb,
+            gpuCount,
             systemRamGb,
             budgetFraction,
           })
         : null,
-    [gpuGb, selected?.size_bytes, systemRamGb, budgetFraction],
+    [gpuGb, gpuCount, selected?.size_bytes, systemRamGb, budgetFraction],
   );
   const selectedDownloadSizeLabel = selected
     ? ggufVariantTransferLabel(selected)

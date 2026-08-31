@@ -950,6 +950,8 @@ export interface DeviceBudget {
   systemRamGb: number;
   /** The user's saved VRAM Budget. Absent falls back to the loader's default. */
   budgetFraction?: number;
+  /** GPUs gpuGb sums, for the loader's per-card VRAM reserve. Absent means one. */
+  gpuCount?: number;
 }
 
 /** GGUF fit, delegated to the one formula the Hub badge already uses.
