@@ -387,6 +387,33 @@ def test_extras_no_deps_has_no_unconditional_torchcodec_pin():
     )
 
 
+def test_notebook_validator_honours_a_torchcodec_uninstall():
+    """Removing the codec is a valid answer to the mismatch, so the new post-2.11 branch
+    must not report one. parse_pip_line drops the `install`/`uninstall` word before the
+    package list, so without the action an uninstall reads exactly like an install."""
+    nv = _load_notebook_validator_module()
+
+    removed = '!pip uninstall -y torchcodec\n!pip install "torch==2.12.0"'
+    assert nv.rule_inst_004_torchcodec_torch(removed, COLAB_TORCH211, "nb.ipynb", 0) == []
+
+    # Put back incompatibly and it is a finding again; put back compatibly and it is not.
+    back_stale = (
+        '!pip uninstall -y torchcodec\n'
+        '!pip install "torch==2.12.0" "torchcodec==0.11.1"'
+    )
+    assert len(nv.rule_inst_004_torchcodec_torch(back_stale, COLAB_TORCH211, "nb.ipynb", 0)) == 1
+
+    back_ok = (
+        '!pip uninstall -y torchcodec\n'
+        '!pip install "torch==2.12.0" "torchcodec==0.13.0"'
+    )
+    assert nv.rule_inst_004_torchcodec_torch(back_ok, COLAB_TORCH211, "nb.ipynb", 0) == []
+
+    # Uninstalling after a good install still leaves nothing to flag.
+    dropped = '!pip install "torch==2.12.0" "torchcodec==0.13.0"\n!pip uninstall -y torchcodec'
+    assert nv.rule_inst_004_torchcodec_torch(dropped, COLAB_TORCH211, "nb.ipynb", 0) == []
+
+
 def test_select_torchcodec_spec_tracks_torch_minor():
     ips = _load_install_python_stack()
     assert ips._select_torchcodec_spec("2.11.0+cu128") == "torchcodec>=0.11.0,<0.12.0"

@@ -275,10 +275,11 @@ class PipInvocation:
     packages: list[str]  # raw package specifiers (e.g. 'transformers==5.5.0')
     raw: str
     line_no: int = 0
+    action: str = "install"  # "install" | "uninstall"
 
 
 PIP_LINE_RE = re.compile(
-    r"^\s*!\s*(?P<tool>(?:uv\s+)?pip)\s+(?:install|uninstall)\b(?P<rest>.*)$",
+    r"^\s*!\s*(?P<tool>(?:uv\s+)?pip)\s+(?P<action>install|uninstall)\b(?P<rest>.*)$",
     re.IGNORECASE,
 )
 NON_PKG_FLAG_TAKES_VAL = {
@@ -331,7 +332,14 @@ def parse_pip_line(line: str, line_no: int = 0) -> PipInvocation | None:
         if t in ("install", "uninstall"):
             continue
         packages.append(t)
-    return PipInvocation(tool = tool, flags = flags, packages = packages, raw = line, line_no = line_no)
+    return PipInvocation(
+        tool = tool,
+        flags = flags,
+        packages = packages,
+        raw = line,
+        line_no = line_no,
+        action = m.group("action").lower(),
+    )
 
 
 def _glue_line_continuations(text: str) -> list[tuple[int, str]]:
@@ -604,6 +612,9 @@ def _effective_version(install_cell: str, target: str, resolved: str | None) -> 
         for raw in inv.packages:
             sp = parse_spec(raw)
             if sp is None or sp.name != target:
+                continue
+            if inv.action == "uninstall":
+                current = None  # removed; a later install can put it back
                 continue
             for op, ver in sp.pins:
                 if op == "==":
