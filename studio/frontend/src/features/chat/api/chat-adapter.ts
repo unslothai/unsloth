@@ -6717,10 +6717,8 @@ export function createOpenAIStreamAdapter(
                       ...(toolCallParts[idx].args ?? {}),
                       ...(nextArgs ?? {}),
                     } as ToolCallMessagePart["args"];
-                    // Whether anything actually merged in, which decides if the exact text
-                    // the card was opened with still describes these arguments.
-                    let argsMerged =
-                      nextArgs !== undefined && Object.keys(nextArgs).length > 0;
+                    const overwrittenArgumentKeys =
+                      nextArgs !== undefined ? Object.keys(nextArgs) : [];
                     // Merge tool_end native_part into args.google so the
                     // outbound translator replays both start (executableCode)
                     // and end (result / inlineData) on the same turn.
@@ -6734,7 +6732,6 @@ export function createOpenAIStreamAdapter(
                       endGoogle.native_part &&
                       typeof endGoogle.native_part === "object"
                     ) {
-                      argsMerged = true;
                       const argsObj = mergedArgs as Record<string, unknown>;
                       const existingGoogle = (argsObj.google ?? {}) as Record<
                         string,
@@ -6806,7 +6803,7 @@ export function createOpenAIStreamAdapter(
                       argsText: mergedToolCallArgumentsText(
                         existing.argsText,
                         mergedArgs,
-                        argsMerged,
+                        overwrittenArgumentKeys,
                       ),
                       result: parsedResult,
                       provenance: mergeToolProvenance(
