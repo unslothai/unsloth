@@ -357,9 +357,7 @@ def test_a_package_directory_replaced_by_a_file_is_damage(site_packages):
 
     shutil.rmtree(site_packages / PKG)
     (site_packages / PKG).write_text("quarantined", encoding = "utf-8")
-    assert install_manifest.damaged_payload_files(PKG) == [
-        f"{PKG}/__init__.py is not reachable"
-    ]
+    assert install_manifest.damaged_payload_files(PKG) == [f"{PKG}/__init__.py is not reachable"]
 
 
 def test_the_companion_distribution_is_scanned_too(site_packages):
@@ -397,9 +395,7 @@ def test_scan_paths_points_the_scan_at_another_venv(tmp_path, site_packages):
     ]
 
 
-def test_a_foreign_venv_is_scanned_when_its_paths_are_given(
-    tmp_path, monkeypatch, site_packages
-):
+def test_a_foreign_venv_is_scanned_when_its_paths_are_given(tmp_path, monkeypatch, site_packages):
     dist_info, rows = _healthy(site_packages)
     _record(dist_info, rows)
     req_root = _complete_install(tmp_path, monkeypatch, site_packages)

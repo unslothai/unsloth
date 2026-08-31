@@ -4363,11 +4363,7 @@ def _stage_replacement(name: str):
     return None
 
 
-def _repair_damaged_core_payload(
-    package_names: "tuple[str, ...]",
-    *,
-    local_repo: str = "",
-) -> None:
+def _repair_damaged_core_payload(package_names: "tuple[str, ...]", *, local_repo: str = "") -> None:
     """Reinstall managed core packages whose recorded files are gone or truncated.
 
     The core phase below asks for an upgrade, and an upgrade of a distribution
