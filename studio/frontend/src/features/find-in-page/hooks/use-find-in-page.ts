@@ -169,24 +169,34 @@ export function useFindInPage(query: string): FindResults {
     [apply],
   );
 
-  /** Flatten the document again, then re-run the query. */
-  const rebuild = useCallback(
-    (reveal: boolean, fromViewport: boolean) => {
-      staleRef.current = false;
-      const scope = scopeRef.current;
-      indexRef.current = scope
-        ? buildTextIndex(scope as unknown as FindElementLike)
-        : EMPTY_TEXT_INDEX;
-      search(reveal, fromViewport);
-    },
-    [search],
-  );
+  /**
+   * Flatten the document again. True when the result RENUMBERS the match list, which is anything
+   * but a pure append at the tail.
+   *
+   * That one test settles who keeps their place. A streaming reply only ever adds to the end, so
+   * match 20 is still match 20 and the ordinal is worth keeping. History arriving above, a
+   * workspace switch flipping `inert`, a breakpoint revealing a column: each renumbers everything
+   * after it, and the reader's number then points at unrelated text, usually off screen. Those
+   * re-anchor to the viewport. An unchanged document is a pure append of nothing, so a rebuild that
+   * finds no news leaves the reader exactly where they were.
+   */
+  const reindex = useCallback((): boolean => {
+    staleRef.current = false;
+    const before = indexRef.current.text;
+    const scope = scopeRef.current;
+    indexRef.current = scope
+      ? buildTextIndex(scope as unknown as FindElementLike)
+      : EMPTY_TEXT_INDEX;
+    return !indexRef.current.text.startsWith(before);
+  }, []);
 
   // Open: take the index and watch for changes. Closing tears all of it down, highlights included.
   useEffect(() => {
     const scope = resolveFindScope();
     scopeRef.current = scope;
-    rebuild(false, true);
+    reindex();
+    // A fresh open always starts from the reader, whatever the index says.
+    search(false, true);
 
     // The thread mounts its tail first and widens over the next few frames, so a search against the
     // document as found would miss everything above the fold. This asks for the rest and re-indexes
@@ -200,11 +210,31 @@ export function useFindInPage(query: string): FindResults {
       indexReaches(scope, viewport),
     ).then(() => {
       if (!live) return;
-      // From the viewport, not the ordinal: this growth PREPENDS, unlike streaming, so match 3 of
-      // the tail is not match 3 of the whole thread. Keeping the number would move the highlight to
-      // an older match off screen and send the next step backwards.
-      rebuild(false, true);
+      // Completion PREPENDS, so it renumbers and the walk re-anchors. On a settled thread it brings
+      // in nothing and waits out its search interval anyway, and there the reader may well have
+      // pressed Enter while it ran: an unconditional re-anchor would take that back.
+      search(false, reindex());
     });
+
+    // Mark the index stale and schedule one rebuild. No reveal: something moved under the reader,
+    // they did not ask to go anywhere.
+    const invalidate = () => {
+      staleRef.current = true;
+      // Nothing to re-run against an empty query, so streaming into an unused bar only sets a flag.
+      if (queryRef.current.length === 0) return;
+      // Already scheduled: the interval is the floor, so a burst costs one rebuild, not one each.
+      if (timerRef.current !== null) return;
+      timerRef.current = setTimeout(() => {
+        timerRef.current = null;
+        if (!staleRef.current) return;
+        search(false, reindex());
+      }, REINDEX_INTERVAL_MS);
+    };
+
+    // A media query is not a mutation. Crossing a breakpoint hides or reveals whole columns
+    // (`hidden lg:flex`) with nothing in the DOM to observe, and the index reads computed
+    // visibility, so without this the bar goes on searching the layout that has gone.
+    window.addEventListener("resize", invalidate);
 
     let observer: MutationObserver | null = null;
     if (scope && typeof MutationObserver !== "undefined") {
@@ -212,18 +242,7 @@ export function useFindInPage(query: string): FindResults {
         // The bar floats inside the region it searches, so its own counter re-rendering is a
         // mutation of the scope. Without this it re-indexes every time the match count changes.
         if (!records.some(mutatesSearchableText)) return;
-        staleRef.current = true;
-        // Nothing to re-run against an empty query, so streaming into an unused bar only sets a flag.
-        if (queryRef.current.length === 0) return;
-        // Already scheduled: the interval is the floor, so a burst costs one rebuild, not one each.
-        if (timerRef.current !== null) return;
-        timerRef.current = setTimeout(() => {
-          timerRef.current = null;
-          if (!staleRef.current) return;
-          // No reveal: a reply arrived, the reader did not ask to move. The ordinal is kept, which
-          // is right for the append-only growth streaming produces.
-          rebuild(false, false);
-        }, REINDEX_INTERVAL_MS);
+        invalidate();
       });
       observer.observe(scope, {
         childList: true,
@@ -244,6 +263,7 @@ export function useFindInPage(query: string): FindResults {
 
     return () => {
       live = false;
+      window.removeEventListener("resize", invalidate);
       observer?.disconnect();
       if (timerRef.current !== null) {
         clearTimeout(timerRef.current);
@@ -254,14 +274,14 @@ export function useFindInPage(query: string): FindResults {
       indexRef.current = EMPTY_TEXT_INDEX;
       matchesRef.current = [];
     };
-  }, [rebuild]);
+  }, [reindex, search]);
 
   // A new query starts from the reader's position, re-indexing first if the document moved on.
   useEffect(() => {
     queryRef.current = query;
-    if (staleRef.current) rebuild(true, true);
-    else search(true, true);
-  }, [query, rebuild, search]);
+    if (staleRef.current) reindex();
+    search(true, true);
+  }, [query, reindex, search]);
 
   const step = useCallback(
     (delta: number) => {

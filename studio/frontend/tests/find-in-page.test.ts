@@ -33,6 +33,7 @@ import {
   segmentAt,
   startPositionAt,
 } from "../src/features/find-in-page/lib/find-text-index.ts";
+import { useFindInPageStore } from "../src/features/find-in-page/stores/find-in-page-store.ts";
 
 // --- the hand-rolled tree ----------------------------------------------------------------------
 
@@ -649,11 +650,11 @@ test("the rows progressive completion adds are re-anchored, not renumbered", asy
   );
   assert.match(
     engine,
-    /completeProgressiveMounts\([\s\S]*?\.then\(\(\) => \{[\s\S]*?rebuild\(false, true\);/,
+    /completeProgressiveMounts\([\s\S]*?\.then\(\(\) => \{[\s\S]*?search\(false, reindex\(\)\);/,
   );
-  // The one place the ordinal is still kept is the observer's throttled rebuild, which is the
-  // append-only case.
-  assert.equal((engine.match(/rebuild\(false, false\)/g) ?? []).length, 1);
+  // Through `reindex`, which answers false when the completion brought nothing in, so a settled
+  // thread's 400ms probe does not take back an Enter pressed while it ran.
+  assert.equal(engine.includes("rebuild("), false);
 });
 
 test("Escape closes the bar from the walk buttons, not just the field", async () => {
@@ -768,6 +769,87 @@ test("the chat composer is out of the searchable scope", async () => {
     root.slice(0, root.indexOf(">")),
     /\{\.\.\.\{ \[FIND_SKIP_ATTRIBUTE\]: "" \}\}/,
   );
+});
+
+test("the ordinal survives an append and nothing else", async () => {
+  // One rule decides who keeps their place. A streaming reply only adds at the tail, so match 20 is
+  // still match 20. History arriving above, a workspace switch flipping `inert`, a breakpoint
+  // revealing a column: each renumbers the list, and the reader's number then points at unrelated
+  // text. An unchanged document is an append of nothing, which is why a rebuild that finds no news
+  // leaves an Enter pressed while it ran alone.
+  const engine = await readFile(
+    new URL(
+      "../src/features/find-in-page/hooks/use-find-in-page.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    engine,
+    /const before = indexRef\.current\.text;[\s\S]*?return !indexRef\.current\.text\.startsWith\(before\);/,
+  );
+  // Every rebuild goes through it: no call site decides for itself that the numbering held.
+  assert.equal(engine.includes("search(false, false)"), false);
+  assert.equal((engine.match(/search\(false, reindex\(\)\)/g) ?? []).length, 2);
+  // Except a fresh open, which starts from the reader whatever the index says.
+  assert.match(engine, /reindex\(\);\n\s*\/\/[^\n]*\n\s*search\(false, true\);/);
+});
+
+test("a breakpoint that changes what is rendered invalidates the index", async () => {
+  // Crossing one hides or reveals whole columns (`hidden lg:flex`) with nothing in the DOM to
+  // observe, and the index reads computed visibility, so the observer alone cannot see it.
+  const engine = await readFile(
+    new URL(
+      "../src/features/find-in-page/hooks/use-find-in-page.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(engine, /window\.addEventListener\("resize", invalidate\);/);
+  assert.match(engine, /window\.removeEventListener\("resize", invalidate\);/);
+  // Through the same throttle as a mutation, so dragging a window edge costs one rebuild an
+  // interval rather than one a frame.
+  assert.match(
+    engine,
+    /const invalidate = \(\) => \{[\s\S]*?REINDEX_INTERVAL_MS\);/,
+  );
+});
+
+test("leaving the shell forgets the search", () => {
+  // The store is module-global and keeps the query across a close on purpose. Signing out unmounts
+  // the shell, and the next person to sign in in the same tab must not be handed the last one's
+  // search, open and focused.
+  const store = useFindInPageStore;
+  store.getState().setQuery("someone else's search");
+  store.getState().requestFocus();
+  assert.equal(store.getState().open, true);
+  store.getState().reset();
+  assert.deepEqual(
+    { open: store.getState().open, query: store.getState().query },
+    { open: false, query: "" },
+  );
+});
+
+test("the shell unmounting is what calls it, not the bar closing", async () => {
+  const bar = await readFile(
+    new URL(
+      "../src/features/find-in-page/components/find-in-page.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  // As an unmount cleanup. Not `enabled`: a dialog turns that off, and the search should still be
+  // there when it closes.
+  assert.match(bar, /useEffect\(\(\) => reset, \[reset\]\);/);
+  // And `close` still keeps the query, which is what makes reopening offer the last search.
+  const store = await readFile(
+    new URL(
+      "../src/features/find-in-page/stores/find-in-page-store.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(store, /close: \(\) => set\(\{ open: false \}\),/);
 });
 
 test("nothing of the engine is mounted while the bar is closed", async () => {

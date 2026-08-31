@@ -18,6 +18,8 @@ interface FindInPageStore {
   requestFocus: () => void;
   close: () => void;
   setQuery: (query: string) => void;
+  /** Forget the search entirely, query included. For leaving the shell, not for closing the bar. */
+  reset: () => void;
 }
 
 export const useFindInPageStore = create<FindInPageStore>((set) => ({
@@ -29,4 +31,5 @@ export const useFindInPageStore = create<FindInPageStore>((set) => ({
   // The query survives a close, so re-opening offers the last search again, selected.
   close: () => set({ open: false }),
   setQuery: (query) => set({ query }),
+  reset: () => set({ open: false, query: "" }),
 }));

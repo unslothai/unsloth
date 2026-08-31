@@ -31,6 +31,13 @@ import { useFindInPageStore } from "../stores/find-in-page-store.ts";
 export function FindInPage({ enabled = true }: { enabled?: boolean }) {
   const open = useFindInPageStore((state) => state.open);
   const requestFocus = useFindInPageStore((state) => state.requestFocus);
+  const reset = useFindInPageStore((state) => state.reset);
+
+  // Leaving the shell for good, which on the web means signing out to /login: the store is
+  // module-global and deliberately keeps the query across a close, so without this the next person
+  // to sign in in the same tab is handed the last one's search, open and focused. Unmount, not
+  // `enabled`: a dialog turns that off and the search should still be there when it closes.
+  useEffect(() => reset, [reset]);
 
   // Not `skipInTextFields`: the chord has to work from the composer, and pressing it inside the
   // find field is how a find bar is asked to start over.

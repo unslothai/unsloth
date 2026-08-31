@@ -40,6 +40,10 @@ declare global {
       setOuterScroll: (outer: boolean) => void;
       /** Insert older messages ABOVE the thread, the way progressive completion does. */
       prepend: (count: number) => void;
+      /** Switch workspaces the way the shell does: flip `inert` off one panel and on to the other. */
+      setWorkspace: (which: "chat" | "other") => void;
+      /** Unmount the whole content region, the way /login does when a user signs out. */
+      setShell: (mounted: boolean) => void;
     };
   }
 }
@@ -114,8 +118,25 @@ function Conversation({ extra, older }: { extra: string[]; older: string[] }) {
   );
 }
 
+/** A second workspace, parked above the conversation exactly as the shell parks one. Its matches
+ *  come BEFORE the thread's, so switching to it is not an append. */
+function OtherWorkspace({ active }: { active: boolean }) {
+  return (
+    <div hidden={!active} inert={!active || undefined} data-workspace="other">
+      {Array.from({ length: 12 }, (_, i) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: fixed-length static filler
+        <div key={i} className="rounded-xl border border-border p-4 text-sm">
+          <p>Another workspace, unsloth line {i + 1}.</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function Harness() {
   const [streamed, setStreamed] = useState<string[]>([]);
+  const [workspace, setWorkspace] = useState<"chat" | "other">("chat");
+  const [shell, setShell] = useState(true);
   const [older, setOlder] = useState<string[]>([]);
   const [modal, setModal] = useState(false);
   const [outerScroll, setOuterScroll] = useState(false);
@@ -147,6 +168,8 @@ function Harness() {
       stream,
       setModal,
       setOuterScroll,
+      setWorkspace,
+      setShell,
       prepend: (count) =>
         setOlder(
           Array.from(
@@ -206,12 +229,18 @@ function Harness() {
               : "relative flex min-h-0 flex-1 flex-col overflow-hidden"
           }
         >
-          <FindInPage />
+          {shell ? <FindInPage /> : null}
           <div
             ref={outerScroll ? undefined : scrollerRef}
             className={outerScroll ? "" : "min-h-0 flex-1 overflow-y-auto"}
           >
-            <Conversation extra={streamed} older={older} />
+            <OtherWorkspace active={workspace === "other"} />
+            <div
+              hidden={workspace !== "chat"}
+              inert={workspace !== "chat" || undefined}
+            >
+              <Conversation extra={streamed} older={older} />
+            </div>
           </div>
           {/* A workspace parked off-route, as `__root.tsx` parks one. Never counted. */}
           <div hidden={true} inert={true}>
