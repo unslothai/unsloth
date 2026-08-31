@@ -10,7 +10,10 @@ export {
   pinKey,
   usePinnedModelsStore,
 } from "./components/model-selector/pinned-models";
-export { hfModelFitsDevice } from "./components/model-selector/recommended-fit";
+export {
+  hfModelFitsDevice,
+  loadScopedGpu,
+} from "./components/model-selector/recommended-fit";
 export {
   NumericValueInput,
   type NumericValueInputHandle,
@@ -48,7 +51,10 @@ export {
   DEFAULT_PER_MODEL_CONFIG,
   normalizeMaxSeqLength,
   type PerModelConfig,
+  PER_MODEL_CONFIG_STORAGE_KEY,
+  PER_MODEL_CONFIG_UPDATED_EVENT,
   adoptLegacyConfigKey,
+  listPerModelConfigs,
   isServedByMlx,
   presetLoadSettingNames,
   resolveInitialConfig,

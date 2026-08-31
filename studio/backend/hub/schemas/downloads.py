@@ -77,6 +77,9 @@ class DownloadStartResponse(BaseModel):
     job_key: str
     state: str
     accepted: bool
+    # True when this start attached to a job already running rather than
+    # starting one. Accepted either way.
+    attached: bool = False
     generation: int
     # The transport the job is really on: the one the backend resolved for a
     # fresh start, or the running job's own when this start adopted one.
@@ -217,6 +220,8 @@ class DatasetDownloadStartResponse(BaseModel):
     repo_id: str
     state: str
     accepted: bool
+    # Attached to a job already running, rather than starting one (see above).
+    attached: bool = False
     generation: int
     # The transport the job is really on, and its cancel marker (see above).
     transport: Optional[str] = None

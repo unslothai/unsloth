@@ -70,6 +70,7 @@ export function DownloadCard({
               progress={progress}
               bytesPerSec={job.bytesPerSec}
               cancelling={job.cancelling}
+              etaSeconds={job.etaSeconds}
             />
           </div>
         )}

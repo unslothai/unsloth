@@ -103,7 +103,7 @@ _owned_sd_cpp_roots() {
 }
 
 # Every root an older build could have hung its sd.cpp sibling off: the canonicalized custom roots
-# and the lexical ones. They differ only when the Studio home is itself a symlink, and there the
+# and the lexical ones. They differ only when the Unsloth home is itself a symlink, and there the
 # lexical form is the one the old `dirname "$UNSLOTH_STUDIO_HOME"` produced, so canonicalizing
 # first looked beside the link's target and missed the tree entirely. Every use is gated on the
 # owner marker, which is what keeps an unrelated checkout at either path safe.
@@ -546,16 +546,16 @@ _unsloth_uninstall_main() {
         # <root>/stable-diffusion.cpp, so the removal above already took it. Older builds put it
         # BESIDE the root at <parent>/stable-diffusion.cpp (find_sd_cpp_binary derived it from
         # UNSLOTH_STUDIO_HOME.parent), and removing only the root would leave that build behind.
-        # Only remove a sibling Studio installed: <parent> is a user-chosen dir and
+        # Only remove a sibling Unsloth installed: <parent> is a user-chosen dir and
         # "stable-diffusion.cpp" is exactly what `git clone` of the upstream project produces, so
         # require our owner marker (written by install_sd_cpp_prebuilt) before rm, and keep any
-        # unowned checkout. A pre-marker Studio build is left behind, never a user file deleted.
+        # unowned checkout. A pre-marker Unsloth build is left behind, never a user file deleted.
         # Guard the derived parent path the same way.
         _custom_sd_cpp="$(dirname "$_custom_root")/stable-diffusion.cpp"
         if _is_unsafe_root "$_custom_sd_cpp"; then
             echo "  refusing to remove unsafe path: $_custom_sd_cpp" >&2
         elif [ -e "$_custom_sd_cpp" ] && [ ! -f "$_custom_sd_cpp/.unsloth-studio-owned" ]; then
-            echo "  keeping sd.cpp without Studio owner marker: $_custom_sd_cpp" >&2
+            echo "  keeping sd.cpp without Unsloth owner marker: $_custom_sd_cpp" >&2
         else
             _remove_path "$_custom_sd_cpp"
         fi
@@ -569,7 +569,7 @@ _unsloth_uninstall_main() {
         # The same ownership check the canonical loop makes before it touches anything. A stale or
         # mistyped UNSLOTH_STUDIO_HOME still reaches here (the lexical pass has no cd -P to filter
         # a path that is not there), and without this "/parent/typo" would take the marked
-        # /parent/stable-diffusion.cpp of somebody else's Studio with it.
+        # /parent/stable-diffusion.cpp of somebody else's Unsloth with it.
         _is_studio_root "$_lex_root" || continue
         _lex_sd_cpp="$(dirname "$_lex_root")/stable-diffusion.cpp"
         [ -f "$_lex_sd_cpp/.unsloth-studio-owned" ] || continue
@@ -596,10 +596,10 @@ _unsloth_uninstall_main() {
     # leejet/stable-diffusion.cpp produces, so a user may keep their own checkout (or point
     # UNSLOTH_SD_CPP_PATH) at this default path; require our owner marker (written by
     # install_sd_cpp_prebuilt) before rm, mirroring the custom-root guard above, so a user's own
-    # checkout or a pre-marker Studio build is kept rather than deleted.
+    # checkout or a pre-marker Unsloth build is kept rather than deleted.
     _default_sd_cpp="$HOME/.unsloth/stable-diffusion.cpp"
     if [ -e "$_default_sd_cpp" ] && [ ! -f "$_default_sd_cpp/.unsloth-studio-owned" ]; then
-        echo "  keeping sd.cpp without Studio owner marker: $_default_sd_cpp" >&2
+        echo "  keeping sd.cpp without Unsloth owner marker: $_default_sd_cpp" >&2
     else
         _remove_path "$_default_sd_cpp"
     fi
@@ -883,7 +883,7 @@ _unsloth_uninstall_main() {
         echo "      did not see is still on disk."
     fi
     echo "Note: provider API keys are kept in the browser's localStorage, not in studio.db."
-    echo "      Unless you ran Studio as the desktop app, clear site data for the"
+    echo "      Unless you ran Unsloth as the desktop app, clear site data for the"
     echo "      http://localhost:<port> origin you used to remove them."
     echo "Note: Hugging Face model cache at ~/.cache/huggingface was left in place."
     echo "Remove it manually with 'rm -rf ~/.cache/huggingface/hub' if desired."

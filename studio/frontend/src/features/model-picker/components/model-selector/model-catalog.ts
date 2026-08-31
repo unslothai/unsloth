@@ -5,6 +5,10 @@
 // Pure helpers, no React/DOM deps. See model-catalog.check.ts (`npm run catalog:check`).
 
 import {
+  type GgufFitClass,
+  classifyGgufFit as classifyGgufFitForDevice,
+} from "../../../../lib/gguf-fit.ts";
+import {
   type HostClass,
   curatedArtifactIsOfferable,
   h3PerfSuffix,
@@ -271,14 +275,21 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     artifacts: [bf16Pipeline("Alpha-VLLM/Lumina-Image-2.0", 11, { totalParams: 2609769152 })],
   },
   {
-    // 17B dual-stream 2K-native DiT with a Qwen2.5-VL encoder; the mirror guider components load natively on diffusers 0.39. ~50 GB bf16-resident, so consumer GPUs route to the QuantStack GGUF.
+    // 17B dual-stream 2K-native DiT with a Qwen2.5-VL encoder; the mirror guider components load natively on diffusers 0.39.
+    // bf16 only: this used to carry gguf("QuantStack/HunyuanImage-2.1-GGUF") as the consumer route, and that repo was
+    // unpublished (404 to an authed request, 401 anonymous). An entry the Hub cannot serve is worse than no entry, because
+    // it renders as a one-click download that fails partway through, which is the exact case model-catalog-network-check
+    // exists to find. QuantStack itself is alive and still ships its other GGUF repos, so this is one model withdrawn
+    // rather than a publisher going away. No vetted replacement: unsloth has an FP8 mirror but no GGUF, and the
+    // third-party HunyuanImage GGUF repos on the Hub are a different lineage (calcuis ships "lite" variants), so picking
+    // one is a decision about which weights users download and not a CI fix.
+    // At 24 GB the bf16 still fits the 61.6 GB budget, so the group stays visible; it is the quant ladder that is gone.
     canonicalId: "hunyuanvideo-community/HunyuanImage-2.1-Diffusers",
     displayName: "HunyuanImage 2.1",
     description: "Text-to-image",
     scope: "image",
     artifacts: [
       bf16Pipeline("hunyuanvideo-community/HunyuanImage-2.1-Diffusers", 50, { totalParams: 17425795520 }),
-      gguf("QuantStack/HunyuanImage-2.1-GGUF"),
     ],
   },
   {
@@ -448,7 +459,8 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
 ];
 
 // The Audio page's curated list. tts groups load into the main slot via /api/inference/load
-// (Orpheus is the only family the llama.cpp TTS path also serves as GGUF); stt groups map to
+// (Orpheus is the only family the llama.cpp TTS path also serves as GGUF); native TTS
+// families use their official Transformers/Diffusers interfaces. stt groups map to
 // the dictation sidecar models in stt-model-catalog.ts, so their sizes are informational only.
 export const AUDIO_CATALOG: CatalogGroup[] = [
   {
@@ -489,9 +501,72 @@ export const AUDIO_CATALOG: CatalogGroup[] = [
       bf16Pipeline("unsloth/Llama-OuteTTS-1.0-1B", 4, { label: "Safetensors" }),
     ],
   },
+  {
+    canonicalId: "bosonai/higgs-tts-2-3b-base",
+    displayName: "Higgs TTS 2 3B",
+    description: "Text-to-speech",
+    scope: "audio",
+    task: "tts",
+    artifacts: [
+      bf16Pipeline("bosonai/higgs-tts-2-3b-base", 12, {
+        label: "Safetensors",
+      }),
+    ],
+  },
+  {
+    canonicalId: "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5",
+    displayName: "MOSS TTS Local v1.5",
+    description: "48 kHz stereo text-to-speech",
+    scope: "audio",
+    task: "tts",
+    artifacts: [
+      bf16Pipeline("OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5", 10, {
+        label: "Safetensors",
+      }),
+    ],
+  },
+  {
+    canonicalId: "OpenMOSS-Team/MOSS-TTS-Nano-100M",
+    displayName: "MOSS TTS Nano 100M",
+    description: "CPU-friendly text-to-speech",
+    scope: "audio",
+    task: "tts",
+    artifacts: [
+      bf16Pipeline("OpenMOSS-Team/MOSS-TTS-Nano-100M", 1, {
+        label: "Safetensors",
+      }),
+    ],
+  },
+  {
+    canonicalId: "multimodalart/higgs-audio-v3-tts-4b-transformers",
+    displayName: "Higgs Audio v3 TTS 4B",
+    description: "Text-to-speech",
+    scope: "audio",
+    task: "tts",
+    artifacts: [
+      bf16Pipeline("multimodalart/higgs-audio-v3-tts-4b-transformers", 10, {
+        label: "Safetensors",
+      }),
+    ],
+  },
+  {
+    canonicalId: "MiniMaxAI/MiniMax-Music3",
+    displayName: "MiniMax Music 3",
+    description: "Lyrics-to-music · NVIDIA CUDA",
+    scope: "audio",
+    task: "tts",
+    artifacts: [
+      bf16Pipeline("MiniMaxAI/MiniMax-Music3", 67, {
+        label: "Diffusers",
+        // 67 GB is the repository/download footprint, not resident VRAM. The
+        // publisher's ModularPipeline path loads in BF16 on a 24 GB CUDA GPU.
+        offloadFitTiers: [{ gpuGb: 24, systemRamGb: 0 }],
+      }),
+    ],
+  },
   // Llasa is deliberately absent. It speaks XCodec2 (65,536 <|s_N|> tokens), which is
   // neither in _AUDIO_TOKEN_PATTERNS nor in AudioCodecManager, so a curated row here
-  // loaded and then failed at generation with "not a supported TTS model". Studio can
+  // loaded and then failed at generation with "not a supported TTS model". Unsloth can
   // still TRAIN Llasa (unsloth_Llasa-3B.yaml); this catalog only feeds the Generate
   // picker. Re-add both rows together with an xcodec2 decoder.
   {
@@ -873,21 +948,58 @@ export interface DeviceBudget {
   gpuGb: number;
   /** Available system RAM in GB (for the GGUF offload tier). */
   systemRamGb: number;
+  /** The user's saved VRAM Budget. Absent falls back to the loader's default. */
+  budgetFraction?: number;
+  /** GPUs gpuGb sums, for the loader's per-card VRAM reserve. Absent means one. */
+  gpuCount?: number;
 }
 
-/** GGUF fit classification matching llama-server _select_gpus: fits = model <= 0.7 * GPU; tight = fits with 0.7 * RAM offload; oom = neither. */
+/** GGUF fit, delegated to the one formula the Hub badge already uses.
+ *
+ * This used to carry its own rule (0.7 * GPU + 0.7 * RAM, raw file size) whose comment claimed to
+ * match `_select_gpus`. It did not: the loader admits against `_active_vram_fraction()`, the saved
+ * VRAM Budget or 0.97, over weights PLUS estimated KV cache. 0.7 appeared nowhere in the backend,
+ * so chat hid quants the loader would have taken and ignored the budget setting entirely. */
 export function classifyGgufFit(
   sizeBytes: number,
   budget: DeviceBudget,
-): "fits" | "tight" | "oom" {
-  const gpuBudgetGb = (budget.gpuGb || 0) * 0.7;
-  const totalBudgetGb = gpuBudgetGb + (budget.systemRamGb || 0) * 0.7;
-  if (totalBudgetGb <= 0) return "fits";
+): GgufFitClass {
+  // Nothing measured, so a verdict would be invented. Callers that know the budget really is zero
+  // (a probed Vulkan device) decide that for themselves.
+  if ((budget.gpuGb || 0) <= 0 && (budget.systemRamGb || 0) <= 0) return "fits";
+  if (sizeBytes <= 0) return "fits";
+  return classifyGgufFitForDevice(sizeBytes, budget);
+}
+
+/** Fit rule for a GGUF the IMAGES / VIDEO / AUDIO pickers offer, which is the one case the shared
+ *  llama.cpp formula must not judge: those loads go through the diffusion backend, whose budget is
+ *  free memory minus a reserve at a 0.85 margin (`diffusion_memory.py`, `_reserve_mib` is 20% on
+ *  unified memory), and which explicitly cannot offload there. On a 64 GiB Mac that planner allows
+ *  about 43.5 GiB where llama.cpp allows 62.1. This rule, the picker's own from before the
+ *  classifiers were merged, allows 44.8, so it is the closer of the two by 18 GiB.
+ *
+ *  It is not the diffusion planner either. It is here so unifying chat's verdict with the Hub's
+ *  does not quietly promise media loads that cannot be placed; a real diffusion predicate is its
+ *  own change. */
+export function classifyMediaGgufFit(
+  sizeBytes: number,
+  gpuGb: number,
+  systemRamGb: number,
+): GgufFitClass {
+  const gpuBudgetGb = gpuGb * 0.7;
+  const totalBudgetGb = gpuBudgetGb + systemRamGb * 0.7;
   const gb = sizeBytes / 1024 ** 3;
   if (gb <= 0 || gb <= gpuBudgetGb) return "fits";
   if (gpuBudgetGb <= 0) return gb <= totalBudgetGb ? "fits" : "oom";
-  if (gb <= totalBudgetGb) return "tight";
-  return "oom";
+  // "partial", where this rule used to say "tight": the state it describes is a spill out of the
+  // card, which is what partial means. Tight now means a full GPU load with no room to spare.
+  return gb <= totalBudgetGb ? "partial" : "oom";
+}
+
+/** Whether a verdict still loads. Only `oom` clears neither budget; `marginal` and `partial` run,
+ *  the second by offloading to CPU. */
+export function ggufFitRuns(fit: GgufFitClass): boolean {
+  return fit !== "oom";
 }
 
 export interface QuantVariant {
@@ -904,22 +1016,23 @@ export function pickDefaultQuant(
   budget: DeviceBudget,
 ): QuantVariant | null {
   if (!variants || variants.length === 0) return null;
-  const totalBudgetGb =
-    (budget.gpuGb || 0) * 0.7 + (budget.systemRamGb || 0) * 0.7;
+  const anyBudget = (budget.gpuGb || 0) > 0 || (budget.systemRamGb || 0) > 0;
+  const runs = (v: QuantVariant) =>
+    ggufFitRuns(classifyGgufFit(v.size_bytes, budget));
   const downloadedFitting = variants
-    .filter((v) => v.downloaded && classifyGgufFit(v.size_bytes, budget) !== "oom")
+    .filter((v) => v.downloaded && runs(v))
     .sort((a, b) => b.size_bytes - a.size_bytes);
   if (downloadedFitting.length > 0) return downloadedFitting[0];
   const byQuant = (quant: string | null) =>
     quant ? (variants.find((v) => v.quant === quant) ?? null) : null;
   // No budget knowledge at all: trust the repo default.
-  if (totalBudgetGb <= 0) return byQuant(defaultVariant) ?? variants[0];
+  if (!anyBudget) return byQuant(defaultVariant) ?? variants[0];
   const defaultV = byQuant(defaultVariant);
-  if (defaultV && classifyGgufFit(defaultV.size_bytes, budget) !== "oom") {
+  if (defaultV && runs(defaultV)) {
     return defaultV;
   }
   const fitting = variants
-    .filter((v) => classifyGgufFit(v.size_bytes, budget) !== "oom")
+    .filter(runs)
     .sort((a, b) => b.size_bytes - a.size_bytes);
   if (fitting.length > 0) return fitting[0];
   const smallest = [...variants].sort((a, b) => a.size_bytes - b.size_bytes);

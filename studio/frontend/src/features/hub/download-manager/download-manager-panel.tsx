@@ -173,6 +173,7 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
           }}
           bytesPerSec={job.bytesPerSec}
           cancelling={job.state === "cancelling"}
+          etaSeconds={job.etaSeconds}
         />
       ) : null}
       {terminal || job.state === "cancelling" || job.error ? (
