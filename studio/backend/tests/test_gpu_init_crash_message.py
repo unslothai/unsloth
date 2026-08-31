@@ -184,7 +184,7 @@ def _run_cpu_fallback_load(
         launches.append((list(cmd), dict(kwargs["env"])))
         return _Process(returncodes[index])
 
-    def _wait_for_health(timeout):
+    def _wait_for_health(timeout, **_kw):
         if len(launches) == 1 and first_output:
             backend._stdout_lines = [first_output]
         if cancel_after is not None and len(launches) >= cancel_after:
@@ -206,7 +206,7 @@ def _run_cpu_fallback_load(
         )
         if not available:
             return None
-        return ["/staged/llama-server", "--device", "none"], None
+        return ["/staged/llama-server", "--device", "none"], None, None
 
     backend._wait_for_health = _wait_for_health
     backend._prepare_cpu_fallback_launch = _prepare_cpu_fallback
@@ -272,7 +272,7 @@ class TestGpuInitCrashMessage:
 
 
 class TestPlatformMatrix:
-    """Every OS and runtime flavour Studio ships, so the recovery cannot leak
+    """Every OS and runtime flavour Unsloth ships, so the recovery cannot leak
     into a path that already worked."""
 
     # (platform, library prefix, library suffix, binary name)
@@ -614,7 +614,7 @@ class TestCpuIsolatedReplay:
 
         prepared = backend._prepare_cpu_fallback_launch("/original/server", ["original"], env, {})
 
-        assert prepared == (["/staged/server", "--device", "none"], None)
+        assert prepared == (["/staged/server", "--device", "none"], None, None)
         assert env[loader_path] == "/staged/libs"
         assert env["KEEP"] == "1"
 
@@ -800,7 +800,7 @@ class TestCpuIsolatedReplay:
 
         assert staged is not None
         assert not dead.exists()
-        # No owner stamp means an older Studio wrote it; leave it alone.
+        # No owner stamp means an older Unsloth wrote it; leave it alone.
         assert legacy.exists()
 
     def test_a_live_owner_keeps_its_runtime(self, monkeypatch, tmp_path):
@@ -1228,7 +1228,7 @@ def test_terminal_signal_with_explicit_child_placement_does_not_replay(
     backend._is_vulkan_backend = lambda _binary = None: True
     backend._vulkan_prebuilt_was_auto_selected = lambda _binary: True
     backend.probe_server_capabilities = lambda _binary: {"found": True}
-    backend._wait_for_health = lambda timeout: False
+    backend._wait_for_health = lambda timeout, **_kw: False
     backend._record_server_pid = lambda _pid: None
     backend._clear_server_pid = lambda: None
     backend._llama_server_env_for_binary = lambda _binary: {
@@ -1508,3 +1508,202 @@ def test_success_response_reports_cpu_downgrade(model_cls):
         kwargs.update(status = "loaded", model = "owner/model", display_name = "model", inference = {})
     response = model_cls(**kwargs)
     assert response.model_dump()["cpu_fallback_reason"] == "vulkan_startup_crash"
+
+
+_HIP_ROCR_MISMATCH = (
+    "llama-server: symbol lookup error: "
+    "/home/t/.unsloth/llama.cpp/build/bin/libamdhip64.so.7: "
+    "undefined symbol: hsa_amd_queue_create, version ROCR_1"
+)
+_VRAM_CRASH = "ggml_backend_hip_buffer_type_alloc_buffer: failed to allocate"
+
+
+def _fit_mode(cmd):
+    if "--fit" in cmd:
+        return cmd[cmd.index("--fit") + 1]
+    return None
+
+
+def _run_full_offload_spawns(monkeypatch, tmp_path, *, outputs, returncodes):
+    """Drive load_model with a model that fits on GPU (--fit off).
+
+    Each spawn's stdout is ``outputs[i]`` and its exit is ``returncodes[i]``
+    (None means healthy). The child env prepends /opt/rocm/lib unless
+    ``use_system_rocm=False``, which is the retry under test.
+    """
+
+    def _gguf_string(value: str) -> bytes:
+        encoded = value.encode()
+        return struct.pack("<Q", len(encoded)) + encoded
+
+    metadata = _gguf_string("general.architecture") + struct.pack("<I", 8) + _gguf_string("llama")
+    gguf = tmp_path / "model.gguf"
+    gguf.write_bytes(struct.pack("<IIQQ", 0x46554747, 3, 0, 1) + metadata)
+
+    backend = LlamaCppBackend()
+    backend._get_gpu_memory = lambda _binary = None, **_kw: [(0, 24 * 1024**3, 24 * 1024**3)]
+    backend._get_gpu_free_memory = lambda _binary = None, **_kw: [(0, 24 * 1024**3)]
+    backend._read_gguf_metadata = lambda _path: None
+    backend._can_estimate_kv = lambda: False
+    backend._get_gguf_size_bytes = lambda _path: 1024
+    backend._mmproj_vram_bytes = lambda _path: 0
+    backend._resolve_launch_mmproj_path = lambda **_kwargs: None
+    backend._apu_ram_shortfall_message = lambda *_args, **_kwargs: None
+    backend._amd_apu_wants_unified_memory = lambda *_args, **_kwargs: False
+    backend._find_llama_server_binary = lambda include_denied = False: "/fake/llama-server"
+    backend._select_gpus = lambda *_a, **_k: ([0], False)
+    backend._host_torch_is_rocm = lambda: False
+    monkeypatch.setattr(
+        LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: False)
+    )
+    backend.probe_server_capabilities = lambda _binary: {"found": True}
+    backend._record_server_pid = lambda _pid: None
+    backend._clear_server_pid = lambda: None
+    monkeypatch.setattr(
+        llama_cpp, "_swa_cache_path", lambda: tmp_path / "studio" / "swa_cache.json"
+    )
+
+    def _env_for_binary(
+        _binary,
+        *,
+        use_system_rocm = True,
+        **_k,
+    ):
+        ld = "/opt/rocm/lib:/bundle/bin" if use_system_rocm else "/bundle/bin"
+        return {"PATH": os.environ.get("PATH", ""), "LD_LIBRARY_PATH": ld}
+
+    backend._llama_server_env_for_binary = _env_for_binary
+    backend._prepare_cpu_fallback_launch = lambda *_a, **_kw: None
+    # Class-level and set by a successful bundle-only retry, so give every run a
+    # fresh one rather than leaking a correction into the next test.
+    monkeypatch.setattr(LlamaCppBackend, "_bundle_only_rocm_dirs", {})
+
+    launches = []
+
+    class _Process:
+        pid = 123
+        stdout = ()
+
+        def __init__(self, returncode):
+            self.returncode = returncode
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            return None
+
+        def wait(self, timeout = None):
+            return self.returncode
+
+        def kill(self):
+            return None
+
+    _real_popen = subprocess.Popen
+
+    def _popen(cmd, **kwargs):
+        # Only the server is a launch. A host with the rocm_sdk wheel installed
+        # shells out to offload-arch from inside load_model, which would land at
+        # index 0 and shift every assertion below onto the wrong process.
+        if not cmd or str(cmd[0]) != "/fake/llama-server":
+            return _real_popen(cmd, **kwargs)
+        idx = len(launches)
+        launches.append((list(cmd), dict(kwargs["env"])))
+        code = returncodes[idx] if idx < len(returncodes) else 1
+        return _Process(code)
+
+    def _wait_for_health(timeout = 600.0, **_kw):
+        idx = len(launches) - 1
+        if 0 <= idx < len(outputs):
+            backend._stdout_lines = [outputs[idx]]
+        code = returncodes[idx] if 0 <= idx < len(returncodes) else 1
+        return code is None
+
+    backend._wait_for_health = _wait_for_health
+    monkeypatch.setattr(subprocess, "Popen", _popen)
+    loaded = False
+    error = None
+    try:
+        loaded = backend.load_model(
+            GgufLoadIntent(gguf_path = str(gguf), model_identifier = "owner/model")
+        )
+    except Exception as exc:
+        error = exc
+    return launches, loaded, error
+
+
+class TestHipRocrRetryKeepsFitBudget:
+    """The ROCm env correction has its own attempt, so a later VRAM crash
+    after the bundle-only launch can still take the --fit on recovery.
+    """
+
+    def test_mix_then_vram_still_gets_fit_on(self, monkeypatch, tmp_path):
+        launches, loaded, error = _run_full_offload_spawns(
+            monkeypatch,
+            tmp_path,
+            outputs = [_HIP_ROCR_MISMATCH, _VRAM_CRASH, ""],
+            returncodes = [127, 1, None],
+        )
+        assert error is None
+        assert loaded
+        assert len(launches) == 3
+        cmd0, env0 = launches[0]
+        cmd1, env1 = launches[1]
+        cmd2, env2 = launches[2]
+        assert env0["LD_LIBRARY_PATH"].startswith("/opt/rocm/lib")
+        assert "/opt/rocm/lib" not in env1["LD_LIBRARY_PATH"].split(":")
+        assert "/opt/rocm/lib" not in env2["LD_LIBRARY_PATH"].split(":")
+        assert _fit_mode(cmd0) == "off"
+        assert _fit_mode(cmd1) == "off"
+        assert _fit_mode(cmd2) == "on"
+
+    def test_mix_then_healthy_bundled_hip_does_not_fit_retry(self, monkeypatch, tmp_path):
+        launches, loaded, error = _run_full_offload_spawns(
+            monkeypatch,
+            tmp_path,
+            outputs = [_HIP_ROCR_MISMATCH, ""],
+            returncodes = [127, None],
+        )
+        assert error is None
+        assert loaded
+        assert len(launches) == 2
+        assert _fit_mode(launches[0][0]) == "off"
+        assert _fit_mode(launches[1][0]) == "off"
+        assert "/opt/rocm/lib" not in launches[1][1]["LD_LIBRARY_PATH"].split(":")
+        # Proved on this host, so later children skip the prepend outright.
+        assert LlamaCppBackend._prefers_bundle_only_rocm("/fake/llama-server")
+
+    def test_a_later_launch_in_the_same_load_still_records_the_correction(
+        self, monkeypatch, tmp_path
+    ):
+        # The correction edits the shared env, so it survives into the outer
+        # recovery spawns (no-flash here). Those call _spawn_and_wait afresh, so
+        # a per-call flag left the launch that actually came up healthy
+        # unrecorded and the sidecar kept the prepend.
+        launches, loaded, error = _run_full_offload_spawns(
+            monkeypatch,
+            tmp_path,
+            outputs = [_HIP_ROCR_MISMATCH, "", "", ""],
+            returncodes = [127, -11, -11, None],
+        )
+        assert error is None
+        assert loaded
+        assert len(launches) == 4
+        assert "/opt/rocm/lib" not in launches[-1][1]["LD_LIBRARY_PATH"].split(":")
+        assert LlamaCppBackend._prefers_bundle_only_rocm("/fake/llama-server")
+
+    def test_a_mix_the_retry_did_not_fix_does_not_spend_the_fit_slot(self, monkeypatch, tmp_path):
+        # Bundle-only did not help, so the symbol is still missing. --fit cannot
+        # load a missing symbol: stop at two launches and report the mix.
+        launches, loaded, error = _run_full_offload_spawns(
+            monkeypatch,
+            tmp_path,
+            outputs = [_HIP_ROCR_MISMATCH, _HIP_ROCR_MISMATCH],
+            returncodes = [127, 127],
+        )
+        assert not loaded
+        assert len(launches) == 2
+        assert _fit_mode(launches[1][0]) == "off"
+        assert "HIP/ROCR" in str(error)
+        # The retry did not fix it, so nothing was proved: do not latch.
+        assert not LlamaCppBackend._prefers_bundle_only_rocm("/fake/llama-server")

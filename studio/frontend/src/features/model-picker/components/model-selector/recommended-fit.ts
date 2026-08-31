@@ -4,6 +4,9 @@
 // Pure helpers for the Recommended list: which formats to surface and whether a
 // model fits the device. No React/DOM deps so they are easy to test.
 
+import { classifyGgufFit } from "../../../../lib/gguf-fit.ts";
+import { classifyMediaGgufFit } from "./model-catalog.ts";
+
 const GGUF_SUFFIX_RE = /-GGUF(?:$|-)/i;
 const MLX_RE = /-MLX(?:$|-)/i;
 
@@ -66,7 +69,7 @@ const PARAM_RE = /(?:^|[-_/. ])[eE]?(\d+(?:\.\d+)?)\s*[bB](?=$|[-_./ ])/;
 export function paramsFromId(id: string): number | undefined {
   const match = PARAM_RE.exec(id);
   if (!match) return undefined;
-  const billions = parseFloat(match[1]);
+  const billions = Number.parseFloat(match[1]);
   return Number.isFinite(billions) && billions > 0 ? billions * 1e9 : undefined;
 }
 
@@ -79,36 +82,69 @@ export function estimateQuantBytes(params: number): number {
   return params * MIN_QUANT_BYTES_PER_PARAM;
 }
 
-/** A model fits when its on-disk size (or a precomputed VRAM estimate) is within
- * the device budget (0.7*GPU + 0.7*RAM). Unknown device means we cannot tell, so
- * treat it as fitting. Unknown size normally fits too, but Recommended passes
- * `requireKnown` so a model we cannot size (e.g. a huge GGUF with no metadata or
- * size token) is hidden rather than wrongly shown. */
+/** A model fits when it can run at all: `classifyGgufFit` short of `oom`, so a partial CPU
+ * offload counts, since that loads and merely runs slower. Shares the loader's formula with the
+ * Hub badge and the quant rows, because this predicate ALSO gates the "Fits on device" filter,
+ * and a filter that hides a row the quant list would badge as runnable is the same bug twice.
+ *
+ * Unknown device means we cannot tell, so treat it as fitting. Unknown size normally fits too,
+ * but Recommended passes `requireKnown` so a model we cannot size (e.g. a huge GGUF with no
+ * metadata or size token) is hidden rather than wrongly shown. */
 export function fitsDevice(opts: {
   sizeBytes?: number;
-  estimatedVramGb?: number;
   gpuGb?: number;
   systemRamGb?: number;
   budgetKnown?: boolean;
   requireKnown?: boolean;
+  budgetFraction?: number;
+  /** How many GPUs gpuGb sums, so the gate charges the loader's per-card VRAM reserve the same
+   *  number of times the badge does. Absent means one. */
+  gpuCount?: number;
+  /** Images / Video: the row is placed by the diffusion backend, not llama-server, so it takes the
+   *  media rule the quant rows under it use. Applies to every format on those pages, GGUF or not:
+   *  that rule is the budget all of them had before the classifiers were merged. */
+  mediaLoad?: boolean;
+  /** The load device's memory is a window into host RAM, so RAM is not a second budget to add.
+   *  Media rule only; the llama.cpp one already takes a RAM figure with the pool removed. */
+  hostPooledMemory?: boolean;
 }): boolean {
   const {
     sizeBytes,
-    estimatedVramGb,
     gpuGb,
     systemRamGb,
     budgetKnown,
     requireKnown,
+    budgetFraction,
+    gpuCount,
+    mediaLoad,
+    hostPooledMemory,
   } = opts;
-  // Unified-memory hosts (Mac / no discrete GPU) report system RAM but no GPU,
-  // so the budget must include RAM. Only an entirely unknown budget fits freely.
-  const budgetGb = Math.max(0, gpuGb ?? 0) * 0.7 + Math.max(0, systemRamGb ?? 0) * 0.7;
-  if (budgetGb <= 0) return !budgetKnown;
+  // Unified-memory hosts (Mac / no discrete GPU) report system RAM but no GPU, so the budget must
+  // include RAM. Only an entirely unknown budget fits freely.
+  const anyBudget =
+    Math.max(0, gpuGb ?? 0) > 0 || Math.max(0, systemRamGb ?? 0) > 0;
+  if (!anyBudget) return !budgetKnown;
   if (sizeBytes && sizeBytes > 0) {
-    return sizeBytes / 1024 ** 3 <= budgetGb;
-  }
-  if (estimatedVramGb && estimatedVramGb > 0) {
-    return estimatedVramGb <= budgetGb;
+    if (mediaLoad) {
+      // No RAM tier on a host pool: diffusion offload moves bytes inside that one pool and frees
+      // nothing. llama.cpp below keeps its tier, because a GGUF really does spill into whatever
+      // host RAM the GPU window does not already cover.
+      return (
+        classifyMediaGgufFit(
+          sizeBytes,
+          gpuGb ?? 0,
+          hostPooledMemory ? 0 : (systemRamGb ?? 0),
+        ) !== "oom"
+      );
+    }
+    return (
+      classifyGgufFit(sizeBytes, {
+        gpuGb,
+        systemRamGb,
+        budgetFraction,
+        gpuCount,
+      }) !== "oom"
+    );
   }
   return requireKnown ? false : true;
 }
@@ -135,6 +171,15 @@ export function hfModelFitsDevice(
     systemRamAvailableGb: number;
     budgetKnown?: boolean;
   },
+  /** `budgetFraction` is the user's saved VRAM Budget: omitted scores against the loader's default,
+   *  so a caller that forgets it judges rows on a budget the user has already replaced.
+   *  `mediaLoad` picks the diffusion rule for an Images / Video row. */
+  opts: {
+    budgetFraction?: number;
+    gpuCount?: number;
+    mediaLoad?: boolean;
+    hostPooledMemory?: boolean;
+  } = {},
 ): boolean {
   if (
     gpu.memoryTotalGb <= 0 &&
@@ -155,6 +200,10 @@ export function hfModelFitsDevice(
     systemRamGb: gpu.systemRamAvailableGb,
     budgetKnown: gpu.budgetKnown,
     requireKnown: true,
+    budgetFraction: opts.budgetFraction,
+    gpuCount: opts.gpuCount,
+    mediaLoad: opts.mediaLoad,
+    hostPooledMemory: opts.hostPooledMemory,
   });
 }
 
@@ -168,11 +217,40 @@ export function loadScopedGpu<
     memoryTotalGb: number;
     maxDeviceMemoryGb: number;
     loadDeviceMemoryGb: number;
+    loadDeviceSharedMemory?: boolean;
+    loadDeviceSharesHostMemory?: boolean;
+    systemRamAvailableGb: number;
+    systemRamAvailableHostGb?: number;
+    deviceCount?: number;
   },
->(gpu: T, taskScoped: boolean): T {
+>(gpu: T, taskScoped: boolean): T & { deviceCount?: number } {
   if (!taskScoped || !gpu.available) return gpu;
   const deviceGb = gpu.loadDeviceMemoryGb || gpu.maxDeviceMemoryGb;
-  return deviceGb > 0 ? { ...gpu, memoryTotalGb: deviceGb } : gpu;
+  if (deviceGb <= 0) return gpu;
+  return {
+    ...gpu,
+    memoryTotalGb: deviceGb,
+    // Narrowed with the capacity it describes, or the loader's per-card VRAM reserve gets charged
+    // once per HOST GPU against a ONE-card budget. Two 24 GiB cards at a 1.0 setting scored an
+    // audio quant against 23.28 GiB where the loader offers the selected card's 23.5.
+    deviceCount: 1,
+    // The raw-host figure is the RAM a DEDICATED task device may claim back from a shared GPU's
+    // reservation. Gated on the folded flag, not shared_memory: that one is Windows-only, so a
+    // Linux ROCm APU took this branch and undid the very subtraction that keeps its GTT window
+    // out of the RAM tier.
+    systemRamAvailableGb: hostPooledLoadDevice(gpu)
+      ? gpu.systemRamAvailableGb
+      : (gpu.systemRamAvailableHostGb ?? gpu.systemRamAvailableGb),
+  };
+}
+
+/** Whether the device a task load lands on draws from host RAM. Prefers the folded flag, which
+ *  counts a Linux APU that reports unified_memory without shared_memory. */
+function hostPooledLoadDevice(gpu: {
+  loadDeviceSharedMemory?: boolean;
+  loadDeviceSharesHostMemory?: boolean;
+}): boolean {
+  return gpu.loadDeviceSharesHostMemory ?? gpu.loadDeviceSharedMemory === true;
 }
 
 /** One fit predicate for both search lists (curated matches and the Hub rows
@@ -187,6 +265,7 @@ export function searchRowFitsDevice<
     loadDeviceMemoryGb: number;
     systemRamAvailableGb: number;
     budgetKnown?: boolean;
+    deviceCount?: number;
   },
 >(
   row: {
@@ -201,16 +280,37 @@ export function searchRowFitsDevice<
     gpu: G;
     inferenceGpu: G;
     taskScoped: boolean;
+    /** Images / Video only. `taskScoped` picks the single-device budget for every task page; this
+     *  picks the diffusion RULE, which Audio must not get: its GGUFs run under llama.cpp. */
+    diffusionLoad?: boolean;
+    budgetFraction?: number;
+    /** How many GPUs the aggregate sums, when the caller's inventory does not carry the count
+     *  itself. loadScopedGpu narrows it to 1 with the capacity, so a task page needs nothing here. */
+    gpuCount?: number;
+    /** The image/video load device's pool is host RAM, so RAM is not a second budget. */
+    hostPooledMemory?: boolean;
   },
 ): boolean {
-  const source = opts.isGguf ? opts.inferenceGpu : opts.gpu;
+  const source = loadScopedGpu(
+    opts.diffusionLoad || !opts.isGguf ? opts.gpu : opts.inferenceGpu,
+    opts.taskScoped,
+  );
   return hfModelFitsDevice(
     {
       ...row,
       isGguf: opts.isGguf,
       curatedSizeBytes: row.curatedSizeBytes ?? opts.curatedSizeBytes,
     },
-    loadScopedGpu(source, opts.taskScoped),
+    source,
+    // A task-scoped row is a media load, so it takes the media rule as well as the single-device
+    // budget. Without this the search gate disagreed with the quant rows it gates.
+    {
+      budgetFraction: opts.budgetFraction,
+      // From the SCOPED budget, so the count always describes the capacity beside it.
+      gpuCount: source.deviceCount ?? opts.gpuCount,
+      mediaLoad: opts.diffusionLoad,
+      hostPooledMemory: opts.hostPooledMemory,
+    },
   );
 }
 

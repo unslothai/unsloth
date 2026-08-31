@@ -229,17 +229,24 @@ def test_llama_install_root_pinned_returns_none(monkeypatch, tmp_path):
 
 
 def test_status_source_build_suppressed_when_newer(monkeypatch, tmp_path):
-    # A source build already newer than the latest prebuilt is not nagged.
+    # Drive the real --version parser through update status: a semantic-version
+    # source build newer than the latest prebuilt must not be offered a downgrade.
     binary = tmp_path / "llama.cpp" / "build" / "bin" / "llama-server"
     binary.parent.mkdir(parents = True)
     binary.write_text("stub")
     monkeypatch.setattr(upd, "_find_binary", lambda: str(binary))
-    _prebuilt(monkeypatch, release_tag = "b9518")
-    monkeypatch.setattr(upd, "_installed_build_number", lambda b: 9600)
+    _prebuilt(monkeypatch, release_tag = "b10360")
+
+    class _Proc:
+        returncode = 0
+        stdout = ""
+        stderr = "version: 0.1.1-dev (build 10470, commit abc1234)\n"
+
+    monkeypatch.setattr(upd.subprocess, "run", lambda cmd, **kw: _Proc())
     st = upd.get_update_status()
     assert st["supported"] is True
     assert st["update_available"] is False
-    assert st["installed_tag"] == "b9600"
+    assert st["installed_tag"] == "b10470"
 
 
 def test_status_source_build_offers_same_base_mix(monkeypatch, tmp_path):
@@ -584,6 +591,43 @@ def test_start_update_reports_full_release_tag(monkeypatch, tmp_path):
     assert job["state"] == "success", job
     assert job["to_tag"] == "b9596-mix-e6f2453"
     assert "Updated llama.cpp to b9596-mix-e6f2453." in job["message"]
+
+
+def test_an_update_that_kept_the_existing_install_does_not_claim_a_new_release(
+    monkeypatch, tmp_path
+):
+    """Exit 0 no longer implies the release changed.
+
+    The installer answers a transient failure by keeping the tree on disk and
+    exiting 0, so "Updated llama.cpp to <tag>" would name the release the user
+    already had. The phase only starts when a newer release was offered, so
+    reporting the kept release as current would be just as wrong: the update is
+    still pending and the user has to retry.
+    """
+    install_dir = tmp_path / "llama.cpp"
+    binary = _write_install(install_dir, "b9595", release_tag = "b9595-mix-aaaaaaa")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(
+        freshness,
+        "_fetch_latest_release_tag",
+        lambda repo, timeout = 5.0: "b9596-mix-e6f2453",
+    )
+
+    # macOS is the reachable case: start_update passes no pin there, so the pinned-tag
+    # mismatch guard that catches this elsewhere does not run.
+    monkeypatch.setattr(upd.sys, "platform", "darwin")
+
+    # Exit 0 having changed nothing, which is what the keep path does.
+    _patch_installer_popen(monkeypatch, on_start = lambda cmd: None)
+
+    job = _run_start_update_to_completion()
+    assert job["state"] == "success", job
+    assert job["to_tag"] == "b9595-mix-aaaaaaa"
+    assert "Updated llama.cpp to" not in job["message"], job["message"]
+    assert "up to date" not in job["message"], job["message"]
+    assert "could not be updated" in job["message"], job["message"]
+    assert "Try again later" in job["message"], job["message"]
 
 
 def _run_start_update_to_completion():
@@ -999,8 +1043,13 @@ def test_installed_build_number(monkeypatch):
         monkeypatch.setattr(upd.subprocess, "run", lambda cmd, **kw: _Proc())
         return upd._installed_build_number("/bin/llama-server")
 
+    assert _ver("version: 0.1.1-dev (build 10470, commit abc1234)\nbuilt with clang\n") == 10470
+    assert _ver("version: 0.1.1 (build 10470, commit abc1234)\n") == 10470
     assert _ver("version: 9585 (abc1234)\nbuilt with clang\n") == 9585
+    assert _ver("version: 0.1.1-dev (build 0, commit unknown)\n") is None
+    assert _ver("version: 0.1.1-dev (build 1, commit deadbee)\n") is None
     assert _ver("version: 1 (deadbee)\n") is None  # source build without tags
+    assert _ver("version: 2.0.0\n") is None
     assert _ver("no version here") is None
     assert upd._installed_build_number(None) is None
 

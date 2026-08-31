@@ -49,6 +49,7 @@ from utils.transformers_version import (
     _higher_tier,
     _config_json_cache,
     _tokenizer_class_cache,
+    _config_mapping_cache,
     _config_needs_510_cache,
     _config_needs_530_cache,
     _config_needs_550_cache,
@@ -60,6 +61,7 @@ from utils.transformers_version import (
     activate_transformers_for_subprocess,
     _venv_dir_is_valid,
     _venv_dir_is_valid_and_undamaged,
+    _CURRENT_EXT_TAG,
     _ensure_venv_dir,
     hf_endpoint_unreachable,
 )
@@ -489,6 +491,26 @@ class TestCheckConfigNeeds550:
     def test_gemma4_model_type_only(self, tmp_path: Path):
         """config.json with model_type=gemma4 (no architectures) should return True."""
         cfg = {"model_type": "gemma4"}
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+
+        assert _check_config_needs_550(str(tmp_path)) is True
+
+    @pytest.mark.parametrize(
+        "cfg",
+        (
+            {"architectures": ["HiggsAudioV2ForConditionalGeneration"]},
+            {"model_type": "higgs_audio_v2"},
+            {"architectures": ["HiggsMultimodalQwen3ForConditionalGeneration"]},
+            {"model_type": "higgs_multimodal_qwen3"},
+        ),
+        ids = (
+            "higgs-tts2-architecture",
+            "higgs-tts2-model-type",
+            "higgs-tts3-architecture",
+            "higgs-tts3-model-type",
+        ),
+    )
+    def test_higgs_tts_uses_transformers_550(self, tmp_path: Path, cfg: dict):
         (tmp_path / "config.json").write_text(json.dumps(cfg))
 
         assert _check_config_needs_550(str(tmp_path)) is True
@@ -1472,6 +1494,10 @@ class TestProbeGating:
         _config_needs_510_cache.clear()
         _config_needs_550_cache.clear()
         _tokenizer_class_cache.clear()
+        # Sixth cache, and the one this class used to miss. get_transformers_tier consults
+        # CONFIG_MAPPING_NAMES per tier and upgrades a model_type the ambient default does
+        # not ship, so a mapping parsed by an earlier test decides the answer here.
+        _config_mapping_cache.clear()
 
     def _patch_venvs(self, monkeypatch):
         for fn in (
@@ -1521,8 +1547,13 @@ class TestProbeGating:
         monkeypatch.setattr(
             "utils.transformers_version._check_tokenizer_config_needs_v5", lambda m, t = None: False
         )
+        # A model_type the ambient default DOES ship. "brandnew" is in none of the
+        # mappings, so the static config-mapping tier upgraded it to 530 before the
+        # version-field probe under test ever ran, and the assert below only passed
+        # when an earlier test had left _config_mapping_cache in a state that skipped
+        # that path. The probe, not the mapping upgrade, is the subject here.
         _config_json_cache[("org/new", None)] = {
-            "model_type": "brandnew",
+            "model_type": "llama",
             "transformers_version": "5.0.0",
         }
         seen = []
@@ -1540,8 +1571,9 @@ class TestProbeGating:
         monkeypatch.setattr(
             "utils.transformers_version._check_tokenizer_config_needs_v5", lambda m, t = None: False
         )
+        # Shipped by the ambient default, for the same reason as the test above.
         _config_json_cache[("org/new", None)] = {
-            "model_type": "brandnew",
+            "model_type": "llama",
             "transformers_version": "5.6.0",
         }
         results = iter([_proc(1, "KeyError: 'x'"), _proc(1, "KeyError: 'x'"), _proc(0)])
@@ -1552,6 +1584,46 @@ class TestProbeGating:
         )
         assert get_transformers_tier("org/new") == "550"
         assert seen == ["", tv._VENV_T5_530_DIR, tv._VENV_T5_550_DIR]
+
+    def test_a_model_type_the_default_lacks_never_reaches_the_version_field_probe(
+        self, monkeypatch
+    ):
+        """The mapping check answers first, and short-circuits the probe below it.
+
+        This ordering is what quietly invalidated the two tests above. They pinned
+        model_type "brandnew", which no mapping ships, so once #7043 landed the mapping
+        check answered before the version-field probe they were written for ever ran, and
+        they began asserting the wrong branch's answer. Nothing pinned the ordering, so
+        the only symptom was those two failing in a way that read like a probe bug.
+
+        Pinning it here means a future reshuffle that puts the probe first fails as
+        itself, and the two tests above keep testing the probe rather than this.
+        """
+        import utils.transformers_version as tv
+
+        self._patch_venvs(monkeypatch)
+        monkeypatch.setattr(
+            "utils.transformers_version._check_tokenizer_config_needs_v5", lambda m, t = None: False
+        )
+        monkeypatch.setattr(
+            tv,
+            "_config_model_types",
+            lambda tier: frozenset({"llama"} if tier == "default" else {"llama", "brandnew"}),
+        )
+        # Declares 5.x too, so the version-field probe below WOULD fire if it were reached.
+        _config_json_cache[("org/brandnew", None)] = {
+            "model_type": "brandnew",
+            "transformers_version": "5.0.0",
+        }
+        probed = []
+        monkeypatch.setattr(
+            "utils.transformers_version.subprocess.run",
+            lambda cmd, **k: probed.append(cmd[3]) or _proc(0),
+        )
+
+        tier = get_transformers_tier("org/brandnew")
+        assert tier != "default", f"a model_type the default lacks must be raised, got {tier!r}"
+        assert probed == [], "the mapping check must answer before any sidecar probe runs"
 
     def test_ordinary_4x_config_does_not_probe(self, monkeypatch):
         self._patch_venvs(monkeypatch)
@@ -1893,6 +1965,110 @@ class TestVenvDirFileIntegrity:
     def test_deleted_file_is_detected(self, tmp_path: Path):
         venv_dir = self._make_venv(tmp_path / "venv")
         (venv_dir / "transformers" / "__init__.py").unlink()
+        assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    @pytest.mark.parametrize(
+        "ext_name",
+        [
+            "_regex.cpython-{tag}-darwin.so",
+            "_regex.cp{tag}-win_amd64.pyd",
+            "_regex.cpython-{tag}t-darwin.so",
+        ],
+    )
+    def test_extension_built_for_another_interpreter_is_detected(
+        self, tmp_path: Path, ext_name: str
+    ):
+        # Pick a stale tag by VERSION, not by whole tag: one template appends "t", so
+        # deriving it from _CURRENT_EXT_TAG directly builds "313t" -- the current tag --
+        # when the suite runs on a free-threaded 3.13, and the case asserts damage.
+        stale = "313" if _CURRENT_EXT_TAG.rstrip("t") != "313" else "312"
+        venv_dir = self._make_venv(
+            tmp_path / "venv",
+            files = {
+                "transformers/__init__.py": "x" * 40,
+                f"regex/{ext_name.format(tag = stale)}": "y" * 40,
+            },
+        )
+        assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_extension_for_the_running_interpreter_passes(self, tmp_path: Path):
+        venv_dir = self._make_venv(
+            tmp_path / "venv",
+            files = {
+                "transformers/__init__.py": "x" * 40,
+                f"regex/_regex.cpython-{_CURRENT_EXT_TAG}-darwin.so": "y" * 40,
+                "yaml/_yaml.so": "w" * 40,
+                # Spellings the tag regex deliberately does not recognise. Each has to fail
+                # OPEN: guessing wrong here costs a several-hundred-MB re-download.
+                "regex/_regex.pypy311-pp73-x86_64-linux-gnu.so": "p" * 40,
+                "regex/_regex.graalpy311-310-native-x86_64-linux.so": "g" * 40,
+                "regex/_regex.cpython-313d-x86_64-linux-gnu.so": "d" * 40,
+            },
+        )
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    @pytest.mark.parametrize(
+        "rel",
+        [
+            # The tag sits in a DIRECTORY component; the binary itself is untagged and fine.
+            "vendor/build.cp312/libhelper.so",
+            "pkg.cp312.libs/libfoo.so",
+            "data/v.cp39/native.pyd",
+        ],
+    )
+    def test_a_version_tag_in_a_directory_name_is_not_damage(self, tmp_path: Path, rel: str):
+        """Matching the whole RECORD path wipes the sidecar over a directory name."""
+        venv_dir = self._make_venv(
+            tmp_path / "venv",
+            files = {"transformers/__init__.py": "x" * 40, rel: "y" * 40},
+        )
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    @pytest.mark.parametrize(
+        ("current_tag", "expect_damage"),
+        [("313", False), ("314", False), ("313t", True), ("314t", True)],
+    )
+    def test_stable_abi_is_damage_only_on_a_free_threaded_build(
+        self, tmp_path: Path, monkeypatch, current_tag: str, expect_damage: bool
+    ):
+        """A GIL build loads any older .abi3.so. A free-threaded one segfaults on it, and
+        the file survives an in-place interpreter swap because nothing else changes."""
+        monkeypatch.setattr("utils.transformers_version._CURRENT_EXT_TAG", current_tag)
+        venv_dir = self._make_venv(
+            tmp_path / "venv",
+            files = {
+                "transformers/__init__.py": "x" * 40,
+                "hf_xet/hf_xet.abi3.so": "z" * 40,
+                "win/_thing.abi3.pyd": "z" * 40,
+            },
+        )
+        if expect_damage:
+            assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+        else:
+            assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    @pytest.mark.parametrize(
+        ("current_tag", "ext_tag"),
+        [
+            # Both directions of the GIL/free-threaded swap, on a fixed pair of versions so
+            # the case cannot collapse into "current tag" on whichever build runs the suite.
+            ("313t", "313"),
+            ("313", "313t"),
+            ("314t", "314"),
+            ("314", "314t"),
+        ],
+    )
+    def test_free_threaded_mismatch_is_detected_in_both_directions(
+        self, tmp_path: Path, monkeypatch, current_tag: str, ext_tag: str
+    ):
+        monkeypatch.setattr("utils.transformers_version._CURRENT_EXT_TAG", current_tag)
+        venv_dir = self._make_venv(
+            tmp_path / "venv",
+            files = {
+                "transformers/__init__.py": "x" * 40,
+                f"regex/_regex.cpython-{ext_tag}-x86_64-linux-gnu.so": "y" * 40,
+            },
+        )
         assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
 
     def test_damage_in_an_unpinned_dependency_is_detected(self, tmp_path: Path):
@@ -3471,6 +3647,20 @@ class TestOverlayRepairsIncompleteSidecar:
         live = tmp_path / "venv_t5_latest"
         (live / "transformers").mkdir(parents = True)
         monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(live))
+        # Every other tier dir too, not just latest.
+        #
+        # _install_to_dir below is patched but the DESTINATIONS were not, and _probe_tier
+        # walks 530, 550 and 510 provisioning each one it finds missing. So this class
+        # wrote a fake transformers 5.99.0 sidecar, whose CONFIG_MAPPING_NAMES is
+        # {"brandnew": "C"}, into the developer's real ~/.unsloth/studio.
+        #
+        # It then poisons the NEXT run rather than this one, which is why it stayed
+        # hidden: tier resolution finds "brandnew" in 530, and the three tests here that
+        # assert an unknown model type routes to "latest" get "530" instead. Reproducible
+        # on plain main, in isolation, on any machine that has run this file before, and
+        # observed on the CI runner too.
+        for name in ("_VENV_T5_530_DIR", "_VENV_T5_550_DIR", "_VENV_T5_510_DIR"):
+            monkeypatch.setattr(tv, name, str(live.parent / name.lower()))
         monkeypatch.setattr(tv, "_latest_tier_disabled", lambda: False)
         monkeypatch.setattr(tv, "latest_venv_pinned_version", lambda: "5.99.0")
         monkeypatch.setattr(
@@ -3720,6 +3910,30 @@ class TestDamagedLatestSidecarRepairHandoff:
         import utils.transformers_version as tv
 
         monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(live))
+        # The other three tiers go to tmp_path as well, and this is not tidiness.
+        #
+        # _fake_install below writes a sidecar at whatever target it is handed, and
+        # _probe_tier walks _PROBE_TIER_ORDER provisioning each tier it tries. With only
+        # the latest dir redirected, the 530, 550 and 510 targets were the REAL ones under
+        # ~/.unsloth/studio, so running this file wrote a fake transformers 5.99.0 whose
+        # CONFIG_MAPPING_NAMES is {"brandnew": "C"} into the developer's own Unsloth.
+        #
+        # It then failed the next run of this same class: _lowest_tier_for("brandnew")
+        # found it in tier 530 and returned "530" where the test asserts "latest". Three
+        # tests, on a clean checkout of main, only on a machine that had run the suite
+        # before. That is also what CI reproduced, since a runner accumulates the same
+        # state within one session.
+        # Derived from the module rather than listed, because listing them is what went
+        # wrong: the list would have to be updated by whoever adds a tier, and the
+        # consequence of forgetting is invisible until a later run of an unrelated test.
+        # This also caught _VENV_T5_DIR, a fifth constant aliasing the 550 sidecar that a
+        # hand-written list of the three obvious ones missed.
+        for _tier_dir in [
+            name for name in dir(tv) if name.startswith("_VENV_T5_") and name.endswith("_DIR")
+        ]:
+            if _tier_dir == "_VENV_T5_LATEST_DIR":
+                continue  # already pointed at `live`, which is the sidecar under test
+            monkeypatch.setattr(tv, _tier_dir, str(live.parent / _tier_dir.lower().strip("_")))
         monkeypatch.setattr(tv, "_latest_tier_disabled", lambda: False)
         monkeypatch.setattr(tv, "_env_offline", lambda: False)
         monkeypatch.setattr(tv, "_workers_active_for_repair", lambda: False)
@@ -3737,6 +3951,38 @@ class TestDamagedLatestSidecarRepairHandoff:
 
         monkeypatch.setattr(tv, "_install_to_dir", _fake_install)
         return tv, installs
+
+    def test_every_sidecar_dir_is_redirected_away_from_the_real_studio_home(
+        self, monkeypatch, tmp_path
+    ):
+        """Adding a fifth tier must not silently start writing to the developer's home.
+
+        _fake_install writes a sidecar at whatever target it is handed, and _probe_tier
+        walks the tiers provisioning each one it tries. Redirecting only the latest dir
+        meant the other three targets were the real ones, and this file wrote a fake
+        transformers 5.99.0 into ~/.unsloth/studio, then failed its own next run.
+
+        So the assertion is over whatever tier constants the module defines, not over the
+        four that exist today: a new _VENV_T5_..._DIR that _patch does not redirect fails
+        here rather than in whichever unrelated test happens to read the tier mapping
+        next.
+        """
+        import utils.transformers_version as tv
+
+        tiers = [name for name in dir(tv) if name.startswith("_VENV_T5_") and name.endswith("_DIR")]
+        assert tiers, "no tier directory constants found; this guard would pass on nothing"
+
+        self._patch(monkeypatch, self._sidecar(tmp_path / "venv_t5_latest"))
+        stray = {
+            name: getattr(tv, name)
+            for name in tiers
+            if not str(getattr(tv, name)).startswith(str(tmp_path))
+        }
+        assert not stray, (
+            f"_patch leaves {stray} pointing outside tmp_path. A repair or probe that "
+            f"provisions one of those writes test fixture data into the real Unsloth "
+            f"install, which poisons tier resolution for every later run on that machine."
+        )
 
     def _damage(self, live: Path):
         """Disk-full shape: the file is still there, just short."""

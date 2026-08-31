@@ -52,6 +52,9 @@ import {
 import { confirmExternalLink } from "../stores/external-link-confirm";
 import type { SelectedModelView } from "../types";
 import { DatasetDownloadSection } from "./dataset-download-section";
+import { taskForMediaPick } from "@/features/model-picker/components/model-selector/audio-picker-policy";
+import { routableToMediaPage } from "../lib/local-path";
+import { studioPageForTask } from "../lib/unsloth-support";
 import { DownloadSection } from "./download-section";
 import { LocalDatasetCard } from "./local-dataset-card";
 import { LocalOnDeviceCard } from "./local-on-device-card";
@@ -393,6 +396,8 @@ export type ModelInspectorRuntime = {
     status: "fits" | "tight" | "exceeds";
   } | null;
   gpuGb?: number;
+  /** GPUs gpuGb sums, for the loader's per-card VRAM reserve. */
+  gpuCount?: number;
   systemRamGb?: number;
 };
 
@@ -440,6 +445,7 @@ export const ModelInspector = memo(function ModelInspector({
     minMemory,
     vramInfo,
     gpuGb,
+    gpuCount,
     systemRamGb,
   } = runtime;
   const {
@@ -570,13 +576,33 @@ export const ModelInspector = memo(function ModelInspector({
           c.key === "vision" ||
           c.key === "audio",
       ));
+  // An image / video model runs on its own page, which onLoad already routes to;
+  // the chat gates below would leave it greyed out as if it were unusable. Only when the
+  // row is one onLoad can actually route there: those pages resolve a routed `model` as a
+  // Hub id, so a filesystem row fails routableToMediaPage and the click falls through to
+  // the chat loader, which unloads the resident model for a load that can only fail.
+  // Whether this model's runtime is llama.cpp at all. Deliberately NOT
+  // runsOnMediaPage below: that one also asks whether the click can be ROUTED to
+  // the page, which is a different question. A diffusion GGUF on a filesystem row
+  // is not routable and still does not load through llama.cpp, so a memory bar
+  // there would describe the wrong runtime either way.
+  const runsOnMediaRuntime =
+    studioPageForTask(
+      taskForMediaPick(model.pipelineTag, model.task) ?? undefined,
+    ) !== undefined;
+  const runsOnMediaPage =
+    studioPageForTask(
+      taskForMediaPick(model.pipelineTag, model.task) ?? undefined,
+    ) !== undefined &&
+    routableToMediaPage(model.kind, model.localSource);
   // Chat-only hosts (no supported GPU / usable MLX) run inference only through
   // llama.cpp, so only GGUF is loadable.
   const canRunModel =
     !isDataset &&
-    (model.runtimeCapabilities?.canChat ?? true) &&
-    !isEmbeddingOnly &&
-    (model.isGguf || (!chatOnly && unslothSupported));
+    (runsOnMediaPage ||
+      ((model.runtimeCapabilities?.canChat ?? true) &&
+        !isEmbeddingOnly &&
+        (model.isGguf || (!chatOnly && unslothSupported))));
   const canTrainModel =
     !isDataset &&
     (model.runtimeCapabilities?.canTrain ?? false) &&
@@ -664,6 +690,7 @@ export const ModelInspector = memo(function ModelInspector({
               isDownloaded={model.isDownloaded}
               isPartial={model.isPartial ?? false}
               partialTransport={model.partialTransport ?? null}
+              partialResumable={model.partialResumable === true}
               cachePath={model.path}
               knownBytes={model.cachedBytes}
               onTrain={onTrain}
@@ -685,6 +712,7 @@ export const ModelInspector = memo(function ModelInspector({
         <InspectorDownloadSlot>
           {model.isLocal && !hasActiveHubDownload ? (
             <LocalOnDeviceCard
+              showMemoryBar={!runsOnMediaRuntime}
               modelId={model.id}
               repoId={model.hubRepoId}
               sourceLabel={model.sourceLabel}
@@ -705,6 +733,7 @@ export const ModelInspector = memo(function ModelInspector({
               isLoading={isLoadingThisModel}
               loadingPhase={loadingPhase}
               gpuGb={gpuGb}
+              gpuCount={gpuCount}
               systemRamGb={systemRamGb}
 
               preferredFile={preferredGgufFile}
@@ -725,11 +754,14 @@ export const ModelInspector = memo(function ModelInspector({
             />
           ) : (
             <DownloadSection
+              showMemoryBar={!runsOnMediaRuntime}
+              mediaRuntime={runsOnMediaRuntime}
               repoId={model.isLocal ? (model.hubRepoId ?? model.id) : model.id}
               isGguf={model.isGguf}
               isDownloaded={model.isDownloaded}
               isPartial={model.isPartial ?? false}
               partialTransport={model.partialTransport ?? null}
+              partialResumable={model.partialResumable === true}
               modelFormat={model.modelFormat}
               canRun={canRunModel}
               isActive={isActive}
@@ -739,6 +771,7 @@ export const ModelInspector = memo(function ModelInspector({
               preferredGgufFileIntent={preferredGgufFileIntent}
               isLoadingThisModel={isLoadingThisModel}
               gpuGb={gpuGb}
+              gpuCount={gpuCount}
               systemRamGb={systemRamGb}
               cachePath={model.path}
               knownBytes={model.cachedBytes}

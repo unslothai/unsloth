@@ -33,6 +33,7 @@ import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
 
 import {
   createKnowledgeBase,
@@ -50,6 +51,7 @@ import {
 import { DocumentStatusChip } from "./document-status-chip";
 import { LinkedFoldersManager } from "./linked-folders-manager";
 import { useRagDocuments } from "./use-rag-documents";
+import { useSourceDrop } from "./use-source-drop";
 
 type View =
   | { kind: "list" }
@@ -342,9 +344,21 @@ function KnowledgeBaseDocuments({
   const handleLinkedSourcesChanged = useCallback(() => {
     void refresh({ quiet: true });
   }, [refresh]);
+  const { dragging, dropProps, nativeDropTarget } = useSourceDrop({
+    onItems: (items) => void upload(items),
+    // upload() tracks one run at a time, so a second batch would clear the
+    // in-flight guard the first one is still relying on.
+    disabledReason: uploading
+      ? "An upload is already running. Add these when it finishes."
+      : undefined,
+  });
 
   return (
-    <div className="flex min-w-0 flex-col gap-3">
+    <div
+      className="flex min-w-0 flex-col gap-3"
+      ref={nativeDropTarget}
+      {...dropProps}
+    >
       <div className="flex items-center justify-between">
         <Button variant="ghost" size="sm" onClick={onBack}>
           <ChevronLeftIcon className="size-4" />
@@ -375,11 +389,22 @@ function KnowledgeBaseDocuments({
           <Spinner />
         </div>
       ) : documents.length === 0 ? (
-        <div className="rounded-md border border-dashed py-6 text-center text-sm text-muted-foreground">
-          No documents yet. Upload a PDF, Markdown, DOCX, HTML, or text file.
+        <div
+          className={cn(
+            "rounded-md border border-dashed py-6 text-center text-sm text-muted-foreground transition-colors",
+            dragging && "border-primary/60 bg-primary/5 text-foreground",
+          )}
+        >
+          No documents yet. Upload or drop a PDF, Markdown, DOCX, HTML, or text
+          file.
         </div>
       ) : (
-        <div className="flex max-h-[55dvh] flex-wrap gap-1.5 overflow-y-auto pr-0.5">
+        <div
+          className={cn(
+            "flex max-h-[55dvh] flex-wrap gap-1.5 overflow-y-auto rounded-md pr-0.5 transition-colors",
+            dragging && "bg-primary/5 ring-1 ring-primary/60",
+          )}
+        >
           {documents.map((doc) => (
             <DocumentStatusChip
               key={doc.id}
