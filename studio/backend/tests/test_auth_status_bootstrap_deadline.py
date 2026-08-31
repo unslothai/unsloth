@@ -56,17 +56,13 @@ class TestTheFieldIsPresent:
         assert body["bootstrap_deadline_seconds"] is None
 
     def test_an_armed_deadline_is_reported(self, client, monkeypatch):
-        monkeypatch.setattr(
-            auth_routes.storage, "requires_password_change", lambda _username: True
-        )
+        monkeypatch.setattr(auth_routes.storage, "requires_password_change", lambda _username: True)
         record_bootstrap_deadline(3600)
         remaining = _status(client)["bootstrap_deadline_seconds"]
         assert remaining is not None and 3590 <= remaining <= 3600
 
     def test_it_counts_down_between_calls(self, client, monkeypatch):
-        monkeypatch.setattr(
-            auth_routes.storage, "requires_password_change", lambda _username: True
-        )
+        monkeypatch.setattr(auth_routes.storage, "requires_password_change", lambda _username: True)
         record_bootstrap_deadline(3600)
         first = _status(client)["bootstrap_deadline_seconds"]
         import auth.bootstrap_timeout as bt
@@ -98,9 +94,7 @@ class TestItIsNotReportedWhenItCannotFire:
             auth_routes.storage, "requires_password_change", lambda _username: False
         )
         assert _status(client)["bootstrap_deadline_seconds"] is None
-        monkeypatch.setattr(
-            auth_routes.storage, "requires_password_change", lambda _username: True
-        )
+        monkeypatch.setattr(auth_routes.storage, "requires_password_change", lambda _username: True)
         assert _status(client)["bootstrap_deadline_seconds"] is not None
 
 
@@ -108,9 +102,7 @@ class TestTheNumberIsUsable:
     def test_an_expired_deadline_reads_zero_not_negative(self, client, monkeypatch):
         """Rendered straight into a countdown, so a negative would print as
         "shuts down in -12 minutes"."""
-        monkeypatch.setattr(
-            auth_routes.storage, "requires_password_change", lambda _username: True
-        )
+        monkeypatch.setattr(auth_routes.storage, "requires_password_change", lambda _username: True)
         record_bootstrap_deadline(1)
         import auth.bootstrap_timeout as bt
 
@@ -121,9 +113,7 @@ class TestTheNumberIsUsable:
         """No auth header is sent anywhere in this file. The deadline discloses
         nothing an anonymous caller cannot already read off
         requires_password_change, which this endpoint has always returned."""
-        monkeypatch.setattr(
-            auth_routes.storage, "requires_password_change", lambda _username: True
-        )
+        monkeypatch.setattr(auth_routes.storage, "requires_password_change", lambda _username: True)
         record_bootstrap_deadline(3600)
         response = client.get("/api/auth/status")
         assert response.status_code == 200

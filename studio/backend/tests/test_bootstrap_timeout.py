@@ -221,7 +221,6 @@ def test_an_expired_deadline_floors_at_zero_rather_than_going_negative():
     record_bootstrap_deadline(1)
     try:
         import auth.bootstrap_timeout as bt
-
         bt._deadline_at = time.monotonic() - 30
         assert bootstrap_deadline_remaining_seconds() == 0
     finally:
