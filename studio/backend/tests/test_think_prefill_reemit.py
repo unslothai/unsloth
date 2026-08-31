@@ -1104,3 +1104,46 @@ def test_muse_glimmer_opening_newline_is_framing_on_either_line_ending(body, exp
     return as the first character of the thought."""
     assert _feed_muse(f" to=self<|message|>{body}<|eom|>") == f"<think>{expected}</think>"
     assert _feed_muse(f" to=self<|message|>{body}<|eom|>", 1) == f"<think>{expected}</think>"
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        # Once a bare first header reaches its "<|message|>" it is no longer ambiguous
+        # with prose, so the budget ending inside it must not expose the fragment.
+        ("to=user<|mess", ""),
+        ("to=self<|m", ""),
+        ("to=web.search<|message", ""),
+        # Still ambiguous, so still text.
+        ("to=user", "to=user"),
+        ("to=", "to="),
+        ("set auto=true", "set auto=true"),
+        ("I said to=true<|x", "I said to=true<|x"),
+    ],
+)
+def test_muse_glimmer_partial_first_header_is_dropped_only_once_committed(raw, expected):
+    assert _feed_muse(f" {raw}") == expected
+
+
+def test_muse_glimmer_invocation_with_an_unclosed_parameter_is_not_promoted():
+    """Promoting it would run the tool with that argument silently missing, so a
+    write_file call would fire with no path at all."""
+    raw = (
+        ' to=write_file<|message|><atem:invoke name="write_file">'
+        '<atem:parameter name="path">/tmp/x</atem:invoke><|eom|>'
+    )
+    output = _feed_muse(raw)
+
+    assert parse_tool_calls_from_text(output) == []
+    assert "/tmp/x" in output
+
+
+def test_muse_glimmer_a_malformed_call_does_not_stop_a_well_formed_one():
+    raw = (
+        ' to=w<|message|><atem:invoke name="a"><atem:parameter name="x">1</atem:invoke>'
+        '<atem:invoke name="b"><atem:parameter name="y">2</atem:parameter></atem:invoke><|eom|>'
+    )
+    calls = parse_tool_calls_from_text(_feed_muse(raw))
+
+    assert [call["function"]["name"] for call in calls] == ["b"]
+    assert json.loads(calls[0]["function"]["arguments"]) == {"y": 2}

@@ -2093,13 +2093,12 @@ def _find_atem_block_end(text: str, start: int = 0) -> tuple[int, int]:
 def _atem_partial_framing_len(text: str) -> int:
     """Length of the trailing fragment that can only be framing the model never finished.
 
-    Restricted to fragments opening with "<", which is what separates unfinished markup
-    from prose: a bare "to=" tail is also how "...auto=true" ends, and a turn cut there
-    should keep its text. So the first header of a turn, which has no "<|start|>" prefix,
-    is left alone and only the block terminators and later headers are recognized."""
+    Framing is a fragment opening with "<", or a bare first header that has reached its
+    "<|message|>". Prose is what stays: "...auto=true" ends in "to=true" and a turn cut
+    there keeps its text, because nothing has committed it to being a header yet."""
     for size in range(min(len(text), _ATEM_HEADER_MAX_LEN), 0, -1):
         tail = text[-size:]
-        if not tail.startswith("<"):
+        if not (tail.startswith("<") or (tail.startswith("to=") and "<|" in tail)):
             continue
         if any(marker.startswith(tail) for marker in _ATEM_BLOCK_ENDS):
             return size
@@ -2211,9 +2210,17 @@ def _atem_block_pieces(block: str, *, complete: bool) -> Optional[list[tuple[boo
         end = block.find(_ATEM_INVOKE_CLOSE, opening.end())
         if end < 0:
             return pieces  # the rest of the block is a call still being written
+        body = block[opening.end() : end]
+        parameters = list(_ATEM_PARAMETER_RE.finditer(body))
+        if len(parameters) != body.count("<atem:parameter"):
+            # A parameter opened and never closed. Promoting anyway would run the tool
+            # with that argument silently missing, so keep the call as text instead.
+            pieces.append((False, block[opening.start() : end + len(_ATEM_INVOKE_CLOSE)]))
+            cursor = end + len(_ATEM_INVOKE_CLOSE)
+            continue
         arguments = {
             parameter.group("key"): _atem_parameter_value(parameter.group("value"))
-            for parameter in _ATEM_PARAMETER_RE.finditer(block[opening.end() : end])
+            for parameter in parameters
         }
         pieces.append(
             (
