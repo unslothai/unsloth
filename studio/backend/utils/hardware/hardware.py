@@ -775,36 +775,54 @@ def get_physical_gpu_inventory(*, block: bool = True) -> Dict[str, Any]:
         return _run_physical_gpu_inventory_probe()
 
 
-def _schedule_physical_gpu_inventory_refresh() -> None:
-    """Refresh the inventory off the caller's thread, one pass at a time.
+def _schedule_single_flight_refresh(
+    flag: str, refresh_lock, work_lock, run, thread_name: str, what: str
+) -> None:
+    """Run ``run`` off the caller's thread, one pass at a time.
 
-    Single-flight through the same lock the blocking path uses, tried without waiting:
-    a refresh already running is exactly what a second caller wants, so it returns
-    rather than queueing a duplicate subprocess behind it.
+    Single-flight through ``refresh_lock``, tried without waiting: a refresh already
+    running is exactly what a second caller wants, so this returns rather than queueing
+    a duplicate probe behind it. ``work_lock`` is the same lock the blocking path takes,
+    so the background pass cannot publish underneath one.
+
+    ``flag`` names the module global holding the in-flight bit, which stays a real
+    global so a test can reset it. Shared by the inventory and the torch snapshot, which
+    carried identical copies of this: the duplication is not a size problem so much as a
+    standing invitation for the two to drift apart under a later fix.
     """
-    global _physical_gpu_inventory_refreshing
-    with _physical_gpu_inventory_refresh_lock:
-        if _physical_gpu_inventory_refreshing:
+    with refresh_lock:
+        if globals()[flag]:
             return
-        _physical_gpu_inventory_refreshing = True
+        globals()[flag] = True
 
     def _refresh() -> None:
-        global _physical_gpu_inventory_refreshing
         try:
-            with _physical_gpu_inventory_lock:
-                _run_physical_gpu_inventory_probe()
+            with work_lock:
+                run()
         except Exception as e:
-            logger.debug("Background inventory refresh failed: %s", e)
+            logger.debug("Background %s refresh failed: %s", what, e)
         finally:
-            with _physical_gpu_inventory_refresh_lock:
-                _physical_gpu_inventory_refreshing = False
+            with refresh_lock:
+                globals()[flag] = False
 
     try:
-        threading.Thread(target = _refresh, name = "gpu-inventory-refresh", daemon = True).start()
+        threading.Thread(target = _refresh, name = thread_name, daemon = True).start()
     except Exception as e:
-        logger.debug("Could not start the inventory refresh thread: %s", e)
-        with _physical_gpu_inventory_refresh_lock:
-            _physical_gpu_inventory_refreshing = False
+        logger.debug("Could not start the %s refresh thread: %s", what, e)
+        with refresh_lock:
+            globals()[flag] = False
+
+
+def _schedule_physical_gpu_inventory_refresh() -> None:
+    """Refresh the inventory off the caller's thread, one pass at a time."""
+    _schedule_single_flight_refresh(
+        "_physical_gpu_inventory_refreshing",
+        _physical_gpu_inventory_refresh_lock,
+        _physical_gpu_inventory_lock,
+        _run_physical_gpu_inventory_probe,
+        "gpu-inventory-refresh",
+        "inventory",
+    )
 
 
 def _reported_torch_label(published: Optional[str] = None) -> Optional[str]:
@@ -967,6 +985,27 @@ def _stated_torch_index_source() -> str:
     return (os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY") or "").strip()
 
 
+def _recorded_install_flavor() -> "tuple[str, bool]":
+    """``(expected_torch_tag, expected_torch_tag_pinned)`` from the venv's manifest.
+
+    ``("", False)`` when there is no manifest, it cannot be read, or the tag is not a
+    string: nothing recorded is not a choice, which is the rule
+    install_manifest.recorded_torch_flavor documents. Read straight off disk rather than
+    by importing that module, which lives outside the backend package. Never raises.
+    """
+    try:
+        path = os.path.join(sys.prefix, "unsloth_install_manifest.json")
+        with open(path, encoding = "utf-8") as fh:
+            manifest = json.load(fh)
+        recorded = manifest.get("expected_torch_tag")
+        pinned = manifest.get("expected_torch_tag_pinned")
+    except (OSError, ValueError, AttributeError):
+        return "", False
+    if not isinstance(recorded, str):
+        return "", False
+    return recorded.strip().lower(), bool(pinned)
+
+
 def _expected_cpu_flavor_was_chosen() -> bool:
     """Whether THIS install deliberately selected a CPU wheel.
 
@@ -975,26 +1014,15 @@ def _expected_cpu_flavor_was_chosen() -> bool:
     manifest, which install_python_stack.py writes from the same expectation the
     Windows flavor invariant enforces.
 
-    Only "cpu" is acted on. An unknown or absent record means nothing was recorded and
-    must not be read as a choice, which is the rule install_manifest.recorded_torch_flavor
-    documents. Read straight off disk rather than by importing that module, which lives
-    outside the backend package. Never raises.
+    Only "cpu" is acted on: an unknown or absent record means nothing was recorded and
+    must not be read as a choice. Never raises.
     """
     if _torch_index_leaf(_stated_torch_index_source()) == "cpu":
         return True
-    try:
-        path = os.path.join(sys.prefix, "unsloth_install_manifest.json")
-        with open(path, encoding = "utf-8") as fh:
-            manifest = json.load(fh)
-        recorded = manifest.get("expected_torch_tag")
-        pinned = manifest.get("expected_torch_tag_pinned")
-    except (OSError, ValueError, AttributeError):
-        return False
-    if not isinstance(recorded, str) or recorded.strip().lower() != "cpu":
-        return False
     # A recorded cpu is not by itself a choice: setup.ps1 selects /cpu automatically on a
     # GPU-less host and records it exactly as it records a pinned one.
-    return bool(pinned)
+    recorded, pinned = _recorded_install_flavor()
+    return recorded == "cpu" and pinned
 
 
 def classify_torch_build(*, block_inventory: bool = False) -> Optional[str]:
@@ -1195,13 +1223,7 @@ def _expected_rocm_flavor_was_chosen() -> bool:
     """Whether this install selected a ROCm wheel, by pin or by recorded flavor."""
     if _is_pip_rocm_family_leaf(_torch_index_leaf(_stated_torch_index_source())):
         return True
-    try:
-        path = os.path.join(sys.prefix, "unsloth_install_manifest.json")
-        with open(path, encoding = "utf-8") as fh:
-            recorded = json.load(fh).get("expected_torch_tag")
-    except (OSError, ValueError, AttributeError):
-        return False
-    return isinstance(recorded, str) and recorded.strip().lower().startswith("rocm")
+    return _recorded_install_flavor()[0].startswith("rocm")
 
 
 def _torch_reports_a_hip_runtime() -> bool:
@@ -1283,13 +1305,7 @@ def _expected_xpu_flavor_was_chosen() -> bool:
     """Whether this install selected an XPU wheel, by pin or by recorded flavor."""
     if _torch_index_leaf(_stated_torch_index_source()) == "xpu":
         return True
-    try:
-        path = os.path.join(sys.prefix, "unsloth_install_manifest.json")
-        with open(path, encoding = "utf-8") as fh:
-            recorded = json.load(fh).get("expected_torch_tag")
-    except (OSError, ValueError, AttributeError):
-        return False
-    return isinstance(recorded, str) and recorded.strip().lower() == "xpu"
+    return _recorded_install_flavor()[0] == "xpu"
 
 
 def _torch_reports_an_xpu_runtime() -> bool:
@@ -1422,29 +1438,14 @@ def torch_build_snapshot(*, block: bool = True) -> Dict[str, Any]:
 
 def _schedule_torch_build_snapshot_refresh() -> None:
     """Refresh the torch snapshot off the caller's thread, one pass at a time."""
-    global _torch_build_snapshot_refreshing
-    with _torch_build_snapshot_refresh_lock:
-        if _torch_build_snapshot_refreshing:
-            return
-        _torch_build_snapshot_refreshing = True
-
-    def _refresh() -> None:
-        global _torch_build_snapshot_refreshing
-        try:
-            with _torch_build_snapshot_lock:
-                _run_torch_build_snapshot()
-        except Exception as e:
-            logger.debug("Background torch build refresh failed: %s", e)
-        finally:
-            with _torch_build_snapshot_refresh_lock:
-                _torch_build_snapshot_refreshing = False
-
-    try:
-        threading.Thread(target = _refresh, name = "torch-build-refresh", daemon = True).start()
-    except Exception as e:
-        logger.debug("Could not start the torch build refresh thread: %s", e)
-        with _torch_build_snapshot_refresh_lock:
-            _torch_build_snapshot_refreshing = False
+    _schedule_single_flight_refresh(
+        "_torch_build_snapshot_refreshing",
+        _torch_build_snapshot_refresh_lock,
+        _torch_build_snapshot_lock,
+        _run_torch_build_snapshot,
+        "torch-build-refresh",
+        "torch build",
+    )
 
 
 def _seed_torch_build_snapshot(reason: Optional[str]) -> None:

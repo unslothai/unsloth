@@ -87,6 +87,7 @@ def _smi(
     stdout: str,
     *,
     returncode: int = 0,
+    raises: "type[BaseException] | None" = None,
 ):
     """Pin what nvidia-smi answers, at the subprocess boundary.
 
@@ -95,11 +96,14 @@ def _smi(
     simulating a machine with no cards has to simulate the kernel driver's absence too.
     The fallback's own tests set it back.
     """
-    monkeypatch.setattr(
-        nvidia.subprocess,
-        "run",
-        lambda *_args, **_kwargs: SimpleNamespace(returncode = returncode, stdout = stdout),
-    )
+    def _run(*_args, **_kwargs):
+        # `raises` is how an ABSENT binary is spelled: FileNotFoundError is an answer
+        # (every AMD, Intel and CPU host), while a nonzero exit is a probe that failed.
+        if raises is not None:
+            raise raises("nvidia-smi")
+        return SimpleNamespace(returncode = returncode, stdout = stdout)
+
+    monkeypatch.setattr(nvidia.subprocess, "run", _run)
     monkeypatch.setattr(nvidia, "_linux_nvidia_procfs_gpu_count", lambda: 0)
 
 
@@ -148,7 +152,6 @@ def cpu_torch_on_an_nvidia_host(monkeypatch):
     monkeypatch.setattr(hw, "IS_ROCM", False)
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
     # Cached for 60s, so a test that did not clear it would read the real host's answer.
-    monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     _smi(monkeypatch, _TWO_A4000_ROWS)
 
 
@@ -189,7 +192,6 @@ def test_a_probe_that_cannot_answer_returns_a_result_rather_than_raising(
     # This suite runs on a real NVIDIA host, so pin procfs empty: the case under test is a
     # machine with no NVIDIA driver at all.
     monkeypatch.setattr(nvidia, "_linux_nvidia_procfs_gpu_count", lambda: 0)
-    monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
 
     result = nvidia.get_physical_gpu_inventory()
@@ -211,7 +213,6 @@ def test_a_probe_that_cannot_answer_returns_a_result_rather_than_raising(
 def test_the_windows_amd_adapters_are_inventoried_too(monkeypatch):
     # No vendor CLI is guaranteed on Windows AMD, so the DirectX registry map is the source.
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     _smi(monkeypatch, "", returncode = 9)
     monkeypatch.setattr(
         hw,
@@ -279,7 +280,6 @@ def test_a_deliberately_emptied_mask_is_not_a_broken_install(monkeypatch, var, m
     import sys
 
     monkeypatch.setitem(sys.modules, "torch", _fake_torch("cuda_dead"))
-    monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     _smi(monkeypatch, _TWO_A4000_ROWS)
     monkeypatch.setenv(var, mask)
 
@@ -333,7 +333,6 @@ def test_a_host_that_really_has_no_gpu_still_reads_no_gpu(monkeypatch):
     monkeypatch.setattr(hw, "TORCH_IMPORT_ERROR", None)
     monkeypatch.setattr(hw, "IS_ROCM", False)
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     _smi(monkeypatch, "", returncode = 9)
 
     _detect(monkeypatch)
@@ -347,7 +346,6 @@ def test_a_healthy_cuda_host_reports_no_mismatch_at_all(monkeypatch):
     import sys
 
     monkeypatch.setitem(sys.modules, "torch", _fake_torch("cuda"))
-    monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     _smi(monkeypatch, _TWO_A4000_ROWS)
 
     assert hw._torch_gpu_mismatch_report() == {}
@@ -399,7 +397,6 @@ def test_a_cpu_host_with_no_cards_publishes_neither_field(monkeypatch):
     monkeypatch.setattr(hw, "TORCH_IMPORT_ERROR", None)
     monkeypatch.setattr(hw, "IS_ROCM", False)
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     _smi(monkeypatch, "", returncode = 9)
 
     gpu, _inference_gpu = _system_gpu_info(monkeypatch)
@@ -540,7 +537,6 @@ def test_a_hip_mask_only_counts_where_it_can_hide_something(monkeypatch, var, ma
     import sys
 
     monkeypatch.setitem(sys.modules, "torch", _fake_torch("cuda_dead"))
-    monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     _smi(monkeypatch, _TWO_A4000_ROWS)
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
     # sys.platform too, not just platform.system(): the ROCR row is gated on sys.platform
@@ -823,7 +819,6 @@ def test_windows_intel_adapters_are_inventoried_too(monkeypatch):
     AMD, so the inventory came back empty and the mismatch was discarded.
     """
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     _smi(monkeypatch, "", returncode = 9)
     monkeypatch.setattr(
         hw, "_windows_live_adapter_names", lambda: ["Intel(R) Arc(TM) A770 Graphics"]
@@ -909,7 +904,6 @@ def test_the_health_path_never_waits_on_the_gpu_probe(monkeypatch):
     monkeypatch.setitem(sys.modules, "torch", _fake_torch("cpu"))
     monkeypatch.setattr(hw, "_probe_physical_gpu_inventory", _probe)
     monkeypatch.setattr(hw.threading, "Thread", _Thread)
-    monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     monkeypatch.setattr(hw, "_physical_gpu_inventory_refreshing", False)
     monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "torch_cpu_build")
     monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", "2.11.0+cpu")
@@ -992,7 +986,6 @@ def test_a_stale_registry_record_is_not_reported_as_a_gpu(monkeypatch):
     cannot restore absent hardware.
     """
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     _smi(monkeypatch, "", returncode = 9)
     monkeypatch.setattr(hw, "_windows_live_adapter_names", lambda: ["Microsoft Basic Display"])
     monkeypatch.setattr(
@@ -1012,7 +1005,6 @@ def test_a_stale_registry_record_is_not_reported_as_a_gpu(monkeypatch):
 
 def test_a_live_scan_that_cannot_answer_reports_unknown_rather_than_guessing(monkeypatch):
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     _smi(monkeypatch, "", returncode = 9)
     monkeypatch.setattr(hw, "_windows_live_adapter_names", lambda: None)
     monkeypatch.setattr(
@@ -1199,14 +1191,8 @@ def test_duplicate_registry_records_are_claimed_one_to_one(monkeypatch):
     to BOTH: a GPU reported that is gone, and its VRAM counted twice.
     """
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     # nvidia-smi ANSWERS (absent), so only the registry vendors go unanswered here.
-    monkeypatch.setattr(
-        nvidia.subprocess,
-        "run",
-        lambda *_a, **_k: (_ for _ in ()).throw(FileNotFoundError("nvidia-smi")),
-    )
-    monkeypatch.setattr(nvidia, "_linux_nvidia_procfs_gpu_count", lambda: 0)
+    _smi(monkeypatch, "", raises = FileNotFoundError)
     monkeypatch.setattr(hw, "_windows_live_adapter_names", lambda: ["AMD Radeon RX 7900 XT"])
     monkeypatch.setattr(
         hw,
@@ -1228,7 +1214,6 @@ def test_duplicate_registry_records_are_claimed_one_to_one(monkeypatch):
 
 def test_both_records_survive_when_both_cards_are_live(monkeypatch):
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     _smi(monkeypatch, "", returncode = 9)
     monkeypatch.setattr(
         hw,
@@ -1844,7 +1829,6 @@ def test_an_absent_nvidia_smi_is_an_answer_not_a_failed_probe(monkeypatch):
     monkeypatch.setattr(nvidia, "_linux_nvidia_procfs_gpu_count", lambda: 0)
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
     monkeypatch.setattr(hw, "_linux_drm_sysfs_records", lambda **_kw: [])
-    monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
 
     inventory = hw.get_physical_gpu_inventory()
     assert inventory["devices"] == []
@@ -2090,7 +2074,6 @@ def test_a_vendor_that_did_not_answer_keeps_the_inventory_unknown(monkeypatch):
     hiding the repair while the NVIDIA probe was merely unavailable.
     """
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     monkeypatch.setattr(
         hw,
         "_linux_drm_sysfs_records",
@@ -2220,17 +2203,11 @@ def test_an_unanswerable_refresh_keeps_the_cards_it_already_found(monkeypatch):
 def test_a_vendor_that_answered_none_is_allowed_to_lose_its_cards(monkeypatch):
     """The carry-forward is per unanswered vendor only, so a real removal still lands."""
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     _smi(monkeypatch, _TWO_A4000_ROWS)
     good = hw.get_physical_gpu_inventory()
 
     monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", (0.0, good))
-    monkeypatch.setattr(
-        nvidia.subprocess,
-        "run",
-        lambda *_a, **_k: (_ for _ in ()).throw(FileNotFoundError("nvidia-smi")),
-    )
-    monkeypatch.setattr(nvidia, "_linux_nvidia_procfs_gpu_count", lambda: 0)
+    _smi(monkeypatch, "", raises = FileNotFoundError)
     after = hw.get_physical_gpu_inventory()
 
     assert after["devices"] == []
@@ -2240,14 +2217,8 @@ def test_a_vendor_that_answered_none_is_allowed_to_lose_its_cards(monkeypatch):
 def test_a_registry_that_cannot_be_read_is_not_a_host_without_adapters(monkeypatch):
     """`{}` from the DirectX helper covers both, so the inventory has to ask which."""
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
     # nvidia-smi ANSWERS (absent), so only the registry vendors go unanswered here.
-    monkeypatch.setattr(
-        nvidia.subprocess,
-        "run",
-        lambda *_a, **_k: (_ for _ in ()).throw(FileNotFoundError("nvidia-smi")),
-    )
-    monkeypatch.setattr(nvidia, "_linux_nvidia_procfs_gpu_count", lambda: 0)
+    _smi(monkeypatch, "", raises = FileNotFoundError)
     monkeypatch.setattr(hw, "_windows_live_adapter_names", lambda: ["AMD Radeon RX 7900 XT"])
     monkeypatch.setattr(
         hw,
@@ -2500,13 +2471,7 @@ def test_a_cardn_with_no_pci_vendor_is_not_a_lost_card(monkeypatch):
 
 def test_the_inventory_marks_both_sysfs_vendors_unanswered(monkeypatch):
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
-    monkeypatch.setattr(
-        nvidia.subprocess,
-        "run",
-        lambda *_a, **_k: (_ for _ in ()).throw(FileNotFoundError("nvidia-smi")),
-    )
-    monkeypatch.setattr(nvidia, "_linux_nvidia_procfs_gpu_count", lambda: 0)
+    _smi(monkeypatch, "", raises = FileNotFoundError)
     monkeypatch.setattr(hw, "_linux_drm_sysfs_records", lambda **_kw: None)
 
     inventory = hw.get_physical_gpu_inventory()
@@ -2518,13 +2483,7 @@ def test_the_inventory_marks_both_sysfs_vendors_unanswered(monkeypatch):
 def test_a_previously_seen_amd_card_survives_an_unreadable_walk(monkeypatch):
     """End to end: the distinction is only worth having if the carry-forward uses it."""
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(hw, "_physical_gpu_inventory_cache", None)
-    monkeypatch.setattr(
-        nvidia.subprocess,
-        "run",
-        lambda *_a, **_k: (_ for _ in ()).throw(FileNotFoundError("nvidia-smi")),
-    )
-    monkeypatch.setattr(nvidia, "_linux_nvidia_procfs_gpu_count", lambda: 0)
+    _smi(monkeypatch, "", raises = FileNotFoundError)
     card = {
         "vendor": "amd",
         "index": 0,
