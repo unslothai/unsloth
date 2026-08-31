@@ -1147,3 +1147,28 @@ def test_muse_glimmer_a_malformed_call_does_not_stop_a_well_formed_one():
 
     assert [call["function"]["name"] for call in calls] == ["b"]
     assert json.loads(calls[0]["function"]["arguments"]) == {"y": 2}
+
+
+def test_muse_glimmer_nested_invocation_is_not_promoted():
+    """The inner closer would otherwise end the outer call, promoting the outer name
+    with the inner arguments, so malformed output could run a different tool."""
+    raw = (
+        ' to=danger<|message|><atem:invoke name="danger"><atem:invoke name="safe">'
+        '<atem:parameter name="q">x</atem:parameter></atem:invoke><|eom|>'
+    )
+
+    assert parse_tool_calls_from_text(_feed_muse(raw)) == []
+
+
+def test_muse_glimmer_a_terminator_between_blocks_is_framing():
+    """continue_final_message resumes inside a reply block, so its closing <|eom|>
+    arrives with no block open and must not reach the chat."""
+    raw = (
+        " more<|eom|><|start|>assistant to=self<|message|>T<|eom|>"
+        "<|start|>assistant to=user<|message|>A<|eot|>"
+    )
+    expected = "more<think>T</think>A"
+
+    assert _feed_muse(raw) == expected
+    for width in (1, 2, 3, 7):
+        assert _feed_muse(raw, width) == expected

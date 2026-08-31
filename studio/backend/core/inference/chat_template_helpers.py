@@ -2108,8 +2108,10 @@ def _atem_partial_framing_len(text: str) -> int:
 
 
 def _split_partial_atem_boundary(text: str) -> tuple[str, str]:
+    """Between blocks either a header or a block terminator may follow, and both are
+    consumed there, so a partial of either has to be held for the next chunk."""
     stable, held = _split_partial_atem_header(text)
-    candidate, tail = _split_partial_marker(text, _ATEM_END_OF_TURN)
+    candidate, tail = _split_partial_atem_block_end(text)
     return (candidate, tail) if len(tail) > len(held) else (stable, held)
 
 
@@ -2212,9 +2214,10 @@ def _atem_block_pieces(block: str, *, complete: bool) -> Optional[list[tuple[boo
             return pieces  # the rest of the block is a call still being written
         body = block[opening.end() : end]
         parameters = list(_ATEM_PARAMETER_RE.finditer(body))
-        if len(parameters) != body.count("<atem:parameter"):
-            # A parameter opened and never closed. Promoting anyway would run the tool
-            # with that argument silently missing, so keep the call as text instead.
+        if len(parameters) != body.count("<atem:parameter") or "<atem:invoke" in body:
+            # A parameter that never closed, or a nested opener that makes this closer
+            # someone else's: promoting either would run a tool the model did not
+            # actually specify, so keep the call as text instead.
             pieces.append((False, block[opening.start() : end + len(_ATEM_INVOKE_CLOSE)]))
             cursor = end + len(_ATEM_INVOKE_CLOSE)
             continue
@@ -2438,12 +2441,14 @@ class RecipientChannelNormalizer:
                         break
 
             match = _ATEM_HEADER_RE.search(self._buffer)
-            end_of_turn = self._buffer.find(_ATEM_END_OF_TURN)
-            if end_of_turn >= 0 and (match is None or end_of_turn < match.start()):
-                # The turn marker is framing too. The transformers streamer keeps
-                # special tokens, so it arrives here rather than ending the stream.
-                output.append(self._buffer[:end_of_turn])
-                self._buffer = self._buffer[end_of_turn + len(_ATEM_END_OF_TURN) :]
+            block_end, end_len = _find_atem_block_end(self._buffer)
+            if block_end >= 0 and (match is None or block_end < match.start()):
+                # A terminator with no block open is framing. The transformers streamer
+                # keeps special tokens, so it arrives here rather than ending the stream,
+                # and continue_final_message resumes inside a block whose close is still
+                # to come, so <|eom|> lands here as well as <|eot|>.
+                output.append(self._buffer[:block_end])
+                self._buffer = self._buffer[block_end + end_len :]
                 self._between_blocks = True
                 continue
             if match is None:
