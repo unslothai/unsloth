@@ -155,6 +155,46 @@ def _runtime_target_is_gfx906() -> bool:
     return set(_detect_amd_gfx_codes()) == {"gfx906"}
 
 
+# Navi 33 and RDNA 4 have no kernels in generic PyTorch ROCm 6.0-6.3 wheels.
+# Keep this a narrow generic-wheel floor, distinct from the AMD per-arch Strix
+# route and the inverse gfx906 legacy route below. Mirrors install.sh.
+_GFX_ROCM64_FLOOR_ARCHES: frozenset[str] = frozenset({"gfx1102", "gfx1200", "gfx1201"})
+_GFX_ROCM64_FLOOR_TAG = "rocm6.4"
+
+
+def _gfx_needs_rocm64_generic_index(ver: tuple[int, int]) -> bool:
+    """True when the selected generic tag is below rocm6.4."""
+    key = next((k for k in sorted(_ROCM_TORCH_INDEX, reverse = True) if ver >= k), None)
+    return key is not None and key < (6, 4)
+
+
+def _runtime_target_needs_rocm64_generic_index() -> bool:
+    """Whether the selected runtime GPU needs the generic rocm6.4 floor.
+
+    Match the existing Strix target selection: an explicit arch override wins;
+    otherwise retain rocminfo's already-applied ROCR mask and index only unmasked
+    rocminfo/amd-smi output. This intentionally does not change gfx906's
+    sole-architecture policy.
+    """
+    override = (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower().split(":")[0]
+    if override:
+        return override in _GFX_ROCM64_FLOOR_ARCHES
+    gfx_devices = _detect_amd_gfx_codes(dedup = False)
+    if not gfx_devices:
+        return False
+    rocr_applied = (
+        _LAST_AMD_GFX_PROBE == "rocminfo" and _first_set_visible_mask() == "ROCR_VISIBLE_DEVICES"
+    )
+    runtime_gfx = gfx_devices[0 if rocr_applied else _pick_visible_index(len(gfx_devices))]
+    return runtime_gfx in _GFX_ROCM64_FLOOR_ARCHES
+
+
+def _installed_rocm_wheel_is_below(label: str, floor: tuple[int, int]) -> bool:
+    """Whether a HIP torch label has no identifiable ROCm family at `floor` or newer."""
+    match = re.search(r"rocm(\d+)\.(\d+)", label)
+    return match is None or (int(match.group(1)), int(match.group(2))) < floor
+
+
 # AMD per-arch leaves needing the torch 2.11 floor (the _grouped_mm <2.11 bug).
 # Mirrors *FloorMap in install.ps1 / setup.ps1; other arches ship <2.11 and stay bare.
 _ROCM_GFX_TORCH211_LEAVES: frozenset[str] = frozenset(
@@ -648,8 +688,39 @@ def _amd_smi_allowed() -> bool:
     return False
 
 
+# Memoized host ROCm version, mirroring _TORCH_RUNTIME_PROBE above. Unlike torch, the
+# host ROCm stack cannot change mid-run, so nothing has to invalidate it after a pip
+# operation; the reset exists for tests. _PROBED distinguishes "not probed yet" from a
+# probed None. Without this, _ensure_rocm_torch() runs twice on Linux (the post-base
+# repair and the final repair), so all five sources are probed twice and the
+# disagreement warning below prints twice where install.sh prints it once.
+_ROCM_VERSION_PROBE: "tuple[int, int] | None" = None
+_ROCM_VERSION_PROBED: bool = False
+
+
+def _invalidate_rocm_version_probe() -> None:
+    """Forget the memoized host ROCm version."""
+    global _ROCM_VERSION_PROBE, _ROCM_VERSION_PROBED
+    _ROCM_VERSION_PROBE = None
+    _ROCM_VERSION_PROBED = False
+
+
 def _detect_rocm_version() -> tuple[int, int] | None:
-    """Return (major, minor) of the installed ROCm stack, or None."""
+    """Return (major, minor) of the installed ROCm stack, or None. Memoized per run."""
+    global _ROCM_VERSION_PROBE, _ROCM_VERSION_PROBED
+    if not _ROCM_VERSION_PROBED:
+        _ROCM_VERSION_PROBE = _detect_rocm_version_uncached()
+        _ROCM_VERSION_PROBED = True
+    return _ROCM_VERSION_PROBE
+
+
+def _detect_rocm_version_uncached() -> tuple[int, int] | None:
+    """Probe every ROCm version source and return the highest reading, or None."""
+    readings: list[tuple[str, tuple[int, int]]] = []
+
+    def _record(source: str, major: int, minor: int) -> None:
+        readings.append((source, (major, minor)))
+
     rocm_root = os.environ.get("ROCM_PATH") or "/opt/rocm"
     for path in (
         os.path.join(rocm_root, ".info", "version"),
@@ -661,7 +732,8 @@ def _detect_rocm_version() -> tuple[int, int] | None:
             # Explicit length guard: don't rely on the broad except below to
             # swallow IndexError on a single-component version (e.g. "6\n").
             if len(parts) >= 2:
-                return int(parts[0]), int(parts[1])
+                _record("ROCm version file", int(parts[0]), int(parts[1]))
+                break
         except Exception:
             pass
 
@@ -682,7 +754,11 @@ def _detect_rocm_version() -> tuple[int, int] | None:
             if result.returncode == 0:
                 m = re.search(r"ROCm version:\s*(\d+)\.(\d+)", result.stdout)
                 if m:
-                    return int(m.group(1)), int(m.group(2))
+                    _record(
+                        "amd-smi",
+                        int(m.group(1)),
+                        int(m.group(2)),
+                    )
         except Exception:
             pass
 
@@ -700,41 +776,114 @@ def _detect_rocm_version() -> tuple[int, int] | None:
                 raw = result.stdout.decode().strip().split("\n")[0]
                 parts = raw.split(".")
                 if len(parts) >= 2 and parts[0].isdigit() and parts[1].split("-")[0].isdigit():
-                    return int(parts[0]), int(parts[1].split("-")[0])
+                    _record(
+                        "hipconfig",
+                        int(parts[0]),
+                        int(parts[1].split("-")[0]),
+                    )
         except Exception:
             pass
 
-    # Distro package-manager fallbacks: package-managed ROCm can expose GPUs via
-    # rocminfo/amd-smi but lack /opt/rocm/.info/version and hipconfig, so probe
-    # dpkg (Debian/Ubuntu) and rpm (RHEL/Fedora/SUSE) for the rocm-core version.
-    # Matches install.sh::get_torch_index_url so `studio update` == fresh install.
-    for cmd in (
-        ["dpkg-query", "-W", "-f=${Version}\n", "rocm-core"],
-        ["rpm", "-q", "--qf", "%{VERSION}\n", "rocm-core"],
-    ):
-        exe = shutil.which(cmd[0])
-        if not exe:
-            continue
+    # Package-managed ROCm can expose GPUs via rocminfo/amd-smi but lack a version
+    # file and hipconfig. Debian/Ubuntu report rocm-core or the packaged HSA
+    # runtime; RPM distros report rocm-core. Matches install.sh so `studio update`
+    # and fresh install choose the same family.
+    #
+    # dpkg-query can still report removed-but-not-purged packages, so only
+    # accept package readings whose status is actually "installed".
+    #
+    # rocm-core wins outright when installed; libhsa-runtime64-1 is a fallback for
+    # distros that ship no rocm-core. See _rocm_tag_from_dpkg in install.sh for why
+    # they are not peers: the HSA package comes from the distro archive and tracks
+    # it rather than the installed ROCm, so on Ubuntu it sits at 5.7.1 beside AMD's
+    # rocm-core 7.2.1 and would report a disagreement on a perfectly healthy host.
+    dpkg = shutil.which("dpkg-query")
+    if dpkg:
         try:
             result = subprocess.run(
-                [exe, *cmd[1:]],
+                [
+                    dpkg,
+                    "-W",
+                    "-f=${Package} ${Status} ${Version}\n",
+                    "rocm-core",
+                    "libhsa-runtime64-1",
+                ],
                 stdout = subprocess.PIPE,
                 stderr = subprocess.DEVNULL,
                 text = True,
                 timeout = 5,
             )
+            # dpkg-query returns nonzero when either requested package is absent,
+            # while still printing the other package's installed line. Parse stdout
+            # independently of the process status so the fallback still votes.
+            _dpkg_readings: "dict[str, list[tuple[int, int]]]" = {"rocm-core": [], "hsa": []}
+            for line in result.stdout.splitlines():
+                fields = line.split()
+                if len(fields) < 5 or fields[3] != "installed":
+                    continue
+                package, raw = fields[0], fields[4]
+                if package not in ("rocm-core", "libhsa-runtime64-1"):
+                    continue
+                # dpkg can prepend an epoch ("1:6.3.0-1"); strip it before parsing.
+                raw = re.sub(r"^\d+:", "", raw)
+                m = re.match(r"(\d+)[.-](\d+)", raw)
+                if m:
+                    _key = "rocm-core" if package == "rocm-core" else "hsa"
+                    _dpkg_readings[_key].append((int(m.group(1)), int(m.group(2))))
+            if _dpkg_readings["rocm-core"]:
+                for _major, _minor in _dpkg_readings["rocm-core"]:
+                    _record("dpkg rocm-core", _major, _minor)
+            else:
+                for _major, _minor in _dpkg_readings["hsa"]:
+                    _record("dpkg HSA runtime", _major, _minor)
         except Exception:
-            continue
-        if result.returncode != 0 or not result.stdout.strip():
-            continue
-        raw = result.stdout.strip()
-        # dpkg can prepend an epoch ("1:6.3.0-1"); strip it before parsing.
-        raw = re.sub(r"^\d+:", "", raw)
-        m = re.match(r"(\d+)[.-](\d+)", raw)
-        if m:
-            return int(m.group(1)), int(m.group(2))
+            pass
 
-    return None
+    rpm = shutil.which("rpm")
+    if rpm:
+        try:
+            result = subprocess.run(
+                [
+                    rpm,
+                    "-q",
+                    "--qf",
+                    "%{VERSION}\n",
+                    "rocm-core",
+                ],
+                stdout = subprocess.PIPE,
+                stderr = subprocess.DEVNULL,
+                text = True,
+                timeout = 5,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                raw = result.stdout.strip()
+                m = re.match(r"(\d+)[.-](\d+)", raw)
+                if m:
+                    _record(
+                        "rpm rocm-core",
+                        int(m.group(1)),
+                        int(m.group(2)),
+                    )
+        except Exception:
+            pass
+
+    if not readings:
+        return None
+
+    best = max(version for _, version in readings)
+    distinct = {version for _, version in readings}
+
+    if len(distinct) > 1:
+        details = ", ".join(
+            f"{source}=rocm{version[0]}.{version[1]}" for source, version in readings
+        )
+        _safe_print(
+            f"WARNING: ROCm version sources disagree ({details}) -- "
+            f"using the highest, rocm{best[0]}.{best[1]}.",
+            file = sys.stderr,
+        )
+
+    return best
 
 
 # APU gfx arches whose board commonly also carries a discrete Radeon. HIP often
@@ -1661,8 +1810,10 @@ def _detect_amd_gfx_codes(
             codes = [f"gfx{c}" for c in re.findall(r"gfx([1-9][0-9a-z]{2,3})", text.lower())]
             return list(dict.fromkeys(codes))
         # One entry per agent section; fall back to dedup for flat output.
+        # amd-smi heads each device with "GPU: N" / "GPU[N]"; install.sh parses the same shapes.
         _sections = re.split(
-            r"(?mi)^\s*\*+\s*$\s*agent\s+\d+\s*$|\bagent\s+\d+\b|\bdevice\s*#\s*\d+\b",
+            r"(?mi)^\s*\*+\s*$\s*agent\s+\d+\s*$|\bagent\s+\d+\b|\bdevice\s*#\s*\d+\b"
+            r"|^[ \t]*gpu[ \t]*[:\[][ \t]*\d+",
             text,
         )
         if len(_sections) > 1:
@@ -3194,6 +3345,29 @@ def _ensure_rocm_torch() -> None:
                     f"   skipping AMD per-gfx index override.\n"
                 )
 
+    # Navi 33 (gfx1102) and RDNA 4 (gfx1200/gfx1201) need generic rocm6.4
+    # wheels. Keep an explicit user pin authoritative, and do not compete with
+    # a selected Strix per-gfx index. A pre-existing older ROCm wheel is actively
+    # repaired just like gfx906's broken generic-wheel combination.
+    _gfx_rocm64_target = (
+        _rocm_pin is None
+        and _strix_override_url is None
+        and _runtime_target_needs_rocm64_generic_index()
+    )
+    _gfx_rocm64_floor = _gfx_rocm64_target and _gfx_needs_rocm64_generic_index(ver)
+    _gfx_rocm64_repair = (
+        _gfx_rocm64_target
+        and has_hip_torch
+        and _installed_rocm_wheel_is_below(_installed_torch_ver, (6, 4))
+    )
+    if _gfx_rocm64_floor or _gfx_rocm64_repair:
+        _safe_print(
+            "   gfx1102/gfx1200/gfx1201 needs the generic rocm6.4 wheel family; "
+            "older generic ROCm wheels lack its kernels."
+        )
+    if _gfx_rocm64_repair:
+        rocm_torch_ready = False
+
     # gfx906 (MI50 / Radeon VII): is this the runtime GPU target? Used below to skip
     # the generic bitsandbytes wheel (no gfx906 kernels). This must hold even under
     # an explicit torch-index pin: a gfx906 host that pins rocm6.3 (without also
@@ -3276,6 +3450,8 @@ def _ensure_rocm_torch() -> None:
         if _override_idx is not None:
             index_url = _override_idx
             tag = _torch_index_leaf(index_url)
+        elif _gfx_rocm64_floor:
+            tag = _GFX_ROCM64_FLOOR_TAG
         else:
             tag = _generic_pytorch_rocm_tag(ver)
         if tag is None:

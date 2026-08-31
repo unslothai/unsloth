@@ -2190,7 +2190,15 @@ _setup_amd_smi_gpu_records() {
         }
         # amd-smi upper-cases every key (amdsmi_logger.py _capitalize_keys): MARKET_NAME,
         # TARGET_GRAPHICS_VERSION. Matched case-folded so older spellings work too.
-        /^[[:space:]]*GPU:[[:space:]]*[0-9]/ { flush(); started = 1; next }
+        #
+        # Two header shapes. `GPU: 0` opens a keyed block and the arch arrives later;
+        # `GPU[0]  : gfx1100` IS the whole record, arch on the header and nothing after it.
+        # Matching only the first answered no arch at all on an amd-smi-only host.
+        /^[[:space:]]*GPU[[:space:]]*[:\[][[:space:]]*[0-9]/ {
+            flush(); started = 1
+            if (match($0, /gfx[1-9][0-9a-z][0-9a-z][0-9a-z]?/)) gfx = substr($0, RSTART, RLENGTH)
+            next
+        }
         !started { next }
         tolower($0) ~ /market.?name/ { if (mkt == "") mkt = value($0); next }
         tolower($0) ~ /target.?graphics.?version/ {
