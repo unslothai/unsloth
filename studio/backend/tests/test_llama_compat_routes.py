@@ -481,3 +481,136 @@ def test_the_probe_paths_are_admitted_under_keyless_inference_scope():
     # Not the Ollama paths: they are not served at all.
     for path in ("/api/tags", "/api/show", "/api/version"):
         assert ("GET", path) not in _INFERENCE_ROUTES, path
+
+
+# ── round two ─────────────────────────────────────────────────────────────────
+
+
+def test_head_on_an_unserved_probe_path_is_404_not_405():
+    """Starlette does NOT admit HEAD on a GET route. Measured on the pinned
+    fastapi 0.141.1 / starlette 1.6.0: HEAD against a bare GET catch-all returns 405,
+    so a HEAD probe would read the endpoint as existing. A comment here previously
+    claimed the opposite."""
+    mod = _load()
+    with _client(mod) as c:
+        for path in ("/completion", "/tokenize", "/metrics", "/slots"):
+            assert c.request("HEAD", path).status_code == 404, path
+
+
+def test_head_is_405_on_a_plain_get_route_which_is_why_it_is_listed():
+    """Pins the framework behaviour the fix depends on, so a future FastAPI that starts
+    admitting HEAD does not leave the reason for this list unexplained."""
+    app = FastAPI()
+
+    @app.get("/{p:path}")
+    async def _catchall(p: str):
+        return {"p": p}
+
+    with TestClient(app) as c:
+        assert c.get("/anything").status_code == 200
+        assert c.request("HEAD", "/anything").status_code == 405
+
+
+@pytest.mark.parametrize("path", ["/slots/0", "/slots/3", "/slots/abc", "/slots/0/"])
+def test_the_nested_slot_endpoint_is_denied_too(path):
+    """/slots/:id_slot is a real llama-server route, and Studio calls it itself in
+    restore_slots_for_resume, so an exact-membership check on "slots" missed it."""
+    mod = _load()
+    assert mod.is_engine_probe_path(path.strip("/"))
+    with _client(mod) as c:
+        for method in ("GET", "HEAD", "POST", "DELETE"):
+            r = c.request(method, path, json = {} if method == "POST" else None)
+            assert r.status_code == 404, (method, path, r.status_code)
+
+
+def test_the_deny_list_matches_llama_servers_own_route_table():
+    """Transcribed from tools/server/server.cpp rather than grown one client complaint
+    at a time. /props is the single bare route Studio serves, so it is the only
+    omission; anything else missing here means a probe still reaches the app shell."""
+    mod = _load()
+    bare_llama_routes = {
+        "apply-template",
+        "audio/transcriptions",
+        "chat/completions",
+        "chat/completions/input_tokens",
+        "completion",
+        "completions",
+        "cors-proxy",
+        "detokenize",
+        "embedding",
+        "embeddings",
+        "health",
+        "infill",
+        "lora-adapters",
+        "metrics",
+        "models",
+        "models/load",
+        "models/sse",
+        "models/unload",
+        "props",
+        "rerank",
+        "reranking",
+        "responses",
+        "responses/input_tokens",
+        "slots",
+        "tokenize",
+        "tools",
+    }
+    served = {"props"}
+    for route in bare_llama_routes - served:
+        assert mod.is_engine_probe_path(route), route
+    assert not mod.is_engine_probe_path("props"), "Studio serves /props"
+
+
+def test_a_bare_llama_route_404s_on_every_method_a_client_would_use():
+    mod = _load()
+    with _client(mod) as c:
+        for path in (
+            "/chat/completions",
+            "/responses",
+            "/models",
+            "/tools",
+            "/audio/transcriptions",
+        ):
+            for method in ("GET", "HEAD", "POST"):
+                r = c.request(method, path, json = {} if method == "POST" else None)
+                assert r.status_code == 404, (method, path, r.status_code)
+                assert "text/html" not in r.headers.get("content-type", ""), (method, path)
+
+
+def test_props_does_not_advertise_child_endpoints_studio_denies():
+    """llama-server puts endpoint_slots / endpoint_props / endpoint_metrics in its props
+    (tools/server/server-context.cpp), and Studio launches it with --metrics, so
+    endpoint_metrics arrives true while public /metrics is one of the paths this module
+    deliberately 404s. Copying the child's route table onto the public surface is the
+    same over-claim as answering a probe with HTML."""
+    upstream = {
+        "endpoint_slots": True,
+        "endpoint_props": True,
+        "endpoint_metrics": True,
+        "ui": True,
+        "ui_settings": {"theme": "dark"},
+        "cors_proxy_enabled": True,
+        "total_slots": 4,
+    }
+    mod = _load(backend = _Backend(props = upstream))
+    with _client(mod) as c:
+        body = c.get("/props").json()
+    assert body["endpoint_slots"] is False
+    assert body["endpoint_props"] is False
+    assert body["endpoint_metrics"] is False
+    for child_only in ("ui", "ui_settings", "cors_proxy_enabled"):
+        assert child_only not in body, child_only
+    # The fields that do describe the model still come through untouched.
+    assert body["total_slots"] == 4
+
+
+def test_the_denied_endpoints_props_advertises_really_are_denied():
+    """Ties the two halves together: every endpoint_* flag set to False above names a
+    path that actually 404s, so the props answer and the route table agree."""
+    mod = _load()
+    with _client(mod) as c:
+        for path in ("/slots", "/metrics"):
+            assert c.get(path).status_code == 404, path
+        # POST /props is llama-server's props-change endpoint; Studio serves GET only.
+        assert c.post("/props", json = {}).status_code in (404, 405)

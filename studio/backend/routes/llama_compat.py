@@ -47,13 +47,20 @@ router = APIRouter()
 # catch-all in main.py answers anything outside /api/ and /v1/ with index.html, so
 # without this a probe for /slots or /completion gets 200 plus a page of HTML --
 # which reads as "supported" to every client that checks the status before the body.
-# The paths this module DOES serve are absent on purpose: they are real routes now,
-# matched before the catch-all, and listing them here would be dead weight.
+# Transcribed from llama-server's own route table (tools/server/server.cpp,
+# ctx_http.get/post), minus /props, which this module serves. Enumerated from the
+# source rather than added one at a time as clients trip over them, so the set is
+# complete instead of merely growing. Bare paths only: Studio's own API lives under
+# /api/ and /v1/, so nothing here can shadow it.
 _ENGINE_PROBE_PATHS = frozenset(
     {
         "apply-template",
+        "audio/transcriptions",
+        "chat/completions",
+        "chat/completions/input_tokens",
         "completion",
         "completions",
+        "cors-proxy",
         "detokenize",
         "embedding",
         "embeddings",
@@ -61,17 +68,30 @@ _ENGINE_PROBE_PATHS = frozenset(
         "infill",
         "lora-adapters",
         "metrics",
+        "models",
+        "models/load",
+        "models/sse",
+        "models/unload",
         "rerank",
         "reranking",
+        "responses",
+        "responses/input_tokens",
         "slots",
         "tokenize",
+        "tools",
     }
 )
+
+# /slots/:id_slot is a real llama-server route and Studio calls it itself
+# (restore_slots_for_resume), so the id has to be matched dynamically rather than
+# enumerated. Only this one prefix is dynamic in the table above.
+_ENGINE_PROBE_PREFIXES = ("slots/",)
 
 
 def is_engine_probe_path(full_path: str) -> bool:
     """True for an engine endpoint that must 404 rather than render the app shell."""
-    return full_path.strip("/").lower() in _ENGINE_PROBE_PATHS
+    normalized = full_path.strip("/").lower()
+    return normalized in _ENGINE_PROBE_PATHS or normalized.startswith(_ENGINE_PROBE_PREFIXES)
 
 
 def _inference():
@@ -151,6 +171,18 @@ def _server_props() -> dict:
     if public_id:
         props["model_path"] = public_id
 
+    # The child's props describe the CHILD's route table and its built-in web UI, none
+    # of which is reachable through Studio. Copying them verbatim points a client using
+    # props for capability discovery at endpoints that 404 here: Studio launches
+    # llama-server with --metrics, so endpoint_metrics arrives true while public
+    # /metrics is one of the paths this module deliberately denies (verified against
+    # tools/server/server-context.cpp, which puts all three flags in the payload).
+    for _child_only in ("ui", "ui_settings", "cors_proxy_enabled"):
+        props.pop(_child_only, None)
+    props["endpoint_slots"] = False
+    props["endpoint_props"] = False
+    props["endpoint_metrics"] = False
+
     # Only when llama-server owns the resident model. With a Transformers or MLX model
     # loaded the llama backend is unloaded, and reading its fields anyway would pair the
     # orchestrator's model_path with n_ctx 0, an empty template and total_slots 0 -- a
@@ -198,12 +230,28 @@ async def _probe_not_found():
 # shadow that lookup. Without these, a POST to /completion or /tokenize matched the
 # GET-only catch-all and returned 405, which a discovery client reads as "the endpoint
 # exists, wrong method" -- the same false positive the 404 is meant to close, and these
-# endpoints are POST in llama-server. OPTIONS is left alone so CORS preflight is
-# unaffected; HEAD already resolves against the catch-all's GET route.
+# endpoints are POST in llama-server. HEAD is listed explicitly: Starlette does NOT
+# admit HEAD on a GET route (measured on the pinned fastapi 0.141.1 / starlette 1.6.0,
+# HEAD /completion -> 405), so a HEAD probe would infer the endpoint exists. OPTIONS is
+# left alone so CORS preflight is unaffected.
+_PROBE_DENIED_METHODS = ["HEAD", "POST", "PUT", "PATCH", "DELETE"]
+
 for _probe_path in sorted(_ENGINE_PROBE_PATHS):
     router.add_api_route(
         f"/{_probe_path}",
         _probe_not_found,
-        methods = ["POST", "PUT", "PATCH", "DELETE"],
+        methods = _PROBE_DENIED_METHODS,
+        include_in_schema = False,
+    )
+
+# The one dynamic entry in llama-server's table, so it needs a path parameter rather
+# than a literal: without it POST /slots/0 falls through to the GET-only catch-all and
+# answers 405, which is the false positive again. Both slash forms, because FastAPI's
+# slash redirect does not apply to a path that matches no route at all.
+for _slots_form in ("/slots/{id_slot}", "/slots/{id_slot}/"):
+    router.add_api_route(
+        _slots_form,
+        _probe_not_found,
+        methods = _PROBE_DENIED_METHODS,
         include_in_schema = False,
     )
