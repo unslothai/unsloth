@@ -136,6 +136,10 @@ def test_skips_torchao_on_windows_rocm(
     )
     monkeypatch.setattr(mod, "_bootstrap_uv", lambda: False)
     monkeypatch.setattr(mod, "_repair_bad_anyio", lambda: None)
+    # SKIP_STUDIO_BASE=1 leaves the core phase to the caller, and the post-phase gate
+    # then refuses a venv with no unsloth in it. This runner has none: it installs the
+    # backend's dependencies, not the package. Nothing here is about that gate.
+    monkeypatch.setattr(mod, "_repair_damaged_core_payload", lambda *args, **kwargs: True)
     monkeypatch.setattr(mod, "_ensure_rocm_torch", lambda: None)
     monkeypatch.setattr(mod, "_ensure_cuda_torch", lambda: None)
     monkeypatch.setattr(mod, "_has_usable_nvidia_gpu", lambda: True)

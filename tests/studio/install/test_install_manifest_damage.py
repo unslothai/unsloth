@@ -686,9 +686,15 @@ def test_an_unimportable_helper_forces_the_dependency_pass(tmp_path, contents, e
     script_dir.mkdir()
     if contents is not None:
         (script_dir / "install_manifest.py").write_text(contents, encoding = "utf-8")
+    # Without PYTHONPATH: setup.sh runs this as the venv's own python, whose only
+    # source of install_manifest is the directory it passes in. Inherited, the repo's
+    # own studio/ answers the import the absent case is about, and the probe goes on
+    # to verify THIS checkout instead of the tree under test.
+    env = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
     result = subprocess.run(
         [sys.executable, "-c", _installer_helper_probe(), str(script_dir)],
         capture_output = True,
+        env = env,
     )
     assert result.returncode == expected
 
