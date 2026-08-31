@@ -707,3 +707,88 @@ def test_the_slash_and_bare_forms_agree():
     with _client(mod) as c:
         assert c.get("/props").json() == c.get("/props/").json()
         assert c.get("/version").json() == c.get("/version/").json()
+
+
+# ── 405 leaks the same signal a 200 did ───────────────────────────────────────
+
+
+def _api_only_client(mod):
+    """An app with no frontend build, so main.py registered no SPA catch-all."""
+    app = FastAPI()
+    app.include_router(mod.router)
+    mod.add_get_denials(app)
+    app.dependency_overrides[mod.get_current_subject] = lambda: "test"
+    return TestClient(app)
+
+
+@pytest.mark.parametrize(
+    "method, path",
+    [
+        ("POST", "/completion/"),
+        ("HEAD", "/metrics/"),
+        ("PUT", "/tokenize/"),
+        ("DELETE", "/slots/"),
+        ("POST", "/v1/rerank/"),
+        ("POST", "/v1/health/"),
+        ("POST", "/slots/3/"),
+    ],
+)
+def test_the_slash_form_of_a_denied_path_404s_rather_than_405(method, path):
+    """405 says "endpoint exists, wrong method", which is the signal this module removes.
+    No redirect rescues these: the catch-all is GET-only, so the slash form matched it on
+    path and missed on method."""
+    mod = _load()
+    with _client(mod) as c:
+        r = c.request(method, path)
+    assert r.status_code == 404, (method, path, r.status_code)
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/completion", "/completion/", "/health", "/metrics", "/slots", "/v1/health", "/slots/3"],
+)
+def test_a_get_probe_404s_in_api_only_mode(path):
+    """--api-only mounts no frontend, so the catch-all that supplies the GET 404 is not
+    registered and these answered 405 on method alone."""
+    mod = _load()
+    with _api_only_client(mod) as c:
+        r = c.get(path)
+    assert r.status_code == 404, (path, r.status_code)
+
+
+def test_api_only_mode_still_serves_the_three_real_routes():
+    mod = _load()
+    with _api_only_client(mod) as c:
+        for path in ("/props", "/v1/props", "/version"):
+            r = c.get(path)
+            assert r.status_code == 200, (path, r.status_code)
+            assert "application/json" in r.headers["content-type"], path
+
+
+def test_the_get_denials_are_not_added_when_a_frontend_is_mounted():
+    """A shipped asset named like an engine path must still be served by the catch-all,
+    so the GET denial is added only for an app that has no catch-all at all."""
+    mod = _load()
+    app = FastAPI()
+    app.include_router(mod.router)
+
+    @app.get("/{full_path:path}")
+    async def _spa(full_path: str):
+        return Response(content = b"asset", media_type = "text/plain")
+
+    app.dependency_overrides[mod.get_current_subject] = lambda: "test"
+    with TestClient(app) as c:
+        assert c.post("/completion").status_code == 404, "sanity: the deny route is live"
+        r = c.get("/completion")
+    assert r.status_code == 200 and r.content == b"asset", (
+        "the router claimed GET, so a shipped asset by that name became unreachable"
+    )
+
+
+def test_the_version_lookup_leaves_the_event_loop():
+    """get_studio_version() shells out to git twice on a source checkout; on the event
+    loop that stalls every other request, including the launcher's health probe."""
+    import inspect
+
+    src = inspect.getsource(_load().studio_version)
+    assert "to_thread" in src, "the version handler must resolve off the event loop"

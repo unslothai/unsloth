@@ -2621,6 +2621,13 @@ def run_server(
                 "  - reinstall: curl -fsSL https://unsloth.ai/install.sh | sh"
             )
 
+    if not _frontend_mounted:
+        # No SPA catch-all was registered, so nothing 404s a GET probe and the engine
+        # paths answered 405 on method alone, which reads as "endpoint exists".
+        from routes.llama_compat import add_get_denials
+
+        add_get_denials(app)
+
     # Resolve once; shared by the log rewrite and banner.
     display_host = _display_host_for_bind(host)
     _install_uvicorn_startup_log_rewrite(host, display_host)

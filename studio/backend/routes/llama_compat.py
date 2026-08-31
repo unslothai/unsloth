@@ -186,7 +186,9 @@ async def llama_props(current_subject: str = Depends(get_current_subject)):
 async def studio_version(current_subject: str = Depends(get_current_subject)):
     """Bare /version only: Ollama spells it /api/version, and answering there is part
     of claiming to be Ollama."""
-    return {"version": _studio_version()}
+    # Threaded like /props: the first call resolves the version, which shells out to git
+    # twice on a source checkout, and that must not sit on the event loop.
+    return {"version": await asyncio.to_thread(_studio_version)}
 
 
 async def _probe_not_found():
@@ -199,28 +201,52 @@ async def _probe_not_found():
 # OPTIONS is untouched for CORS preflight.
 _PROBE_DENIED_METHODS = ["HEAD", "POST", "PUT", "PATCH", "DELETE"]
 
+# Both forms of every path: no redirect rescues "POST /completion/", because the
+# catch-all is GET-only, so the slash form was a method mismatch and returned the 405
+# these routes exist to prevent.
+def _both_forms(path: str) -> tuple:
+    return (path, path + "/")
+
+
 for _probe_path in sorted(_ENGINE_PROBE_PATHS):
-    router.add_api_route(
-        f"/{_probe_path}",
-        _probe_not_found,
-        methods = _PROBE_DENIED_METHODS,
-        include_in_schema = False,
-    )
+    for _form in _both_forms(f"/{_probe_path}"):
+        router.add_api_route(
+            _form,
+            _probe_not_found,
+            methods = _PROBE_DENIED_METHODS,
+            include_in_schema = False,
+        )
 
 # main.py already 404s an unknown GET under /v1/, so only the other methods need these.
 for _v1_path in sorted(_UNSERVED_V1_PROBE_PATHS):
-    router.add_api_route(
-        f"/{_v1_path}",
-        _probe_not_found,
-        methods = _PROBE_DENIED_METHODS,
-        include_in_schema = False,
-    )
+    for _form in _both_forms(f"/{_v1_path}"):
+        router.add_api_route(
+            _form,
+            _probe_not_found,
+            methods = _PROBE_DENIED_METHODS,
+            include_in_schema = False,
+        )
 
-# Both slash forms: FastAPI's slash redirect does not apply to a path matching no route.
-for _slots_form in ("/slots/{id_slot}", "/slots/{id_slot}/"):
+for _slots_form in _both_forms("/slots/{id_slot}"):
     router.add_api_route(
         _slots_form,
         _probe_not_found,
         methods = _PROBE_DENIED_METHODS,
         include_in_schema = False,
     )
+
+
+def add_get_denials(app) -> None:
+    """404 the engine paths on GET as well, for an app with no frontend mounted.
+
+    The GET denial normally comes from main.py's SPA catch-all, which is registered
+    only when setup_frontend() finds a build. In API-only mode there is none, so these
+    paths matched on method alone and answered 405, which a discovery client reads as
+    "endpoint exists, wrong method" -- the signal this module exists to remove. Called
+    after the frontend decision so a mounted build keeps serving assets by these names.
+    """
+    for path in sorted(_ENGINE_PROBE_PATHS) + sorted(_UNSERVED_V1_PROBE_PATHS):
+        for form in _both_forms(f"/{path}"):
+            app.add_api_route(form, _probe_not_found, methods = ["GET"], include_in_schema = False)
+    for form in _both_forms("/slots/{id_slot}"):
+        app.add_api_route(form, _probe_not_found, methods = ["GET"], include_in_schema = False)
