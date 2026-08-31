@@ -360,3 +360,59 @@ test("the sidebar keeps polling while the inventory can still change the verdict
     "a settled host polls at the inventory cadence, not the self-heal one",
   );
 });
+
+// The poll decision itself, evaluated rather than pattern-matched.
+//
+// The test above pins the shape of the early return; this one runs it. A regression that
+// keeps the guard's text but inverts its sense would give every working install a forced
+// /api/system read a minute for the life of the session, which is the opposite of what
+// this change is for.
+test("only a host the inventory can still reclassify keeps polling", () => {
+  const guard = lift(
+    sidebarSrc,
+    /const inventorySensitive =[\s\S]*?if \(selfHealSettled && !capabilitiesUnknown && !inventorySensitive\) return;/,
+    "the polling guard",
+    "app-sidebar.tsx",
+  );
+  const reasons = lift(
+    sidebarSrc,
+    /const INVENTORY_SENSITIVE_REASONS = new Set\(\[[\s\S]*?\]\);/,
+    "INVENTORY_SENSITIVE_REASONS",
+    "app-sidebar.tsx",
+  );
+  const polls = (
+    chatOnly: boolean,
+    chatOnlyReason: string | null,
+    selfHealSettled = true,
+    capabilitiesUnknown = false,
+  ) =>
+    new Function(
+      "chatOnly",
+      "chatOnlyReason",
+      "selfHealSettled",
+      "capabilitiesUnknown",
+      `${reasons}
+       ${guard}
+       return true;`,
+    )(chatOnly, chatOnlyReason, selfHealSettled, capabilitiesUnknown) === true;
+
+  // The hosts this change exists for. Their verdict moves on the next inventory refresh.
+  assert.ok(polls(true, "torch_cpu_build"));
+  assert.ok(polls(true, "torch_cuda_unavailable"));
+  assert.ok(polls(true, "no_gpu"), "an eGPU can arrive on a CPU-only box");
+
+  // And the hosts that were working before this PR and must keep working the same way.
+  assert.ok(
+    !polls(false, null),
+    "a healthy GPU host must not gain a forced read a minute",
+  );
+  assert.ok(!polls(true, "intel_mac"), "an Intel Mac stays an Intel Mac");
+  assert.ok(
+    !polls(true, "detection_failed"),
+    "a probe cannot undo a detection that already failed",
+  );
+
+  // The two pre-existing polls are untouched.
+  assert.ok(polls(true, "mlx_unavailable", false), "the MLX self-heal poll");
+  assert.ok(polls(false, null, true, true), "the unknown-verdict poll");
+});
