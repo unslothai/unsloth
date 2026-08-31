@@ -1912,6 +1912,158 @@ def _converter_gguf_shard_size(
     return _GGUF_NO_SHARDING
 
 
+def _gguf_shard_size_bytes(gguf_shard_size: str) -> int:
+    """Convert a normalized GGUF shard size to decimal bytes."""
+    if gguf_shard_size == _GGUF_NO_SHARDING:
+        return 0
+    match = _GGUF_SHARD_SIZE_RE.fullmatch(gguf_shard_size)
+    if match is None:
+        raise ValueError(f"Unsloth: invalid normalized GGUF shard size {gguf_shard_size!r}.")
+    multiplier = 1_000_000 if match.group(2).upper() == "M" else 1_000_000_000
+    return int(match.group(1)) * multiplier
+
+
+def _is_gguf_companion(path: Union[str, os.PathLike]) -> bool:
+    """Return whether a GGUF is a vision or speculative-decoding companion."""
+    file_path = Path(path)
+    name = file_path.name.casefold()
+    stem = name[:-5] if name.endswith(".gguf") else name
+    return (
+        "-mmproj" in stem
+        or stem.startswith("mmproj-")
+        or stem.startswith("mtp-")
+        or stem.endswith("-mtp")
+        or file_path.parent.name.casefold() == "mtp"
+    )
+
+
+def _find_llama_gguf_split(quantizer_location: str) -> str:
+    """Find the llama.cpp split utility beside supported install layouts."""
+    executable = "llama-gguf-split.exe" if IS_WINDOWS else "llama-gguf-split"
+    candidates = [shutil.which(executable)]
+    quantizer_dir = os.path.dirname(os.path.abspath(quantizer_location))
+    candidates.extend(
+        [
+            os.path.join(quantizer_dir, executable),
+            os.path.join(LLAMA_CPP_DEFAULT_DIR, executable),
+            os.path.join(LLAMA_CPP_DEFAULT_DIR, "build", "bin", executable),
+            os.path.join(
+                LLAMA_CPP_DEFAULT_DIR,
+                "build",
+                "bin",
+                "Release",
+                executable,
+            ),
+        ]
+    )
+    for candidate in dict.fromkeys(path for path in candidates if path):
+        if os.path.isfile(candidate) and (IS_WINDOWS or os.access(candidate, os.X_OK)):
+            return candidate
+    raise RuntimeError(
+        "Unsloth: sharding a vision GGUF requires llama-gguf-split so the mmproj "
+        "companion can stay single-file. Upgrade unsloth_zoo and reinstall llama.cpp, "
+        "then retry."
+    )
+
+
+def _split_vlm_main_gguf(
+    initial_files,
+    gguf_shard_size: str,
+    quantizer_location: str,
+):
+    """Split one VLM text GGUF while leaving mmproj and MTP companions untouched."""
+    max_bytes = _gguf_shard_size_bytes(gguf_shard_size)
+    if max_bytes == 0:
+        return initial_files
+
+    main_files = [os.fspath(path) for path in initial_files if not _is_gguf_companion(path)]
+    if len(main_files) != 1:
+        raise RuntimeError(
+            "Unsloth: expected one unsharded VLM text GGUF before companion-safe "
+            f"splitting, found {len(main_files)}."
+        )
+    main_file = main_files[0]
+    if os.path.getsize(main_file) <= max_bytes:
+        return initial_files
+
+    splitter = _find_llama_gguf_split(quantizer_location)
+    parent = os.path.dirname(os.path.abspath(main_file))
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix = ".unsloth_gguf_split_", dir = parent) as temp_dir:
+        output_prefix = os.path.join(temp_dir, Path(main_file).stem)
+        split_size = gguf_shard_size[:-1]
+        try:
+            result = subprocess.run(
+                [
+                    splitter,
+                    "--split",
+                    "--split-max-size",
+                    split_size,
+                    main_file,
+                    output_prefix,
+                ],
+                check = True,
+                capture_output = True,
+                text = True,
+            )
+        except subprocess.CalledProcessError as exception:
+            details = (exception.stderr or exception.stdout or "").strip()
+            suffix = f"\n{details}" if details else ""
+            raise RuntimeError(f"Unsloth: llama-gguf-split failed.{suffix}") from exception
+
+        pattern = re.compile(
+            rf"^{re.escape(Path(output_prefix).name)}-(\d{{5}})-of-(\d{{5}})\.gguf$"
+        )
+        shards = []
+        for candidate in Path(temp_dir).iterdir():
+            match = pattern.fullmatch(candidate.name)
+            if match is not None:
+                shards.append((int(match.group(1)), int(match.group(2)), candidate))
+        shards.sort(key = lambda item: item[0])
+        if not shards:
+            details = (result.stderr or result.stdout or "").strip()
+            suffix = f"\n{details}" if details else ""
+            raise RuntimeError(f"Unsloth: llama-gguf-split produced no shards.{suffix}")
+
+        total = shards[0][1]
+        indices = [index for index, declared_total, _ in shards if declared_total == total]
+        if len(indices) != len(shards) or indices != list(range(1, total + 1)):
+            raise RuntimeError("Unsloth: llama-gguf-split produced an incomplete shard set.")
+        if total == 1:
+            return initial_files
+
+        destinations = [os.path.join(parent, shard.name) for _, _, shard in shards]
+        existing = [path for path in destinations if os.path.exists(path)]
+        if existing:
+            raise FileExistsError(
+                "Unsloth: refusing to overwrite an existing GGUF shard set: "
+                + ", ".join(existing)
+            )
+
+        moved = []
+        try:
+            for (_, _, source), destination in zip(shards, destinations):
+                os.replace(source, destination)
+                moved.append(destination)
+            os.unlink(main_file)
+        except Exception:
+            for destination in moved:
+                try:
+                    os.unlink(destination)
+                except OSError:
+                    pass
+            raise
+
+    output_files = []
+    for path in initial_files:
+        if os.path.abspath(os.fspath(path)) == os.path.abspath(main_file):
+            output_files.extend(destinations)
+        else:
+            output_files.append(path)
+    return output_files
+
+
 def _choose_first_conversion(
     quantization_methods,
     model_dtype,
@@ -2158,6 +2310,17 @@ def save_to_gguf(
         moved_files.append(dst)
     initial_files = moved_files
 
+    if (
+        is_vlm
+        and first_conversion in _FULL_PRECISION_GGUF_TYPES
+        and first_conversion in quantization_method
+    ):
+        initial_files = _split_vlm_main_gguf(
+            initial_files,
+            gguf_shard_size,
+            quantizer_location,
+        )
+
     print(f"Unsloth: Initial conversion completed! Files: {initial_files}")
 
     # Step 4: Additional quantizations using llama-quantize
@@ -2248,7 +2411,7 @@ def save_to_gguf(
                                 os.path.getsize(f)
                                 for f in initial_files
                                 if os.path.isfile(f)
-                                and "-mmproj" not in os.path.basename(f).lower()
+                                and not _is_gguf_companion(f)
                             )
                             * _ratio
                         )
@@ -2335,7 +2498,7 @@ def save_to_gguf(
             base_bytes = sum(
                 os.path.getsize(f)
                 for f in initial_files
-                if "-mmproj" not in os.path.basename(f).lower()
+                if not _is_gguf_companion(f)
             )
             mem_ok = psutil.virtual_memory().available >= int(2.5 * base_bytes)
         except Exception:
@@ -2401,9 +2564,8 @@ def save_to_gguf(
         print("Unsloth: Model files cleanup...")
         want_full_precision = first_conversion in quantization_method
         if quants_created:
-            # convert_to_gguf may return multiple base shards plus an mmproj entry,
-            # so treat every initial file that is not an mmproj as part of the base set.
-            base_files = [f for f in initial_files if "-mmproj" not in os.path.basename(f).lower()]
+            # convert_to_gguf can return main shards plus companion files.
+            base_files = [f for f in initial_files if not _is_gguf_companion(f)]
             if not want_full_precision:
                 for f in base_files:
                     if f in all_saved_locations:
@@ -5376,14 +5538,12 @@ def _free_merge_if_disk_is_tight(
     if not quant_methods:
         return 0
     try:
-        # llama-quantize copies a VLM's `-mmproj` projector rather than quantizing
-        # it, so it is not part of what a pass writes and charging it once per
-        # quant would call a disk tight that has the room. Filtered the same way
-        # the RAM budget above filters it.
+        # llama-quantize copies companions rather than quantizing them, so they
+        # are excluded from the output and memory estimates.
         base_bytes = sum(
             os.path.getsize(f)
             for f in initial_files
-            if os.path.isfile(f) and "-mmproj" not in os.path.basename(f).lower()
+            if os.path.isfile(f) and not _is_gguf_companion(f)
         )
     except OSError:
         return 0
