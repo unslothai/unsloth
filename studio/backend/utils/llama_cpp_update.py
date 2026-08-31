@@ -158,11 +158,7 @@ def _setup_source_build_cmd(script: Path) -> list[str]:
     return ["bash", str(script)]
 
 
-def _run_setup_source_build(
-    *,
-    desired_ref: Optional[str],
-    set_progress,
-) -> None:
+def _run_setup_source_build(*, desired_ref: Optional[str], set_progress) -> None:
     """Compile managed llama.cpp via setup.sh / setup.ps1 (installer's EXIT_FALLBACK owner)."""
     script = _setup_script()
     if script is None:

@@ -322,7 +322,9 @@ def test_start_update_managed_source_refresh_falls_back_to_setup(monkeypatch, tm
     assert len(calls) == 2, calls
     assert "install_llama_prebuilt" in " ".join(str(c) for c in calls[0])
     setup_joined = " ".join(str(c) for c in calls[1])
-    assert setup_name in setup_joined or "powershell" in setup_joined.lower() or "bash" in setup_joined
+    assert (
+        setup_name in setup_joined or "powershell" in setup_joined.lower() or "bash" in setup_joined
+    )
     assert "Rebuilt llama.cpp from source" in (job.get("message") or "")
 
 
