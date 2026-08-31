@@ -343,26 +343,17 @@ def install_state(extra_roots: Sequence[Path] = (), deep: bool = False) -> dict:
                 kwargs["installed_conflicts"] = installed_conflicts
             if deep and _verify_install_supports(module, "deep"):
                 kwargs["deep"] = True
-                # The scan resolves RECORD rows against the distribution that
-                # declared them, so without that venv's own site-packages it
-                # would answer for this interpreter's tree, or for nothing at
-                # all. Guarded separately: an install_manifest new enough for
-                # `deep` may still predate `scan_paths`, and there the scan is
-                # simply skipped rather than pointed at the wrong venv.
+                # Without that venv's site-packages the scan answers for this
+                # interpreter's tree. Guarded separately: a module new enough
+                # for `deep` may predate `scan_paths`.
                 if _verify_install_supports(module, "scan_paths"):
                     paths = [str(path) for path in _venv_site_packages(root)]
                     if paths:
                         kwargs["scan_paths"] = paths
             return module.verify_install(**kwargs)
-        # deep stays off for the default caller, `desktop-capabilities`, which
-        # the Tauri preflight spawns on the boot path under a 10 second timeout:
-        # a stat of every recorded file could spend that budget on a cold page
-        # cache, and a timed-out probe reports the install stale and repairs a
-        # healthy venv, which is worse than the quarantine it would have caught.
-        # `verify-install` passes deep because nothing times it out and it is the
-        # diagnostic a user is told to run. Guarded like the kwargs above so a
-        # newer CLI against an older install_manifest.py does not die on an
-        # unexpected keyword.
+        # Off for `desktop-capabilities`: the Tauri preflight times it out at
+        # 10s, and a probe that overruns repairs a healthy venv. `verify-install`
+        # is untimed, so it opts in.
         deep_kwargs = {"deep": True} if (deep and _verify_install_supports(module, "deep")) else {}
         state = module.verify_install(root = root, **deep_kwargs)
         if foreign and not state["deps_ok"]:

@@ -4792,8 +4792,7 @@ def verify_install(
     to decide whether the "already up to date" fast path may be taken.
 
     Scans the installed files too, unlike `desktop-capabilities`: nothing times
-    this command out, and a payload an antivirus quarantined is exactly what a
-    user running a verify step wants told.
+    this one out.
     """
     state = _install_state(deep = True)
 

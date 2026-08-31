@@ -774,13 +774,9 @@ class TestBuildPipCmdUpgradeIntent:
 
 
 class TestDamagedCorePayloadRepair:
-    """An upgrade of a distribution already at the wanted version installs nothing.
-
-    uv answers "Audited 1 package" and pip calls the requirement satisfied, both
-    reading metadata an antivirus quarantine of the payload leaves intact. So the
-    one pass that could restore the files is the one that decides it has nothing
-    to do, and the damaged distribution has to be named for reinstall.
-    """
+    """An upgrade of a distribution already at the wanted version installs
+    nothing: uv audits it, pip calls it satisfied, and both read metadata a
+    quarantine of the payload leaves intact."""
 
     def test_the_uv_command_targets_only_the_named_package(self):
         cmd = ips._build_uv_cmd(

@@ -475,9 +475,8 @@ def missing_requirements(
     return missing
 
 
-# Top-level dirs several wheels write into, so one uninstall deletes another's
-# files and the survivor's RECORD describes a file nothing recreates. Mirrors
-# _SHARED_NON_RUNTIME_ROOTS in unsloth_cli/_studio_deps.py.
+# Shared between wheels, so one uninstall deletes another's recorded files.
+# Mirrors _SHARED_NON_RUNTIME_ROOTS in unsloth_cli/_studio_deps.py.
 _SHARED_NON_RUNTIME_ROOTS = frozenset(
     (
         "test",
@@ -494,21 +493,15 @@ _SHARED_NON_RUNTIME_ROOTS = frozenset(
     )
 )
 
-# Rewritten in place by our own setup, so the recorded size drifts. The file
-# disappearing is still damage, so only its size claim is dropped.
+# Rewritten in place by our own setup: the size claim is waived, absence is not.
 _INSTALLER_REWRITTEN_NAMES = frozenset(("package-lock.json",))
 
-# Regenerated wholesale by our own setup: setup.sh/setup.ps1 run `npm run build`
-# in the installed tree, and vite empties dist/ and rewrites every asset under a
-# fresh content hash. The wheel ships that bundle, so RECORD names files the
-# rebuild deletes. Unlike a rewritten name this cannot be a size waiver, because
-# the recorded files are gone rather than shorter, so the whole subtree is
-# skipped the way a shared root is.
+# `npm run build` in the installed tree rehashes every asset, so RECORD names
+# files our own setup deleted. Skipped whole: they are gone, not shorter.
 _INSTALLER_REGENERATED_TREES = (("studio", "frontend", "dist"),)
 
-# Wall clock the payload scan may spend. Every setup run pays it and neither
-# installer wraps the call in a timeout, so a stalled network mount would
-# otherwise wedge setup. ~65ms is the warm cost of the largest real case.
+# Neither installer wraps the scan in a timeout, so a stalled mount would wedge
+# setup. Warm cost of the largest real case is ~65ms.
 PAYLOAD_SCAN_BUDGET_SECONDS = 5.0
 
 
@@ -521,33 +514,12 @@ def damaged_payload_files(
 ) -> List[str]:
     """Recorded files of the managed distribution that are gone or truncated.
 
-    The version checks above read metadata only, so a payload an antivirus
-    quarantined after installation still reports the announced version and takes
-    the dependency fast path, and the repair pass that would restore it never
-    runs. This walks the distribution's own RECORD instead.
-
-    Narrow by design: it answers for the managed package and the companions the
-    caller names, not for every installed distribution the way
-    `damaged_installed_files` does, because this runs on the fast path and its
-    only job is deciding whether to repair ours. unsloth-zoo is a companion for
-    the default install -- studio.txt does not list it, so nothing else here
-    would notice it quarantined, and the training, export and inference paths
-    all import it.
-
-    `scan_paths` names the site-packages roots to search, for a caller
-    describing a venv other than the one it is running in. Without it the
-    scanner answers for this interpreter.
-
-    Bounded. Every setup run pays for this, and the call sites in setup.sh and
-    setup.ps1 have no timeout around them, so an unbounded walk would hand a
-    stalled NFS mount or a network drive the ability to wedge setup outright.
-    3644 of unsloth's 4358 recorded rows are stat'ed and that takes ~65ms warm,
-    so the budget is roughly 75x headroom; past it the scan gives up and reports
-    what it has.
-
-    Never raises, and gives up rather than guesses: an environment this cannot
-    read or cannot finish reading is reported as undamaged, so a scan that
-    cannot answer leaves the fast path exactly as it found it.
+    Every check above reads metadata, which a quarantine of the payload leaves
+    intact. Only the named package and companions, unlike `damaged_installed_files`:
+    this runs on the fast path to decide whether to repair ours. `scan_paths`
+    aims it at another venv. Never raises, and an environment it cannot read or
+    finish reading is reported undamaged, since guessing the other way would
+    repair a healthy venv on every run.
     """
     import csv
     import io
@@ -571,17 +543,13 @@ def damaged_payload_files(
                 record = dist.read_text("RECORD")
             except Exception:
                 continue
-            # Absent RECORD is permitted by the spec, and an unreadable one says
-            # nothing about the tree. Neither is evidence of damage.
+            # RECORD is optional per the spec, and unreadable says nothing.
             if not record:
                 continue
             # csv, not splitlines: a quoted field may hold a newline, and
             # splitlines also breaks on \v, \f and the Unicode separators.
             for row in csv.reader(io.StringIO(record, newline = "")):
-                # Every row, not every 64th: a clock read is ~68ns against ~1343ns
-                # for a warm stat, so the guard is free, and batching it meant a
-                # mount taking a second per stat could overrun a 5s budget by a
-                # minute -- exactly the case the budget exists for.
+                # Every row: batching this let one slow mount overrun 5s by a minute.
                 if deadline is not None and time.monotonic() > deadline:
                     return found
                 rel = row[0] if row else ""
@@ -603,9 +571,7 @@ def damaged_payload_files(
                 except FileNotFoundError:
                     found.append(f"{rel} is missing")
                 except NotADirectoryError:
-                    # A parent directory replaced by a regular file. Not a
-                    # FileNotFoundError, so this needs naming separately or every
-                    # row beneath it reads as merely unreadable.
+                    # Not a FileNotFoundError: a parent replaced by a file.
                     found.append(f"{rel} is not reachable")
                 except OSError:
                     # Unreadable is not missing, and a reinstall cannot fix it.
@@ -647,24 +613,11 @@ def verify_install(
     and dependency checks would answer for the venv the caller happens to be
     running in.
 
-    `deep` adds the payload scan, and is off by default so that every existing
-    caller keeps the behaviour it has today. setup.sh and setup.ps1 opt in; they
-    import this module from their own directory, so they can never be skewed
-    against it. The desktop preflight deliberately does not: its capability
-    subprocess runs under a 10 second timeout on the boot path, and a stat of
-    every recorded file is not worth spending that budget on.
-
-    Off rather than on because the skew fails the safe way round. An external CLI
-    driving a managed venv resolves this module out of that venv
-    (`_manifest_candidates` falls through to `sys.prefix`), so an older CLI can
-    load a newer copy of this file; defaulting the scan on would put it inside
-    that 10 second budget with no way for the old caller to decline.
-
-    `scan_paths` names that other venv's site-packages, so a caller passing
-    `installed` can still ask for the payload scan. Without it a foreign venv is
-    only checked as far as its metadata goes: RECORD rows resolve against the
-    distribution that declared them, and this interpreter's own tree is the
-    wrong subject.
+    `deep` adds the payload scan, off by default because an external CLI loads
+    this module out of the venv it drives: opt-out would spend the desktop
+    preflight's 10 second budget with no way for an old caller to decline.
+    `scan_paths` names that venv's site-packages, without which RECORD rows
+    resolve against the wrong tree.
     """
     reqs = req_root or requirements_root()
     missing = missing_requirements(reqs / BOOT_REQUIREMENT_FILE, installed = installed)
@@ -694,9 +647,8 @@ def verify_install(
             _canonical(manifest_package) != "unsloth-zoo" and "unsloth-zoo" in foreign_conflicts
         )
         recorded = manifest.get("package_version")
-        # A recorded install whose distribution is gone entirely: pip removed it,
-        # or an antivirus took the dist-info along with the payload. Every check
-        # below compares against `current`, so an absent one passes all of them.
+        # Every check below compares against `current`, which an absent
+        # distribution passes.
         vanished = bool(recorded) and not current
         if core_conflict or local_conflict:
             reason = "studio_install_metadata_conflict"
@@ -711,15 +663,11 @@ def verify_install(
         # Install finished but the boot deps are gone: venv edited afterwards.
         reason = "studio_deps_missing"
 
-    # Last, and only once everything metadata can prove has passed: this is the
-    # one check that touches the filesystem, and it must not divert any of the
-    # reasons above. `installed` means we are describing someone else's venv,
-    # whose tree this interpreter cannot stat.
+    # Last: the only check that touches the filesystem, so it must not divert a
+    # reason above. `installed` without `scan_paths` is a venv we cannot stat.
     if manifest_ok and deps_ok and deep and (installed is None or scan_paths):
-        # `manifest` is non-None here: manifest_ok is only reachable through the
-        # else branch above. Reused rather than re-read, so the scan cannot
-        # disagree with the checks that already passed on a manifest rewritten
-        # underneath us mid-run.
+        # Reused, not re-read: a manifest rewritten mid-run would make the scan
+        # disagree with the checks that already passed.
         scan_package = (manifest or {}).get("package") or package_name
         companions = () if _canonical(scan_package) == "unsloth-zoo" else ("unsloth-zoo",)
         if vanished or damaged_payload_files(

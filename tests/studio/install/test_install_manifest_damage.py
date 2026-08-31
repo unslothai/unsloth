@@ -3,12 +3,9 @@
 
 """The payload scan behind `studio_install_damaged`.
 
-verify_install's other checks read metadata only, so a payload an antivirus
-quarantined after installation still reports the announced version and takes the
-dependency fast path -- the repair pass that would restore it never runs. These
-cover both directions: real damage has to be seen, and the trees our own setup
-rewrites must not be mistaken for it, because a false positive makes setup repair
-a healthy venv on every run.
+Both directions: real damage has to be seen, and the trees our own setup
+rewrites must not be mistaken for it, since a false positive repairs a healthy
+venv on every run.
 """
 
 import csv
@@ -268,12 +265,8 @@ def test_a_damaged_payload_invalidates_an_otherwise_complete_install(
 
 
 def test_the_scan_is_off_unless_asked_for(tmp_path, monkeypatch, site_packages):
-    """Default off, so every caller that predates the kwarg is unaffected.
-
-    The skew fails the safe way round this way: an external CLI resolves this
-    module out of the managed venv, so an older caller can load a newer copy of
-    it, and that caller has no way to decline a scan it does not expect.
-    """
+    """Default off: an external CLI can load a newer copy of this module out of
+    the venv it drives, and cannot decline a scan it does not expect."""
     dist_info, rows = _healthy(site_packages)
     _record(dist_info, rows)
     req_root = _complete_install(tmp_path, monkeypatch, site_packages)
@@ -311,11 +304,8 @@ def test_the_scan_runs_last_and_diverts_no_existing_reason(tmp_path, monkeypatch
 
 
 def test_the_installers_ask_for_the_scan():
-    """setup.sh and setup.ps1 are the two callers that want it.
-
-    They import this module from their own directory, so unlike an external CLI
-    they can never be skewed against it.
-    """
+    """They import this module from their own directory, so unlike an external
+    CLI they can never be skewed against it."""
     repo = Path(__file__).resolve().parents[3]
     for name in ("studio/setup.sh", "studio/setup.ps1"):
         text = (repo / name).read_text(encoding = "utf-8")
@@ -325,13 +315,8 @@ def test_the_installers_ask_for_the_scan():
 
 
 def test_the_desktop_boot_path_does_not_ask_for_the_scan():
-    """`desktop-capabilities` feeds the Tauri preflight under a 10 second timeout.
-
-    Pinned because nothing else would notice it regressing: a refactor that made
-    install_state scan by default would put a stat of every recorded file inside
-    that budget, and a timed-out probe reports a healthy install stale and
-    repairs it.
-    """
+    """`desktop-capabilities` feeds the Tauri preflight under a 10 second
+    timeout, and a probe that overruns it repairs a healthy install."""
     repo = Path(__file__).resolve().parents[3]
     deps = (repo / "unsloth_cli" / "_studio_deps.py").read_text(encoding = "utf-8")
     assert "def install_state(extra_roots: Sequence[Path] = (), deep: bool = False)" in deps
@@ -346,11 +331,8 @@ def test_the_desktop_boot_path_does_not_ask_for_the_scan():
 
 
 def test_a_package_directory_replaced_by_a_file_is_damage(site_packages):
-    """NotADirectoryError is an OSError but not a FileNotFoundError.
-
-    Left to the generic OSError arm it read as merely unreadable, so a payload
-    replaced wholesale by a quarantine stub reported an undamaged install.
-    """
+    """NotADirectoryError is an OSError but not a FileNotFoundError, so the
+    generic arm read a payload replaced by a quarantine stub as healthy."""
     dist_info, rows = _healthy(site_packages)
     _record(dist_info, rows)
     import shutil
@@ -431,11 +413,7 @@ def test_an_uninstalled_managed_distribution_is_damage(tmp_path, monkeypatch, si
 
 
 def test_the_budget_is_checked_before_every_stat(site_packages, monkeypatch):
-    """Batching the clock read let one slow stat per row overrun the budget.
-
-    A clock read is ~68ns against ~1343ns for a warm stat, so guarding every row
-    is cheaper than the call it guards.
-    """
+    """Batched every 64 rows, one slow stat per row overran the budget."""
     dist_info = _dist(site_packages)
     rows = []
     for index in range(500):
@@ -454,20 +432,14 @@ def test_the_budget_is_checked_before_every_stat(site_packages, monkeypatch):
 
     monkeypatch.setattr(Path, "stat", slow_stat)
     install_manifest.damaged_payload_files(PKG, budget_seconds = 5.0)
-    # 5 stats, not 64: the old code only looked at the clock every 64th row.
-    # The lower bound keeps the patched stat honest -- if it were not the one
-    # being called the clock would never move and the upper bound alone would
-    # pass on a scan that ignored the budget entirely.
+    # The lower bound keeps the patched stat honest: unpatched the clock never
+    # moves, and the upper bound alone passes a scan that ignored the budget.
     assert 5.0 <= clock["now"] <= 6.0
 
 
 def test_the_cli_hands_over_the_managed_venvs_own_paths():
-    """A deep check of another venv has to be pointed at that venv.
-
-    RECORD rows resolve against the distribution that declared them, so without
-    this the scan would answer for the external CLI's own tree instead, and
-    `deep` on the foreign branch would be a silent no-op.
-    """
+    """RECORD rows resolve against the distribution that declared them, so
+    without this the foreign branch scans the CLI's own tree, or nothing."""
     repo = Path(__file__).resolve().parents[3]
     deps = (repo / "unsloth_cli" / "_studio_deps.py").read_text(encoding = "utf-8")
     assert 'kwargs["scan_paths"] = paths' in deps
