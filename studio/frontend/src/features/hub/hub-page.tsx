@@ -135,7 +135,9 @@ import type {
   SelectedResourceRef,
 } from "./types";
 
-// Per-model settings key on repo id for repos cached outside the active HF cache (`hub_cache`), which load by snapshot path.
+// What per-model settings are keyed by, which is not always what the loader is handed: a repo
+// cached outside the active HF cache loads by snapshot path while the picker keys it by repo
+// id. The row decides that, not the view it is shown in; `hub_cache` marks exactly those.
 function modelConfigIdentity(
   kind: SelectedModelView["kind"],
   resource: SelectedResourceRef,
@@ -151,8 +153,10 @@ const ALL_MODELS_VIEW_STORAGE_KEY = "unsloth.hub.allModelsView";
 const INVENTORY_SORT_STORAGE_KEY = "unsloth.hub.inventorySort";
 const OWNER_SCOPE_STORAGE_KEY = "unsloth.hub.ownerScope";
 
+// Iconless models (no provider logo, e.g. Ornith, Inkling) show once they clear this many likes.
 const MIN_ICONLESS_MODEL_LIKES = 30;
 
+/** Discover browsing scope: the whole Hub (default) or only the unsloth org. */
 export type OwnerScope = "unsloth" | "all";
 
 function readOwnerScopePreference(): OwnerScope {
@@ -161,6 +165,7 @@ function readOwnerScopePreference(): OwnerScope {
   }
   try {
     const value = window.localStorage.getItem(OWNER_SCOPE_STORAGE_KEY);
+    // Default to the whole Hub; only honor an explicit "unsloth" preference.
     return value === "unsloth" ? "unsloth" : "all";
   } catch {
     return "all";
@@ -185,6 +190,7 @@ type DiscoverMode = "feed" | "channel-list" | "search";
 
 type ModelLoadOptions = { ggufVariant?: string; expectedBytes?: number };
 
+// Focused list heading stays "Models"/"Datasets" regardless of filters; only search relabels it.
 function buildFocusedHeading({
   query,
   channel,
@@ -241,6 +247,7 @@ function writeModelsTabPreference(tab: ModelsTab): void {
   }
 }
 
+// "All models" defaults to list layout; list-vs-grid choice persists across sessions.
 function readAllModelsViewPreference(): AllModelsView {
   if (typeof window === "undefined") {
     return "split";
@@ -368,6 +375,10 @@ export function ModelsPage() {
   const navigate = useNavigate();
   const gpu = useGpuInfo();
   const inferenceGpu = useInferenceGpuInfo();
+  // Browser reachability, which is what every client here asks about: the
+  // selected model's metadata and the cached feed each issue their own request.
+  // On the discovery phase they would stay blocked at "probing" until a
+  // *listing* succeeded, and the Downloaded tab has no Retry to make that happen.
   const online = useOnlineStatus();
   const deviceType = usePlatformStore((s) => s.deviceType);
   const hubSearch = useSearch({ from: "/hub" });
@@ -379,7 +390,10 @@ export function ModelsPage() {
     useChatModelRuntime();
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const residentCheckpoint = useChatRuntimeStore((s) => s.residentCheckpoint);
-  // Resident, not merely picked: a media load evicts chat weights. `undefined` is "no status read yet", which keeps the prior value.
+  // Resident, not merely picked. An image or video load evicts the chat model
+  // and leaves the pick alone, so the cards kept saying "Loaded" for weights the
+  // backend had already released. `undefined` is "no status read yet", which
+  // stays as it was rather than flashing "On device" on every launch.
   const activeCheckpoint =
     checkpoint && !isExternalModelId(checkpoint) && residentCheckpoint !== null
       ? checkpoint
@@ -390,15 +404,23 @@ export function ModelsPage() {
   );
   const [initialResidentStatusSettled, setInitialResidentStatusSettled] =
     useState(false);
+  // Live settings of the loaded model, so its page shows what it is running with.
   const { config: activeModelConfig } = useActiveModelConfig();
+  // Shared with the chat model selector: list only models sized for this device.
   const fitOnDeviceOnly = useChatRuntimeStore((s) => s.fitOnDeviceOnly);
   const setFitOnDeviceOnly = useChatRuntimeStore((s) => s.setFitOnDeviceOnly);
 
+  // Drops a response that lands after a newer read started, or after unmount.
   const residentStatusSeq = useRef(0);
+  // The newest read started, so a dropped response can resolve with that instead of nothing. The
+  // settings handlers' own guard counts settings opens only: a focus refresh supersedes without bumping.
   const residentStatusSupersession = useRef<RefreshSupersession>({
     latest: null,
   });
-  // /status cannot tell an idle eviction from a real unload, and the timeout is editable while this page stays mounted, so read it per status read. Last answer wins on failure.
+  // /status cannot say whether an empty answer is an idle eviction that will reload or a real
+  // unload, and only this endpoint knows. Read alongside every status read rather than cached,
+  // since the idle timeout is editable while this page stays mounted. Last answer wins on
+  // failure, not the default: "disarmed" clears the checkpoint, so a blip would discard a selection.
   const idleUnloadArmed = useRef(false);
   const readIdleUnloadArmed = useCallback(
     (): Promise<boolean> =>
@@ -410,17 +432,21 @@ export function ModelsPage() {
         .catch(() => idleUnloadArmed.current),
     [],
   );
+  // Returns the read so a caller that needs the answer first can wait for it.
   const refreshResidentModelStatus = useCallback((): Promise<void> => {
     const seq = ++residentStatusSeq.current;
     const read = Promise.all([getInferenceStatus(), readIdleUnloadArmed()])
       .then(([status, idleUnloadArmed]) => {
-        // Resolve with the superseding refresh so an awaiting caller does not read the pre-switch store.
+        // A newer read owns the store, so this writes nothing; resolving with the refresh that took
+        // it over keeps an awaiting caller off the pre-switch store the await was there to replace.
         if (seq !== residentStatusSeq.current)
           return supersedingRefresh(residentStatusSupersession.current, seq);
         const store = useChatRuntimeStore.getState();
         adoptResidentModelStatus(
           {
-            // Null for a speech model: this page also writes params.checkpoint, so adopting one made it the chat model.
+            // The loadable identifier: a GGUF off disk loads by path, and two files sharing a stem collapse.
+            // Null for a speech model: this page is the other writer of params.checkpoint,
+            // so adopting one here made it the chat model just as the mount sync did.
             checkpointId: isSpeechOnlyStatus(status)
               ? null
               : resolveInferenceCheckpointId(status),
@@ -441,6 +467,7 @@ export function ModelsPage() {
             clearCheckpoint: () => {
               store.clearCheckpoint();
             },
+            // The one entry point that has applied no status yet, so settings would read defaults.
             applyStatus: (previous) => {
               applyActiveModelStatusToStore(status, {
                 previousCheckpoint: previous.checkpoint ?? undefined,
@@ -451,10 +478,12 @@ export function ModelsPage() {
         );
       })
       .catch(() => undefined);
+    // In start order, synchronously with the sequence number, so a dropped response finds the newest read.
     registerRefresh(residentStatusSupersession.current, seq, read);
     return read;
   }, [readIdleUnloadArmed]);
 
+  // Mount, then whenever this tab could have missed an API-driven switch. Re-reading is safe.
   useEffect(() => {
     let active = true;
     void refreshResidentModelStatus().finally(() => {
@@ -465,6 +494,7 @@ export function ModelsPage() {
     );
     return () => {
       active = false;
+      // A response still in flight adopts nothing once the Hub is gone.
       residentStatusSeq.current += 1;
       unsubscribe();
     };
@@ -487,6 +517,7 @@ export function ModelsPage() {
     hubSearch.kind === "datasets" ? "datasets" : "models";
   const [resourceType, setResourceType] =
     useState<ResourceTypeFilter>(urlResourceType);
+  // Resync on URL kind change (back/forward); it is only seeded on mount.
   useEffect(() => {
     setResourceType((current) =>
       current === urlResourceType ? current : urlResourceType,
@@ -518,6 +549,7 @@ export function ModelsPage() {
       if (isDiscoverTab) {
         setDiscoverFormat(next);
         if (urlSection) {
+          // Exit the section so its preset does not re-impose its own format.
           void navigate({
             to: "/hub",
             search: (prev) => ({ ...prev, section: undefined }),
@@ -534,11 +566,13 @@ export function ModelsPage() {
   const [allModelsView, setAllModelsViewState] = useState<AllModelsView>(
     readAllModelsViewPreference,
   );
+  // Remembers the last non-split view so "Back to Hub" drops into the prior browsing layout.
   const lastNonSplitViewRef = useRef<AllModelsView>("two");
   const setAllModelsView = useCallback(
     (view: AllModelsView) => {
       setAllModelsViewState(view);
       writeAllModelsViewPreference(view);
+      // Leaving split view drops the inline preview so the user lands on the full hub list.
       if (view !== "split") {
         void navigate({
           to: "/hub",
@@ -705,6 +739,8 @@ export function ModelsPage() {
   const effectiveSort: HfSortKey =
     isFeedMode && liveListChannel ? liveListChannel.sort : sortBy;
   const effectiveDirection: HfSortDirection = isFeedMode ? "desc" : direction;
+  // The format dropdown always filters the visible list, including the feed's "Latest" list, so
+  // the default (GGUF) hides fp8/safetensors and picking a format actually changes the rows.
   const effectiveDiscoverFormat: ModelFormatFilter = deferredFormatFilter;
 
   const listChannel = useMemo<HfModelSearchChannel | null>(() => {
@@ -846,6 +882,7 @@ export function ModelsPage() {
       (row) =>
         !isHiddenModelId(row.id) &&
         !isConfiguredHiddenModelId(hiddenEmbeddingModelIds, row.id) &&
+        // Feed shows logo'd models, plus iconless ones above the likes threshold.
         (!isFeedMode ||
           resolveOwnerProviderLogo(row.owner, row.repo) !== null ||
           (row.result.likes ?? 0) >= MIN_ICONLESS_MODEL_LIKES) &&
@@ -855,6 +892,7 @@ export function ModelsPage() {
         ) &&
         matchesCapability(row.capabilities, deferredCapabilityFilter) &&
         (!activeChannel?.finetunableOnly || isUnslothFinetunable(row.result)) &&
+        // Models already on disk stay visible regardless of device fit, matching the chat selector.
         (!fitOnDeviceOnly ||
           row.isAvailableOnDevice ||
           hfModelFitsDevice(
@@ -897,6 +935,7 @@ export function ModelsPage() {
             !isConfiguredHiddenModelId(hiddenEmbeddingModelIds, row.id),
         )
         .filter((row) => matchesFormat(row.result.isGguf, "gguf"))
+        // Same fit filter as the main Discover list, so the feed carousel honors the toggle too.
         .filter(
           (row) =>
             !fitOnDeviceOnly ||
@@ -937,6 +976,7 @@ export function ModelsPage() {
     () => (isDiscoverTab ? [] : tokenizeQuery(deferredDebouncedQuery)),
     [isDiscoverTab, deferredDebouncedQuery],
   );
+  // Server cache rows already apply variant-aware infra hiding; optimistic rows are not confirmed.
   const isVisibleInventoryRow = useCallback(
     (row: CachedInventoryRow | LocalInventoryRow) => {
       if (row.kind === "cache") {
@@ -951,6 +991,7 @@ export function ModelsPage() {
             ))
         );
       }
+      // Local rows may lack a repo id, so also check path and title.
       return (
         !isHiddenModelId(row.id, row.repoId, row.path, row.title) ||
         (inventoryTokens.length > 0 &&
@@ -959,13 +1000,15 @@ export function ModelsPage() {
     },
     [hiddenEmbeddingModelIds, inventoryTokens],
   );
-  // Format filter hard-filters; the text query instead dims rather than filters, so selection survives typing.
+  // Format filter is a deliberate scope narrowing, so hard-filter it out. The text query instead
+  // drives dim-not-filter on On Device so selection survives typing; matches sort to the top.
   const filteredCachedRows = useMemo(
     () =>
       partitionByMatch(
         effectiveCachedRows.filter(
           (row) =>
-            // Datasets bypass hidden-model and format filtering, as Discover does.
+            // Hidden-model filtering is model-only; datasets bypass it (and the format filter) as Discover
+            // does, so a dataset whose id/title/path contains an infra needle is not dropped.
             isDatasetMode ||
             (matchesFormat(row.modelFormat, deferredFormatFilter) &&
               matchesModelType(row, inventoryTypeFilter) &&
@@ -988,7 +1031,8 @@ export function ModelsPage() {
       partitionByMatch(
         effectiveLocalRows.filter(
           (row) =>
-            // Datasets bypass hidden-model and format filtering, as Discover does.
+            // Hidden-model filtering is model-only; datasets bypass it (and the format filter) as Discover
+            // does, so a dataset whose id/title/path contains an infra needle is not dropped.
             isDatasetMode ||
             (matchesFormat(row.modelFormat, deferredFormatFilter) &&
               matchesModelType(row, inventoryTypeFilter) &&
@@ -1006,6 +1050,9 @@ export function ModelsPage() {
     ],
   );
 
+  // Header tallies exclude infra/hidden models so the count matches the On Device list (a fresh
+  // install with only the bge embedder cached reads 0, not 1 over an empty list). Reuse
+  // isVisibleInventoryRow so a search-revealed row is counted, and datasets keep their full count.
   const visibleCachedCount = useMemo(
     () =>
       effectiveCachedRows.filter(
@@ -1073,11 +1120,13 @@ export function ModelsPage() {
     fetchMoreManually: fetchMoreDiscoverManually,
   } = useHubInfiniteScroll(
     fetchMore,
-    // Off the raw fetched count, not the filtered one: aggressive filters can reject every row and stall it.
+    // Re-evaluate off the raw fetched count, not the filtered one: aggressive filters can reject
+    // every row, stalling filteredDiscoverRows.length while results grow.
     scannedCount,
     {
       enabled: online && isDiscoverTab && hasMore,
-      // No phase gate: the footer outlives the failed page, and the manual fetch clears the backoff itself.
+      // No phase gate: the footer renders on hasMore and so outlives the failed
+      // page, and fetchMoreDiscoverManual clears the backoff itself.
       isFetching: isLoading || isLoadingMore,
       resultCount: filteredDiscoverRows.length,
       maxAutoFillFetches: 5,
@@ -1119,6 +1168,8 @@ export function ModelsPage() {
     [navigate],
   );
   const handleCloseDetail = useCallback(() => {
+    // From split view, "Back to Hub" returns to the main hub feed (not the filtered list): leave
+    // split mode, reset discover state, and clear the inline preview and channel.
     if (allModelsView === "split") {
       const next = lastNonSplitViewRef.current;
       setAllModelsViewState(next);
@@ -1200,14 +1251,18 @@ export function ModelsPage() {
     urlModel,
   ]);
 
+  // Track the last non-split layout so leaving split mode restores it.
   useEffect(() => {
     if (allModelsView !== "split") {
       lastNonSplitViewRef.current = allModelsView;
     }
   }, [allModelsView]);
 
+  // Split view previews the first row so the detail pane isn't empty. Feed mode included: split
+  // view shows only the master list, so its first row lands on a real README, not a placeholder.
   useEffect(() => {
     if (allModelsView !== "split" || urlModel) return;
+    // Use the filtered rows the master pane renders so the preview never lands on a filtered-out row.
     const firstId = isDiscoverTab
       ? listRows[0]?.id
       : (filteredCachedRows[0]?.id ?? filteredLocalRows[0]?.id);
@@ -1286,12 +1341,20 @@ export function ModelsPage() {
     (opts: ModelLoadOptions, isDownloaded: boolean) => {
       if (!selectedModel) return;
       const runId = selectedModel.resource.runId;
-      // An image / video model is run by its own page: loading it here evicted the chat model for a llama.cpp load that could only fail.
-      // `task` is not optional: only CachedModelRepo carries pipelineTag, so a cached GGUF repo reports modality on `task`.
+      // An image / video model is run by its own page, not by chat: loading it here evicted
+      // the resident chat model for a llama.cpp load that could only fail. Same resolution
+      // and destination the chat picker uses, so both surfaces route a pick identically.
+      // `task` is not optional here: only CachedModelRepo carries pipelineTag, so every
+      // cached GGUF repo (the reported MiniMax-H3 case) reports its modality on `task`.
       const mediaPage = studioPageForTask(
         taskForMediaPick(selectedModel.pipelineTag, selectedModel.task) ?? undefined,
       );
-      // The target pages read a routed `model` as a Hub id, so a path-shaped runId would arrive as a nonexistent repo.
+      // The target pages read a routed `model` as a Hub id, so a runId that is a PATH would
+      // arrive as a repo that does not exist -- prefer the Hub id, which loads the same copy
+      // since the loader reuses whichever cache root holds it. That covers a filesystem row
+      // (left on today's route, and the backend preflight now refuses it by name) and a
+      // cached repo the inventory pinned to its snapshot directory, whose symlinked entries
+      // the pages' containment check rejects anyway.
       const routeId = runId && !looksLikeLocalPath(runId) ? runId : selectedModel.hubRepoId;
       if (
         mediaPage &&
@@ -1311,6 +1374,7 @@ export function ModelsPage() {
         selectedModel.kind,
         selectedModel.resource,
       );
+      // A cached repo used to be keyed by its snapshot path (its runId); move that record over first.
       adoptLegacyConfigKey(configIdentity, runId, opts.ggufVariant);
       const resolvedConfig = resolveInitialConfig(
         configIdentity,
@@ -1331,10 +1395,14 @@ export function ModelsPage() {
         keepSpeculative: hasAppliedConfig,
         throwOnError: true,
         previousConfig,
-        // /load inherits launch flags only from the SAME resident model, and the runtime store has no field for them.
+        // The runtime store is not enough: applyPerModelConfigToRuntime has no field
+        // for the launch flags, and /load only inherits them from the SAME resident
+        // model, so a cold launch or a switch from another model ran without the
+        // arguments this model was remembered with.
         ...(rememberedConfig ? { config: rememberedConfig } : {}),
       })
         .then(() => {
+          // Read fresh: the load is async, so the checkpoint may have changed.
           const store = useChatRuntimeStore.getState();
           if (!modelIdsMatch(store.params.checkpoint, runId)) {
             store.setCheckpoint(runId, opts.ggufVariant ?? null);
@@ -1351,9 +1419,12 @@ export function ModelsPage() {
     [runSelectedModel, selectedModel],
   );
 
+  // Full-page per-model settings. Local state, not a URL param: a deep link would need the row re-resolved.
   const [settingsTarget, setSettingsTarget] = useState<ModelPickTarget | null>(
     null,
   );
+  // Opening settings is where a stale read costs something: the editor is seeded once and Apply
+  // reloads with what it seeded. Resolving a target is openModelSettings' own read.
   useEffect(() => {
     if (settingsTarget) void refreshResidentModelStatus();
   }, [settingsTarget, refreshResidentModelStatus]);
@@ -1362,10 +1433,13 @@ export function ModelsPage() {
   const openModelSettings = useCallback(
     async (row: CachedInventoryRow | LocalInventoryRow) => {
       const openSeq = ++settingsOpenSeq.current;
+      // Before anything reads the store: the status effect watches settingsTarget. Every path out
+      // seeds the editor from the store and Apply reloads with that, so a stale read misconfigures.
       await refreshResidentModelStatus();
       if (settingsOpenSeq.current !== openSeq) return;
       // loadId is what the loader accepts; repoId is only a display/API alias.
       const id = row.loadId;
+      // Every name this row answers to.
       const rowAliases =
         row.kind === "local"
           ? [id, row.repoId, row.path]
@@ -1373,7 +1447,8 @@ export function ModelsPage() {
       // Cached repo rows carry no quant, and a null variant keys the config to `repo::` while the loader reads `repo::Q4_K_M`.
       let ggufVariant = settingsGgufVariantForRow(row);
       if (!ggufVariant && row.isGguf && row.capabilities.requiresVariant) {
-        // A local row carries a repo id only inside the HF cache, so a plain folder of quants falls back to its path.
+        // A local row only carries a repo id inside the HF cache, so a plain folder of quants has
+        // none while still needing one; the listing scans a path in the same position.
         const repoId =
           row.kind === "cache" ? row.repoId : (row.repoId ?? row.path ?? null);
         if (repoId) {
@@ -1384,7 +1459,9 @@ export function ModelsPage() {
                 row.kind === "local" ? row.path : (row.cachePath ?? null),
             });
             const downloaded = res.variants.filter((v) => v.downloaded);
-            // Re-read after the network lookup: a switch during it would leave this on the displaced model's quant.
+            // Re-read after this await too: the lookup hits the network, and a switch during it would
+            // leave the branch below on the displaced model's quant. Against the server, not the store:
+            // nothing pushes an API switch into this tab.
             await refreshResidentModelStatus();
             if (settingsOpenSeq.current !== openSeq) return;
             const settled = useChatRuntimeStore.getState();
@@ -1397,6 +1474,7 @@ export function ModelsPage() {
               modelIdsMatch(alias, settledCheckpoint),
             );
             ggufVariant =
+              // Loaded quant, then repo default, then whatever is on disk, mirroring LocalOnDeviceCard.
               (settledIsActive
                 ? downloaded.find((v) =>
                     ggufVariantsMatch(v.quant, settled.activeGgufVariant),
@@ -1412,6 +1490,7 @@ export function ModelsPage() {
           }
         }
         if (!ggufVariant) {
+          // A model needing a quant cannot be configured without one: the picker matches variants exactly.
           toast.error("Couldn't determine which quant to configure.", {
             description:
               "Settings for this model are per quant. Check the connection or the model's cache, then try again.",
@@ -1419,6 +1498,7 @@ export function ModelsPage() {
           return;
         }
       }
+      // The lookup is async: without this, whichever call finished last would win.
       if (settingsOpenSeq.current !== openSeq) {
         return;
       }
@@ -1441,12 +1521,14 @@ export function ModelsPage() {
           isGguf: row.isGguf,
           // A partial opens settings too; claiming complete would skip download progress.
           isDownloaded: !row.partial,
+          // Not on inventory rows; ModelConfigPage reads the GGUF header itself.
           contextLength: null,
         },
       });
     },
     [activeCheckpoint, activeGgufVariant, hfToken, refreshResidentModelStatus],
   );
+  // Applying loads the model with exactly these settings, already persisted by ModelConfigPage.
   const runSettingsTarget = useCallback(
     (config: PerModelConfig) => {
       const target = settingsTarget;
@@ -1461,11 +1543,15 @@ export function ModelsPage() {
         source: "local",
         ggufVariant: target.ggufVariant ?? undefined,
         isGguf: target.isGguf,
+        // A partial row opens settings too; claiming complete would skip download progress.
         isDownloaded: target.meta.isDownloaded,
         isLora: target.meta.isLora,
         keepSpeculative: true,
         forceReload: true,
-        // The submitted config, not its echo in the store: the store drops llamaExtraArgs, so an edit would do nothing.
+        // The submitted config, not only its echo in the runtime store: the store
+        // does not carry llamaExtraArgs, so without this the load omits the field
+        // and the route keeps the resident server's old list. Applying an edit, or
+        // clearing the box, would then do nothing on this page.
         config,
         previousConfig,
       }).catch(() => undefined);
@@ -1479,10 +1565,13 @@ export function ModelsPage() {
   const handleTrain = useCallback(() => {
     // Hub → train integration ships in a later PR.
   }, []);
+  // Opened from the on-device card, which passes in the quant it already resolved.
   const openSelectedModelSettings = useCallback(
     async (ggufVariant: string | null, quantIsUserPicked = false) => {
       if (!selectedModel) return;
+      // Shared with openModelSettings: another row's pending lookup must not land here.
       const openSeq = ++settingsOpenSeq.current;
+      // Unconditional, as in openModelSettings: the editor seeds from the store and Apply reloads it.
       await refreshResidentModelStatus();
       if (settingsOpenSeq.current !== openSeq) return;
       let variant = ggufVariant;
@@ -1494,6 +1583,7 @@ export function ModelsPage() {
           !isExternalModelId(settled.params.checkpoint)
             ? settled.params.checkpoint
             : null;
+        // Every name this model answers to, as the row menu path matches them.
         const aliases = [
           selectedModel.resource.runId,
           selectedModel.resource.repoId,
@@ -1506,6 +1596,7 @@ export function ModelsPage() {
           variant = settled.activeGgufVariant;
         }
       }
+      // The card passes null while its lookup is pending or failed, so guard as openModelSettings does.
       if (!variant && selectedModel.isGguf && selectedModel.requiresVariant) {
         toast.error("Couldn't determine which quant to configure.", {
           description:
@@ -1542,7 +1633,9 @@ export function ModelsPage() {
     },
     [selectedModel, refreshResidentModelStatus],
   );
-  // A GGUF off disk loads by path but is reported by its public id, so both names count as aliases here.
+  // Whether the settings page is open on the loaded model, so it can show the live launch config.
+  // A GGUF off disk loads by path but is reported by its public id, so the row's path and its
+  // settings identity are both offered as aliases; a loose .gguf carries no variant.
   const settingsTargetIsStandaloneFile =
     settingsTarget !== null &&
     settingsTarget.ggufVariant == null &&
@@ -1565,6 +1658,7 @@ export function ModelsPage() {
       setDiscoverFormat("all");
       setCapabilityFilter("all");
       setSortBrowseActive(false);
+      // Base models come from other publishers, so search the whole Hub.
       setOwnerScope("all");
       setQuery(trimmed);
       void navigate({
@@ -1774,6 +1868,7 @@ export function ModelsPage() {
     const ownerToggle = isDatasetMode ? undefined : (
       <OwnerScopeToggle value={ownerScope} onChange={setOwnerScope} />
     );
+    // Compact pill so it stays beside the view-mode tabs even in the narrow split pane.
     return (
       <div className="flex flex-col gap-3 pt-6">
         {isChannelListMode ? (
@@ -1823,6 +1918,7 @@ export function ModelsPage() {
   ]);
 
   const downloadedHeader = useMemo(() => {
+    // Compact pills so they stay beside the view-mode tabs even in the narrow split pane.
     const controls = (
       <div className="flex min-w-0 items-center gap-1.5">
         {!isDatasetMode && (
@@ -1859,6 +1955,7 @@ export function ModelsPage() {
 
   const detailOpen = urlModel !== null;
   const splitMode = allModelsView === "split";
+  // Unreachable under an opaque overlay: the detail view (full-page only) or settings.
   const catalogCovered = (detailOpen && !splitMode) || settingsTarget !== null;
 
   return (
@@ -1902,6 +1999,7 @@ export function ModelsPage() {
       <div
         className={cn(
           "relative flex min-h-0 min-w-0 flex-1 basis-0",
+          // Split mode shares the top bar's centered --hub-measure column so the list lines up.
           splitMode
             ? "flex-col lg:mx-auto lg:w-full lg:max-w-[var(--hub-measure)] lg:flex-row"
             : "flex-col",
@@ -1910,6 +2008,8 @@ export function ModelsPage() {
         <div
           className={cn(
             "flex min-h-0 flex-col",
+            // Split mode keeps the catalog as a master pane that grows off a 460px floor; otherwise it
+            // fills the area and the detail view overlays it.
             splitMode
               ? "flex-1 lg:w-[clamp(460px,32%,620px)] lg:max-w-[44%] lg:flex-none lg:shrink-0 lg:border-r lg:border-border/60"
               : "flex-1",
