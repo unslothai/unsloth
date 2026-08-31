@@ -844,36 +844,16 @@ def _native_linux_system_rocm_lib_dirs(binary_dir: str = "") -> "list[str]":
 
 # Plan-without-action re-prompt state now lives in tool_call_parser (imported above).
 
-# Substantive answer artifacts. Re-prompt fires when the model emits
-# intent-only language ("first I'll ...", "let me ...") without a tool
-# call, but the same intent words appear in long explanations that
-# accompany REAL code or markup. Without this guard, a complete reply
-# like "First, let me set up pygame. ```python ... ```" trips the
-# re-prompt and the next user-visible message wipes the code. We
-# require ALL of (intent signal, length < _REPROMPT_MAX_CHARS, no
-# answer artifact) to fire.
+# An artifact is content the model could not have written as a plan; without
+# one, "First, let me set up pygame. ```python ... ```" satisfies the intent
+# gate and the synthetic STOP turn wipes the code.
 #
-# An artifact is content the model could not have written as a plan: a
-# closed code fence, a complete HTML page, a complete SVG. A numbered
-# list is deliberately NOT one. "1. ... 2. ..." is a plan as often as it
-# is an answer and nothing in the text separates the two -- over 300
-# recorded finished answers (tests/data/plan_vs_answer.jsonl) a
-# numbered-list branch changed the verdict on exactly one turn, while
-# costing false positives ("I will:\n1. review code") and false
-# negatives ("Let me explain:\n1. ...") in both directions at once.
+# A numbered list is deliberately NOT one: over the 300 recorded answers in
+# tests/data/plan_vs_answer a list branch decided one turn while costing errors
+# in both directions.
 #
-# Notes on the patterns:
-#   * `\r?\n` everywhere a newline is required so Windows-authored or
-#     CRLF-converted content still matches.
-#   * Code-fence info string is `[^\r\n]{0,200}` so common languages with
-#     digits / symbols (python3, c++, c#, objective-c, ts-node, ...) are
-#     all recognised; the closing fence may be indented or carry a `>`
-#     blockquote marker, matching what _has_unclosed_code_fence accepts.
-#   * HTML branches require a closing `</html>` (whitespace before the
-#     `>` is legal per the HTML spec) so plan-only mentions of
-#     `<html>` or `<!doctype>` do not bypass the re-prompt.
-#   * All `[\s\S]{...}?` runs are length-bounded so the search stays
-#     linear on adversarial input (CRLF spam, repeated `<html>` etc.).
+# `\s*` in the closing tags is spec-legal HTML. Every `[\s\S]{...}?` run stays
+# length-bounded or the search backtracks on CRLF and `<html>` spam.
 _CLOSED_CODE_FENCE = re.compile(
     r"(?<!`)(?P<bf>`{3,})(?!`)[^\r\n]{0,200}\r?\n[\s\S]{1,4000}?\r?\n[ \t>]*(?P=bf)`*[ \t]*(?:\r?\n|\Z)"
     r"|(?<!~)(?P<tf>~{3,})(?!~)[^\r\n]{0,200}\r?\n[\s\S]{1,4000}?\r?\n[ \t>]*(?P=tf)~*[ \t]*(?:\r?\n|\Z)",
@@ -884,48 +864,31 @@ _CLOSED_MARKUP_ARTIFACT = re.compile(
     re.IGNORECASE,
 )
 _HAS_ANSWER_ARTIFACT = re.compile(
-    # Closed backtick code fence (any markdown info string, optional indent
-    # on close).  CommonMark allows opening fences of 3+ backticks; the
-    # closing fence must have at least as many delimiters, and the line
-    # must end cleanly (only trailing whitespace before newline / EOS),
-    # so spam like ``` ```not actually closed ``` does not count.
+    # Backtick then tilde fence (models emit ~~~ when the body holds backticks).
+    # CommonMark takes 3+ to open, at least as many to close, and the closing line
+    # must end cleanly, so ``` ```not actually closed ``` does not count.
     r"(?<!`)(?P<bf>`{3,})(?!`)[^\r\n]{0,200}\r?\n[\s\S]{1,4000}?\r?\n[ \t>]*(?P=bf)`*[ \t]*(?:\r?\n|\Z)"
-    # Closed tilde code fence; same 3+ rule (several models emit ~~~ when
-    # the body itself contains backticks). Opener anchored to the full
-    # run of tildes; closer accepts >= opener length per CommonMark.
     r"|(?<!~)(?P<tf>~{3,})(?!~)[^\r\n]{0,200}\r?\n[\s\S]{1,4000}?\r?\n[ \t>]*(?P=tf)~*[ \t]*(?:\r?\n|\Z)"
-    # Complete HTML page; doctype prefix is optional.
     r"|(?:<!doctype\b[\s\S]{0,200}?)?<html\b[\s\S]{0,4000}?</html\s*>"
-    # Complete SVG document.
     r"|<svg\b[\s\S]{0,4000}?</svg\s*>",
     re.IGNORECASE,
 )
 
 _FENCE_RUN_RE = re.compile(r"(?<!`)(?P<backticks>`{3,})(?!`)|(?<!~)(?P<tildes>~{3,})(?!~)")
-# Blockquote markers are markdown structure, not content: stripped so a
-# fence inside a quote is judged at its real column.
+# Structure, not content: stripped so a quoted fence is judged at its real column.
 _BLOCKQUOTE_PREFIX = re.compile(r"^[ \t]*(?:>[ \t]?)+")
 
 
 def _has_unclosed_code_fence(text: str) -> bool:
     """True if ``text`` contains a code fence whose closer is missing.
 
-    Each line is scanned with ``search`` so inline openers like
-    ``First. \\`\\`\\`python`` are tracked. To avoid reading prose
-    mentions of triple backticks as openers, an INLINE fence (fence
-    not at line start) is only accepted when its trailing characters
-    look like a clean CommonMark info-string token with no internal
-    whitespace. Column-0 fences always count, so multi-token info
-    strings like ``\\`\\`\\`python linenums=1`` still work, blockquoted
-    or not: the ``>`` marker is stripped first so a quoted fence is
-    judged at its real column instead of reading as prose.
+    Models do open a fence mid-line (``First. \\`\\`\\`python``), so an inline
+    run counts, but only when it cannot be read as prose instead. A column-0
+    fence always counts, blockquoted or not.
 
-    This helper, not `_HAS_ANSWER_ARTIFACT`, is what decides that a
-    quoted closer belongs to a quoted opener. The pattern allows a `>`
-    on any closer so a quoted block is found at all; the open/close
-    state here then vetoes one whose quote depth does not match, which
-    is what stops a literal `> \\`\\`\\`` line inside an unquoted
-    ```` ```markdown ```` block from closing it.
+    This helper, not `_HAS_ANSWER_ARTIFACT`, is what pairs a quoted closer with
+    a quoted opener: the pattern accepts `>` on any closer so a quoted block is
+    found at all, and the depth check below rejects the ones that do not match.
     """
     active_char: Optional[str] = None
     active_len = 0
@@ -943,18 +906,15 @@ def _has_unclosed_code_fence(text: str) -> bool:
         trailing = raw_trailing.strip()
         ch = fence[0]
         is_inline = bool(line[: m.start()].strip())
-        # Inline + multi-word trailing or leading-space trailing both
-        # read as prose ("Use ``` to start", "Use ```python to open").
         if is_inline:
-            # A later run on the same line closes an inline span ("the
-            # marker is ```python```"), so neither run is a fence.
+            # A later run closes an inline span ("the marker is ```python```").
             if _FENCE_RUN_RE.search(raw_trailing):
                 continue
-            # A bare delimiter ending a prose line once a block has
-            # already closed is a literal ("wrap it in ```"), not the
-            # start of a second block.
+            # Bare delimiter once something has closed: a literal ("wrap it in
+            # ```"). Gated on closed_any so "here is code: ```" still opens.
             if not trailing and closed_any and active_char is None:
                 continue
+            # Multi-word or space-led trailing text is prose ("Use ``` to start").
             if raw_trailing and raw_trailing[0] == " " and trailing:
                 continue
             if trailing and (" " in trailing or "\t" in trailing):
@@ -977,11 +937,8 @@ def _has_unclosed_code_fence(text: str) -> bool:
 def _has_unclosed_markup_block(text: str) -> bool:
     """True if ``text`` opens an <html>/<svg> block without closing it.
 
-    Either a missing close on the only block, OR a closed block followed
-    by a still-open block, qualifies. The check is unbalanced-count
-    based so half-finished output ALWAYS disqualifies the artifact path,
-    even when an earlier complete artifact is also present in the same
-    response.
+    Counted rather than matched, so a closed block followed by a still-open one
+    also qualifies.
     """
     opens_html = len(re.findall(r"<html\b", text, re.IGNORECASE))
     closes_html = len(re.findall(r"</html\s*>", text, re.IGNORECASE))
@@ -992,9 +949,7 @@ def _has_unclosed_markup_block(text: str) -> bool:
     return opens_svg > closes_svg
 
 
-# Matches the full span of an empty <html></html> or <svg></svg>
-# skeleton. Plan-only mentions ("First, I'll create an <html></html>
-# skeleton") would otherwise look like a complete page.
+# "First, I'll create an <html></html> skeleton" is a plan, not a page.
 _EMPTY_MARKUP_SKELETON = re.compile(
     r"<(html|svg)\b[^>]*>\s*</\1\s*>",
     re.IGNORECASE,
@@ -1006,9 +961,8 @@ _DOCTYPE_PREFIX = re.compile(
 
 
 def _is_empty_markup_skeleton(matched: str) -> bool:
-    """True if ``matched`` is just an empty <html></html> / <svg></svg>
-    (optionally with a `<!doctype>` prefix and surrounding whitespace).
-    These read as plan-only mentions, not substantive answers."""
+    """True if ``matched`` is an empty <html></html> / <svg></svg>, doctype
+    prefix and surrounding whitespace allowed."""
     candidate = _DOCTYPE_PREFIX.sub("", matched.strip(), count = 1).strip()
     return _EMPTY_MARKUP_SKELETON.fullmatch(candidate) is not None
 
@@ -1016,9 +970,7 @@ def _is_empty_markup_skeleton(matched: str) -> bool:
 def _looks_like_real_artifact(text: str) -> bool:
     """Match _HAS_ANSWER_ARTIFACT but reject empty markup skeletons.
 
-    Iterates every artifact match in ``text`` so an empty <html></html>
-    skeleton followed by a real complete page still classifies as a
-    real artifact (the second match wins)."""
+    Every match is inspected, so a skeleton followed by a real page counts."""
     for m in _HAS_ANSWER_ARTIFACT.finditer(text):
         if not _is_empty_markup_skeleton(m.group(0)):
             return True
@@ -1028,28 +980,18 @@ def _looks_like_real_artifact(text: str) -> bool:
 def _has_answer_artifact(text: str) -> bool:
     """True if ``text`` looks like a completed answer artifact.
 
-    Only a closed code fence, a complete HTML page, or a complete SVG
-    counts. An unclosed fence, or an unclosed `<html>` / `<svg>` block
-    with no complete artifact anywhere, disqualifies the path so
-    half-finished output does not read as a final answer. Empty
-    `<html></html>` / `<svg></svg>` skeletons do not count.
+    A closed code fence, a complete HTML page, or a complete SVG, and none of
+    them left unfinished. Empty skeletons do not count.
     """
-    # Cross-strip closed artifacts before the unclosed-state checks so
-    # delimiter-like content INSIDE a complete code fence (e.g.
-    # `html = '<html>'` literal in a Python snippet) or INSIDE complete
-    # HTML (e.g. a JS string containing backticks) does not falsely
-    # disqualify the artifact path.
+    # Strip closed artifacts first: a `html = '<html>'` literal in a finished
+    # snippet, or backticks inside finished HTML, are content, not open state.
     text_without_closed_fences = _CLOSED_CODE_FENCE.sub("", text)
     text_without_closed_markup = _CLOSED_MARKUP_ARTIFACT.sub("", text)
     text_without_both = _CLOSED_MARKUP_ARTIFACT.sub("", text_without_closed_fences)
     if _has_unclosed_code_fence(text_without_closed_markup):
         return False
-    # When NO complete artifact has been emitted yet, count-based markup
-    # detection is reliable for spotting mid-stream output. Once a real
-    # artifact already exists, prose mentions of bare ``<html>`` /
-    # ``<svg>`` tags in explanations are common (and would falsely
-    # unbalance the open/close count), so we rely on the closed-artifact
-    # path instead and skip the count check.
+    # Only meaningful before any artifact lands: afterwards, prose mentioning
+    # a bare <html> tag is common and would unbalance the count.
     real_artifact = _looks_like_real_artifact(text)
     if not real_artifact and _has_unclosed_markup_block(text_without_both):
         return False
@@ -29390,10 +29332,8 @@ class LlamaCppBackend:
                         # to _MAX_REPROMPTS times, only on short responses with intent
                         # signals -- "4" or "Hello!" won't trigger it. Uses content,
                         # else reasoning text (reasoning-only stalls).
-                        # Classify only text the user can see. Tool-call markup is
-                        # scrubbed from the final answer and cannot make a plan look
-                        # complete. Reasoning is visible only when no content tokens
-                        # were produced.
+                        # Classify only what the user sees: tool-call markup is
+                        # scrubbed, and reasoning shows only with no content tokens.
                         _visible_raw = content_accum.strip()
                         _visible = (
                             _strip_tool_markup(content_accum, final = True).strip()

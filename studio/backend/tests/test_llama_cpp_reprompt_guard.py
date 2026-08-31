@@ -3,28 +3,14 @@
 
 """Tests for the plan-without-action re-prompt guard.
 
-The re-prompt path in ``LlamaCppEngine.chat_stream`` exists to nudge a
-model that described what it *will* do (forward-looking language)
-without actually calling a tool. Before the guard added in this PR, the
-heuristic only checked ``len(content) < _REPROMPT_MAX_CHARS`` and the
-intent regex, which over-fired on long-but-complete responses that
-happened to contain phrases like "first" or "let me". Specifically, a
-correct Python game answer of the form ::
+The re-prompt in ``LlamaCppEngine.chat_stream`` nudges a model that said what
+it *will* do without calling a tool. On the intent regex and a length cap
+alone, ``First, let me set up pygame.`` plus a closed ```python block matched
+too, and the synthetic STOP turn then wiped the code.
 
-    First, let me set up pygame.
-    ```python
-    import pygame; ...
-    ```
-
-would still match (length < 2000, intent signal present) and the next
-synthetic user turn ("STOP. Do NOT write code or explain.") wiped the
-visible code from the conversation.
-
-The guard recognises completed code fences (any markdown info string,
-indented or blockquoted closing fence), complete HTML documents, and
-complete SVGs. Those are the shapes a plan cannot contain. A numbered
-list is deliberately not one of them, so plan-only stalls of the form
-``Here's my plan:\\n1. search\\n2. summarise`` still re-prompt.
+The guard adds the shapes a plan cannot contain: a closed code fence, a
+complete HTML page, a complete SVG. A numbered list is deliberately not one,
+so ``Here's my plan:\\n1. search\\n2. summarise`` still re-prompts.
 """
 
 from __future__ import annotations
@@ -37,17 +23,11 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Inject minimal stand-ins ONLY when the real modules are unavailable.
-# Using ``setdefault`` with a non-package ``ModuleType`` would otherwise
-# poison ``sys.modules`` for any later test that does
-# ``from loggers.handlers import ...`` (Python would raise "loggers is
-# not a package" because the stub has no ``__path__``).
-#
-# structlog is stubbed FIRST because ``loggers.handlers`` imports it: with
-# structlog missing, ``import loggers`` raises for structlog and the real
-# package would be replaced by the stub below, causing exactly the
-# poisoning this guards against. ``exc.name`` is checked for the same
-# reason, so any other transitive gap surfaces instead of being swallowed.
+# Stand-ins ONLY when the real modules are missing: a stub in
+# ``sys.modules["loggers"]`` breaks every later ``from loggers.handlers
+# import ...``. structlog goes first and ``exc.name`` is checked because
+# ``loggers.handlers`` imports structlog, so a missing structlog would
+# otherwise be mistaken for a missing ``loggers``.
 try:  # noqa: E402
     import structlog  # type: ignore
 except ModuleNotFoundError:
@@ -133,15 +113,13 @@ def test_artifact_regex_detects_non_alpha_info_strings():
 
 
 def test_artifact_regex_detects_indented_close_fence():
-    """A closing fence indented under a list / blockquote still counts.
-    Common when the model nests code in markdown structure."""
+    """A closing fence indented under a list or blockquote still counts."""
     text = "First, let me show:\n```python\nx = 1\n  ```"
     assert _has_answer_artifact(text)
 
 
 def test_artifact_regex_detects_tilde_code_fence():
-    """CommonMark also allows ``~~~`` fences. Models emit them when the
-    body itself contains backticks, e.g. shell or markdown."""
+    """Models emit ``~~~`` when the body itself contains backticks."""
     samples = [
         "First, let me write it.\n~~~python\nprint('hi')\n~~~",
         "First, let me show:\n~~~\nplain block\n~~~",
@@ -213,15 +191,12 @@ def test_artifact_regex_ignores_incomplete_svg():
 
 
 def test_artifact_regex_detects_blockquoted_code_fence():
-    """A fence nested in a blockquote closes with ``> ``` ``.
-    ``_has_unclosed_code_fence`` already reads those delimiters as
-    balanced, so the closed-fence patterns must agree or a complete
-    answer is classified as mid-stream and wiped."""
+    """The closed-fence patterns must agree with ``_has_unclosed_code_fence``
+    on a quoted block, or a complete answer is read as mid-stream and wiped."""
     samples = [
         "First, let me show it.\n> ```python\n> x = 1\n> ```",
         "Let me quote it.\n> ~~~bash\n> echo hi\n> ~~~",
-        # The marker is stripped before the column is judged, so a quoted
-        # fence keeps the multi-token info strings a column-0 fence allows.
+        # A quoted fence keeps the multi-token info strings column 0 allows.
         'First, let me show it.\n> ```python linenums="1"\n> x = 1\n> ```',
         "First, let me show it.\n>> ```python title=demo.py\n>> x = 1\n>> ```",
     ]
@@ -231,25 +206,22 @@ def test_artifact_regex_detects_blockquoted_code_fence():
 
 
 def test_blockquoted_open_fence_still_reprompts():
-    """Stripping the marker must not make an unfinished quoted block
-    look complete."""
+    """Stripping the marker must not make an unfinished block look done."""
     text = 'First, let me show it.\n> ```python linenums="1"\n> x = 1'
     assert not _has_answer_artifact(text)
     assert _would_reprompt(text)
 
 
 def test_quoted_prose_mention_of_backticks_after_code():
-    """A blockquoted prose line is still prose: it must not reopen a
-    fence that the code block already closed."""
+    """A quoted prose line must not reopen an already closed fence."""
     text = "First, let me show it.\n```python\nx = 1\n```\n> Use ``` for markdown."
     assert _has_answer_artifact(text)
     assert not _would_reprompt(text)
 
 
 def test_quoted_closer_does_not_close_an_unquoted_fence():
-    """A ``>`` closer belongs to a quoted container. Inside an unquoted
-    ```markdown block a literal ``> ``` `` line is content, so the block
-    is still open and the turn is still mid-stream."""
+    """Inside an unquoted ```markdown block a literal ``> ``` `` line is
+    content, so the block is still open."""
     text = "First, let me show it.\n```markdown\nExample:\n> ```"
     assert not _has_answer_artifact(text)
     assert _would_reprompt(text)
@@ -258,17 +230,16 @@ def test_quoted_closer_does_not_close_an_unquoted_fence():
 
 
 def test_balanced_inline_fence_span_is_not_an_opener():
-    """``The marker is ```python``` `` is a balanced inline span, not a
-    fence. Scanning one delimiter per line read the first run as an
-    opener and left the answer looking unfinished."""
+    """A balanced inline span is not a fence. Scanning one delimiter per line
+    read the first run as an opener and left the answer looking unfinished."""
     text = "First, let me show it.\n```python\nx = 1\n```\nThe marker is ```python```."
     assert _has_answer_artifact(text)
     assert not _would_reprompt(text)
 
 
 def test_bare_delimiter_in_prose_after_a_closed_block():
-    """``wrap it in ``` `` ends the line, so neither trailing-prose rule
-    catches it. Once a block has closed, a bare delimiter is a literal."""
+    """A delimiter ending the line escapes both trailing-prose rules. Once a
+    block has closed it is a literal."""
     samples = [
         "First, let me show it.\n```python\nx = 1\n```\nWrap it in ```",
         "First, let me show it.\n~~~python\nx = 1\n~~~\nOr use ~~~",
@@ -283,8 +254,8 @@ def test_bare_delimiter_in_prose_after_a_closed_block():
 
 
 def test_markup_closing_tag_tolerates_whitespace():
-    """`</html >` and `</svg >` are legal per the HTML spec, and must
-    count both as artifacts and as closes in the balance check."""
+    """`</html >` is spec-legal, and must count as an artifact AND as a close
+    in the balance count."""
     samples = [
         "First, let me show it.\n<html><body>hi</body></html >",
         'First, let me draw it.\n<svg width="10"><circle r="3"/></svg >',
@@ -297,8 +268,8 @@ def test_markup_closing_tag_tolerates_whitespace():
 
 
 def test_blockquote_marker_does_not_close_an_open_fence_early():
-    """The ``>`` tolerance is for the closing delimiter only; prose that
-    merely quotes a fence must not close a block that is still open."""
+    """The ``>`` tolerance is for the closer only: quoted prose must not close
+    a block that is still open."""
     text = "First, let me write it.\n```python\nimport sys\n> ``` is the delimiter"
     assert not _has_answer_artifact(text)
     assert _would_reprompt(text)
@@ -310,11 +281,9 @@ def test_blockquote_marker_does_not_close_an_open_fence_early():
 def test_numbered_list_is_not_an_answer_artifact():
     """A numbered list is never an answer artifact.
 
-    ``1. ... 2. ...`` is a plan as often as it is an answer and nothing
-    in the text separates them, so the guard covers only content a plan
-    cannot contain: a closed fence, a complete page, a complete SVG.
-    A list answer with no intent phrasing never reached the re-prompt
-    anyway; one with intent phrasing behaves as it did before the guard.
+    ``1. ... 2. ...`` is a plan as often as an answer and nothing in the text
+    separates them. A list answer with no intent phrasing never reached the
+    re-prompt anyway; one with intent phrasing behaves as it did on main.
     """
     plan_stalls = [
         "Here's my plan:\n1. Search the web for the chart.\n2. Summarise.",
