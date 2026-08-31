@@ -689,3 +689,23 @@ def test_the_v1_deny_list_never_shadows_a_path_studio_serves():
         assert (
             f"/{probe}" not in served
         ), f"Studio now serves /{probe}; drop it from _UNSERVED_V1_PROBE_PATHS"
+
+
+@pytest.mark.parametrize("path", ["/props/", "/v1/props/", "/version/"])
+def test_the_trailing_slash_forms_answer_json_not_the_app_shell(path):
+    """FastAPI's slash redirect never fires here: the SPA catch-all is a full match for
+    "/props/", so the request landed there and came back as index.html -- the original
+    defect, still live for any client that does not canonicalize its probe URL.
+    routes/inference.py registers "/v1/models/" for exactly this reason."""
+    mod = _load()
+    with _client(mod) as c:
+        r = c.get(path)
+    assert r.status_code == 200, (path, r.status_code)
+    assert "application/json" in r.headers["content-type"], path
+
+
+def test_the_slash_and_bare_forms_agree():
+    mod = _load()
+    with _client(mod) as c:
+        assert c.get("/props").json() == c.get("/props/").json()
+        assert c.get("/version").json() == c.get("/version/").json()
