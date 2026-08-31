@@ -447,10 +447,9 @@ def auth_status() -> AuthStatusResponse:
         if storage.is_initialized()
         else True
     )
-    # Only while the default password stands: the deadline fires on that condition,
-    # so once it is changed the timer is inert and reporting it would be a lie.
-    # Unauthenticated by design, like the rest of this response, and it discloses
-    # nothing an anonymous caller cannot already read off requires_password_change.
+    # Only while the default password stands, since that is the condition the
+    # deadline fires on; afterwards the timer is inert. Anonymous like the rest of
+    # this response, and implied by requires_password_change, which it already returns.
     return AuthStatusResponse(
         initialized = storage.is_initialized(),
         default_username = storage.DEFAULT_ADMIN_USERNAME,
