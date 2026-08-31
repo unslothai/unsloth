@@ -317,6 +317,7 @@ from routes import (
     youtube_router,
 )
 from routes.llama import router as llama_router
+from routes.llama_compat import is_engine_probe_path, router as llama_compat_router
 from routes.whisper import router as whisper_router
 from routes.preview import router as preview_router
 from hub.routes import (
@@ -1460,6 +1461,11 @@ app.include_router(video_openai_router, prefix = "/v1", tags = ["openai-compat"]
 
 # OpenAI-compatible: mount the inference router at /v1 for external tools.
 app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])
+# llama-server / Ollama discovery probes. Declares its own full paths (/props,
+# /version, /api/tags, ...) so it needs no prefix, and must be registered here --
+# ahead of the SPA catch-all in serve_frontend() -- or /props and /version go on
+# resolving to index.html with a 200.
+app.include_router(llama_compat_router, tags = ["openai-compat"])
 app.include_router(preview_router, prefix = "/p", tags = ["preview"])
 app.include_router(providers_router, prefix = "/api/providers", tags = ["providers"])
 
@@ -2532,6 +2538,8 @@ def setup_frontend(
         # Unknown API paths: raise a real 404 so the api_errors handlers render the right envelope
         # for /v1/* ({"detail": ...} for /api/*). The request path is "/" + full_path.
         if full_path in {"api", "v1"} or full_path.startswith(("api/", "v1/")):
+            raise HTTPException(status_code = 404, detail = "API endpoint not found")
+        if is_engine_probe_path(full_path):
             raise HTTPException(status_code = 404, detail = "API endpoint not found")
         if not _frontend_request_allowed(request):
             return Response(status_code = 404)
