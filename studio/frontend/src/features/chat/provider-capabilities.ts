@@ -98,11 +98,13 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
   },
   { providerType: "openai", prefixes: ["gpt-5.4-pro", "gpt-5.4"], cap: 65536 },
   { providerType: "openai", prefixes: ["gpt-5.3"], cap: 16384 },
-  // Legacy families the picker now surfaces. Both cap output at 4,096, under
-  // the 8,192 in DEFAULT_INFERENCE_PARAMS, and the Responses API rejects an
-  // over-limit max_output_tokens instead of clamping it, so without these the
-  // first message on an untouched config fails. Prefixes are exact enough not
-  // to shadow gpt-4o / gpt-4.1 / gpt-4.5, which are all above the default.
+  // Older families the picker now surfaces. The Responses API rejects an
+  // over-limit max_output_tokens instead of clamping it, so a Max Tokens above
+  // the cap fails the request. 4,096 is under the 8,192 in
+  // DEFAULT_INFERENCE_PARAMS, so those two fail on an untouched config.
+  // `gpt-4o` also covers gpt-4o-mini, which has the same cap. gpt-4.1 and
+  // gpt-4.5 need no row: their caps are the 32,768 fallback or above.
+  { providerType: "openai", prefixes: ["gpt-4o"], cap: 16384 },
   {
     providerType: "openai",
     prefixes: ["gpt-3.5-turbo", "gpt-4-turbo"],

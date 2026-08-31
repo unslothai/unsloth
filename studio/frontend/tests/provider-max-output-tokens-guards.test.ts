@@ -87,22 +87,25 @@ test("a documented per-model cap bounds the connection override", () => {
   }
 });
 
-test("legacy OpenAI families clamp below the default Max Tokens", () => {
-  // DEFAULT_INFERENCE_PARAMS asks for 8,192 and both of these cap output at
-  // 4,096. The Responses API rejects an over-limit max_output_tokens instead
-  // of clamping, so an untouched config would fail on the first message.
-  for (const modelId of [
-    "gpt-3.5-turbo",
-    "gpt-3.5-turbo-16k",
-    "gpt-4-turbo",
-    "gpt-4-turbo-preview",
-  ]) {
-    assert.equal(getExternalMaxOutputTokens("openai", modelId), 4096);
-    assert.equal(getExternalMaxOutputTokens("openai", modelId, 8192), 4096);
+test("older OpenAI families carry their documented output cap", () => {
+  // The Responses API rejects an over-limit max_output_tokens instead of
+  // clamping, so every family under the 32,768 fallback needs a row. The 4,096
+  // pair is also under the 8,192 in DEFAULT_INFERENCE_PARAMS, so those two
+  // would fail on an untouched config.
+  const caps: Array<[string, number]> = [
+    ["gpt-3.5-turbo", 4096],
+    ["gpt-3.5-turbo-16k", 4096],
+    ["gpt-4-turbo", 4096],
+    ["gpt-4-turbo-preview", 4096],
+    ["gpt-4o", 16384],
+    ["gpt-4o-mini", 16384],
+  ];
+  for (const [modelId, cap] of caps) {
+    assert.equal(getExternalMaxOutputTokens("openai", modelId), cap);
+    assert.equal(getExternalMaxOutputTokens("openai", modelId, 32768), cap);
   }
-  // Families above the default must not be shadowed by the `gpt-4-turbo` and
-  // `gpt-3.5-turbo` prefixes.
-  for (const modelId of ["gpt-4o", "gpt-4.1", "gpt-4.5-preview"]) {
+  // The `gpt-4-turbo` and `gpt-4o` prefixes must not shadow these.
+  for (const modelId of ["gpt-4.1", "gpt-4.5-preview"]) {
     assert.equal(
       getExternalMaxOutputTokens("openai", modelId),
       EXTERNAL_MAX_OUTPUT_TOKENS,
@@ -114,7 +117,7 @@ test("a model with no documented cap takes the connection override", () => {
   // the reported case: a router id no capability row matches pinned at 32,768
   const undocumented: Array<[string, string | null]> = [
     ["openrouter", "minimax/minimax-m3"],
-    ["openai", "gpt-4o"],
+    ["openai", "gpt-4.1"],
     ["vllm", "some/local-model"],
     ["ollama", null],
     [LEGACY_CUSTOM_PROVIDER_TYPE, "any-model"],
