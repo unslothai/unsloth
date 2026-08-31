@@ -11,6 +11,7 @@ and leaves non-training/external loads untouched."""
 import asyncio
 import importlib.util
 import sys
+import threading
 import types
 import unittest
 from pathlib import Path
@@ -444,6 +445,10 @@ def _stub_guard_deps(
 ):
     """Inject the guard's two lazy imports (get_training_backend, can_load_chat_
     during_training); `captured` records the can_load kwargs for assertions."""
+    # Keep the process-wide lifecycle gate in patch.dict's module snapshot so
+    # later route imports cannot create a second lock through a stale package attribute.
+    import core.inference.llama_keepwarm  # noqa: F401
+
     core_training = types.ModuleType("core.training")
     if isinstance(training_active, Exception):
 
@@ -865,6 +870,161 @@ class TestEffectiveLoadIn4bit(unittest.TestCase):
             (Path(d) / "adapter_config.json").write_text("[1, 2, 3]")  # not a dict
             cfg = SimpleNamespace(is_lora = True, path = d, base_model = "x")
             self.assertTrue(self.route._effective_load_in_4bit(cfg, True))  # no crash
+
+    def test_native_audio_uses_full_precision_for_admission(self):
+        cfg = SimpleNamespace(
+            is_lora = False,
+            path = None,
+            base_model = None,
+            audio_type = "moss_tts_local",
+        )
+        self.assertFalse(self.route._effective_load_in_4bit(cfg, True))
+
+
+class TestNativeAudioPlacementContracts(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.route = _load_inference_route()
+
+    def _preflight(
+        self,
+        *,
+        metadata,
+        availability = None,
+        requested = None,
+        selected = None,
+    ):
+        config = SimpleNamespace(identifier = "test/native-audio", audio_type = "higgs_tts2")
+        request = SimpleNamespace(gpu_ids = requested, hf_token = None, max_seq_length = 2048)
+        placement = self.route._LoadPlacement(requested, None, False, False)
+        with (
+            patch("utils.hardware.get_device", return_value = DeviceType.CUDA),
+            patch(
+                "core.inference.native_audio.native_audio_security_targets",
+                return_value = [config.identifier],
+            ),
+            patch(
+                "utils.hardware.prepare_gpu_selection",
+                return_value = (selected if selected is not None else [0], metadata),
+            ),
+            patch.object(
+                self.route,
+                "_native_audio_post_handoff_free_gb",
+                return_value = availability,
+            ),
+            patch.object(_hw_module, "IS_ROCM", False),
+        ):
+            return asyncio.run(
+                self.route._preflight_native_audio_placement(config, request, placement)
+            )
+
+    def test_automatic_fallback_requires_attributable_resident_memory(self):
+        metadata = {"selection_mode": "fallback_all", "required_gb": 20.0, "usable_gb": 6.0}
+        with self.assertRaisesRegex(HTTPException, "No single GPU has enough free memory"):
+            self._preflight(metadata = metadata)
+
+        availability = self.route._NativeAudioAvailability({0: 24.0}, {0: 18.0})
+        placement = self._preflight(metadata = metadata, availability = availability)
+        self.assertEqual(placement.resolved_gpu_ids, [0])
+        self.assertEqual(placement.native_required_gb, 20.0)
+        self.assertEqual(placement.native_post_handoff_free_gb, {0: 24.0})
+
+    def test_minimax_uses_a_threshold_a_24_gb_card_can_report(self):
+        config = SimpleNamespace(
+            identifier = "MiniMaxAI/MiniMax-Music3",
+            audio_type = "minimax_music3",
+        )
+        request = SimpleNamespace(gpu_ids = None, hf_token = None, max_seq_length = 2048)
+        placement = self.route._LoadPlacement(None, None, False, False)
+        with (
+            patch("utils.hardware.get_device", return_value = DeviceType.CUDA),
+            patch.object(_hw_module, "IS_ROCM", False),
+            patch(
+                "core.inference.native_audio.native_audio_security_targets",
+                return_value = [config.identifier],
+            ),
+            patch("utils.hardware.prepare_gpu_selection", return_value = ([1], {})) as prepare,
+        ):
+            result = asyncio.run(
+                self.route._preflight_native_audio_placement(config, request, placement)
+            )
+
+        self.assertEqual(result.resolved_gpu_ids, [1])
+        self.assertEqual(result.native_required_gb, 23.0)
+        self.assertEqual(prepare.call_args.kwargs["required_override_gb"], 23.0)
+
+    def test_explicit_multi_gpu_is_rejected_before_load(self):
+        with self.assertRaisesRegex(HTTPException, "require one GPU"):
+            self._preflight(
+                metadata = {"selection_mode": "explicit"},
+                requested = [0, 1],
+                selected = [0, 1],
+            )
+
+    def test_live_training_recheck_cannot_switch_off_selected_gpu(self):
+        with (
+            patch("utils.hardware.get_device", return_value = DeviceType.CUDA),
+            patch(
+                "utils.hardware.get_visible_gpu_utilization",
+                return_value = {"devices": _devices((0, 24, 12), (1, 48, 8))},
+            ),
+            patch("utils.hardware.resolve_requested_gpu_ids", return_value = [0]),
+            patch("utils.hardware.auto_select_gpu_ids") as auto_select,
+        ):
+            ok, info = tv.can_load_chat_during_training(
+                model_name = "m",
+                hf_token = None,
+                load_in_4bit = False,
+                max_seq_length = 2048,
+                requested_gpu_ids = [0],
+                required_override_gb = 16.0,
+            )
+        self.assertFalse(ok)
+        self.assertEqual(info["usable_gb"], 12.0)
+        auto_select.assert_not_called()
+
+    def test_worker_memory_reply_is_correlated_to_its_probe(self):
+        from core.inference.orchestrator import InferenceOrchestrator
+
+        backend = InferenceOrchestrator.__new__(InferenceOrchestrator)
+        replies = iter(
+            [
+                {"type": "gpu_memory", "request_id": "old", "reclaimable_gpu_gb": {"0": 10.0}},
+                {"type": "gpu_memory", "request_id": "new", "reclaimable_gpu_gb": {"0": 4.0}},
+            ]
+        )
+        backend._read_resp = lambda **_kwargs: next(replies)
+        backend._ensure_subprocess_alive = lambda: True
+        response = backend._wait_response("gpu_memory", timeout = 1.0, expected_request_id = "new")
+        self.assertEqual(response["reclaimable_gpu_gb"], {"0": 4.0})
+
+    def test_llama_floor_uses_the_child_to_physical_gpu_map(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        backend = LlamaCppBackend.__new__(LlamaCppBackend)
+        backend._process = SimpleNamespace(poll = lambda: None)
+        backend._gpu_ids = None
+        backend._child_gpu_physical_ids = (1,)
+        backend._stdout_lines = ["load_tensors: CUDA0 model buffer size = 10240.0 MiB"]
+        self.assertEqual(backend.reclaimable_gpu_memory_gb(), {1: 10.0})
+
+    def test_inflight_media_replacement_is_never_credited(self):
+        utilization = {"devices": [{"index": 0, "vram_total_gb": 24.0, "vram_used_gb": 18.0}]}
+        media = SimpleNamespace(
+            _generate_lock = threading.Lock(),
+            _lock = threading.Lock(),
+            _state = object(),
+            _loading = object(),
+        )
+        with (
+            patch("utils.hardware.get_visible_gpu_utilization", return_value = utilization),
+            patch("core.inference.gpu_arbiter.owner_snapshot", return_value = ("diffusion", 4)),
+            patch(
+                "core.inference.diffusion_engine_router.get_active_diffusion_engine",
+                return_value = media,
+            ),
+        ):
+            self.assertIsNone(self.route._native_audio_post_handoff_free_gb())
 
 
 # ── validate_model integration (early refusal, real settings) ────────────────
