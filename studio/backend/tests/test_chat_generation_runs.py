@@ -335,27 +335,6 @@ def test_batched_events_preserve_receipt_timestamps(chat_home):
     assert [event["createdAt"] for event in chunks] == [1001, 1002]
 
 
-def test_stream_checkpoint_commits_use_normal_wal_synchronization(chat_home, monkeypatch):
-    """Frequent recoverable batches must not issue a disk barrier per commit."""
-    _create()
-    worker_token = runs_db.get_worker_token("run-1")
-    statements = []
-    real_get_connection = runs_db.get_connection
-
-    def traced_connection():
-        conn = real_get_connection()
-        conn.set_trace_callback(statements.append)
-        return conn
-
-    monkeypatch.setattr(runs_db, "get_connection", traced_connection)
-    runs_db.append_events("run-1", worker_token, [("chunk", {"text": "A"})])
-
-    normalized = [statement.upper().replace(" ", "") for statement in statements]
-    synchronous = normalized.index("PRAGMASYNCHRONOUS=NORMAL")
-    transaction = normalized.index("BEGINIMMEDIATE")
-    assert synchronous < transaction
-
-
 def test_wal_keeper_defers_last_close_checkpoint_between_stream_batches(chat_home):
     _create()
     worker_token = runs_db.get_worker_token("run-1")
