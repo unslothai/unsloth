@@ -24,6 +24,15 @@ class GgufVariantDetail(BaseModel):
     )
     size_bytes: int = Field(0, description = "File size in bytes")
     download_size_bytes: int = Field(0, description = "Total bytes needed to download this variant")
+    shard_count: int = Field(0, description = "Part count for a complete canonical split GGUF")
+    download_remaining_bytes: Optional[int] = Field(
+        None,
+        description = (
+            "Bytes a resume still has to fetch: the total minus what is already on disk "
+            "and reusable. Set only on a partial variant; null when not partial or when "
+            "the plan cannot be resolved."
+        ),
+    )
     downloaded: bool = Field(
         False, description = "Whether this variant is already in the local HF cache"
     )
@@ -45,8 +54,15 @@ class GgufVariantDetail(BaseModel):
         None,
         description = (
             'Transport recorded for the partial state ("http" or '
-            '"xet"), or null if not partial / unknown. Frontend uses '
-            "this to pick Resume (http) vs Redownload (xet) labels."
+            '"xet"), or null if not partial / unknown.'
+        ),
+    )
+    partial_resumable: bool = Field(
+        False,
+        description = (
+            "Whether THIS partial can be continued byte for byte, which is what picks "
+            "Resume over Continue. False for a Xet partial, and for an HTTP one no "
+            "installed writer can reopen."
         ),
     )
     dependency_key: Optional[str] = Field(
@@ -146,6 +162,10 @@ class LocalModelInfo(BaseModel):
             "those lists."
         ),
     )
+    audio_type: Optional[str] = Field(
+        None,
+        description = "Detected output-audio architecture or codec used by Audio runtime policy",
+    )
     base_model: Optional[str] = Field(
         None,
         description = "Base model from adapter_config.json when this is an adapter",
@@ -176,6 +196,10 @@ class LocalModelInfo(BaseModel):
             'Transport recorded for the partial state ("http" or '
             '"xet"), or null if not partial / unknown.'
         ),
+    )
+    partial_resumable: bool = Field(
+        False,
+        description = "Whether THIS partial can be continued byte for byte.",
     )
 
 
@@ -210,6 +234,7 @@ class CachedRepoBase(BaseModel):
     last_modified: Optional[float] = None
     partial: bool = False
     partial_transport: Optional[str] = None
+    partial_resumable: bool = False
     inventory_id: Optional[str] = None
     load_id: Optional[str] = None
     model_format: ModelFormat = "unknown"
@@ -219,6 +244,7 @@ class CachedRepoBase(BaseModel):
     # Inferred pipeline task ("text-to-image" / "text-to-video" / a chat task / None). The task-scoped pickers filter On
     # Device rows on it and the chat picker routes a diffusion pick by it, so a row without one is dropped from those lists.
     task: Optional[str] = None
+    audio_type: Optional[str] = None
 
 
 class CachedGgufRepo(CachedRepoBase):
@@ -235,9 +261,11 @@ class CachedGgufRepo(CachedRepoBase):
 
 class CachedGgufResponse(BaseModel):
     cached: List[CachedGgufRepo] = Field(default_factory = list)
+    scan_confirmed: bool = True
 
 
 class CachedModelRepo(CachedRepoBase):
+    audio_type: Optional[str] = None
     quant_method: Optional[str] = None
     pipeline_tag: Optional[str] = None
     library_name: Optional[str] = None
@@ -249,10 +277,16 @@ class CachedModelRepo(CachedRepoBase):
     # never a pick on ANY page. It still gets a row, because these run to tens of GB and the row
     # is how they are seen and deleted; the pickers filter on this instead.
     companion: bool = False
+    # True when the SELECTED revision is a diffusers pipeline. An unrecognised one carries no
+    # task and no root config for can_chat, so this flag is all that keeps it out of a chat
+    # picker. Declared because response_model drops undeclared keys, which left the CLI
+    # (reading the dict in-process) and the frontend disagreeing about the same row.
+    diffusers: bool = False
 
 
 class CachedModelsResponse(BaseModel):
     cached: List[CachedModelRepo] = Field(default_factory = list)
+    scan_confirmed: bool = True
 
 
 class HiddenModelsResponse(BaseModel):
@@ -276,6 +310,10 @@ class ScanFolderInfo(BaseModel):
     id: int = Field(..., description = "Database row ID")
     path: str = Field(..., description = "Normalized absolute path")
     created_at: str = Field(..., description = "ISO 8601 creation timestamp")
+    status: str = Field(
+        default = "ok",
+        description = "Last scan result: ok, permission_denied, missing, or unreadable",
+    )
 
 
 class ScanFoldersResponse(BaseModel):

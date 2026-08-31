@@ -5,8 +5,10 @@
 
 All off by default so existing API behavior is unchanged:
 - ``openai_api_auto_switch_model``: when on, a ``/v1`` request whose ``model``
-  names a downloaded local GGUF different from the loaded one transparently
-  loads it before serving (llama-swap-style). Unknown names pass through.
+  names a downloaded local model different from the loaded one transparently
+  loads it before serving (llama-swap-style). Covers GGUF through llama.cpp and
+  non-GGUF weights (safetensors, MLX) through the inference orchestrator.
+  Unknown names pass through.
 - ``openai_api_auto_download_model``: when on, a ``/v1`` request naming an
   undownloaded GGUF repo starts a background download instead of failing.
   Gated on auto-switch, which is what serves the model once it lands.
@@ -430,6 +432,16 @@ VALID_SPECULATIVE_TYPES = frozenset(
 DRAFT_N_MAX_SPEC_TYPES = frozenset(
     {"mtp", "mtp+ngram", "draft-mtp", "dspark", "draft-dspark", "dflash", "draft-dflash"}
 )
+# Only these load a separate draft model, and so a draft context for the dtype to
+# apply to (mirrors SEPARATE_DRAFT_MODEL_SPEC_TYPES in the UI).
+SEPARATE_DRAFT_MODEL_SPEC_TYPES = frozenset({"dspark", "draft-dspark", "dflash", "draft-dflash"})
+# Mirrors _LOAD_MODE_VALUES in llama_server_args.py. "auto" is the llama.cpp
+# default and is not stored: an entry holding it would pin what a build may redefine.
+VALID_LOAD_MODES = frozenset({"none", "mmap", "mlock", "mmap+mlock", "dio"})
+# Mirrors CTX_CHECKPOINTS_MAX / CACHE_RAM_MAX_MIB in llama_server_args.py.
+CTX_CHECKPOINTS_MAX = 256
+CACHE_RAM_MIN_MIB = -1
+CACHE_RAM_MAX_MIB = 1024 * 1024
 VALID_GPU_MEMORY_MODES = frozenset({"auto", "manual"})
 # Mirrors MLX_KV_BITS_CHOICES in core/inference/mlx_inference.py; a set, not a range.
 VALID_MLX_KV_BITS = frozenset({8, 6, 5, 4, 3, 2})
@@ -523,6 +535,14 @@ def normalize_model_override(
             spec_draft_n_max = _bounded_int(payload.get("spec_draft_n_max"), minimum = 1, maximum = 16)
             if spec_draft_n_max:
                 entry["spec_draft_n_max"] = spec_draft_n_max
+        # Same rule, narrower set: the dtype needs a separate draft model, and only
+        # the sidecar modes always load one.
+        if speculative_type in SEPARATE_DRAFT_MODEL_SPEC_TYPES:
+            spec_draft_cache_type = _clean_str(
+                payload.get("spec_draft_cache_type"), VALID_KV_CACHE_DTYPES
+            )
+            if spec_draft_cache_type:
+                entry["spec_draft_cache_type"] = spec_draft_cache_type
 
     # Blank or out of range means "follow the server-wide --parallel default".
     n_parallel = _bounded_int(
@@ -537,8 +557,31 @@ def normalize_model_override(
         if parsed:
             entry[key] = parsed
 
+    load_mode = _clean_str(payload.get("load_mode"), VALID_LOAD_MODES)
+    if load_mode:
+        entry["load_mode"] = load_mode
+
+    # 0 and -1 are meaningful (no checkpoints; no cache limit), so these store on
+    # "is not None" rather than on truth, unlike the batch sizes above.
+    ctx_checkpoints = _bounded_int(
+        payload.get("ctx_checkpoints"), minimum = 0, maximum = CTX_CHECKPOINTS_MAX
+    )
+    if ctx_checkpoints is not None:
+        entry["ctx_checkpoints"] = ctx_checkpoints
+
+    cache_ram = _bounded_int(
+        payload.get("cache_ram"), minimum = CACHE_RAM_MIN_MIB, maximum = CACHE_RAM_MAX_MIB
+    )
+    if cache_ram is not None:
+        entry["cache_ram"] = cache_ram
+
     if _coerce_bool(payload.get("tensor_parallel")):
         entry["tensor_parallel"] = True
+
+    # Stored only when set, like tensor_parallel: absent means the default, so an
+    # override that never touched the switch does not pin it off for a later load.
+    if _coerce_bool(payload.get("disable_vision")):
+        entry["disable_vision"] = True
 
     template = payload.get("chat_template_override")
     if isinstance(template, str) and template.strip():
@@ -641,6 +684,7 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
         ("speculative_type", "speculative_type"),
         ("spec_draft_n_max", "spec_draft_n_max"),
         ("tensor_parallel", "tensor_parallel"),
+        ("disable_vision", "disable_vision"),
         ("chat_template_override", "chat_template_override"),
     ):
         if override.get(source) is not None:
@@ -655,6 +699,10 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
             kwargs["n_batch"] = override["n_batch"]
         if override.get("n_ubatch") is not None:
             kwargs["n_ubatch"] = override["n_ubatch"]
+        # llama-server flags too, so GGUF-only like the rest of this block
+        for key in ("load_mode", "spec_draft_cache_type", "ctx_checkpoints", "cache_ram"):
+            if override.get(key) is not None:
+                kwargs[key] = override[key]
         if override.get("gpu_memory_mode") is not None:
             kwargs["gpu_memory_mode"] = override["gpu_memory_mode"]
         if override.get("gpu_layers") is not None:
@@ -675,13 +723,26 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
         # (_resolve_inherited_extra_args); the stripper is imported rather than mirrored so
         # the two paths cannot drift over which flag belongs to which group -- the allow-list
         # this module stays out of is validate_extra_args, which remains the caller's job.
-        from core.inference.llama_server_args import strip_shadowing_flags
+        from core.inference.llama_server_args import (
+            matches_explicit_ctx_override,
+            strip_shadowing_flags,
+        )
+
+        # Context's load-time value is a VRAM-fit target, not an allocation, so a
+        # MATCHING -c/--ctx-size is the user's opt-in to exceed the safe threshold
+        # and survives; /props then publishes what was really allocated. Stale and
+        # malformed flags are still stripped. The test lives beside the stripper
+        # because /load's inheritance path asks it too and must not drift.
+        matching_explicit_ctx = matches_explicit_ctx_override(
+            kwargs["llama_extra_args"], kwargs.get("max_seq_length")
+        )
+
         kwargs["llama_extra_args"] = strip_shadowing_flags(
             kwargs["llama_extra_args"],
             # Only the groups this override actually supplies, as the route gates on its
             # request's set fields: a flag with no first-class field behind it is the user's
             # only way to set that knob and still passes through.
-            strip_context = "max_seq_length" in kwargs,
+            strip_context = "max_seq_length" in kwargs and not matching_explicit_ctx,
             strip_cache = "cache_type_kv" in kwargs,
             strip_spec = "speculative_type" in kwargs or "spec_draft_n_max" in kwargs,
             strip_template = "chat_template_override" in kwargs,
@@ -690,6 +751,9 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
             strip_split_mode = bool(kwargs.get("tensor_parallel")),
             strip_batch = "n_batch" in kwargs,
             strip_ubatch = "n_ubatch" in kwargs,
+            strip_ctx_checkpoints = "ctx_checkpoints" in kwargs,
+            strip_cache_ram = "cache_ram" in kwargs,
+            strip_spec_draft_cache = "spec_draft_cache_type" in kwargs,
         )
     return kwargs
 
@@ -946,6 +1010,26 @@ def _cached_repo_override_identity(model_id: str) -> Optional[tuple[str, str]]:
             return None
         repo = base
     return repo.strip().casefold(), quant.strip().casefold()
+
+
+def is_cache_load_path_key(model_id: str) -> bool:
+    """True when ``model_id`` spells a cached quant as the path a load actually opens.
+
+    The two spellings of one cached repo are not interchangeable in a lookup:
+    ``override_lookup_candidates`` tries the load path before the advertised repo id,
+    so of a pair only the path row is ever read and the repo-id row sits dormant. A
+    caller choosing between stored rows has to know which side it is holding, and
+    ``cached_repo_alias_keys`` deliberately does not say, since it answers "the other
+    spelling" in either direction.
+
+    Lives here for the reason the rest of the resolution does: the ordering rule is
+    this module's, and a second copy of it would drift.
+    """
+    from core.inference.model_ids import hf_cache_repo_id
+
+    split = split_quant_suffix(model_id)
+    base = split[0] if split else model_id
+    return hf_cache_repo_id(base) is not None
 
 
 def cached_repo_alias_keys(model_id: str) -> list[str]:

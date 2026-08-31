@@ -14,6 +14,7 @@ import contextlib
 import re
 import sys
 import threading
+import time
 import types
 from pathlib import Path
 
@@ -21,6 +22,7 @@ import pytest
 
 from core.inference.diffusion import (
     DiffusionBackend,
+    DiffusionModelReplacedError,
     _LoadState,
     _base_file_downloaded,
     _clamp_max_side,
@@ -32,6 +34,7 @@ from core.inference.diffusion import (
 import core.inference.diffusion_eager_patches  # noqa: E402,F401
 import core.inference.diffusion_arch_patches  # noqa: E402,F401
 from core.inference.diffusion_families import (
+    DIFFUSION_CANCELLED_MSG,
     _GATED_MIRROR_PAIRS,
     _MIRROR_PAIRS,
     _UNGATED_MIRROR_PAIRS,
@@ -39,6 +42,7 @@ from core.inference.diffusion_families import (
     canonical_base,
     detect_family,
     family_prequant_repo,
+    load_identity,
     mirror_repo,
     prefer_ungated_mirror,
     resolve_base_repo,
@@ -449,6 +453,119 @@ def test_a_stray_upstream_file_does_not_disable_the_mirror(monkeypatch, tmp_path
     assert prefer_ungated_mirror(gated, files = wanted[:1]) == gated
 
 
+def test_a_repack_split_across_the_two_cache_roots_still_counts(monkeypatch, tmp_path):
+    """A pair split by a cache-folder change is held by neither root alone, but IS reusable.
+
+    The callers that pass ``other_root`` fetch with ``reuse_other_cache_root``, which resolves
+    each file through whichever root holds it. Asking each root for the whole set therefore calls
+    a split pair absent and re-pulls several GB the two roots already have between them (offline,
+    it fails outright). Reachable with an interrupted download either side of the change: the file
+    fetched before it stays in the old root, the one fetched after lands in the new one.
+    """
+    from huggingface_hub import constants
+
+    from core.inference.diffusion_families import _upstream_is_cached, prefer_cached_legacy_source
+
+    repack = "Comfy-Org/z_image_turbo"
+    mirror = "unsloth/Z-Image-Turbo-ComfyUI"
+    first, second = "split_files/vae/ae.safetensors", "split_files/text_encoders/te.safetensors"
+    live, other = tmp_path / "live", tmp_path / "other"
+
+    def seed(root, name):
+        rev = root / f"models--{repack.replace('/', '--')}" / "snapshots" / ("d" * 40)
+        (rev / name).parent.mkdir(parents = True, exist_ok = True)
+        (rev / name).write_bytes(b"x")
+        refs = root / f"models--{repack.replace('/', '--')}" / "refs"
+        refs.mkdir(parents = True, exist_ok = True)
+        (refs / "main").write_text("d" * 40, encoding = "utf-8")
+
+    seed(other, first)  # fetched before the cache-folder change
+    seed(live, second)  # fetched after it
+    monkeypatch.setattr("utils.hf_cache_settings.active_hf_hub_cache", lambda: str(live))
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(other))
+
+    wanted = (first, second)
+    assert _upstream_is_cached(repack, wanted, other_root = True) is True
+    assert prefer_cached_legacy_source(mirror, wanted) == repack
+
+    # The live root alone is still the live root alone: a from_pretrained pinned to it cannot see
+    # the other one, so the default probe must NOT count the split.
+    assert _upstream_is_cached(repack, wanted) is False
+
+    # And a file neither root holds is still missing, so the union is not a free pass.
+    assert (
+        _upstream_is_cached(repack, (*wanted, "split_files/absent.safetensors"), other_root = True)
+        is False
+    )
+
+
+def test_the_two_root_union_does_not_relax_the_revision_rule(monkeypatch, tmp_path):
+    """Per-file across roots, whole-set within one: a superseded revision contributes nothing.
+
+    Only the revision refs/main names can satisfy a fetch, and that stays true per root. Without
+    the split the union would let an old complete revision in one root paper over the new
+    incomplete one in the other.
+    """
+    from huggingface_hub import constants
+
+    from core.inference.diffusion_families import _upstream_is_cached
+
+    repack = "Comfy-Org/z_image_turbo"
+    first, second = "split_files/vae/ae.safetensors", "split_files/text_encoders/te.safetensors"
+    live, other = tmp_path / "live", tmp_path / "other"
+
+    def seed(root, name, revision, ref):
+        base = root / f"models--{repack.replace('/', '--')}"
+        rev = base / "snapshots" / revision
+        (rev / name).parent.mkdir(parents = True, exist_ok = True)
+        (rev / name).write_bytes(b"x")
+        (base / "refs").mkdir(parents = True, exist_ok = True)
+        (base / "refs" / "main").write_text(ref, encoding = "utf-8")
+
+    # Each root holds one file, but only under a revision refs/main has moved off.
+    seed(other, first, "old", ref = "new")
+    seed(live, second, "old", ref = "new")
+    monkeypatch.setattr("utils.hf_cache_settings.active_hf_hub_cache", lambda: str(live))
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(other))
+
+    assert _upstream_is_cached(repack, (first, second), other_root = True) is False
+
+
+def test_the_union_never_borrows_across_revisions_inside_one_root(monkeypatch, tmp_path):
+    """Split across ROOTS is reusable; split across SNAPSHOTS of one root is not.
+
+    A commit-pinned download leaves no refs/main, so every snapshot is a candidate. Answering the
+    set name by name would then let an old snapshot complete a newer one inside the same root,
+    which no fetch can do: a fetch that lands in a root lands in ONE revision of it. Studio never
+    pins a revision itself, but the cache is shared with anything else that does.
+    """
+    from huggingface_hub import constants
+
+    from core.inference.diffusion_families import _upstream_is_cached
+
+    repack = "Comfy-Org/z_image_turbo"
+    first, second = "split_files/vae/ae.safetensors", "split_files/text_encoders/te.safetensors"
+    live, other = tmp_path / "live", tmp_path / "other"
+    other.mkdir()
+
+    def seed(root, name, revision):
+        rev = root / f"models--{repack.replace('/', '--')}" / "snapshots" / revision
+        (rev / name).parent.mkdir(parents = True, exist_ok = True)
+        (rev / name).write_bytes(b"x")
+
+    # No refs/main anywhere, and the two names live in different snapshots of the SAME root.
+    seed(live, first, "a" * 40)
+    seed(live, second, "b" * 40)
+    monkeypatch.setattr("utils.hf_cache_settings.active_hf_hub_cache", lambda: str(live))
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(other))
+
+    assert _upstream_is_cached(repack, (first, second), other_root = True) is False
+
+    # One snapshot holding both is the ordinary no-ref case, and still counts.
+    seed(live, second, "a" * 40)
+    assert _upstream_is_cached(repack, (first, second), other_root = True) is True
+
+
 def test_te_prequant_equivalence_group_accepts_a_mirrored_base():
     """The T5-XXL artifact is shared across the FLUX.1 releases through an equivalence group of
     UPSTREAM ids. A mirrored base is a different string, so without normalising it the pre-cast
@@ -632,11 +749,19 @@ class _FakeImg2ImgPipe:
 class _FakeImg2ImgPipeline:
     built_from: object = None
     from_pipe_kwargs: dict = {}
+    recast_dtype: object = None
+
+    def to(self, *args, **kwargs):
+        _FakeImg2ImgPipeline.recast_dtype = kwargs.get("dtype")
+        return self
 
     @classmethod
     def from_pipe(cls, base_pipe, **kwargs):
         _FakeImg2ImgPipeline.built_from = base_pipe
         _FakeImg2ImgPipeline.from_pipe_kwargs = kwargs
+        _FakeImg2ImgPipeline.recast_dtype = None
+        # from_pipe's terminal cast, which is what makes the call site's class choice observable.
+        cls().to(dtype = kwargs.get("dtype") or kwargs.get("torch_dtype") or "float32")
         return _FakeImg2ImgPipe()
 
 
@@ -673,10 +798,17 @@ class _FakeInpaintPipe:
 
 class _FakeInpaintPipeline:
     built_from: object = None
+    recast_dtype: object = None
+
+    def to(self, *args, **kwargs):
+        _FakeInpaintPipeline.recast_dtype = kwargs.get("dtype")
+        return self
 
     @classmethod
     def from_pipe(cls, base_pipe, **kwargs):
         _FakeInpaintPipeline.built_from = base_pipe
+        _FakeInpaintPipeline.recast_dtype = None
+        cls().to(dtype = kwargs.get("dtype") or kwargs.get("torch_dtype") or "float32")
         return _FakeInpaintPipe()
 
 
@@ -734,6 +866,128 @@ def fake_runtime(monkeypatch):
     _FakeInpaintPipeline.built_from = None
     _FakeInpaintPipe.last_kwargs = {}
     yield
+
+
+def test_generate_refuses_when_the_model_was_replaced_since_the_snapshot(fake_runtime, tmp_path):
+    """The guard in isolation: a snapshot naming another model is refused, typed (#9448)."""
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
+        family_override = "z-image",
+    )
+    st = backend.status()
+    loaded = load_identity(st["repo_id"], st["base_repo"], st["family"])
+
+    # Snapshot names a different model: typed refusal, no denoise started.
+    stale = load_identity("other/model", st["base_repo"], st["family"])
+    with pytest.raises(DiffusionModelReplacedError) as replaced:
+        backend.generate(prompt = "stale request", expected_load = stale)
+    assert replaced.value.expected == stale
+    assert replaced.value.actual == loaded
+
+    gen = backend.generate(prompt = "fresh request", expected_load = loaded, steps = 4)
+    assert len(gen["images"]) == 1
+
+    # And callers that pass no snapshot keep the historical behaviour.
+    gen2 = backend.generate(prompt = "legacy caller", steps = 4)
+    assert len(gen2["images"]) == 1
+
+
+def test_generate_refuses_a_replacement_that_committed_while_it_waited(fake_runtime, tmp_path):
+    """The reported interleaving end to end (#9448).
+
+    A load drops its teardown fence for the whole construction of the new model while still
+    holding the generation lock, so a generate arriving there used to block, then denoise on
+    the NEW model with the snapshot's steps/guidance.
+    """
+    old_dir, new_dir = tmp_path / "old", tmp_path / "new"
+    for d in (old_dir, new_dir):
+        d.mkdir()
+        (d / "model.gguf").write_bytes(b"weights")
+    load_kwargs = dict(gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image")
+
+    backend = DiffusionBackend()
+    backend.load_pipeline(str(old_dir), **load_kwargs)
+    st = backend.status()  # the route's pre-generation read
+    snapshot = load_identity(st["repo_id"], st["base_repo"], st["family"])
+
+    # Park a replacement inside the construction of the new model: the fence is down there.
+    reached, release = threading.Event(), threading.Event()
+    original = _FakeTransformer.from_single_file.__func__
+
+    def _parked(cls, path, **kwargs):
+        reached.set()
+        assert release.wait(30)
+        return original(cls, path, **kwargs)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(_FakeTransformer, "from_single_file", classmethod(_parked))
+        loader = threading.Thread(
+            target = backend.load_pipeline, args = (str(new_dir),), kwargs = load_kwargs, daemon = True
+        )
+        loader.start()
+        assert reached.wait(30)
+        assert backend._teardown_waiters == 0  # the window under test is genuinely open
+
+        outcome = {}
+
+        def _generate():
+            try:
+                outcome["ok"] = backend.generate(
+                    prompt = "a sloth", steps = 9, guidance = 0.0, expected_load = snapshot
+                )
+            except BaseException as exc:  # noqa: BLE001 (the exception IS the assertion)
+                outcome["err"] = exc
+
+        gen = threading.Thread(target = _generate, daemon = True)
+        gen.start()
+        gen.join(1.0)
+        assert gen.is_alive()  # blocked on _generate_lock, which the load holds
+
+        release.set()
+        loader.join(30)
+        gen.join(30)
+
+    assert not gen.is_alive()
+    assert backend.status()["repo_id"] == str(new_dir)  # the replacement did commit
+    assert "ok" not in outcome, "denoised on the replacement with the snapshot's parameters"
+    assert isinstance(outcome["err"], DiffusionModelReplacedError)
+    assert (outcome["err"].expected.repo_id, outcome["err"].actual.repo_id) == (
+        str(old_dir),
+        str(new_dir),
+    )
+
+
+def test_the_same_path_reloaded_under_a_different_base_is_a_replacement(fake_runtime, tmp_path):
+    """repo_id is not a load identity (#9448).
+
+    base_repo and family_override are settable per load, so one local checkpoint reloads as a
+    different model. Pinning the path alone let a FLUX.1-dev request reach a schnell pipeline.
+    """
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "black-forest-labs/FLUX.1-dev",
+        family_override = "z-image",
+    )
+    st = backend.status()
+    snapshot = load_identity(st["repo_id"], st["base_repo"], st["family"])
+
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "black-forest-labs/FLUX.1-schnell",
+        family_override = "z-image",
+    )
+    assert backend.status()["repo_id"] == snapshot.repo_id  # repo_id alone sees no change
+    with pytest.raises(DiffusionModelReplacedError) as replaced:
+        backend.generate(prompt = "p", steps = 28, guidance = 3.5, expected_load = snapshot)
+    assert replaced.value.actual.base_repo == "black-forest-labs/FLUX.1-schnell"
 
 
 def test_load_generate_unload_gguf(fake_runtime, tmp_path):
@@ -1116,8 +1370,11 @@ def test_generate_img2img_uses_from_pipe(fake_runtime, tmp_path):
     assert len(out["images"]) == 1
     # from_pipe was handed the loaded text-to-image pipe (component reuse, no reload).
     assert _FakeImg2ImgPipeline.built_from is loaded_pipe
-    # ...with torch_dtype=None so from_pipe skips the float32 recast that crashes on torchao weights.
-    assert _FakeImg2ImgPipeline.from_pipe_kwargs.get("torch_dtype", "MISSING") is None
+    # ...naming no dtype, and built through a class that drops from_pipe's terminal cast --
+    # which is what actually protects the resident modules (#9186).
+    assert "torch_dtype" not in _FakeImg2ImgPipeline.from_pipe_kwargs
+    assert "dtype" not in _FakeImg2ImgPipeline.from_pipe_kwargs
+    assert _FakeImg2ImgPipeline.recast_dtype is None
     call = _FakeImg2ImgPipe.last_kwargs
     assert call["image"] is not None  # decoded source image passed through
     assert call["strength"] == 0.5
@@ -1126,6 +1383,186 @@ def test_generate_img2img_uses_from_pipe(fake_runtime, tmp_path):
     # A txt2img call after it still uses the base pipe (no image kwarg).
     backend.generate(prompt = "plain", steps = 4, seed = 1)
     assert backend._state.pipe.last_kwargs.get("image") is None
+
+
+# ── from_pipe never recasts a reused component (#9186) ──────────────────────
+
+
+class _Component:
+    """Records the dtype it is left at; a quantized one refuses a cast, as ModelMixin does."""
+
+    def __init__(
+        self,
+        dtype,
+        quantized = False,
+    ):
+        self.dtype = dtype
+        self.is_quantized = quantized
+
+    def to(
+        self,
+        device = None,
+        dtype = None,
+    ):
+        if dtype is not None:
+            if self.is_quantized:
+                raise ValueError("Casting a quantized model to a new `dtype` is unsupported.")
+            self.dtype = dtype
+        return self
+
+
+class _Resident:
+    """The loaded text-to-image pipeline the workflow pipes are built from."""
+
+    def __init__(self, *, quantized_transformer):
+        self.components = {
+            "text_encoder": _Component("bfloat16"),
+            "transformer": _Component("bfloat16", quantized = quantized_transformer),
+            "vae": _Component("bfloat16"),
+        }
+
+    def dtypes(self):
+        return {name: c.dtype for name, c in self.components.items()}
+
+
+class _RecastingPipeline:
+    """``from_pipe`` as every diffusers Unsloth can install implements it: reuse the resident
+    components, then cast them in name order to float32 unless the caller named a dtype."""
+
+    seen: dict = {}
+    recasts = True
+
+    def __init__(self, **components):
+        self.components = components
+        for name, component in components.items():
+            setattr(self, name, component)
+
+    def to(self, *args, **kwargs):
+        dtype = kwargs.get("dtype")
+        for name in sorted(self.components):
+            component = self.components[name]
+            if hasattr(component, "to"):
+                component.to(dtype = dtype)
+        return self
+
+    @classmethod
+    def from_pipe(cls, base_pipe, **kwargs):
+        _RecastingPipeline.seen = dict(kwargs)
+        new = cls(**dict(base_pipe.components, **kwargs))
+        if cls.recasts:
+            new.to(dtype = kwargs.get("dtype") or kwargs.get("torch_dtype") or "float32")
+        return new
+
+
+class _PreservingPipeline(_RecastingPipeline):
+    """``from_pipe`` once upstream keeps the loaded dtype instead of defaulting to float32."""
+
+    recasts = False
+
+
+def _torch_with_dtype(monkeypatch):
+    """A torch stub whose ``dtype`` is a real class, so ``isinstance`` means something."""
+    torch = types.ModuleType("torch")
+
+    class dtype:  # noqa: N801 -- mirrors torch.dtype
+        pass
+
+    torch.dtype = dtype
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    return torch
+
+
+def test_no_recast_class_drops_every_shape_of_dtype_cast(monkeypatch):
+    """Every form of dtype ``.to()`` accepts is ignored; every form of device is forwarded."""
+    from core.inference.diffusion import _no_recast_pipeline_class
+
+    torch = _torch_with_dtype(monkeypatch)
+    fp32 = torch.dtype()
+
+    class _Recorder:
+        def __init__(self):
+            self.calls = []
+
+        def to(self, *args, **kwargs):
+            self.calls.append((args, kwargs))
+            return self
+
+    pipe = _no_recast_pipeline_class(_Recorder)()
+
+    assert pipe.to(fp32) is pipe  # positional dtype
+    assert pipe.to(dtype = fp32) is pipe  # keyword dtype
+    assert pipe.calls == []  # neither of them reached the parent
+
+    pipe.to("cuda")
+    pipe.to("cuda", fp32)
+    pipe.to(device = "cuda", dtype = fp32)
+    assert pipe.calls == [(("cuda",), {}), (("cuda",), {}), ((), {"device": "cuda"})]
+
+
+def test_no_recast_class_is_cached_and_keeps_identity():
+    """One subclass per pipeline class, and it still passes as the family's own class --
+    which the rest of the backend and the diffusers internals go on assuming."""
+    from core.inference.diffusion import _no_recast_pipeline_class
+
+    cls = _no_recast_pipeline_class(_RecastingPipeline)
+    assert _no_recast_pipeline_class(_RecastingPipeline) is cls
+    assert issubclass(cls, _RecastingPipeline)
+    assert cls.__name__ == _RecastingPipeline.__name__
+
+
+@pytest.mark.parametrize("pipeline_cls", [_RecastingPipeline, _PreservingPipeline])
+@pytest.mark.parametrize("quantized_transformer", [True, False])
+def test_from_pipe_no_recast_leaves_every_component_at_its_loaded_dtype(
+    pipeline_cls, quantized_transformer
+):
+    """The build succeeds and no component moves off bfloat16.
+
+    The two quantization cases fail differently against a recasting from_pipe: a quantized
+    denoiser makes the cast raise, and since components are cast in name order the text
+    encoder is float32 already by then, so catching the error is not a fix; unquantized
+    raises nothing at all and the whole pipeline is silently doubled in place. The two
+    pipeline classes cover a from_pipe that recasts and one that has stopped, so an upstream
+    fix landing under Unsloth cannot change the outcome."""
+    from core.inference.diffusion import DiffusionBackend
+
+    resident = _Resident(quantized_transformer = quantized_transformer)
+    before = resident.dtypes()
+
+    pipe = DiffusionBackend._from_pipe_no_recast(resident, pipeline_cls)
+
+    assert resident.dtypes() == before == {n: "bfloat16" for n in before}
+    assert pipe.transformer is resident.components["transformer"]
+    assert pipe.vae is resident.components["vae"]
+
+
+def test_from_pipe_no_recast_names_no_dtype_and_forwards_extras():
+    """The helper names no dtype, and passes a ControlNet along."""
+    from core.inference.diffusion import DiffusionBackend
+
+    resident = _Resident(quantized_transformer = True)
+    DiffusionBackend._from_pipe_no_recast(resident, _RecastingPipeline)
+    assert _RecastingPipeline.seen == {}  # neither torch_dtype nor dtype
+
+    controlnet = _Component("bfloat16")
+    pipe = DiffusionBackend._from_pipe_no_recast(
+        resident, _RecastingPipeline, controlnet = controlnet
+    )
+    assert _RecastingPipeline.seen == {"controlnet": controlnet}
+    assert pipe.controlnet is controlnet
+
+
+def test_from_pipe_no_recast_does_not_swallow_errors():
+    """A real assembly failure must surface: catching the quantized-cast error would hide
+    that from_pipe had already cast every component ahead of the one that refused."""
+    from core.inference.diffusion import DiffusionBackend
+
+    class _Broken:
+        @classmethod
+        def from_pipe(cls, base_pipe, **kwargs):
+            raise ValueError("Casting a quantized model to a new `dtype` is unsupported")
+
+    with pytest.raises(ValueError, match = "Casting a quantized model"):
+        DiffusionBackend._from_pipe_no_recast(_Resident(quantized_transformer = True), _Broken)
 
 
 def test_generate_img2img_unsupported_family_raises(fake_runtime, tmp_path, monkeypatch):
@@ -1431,6 +1868,7 @@ def test_generate_inpaint_uses_from_pipe(fake_runtime, tmp_path):
     assert len(out["images"]) == 1
     # The inpaint pipe (not img2img) was selected and built from the loaded pipe.
     assert _FakeInpaintPipeline.built_from is loaded_pipe
+    assert _FakeInpaintPipeline.recast_dtype is None  # reused modules, never recast (#9186)
     assert _FakeImg2ImgPipeline.built_from is None
     call = _FakeInpaintPipe.last_kwargs
     assert call["image"] is not None and call["mask_image"] is not None
@@ -3572,6 +4010,25 @@ def test_begin_load_never_refuses_auto(fake_runtime, tmp_path, monkeypatch):
     # The same CPU host with `auto` must sail through: delegating the choice is not a contract.
     (tmp_path / "m.gguf").write_bytes(b"x")
     backend = DiffusionBackend()
+
+    # Hold the worker thread at its first instruction, so `loaded` CANNOT be True yet.
+    # begin_load documents "Returns at once", and the assertion below used to race the
+    # daemon thread for it: on an idle host the caller wins and it passes, on a busy one
+    # the thread finishes first and it fails with `assert True is False`. Blocking the
+    # worker makes the same claim unraceable. The refusal this test is named for happens
+    # in begin_load's validation, before the thread is spawned, so stubbing the body
+    # costs no coverage.
+    release = threading.Event()
+    entered = threading.Event()
+    worker: dict = {}
+
+    def _blocked_run_load(self, **kwargs):
+        worker["thread"] = threading.current_thread()
+        entered.set()
+        release.wait(30)
+
+    monkeypatch.setattr(DiffusionBackend, "_run_load", _blocked_run_load)
+
     started = backend.begin_load(
         str(tmp_path),
         gguf_filename = "m.gguf",
@@ -3579,7 +4036,15 @@ def test_begin_load_never_refuses_auto(fake_runtime, tmp_path, monkeypatch):
         model_kind = "gguf",
         transformer_quant = "auto",
     )
-    assert started["loaded"] is False  # returns immediately; the load runs on a thread
+    assert started["loaded"] is False  # returned without waiting on the load
+    assert entered.wait(30), "begin_load never started the load thread"
+    # The load is still in flight, which is the whole claim. Checked from the caller,
+    # not with an assert inside the worker: an assertion that fails on a non-main
+    # thread does not fail the test, so that version reported a pass against a
+    # begin_load mutated to join its own thread.
+    assert worker["thread"].is_alive(), "begin_load waited for the load instead of returning"
+    release.set()
+    worker["thread"].join(30)
 
 
 def test_transformer_quant_falls_back_to_gguf_on_failure(
@@ -5241,7 +5706,7 @@ def _split_cache_roots(
     *,
     register_root = False,
 ):
-    """Studio's live cache root and a second one holding what a mid-session cache-folder change
+    """Unsloth's live cache root and a second one holding what a mid-session cache-folder change
     left behind, both empty. ``register_root`` makes the second dir huggingface_hub's import-time
     constant, the root ``cache_dir = None`` resolves to; without it the constant points at a third
     empty dir, so ``other`` is reachable only as an explicit staged snapshot. Either way the test
@@ -5317,7 +5782,7 @@ def _other_root_base_snapshot(
     *,
     register_root = False,
 ):
-    """A base repo cached ONLY under the other cache root, with Studio's live root empty: what
+    """A base repo cached ONLY under the other cache root, with Unsloth's live root empty: what
     a mid-session cache-folder change leaves behind, handed back as ``_base_local_dir``. Sparse."""
     _live, other = _split_cache_roots(tmp_path, monkeypatch, register_root = register_root)
     snapshot = other / "models--bfl--base" / "snapshots" / ("a" * 40)
@@ -6159,7 +6624,7 @@ def _fake_hf_api(
 
     monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
     # Download-plan tests describe their cache state explicitly. Never let a developer's real
-    # Studio cache make an entry disappear from these otherwise hermetic tests.
+    # Unsloth cache make an entry disappear from these otherwise hermetic tests.
     monkeypatch.setattr(
         DiffusionBackend,
         "_hub_file_is_cached",
@@ -6543,14 +7008,15 @@ def test_download_plan_flags_a_mirrored_pipeline_as_the_checkpoint(monkeypatch):
     # The page used to derive the label by comparing those two ids, which made every file of the
     # selected model read as "Required assets". Only the planner knows about the swap.
     gated = "black-forest-labs/FLUX.1-dev"
-    _fake_hf_api(monkeypatch, {gated: _FLUX_BASE_SIBLINGS})
+    mirror = "unsloth/FLUX.1-dev"
+    _fake_hf_api(monkeypatch, {gated: _FLUX_BASE_SIBLINGS, mirror: _FLUX_BASE_SIBLINGS})
     _no_cache(monkeypatch)
 
     plan = DiffusionBackend().download_plan(gated, model_kind = "pipeline")
 
     assert len(plan["entries"]) == 1
     entry = plan["entries"][0]
-    assert entry["repo_id"] == "unsloth/FLUX.1-dev" != gated
+    assert entry["repo_id"] == mirror != gated
     assert entry["checkpoint"] is True
 
 
@@ -6593,7 +7059,7 @@ def test_download_plan_stages_the_precast_encoder_instead_of_the_dense_one(monke
     # The pick resolves one hosted pre-cast encoder for text_encoder_2 (flux.1 hosts its T5-XXL).
     monkeypatch.setattr(
         "core.inference.diffusion_te_prequant.te_prequant_sources",
-        lambda fam, *, te_quant_mode, target: (
+        lambda fam, *, te_quant_mode, target, **_kwargs: (
             {
                 "text_encoder_2": types.SimpleNamespace(
                     kind = "repo",
@@ -6999,7 +7465,7 @@ def test_download_plan_for_a_pipeline_kind_ignores_the_prequant_cache(monkeypatc
 
 
 def test_download_plan_restages_a_base_split_across_both_cache_roots(monkeypatch):
-    # Studio's cache folder is a setting, so a base can end up half in the old root and half in the
+    # Unsloth's cache folder is a setting, so a base can end up half in the old root and half in the
     # new one. _prefetch_files refuses to name a snapshot in that state and the assembly is pinned
     # to hub_cache_dir(), so the old-root half is invisible to from_pretrained. Staging nothing
     # there means the load re-pulls it inline, past the plan's progress, cancel and disk preflight.
@@ -7152,7 +7618,7 @@ def test_download_plan_still_plans_an_unrecognised_gguf_given_an_explicit_base(m
 
 
 def test_unload_fences_queued_generations_while_it_waits(fake_runtime, tmp_path):
-    # A queued generation holds no cancel event, so unload's signal cannot reach it, and Python locks are not FIFO, so it could get in ahead and denoise after the eject.
+    # A queued generation must not bypass the teardown fence.
     (tmp_path / "model.gguf").write_bytes(b"weights")
     backend = DiffusionBackend()
     backend.load_pipeline(
@@ -7211,8 +7677,50 @@ def test_a_raising_unload_still_drains_the_teardown_fence(fake_runtime, tmp_path
     assert backend.generate(prompt = "after", steps = 2)["images"]
 
 
-def test_generation_refuses_while_a_teardown_is_waiting(fake_runtime, tmp_path):
-    # The fence's effect: with a teardown waiting on _generate_lock, a generation that wins the lock refuses instead of denoising on a pipeline being freed.
+class _RecordingGate(threading.Event):
+    """Teardown gate that reports every time a generation parks on it."""
+
+    def __init__(self, parked: threading.Event):
+        super().__init__()
+        self._parked = parked
+
+    def wait(self, timeout = None):
+        self._parked.set()
+        return super().wait(timeout)
+
+
+class _AdmissionHookLock:
+    """Lock wrapper that pauses generation after atomic admission releases state."""
+
+    def __init__(self, backend, on_admitted):
+        self._lock = threading.Lock()
+        self._backend = backend
+        self._on_admitted = on_admitted
+        self._fired = False
+
+    def acquire(self, *args, **kwargs):
+        return self._lock.acquire(*args, **kwargs)
+
+    def release(self):
+        self._lock.release()
+        if (
+            not self._fired
+            and threading.current_thread().name == "generation-under-test"
+            and self._backend._active_generate_cancel is not None
+        ):
+            self._fired = True
+            self._on_admitted()
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *_args):
+        self.release()
+
+
+def test_generation_waits_for_all_pending_teardowns(fake_runtime, tmp_path, monkeypatch):
+    # A lock winner must yield to every pending teardown.
     (tmp_path / "model.gguf").write_bytes(b"weights")
     backend = DiffusionBackend()
     backend.load_pipeline(
@@ -7223,14 +7731,738 @@ def test_generation_refuses_while_a_teardown_is_waiting(fake_runtime, tmp_path):
     )
     assert backend.generate(prompt = "before", steps = 2)["images"]
 
-    backend._teardown_waiters = 1
-    with pytest.raises(RuntimeError, match = "cancelled"):
-        backend.generate(prompt = "during", steps = 2)
-    # Still loaded: the refusal is about the pending teardown, not a missing model.
-    assert backend._state is not None
+    parked = threading.Event()
+    denoise_entered = threading.Event()
+    pipe_type = type(backend._state.pipe)
+    real_call = pipe_type.__call__
 
-    backend._teardown_waiters = 0
-    assert backend.generate(prompt = "after", steps = 2)["images"]
+    def record_denoise(self, *args, **kwargs):
+        denoise_entered.set()
+        return real_call(self, *args, **kwargs)
+
+    monkeypatch.setattr(pipe_type, "__call__", record_denoise)
+    backend._teardown_drained = _RecordingGate(parked)
+    with backend._lock:
+        backend._reserve_teardown_locked()
+        backend._reserve_teardown_locked()
+
+    outcome: dict = {}
+    worker = threading.Thread(
+        target = lambda: outcome.setdefault("result", backend.generate(prompt = "during", steps = 2)),
+        daemon = True,
+    )
+    worker.start()
+    assert parked.wait(5), "generation did not yield to the pending teardown"
+
+    parked.clear()
+    with backend._lock:
+        backend._release_teardown_locked()
+    assert parked.wait(5), "generation did not re-park behind the final teardown"
+    assert not backend._teardown_drained.is_set(), "the gate opened with a reservation live"
+    assert not denoise_entered.is_set(), "generation denoised before every teardown drained"
+
+    with backend._lock:
+        backend._release_teardown_locked()
+    worker.join(5)
+    assert not worker.is_alive(), "generation did not resume after the teardown drained"
+    assert denoise_entered.is_set()
+    assert outcome["result"]["images"]
+
+
+def test_cancel_wakes_generation_waiting_for_replacement(fake_runtime, tmp_path, monkeypatch):
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
+        family_override = "z-image",
+    )
+
+    replacement_build_started = threading.Event()
+    allow_replacement_commit = threading.Event()
+    real_from_single_file = _FakeTransformer.from_single_file
+
+    def blocking_from_single_file(cls, path, **kwargs):
+        replacement_build_started.set()
+        assert allow_replacement_commit.wait(5), "replacement load was not released"
+        return real_from_single_file(path, **kwargs)
+
+    monkeypatch.setattr(
+        _FakeTransformer, "from_single_file", classmethod(blocking_from_single_file)
+    )
+
+    load_outcome: dict = {}
+
+    def replace_model():
+        try:
+            load_outcome["result"] = backend.load_pipeline(
+                str(tmp_path),
+                gguf_filename = "model.gguf",
+                base_repo = "base/repo",
+                family_override = "z-image",
+            )
+        except BaseException as exc:  # noqa: BLE001 - surface worker failures in the test thread
+            load_outcome["error"] = exc
+
+    loader = threading.Thread(target = replace_model, daemon = True)
+    loader.start()
+    assert replacement_build_started.wait(5), load_outcome
+
+    outcome: dict = {}
+
+    def generate():
+        try:
+            backend.generate(prompt = "cancel while queued", steps = 2)
+        except RuntimeError as exc:
+            outcome["error"] = str(exc)
+
+    worker = threading.Thread(target = generate, daemon = True)
+    worker.start()
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        with backend._generation_cancel_lock:
+            if backend._queued_generate_cancels:
+                break
+        time.sleep(0.01)
+    else:
+        allow_replacement_commit.set()
+        pytest.fail("generation was not published while waiting for replacement")
+    assert backend.cancel_generate() is True
+    worker.join(5)
+    assert not worker.is_alive(), "cancelled generation waited for replacement to finish"
+    assert outcome["error"] == DIFFUSION_CANCELLED_MSG
+    assert not backend._queued_generate_cancels
+    assert backend.generate_progress()["active"] is False
+    assert loader.is_alive(), "replacement unexpectedly finished before the queued cancel"
+
+    allow_replacement_commit.set()
+    loader.join(5)
+    assert not loader.is_alive(), "replacement load did not finish"
+    assert "error" not in load_outcome, load_outcome
+
+
+def test_cancel_stops_every_generation_queued_behind_teardown(fake_runtime, tmp_path):
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
+        family_override = "z-image",
+    )
+    with backend._lock:
+        backend._reserve_teardown_locked()
+
+    errors: list[str] = []
+
+    def generate(prompt):
+        try:
+            backend.generate(prompt = prompt, steps = 2)
+        except RuntimeError as exc:
+            errors.append(str(exc))
+
+    workers = [
+        threading.Thread(target = generate, args = (f"queued-{index}",), daemon = True)
+        for index in range(2)
+    ]
+    for worker in workers:
+        worker.start()
+
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        with backend._generation_cancel_lock:
+            if len(backend._queued_generate_cancels) == 2:
+                break
+        time.sleep(0.01)
+    else:
+        pytest.fail("both generations did not register for queued cancellation")
+
+    try:
+        assert backend.cancel_generate() is True
+        for worker in workers:
+            worker.join(5)
+            assert not worker.is_alive()
+        assert errors == [DIFFUSION_CANCELLED_MSG, DIFFUSION_CANCELLED_MSG]
+        assert not backend._queued_generate_cancels
+    finally:
+        with backend._lock:
+            if backend._teardown_waiters:
+                backend._release_teardown_locked()
+
+
+class _SlotYieldLock:
+    """Generation-lock wrapper that reports the release yielding the slot to a teardown."""
+
+    def __init__(self, lock, yielded):
+        self._lock = lock
+        self._yielded = yielded
+
+    def acquire(self, *args, **kwargs):
+        return self._lock.acquire(*args, **kwargs)
+
+    def release(self):
+        self._lock.release()
+        self._yielded.set()
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *_args):
+        self.release()
+
+
+def test_cancel_reaches_a_queued_generation_while_a_load_holds_the_state_lock(
+    fake_runtime, tmp_path
+):
+    # A replacement holds _lock for the whole of its model construction, so a generation
+    # parked behind the teardown must not need that lock to notice Stop. Waiting on a
+    # Condition over _lock does need it -- Condition.wait() reacquires the lock before it
+    # returns, timeout included -- which left the request blocked for the length of the load.
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
+        family_override = "z-image",
+    )
+    with backend._lock:
+        backend._reserve_teardown_locked()
+
+    yielded = threading.Event()
+    backend._generate_lock = _SlotYieldLock(backend._generate_lock, yielded)
+
+    outcome: dict = {}
+
+    def generate():
+        try:
+            backend.generate(prompt = "queued", steps = 2)
+        except RuntimeError as exc:
+            outcome["error"] = str(exc)
+
+    worker = threading.Thread(target = generate, daemon = True)
+    worker.start()
+    assert yielded.wait(5), "generation did not yield the slot to the teardown"
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        with backend._generation_cancel_lock:
+            if backend._queued_generate_cancels:
+                break
+        time.sleep(0.01)
+    else:
+        pytest.fail("the queued generation never published a cancel event")
+
+    # Simulate construction while _lock is held.
+    with backend._lock:
+        assert backend.cancel_generate() is True
+        worker.join(5)
+        assert not worker.is_alive(), "Stop could not reach the queued generation"
+    assert outcome["error"] == DIFFUSION_CANCELLED_MSG
+    assert not backend._queued_generate_cancels
+
+    with backend._lock:
+        backend._release_teardown_locked()
+
+
+def test_cancel_reaches_a_waiter_once_the_generation_it_queued_behind_exits(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # Stop eligibility is decided from live state after the handoff.
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
+        family_override = "z-image",
+    )
+
+    denoising = threading.Event()
+    release_active = threading.Event()
+    calls: list[int] = []
+    real_call = _FakePipe.__call__
+
+    def _call(self, **kwargs):
+        first = not calls
+        calls.append(1)
+        if first:
+            denoising.set()
+            assert release_active.wait(5), "the active generation was never released"
+        return real_call(self, **kwargs)
+
+    monkeypatch.setattr(_FakePipe, "__call__", _call)
+
+    outcomes: dict = {}
+
+    def generate(key, prompt):
+        try:
+            outcomes[key] = backend.generate(prompt = prompt, steps = 2)
+        except RuntimeError as exc:
+            outcomes[key] = exc
+
+    active = threading.Thread(target = generate, args = ("active", "active"), daemon = True)
+    active.start()
+    assert denoising.wait(5), "the first generation never started denoising"
+    waiter = threading.Thread(target = generate, args = ("waiter", "waiter"), daemon = True)
+    waiter.start()
+
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        with backend._generation_cancel_lock:
+            if backend._queued_generate_cancels:
+                break
+        time.sleep(0.01)
+    else:
+        release_active.set()
+        pytest.fail("the waiting request was never published")
+
+    # Reserve teardown before releasing the active generation.
+    with backend._lock:
+        backend._reserve_teardown_locked()
+    release_active.set()
+    active.join(5)
+    assert not active.is_alive()
+
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            with backend._generation_cancel_lock:
+                if backend._active_generate_cancel is None:
+                    break
+            time.sleep(0.01)
+        else:
+            pytest.fail("the active generation never deregistered")
+
+        assert backend.cancel_generate() is True, "Stop did not reach the waiting request"
+        waiter.join(5)
+        assert not waiter.is_alive(), "the waiting request stayed queued through the teardown"
+        assert isinstance(outcomes["waiter"], RuntimeError)
+        assert str(outcomes["waiter"]) == DIFFUSION_CANCELLED_MSG
+        assert not backend._queued_generate_cancels
+    finally:
+        with backend._lock:
+            if backend._teardown_waiters:
+                backend._release_teardown_locked()
+        waiter.join(5)
+
+
+def test_cancel_spares_a_serialized_request_through_the_active_epilogue(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # The active generation drops its cancel event at the last-word check, while it still owns
+    # the slot for the epilogue that builds the result. Reading "no cancel event" as "nothing
+    # owns the slot" there failed a request that was only serialised behind it.
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
+        family_override = "z-image",
+    )
+
+    from core.inference import diffusion as diffusion_module
+
+    queued = threading.Event()
+    stop_answered: list[bool] = []
+    fired: list[int] = []
+    real_baked = diffusion_module._baked_lora_names
+
+    def _baked(pipe):
+        # Runs in the epilogue, after the last-word check cleared _active_generate_cancel and
+        # before _generation_slot releases the lock. Only the first generation's epilogue has a
+        # request queued behind it.
+        if not fired:
+            fired.append(1)
+            if queued.wait(5):
+                stop_answered.append(backend.cancel_generate())
+        return real_baked(pipe)
+
+    monkeypatch.setattr(diffusion_module, "_baked_lora_names", _baked)
+
+    outcomes: dict = {}
+
+    def generate(key, prompt):
+        try:
+            outcomes[key] = backend.generate(prompt = prompt, steps = 2)
+        except RuntimeError as exc:
+            outcomes[key] = exc
+
+    active = threading.Thread(target = generate, args = ("active", "active"), daemon = True)
+    active.start()
+    serialized = threading.Thread(target = generate, args = ("serialized", "serialized"), daemon = True)
+    serialized.start()
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        with backend._generation_cancel_lock:
+            if backend._queued_generate_cancels:
+                break
+        time.sleep(0.01)
+    queued.set()
+
+    active.join(5)
+    serialized.join(5)
+    assert not active.is_alive() and not serialized.is_alive()
+    assert stop_answered == [False], "Stop claimed a generation that had already committed"
+    assert isinstance(outcomes["active"], dict), outcomes["active"]
+    assert isinstance(outcomes["serialized"], dict), outcomes["serialized"]
+    assert outcomes["serialized"]["images"]
+
+
+class _FirstAcquireHookLock:
+    """Generation-lock wrapper that runs a hook before the first acquisition attempt."""
+
+    def __init__(self, lock, on_first_acquire):
+        self._lock = lock
+        self._on_first_acquire = on_first_acquire
+        self._fired = False
+
+    def acquire(self, *args, **kwargs):
+        if not self._fired:
+            self._fired = True
+            self._on_first_acquire()
+        return self._lock.acquire(*args, **kwargs)
+
+    def release(self):
+        self._lock.release()
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *_args):
+        self.release()
+
+
+def test_stop_reaches_a_queued_generation_before_its_first_lock_attempt(fake_runtime, tmp_path):
+    # A replacement can already own the slot when the request arrives, so publishing the cancel
+    # event only after the first timed acquisition failed left a 100 ms hole: Stop answered
+    # false, the page settled its button back to Generate, and the generation still ran once the
+    # load finished.
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
+        family_override = "z-image",
+    )
+    with backend._lock:
+        backend._reserve_teardown_locked()
+
+    stop_answered: list[bool] = []
+    backend._generate_lock = _FirstAcquireHookLock(
+        backend._generate_lock, lambda: stop_answered.append(backend.cancel_generate())
+    )
+
+    outcome: dict = {}
+
+    def generate():
+        try:
+            backend.generate(prompt = "queued", steps = 2)
+        except RuntimeError as exc:
+            outcome["error"] = str(exc)
+
+    worker = threading.Thread(target = generate, daemon = True)
+    worker.start()
+    try:
+        worker.join(5)
+        assert not worker.is_alive(), "the queued generation did not unwind"
+        assert stop_answered == [True], "Stop did not see the request before it queued"
+        assert outcome["error"] == DIFFUSION_CANCELLED_MSG
+        assert not backend._queued_generate_cancels
+    finally:
+        with backend._lock:
+            if backend._teardown_waiters:
+                backend._release_teardown_locked()
+        worker.join(5)
+
+
+class _SlotHandoffLock:
+    """Generation-lock wrapper that pauses a waiter after it receives the slot."""
+
+    def __init__(self, lock, handed_off, admit_waiter):
+        self._lock = lock
+        self._handed_off = handed_off
+        self._admit_waiter = admit_waiter
+
+    def acquire(self, *args, **kwargs):
+        acquired = self._lock.acquire(*args, **kwargs)
+        if acquired and threading.current_thread().name == "serialized-waiter":
+            self._handed_off.set()
+            assert self._admit_waiter.wait(5), "the waiter was not allowed to register"
+        return acquired
+
+    def release(self):
+        self._lock.release()
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *_args):
+        self.release()
+
+
+def test_cancel_spares_a_serialized_request_during_slot_handoff(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # Once the active request releases _generate_lock, a waiter can own it before moving its
+    # cancel event from the queued set to the active slot. Stop in that handoff must not mistake
+    # the ordinary serialized waiter for a request blocked by model replacement.
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
+        family_override = "z-image",
+    )
+
+    denoising = threading.Event()
+    release_active = threading.Event()
+    handed_off = threading.Event()
+    admit_waiter = threading.Event()
+    calls: list[int] = []
+    real_call = _FakePipe.__call__
+
+    def _call(self, **kwargs):
+        first = not calls
+        calls.append(1)
+        if first:
+            denoising.set()
+            assert release_active.wait(5), "the active generation was never released"
+        return real_call(self, **kwargs)
+
+    monkeypatch.setattr(_FakePipe, "__call__", _call)
+    backend._generate_lock = _SlotHandoffLock(backend._generate_lock, handed_off, admit_waiter)
+
+    outcomes: dict = {}
+
+    def generate(key, prompt):
+        try:
+            outcomes[key] = backend.generate(prompt = prompt, steps = 2)
+        except RuntimeError as exc:
+            outcomes[key] = exc
+
+    active = threading.Thread(
+        target = generate,
+        args = ("active", "active"),
+        name = "active-generation",
+        daemon = True,
+    )
+    active.start()
+    assert denoising.wait(5), "the first generation never started denoising"
+    serialized = threading.Thread(
+        target = generate,
+        args = ("serialized", "serialized"),
+        name = "serialized-waiter",
+        daemon = True,
+    )
+    serialized.start()
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        with backend._generation_cancel_lock:
+            if backend._queued_generate_cancels:
+                break
+        time.sleep(0.01)
+    else:
+        pytest.fail("the serialized request was never published")
+
+    release_active.set()
+    assert handed_off.wait(5), "the serialized waiter never received the slot"
+    assert backend.cancel_generate() is False
+    admit_waiter.set()
+
+    active.join(5)
+    serialized.join(5)
+    assert not active.is_alive() and not serialized.is_alive()
+    assert isinstance(outcomes["active"], dict), outcomes["active"]
+    assert isinstance(outcomes["serialized"], dict), outcomes["serialized"]
+    assert outcomes["serialized"]["images"]
+
+
+class _SlotContentionLock:
+    """Generation-lock wrapper that reports a failed (contended) acquisition."""
+
+    def __init__(self, lock, contended):
+        self._lock = lock
+        self._contended = contended
+
+    def acquire(self, *args, **kwargs):
+        acquired = self._lock.acquire(*args, **kwargs)
+        if not acquired:
+            self._contended.set()
+        return acquired
+
+    def release(self):
+        self._lock.release()
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *_args):
+        self.release()
+
+
+def test_cancel_spares_a_request_only_serialized_behind_the_active_one(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # Two image requests can be in flight at once: POST /images/generate and the
+    # OpenAI-compatible POST /v1/images/generations both call generate() and neither has a
+    # busy guard, so the second simply waits on _generate_lock. Stop is about the generation
+    # the page is showing, so it must not fail that second request with the cancel sentinel
+    # -- the same untrue "cancelled" this PR exists to remove.
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
+        family_override = "z-image",
+    )
+
+    denoising = threading.Event()
+    release_active = threading.Event()
+    contended = threading.Event()
+    calls: list[int] = []
+    real_call = _FakePipe.__call__
+
+    def _call(self, **kwargs):
+        first = not calls
+        calls.append(1)
+        if first:
+            denoising.set()
+            assert release_active.wait(5), "the active generation was never released"
+        return real_call(self, **kwargs)
+
+    monkeypatch.setattr(_FakePipe, "__call__", _call)
+    backend._generate_lock = _SlotContentionLock(backend._generate_lock, contended)
+
+    outcomes: dict = {}
+
+    def generate(key, prompt):
+        try:
+            outcomes[key] = backend.generate(prompt = prompt, steps = 2)
+        except RuntimeError as exc:
+            outcomes[key] = exc
+
+    active = threading.Thread(target = generate, args = ("active", "active"), daemon = True)
+    active.start()
+    assert denoising.wait(5), "the first generation never started denoising"
+    serialized = threading.Thread(target = generate, args = ("serialized", "serialized"), daemon = True)
+    serialized.start()
+    assert contended.wait(5), "the second request never queued on the generation lock"
+
+    assert backend.cancel_generate() is True
+    release_active.set()
+    active.join(5)
+    serialized.join(5)
+    assert not active.is_alive() and not serialized.is_alive()
+
+    assert isinstance(outcomes["active"], RuntimeError)
+    assert str(outcomes["active"]) == DIFFUSION_CANCELLED_MSG
+    assert isinstance(outcomes["serialized"], dict), outcomes["serialized"]
+    assert outcomes["serialized"]["images"]
+
+
+def test_admission_registers_cancel_before_teardown_can_reserve(fake_runtime, tmp_path):
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
+        family_override = "z-image",
+    )
+
+    start_teardown = threading.Event()
+    teardown_reserved = threading.Event()
+    saw_active_cancel: list[bool] = []
+
+    def after_admission():
+        start_teardown.set()
+        assert teardown_reserved.wait(5), "teardown did not reserve after admission"
+
+    backend._lock = _AdmissionHookLock(backend, after_admission)
+
+    def teardown():
+        assert start_teardown.wait(5), "generation never reached admission"
+        with backend._lock:
+            with backend._generation_cancel_lock:
+                cancel = backend._active_generate_cancel
+                saw_active_cancel.append(cancel is not None)
+                if cancel is not None:
+                    cancel.set()
+            backend._reserve_teardown_locked()
+            teardown_reserved.set()
+        with backend._generate_lock:
+            with backend._lock:
+                try:
+                    backend._unload_locked()
+                finally:
+                    backend._release_teardown_locked()
+
+    teardown_worker = threading.Thread(target = teardown, daemon = True)
+    teardown_worker.start()
+
+    outcome: dict = {}
+
+    def generate():
+        try:
+            backend.generate(prompt = "atomic admission", steps = 2)
+        except RuntimeError as exc:
+            outcome["error"] = str(exc)
+
+    generation_worker = threading.Thread(target = generate, name = "generation-under-test", daemon = True)
+    generation_worker.start()
+    generation_worker.join(5)
+    teardown_worker.join(5)
+
+    assert not generation_worker.is_alive(), "generation ignored teardown cancellation"
+    assert not teardown_worker.is_alive(), "teardown remained blocked behind generation"
+    assert saw_active_cancel == [True]
+    assert outcome["error"] == DIFFUSION_CANCELLED_MSG
+    assert backend._state is None
+    assert backend._teardown_waiters == 0
+
+
+def test_generation_reports_not_loaded_after_waiting_for_unload(fake_runtime, tmp_path):
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
+        family_override = "z-image",
+    )
+
+    parked = threading.Event()
+    backend._teardown_drained = _RecordingGate(parked)
+    with backend._lock:
+        backend._reserve_teardown_locked()
+
+    outcome: dict = {}
+
+    def generate():
+        try:
+            backend.generate(prompt = "during", steps = 2)
+        except RuntimeError as exc:
+            outcome["error"] = str(exc)
+
+    worker = threading.Thread(target = generate, daemon = True)
+    worker.start()
+    assert parked.wait(5), "generation did not wait for unload"
+
+    with backend._lock:
+        backend._unload_locked()
+        backend._release_teardown_locked()
+    worker.join(5)
+    assert not worker.is_alive(), "generation remained blocked after unload"
+    assert outcome["error"] == "No diffusion model is loaded."
 
 
 def test_a_superseding_load_fences_queued_generations_too(fake_runtime, tmp_path):
@@ -9085,7 +10317,7 @@ def test_the_resident_size_table_prices_a_pre_cast_encoder_at_its_real_size(
     monkeypatch.setattr(dmod, "family_bf16_components_gb", dmod.family_bf16_components_gb)
     monkeypatch.setattr(
         "core.inference.diffusion_te_prequant.te_prequant_sources",
-        lambda fam, te_quant_mode = None, target = None: {"text_encoder": object()},
+        lambda fam, te_quant_mode = None, target = None, **_kwargs: {"text_encoder": object()},
     )
     precast = backend._resident_sized_plan(
         plan, fam, base, target, "pipeline", text_encoder_quant = "fp8"
@@ -9184,7 +10416,6 @@ def test_the_prequant_fit_check_prices_a_pre_cast_text_encoder(fake_runtime, mon
     already applies te_prequant_budget_scale; this is the same scale on the same estimate."""
     from core.inference.diffusion import DiffusionBackend
     from core.inference.diffusion_families import detect_family
-    from core.inference.diffusion_te_prequant import TE_PREQUANT_BUDGET_SCALE
 
     fam = detect_family("black-forest-labs/FLUX.2-dev")
     assert fam is not None and fam.te_prequant_repos, "the fixture family lost its pre-cast repo"
@@ -9192,43 +10423,35 @@ def test_the_prequant_fit_check_prices_a_pre_cast_text_encoder(fake_runtime, mon
     encoders = 48_000
     candidate = types.SimpleNamespace(companions_mib = encoders + 400, text_encoders_mib = encoders)
 
-    scaled = DiffusionBackend._precast_scaled_companions_mib(candidate, fam, object(), "fp8")
-    # No pre-cast encoder resolves in this environment unless te_prequant_sources says so, so pin
-    # the two outcomes on the resolver rather than assuming one.
-    from core.inference.diffusion_te_prequant import te_prequant_sources
+    base = "black-forest-labs/FLUX.2-dev"
+    seen: dict = {}
 
-    if te_prequant_sources(fam, te_quant_mode = "fp8", target = object()):
-        assert scaled == 400 + int(encoders * TE_PREQUANT_BUDGET_SCALE)
-        assert scaled < candidate.companions_mib
-    else:
-        assert scaled == candidate.companions_mib
+    def _scale(_fam, *, te_quant_mode, target, base):
+        seen.update(mode = te_quant_mode, target = target, base = base)
+        return 0.5 if te_quant_mode == "fp8" else 1.0
+
+    monkeypatch.setattr("core.inference.diffusion_te_prequant.te_prequant_budget_scale", _scale)
+    scaled = DiffusionBackend._precast_scaled_companions_mib(candidate, fam, base, object(), "fp8")
+    assert scaled == 24_400
+    assert seen["mode"] == "fp8"
+    assert seen["base"] == base
 
     # No encoder quant requested: the estimate is passed through untouched, byte for byte.
     assert (
-        DiffusionBackend._precast_scaled_companions_mib(candidate, fam, object(), None)
+        DiffusionBackend._precast_scaled_companions_mib(candidate, fam, base, object(), None)
         == candidate.companions_mib
     )
     # The VAE share is never scaled, and a candidate with no split degrades to the dense total.
     no_split = types.SimpleNamespace(companions_mib = 1234, text_encoders_mib = 0)
-    assert DiffusionBackend._precast_scaled_companions_mib(no_split, fam, object(), "fp8") == 1234
+    assert (
+        DiffusionBackend._precast_scaled_companions_mib(no_split, fam, base, object(), "fp8")
+        == 1234
+    )
     # An estimate with no companions at all stays None, which _plan_memory reads as "no override".
     empty = types.SimpleNamespace(companions_mib = None)
-    assert DiffusionBackend._precast_scaled_companions_mib(empty, fam, object(), "fp8") is None
-
-
-def test_the_pre_cast_companion_scale_matches_the_load_level_plan(fake_runtime, monkeypatch):
-    """Both sides must read the same scale from the same resolver, or the fit check and the plan
-    it gates disagree about what the load builds."""
-    from core.inference.diffusion import DiffusionBackend
-    from core.inference.diffusion_families import detect_family
-
-    fam = detect_family("black-forest-labs/FLUX.2-dev")
-    monkeypatch.setattr(
-        "core.inference.diffusion_te_prequant.te_prequant_budget_scale",
-        lambda fam, *, te_quant_mode, target: 0.5 if te_quant_mode == "fp8" else 1.0,
+    assert (
+        DiffusionBackend._precast_scaled_companions_mib(empty, fam, base, object(), "fp8") is None
     )
-    candidate = types.SimpleNamespace(companions_mib = 10_400, text_encoders_mib = 10_000)
-    assert DiffusionBackend._precast_scaled_companions_mib(candidate, fam, object(), "fp8") == 5_400
 
 
 def test_an_offload_memory_request_is_not_reported_as_unstaged_shards(
@@ -9321,3 +10544,44 @@ def test_an_unsupported_host_is_not_told_its_shards_are_unstaged(
     )
     reason3 = ((status3.get("resolved") or {}).get("transformer_quant") or {}).get("reason") or ""
     assert "shards are not staged" in reason3, reason3
+
+
+def test_generation_in_flight_tracks_a_generation(fake_runtime, tmp_path, monkeypatch):
+    import core.inference.diffusion as diffusion_mod
+
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
+        family_override = "z-image",
+    )
+    monkeypatch.setattr(diffusion_mod, "_diffusion_backend", backend)
+
+    seen = {}
+
+    def fake_apply(self, state, loras, cancel):
+        # Check the marker during pre-denoise setup.
+        seen["in_flight"] = diffusion_mod.generation_in_flight()
+
+    monkeypatch.setattr(DiffusionBackend, "_apply_loras", fake_apply)
+
+    assert diffusion_mod.generation_in_flight() is False
+    backend.generate(prompt = "a sloth", steps = 4)
+    assert (
+        seen["in_flight"] is True
+    ), "liveness cannot tell this backend from a dead one while it renders an image"
+    assert diffusion_mod.generation_in_flight() is False
+
+
+def test_generation_in_flight_never_builds_a_backend(fake_runtime, monkeypatch):
+    import core.inference.diffusion as diffusion_mod
+
+    monkeypatch.setattr(diffusion_mod, "_diffusion_backend", None)
+    monkeypatch.setattr(
+        diffusion_mod,
+        "DiffusionBackend",
+        lambda *a, **k: pytest.fail("liveness constructed a diffusion backend"),
+    )
+    assert diffusion_mod.generation_in_flight() is False

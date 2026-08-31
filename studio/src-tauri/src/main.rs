@@ -20,7 +20,9 @@ mod native_path_policy;
 mod preflight;
 mod process;
 mod process_identity;
+mod staged_update;
 mod update;
+mod webview_permissions;
 mod windows_job;
 mod x11_threads;
 
@@ -29,13 +31,13 @@ use process::new_backend_state;
 use simplelog::{
     CombinedLogger, Config, LevelFilter, SharedLogger, TermLogger, TerminalMode, WriteLogger,
 };
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
-use tauri::menu::{MenuBuilder, MenuItemBuilder};
+use tauri::menu::{MenuBuilder, MenuItem, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager};
 use tauri_plugin_window_state::{AppHandleExt, StateFlags};
@@ -47,6 +49,9 @@ use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 static TERMINATION_CLEANUP: Mutex<bool> = Mutex::new(false);
 
 const IN_APP_RELAUNCH_MARKER_FILE: &str = "in-app-relaunch-v1";
+
+#[cfg(target_os = "macos")]
+const STAGED_ROLLBACK_RELAUNCH_FLAG: &str = "--staged-rollback-relaunch-wait";
 
 const CLOSE_TO_TRAY_PREFERENCE_FILE: &str = "close-to-tray-v1";
 
@@ -798,6 +803,40 @@ fn setup_custom_titlebar(app: &tauri::App) -> Result<(), Box<dyn std::error::Err
         std::io::Error::new(std::io::ErrorKind::NotFound, "main window not found")
     })?;
     window.set_decorations(false)?;
+    Ok(())
+}
+
+// WebKitGTK ships two defaults that together break voice dictation on Linux:
+// `enable-media-stream` is off, and the stock `permission-request` handler
+// denies every request it never saw a listener override, including
+// microphone/camera grabs. Neither is fixable from outside the embedding
+// application, so opt in here and auto-allow only user-media requests --
+// every other permission kind (notifications, geolocation, ...) keeps the
+// default deny.
+#[cfg(target_os = "linux")]
+fn setup_linux_media_permissions(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    use webkit2gtk::{
+        glib::Cast, PermissionRequestExt, SettingsExt, UserMediaPermissionRequest, WebViewExt,
+    };
+
+    let window = app.get_webview_window("main").ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "main window not found")
+    })?;
+    window.with_webview(|webview| {
+        let webview = webview.inner();
+        if let Some(settings) = webview.settings() {
+            settings.set_enable_media_stream(true);
+        }
+        webview.connect_permission_request(|_webview, request| {
+            match request.downcast_ref::<UserMediaPermissionRequest>() {
+                Some(request) => {
+                    request.allow();
+                    true
+                }
+                None => false,
+            }
+        });
+    })?;
     Ok(())
 }
 
@@ -1645,6 +1684,26 @@ fn setup_terminate_interception(app: &tauri::App) {
     }
 }
 
+struct TrayServerToggle(MenuItem<tauri::Wry>);
+
+fn tray_toggle_label(status: &str) -> (&'static str, bool) {
+    match status {
+        "running" => ("Stop Server", true),
+        "stopped" | "error" => ("Start Server", true),
+        "starting" => ("Starting\u{2026}", false),
+        _ => ("Start Server", false),
+    }
+}
+
+#[tauri::command]
+fn set_tray_server_status(app: tauri::AppHandle, status: String) {
+    if let Some(toggle) = app.try_state::<TrayServerToggle>() {
+        let (text, enabled) = tray_toggle_label(&status);
+        let _ = toggle.0.set_text(text);
+        let _ = toggle.0.set_enabled(enabled);
+    }
+}
+
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let open = MenuItemBuilder::with_id("open", "Open Unsloth").build(app)?;
     let toggle = MenuItemBuilder::with_id("toggle", "Start/Stop Server").build(app)?;
@@ -1652,6 +1711,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let menu = MenuBuilder::new(app)
         .items(&[&open, &toggle, &quit])
         .build()?;
+    app.manage(TrayServerToggle(toggle));
 
     TrayIconBuilder::new()
         .menu(&menu)
@@ -1763,16 +1823,80 @@ fn webview_cache_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
         .build()
 }
 
+#[cfg(target_os = "macos")]
+fn staged_rollback_relaunch_args(args: &[OsString]) -> Option<(u32, &[OsString])> {
+    if args.first()?.as_os_str() != OsStr::new(STAGED_ROLLBACK_RELAUNCH_FLAG) {
+        return None;
+    }
+    let parent = args.get(1)?.to_str()?.parse().ok()?;
+    Some((parent, &args[2..]))
+}
+
+#[cfg(target_os = "macos")]
+fn detached_relaunch_command(binary: impl AsRef<OsStr>) -> std::process::Command {
+    use std::os::unix::process::CommandExt;
+
+    let mut command = std::process::Command::new(binary);
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .process_group(0);
+    command
+}
+
+#[cfg(target_os = "macos")]
+fn run_staged_rollback_relaunch_helper() -> bool {
+    let args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    let Some((parent, original_args)) = staged_rollback_relaunch_args(&args) else {
+        return false;
+    };
+    for _ in 0..1200 {
+        if !desktop_backend_owner::pid_is_not_dead(parent) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    if desktop_backend_owner::pid_is_not_dead(parent) {
+        eprintln!("staged rollback relaunch timed out waiting for the previous app");
+        return true;
+    }
+    match std::env::current_exe()
+        .and_then(|binary| detached_relaunch_command(binary).args(original_args).spawn())
+    {
+        Ok(_) => {}
+        Err(error) => eprintln!("staged rollback relaunch failed: {error}"),
+    }
+    true
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn schedule_staged_rollback_relaunch(app: &tauri::AppHandle) -> Result<(), String> {
+    let binary = tauri::process::current_binary(&app.env()).map_err(|error| error.to_string())?;
+    detached_relaunch_command(binary)
+        .arg(STAGED_ROLLBACK_RELAUNCH_FLAG)
+        .arg(std::process::id().to_string())
+        .args(std::env::args_os().skip(1))
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
 fn main() {
+    #[cfg(target_os = "macos")]
+    if run_staged_rollback_relaunch_helper() {
+        return;
+    }
+
     // Must precede any Xlib call: GTK3 never calls XInitThreads and this
     // process drives X from several threads. See x11_threads for the crash.
     x11_threads::init_x11_threads();
 
-    // WebKitGTK's hardware dmabuf path can violate Wayland explicit-sync
-    // protocol on current NVIDIA/Mesa stacks. Select a compatible fallback
-    // before any GTK/WebKit object can be initialized.
+    // WebKitGTK's hardware dmabuf path breaks on the proprietary NVIDIA driver on
+    // either display server, and on an AppImage that cannot load GLES. Select a
+    // compatible fallback before any GTK/WebKit object can be initialized.
     #[cfg(target_os = "linux")]
-    let webkit_rendering_workaround = linux_webkit::configure_wayland_renderer();
+    let webkit_rendering_workaround = linux_webkit::configure_renderer();
     // Fix PATH for GUI apps (macOS .app bundles, Linux AppImage, Windows)
     // GUI apps don't inherit shell dotfile PATH — this spawns the user's
     // login shell to source .zshrc/.bashrc/.profile and sets PATH properly.
@@ -1782,8 +1906,13 @@ fn main() {
     info!("Unsloth desktop app starting");
 
     #[cfg(target_os = "linux")]
-    if let Some(variable) = webkit_rendering_workaround {
-        info!("Wayland detected; set {variable}=1 for WebKitGTK compatibility");
+    if let Some((variables, reason)) = webkit_rendering_workaround {
+        let applied = variables
+            .iter()
+            .map(|variable| format!("{variable}=1"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        info!("{reason}; set {applied} for WebKitGTK compatibility");
     }
     windows_job::initialize();
 
@@ -1819,6 +1948,7 @@ fn main() {
         .manage(new_backend_state())
         .manage(process::new_shutdown_flag())
         .manage(update::new_update_state())
+        .manage(desktop_updater::new_desktop_update_state())
         .manage(new_close_to_tray_state())
         .manage(native_file_dialogs::ChatImportRegistry::default())
         .invoke_handler(tauri::generate_handler![
@@ -1838,6 +1968,10 @@ fn main() {
             commands::open_logs_dir,
             commands::open_models_dir,
             commands::start_backend_update,
+            commands::start_staged_update,
+            commands::cancel_staged_update,
+            commands::staged_update_status,
+            commands::discard_staged_update,
             commands::start_managed_repair,
             commands::native_path_leases_usable,
             commands::cancel_pending_elevation,
@@ -1846,6 +1980,9 @@ fn main() {
             desktop_update_policy::check_desktop_manual_update,
             desktop_update_policy::desktop_update_policy,
             desktop_updater::check_desktop_update,
+            desktop_updater::download_desktop_update,
+            desktop_updater::install_desktop_update,
+            desktop_updater::desktop_update_bundle_status,
             desktop_updater::desktop_update_cleanup_armed,
             desktop_updater::resume_desktop_update_cleanup,
             diagnostics::collect_support_diagnostics,
@@ -1868,6 +2005,7 @@ fn main() {
             native_intents::register_artifact_path,
             native_intents::reveal_path_token,
             native_intents::open_path_token,
+            webview_permissions::reset_microphone_permission,
             has_saved_window_state,
             was_launched_hidden,
             mark_in_app_relaunch,
@@ -1877,6 +2015,7 @@ fn main() {
             set_close_to_tray,
             get_launch_at_login,
             set_launch_at_login,
+            set_tray_server_status,
         ])
         .setup(|app| {
             // Resolve here, before any window path can ask: this consumes the relaunch marker.
@@ -1890,6 +2029,15 @@ fn main() {
 
             initialize_close_to_tray(app.handle());
             reconcile_autostart_entry(app.handle());
+            if let Err(error) = process::with_studio_runtime_launch_guard(|| {
+                staged_update::reconcile_at_launch(
+                    &diagnostics::studio_dir(),
+                    &app.package_info().version.to_string(),
+                );
+                Ok(())
+            }) {
+                warn!("Staged update activation deferred: {error}");
+            }
             // Recover legacy desktop installs before the first preflight.
             if let Err(error) = desktop_backend_owner::ensure_installed_studio_root_id() {
                 warn!("Desktop backend ownership id unavailable: {error}");
@@ -1903,6 +2051,8 @@ fn main() {
             }
             #[cfg(any(target_os = "windows", target_os = "linux"))]
             setup_custom_titlebar(app)?;
+            #[cfg(target_os = "linux")]
+            setup_linux_media_permissions(app)?;
             #[cfg(all(windows, not(debug_assertions)))]
             setup_windows_browser_guards(app)?;
             #[cfg(target_os = "macos")]
@@ -2034,6 +2184,23 @@ mod tests {
         assert!(take_in_app_relaunch_marker(dir.path()));
         assert!(!take_in_app_relaunch_marker(dir.path()));
         assert!(!in_app_relaunch_marker_path(dir.path()).exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn staged_rollback_relaunch_helper_removes_its_private_arguments() {
+        let args = vec![
+            OsString::from(STAGED_ROLLBACK_RELAUNCH_FLAG),
+            OsString::from("123"),
+            OsString::from("--hidden"),
+            OsString::from("file.gguf"),
+        ];
+
+        let (parent, original) = staged_rollback_relaunch_args(&args).unwrap();
+
+        assert_eq!(parent, 123);
+        assert_eq!(original, &args[2..]);
+        assert!(staged_rollback_relaunch_args(&args[2..]).is_none());
     }
 
     #[test]
@@ -2708,5 +2875,51 @@ mod tests {
         apply_renderer_activity(&state, "", false);
         apply_renderer_activity(&state, "Downloads", true);
         assert_eq!(renderer_activity(&state), (false, true));
+    }
+
+    /// The three states the tray-toggle-server listener in use-tauri-backend.ts acts
+    /// on, plus the one the tray reports progress for.
+    #[test]
+    fn the_tray_toggle_names_the_action_a_click_would_take() {
+        assert_eq!(tray_toggle_label("running"), ("Stop Server", true));
+        assert_eq!(tray_toggle_label("stopped"), ("Start Server", true));
+        assert_eq!(tray_toggle_label("error"), ("Start Server", true));
+        assert_eq!(tray_toggle_label("starting"), ("Starting\u{2026}", false));
+    }
+
+    /// Every remaining BackendStatus: the listener acts on none of them, so the item is
+    /// greyed rather than offering a click that would be a silent no-op. Keep this list in
+    /// step with the union in use-tauri-backend.ts.
+    #[test]
+    fn a_status_the_tray_cannot_act_on_greys_the_toggle() {
+        for status in [
+            "checking",
+            "not-installed",
+            "installing",
+            "install-error",
+            "needs-elevation",
+            "repairing",
+            "repair-error",
+        ] {
+            assert_eq!(
+                tray_toggle_label(status),
+                ("Start Server", false),
+                "{status} offered a click the renderer would drop"
+            );
+        }
+    }
+
+    /// The status is whatever string the webview sent, so a mismatched bundle can pass
+    /// something that is not a status at all. Match the whole string: a prefix or a case
+    /// fold would let "run" read as an offer to stop a server that is not running.
+    #[test]
+    fn an_unrecognised_status_greys_the_toggle_rather_than_guessing() {
+        for status in ["", " ", "Running", "RUNNING", "running ", "run", "{}"] {
+            assert_eq!(
+                tray_toggle_label(status),
+                ("Start Server", false),
+                "{status:?} was read as a known status"
+            );
+        }
     }
 }
