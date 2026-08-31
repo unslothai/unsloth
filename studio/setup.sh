@@ -2761,9 +2761,9 @@ else
         if grep -Fq "already matches" "$_PREBUILT_LOG"; then
             step "llama.cpp" "prebuilt up to date and validated"
         elif grep -Fq "keeping the existing complete install" "$_PREBUILT_LOG"; then
-            # Exit 0 no longer means something was installed: the installer answers a
-            # transient update failure by keeping the tree already on disk. Reporting
-            # that as "installed and validated" names a release that was never fetched.
+            # Exit 0 can also mean the installer kept the tree already on disk after a
+            # transient failure. "installed and validated" would name a release nothing
+            # fetched.
             step "llama.cpp" "update unavailable, existing prebuilt kept" "$C_WARN"
         else
             step "llama.cpp" "prebuilt installed and validated"

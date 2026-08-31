@@ -182,11 +182,9 @@ def test_the_mlx_group_runs_serially_and_skips_the_per_file_three() -> None:
 def test_an_empty_mlx_group_stops_the_step_instead_of_collecting_everything() -> None:
     """The group is passed unquoted, so an empty list is not an empty run.
 
-    ``python -m pytest $mlx_group --deselect ...`` with nothing in ``mlx_group``
-    is ``python -m pytest --deselect ...``, which collects the whole rootdir
-    serially: green, far slower, and no longer the group this step describes. The
-    glob only has to stop matching once -- upstream renaming the family, or the
-    step being copied to a repo laid out differently -- for that to be what runs.
+    With nothing in ``mlx_group`` the command collects the whole rootdir instead:
+    green, far slower, and not this group. The glob only has to stop matching
+    once, upstream renaming the family for instance.
     """
     text = WORKFLOW.read_text(encoding = "utf-8")
     assert 'if [ -z "$mlx_group" ]' in text, (
@@ -198,9 +196,8 @@ def test_an_empty_mlx_group_stops_the_step_instead_of_collecting_everything() ->
 def test_a_skipped_isolated_file_is_named_in_the_log() -> None:
     """Exit 5 is tolerated, so the file that produced it has to be identifiable.
 
-    A module-level skip and a file that stopped collecting for some new reason
-    both exit 5 and both stay green. Naming the file is what lets a maintainer
-    tell the expected one from the regression without re-deriving the list.
+    An expected module-level skip and a file that stopped collecting for a new
+    reason both exit 5 and both stay green.
     """
     text = WORKFLOW.read_text(encoding = "utf-8")
     for path, _ in ISOLATED:

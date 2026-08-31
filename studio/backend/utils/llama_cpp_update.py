@@ -613,12 +613,10 @@ def _run_llama_phase(
     backend = None
     model_was_active = False
     mtmd_guard = ExitStack()
-    # What is installed before the installer runs. The installer now exits 0 for a
-    # transient failure it answered by keeping the existing tree, so a successful exit
-    # no longer implies the release changed, and "Updated llama.cpp to <tag>" would name
-    # the tag the user already had. Reachable on macOS in particular, where the update
-    # path passes no pin and so does not disqualify itself from the keep branch.
-    # Read the same way the post-install check does, so the two tags are comparable.
+    # The installer now exits 0 for a transient failure it answered by keeping the
+    # existing tree, so success no longer implies the release changed. Read the same way
+    # as the post-install check so the two tags compare. Mainly a macOS case: the update
+    # path passes no pin there, so it does not disqualify itself from the keep branch.
     prior_marker = read_install_marker(_find_binary())
     prior_tag = (prior_marker or {}).get("release_tag") or (prior_marker or {}).get("tag")
     try:
@@ -735,9 +733,8 @@ def _run_llama_phase(
         if backend_request is not None:
             message = f"llama.cpp is now running on {new_backend or backend_request}.{reload_hint}"
         elif kept_existing:
-            # Say what happened. Claiming an update that did not happen is worse than
-            # saying nothing changed, because the next thing the user does is look for
-            # a fix that shipped in the release they think they just installed.
+            # Naming a release that was never fetched sends the user looking for a fix
+            # that shipped in it.
             message = f"llama.cpp is already up to date on {new_tag}."
         else:
             message = f"Updated llama.cpp to {new_tag}.{reload_hint}"

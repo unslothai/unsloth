@@ -627,19 +627,15 @@ def _choice_seed(
     """A seed of its own per choice, so a seeded request samples n times rather
     than repeating one run. Shared by both drains so they cannot disagree.
 
-    llama-server holds the seed as a uint32 and draws at random for exactly one
-    value, LLAMA_DEFAULT_SEED (0xFFFFFFFF). Offsetting that would make every
-    choice after the first deterministic, so it is exempt -- but it is reached by
-    every request seed congruent to it, not just ``-1``: the schemas above also
-    accept ``4294967295`` and ``2**64-1``, and llama-server draws at random for
-    all three. Compared in the uint32 domain for that reason, and because
-    ``_apply_seeded_llama_request`` decides prompt caching with the same test; a
-    literal ``-1`` check here left choice 0 random and cached while choice 1 was
-    offset into a fixed, uncached seed inside one request. Every other negative
-    is an ordinary fixed seed there, so it must be offset like any other or all n
-    choices repeat one run. The offset is taken in that same uint32 domain, so a
-    shifted seed cannot land on the sentinel and turn one choice random. MLX maps
-    every seed onto its key domain instead, so nothing is exempt on that side.
+    llama-server reads the seed as a uint32 and draws at random for exactly one
+    value, LLAMA_DEFAULT_SEED (0xFFFFFFFF). Every seed congruent to it is that
+    sentinel, not just ``-1``: the schemas above also accept ``4294967295`` and
+    ``2**64-1``. Tested in that domain to match ``_apply_seeded_llama_request``,
+    since a literal ``-1`` left choice 0 random and cached while choice 1 was
+    offset into a fixed, uncached seed. Every other negative is an ordinary fixed
+    seed and must be offset, or all n choices repeat one run; offsetting in the
+    same domain cannot land on the sentinel. MLX maps every seed onto its key
+    domain, so nothing is exempt there.
     """
     if seed is None or not choice_index:
         return seed

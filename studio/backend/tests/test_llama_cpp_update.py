@@ -598,11 +598,9 @@ def test_an_update_that_kept_the_existing_install_does_not_claim_a_new_release(
 ):
     """Exit 0 no longer implies the release changed.
 
-    The installer answers a transient update failure by keeping the tree already
-    on disk and exiting 0. Reachable here in particular because the update path
-    passes no pin on macOS, so it does not disqualify itself from that branch.
-    Reporting "Updated llama.cpp to <tag>" then names the release the user
-    already had, and the next thing they do is look for a fix that shipped in it.
+    The installer answers a transient failure by keeping the tree on disk and
+    exiting 0, so "Updated llama.cpp to <tag>" would name the release the user
+    already had.
     """
     install_dir = tmp_path / "llama.cpp"
     binary = _write_install(install_dir, "b9595", release_tag = "b9595-mix-aaaaaaa")
@@ -614,12 +612,11 @@ def test_an_update_that_kept_the_existing_install_does_not_claim_a_new_release(
         lambda repo, timeout = 5.0: "b9596-mix-e6f2453",
     )
 
-    # macOS is the reachable case: start_update passes no pin there, so the
-    # "pinned release X but installer produced Y" guard that catches this on
-    # Linux and Windows does not run and the phase reports success.
+    # macOS is the reachable case: start_update passes no pin there, so the pinned-tag
+    # mismatch guard that catches this elsewhere does not run.
     monkeypatch.setattr(upd.sys, "platform", "darwin")
 
-    # The installer exits 0 having changed nothing, which is what the keep path does.
+    # Exit 0 having changed nothing, which is what the keep path does.
     _patch_installer_popen(monkeypatch, on_start = lambda cmd: None)
 
     job = _run_start_update_to_completion()

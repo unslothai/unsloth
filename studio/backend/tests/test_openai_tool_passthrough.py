@@ -10301,17 +10301,11 @@ def test_every_gguf_choice_gets_a_seed_of_its_own():
 def test_the_two_seed_helpers_agree_on_which_seeds_are_random():
     """``-1`` is not the only request seed that reaches LLAMA_DEFAULT_SEED.
 
-    llama-server reads the seed as a uint32, so every value congruent to
-    0xFFFFFFFF is the sentinel: ``-1``, ``4294967295`` and ``2**64-1`` all draw
-    at random, and the schemas above accept all three. Measured against a real
-    llama-server: each of those three produced varying output across repeated
-    requests, while 4294967294 and 0 did not.
-
-    ``_apply_seeded_llama_request`` compares in that uint32 domain. This helper
-    has to use the same test, or one request disagrees with itself -- choice 0
-    keeps the caller's random seed while choice 1 is offset into a fixed one, so
-    half the choices are reproducible and half are not, and only half of them
-    disable prompt caching.
+    The seed is a uint32 there, so ``-1``, ``4294967295`` and ``2**64-1`` are all
+    the sentinel and all draw at random; the schemas accept all three. Both
+    helpers must agree, or one request disagrees with itself: choice 0 keeps the
+    caller's random seed while choice 1 is offset into a fixed one, so half the
+    choices are reproducible and only half disable prompt caching.
     """
     from core.inference.llama_cpp import _LLAMA_RANDOM_SEED, _apply_seeded_llama_request
     from routes.inference import _choice_seed

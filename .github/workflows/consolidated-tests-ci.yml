@@ -483,8 +483,8 @@ jobs:
           rc=0
           _keep() {
             if [ "$1" = 5 ]; then
-              # Name the file: a module-level skip and a file that stopped collecting
-              # for a new reason both exit 5, and only the first is expected.
+              # Named: an expected module-level skip and a file that stopped collecting
+              # for a new reason both exit 5.
               echo "note: ${2:-that run} collected nothing (module-level skip), not a failure"
             else
               rc=1
@@ -501,9 +501,8 @@ jobs:
           # above also contaminate this group, so exclude them from its file list.
           mlx_group=$(ls tests/test_mlx_*.py |
             grep -vE 'tests/test_mlx_(generate|neftune_quant_map|gated_delta_vjp)\.py$')
-          # Unquoted below so the list word-splits into file arguments. Empty would
-          # therefore pass none, and pytest would collect the whole rootdir serially
-          # instead of this group -- green, slow, and testing something else entirely.
+          # Passed unquoted below to word-split into file arguments, so an empty list
+          # would pass none and pytest would collect the whole rootdir instead.
           if [ -z "$mlx_group" ]; then
             echo "::error::the mlx group glob matched no files"
             exit 1
