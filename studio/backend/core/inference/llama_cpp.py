@@ -22780,6 +22780,14 @@ class LlamaCppBackend:
                                         requested_load_mode = load_mode,
                                         model_memory_settings = _model_memory_settings,
                                     )
+                                    # Over the rebuilt extras, not the first launch's: this
+                                    # retry hands back whatever that one stripped, so a
+                                    # marker taken from there describes a child that no
+                                    # longer exists. The env scrub does carry over, since
+                                    # the retry runs on the same env.
+                                    _retry_touched = bool(_mem_scrubbed) or _retry_extras != list(
+                                        extra_args or []
+                                    )
                                     # Only when the rebuilt policy really has no host copy.
                                     # Restoring a reserving mode puts one back, and then the
                                     # lock still has something to act on -- the promotion the
@@ -22811,7 +22819,7 @@ class LlamaCppBackend:
                                         # this child unless it also scrubbed or stripped,
                                         # and a child equal to an unmanaged one must not
                                         # be torn down when the toggles go off.
-                                        self._memory_policy_active = _mem_policy_touched_extras
+                                        self._memory_policy_active = _retry_touched
                                         logger.info(
                                             "Model Memory: dropping the page-lock for "
                                             "the --fit off retry; it offloads every layer."

@@ -2952,6 +2952,49 @@ class TestFitOffRetryClearsPolicyActivity:
         """A scrub or a strip survives the drop, so that one must still reload."""
         assert self._satisfied(monkeypatch, policy_active = True) is False
 
+    def test_the_rebuilt_retry_hands_the_stripped_extras_back(self):
+        """Why the first launch's marker cannot be reused: it says the policy
+        stripped the extras, and this retry is the thing that undoes that."""
+        settings = (True, False)
+        original = ["--load-mode", "dio", "--temp", "0.7"]
+        managed, initial_extras = apply_model_memory_policy(
+            original,
+            supports_load_mode = True,
+            weights_in_host_memory = True,
+            model_memory_settings = settings,
+        )
+        assert managed == ["--load-mode", "mmap+mlock"]
+        assert initial_extras == ["--temp", "0.7"]
+
+        retry_managed, retry_extras = apply_model_memory_policy(
+            original,
+            supports_load_mode = True,
+            weights_in_host_memory = False,
+            model_memory_settings = settings,
+        )
+        _retry_mode, retry_extras = apply_load_mode_policy(
+            retry_extras,
+            supports_load_mode = True,
+            weights_in_host_memory = False,
+            requested_load_mode = None,
+            model_memory_settings = settings,
+        )
+        assert retry_managed == []
+        assert retry_extras == original
+
+    def test_the_restored_child_survives_the_toggles_going_off(self, monkeypatch):
+        """dio streams the weights, so the retry child holds no lock and no
+        reservation, exactly what both toggles off would have launched."""
+        import utils.model_memory_settings as mm
+
+        monkeypatch.setattr(mm, "get_keep_resident", lambda: False)
+        monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
+        state = resolve_effective_memory_state(["--load-mode", "dio", "--temp", "0.7"], {})
+        assert state == (False, False)
+        assert memory_state_satisfies_settings(state, False, False) is True
+        # The marker carried over from the first attempt is what forced the reload.
+        assert memory_state_satisfies_settings(state, True, False) is False
+
     def test_the_launch_recomputes_activity_without_the_managed_flag(self):
         """Source check: the retry must reuse the non-managed half of the launch
         expression, not leave the first attempt's verdict standing."""
@@ -2966,7 +3009,11 @@ class TestFitOffRetryClearsPolicyActivity:
         assert branch != -1
         end = src.find("return False", branch)
         assert end != -1
-        assert "self._memory_policy_active = _mem_policy_touched_extras" in src[branch:end]
+        tail = src[branch:end]
+        # Recomputed over the retry's own extras; the env scrub still counts.
+        assert "_retry_touched = bool(_mem_scrubbed) or _retry_extras != list(" in tail
+        assert "self._memory_policy_active = _retry_touched" in tail
+        assert "self._memory_policy_active = _mem_policy_touched_extras" not in tail
 
 
 class TestNoDeadMemoryBookkeeping:
