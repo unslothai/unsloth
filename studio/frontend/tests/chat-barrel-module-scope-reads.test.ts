@@ -922,6 +922,48 @@ function barrelBearingModules(
   return bearing;
 }
 
+/**
+ * Exported names that can sit in a temporal dead zone.
+ *
+ * `function` declarations are hoisted and initialized before any module body
+ * runs, so importing one from a half-evaluated module is always safe. Only
+ * `const`, `let` and `class` bindings can be read before initialization, and
+ * they are the only ones worth reporting on a deep import into the cycle.
+ */
+function tdzProneExportNames(source: ts.SourceFile): Set<string> {
+  const prone = new Set<string>();
+  const lexical = new Set<string>();
+  for (const statement of source.statements) {
+    const exported = hasModifier(statement, ts.SyntaxKind.ExportKeyword);
+    if (ts.isVariableStatement(statement)) {
+      const isLexical = Boolean(
+        statement.declarationList.flags & (ts.NodeFlags.Const | ts.NodeFlags.Let),
+      );
+      if (!isLexical) continue;
+      const names = new Set<string>();
+      for (const d of statement.declarationList.declarations) collectBindingNames(d.name, names);
+      for (const n of names) {
+        lexical.add(n);
+        if (exported) prone.add(n);
+      }
+    } else if (ts.isClassDeclaration(statement) && statement.name) {
+      lexical.add(statement.name.text);
+      if (exported) prone.add(statement.name.text);
+    }
+  }
+  // `export { X }` publishes a lexical binding declared above.
+  for (const statement of source.statements) {
+    if (!ts.isExportDeclaration(statement) || statement.moduleSpecifier) continue;
+    const clause = statement.exportClause;
+    if (!clause || !ts.isNamedExports(clause)) continue;
+    for (const element of clause.elements) {
+      if (element.isTypeOnly) continue;
+      if (lexical.has((element.propertyName ?? element.name).text)) prone.add(element.name.text);
+    }
+  }
+  return prone;
+}
+
 /** Functions a module exports by name, for resolving a cross-module call. */
 function exportedFunctions(source: ts.SourceFile): Map<string, ts.FunctionLikeDeclaration> {
   const out = new Map<string, ts.FunctionLikeDeclaration>();
@@ -990,6 +1032,74 @@ function barrelInitClosure(files: string[]): Set<string> {
   return seen;
 }
 
+/**
+ * Module-scope reads that already existed when deep imports into the cycle
+ * started being checked.
+ *
+ * Every one is the same hazard as the crash this file exists for: a lexical
+ * binding read at module scope from a module the barrel's own initialization
+ * can reach. They are allowed only because clearing them is a refactor of
+ * unrelated features, not because they are safe.
+ *
+ * This list may SHRINK, never grow. A new entry means a new latent blank-page
+ * bug, and the assertion below rejects it.
+ */
+const KNOWN_DEEP_CYCLE_READS = new Set<string>([
+  "components/assistant-ui/markdown-text.tsx: SEARCH_IMAGE_TAG (line 140)",
+  "components/assistant-ui/markdown-text.tsx: SEARCH_IMAGE_TAG (line 144)",
+  "components/assistant-ui/markdown-text.tsx: SearchImageElement (line 140)",
+  "components/assistant-ui/markdown-text.tsx: unslothDarkTheme (line 110)",
+  "components/assistant-ui/markdown-text.tsx: unslothDarkTheme (line 94)",
+  "components/assistant-ui/markdown-text.tsx: unslothLightTheme (line 109)",
+  "components/assistant-ui/markdown-text.tsx: unslothLightTheme (line 94)",
+  "components/assistant-ui/markdown-text.tsx: withMathBlockMarker (line 91)",
+  "components/assistant-ui/thread.tsx: CodeExecutionToolUI (line 7094)",
+  "components/assistant-ui/thread.tsx: ImageGenerationToolUI (line 7096)",
+  "components/assistant-ui/thread.tsx: KnowledgeBaseToolUI (line 7090)",
+  "components/assistant-ui/thread.tsx: MarkdownText (line 7111)",
+  "components/assistant-ui/thread.tsx: PythonToolUI (line 7091)",
+  "components/assistant-ui/thread.tsx: Reasoning (line 7112)",
+  "components/assistant-ui/thread.tsx: ReasoningGroup (line 7113)",
+  "components/assistant-ui/thread.tsx: RenderHtmlToolUI (line 7098)",
+  "components/assistant-ui/thread.tsx: Sources (line 7114)",
+  "components/assistant-ui/thread.tsx: TerminalToolUI (line 7092)",
+  "components/assistant-ui/thread.tsx: ToolFallback (line 7099)",
+  "components/assistant-ui/thread.tsx: ToolGroup (line 7115)",
+  "components/assistant-ui/thread.tsx: WebSearchToolUI (line 7088)",
+  "components/ui/sidebar.tsx: SIDEBAR_WIDTH_DEFAULT (line 45)",
+  "features/chat/artifacts/artifact-surface.tsx: unslothDarkTheme (line 37)",
+  "features/chat/artifacts/artifact-surface.tsx: unslothLightTheme (line 37)",
+  "features/chat/attachment-content.ts: MAX_OPEN_DOCUMENT_ARCHIVE_BYTES (line 96)",
+  "features/chat/chat-page.tsx: CONVERSATION_MARKDOWN_FORMAT (line 1157)",
+  "features/chat/chat-page.tsx: CONVERSATION_MARKDOWN_LABEL (line 1156)",
+  "features/chat/components/deep-research-composer-button.tsx: MAX_RESEARCH_MODEL_TIMEOUT_SECONDS (line 29)",
+  "features/chat/presets/preset-load-config.ts: KV_CACHE_DTYPES (line 58)",
+  "features/chat/presets/preset-load-config.ts: SPECULATIVE_TYPES (line 59)",
+  "features/chat/presets/preset-policy.ts: DEFAULT_INFERENCE_PARAMS (line 10)",
+  "features/chat/stores/chat-runtime-store.ts: PERSISTED_INFERENCE_PARAM_KEYS (line 3098)",
+  "features/chat/stores/sidebar-organization-store.ts: SIDEBAR_ORGANIZATION_STORAGE_KEY (line 142)",
+  "features/chat/utils/chat-history-storage.ts: ThreadRecordWriteCoordinator (line 83)",
+  "features/chat/utils/clipboard-files.ts: MAX_AUDIO_SIZE (line 14)",
+  "features/chat/utils/thread-scoped-settings.ts: MAX_SAMPLING_SEED (line 112)",
+  "features/hub/download-manager/download-manager-state.ts: ACTIVE_STATES (line 296)",
+  "features/hub/download-manager/download-manager-state.ts: isTauri (line 300)",
+  "features/hub/lib/hf-cache.ts: LruMap (line 43)",
+  "features/hub/stores/hf-token-store.ts: AUTH_SESSION_CLEARED_EVENT (line 321)",
+  "features/native-intents/drop-paths.ts: OPEN_DOCUMENT_ATTACHMENT_EXTENSIONS (line 57)",
+  "features/native-intents/drop-paths.ts: RAG_UPLOAD_ACCEPT (line 11)",
+  "features/native-intents/drop-paths.ts: RAG_UPLOAD_ACCEPT (line 57)",
+  "features/native-intents/drop-paths.ts: TEXT_ATTACHMENT_EXTENSIONS (line 16)",
+  "features/native-intents/native-drop-targets.ts: isTauri (line 22)",
+  "features/native-intents/native-drop-targets.ts: isTauri (line 48)",
+  "features/settings/settings-dialog.tsx: MicIcon (line 210)",
+  "features/settings/settings-dialog.tsx: isTauri (line 233)",
+  "features/settings/settings-dialog.tsx: isTauri (line 235)",
+  "features/training/stores/training-config-policy.ts: DEFAULT_HYPERPARAMS (line 103)",
+  "features/training/stores/training-config-store.ts: TRAINING_CONFIG_PERSISTENCE_NAME (line 1305)",
+  "features/training/stores/training-config-store.ts: TRAINING_CONFIG_PERSISTENCE_VERSION (line 1306)",
+  "i18n/messages.ts: en (line 27)",
+]);
+
 test("no module-scope read of a chat barrel value", () => {
   const files = walkSources(SRC);
   // Only a module the barrel can reach during its own initialization can be
@@ -999,17 +1109,46 @@ test("no module-scope read of a chat barrel value", () => {
   const sources = readAll(files);
   const resolve = makeResolver(sources);
   const bearing = barrelBearingModules(sources, resolve);
+  const runtimeEdges = (file: string): string[] => {
+    const source = parse(file, sources.get(file) ?? "");
+    const out: string[] = [];
+    for (const st of source.statements) {
+      const spec =
+        (ts.isImportDeclaration(st) || ts.isExportDeclaration(st)) && st.moduleSpecifier;
+      if (!spec || !ts.isStringLiteral(spec)) continue;
+      if (isErasedEdge(st)) continue;
+      out.push(spec.text);
+    }
+    return out;
+  };
+
   const barrelNameFilter =
     (from: string) =>
     (specifier: string, exported?: string): boolean => {
       if (specifier === BARREL) return true;
       const target = resolve(specifier, from);
       if (target === null) return false;
+      // A deep import into the cycle is the same hazard as the barrel. The
+      // crash this guard exists for was a read of a const imported straight
+      // from chat-runtime-store; #9852 later moved that import off the barrel,
+      // which silently put the original defect outside a barrel-only filter.
+      // Any module the barrel's own initialization can reach may itself be
+      // mid-initialization when an at-risk module reads from it.
+      if (atRisk.has(target)) {
+        // A module with no runtime imports has nothing that can re-enter it, so
+        // its bindings are always initialized before any importer body runs.
+        // That is exactly why prompt-queue-events.ts exists, and reading from
+        // such a leaf is safe however the barrel reaches it.
+        if (runtimeEdges(target).length === 0) return false;
+        const prone = tdzProneExportNames(parse(target, sources.get(target) ?? ""));
+        return exported === undefined ? prone.size > 0 : prone.has(exported);
+      }
       const carried = bearing.get(target);
       if (!carried) return false;
       return exported === undefined ? carried.size > 0 : carried.has(exported);
     };
   const offenders: string[] = [];
+  const stillPresent = new Set<string>();
   let importers = 0;
   for (const file of files) {
     const text = sources.get(file) ?? "";
@@ -1042,7 +1181,12 @@ test("no module-scope read of a chat barrel value", () => {
     if (names.size > 0) importers += 1;
     if (!atRisk.has(file)) continue;
     for (const hit of eagerReads(source, names, { helpers })) {
-      offenders.push(`${path.relative(SRC, file)}: ${hit}`);
+      const entry = `${path.relative(SRC, file)}: ${hit}`;
+      if (KNOWN_DEEP_CYCLE_READS.has(entry)) {
+        stillPresent.add(entry);
+        continue;
+      }
+      offenders.push(entry);
     }
   }
   assert.deepEqual(
