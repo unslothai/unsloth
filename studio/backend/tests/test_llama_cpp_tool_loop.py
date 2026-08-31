@@ -3375,6 +3375,28 @@ def test_confirm_tool_calls_skips_gguf_rag_autoinject(monkeypatch):
     assert any(event.get("type") == "content" and event.get("text") == "Done." for event in events)
 
 
+def test_gguf_missing_rag_tool_skips_autoinject(monkeypatch):
+    streams = [[_sse({"content": "Done."}), _done()]]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+
+    def fail_autoinject(*_args, **_kwargs):
+        raise AssertionError("excluded RAG tool must prevent autoinject")
+
+    monkeypatch.setattr("core.inference.tools.build_rag_autoinject", fail_autoinject)
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "use docs"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+            session_id = "sess",
+            rag_scope = {"project_id": "p1", "autoinject": False},
+        )
+    )
+
+    assert any(event.get("type") == "content" and event.get("text") == "Done." for event in events)
+
+
 def test_rag_autoinject_counts_as_a_prior_tool_execution(monkeypatch):
     """Autoinjected retrieval runs before the controller, so history stays empty.
 

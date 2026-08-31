@@ -27480,7 +27480,8 @@ class LlamaCppBackend:
         # A resumed turn must keep the partial trailing: autoinject appends a tool call
         # plus its result, moving the boundary so the model opens a fresh answer.
         _skip_autoinject = (
-            tool_choice == "none"
+            "search_knowledge_base" not in _gguf_active_tool_names(tools)
+            or tool_choice == "none"
             or (
                 confirm_tool_calls
                 and not bypass_permissions

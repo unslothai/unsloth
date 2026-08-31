@@ -547,7 +547,8 @@ def run_safetensors_tool_loop(
     # A resumed turn must keep the partial trailing: autoinject appends a tool call
     # plus its result, moving the boundary so the model opens a fresh answer.
     _skip_autoinject = (
-        confirm_tool_calls and not bypass_permissions and permission_mode not in ("auto", "off")
+        (bool(tools) and "search_knowledge_base" not in _active_tool_names(tools))
+        or (confirm_tool_calls and not bypass_permissions and permission_mode not in ("auto", "off"))
     ) or bool(continue_final_message and trailing_assistant_text(conversation))
     _auto = None if _skip_autoinject else build_rag_autoinject(conversation, rag_scope)
     if _auto:
