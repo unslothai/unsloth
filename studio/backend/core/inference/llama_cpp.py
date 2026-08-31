@@ -397,6 +397,7 @@ from core.inference.tool_call_parser import (
     strip_llama3_leading_sentinels,
     strip_tool_markup as _shared_strip_tool_markup,
 )
+from core.tool_healing import _markerless_promotable
 
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.child_stdio import utf8_child_env
@@ -1563,14 +1564,15 @@ _GGUF_REHEARSAL_ARGS_RE = re.compile(r"(?<!\[CALL_ID\])\b([\w-]+)\[ARGS\]")
 
 
 def _gguf_rehearsal_signal_pos(text: str, active_tools: list[dict]) -> int:
-    """Index of the first ``NAME[ARGS]`` whose NAME is an active tool, else -1. A
-    bare/inactive-name ``foo[ARGS]`` in prose is not a call; mirrors the safetensors
-    ``_earliest_tool_signal`` name-gating (no unrestricted GGUF mode)."""
+    """Index of the first ``NAME[ARGS]`` whose NAME is markerless-promotable, else -1. A
+    bare/inactive-name ``foo[ARGS]`` in prose is not a call, and neither is an
+    execution-class ``terminal[ARGS]`` the parser refuses to promote from a bare span;
+    mirrors the safetensors ``_earliest_tool_signal`` gating (no unrestricted GGUF mode)."""
     active = set(_gguf_active_tool_names(active_tools))
     if not active:
         return -1
     for m in _GGUF_REHEARSAL_ARGS_RE.finditer(text):
-        if m.group(1) in active:
+        if _markerless_promotable(m.group(1), active):
             return m.start()
     return -1
 
@@ -1599,26 +1601,38 @@ _TEXT_TOOL_REHEARSAL_RE = re.compile(r"\s*([\w.\-]+)\s*\[ARGS\]")
 def _sniff_text_tool_name(text: str, enabled_names: set) -> str:
     """Best-effort tool name from a partially drained TEXT tool call, gated on
     enabled names so prose can never spawn a card. Used only to open the live
-    argument pane early; the authoritative parse still happens at stream end."""
+    argument pane early; the authoritative parse still happens at stream end.
+
+    The two anchored arms only ever match a MARKERLESS leading call (a wrapper would
+    push the shape off position 0), so they take the parser's promotable gate: a bare
+    ``call:terminal{`` is prose there, and opening an execution card for it would show
+    a running terminal call that never runs. The ``"name":`` arm searches the whole
+    prefix and so also sees a trusted ``[TOOL_CALLS][{"name":"terminal",...}]``; the
+    markerless bare-JSON form never reaches here because ``strip_leading_bare_json_call``
+    already refuses to drain it."""
     m = _TEXT_TOOL_NAME_RE.search(text[:4096])
     if m and m.group(1) in enabled_names:
         return m.group(1)
     m = _TEXT_TOOL_GEMMA_RE.match(text[:256])
-    if m and m.group(1) in enabled_names:
+    if m and _markerless_promotable(m.group(1), enabled_names):
         return m.group(1)
     m = _TEXT_TOOL_REHEARSAL_RE.match(text[:256])
-    if m and m.group(1) in enabled_names:
+    if m and _markerless_promotable(m.group(1), enabled_names):
         return m.group(1)
     return ""
 
 
 def _is_rehearsal_prefix(stripped: str, active_tools: list[dict]) -> bool:
-    """True if ``stripped`` is a (possibly partial) prefix of ``NAME[ARGS]`` for an
-    active tool -- the bare tool name arriving in its own chunk before ``[ARGS]{...}``.
-    Mirrors the safetensors loop so the split rehearsal call is not streamed."""
+    """True if ``stripped`` is a (possibly partial) prefix of ``NAME[ARGS]`` for a
+    markerless-promotable tool -- the bare tool name arriving in its own chunk before
+    ``[ARGS]{...}``. An execution-class name is prose in this form, so it streams rather
+    than being held. Mirrors the safetensors loop so the split rehearsal is not leaked."""
     if not stripped or any(ch.isspace() for ch in stripped):
         return False
-    for name in _gguf_active_tool_names(active_tools):
+    names = _gguf_active_tool_names(active_tools)
+    for name in names:
+        if not _markerless_promotable(name, names):
+            continue
         if stripped == name or f"{name}[ARGS]".startswith(stripped):
             return True
     return False

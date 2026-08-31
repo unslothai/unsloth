@@ -167,3 +167,103 @@ def test_benign_bare_call_is_still_stripped_from_display():
         'do web_search[ARGS]{"query":"x"} now', final = True, enabled_tool_names = EXEC_ENABLED
     )
     assert "web_search[ARGS]" not in out
+
+
+# ------------------------------------------- every OTHER consumer of the markerless shapes agrees
+#
+# The parser is authoritative but not alone: the route display cleaner and the two loops' stream
+# detectors each decide "is this NAME[ARGS] / call:NAME{ a call?" on their own. Left on the plain
+# enabled-name gate they disagree with the parser, and each disagreement is user-visible: the
+# cleaner deletes prose the parser kept (no call AND no text), the detectors drain a turn for a
+# call that never parses, and the GGUF sniff opens a terminal card for something that never runs.
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    ['terminal[ARGS]{"command":"id"}', 'python[ARGS]{"code":"print(1)"}'],
+)
+def test_route_display_cleaner_keeps_bare_execution_call(snippet):
+    from routes.inference import _strip_tool_xml_for_display
+    out = _strip_tool_xml_for_display(
+        snippet, auto_heal_tool_calls = True, enabled_tool_names = EXEC_ENABLED
+    )
+    assert out == snippet
+
+
+def test_route_display_cleaner_still_strips_benign_and_wrapped_calls():
+    from routes.inference import _strip_tool_xml_for_display
+
+    def _clean(text):
+        return _strip_tool_xml_for_display(
+            text, auto_heal_tool_calls = True, enabled_tool_names = EXEC_ENABLED
+        )
+
+    assert _clean('web_search[ARGS]{"query":"x"}') == ""
+    assert _clean('[TOOL_CALLS]terminal[ARGS]{"command":"id"}') == ""
+    assert _clean('<function=terminal>{"command":"id"}</function>') == ""
+
+
+EXEC_TOOLS = [
+    {"type": "function", "function": {"name": name}}
+    for name in ("web_search", "python", "terminal")
+]
+
+
+@pytest.mark.parametrize("name", ["python", "terminal"])
+def test_stream_detectors_do_not_drain_on_bare_execution_rehearsal(name):
+    from core.inference.llama_cpp import _gguf_has_genuine_tool_signal
+    from core.inference.safetensors_agentic import _earliest_tool_signal, _has_genuine_tool_signal
+    from core.inference.tool_call_parser import TOOL_XML_SIGNALS
+
+    text = f'{name}[ARGS]{{"command":"id"}}'
+    assert _earliest_tool_signal(text, TOOL_XML_SIGNALS, EXEC_TOOLS) == -1
+    # Unrestricted (no tool list) parses name-agnostically, so it must not drain either.
+    assert _earliest_tool_signal(text, TOOL_XML_SIGNALS, EXEC_TOOLS, unrestricted = True) == -1
+    assert _has_genuine_tool_signal(text, TOOL_XML_SIGNALS, EXEC_TOOLS) is False
+    assert _gguf_has_genuine_tool_signal(text, TOOL_XML_SIGNALS, EXEC_TOOLS) is False
+
+
+def test_stream_detectors_still_drain_on_benign_and_wrapped_calls():
+    from core.inference.llama_cpp import _gguf_has_genuine_tool_signal
+    from core.inference.safetensors_agentic import _earliest_tool_signal
+    from core.inference.tool_call_parser import TOOL_XML_SIGNALS
+
+    for text in (
+        'web_search[ARGS]{"query":"x"}',
+        '[TOOL_CALLS]terminal[ARGS]{"command":"id"}',
+        "<|tool_call>call:terminal{command:id}<tool_call|>",
+    ):
+        assert _earliest_tool_signal(text, TOOL_XML_SIGNALS, EXEC_TOOLS) == 0, text
+        assert _gguf_has_genuine_tool_signal(text, TOOL_XML_SIGNALS, EXEC_TOOLS) is True, text
+
+
+@pytest.mark.parametrize("name", ["python", "terminal"])
+def test_split_rehearsal_hold_does_not_apply_to_execution_names(name):
+    # The bare name arriving in its own chunk is prose now, so it streams instead of being held.
+    from core.inference.llama_cpp import _is_rehearsal_prefix as _gguf_prefix
+    from core.inference.safetensors_agentic import _is_rehearsal_prefix
+
+    assert _is_rehearsal_prefix(name, EXEC_TOOLS) is False
+    assert _is_rehearsal_prefix(name, EXEC_TOOLS, unrestricted = True) is False
+    assert _gguf_prefix(name, EXEC_TOOLS) is False
+    assert _is_rehearsal_prefix("web_search", EXEC_TOOLS) is True
+    assert _gguf_prefix("web_search", EXEC_TOOLS) is True
+
+
+@pytest.mark.parametrize("shape", ['{name}[ARGS]{{"command":"id"}}', "call:{name}{{command:id}}"])
+@pytest.mark.parametrize("name", ["python", "terminal"])
+def test_provisional_card_sniff_ignores_bare_execution_call(shape, name):
+    # A drained bare code call must not open a live "terminal is running" card that
+    # the stream then closes with an empty result, since nothing ever executes.
+    from core.inference.llama_cpp import _sniff_text_tool_name
+    assert _sniff_text_tool_name(shape.format(name = name), EXEC_ENABLED) == ""
+
+
+def test_provisional_card_sniff_keeps_benign_and_structured_names():
+    from core.inference.llama_cpp import _sniff_text_tool_name
+
+    assert _sniff_text_tool_name('web_search[ARGS]{"query":"x"}', EXEC_ENABLED) == "web_search"
+    assert _sniff_text_tool_name("call:web_search{query:x}", EXEC_ENABLED) == "web_search"
+    # The structured Mistral array is a trusted wrapper, so its card still opens.
+    structured = '[TOOL_CALLS][{"name":"terminal","arguments":{"command":"id"}}]'
+    assert _sniff_text_tool_name(structured, EXEC_ENABLED) == "terminal"

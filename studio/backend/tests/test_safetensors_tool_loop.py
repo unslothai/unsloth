@@ -304,7 +304,7 @@ class TestParser:
         assert result == []
 
     def test_rehearsal_after_closed_think_still_parsed(self):
-        text = "<think>planning</think>" 'web_search[ARGS]{"code":"print(1)"}'
+        text = '<think>planning</think>web_search[ARGS]{"code":"print(1)"}'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert result[0]["function"]["name"] == "web_search"
@@ -387,7 +387,7 @@ class TestParser:
         assert "print(1)" in result[0]["function"]["arguments"]
 
     def test_rehearsal_with_prose(self):
-        text = "I should call the web_search tool. Like this: " 'web_search[ARGS]{"code":"x = 1"}'
+        text = 'I should call the web_search tool. Like this: web_search[ARGS]{"code":"x = 1"}'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert result[0]["function"]["name"] == "web_search"
@@ -1257,6 +1257,37 @@ class TestMarkerlessExecToolGuardLoop:
         loop, exec_fn = _make_loop(turns = turns, exec_results = ["uid=0"], max_tool_iterations = 3)
         _collect_events(loop)
         assert [name for name, _args in exec_fn.calls] == ["terminal"]
+
+    def test_bare_execution_rehearsal_streams_instead_of_draining(self):
+        # The detector must agree with the parser: a bare terminal[ARGS] never becomes a
+        # call, so draining on it would withhold the whole answer until EOS.
+        turns = [
+            [
+                "The syntax is ",
+                'terminal[ARGS]{"command":"id"}',
+                ", which I will not run.",
+            ]
+        ]
+        loop, exec_fn = _make_loop(turns = turns)
+        events = _collect_events(loop)
+        assert exec_fn.calls == []
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        # Streamed progressively, not emitted once at end of turn.
+        assert len(contents) > 1, contents
+        assert 'terminal[ARGS]{"command":"id"}' in contents[-1]
+
+    def test_benign_rehearsal_still_drains_and_executes(self):
+        # Control for the test above: the benign bare form keeps its boundary detection,
+        # so the call text is never streamed as prose.
+        turns = [
+            ["I will look it up: ", 'web_search[ARGS]{"query":"cats"}'],
+            ["Done."],
+        ]
+        loop, exec_fn = _make_loop(turns = turns, exec_results = ["RESULT"], max_tool_iterations = 3)
+        events = _collect_events(loop)
+        assert [name for name, _args in exec_fn.calls] == ["web_search"]
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert not any("[ARGS]" in t for t in contents), contents
 
 
 class TestParserDeepSeek:
@@ -3638,9 +3669,9 @@ class TestGGUFSafetensorsHealingParity:
         from core.inference.llama_cpp import LlamaCppBackend
 
         src = inspect.getsource(LlamaCppBackend.generate_chat_completion_with_tools)
-        assert (
-            "_shared_strip_tool_markup" in src
-        ), "GGUF stream cleanup must delegate to the shared strip_tool_markup helper"
+        assert "_shared_strip_tool_markup" in src, (
+            "GGUF stream cleanup must delegate to the shared strip_tool_markup helper"
+        )
 
     def test_gguf_uses_canonical_heal_keys(self):
         # GGUF and safetensors heal a bare-string ``arguments`` to the same
@@ -3926,9 +3957,9 @@ class TestProseMentioningToolCall:
         contents = [e for e in events if e["type"] == "content"]
         assert contents, "expected at least one content event"
         final = contents[-1]["text"]
-        assert (
-            "LLM tool" in final
-        ), f"prose mentioning <tool_call> should not be truncated; got {final!r}"
+        assert "LLM tool" in final, (
+            f"prose mentioning <tool_call> should not be truncated; got {final!r}"
+        )
 
     def test_tool_result_with_tool_call_text_does_not_retrigger(self):
         # A literal ``<tool_call>`` in the tool result must not re-trigger: the
@@ -5364,6 +5395,6 @@ class TestStreamingDisplayStripStillMatchesTheExportedHelper:
         for i in range(1, len(text) + 1):
             prefix = text[:i]
             incremental = stripper.strip(safetensors_agentic._strip_mistral_reasoning(prefix))
-            assert incremental == strip_tool_markup_streaming(
-                prefix, enabled_tool_names = names
-            ), f"diverged at offset {i}"
+            assert incremental == strip_tool_markup_streaming(prefix, enabled_tool_names = names), (
+                f"diverged at offset {i}"
+            )

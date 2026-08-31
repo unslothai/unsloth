@@ -5133,15 +5133,20 @@ def _strip_tool_xml_for_display(
     unconditionally regardless of NAME."""
     if not auto_heal_tool_calls:
         return text
-    from core.tool_healing import _strip_bracket_tag_calls, strip_outside_think
+    from core.tool_healing import (
+        _markerless_promotable,
+        _strip_bracket_tag_calls,
+        strip_outside_think,
+    )
 
     def _keep_inactive_rehearsal(m) -> str:
-        # Only the bare-rehearsal arm captures ``reh``; with a tool list an inactive
-        # NAME[ARGS]{...} is prose -- keep it.
-        if enabled_tool_names is not None:
-            name = m.groupdict().get("reh")
-            if name is not None and name not in enabled_tool_names:
-                return m.group(0)
+        # Only the bare-rehearsal arm captures ``reh``. A NAME[ARGS]{...} the parser will not
+        # promote is prose -- an inactive NAME, or an execution-class one, which is never
+        # promotable from a markerless span even when enabled. Deleting it would leave the
+        # turn with no call AND no text, so keep it (same predicate as the parser/strip).
+        name = m.groupdict().get("reh")
+        if name is not None and not _markerless_promotable(name, enabled_tool_names):
+            return m.group(0)
         return ""
 
     def _strip_segment(seg: str, is_last: bool) -> str:

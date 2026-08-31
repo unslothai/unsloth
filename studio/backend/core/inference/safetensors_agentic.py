@@ -47,6 +47,7 @@ from core.inference.tool_call_parser import (
 )
 
 from core.tool_healing import (
+    _markerless_promotable,
     _THINK_CLOSE_RE,
     _think_spans_outside_tool_markup,
     strip_outside_think,
@@ -115,12 +116,19 @@ def _is_rehearsal_prefix(
 ) -> bool:
     """True if ``stripped`` is a (possibly partial) prefix of a ``NAME[ARGS]``
     rehearsal split across chunks (``web_search`` then ``[ARGS]{...}``). A space
-    means prose. Unrestricted mode accepts any identifier; else NAME must be active."""
+    means prose. Unrestricted mode accepts any identifier; else NAME must be active.
+    Either way NAME must be markerless-promotable, so a bare execution-class name the
+    parser will never promote streams as prose instead of being held."""
     if not stripped or any(ch.isspace() for ch in stripped):
         return False
     if unrestricted:
-        return _UNRESTRICTED_REHEARSAL_RE.fullmatch(stripped) is not None
-    for name in _active_tool_names(active_tools):
+        if _UNRESTRICTED_REHEARSAL_RE.fullmatch(stripped) is None:
+            return False
+        return _markerless_promotable(stripped.split("[", 1)[0], None)
+    names = _active_tool_names(active_tools)
+    for name in names:
+        if not _markerless_promotable(name, names):
+            continue
         if stripped == name or f"{name}[ARGS]".startswith(stripped):
             return True
     return False
@@ -155,14 +163,16 @@ def _rehearsal_name_start(
 ) -> int:
     """For an ``[ARGS]`` signal at ``signal_pos``, return the start of the preceding
     bare tool-name token (``NAME[ARGS]``), else ``signal_pos`` unchanged when the
-    signal is not ``[ARGS]`` or NAME is not an active tool (restricted mode)."""
+    signal is not ``[ARGS]`` or NAME is not markerless-promotable -- not an active tool
+    (restricted mode), or execution-class, which the parser never promotes from a bare
+    span, so draining on it would withhold the turn for a call that never comes."""
     if not candidate.startswith("[ARGS]", signal_pos):
         return signal_pos
     j = signal_pos
     while j > 0 and (candidate[j - 1].isalnum() or candidate[j - 1] in "_-"):
         j -= 1
-    if j < signal_pos and (
-        unrestricted or candidate[j:signal_pos] in _active_tool_names(active_tools)
+    if j < signal_pos and _markerless_promotable(
+        candidate[j:signal_pos], None if unrestricted else _active_tool_names(active_tools)
     ):
         return j
     return signal_pos
