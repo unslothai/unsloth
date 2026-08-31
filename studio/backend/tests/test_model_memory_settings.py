@@ -1746,6 +1746,57 @@ class TestMlockApplicable:
         assert body.mlock_applicable is False
         assert body.mlock_skip_reason == "ungoverned"
 
+    @pytest.mark.parametrize("owner", ["diffusion", "video"])
+    def test_a_cpu_only_media_runner_is_ungoverned(self, monkeypatch, owner):
+        """A CPU-only image or video load releases arbiter ownership on purpose,
+        so the owner is None while the pipeline is still resident. The notice
+        this response drives is the one that speaks for media runners, and
+        without this it reached only the ones that happened to hold the GPU."""
+        import core.inference.gpu_arbiter as arbiter
+        import core.inference.media_keepwarm as keepwarm
+        import routes.settings as rs
+
+        _install_backend(monkeypatch, _fake_backend(), keep = True, no_res = False)
+        resident = type("_MediaBackend", (), {"is_loaded": True})()
+        monkeypatch.setattr(
+            keepwarm,
+            "engine_if_imported",
+            lambda which: resident if which == getattr(arbiter, owner.upper()) else None,
+        )
+        body = rs._model_memory_response()
+        assert body.mlock_applicable is False
+        assert body.mlock_skip_reason == "ungoverned"
+        assert body.mlock_active is False
+        assert body.memlock_limit_bytes is None
+
+    def test_an_unloaded_media_backend_is_still_no_launch(self, monkeypatch):
+        """Only residency counts. An imported but empty backend must not turn
+        the intent report into a claim about a launch that does not exist."""
+        import core.inference.media_keepwarm as keepwarm
+        import routes.settings as rs
+
+        _install_backend(monkeypatch, _fake_backend(), keep = True, no_res = False)
+        monkeypatch.setattr(
+            keepwarm,
+            "engine_if_imported",
+            lambda _which: type("_MediaBackend", (), {"is_loaded": False})(),
+        )
+        body = rs._model_memory_response()
+        assert body.mlock_applicable is True
+        assert body.mlock_skip_reason is None
+        assert body.mlock_active is True
+
+    def test_a_media_probe_that_raises_does_not_break_the_response(self, monkeypatch):
+        import core.inference.media_keepwarm as keepwarm
+        import routes.settings as rs
+
+        def _boom(_which):
+            raise RuntimeError("backend is mid-teardown")
+
+        _install_backend(monkeypatch, _fake_backend(), keep = True, no_res = False)
+        monkeypatch.setattr(keepwarm, "engine_if_imported", _boom)
+        assert rs._model_memory_response().mlock_skip_reason is None
+
 
 class TestModelMemoryResponseSnapshot:
     def test_the_launch_placement_is_read_once(self, monkeypatch):

@@ -921,6 +921,34 @@ def _chat_preferences_response(enabled: bool | None = None) -> ChatPreferencesRe
 _NO_LAUNCH = object()
 
 
+def _media_model_is_resident() -> bool:
+    """Whether an image or video model is loaded.
+
+    The GPU arbiter does not answer this: a CPU-only diffusion or video load
+    releases ownership on purpose (routes/inference.py, routes/video.py), so
+    current_owner() is None while the pipeline is still resident. Read through
+    media_keepwarm, which returns None until the backend module is imported, so
+    an Unsloth that never opened those pages pays nothing and never pulls torch
+    in just to answer this.
+    """
+    from core.inference.gpu_arbiter import DIFFUSION, VIDEO
+    from core.inference.media_keepwarm import engine_if_imported
+
+    for owner in (DIFFUSION, VIDEO):
+        try:
+            backend = engine_if_imported(owner)
+            if backend is None:
+                continue
+            loaded = getattr(backend, "is_loaded", None)
+            if loaded is None:
+                loaded = bool(backend.status().get("loaded"))
+        except Exception:  # noqa: BLE001 - a probe must never block reading settings
+            continue
+        if loaded:
+            return True
+    return False
+
+
 def _active_launch_placement():
     """``(state, policy_active, mlock_applicable)`` for the running child.
 
@@ -944,6 +972,7 @@ def _active_launch_placement():
                 or bool(getattr(orchestrator, "active_model_name", None))
                 or bool(getattr(orchestrator, "loading_models", None))
                 or stt_model_loaded
+                or _media_model_is_resident()
             ):
                 return None, False, False
             return _NO_LAUNCH, False, True
