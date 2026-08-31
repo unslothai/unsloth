@@ -691,8 +691,7 @@ def test_a_provider_claiming_a_minted_id_displaces_the_id_less_call():
     turn.merge_structured([_delta(1, "beta", '{"b":2}', call_id = "tool_call_0")])
 
     reported = [
-        (call.get("card_id") or call["id"], call["function"]["name"])
-        for call in turn.calls()
+        (call.get("card_id") or call["id"], call["function"]["name"]) for call in turn.calls()
     ]
     assert reported == [("tool_call_1", "alpha"), ("tool_call_0", "beta")]
 
