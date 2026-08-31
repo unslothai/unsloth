@@ -627,20 +627,21 @@ def _choice_seed(
     """A seed of its own per choice, so a seeded request samples n times rather
     than repeating one run. Shared by both drains so they cannot disagree.
 
-    llama-server holds the seed as a uint32 and draws at random for exactly one
-    value, LLAMA_DEFAULT_SEED (0xFFFFFFFF); ``-1`` is the only request seed that
-    converts to it, and offsetting that would make every choice after the first
-    deterministic. Every other negative is an ordinary fixed seed there, so it
-    must be offset like any other or all n choices repeat one run. The offset is
-    taken in that same uint32 domain, so a shifted seed cannot land on the
-    sentinel and turn one choice random. MLX maps every seed onto its key domain
-    instead, so nothing is exempt on that side.
+    llama-server reads the seed as a uint32 and draws at random for exactly one
+    value, LLAMA_DEFAULT_SEED (0xFFFFFFFF). Every seed congruent to it is that
+    sentinel, not just ``-1``: the schemas above also accept ``4294967295`` and
+    ``2**64-1``. Tested in that domain to match ``_apply_seeded_llama_request``,
+    since a literal ``-1`` left choice 0 random and cached while choice 1 was
+    offset into a fixed, uncached seed. Every other negative is an ordinary fixed
+    seed and must be offset, or all n choices repeat one run; offsetting in the
+    same domain cannot land on the sentinel. MLX maps every seed onto its key
+    domain, so nothing is exempt there.
     """
     if seed is None or not choice_index:
         return seed
     if not negative_is_random:
         return seed + choice_index
-    if seed == -1:
+    if (seed & 0xFFFFFFFF) == 0xFFFFFFFF:
         return seed
     return ((seed & 0xFFFFFFFF) + choice_index) % 0xFFFFFFFF
 
@@ -1462,6 +1463,7 @@ try:
         _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_STREAM_STALL_TIMEOUT_S,
+        _apply_seeded_llama_request,
         _emitted_n_batch,
         _extra_args_draft_device_pin,
         _extra_args_n_ubatch,
@@ -1519,6 +1521,7 @@ except ImportError:
         _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_STREAM_STALL_TIMEOUT_S,
+        _apply_seeded_llama_request,
         _emitted_n_batch,
         _extra_args_draft_device_pin,
         _extra_args_n_ubatch,
@@ -1644,6 +1647,18 @@ def _openai_llama_admission_budget(llama_backend) -> Optional[int]:
     """
     total = _positive_int_or_none(getattr(llama_backend, "_kv_cache_context_total", None))
     return total or _positive_int_or_none(getattr(llama_backend, "context_length", None))
+
+
+def _openai_llama_admission_can_yield(llama_backend) -> bool:
+    """Whether a round between generations may hand its commitment back.
+
+    Only where llama-server actually clears an idle slot's KV. Under ``--kv-unified``
+    without ``--cache-idle-slots`` a finished round's cells stay resident, so yielding
+    would promise the same capacity twice. Studio launches exactly that way on Windows
+    under full GPU offload (``--cache-ram 0``, #5692); there re-costing declines instead
+    of waiting. A backend that cannot say (no load yet, or a stub) reads as False.
+    """
+    return bool(getattr(llama_backend, "idle_slot_clearing_active", False))
 
 
 def _openai_llama_admission_extra_prompt_tokens(payload) -> int:
@@ -1830,6 +1845,30 @@ def _openai_llama_admission_media_tokens(
     return extra
 
 
+def _openai_llama_admission_injected_tool_tokens(injected_tools) -> int:
+    """The tool catalogue Unsloth adds itself, in tokens.
+
+    ``payload.tools`` is what the CLIENT sent, and for Unsloth's own tool loop that is
+    usually nothing: Web Search and the rest resolve server-side and render into the
+    prompt after admission has priced the request. Measured on Qwen3.5-4B-MTP-GGUF, the
+    same user turn is 1716 prompt tokens with tools off and 2969 with them on, so the
+    catalogue is around 1250 tokens the message list cannot see.
+
+    Leaving it out is not a rounding error: at ``-c 4096`` four requests priced at an
+    equal share were all admitted and llama.cpp answered every one with ``Context size
+    has been exceeded``.
+    """
+    if not injected_tools:
+        return 0
+    try:
+        text = json.dumps(injected_tools, default = str)
+    except Exception:
+        return 0
+    if not text:
+        return 0
+    return estimate_messages_tokens_dense([{"role": "system", "content": text}])
+
+
 def _openai_llama_admission_tokens(
     payload,
     *,
@@ -1837,6 +1876,7 @@ def _openai_llama_admission_tokens(
     capacity: int,
     tool_loop: bool = False,
     image_tokens: int = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
+    injected_tools = None,
 ) -> Optional[int]:
     """KV a request will occupy: what is sent, plus what it may generate.
 
@@ -1858,6 +1898,7 @@ def _openai_llama_admission_tokens(
             )
             prompt_tokens = estimate_messages_tokens_dense(estimate_messages)
             prompt_tokens += _openai_llama_admission_extra_prompt_tokens(payload)
+            prompt_tokens += _openai_llama_admission_injected_tool_tokens(injected_tools)
             prompt_tokens += _openai_llama_admission_media_tokens(
                 payload,
                 message_image_parts = message_image_parts,
@@ -1888,23 +1929,35 @@ def _openai_llama_admission_tokens(
         output_tokens = max(0, budget - prompt_tokens)
     else:
         output_tokens = cap
-    # A tool loop reserves the whole cache. One lease covers up to 25 rounds, and each
-    # round appends its tool results and re-sends the conversation, so a request that
-    # starts small can approach the full window while its commitment stays at the
-    # opening estimate. Re-costing per round would mean threading a callback through the
-    # generator; reserving the upper bound is the same guarantee without that surface,
-    # at the price of serialising concurrent tool requests. That price is real, and it
-    # is the one this accounting exists to charge: the alternative is admitting rounds
-    # the cache cannot hold and letting llama.cpp kill both.
+    # A tool loop opens at its own estimate with an equal share as the floor, and re-costs
+    # as it grows (generate_chat_completion_with_tools on_conversation_grew ->
+    # lease.recost_waiting). The floor keeps re-costing rare: under its share a run never
+    # calls the queue at all.
+    #
+    # #9392 reserved the WHOLE cache here instead, closing the same growth without a
+    # callback "at the price of serialising concurrent tool requests". That price is not
+    # payable: any lit pill sets enable_tools, so every tool chat ran alone. Measured on a
+    # 262144 cache, four tool chats went one at a time at 0.1/2.8/4.6/8.8s to first token;
+    # with this they start together. It also scaled the wrong way: #9392's own failure was
+    # a 2048-token cache where 565 + 1485 overflowed, so reserving all of that cost a
+    # request that could not have run anyway, while reserving all of 262144 costs three
+    # that comfortably could.
     #
     # Keyed on the resolved execution path, NOT on payload.tools. The loop opens on
     # `enable_tools`, `mcp_enabled`, the CLI --enable-tools policy or a checkpoint
     # repair, none of which need a client `tools` array, so keying on the array
     # undercharged Unsloth's own tool traffic; and a passthrough or /responses request
-    # that merely forwards `tools` to llama-server runs ONE generation per HTTP call,
-    # so charging it the whole cache serialised the client-driven loop for nothing.
+    # that merely forwards `tools` to llama-server runs ONE generation per HTTP call.
     if tool_loop:
-        return budget
+        # Exactly what the same request without tools is charged, floored at an equal
+        # share. A tool loop is a special case at ROUND time, not at admission time.
+        #
+        # Not clamped to the share: charging less than prompt + output reopens what #9392
+        # closed, since a first round may generate its whole output allowance before any
+        # re-cost runs. The floor only helps a SMALL request, the one that would otherwise
+        # re-cost on its very first round.
+        share = max(1, budget // max(1, capacity))
+        return max(1, min(budget, max(share, prompt_tokens + output_tokens)))
     # Clamped to the budget so an oversized request stays schedulable: the queue
     # admits it alone rather than stranding it, and llama-server refuses it with a
     # message naming both counts.
@@ -1917,6 +1970,7 @@ def _openai_llama_admission_reserve(
     llama_backend,
     payload = None,
     tool_loop: bool = False,
+    injected_tools = None,
 ) -> tuple[LlamaAdmissionReservation, LlamaAdmissionConfig]:
     config = llama_admission_config_from_env()
     capacity = _openai_llama_admission_capacity(request, llama_backend)
@@ -1932,11 +1986,86 @@ def _openai_llama_admission_reserve(
             capacity = capacity,
             tool_loop = tool_loop,
             image_tokens = _openai_llama_admission_image_tokens(llama_backend),
+            injected_tools = injected_tools,
         )
         if payload is not None
         else None,
     )
     return reservation, config
+
+
+def _openai_llama_admission_recost(
+    reservation,
+    conversation,
+    *,
+    request: Optional[Request],
+    llama_backend,
+    payload = None,
+    output_tokens: Optional[int] = None,
+    cancel_event = None,
+    injected_tools = None,
+) -> None:
+    """Charge a tool loop for what its conversation now is, not what it opened as.
+
+    #9392 avoided this by reserving the whole cache for any tool run, serialising every
+    tool chat. Called at the top of each round, this keeps the commitment honest as the
+    conversation grows, so the opening reservation can be an ordinary estimate and four
+    tool chats can decode at once.
+
+    Growth that does not fit WAITS here rather than proceeding uncharged: four loops that
+    open at a share each and grow past it together draw one ``Context size has been
+    exceeded`` that kills every decoding slot. ``recost_waiting`` yields the old
+    commitment first, so a waiting round is not holding the room it waits for.
+
+    Safe to wait here because it is between rounds and the slot is idle at llama-server.
+    Idle is not reclaimed, though, so the yield is gated on
+    ``_openai_llama_admission_can_yield``; where it is False this declines instead.
+    """
+    if reservation is None:
+        return
+    try:
+        lease = reservation.lease_nowait()
+        if lease is None:
+            return
+        budget = _openai_llama_admission_budget(llama_backend)
+        if not budget:
+            return
+        capacity = _openai_llama_admission_capacity(request, llama_backend)
+        # Every term the OPENING reservation charges, charged again here. Counting fewer
+        # things than the reservation it replaces would SHRINK a correctly sized lease --
+        # and since the callback fires at the top of round zero, before any growth, it
+        # would hand back room llama-server is already using.
+        estimate_messages, message_image_parts = _openai_llama_admission_messages_for_estimate(
+            conversation
+        )
+        prompt_tokens = estimate_messages_tokens_dense(estimate_messages)
+        # Re-sent every round, so it belongs in every re-costing, not just the opening one.
+        prompt_tokens += _openai_llama_admission_injected_tool_tokens(injected_tools)
+        # Anthropic keeps `system` and `tools` out of the message list entirely, so for
+        # that route this is most of the prompt.
+        prompt_tokens += _openai_llama_admission_extra_prompt_tokens(payload)
+        # mtmd embeddings, KV the message text cannot show: image parts compact to
+        # "[image]" for the text estimate, so their real cost comes from the compaction
+        # count. A screenshot tool adds more of them, so this grows with the rounds.
+        prompt_tokens += _openai_llama_admission_media_tokens(
+            payload,
+            message_image_parts = message_image_parts,
+            image_tokens = _openai_llama_admission_image_tokens(llama_backend),
+        )
+        if output_tokens is None:
+            # No cap named, so generation is bounded only by the window, as the opening
+            # estimate assumes. Charging zero here dropped an uncapped loop to its share
+            # on round zero while its generations could still fill most of the cache.
+            output_tokens = max(0, budget - prompt_tokens)
+        share = max(1, budget // max(1, capacity))
+        want = max(1, min(budget, max(share, prompt_tokens + max(0, output_tokens))))
+        lease.recost_waiting(
+            want,
+            cancel_event = cancel_event,
+            allow_yield = _openai_llama_admission_can_yield(llama_backend),
+        )
+    except Exception:  # pragma: no cover - accounting must not break a live run
+        logger.debug("llama admission recost failed", exc_info = True)
 
 
 def _openai_admission_request_path(request: Optional[Request]) -> Optional[str]:
@@ -2721,6 +2850,7 @@ from models.inference import (
     ImageGenerationData,
     ImageGenerationResponse,
     AudioSpeechRequest,
+    AudioGalleryFlagsPatch,
     AudioGalleryItem,
     AudioGalleryListResponse,
     LoadResponse,
@@ -2758,11 +2888,14 @@ from models.inference import (
     ResponsesUnknownInputItem,
     ResponsesFunctionCallInputItem,
     ResponsesFunctionCallOutputInputItem,
+    ResponsesCustomToolCallInputItem,
+    ResponsesCustomToolCallOutputInputItem,
     ResponsesOutputTextContent,
     ResponsesOutputMessage,
     ResponsesOutputReasoning,
     ResponsesOutputReasoningContent,
     ResponsesOutputFunctionCall,
+    ResponsesOutputCustomToolCall,
     ResponsesUsage,
     ResponsesResponse,
     AnthropicMessagesRequest,
@@ -6834,8 +6967,7 @@ def _target_accepts_request_input(
 
 
 _AUDIO_IMAGE_INPUT_DETAIL = (
-    "This model takes audio or an image in one message, not both."
-    " Send the image on its own turn."
+    "This model takes audio or an image in one message, not both. Send the image on its own turn."
 )
 
 
@@ -20407,6 +20539,30 @@ async def produce_openai_chat_completions(
             _gguf_auto_heal_tool_calls = (
                 payload.auto_heal_tool_calls if payload.auto_heal_tool_calls is not None else True
             )
+            # Filled once admission returns. The generator below is BUILT before the
+            # reservation exists but not ITERATED until after, so the callback always sees
+            # a reservation by the time a round can call it.
+            _gguf_admission_hold: dict = {"reservation": None}
+
+            def _gguf_recost(conversation) -> None:
+                _openai_llama_admission_recost(
+                    _gguf_admission_hold["reservation"],
+                    conversation,
+                    request = request,
+                    llama_backend = llama_backend,
+                    # The payload the opening reservation was priced from, so a round is
+                    # charged for its media and non-message prompt too.
+                    payload = payload,
+                    # NOT `or 0`. None means no cap was named, which the reservation
+                    # prices as the rest of the budget; zero would re-cost an uncapped
+                    # loop down to its share on its very first round.
+                    output_tokens = effective_max_tokens,
+                    injected_tools = tools_to_use,
+                    # A round waiting for cache room must still answer Stop. Same event
+                    # the loop polls each iteration, so a wait ends where a cancel would.
+                    cancel_event = cancel_event,
+                )
+
             # Active tool names gating the bare-rehearsal strip, matching the loop gate.
             _gguf_display_tool_names = _display_tool_name_gate(tools_to_use)
 
@@ -20469,6 +20625,7 @@ async def produce_openai_chat_completions(
                     bypass_permissions = bool(payload.bypass_permissions),
                     permission_mode = payload.permission_mode,
                     perf_callback = _gguf_perf_callback,
+                    on_conversation_grew = _gguf_recost,
                     context_overflow = _rolling_context_policy(payload),
                     context_policy = _request_context_policy(payload),
                     compaction_headroom_ratio = _request_compaction_headroom_ratio(payload),
@@ -20480,11 +20637,18 @@ async def produce_openai_chat_completions(
                     request = request,
                     llama_backend = llama_backend,
                     payload = payload,
+                    # The catalogue Unsloth resolves server-side: payload.tools does not
+                    # carry it and it is roughly 1250 prompt tokens.
+                    injected_tools = tools_to_use,
                     # This branch IS the resolved server-side loop (use_tools is true
                     # here whether it came from tools, enable_tools, mcp_enabled, the
-                    # CLI policy or a checkpoint repair), so charge the upper bound.
+                    # CLI policy or a checkpoint repair), so it opens at an equal share
+                    # and re-costs per round through _gguf_recost.
                     tool_loop = True,
                 )
+                # Hand the rounds their reservation now it exists; no round can have run
+                # before this, since the generator is not iterated until admission returns.
+                _gguf_admission_hold["reservation"] = reservation
             except LlamaAdmissionQueueFull as exc:
                 _llama_admission_log(
                     "queue-full",
@@ -23913,35 +24077,163 @@ async def _cached_local_catalog() -> list:
     return _CATALOG_CACHE["models"]
 
 
-def _servable_catalog_rows(catalog) -> list[tuple[object, bool, tuple[str, ...], bool]]:
-    """``(info, is_gguf, quants, resident)`` per catalog entry this server can serve
-    from disk. Module scope, and always called through ``asyncio.to_thread``: the file
-    checks stat many files and the residency check reads the inference singleton."""
-    from core.inference.local_model_resolver import local_load_dir, local_servable_model
+# One tuple, published in a single assignment: the fast path below reads it without the
+# lock, and three separate fields could be caught half-replaced -- old stamp and old
+# catalog still matching while `rows` already held the next catalog's rows.
+# How long a scan may answer without any counter having moved. Bounds the one case the
+# counters cannot see, a file added or removed from a scan folder outside Studio, while
+# still collapsing the burst of polls that motivated the cache: at 5s a client polling
+# every second still takes four hits out of five.
+_SERVABLE_SCAN_TTL_S = 5.0
+_SERVABLE_SCAN_CACHE: dict = {"entry": None}  # (catalog_at, catalog, generation, at, rows)
+_SERVABLE_SCAN_CACHE_LOCK = threading.Lock()
+
+
+def _servability_generation() -> tuple[int, int, int]:
+    """Every counter the cached servability answer depends on.
+
+    A tuple rather than one number: the three move independently and no single existing
+    counter covers the others, so combining them here is what keeps a stale row from
+    outliving any one of the events that should have retired it. All three are cheap
+    reads of module state; nothing here touches the filesystem.
+
+    Nothing is caught. A missing counter would silently pin this key at a constant and
+    quietly undo the invalidation it exists to provide, which is worse than the import
+    error that says so.
+    """
+    from core.inference.local_model_resolver import index_generation
+    from utils.hardware import hardware as hw
+
+    from hub.utils.inventory_scan import hf_cache_scans_epoch
+
+    return (
+        index_generation(),
+        int(hf_cache_scans_epoch()),
+        int(hw.DETECTION_GENERATION),
+    )
+
+
+def _servable_catalog_scan(catalog, catalog_at: Optional[float]):
+    """``(info, is_gguf, quants, resident_key)`` per servable entry, rebuilt only when
+    the shared catalog scan is replaced.
+
+    ``local_servable_model`` stats many files and reads a ``config.json`` per entry, and
+    /v1/models re-ran that for the whole catalog on every request even though the catalog
+    behind it was already cached -- 316-621ms against 13-34ms for the internal list, which
+    touches no filesystem. Keyed on the catalog stamp like ``_validated_media_picks``, so
+    a rescan is what invalidates it and nothing goes stale behind a separate TTL.
+    """
+    from core.inference.local_model_resolver import (
+        index_generation,
+        local_load_dir,
+        local_servable_model,
+    )
     from hub.services.models.catalog_classification import _UNSUPPORTED_DIFFUSION_TASK
 
-    rows = []
-    for info in catalog:
-        if getattr(info, "task", None) in (
-            *_MEDIA_MODEL_TASKS,
-            _STT_MODEL_TASK,
-            _TTS_MODEL_TASK,
-            _UNSUPPORTED_DIFFUSION_TASK,
-        ):
-            continue
-        servable = local_servable_model(info)
-        if servable is None:
-            continue
-        is_gguf, quants = servable
-        path = getattr(info, "path", None)
-        # the load dir, since an HF cache repo loads as a snapshot exact_only cannot match.
-        resident = _resolves_to_resident(
-            path if is_gguf else local_load_dir(path),
-            llama_only = is_gguf,
-            exact_only = not is_gguf,
+    # Identity as well as the stamp: _CATALOG_CACHE["at"] only advances inside
+    # _cached_local_catalog, so a caller that supplies a catalog from anywhere else
+    # would otherwise be served the previous scan under an unchanged stamp.
+    #
+    # And every signal the servability decision itself reads, because the catalog is the
+    # coarsest of them and would otherwise pin a stale answer for the rest of its TTL,
+    # where the per-request scan re-derived one each time:
+    #
+    #   resolver index   a model or quant deleted from ./models, an export, a download
+    #   HF cache epoch   a cached Hub repo deleted; deletion.py invalidates only this
+    #   detection gen    hardware.DEVICE changing under the resolver, which is what
+    #                    decides servability for non-GGUF checkpoints. An Apple Silicon
+    #                    MLX self-repair flips CPU to MLX after startup, and an early
+    #                    /v1/models would otherwise hide those checkpoints until the TTL.
+    def _fresh():
+        """Read the entry and the generation as one validated snapshot.
+
+        Generation, entry, generation. The counter only ever advances, so equal ends mean
+        no invalidation landed between them; an unequal pair means one did and the rows in
+        hand may predate it. Without the second read a delete that completes between the
+        generation read and the entry read is accepted anyway, on the lock-free path and
+        under the lock alike, since invalidate_index does not take this lock.
+        """
+        before = _servability_generation()
+        entry = _SERVABLE_SCAN_CACHE["entry"]  # one read, so the tuple cannot tear
+        if entry is None or catalog_at is None:
+            return None
+        at, cached_catalog, cached_generation, scanned_at, rows = entry
+        if cached_generation != before or _servability_generation() != before:
+            return None
+        # Its own TTL as well as the generation. The counters cover Studio's own download
+        # and delete paths; a file removed from a scan folder by hand moves none of them,
+        # and the per-request scan used to notice that immediately. A directory mtime
+        # would not help: editing or deleting a file inside a nested directory does not
+        # bump the root's mtime, which is why the resolver's own mtime memo was dropped.
+        if time.monotonic() - scanned_at > _SERVABLE_SCAN_TTL_S:
+            return None
+        return rows if at == catalog_at and cached_catalog is catalog else None
+
+    hit = _fresh()
+    if hit is not None:
+        return hit
+    with _SERVABLE_SCAN_CACHE_LOCK:
+        hit = _fresh()
+        if hit is not None:
+            return hit
+        # Captured before the scan: an invalidation that lands while it runs must make
+        # the stored entry stale rather than be stamped in as if the scan had seen it.
+        generation = _servability_generation()
+        scanned = []
+        for info in catalog:
+            if getattr(info, "task", None) in (
+                *_MEDIA_MODEL_TASKS,
+                _STT_MODEL_TASK,
+                _TTS_MODEL_TASK,
+                _UNSUPPORTED_DIFFUSION_TASK,
+            ):
+                continue
+            servable = local_servable_model(info)
+            if servable is None:
+                continue
+            is_gguf, quants = servable
+            # The source path, not the resolved load dir: an HF repo's snapshot pointer can
+            # move within the catalog's lifetime, and a cached snapshot path would then
+            # report a freshly loaded model as unloaded. Residency resolves it per call.
+            scanned.append((info, is_gguf, quants, getattr(info, "path", None)))
+        if catalog_at is not None:
+            # The generation read BEFORE the scan, not after: an invalidation that
+            # landed while the scan ran would otherwise be stamped in as if the scan
+            # had seen it, and the very delete this guards against would be cached.
+            _SERVABLE_SCAN_CACHE["entry"] = (
+                catalog_at,
+                catalog,
+                generation,
+                time.monotonic(),
+                scanned,
+            )
+        return scanned
+
+
+def _servable_catalog_rows(
+    catalog, catalog_at: Optional[float] = None
+) -> list[tuple[object, bool, tuple[str, ...], bool]]:
+    """``(info, is_gguf, quants, resident)`` per catalog entry this server can serve
+    from disk. Module scope, and always called through ``asyncio.to_thread``: the file
+    checks stat many files and the residency check reads the inference singleton.
+
+    Residency is read per request; only the scan is cached. That includes resolving the
+    HF snapshot a non-GGUF path currently points at, since a download can move it inside
+    the catalog's lifetime and a cached snapshot would report a loaded model as unloaded."""
+    from core.inference.local_model_resolver import local_load_dir
+    return [
+        (
+            info,
+            is_gguf,
+            quants,
+            _resolves_to_resident(
+                path if is_gguf else local_load_dir(path),
+                llama_only = is_gguf,
+                exact_only = not is_gguf,
+            ),
         )
-        rows.append((info, is_gguf, quants, resident))
-    return rows
+        for info, is_gguf, quants, path in _servable_catalog_scan(catalog, catalog_at)
+    ]
 
 
 async def _openai_catalog_objects() -> list[dict]:
@@ -23961,7 +24253,10 @@ async def _openai_catalog_objects() -> list[dict]:
 
     # Downloaded but unloaded: GGUF via llama.cpp, other weights via the orchestrator.
     catalog = await _cached_local_catalog()
-    for info, is_gguf, quants, loaded in await asyncio.to_thread(_servable_catalog_rows, catalog):
+    catalog_at = _CATALOG_CACHE["at"]
+    for info, is_gguf, quants, loaded in await asyncio.to_thread(
+        _servable_catalog_rows, catalog, catalog_at
+    ):
         cid = getattr(info, "model_id", None) or public_model_id(getattr(info, "id", None))
         if not cid or cid in by_id:
             continue
@@ -24562,8 +24857,44 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
 # =====================================================================
 
 
+_RESPONSES_CUSTOM_APPLY_PATCH = "apply_patch"
+
+
+def _is_responses_apply_patch_tool(tool: Any) -> bool:
+    if not isinstance(tool, dict):
+        return False
+    format_spec = tool.get("format")
+    return (
+        tool.get("type") == "custom"
+        and tool.get("name") == _RESPONSES_CUSTOM_APPLY_PATCH
+        and isinstance(format_spec, dict)
+        and format_spec.get("type") == "grammar"
+        and format_spec.get("syntax") == "lark"
+        and isinstance(format_spec.get("definition"), str)
+    )
+
+
+def _responses_custom_tool_names(tools: Optional[list[dict]]) -> set[str]:
+    return {tool["name"] for tool in tools or [] if _is_responses_apply_patch_tool(tool)}
+
+
+def _responses_apply_patch_description(tool: dict) -> str:
+    description = (
+        "Edit files by passing one complete patch in the input field. "
+        "Every added content line must start with +. Example:\n"
+        "*** Begin Patch\n"
+        "*** Add File: path/to/file.txt\n"
+        "+first line\n"
+        "*** End Patch"
+    )
+    format_spec = tool.get("format")
+    if isinstance(format_spec, dict) and isinstance(format_spec.get("definition"), str):
+        description += "\n\nThe input must match this Lark grammar:\n" + format_spec["definition"]
+    return description
+
+
 def _translate_responses_tools_to_chat(tools: Optional[list[dict]]) -> Optional[list[dict]]:
-    """Translate Responses-shape function tools to the Chat Completions nested shape.
+    """Translate supported Responses tools to the Chat Completions function shape.
 
     Responses uses a flat shape per tool entry::
 
@@ -24576,16 +24907,38 @@ def _translate_responses_tools_to_chat(tools: Optional[list[dict]]) -> Optional[
          "function": {"name": "...", "description": "...",
                       "parameters": {...}, "strict": true}}
 
-    Only ``type=="function"`` entries are forwarded. Built-in Responses tools
-    (``web_search``, ``file_search``, ``mcp``, ...) are dropped: llama-server
-    doesn't implement them server-side, so keeping them would produce an opaque
-    upstream 400.
+    Codex's freeform ``apply_patch`` custom tool becomes a string-input function
+    for local chat templates. Other custom and built-in Responses tools are
+    dropped because llama-server cannot execute them server-side.
     """
     if not tools:
         return None
     out: list[dict] = []
     for tool in tools:
         if not isinstance(tool, dict):
+            continue
+        if _is_responses_apply_patch_tool(tool):
+            out.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": _RESPONSES_CUSTOM_APPLY_PATCH,
+                        "description": _responses_apply_patch_description(tool),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "input": {
+                                    "type": "string",
+                                    "description": "A complete patch matching the tool grammar.",
+                                }
+                            },
+                            "required": ["input"],
+                            "additionalProperties": False,
+                        },
+                        "strict": False,
+                    },
+                }
+            )
             continue
         if tool.get("type") != "function":
             continue
@@ -24602,7 +24955,9 @@ def _translate_responses_tools_to_chat(tools: Optional[list[dict]]) -> Optional[
     return out or None
 
 
-def _translate_responses_tool_choice_to_chat(tool_choice: Any) -> Any:
+def _translate_responses_tool_choice_to_chat(
+    tool_choice: Any, custom_tool_names: Optional[set[str]] = None
+) -> Any:
     """Translate a Responses-shape ``tool_choice`` to the Chat Completions shape.
 
     String values (``"auto"``/``"none"``/``"required"``) pass through unchanged.
@@ -24617,10 +24972,14 @@ def _translate_responses_tool_choice_to_chat(tool_choice: Any) -> Any:
         return tool_choice
     if (
         isinstance(tool_choice, dict)
-        and tool_choice.get("type") == "function"
+        and tool_choice.get("type") in ("function", "custom")
         and "name" in tool_choice
         and "function" not in tool_choice
     ):
+        if tool_choice.get("type") == "custom":
+            custom_tool_names = custom_tool_names or set()
+            if tool_choice["name"] not in custom_tool_names:
+                return tool_choice
         return {"type": "function", "function": {"name": tool_choice["name"]}}
     return tool_choice
 
@@ -24875,7 +25234,7 @@ def _responses_reasoning_output_item(reasoning_text: str, item_id: Optional[str]
 def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
     """Convert a ResponsesRequest's ``input`` into a Chat-format ``ChatMessage`` list.
 
-    Handles the three input item shapes allowed by the Responses API:
+    Handles the supported input item shapes from the Responses API:
 
     - ``ResponsesInputMessage`` -- regular chat messages (text or multimodal).
     - ``ResponsesFunctionCallInputItem`` -- a prior assistant tool call
@@ -24884,6 +25243,8 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
     - ``ResponsesFunctionCallOutputInputItem`` -- a tool result the client is
       returning. Becomes a ``role="tool"`` message with ``tool_call_id`` set to
       the originating ``call_id`` so llama-server can reconcile call with result.
+    - ``ResponsesCustomToolCallInputItem`` and its output counterpart -- the
+      freeform call is wrapped in the local ``input`` function argument.
 
     System / developer content is collected from ``instructions`` *and* any
     ``role="system"`` / ``role="developer"`` entries in ``input``, then merged
@@ -24911,6 +25272,13 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
         if payload.input:
             messages.append(ChatMessage(role = "user", content = payload.input))
         return _with_system(messages)
+
+    custom_tool_names = _responses_custom_tool_names(payload.tools)
+    custom_tool_call_ids = {
+        item.call_id
+        for item in payload.input
+        if isinstance(item, ResponsesCustomToolCallInputItem) and item.name in custom_tool_names
+    }
 
     for item in payload.input:
         if isinstance(item, ResponsesFunctionCallInputItem):
@@ -24941,6 +25309,39 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
                     role = "tool",
                     tool_call_id = item.call_id,
                     content = output,
+                )
+            )
+            continue
+
+        if isinstance(item, ResponsesCustomToolCallInputItem):
+            if item.call_id not in custom_tool_call_ids:
+                continue
+            messages.append(
+                ChatMessage(
+                    role = "assistant",
+                    content = None,
+                    tool_calls = [
+                        {
+                            "id": item.call_id,
+                            "type": "function",
+                            "function": {
+                                "name": item.name,
+                                "arguments": json.dumps({"input": item.input}, ensure_ascii = False),
+                            },
+                        }
+                    ],
+                )
+            )
+            continue
+
+        if isinstance(item, ResponsesCustomToolCallOutputInputItem):
+            if item.call_id not in custom_tool_call_ids:
+                continue
+            messages.append(
+                ChatMessage(
+                    role = "tool",
+                    tool_call_id = item.call_id,
+                    content = _responses_tool_output_content(item.output),
                 )
             )
             continue
@@ -25037,6 +25438,8 @@ def _build_chat_request(
         chat_kwargs["temperature"] = payload.temperature
     if payload.top_p is not None:
         chat_kwargs["top_p"] = payload.top_p
+    if payload.seed is not None:
+        chat_kwargs["seed"] = payload.seed
     if payload.max_output_tokens is not None:
         chat_kwargs["max_tokens"] = payload.max_output_tokens
 
@@ -25044,7 +25447,9 @@ def _build_chat_request(
     if chat_tools is not None:
         chat_kwargs["tools"] = chat_tools
 
-    chat_tool_choice = _translate_responses_tool_choice_to_chat(payload.tool_choice)
+    chat_tool_choice = _translate_responses_tool_choice_to_chat(
+        payload.tool_choice, _responses_custom_tool_names(payload.tools)
+    )
     if chat_tool_choice is not None:
         chat_kwargs["tool_choice"] = chat_tool_choice
     if payload.parallel_tool_calls is not None:
@@ -25095,23 +25500,50 @@ def _build_chat_request(
     return ChatCompletionRequest(**chat_kwargs)
 
 
-def _chat_tool_calls_to_responses_output(tool_calls: list[dict]) -> list[dict]:
-    """Map Chat Completions ``tool_calls`` into Responses ``function_call`` output items.
+def _responses_custom_tool_input(arguments: Any) -> str:
+    if not isinstance(arguments, str):
+        return ""
+    try:
+        parsed = json.loads(arguments)
+    except json.JSONDecodeError:
+        return arguments
+    if isinstance(parsed, dict) and isinstance(parsed.get("input"), str):
+        return parsed["input"]
+    return arguments
+
+
+def _chat_tool_calls_to_responses_output(
+    tool_calls: list[dict], custom_tool_names: Optional[set[str]] = None
+) -> list[dict]:
+    """Map local function calls back into their Responses output item types.
 
     The Chat Completions id (``call_xxx``) is the shared correlation key across
     turns in the Responses API -- stored as ``call_id`` on the output item and
-    echoed back by the client as ``function_call_output.call_id`` next turn.
+    echoed back by the client in the tool output on the next turn.
     """
+    custom_tool_names = custom_tool_names or set()
     items: list[dict] = []
     for tc in tool_calls:
         if tc.get("type") != "function":
             continue
         fn = tc.get("function") or {}
+        name = fn.get("name", "")
+        arguments = fn.get("arguments", "") or ""
+        if name in custom_tool_names:
+            items.append(
+                ResponsesOutputCustomToolCall(
+                    call_id = tc.get("id", ""),
+                    name = name,
+                    input = _responses_custom_tool_input(arguments),
+                    status = "completed",
+                ).model_dump()
+            )
+            continue
         items.append(
             ResponsesOutputFunctionCall(
                 call_id = tc.get("id", ""),
-                name = fn.get("name", ""),
-                arguments = fn.get("arguments", "") or "",
+                name = name,
+                arguments = arguments,
                 status = "completed",
             ).model_dump()
         )
@@ -25209,7 +25641,11 @@ async def _responses_non_streaming(
                     content = [ResponsesOutputTextContent(text = text)],
                 ).model_dump()
             )
-        output_items.extend(_chat_tool_calls_to_responses_output(tool_calls))
+        output_items.extend(
+            _chat_tool_calls_to_responses_output(
+                tool_calls, _responses_custom_tool_names(payload.tools)
+            )
+        )
 
         response = ResponsesResponse(
             id = resp_id,
@@ -25275,10 +25711,9 @@ async def _responses_stream(
     Output items are allocated as upstream deltas appear. Reasoning/text deltas
     open top-level ``reasoning`` / ``message`` items; each tool call from
     ``delta.tool_calls[]`` is promoted to its own top-level ``function_call``
-    item (one per distinct ``tool_calls[].index``) and relayed as
-    ``response.function_call_arguments.delta`` / ``.done`` events so clients
-    (Codex, OpenAI Python SDK) can reconstruct the call incrementally and reply
-    with a ``function_call_output`` item next turn.
+    item (one per distinct ``tool_calls[].index``). Regular functions relay
+    argument deltas. Codex's bridged ``apply_patch`` call is buffered and
+    restored to one native ``custom_tool_call`` item with raw patch input.
     """
     from core.inference.llama_keepwarm import mark_response_failed
 
@@ -25286,6 +25721,7 @@ async def _responses_stream(
     created_at = int(time.time())
 
     chat_req = _build_chat_request(payload, messages, stream = True)
+    custom_tool_names = _responses_custom_tool_names(payload.tools)
 
     llama_backend = get_llama_cpp_backend()
     if not llama_backend.is_loaded:
@@ -25475,7 +25911,8 @@ async def _responses_stream(
                 if fn.get("name") and not st["name"]:
                     st["name"] = fn["name"]
 
-            if not st["opened"] and st["call_id"] and st["name"]:
+            is_custom_tool = st["name"] in custom_tool_names
+            if not is_custom_tool and not st["opened"] and st["call_id"] and st["name"]:
                 item_added = {
                     "type": "response.output_item.added",
                     "output_index": st["output_index"],
@@ -25492,8 +25929,9 @@ async def _responses_stream(
                 st["opened"] = True
 
             arg_delta = fn.get("arguments") or ""
-            if arg_delta and st["opened"]:
+            if arg_delta:
                 st["arguments"] += arg_delta
+            if arg_delta and st["opened"]:
                 args_delta_event = {
                     "type": "response.function_call_arguments.delta",
                     "item_id": st["item_id"],
@@ -25501,11 +25939,6 @@ async def _responses_stream(
                     "delta": arg_delta,
                 }
                 events.append(_sse("response.function_call_arguments.delta", args_delta_event))
-            elif arg_delta:
-                # Buffer args until we can open the item (some models
-                # send id/name in the same chunk as the first arg delta;
-                # if not, stash).
-                st["arguments"] += arg_delta
             return events
 
         def _claim_output_index() -> int:
@@ -25724,17 +26157,27 @@ async def _responses_stream(
                     )
                 )
             for st in tool_call_state.values():
+                if st["name"] in custom_tool_names:
+                    item = {
+                        "type": "custom_tool_call",
+                        "status": "completed",
+                        "call_id": st["call_id"],
+                        "name": st["name"],
+                        "input": _responses_custom_tool_input(st["arguments"]),
+                    }
+                else:
+                    item = {
+                        "type": "function_call",
+                        "id": st["item_id"],
+                        "status": "completed",
+                        "call_id": st["call_id"],
+                        "name": st["name"],
+                        "arguments": st["arguments"],
+                    }
                 indexed_items.append(
                     (
                         st["output_index"],
-                        {
-                            "type": "function_call",
-                            "id": st["item_id"],
-                            "status": "completed",
-                            "call_id": st["call_id"],
-                            "name": st["name"],
-                            "arguments": st["arguments"],
-                        },
+                        item,
                     )
                 )
             return [item for _, item in sorted(indexed_items, key = lambda pair: pair[0])]
@@ -26164,6 +26607,25 @@ async def _responses_stream(
                         },
                     },
                 )
+                continue
+
+            if st["name"] in custom_tool_names:
+                if not st["call_id"]:
+                    st["call_id"] = f"call_{uuid.uuid4().hex[:12]}"
+                custom_input = _responses_custom_tool_input(st["arguments"])
+                item_done = {
+                    "type": "response.output_item.done",
+                    "output_index": st["output_index"],
+                    "item": {
+                        "type": "custom_tool_call",
+                        "status": "completed",
+                        "call_id": st["call_id"],
+                        "name": st["name"],
+                        "input": custom_input,
+                    },
+                }
+                api_monitor.append_reply(monitor_id, _monitor_call_text(st["name"], custom_input))
+                yield _sse("response.output_item.done", item_done)
                 continue
 
             # If id/name never arrived (malformed upstream), synthesise so the
@@ -27430,6 +27892,26 @@ async def anthropic_messages(
                 else:
                     reservation.cancel()
 
+    # Same shape as the chat route's _gguf_admission_hold: filled once admission returns,
+    # read from inside the tool loop. This path runs the identical 25-round loop against
+    # the identical cache, so without it an Anthropic tool run would keep its opening
+    # estimate for the whole run.
+    _anthropic_admission_hold: dict = {"reservation": None}
+
+    def _anthropic_recost(conversation) -> None:
+        _openai_llama_admission_recost(
+            _anthropic_admission_hold["reservation"],
+            conversation,
+            request = request,
+            llama_backend = llama_backend,
+            # `system` and `tools` live outside `messages` here, so without the payload a
+            # re-cost drops most of the prompt it is meant to charge.
+            payload = payload,
+            output_tokens = payload.max_tokens,
+            injected_tools = openai_tools,
+            cancel_event = cancel_event,
+        )
+
     async def _admitted_anthropic(coro, *, tool_loop: bool = False):
         try:
             reservation, admission_config = _openai_llama_admission_reserve(
@@ -27437,7 +27919,11 @@ async def anthropic_messages(
                 llama_backend = llama_backend,
                 payload = payload,
                 tool_loop = tool_loop,
+                # Only the tool branch resolves a catalogue; the plain branch sends none.
+                injected_tools = openai_tools if tool_loop else None,
             )
+            if tool_loop:
+                _anthropic_admission_hold["reservation"] = reservation
         except LlamaAdmissionQueueFull as exc:
             coro.close()
             api_monitor.fail(monitor_id, str(exc))
@@ -27549,6 +28035,7 @@ async def anthropic_messages(
                     min_p = min_p,
                     repetition_penalty = repetition_penalty,
                     presence_penalty = presence_penalty,
+                    seed = payload.seed,
                     tool_choice = openai_tool_choice,
                     session_id = payload.session_id,
                     cancel_id = payload.cancel_id,
@@ -27573,6 +28060,7 @@ async def anthropic_messages(
                 min_p = min_p,
                 repetition_penalty = repetition_penalty,
                 presence_penalty = presence_penalty,
+                seed = payload.seed,
                 tool_choice = openai_tool_choice,
                 disable_parallel_tool_use = _disable_parallel,
                 auto_heal_tool_calls = payload.auto_heal_tool_calls,
@@ -27690,8 +28178,10 @@ async def anthropic_messages(
                 presence_penalty = presence_penalty,
                 max_tokens = payload.max_tokens,
                 stop = stop,
+                seed = payload.seed,
                 cancel_event = cancel_event,
                 max_tool_iterations = 25,
+                on_conversation_grew = _anthropic_recost,
                 auto_heal_tool_calls = True,
                 nudge_tool_calls = payload.nudge_tool_calls,
                 tool_choice = server_tool_choice,
@@ -27757,6 +28247,7 @@ async def anthropic_messages(
             presence_penalty = presence_penalty,
             max_tokens = payload.max_tokens,
             stop = stop,
+            seed = payload.seed,
             cancel_event = cancel_event,
             promote_reasoning_only = False,
             perf_callback = _monitor_perf_callback(
@@ -28648,8 +29139,7 @@ def _build_passthrough_payload(
         tool_choice = reconciled_tool_choice(tool_choice, openai_tools, safe_tools)
         if tool_choice is not None:
             body["tool_choice"] = tool_choice
-    if seed is not None:
-        body["seed"] = seed
+    _apply_seeded_llama_request(body, seed)
     if stream and stream_options is not None:
         body["stream_options"] = stream_options
     body["max_tokens"] = (
@@ -28771,6 +29261,7 @@ async def _anthropic_passthrough_stream(
     min_p = None,
     repetition_penalty = None,
     presence_penalty = None,
+    seed = None,
     tool_choice = "auto",
     session_id = None,
     cancel_id = None,
@@ -28796,6 +29287,7 @@ async def _anthropic_passthrough_stream(
         min_p = min_p,
         repetition_penalty = repetition_penalty,
         presence_penalty = presence_penalty,
+        seed = seed,
         tool_choice = tool_choice,
         chat_template_kwargs = _reasoning_template_kwargs(
             llama_backend, enable_thinking, reasoning_effort, preserve_thinking
@@ -29071,6 +29563,7 @@ async def _anthropic_passthrough_non_streaming(
     min_p = None,
     repetition_penalty = None,
     presence_penalty = None,
+    seed = None,
     tool_choice = "auto",
     disable_parallel_tool_use = False,
     auto_heal_tool_calls = None,
@@ -29102,6 +29595,7 @@ async def _anthropic_passthrough_non_streaming(
         min_p = min_p,
         repetition_penalty = repetition_penalty,
         presence_penalty = presence_penalty,
+        seed = seed,
         tool_choice = tool_choice,
         chat_template_kwargs = _reasoning_template_kwargs(
             llama_backend, enable_thinking, reasoning_effort, preserve_thinking
@@ -32024,6 +32518,7 @@ async def list_gallery_audio(
     offset: int = 0,
     before_mtime: Optional[float] = None,
     before_id: Optional[str] = None,
+    archived: bool = False,
     current_subject: str = Depends(get_current_subject),
 ):
     from pydantic import ValidationError
@@ -32053,6 +32548,7 @@ async def list_gallery_audio(
         offset,
         before = before,
         valid = _valid_gallery_audio,
+        archived = archived,
     )
     has_more = len(entries) > limit
     visible = entries[:limit]
@@ -32086,6 +32582,24 @@ async def get_gallery_audio_file(
     )
 
 
+@studio_router.patch("/audio/gallery/{audio_id}", response_model = AudioGalleryItem)
+async def update_gallery_audio_flags(
+    audio_id: str,
+    patch: AudioGalleryFlagsPatch,
+    current_subject: str = Depends(get_current_subject),
+):
+    from core.inference import audio_gallery
+
+    try:
+        record = await asyncio.to_thread(audio_gallery.set_flags, audio_id, archived = patch.archived)
+    except OSError as exc:
+        logger.warning("audio_gallery.set_flags_failed: %s", exc)
+        raise HTTPException(status_code = 500, detail = "Could not save the change to this clip.")
+    if record is None:
+        raise HTTPException(status_code = 404, detail = "Audio not found.")
+    return AudioGalleryItem(**record)
+
+
 @studio_router.delete("/audio/gallery/{audio_id}")
 async def delete_gallery_audio(audio_id: str, current_subject: str = Depends(get_current_subject)):
     from core.inference import audio_gallery
@@ -32099,7 +32613,17 @@ async def delete_gallery_audio(audio_id: str, current_subject: str = Depends(get
 @studio_router.delete("/audio/gallery")
 async def clear_gallery_audio(current_subject: str = Depends(get_current_subject)):
     from core.inference import audio_gallery
-    removed = await asyncio.to_thread(audio_gallery.clear)
+    from core.inference.gallery_flags import FlagsUnavailable
+
+    try:
+        removed = await asyncio.to_thread(audio_gallery.clear)
+    except FlagsUnavailable as exc:
+        logger.warning("audio_gallery.clear_blocked: %s", exc)
+        raise HTTPException(
+            status_code = 503,
+            detail = "Could not read the gallery's archive data, so clearing was stopped to "
+            "avoid deleting archived clips.",
+        )
     return {"removed": removed}
 
 

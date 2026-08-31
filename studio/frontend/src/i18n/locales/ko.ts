@@ -1483,6 +1483,8 @@ export const ko = {
       archivedImagesDescription: "보관한 이미지를 확인하고 관리합니다.",
       archivedVideos: "보관된 동영상",
       archivedVideosDescription: "보관한 동영상을 확인하고 관리합니다.",
+      archivedAudio: "보관된 오디오",
+      archivedAudioDescription: "보관한 오디오 클립을 확인하고 관리합니다.",
       manageAction: "관리",
       manageChats: "채팅 관리",
       manageChatsDescription:

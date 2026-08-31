@@ -11,8 +11,11 @@ backend-specific modules.
 
 from __future__ import annotations
 
+import ast
 import copy
 import json
+import math
+import re
 from dataclasses import dataclass, field
 from typing import Any, Collection, Literal, Mapping, Sequence
 from urllib.parse import urlparse
@@ -345,6 +348,304 @@ def canonical_tool_call_key(tool_name: str, arguments: Mapping[str, Any]) -> str
     return f"{tool_name}:{canonical_args}"
 
 
+# "0"/"1" are left out: a native `0` arrives already typed, so they would mean two things.
+_SCHEMA_TRUE_WORDS = frozenset({"true", "yes"})
+_SCHEMA_FALSE_WORDS = frozenset({"false", "no"})
+# Not ValueErrors, so a decode-shaped except would let deep model output escape as a 500.
+_DECODE_ERRORS = (ValueError, RecursionError)
+_LITERAL_ERRORS = (*_DECODE_ERRORS, SyntaxError, MemoryError)
+
+
+# A JSON string, open or closed; group 1 is the closing quote, which `endswith` cannot stand
+# in for because an open string can end on an escaped one. The `\?$` tail stops a started
+# match from ever failing, which would send `finditer` back over every later quote.
+_JSON_STRING_RE = re.compile(r'"(?:[^"\\]|\\.)*(?:(")|\\?$)', re.S)
+_JSON_CLOSER = {"[": "]", "{": "}"}
+
+
+def _balanced(segment: str, opened: "list[str]") -> str:
+    kept: list[str] = []
+    for ch in segment:
+        if ch in _JSON_CLOSER:
+            opened.append(_JSON_CLOSER[ch])
+            kept.append(ch)
+        elif ch in "]}":
+            # The commonest slip: a closer of the wrong kind becomes the right one.
+            if opened:
+                kept.append(opened.pop())
+        else:
+            kept.append(ch)
+    return "".join(kept)
+
+
+def _repair_json_value(text: str) -> Any:
+    """Parse near-valid JSON whose brackets do not balance, or None if it still will not."""
+    parts: list[str] = []
+    opened: list[str] = []
+    cursor = 0
+    open_string = ""
+    for match in _JSON_STRING_RE.finditer(text):
+        parts += [_balanced(text[cursor : match.start()], opened), match.group()]
+        open_string = "" if match.group(1) else '"'
+        cursor = match.end()
+    parts += [_balanced(text[cursor:], opened), open_string, *reversed(opened)]
+    try:
+        return json.loads("".join(parts), strict = False)
+    except _DECODE_ERRORS:
+        return None
+
+
+# Followed to find a declaration; `nullable` is OpenAPI 3.0's spelling of a type union.
+_READ_KEYWORDS = frozenset(
+    {
+        "type",
+        "nullable",
+        "properties",
+        "items",
+        "prefixItems",
+        "additionalItems",
+        "additionalProperties",
+    }
+)
+# Cannot move a declaration out of reach: annotations, and constraints that only reject.
+_INERT_KEYWORDS = frozenset(
+    {
+        "title",
+        "description",
+        "default",
+        "examples",
+        "example",
+        "deprecated",
+        "readOnly",
+        "writeOnly",
+        "format",
+        "$comment",
+        "$schema",
+        "$id",
+        "$anchor",
+        "$defs",
+        "definitions",
+        "enum",
+        "const",
+        "required",
+        "dependentRequired",
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "multipleOf",
+        "minLength",
+        "maxLength",
+        "pattern",
+        "minItems",
+        "maxItems",
+        "uniqueItems",
+        "minContains",
+        "maxContains",
+        "minProperties",
+        "maxProperties",
+    }
+)
+_UNION_KEYWORDS = frozenset({"anyOf", "oneOf"})
+# Matched exactly: an unknown type name is as unreadable as an unknown keyword.
+_JSON_SCHEMA_TYPES = frozenset(
+    {
+        "array",
+        "boolean",
+        "integer",
+        "null",
+        "number",
+        "object",
+        "string",
+    }
+)
+_KNOWN_KEYWORDS = _READ_KEYWORDS | _INERT_KEYWORDS | _UNION_KEYWORDS
+
+
+def _readable(spec: Any) -> bool:
+    """An allowlist, because composition, reference and a later draft's keywords can all move
+    a declaration out of this walk's reach."""
+    return isinstance(spec, Mapping) and spec.keys() <= _KNOWN_KEYWORDS
+
+
+def _read_schema(spec: Any) -> "tuple[Any, str | None, bool]":
+    """The subschema to read against, its one declared type, and whether it admits null;
+    ``(None, ...)`` leaves it alone. A union collapses to its single non-null branch, so
+    every branch must name one: reading the integer branch of ``anyOf: [{integer}, {$ref}]``
+    would turn ``"001"`` into 1."""
+    if not _readable(spec):
+        return None, None, False
+    union = _UNION_KEYWORDS & spec.keys()
+    if union and (len(union) > 1 or not _READ_KEYWORDS.isdisjoint(spec)):
+        return None, None, False
+    kind = spec.get("type")
+    chosen = spec
+    if isinstance(kind, str):
+        named = [kind]
+    elif isinstance(kind, list):
+        named = list(kind)
+    elif union:
+        branches = spec.get("anyOf") or spec.get("oneOf")
+        if not isinstance(branches, list) or not branches:
+            return None, None, False
+        named = []
+        for branch in branches:
+            name = branch.get("type") if _readable(branch) else None
+            if not isinstance(name, str) or _UNION_KEYWORDS & branch.keys():
+                return None, None, False
+            named.append(name)
+            if named[-1] != "null":
+                chosen = branch
+    elif kind is None:
+        return spec, None, False
+    else:
+        return None, None, False
+    if not named or not all(isinstance(name, str) and name in _JSON_SCHEMA_TYPES for name in named):
+        return None, None, False
+    if chosen.get("nullable") is True:
+        named.append("null")
+    rest = [k for k in named if k != "null"]
+    if len(rest) > 1 or (not rest and "null" not in named):
+        return None, None, False
+    return chosen, rest[0] if rest else None, "null" in named
+
+
+# A schema is model-facing data, so its nesting is not trusted to be shallow.
+_MAX_SCHEMA_DEPTH = 8
+
+
+def _coerce_declared_value(text: str, declared: str, repair: bool) -> Any:
+    stripped = text.strip()
+    if declared == "boolean":
+        lowered = stripped.lower()
+        if lowered in _SCHEMA_TRUE_WORDS:
+            return True
+        if lowered in _SCHEMA_FALSE_WORDS:
+            return False
+    elif declared in ("integer", "number"):
+        try:
+            # float() would round 9007199254740993, which an already-numeric argument keeps.
+            return int(stripped)
+        except ValueError:
+            pass
+        try:
+            number = float(stripped)
+        except (ValueError, OverflowError):
+            return text
+        # "nan"/"inf" parse, but json.dumps writes them bare and the client rejects that.
+        # Exactness is unguarded: float64 IS JSON's number type, so a JSON call agrees.
+        if math.isfinite(number) and (declared == "number" or number.is_integer()):
+            return number
+    elif declared == "array":
+        return _coerce_container(text, list, repair)
+    elif declared == "object":
+        return _coerce_container(text, dict, repair)
+    return text
+
+
+def _usable_container(value: Any, want: type) -> bool:
+    """A ``want`` that survives the JSON re-encoding of ``arguments``: both decoders admit
+    what ``json.dumps`` will not write back, such as an integer key returning as a STRING."""
+    if not isinstance(value, want):
+        return False
+    try:
+        dumped = json.dumps(value, allow_nan = False, sort_keys = True, ensure_ascii = False)
+        dumped.encode("utf-8")  # a lone surrogate survives dumps and dies encoding the reply
+        return json.loads(dumped) == value
+    except (TypeError, ValueError, RecursionError):
+        return False
+
+
+def _coerce_container(text: str, want: type, repair: bool) -> Any:
+    """``text`` read as the DECLARED container, tolerating a Python literal and, when
+    ``repair``, unbalanced brackets. Rewriting brackets is what auto-heal opts out of."""
+    try:
+        parsed = json.loads(text, strict = False)
+    except _DECODE_ERRORS:
+        parsed = None
+    if _usable_container(parsed, want):
+        return parsed
+    try:
+        literal = ast.literal_eval(text)
+    except _LITERAL_ERRORS:
+        literal = None
+    if isinstance(literal, tuple):
+        literal = list(literal)
+    if _usable_container(literal, want):
+        return literal
+    repaired = _repair_json_value(text) if repair else None
+    return repaired if _usable_container(repaired, want) else text
+
+
+def _coerce_by_property(value: Any, spec: Any, depth: int, repair: bool) -> Any:
+    if depth >= _MAX_SCHEMA_DEPTH:
+        return value
+    spec, declared, nullable = _read_schema(spec)
+    if spec is None:
+        return value
+    if isinstance(value, str):
+        if declared == "string":
+            return value
+        if nullable and value.strip().lower() == "null":
+            return None
+        if declared is None:
+            return value
+        value = _coerce_declared_value(value, declared, repair)
+    # Descent needs the SAME declaration the conversion needs: without one a text value is
+    # not decoded, so descending into an already-decoded one would make the syntaxes disagree.
+    if declared == "object" and isinstance(value, Mapping):
+        nested = spec.get("properties")
+        nested = nested if isinstance(nested, Mapping) else {}
+        extra = spec.get("additionalProperties")
+        extra = extra if isinstance(extra, Mapping) else None
+        if nested or extra:
+            return {
+                k: _coerce_by_property(v, nested.get(k, extra), depth + 1, repair)
+                for k, v in value.items()
+            }
+    elif declared == "array" and isinstance(value, list):
+        items = spec.get("items")
+        prefix = items if isinstance(items, list) else spec.get("prefixItems")
+        if isinstance(prefix, list):
+            # A schema per position: draft-07 tuple `items`, 2020-12 `prefixItems`.
+            rest = spec.get("additionalItems") if isinstance(items, list) else items
+            return [
+                _coerce_by_property(v, prefix[i] if i < len(prefix) else rest, depth + 1, repair)
+                for i, v in enumerate(value)
+            ]
+        if isinstance(items, Mapping):
+            return [_coerce_by_property(v, items, depth + 1, repair) for v in value]
+    return value
+
+
+def coerce_arguments_by_schema(
+    arguments: Mapping[str, Any],
+    properties: Any,
+    *,
+    repair: bool = False,
+) -> dict:
+    """Arguments with each string value that declares a non-string type read as that type.
+
+    A tool-call parser is given tool NAMES, never schemas, so an XML-form parameter is stored
+    as raw text: ``replace_all`` reaches the tool as ``"false"``, and ``bool("false")`` is
+    True. A container's text IS its JSON; a scalar's carries no type, so it is read only
+    where its spelling names the declared type. Anything else keeps its text.
+    """
+    if not isinstance(properties, Mapping) or not properties:
+        return dict(arguments)
+    return {k: _coerce_by_property(v, properties.get(k), 0, repair) for k, v in arguments.items()}
+
+
+def _declared_properties(tool_name: str, tool_schemas) -> Any:
+    for tool in tool_schemas or []:
+        function = tool.get("function") if isinstance(tool, Mapping) else None
+        if not isinstance(function, Mapping) or function.get("name") != tool_name:
+            continue
+        parameters = function.get("parameters")
+        return parameters.get("properties") if isinstance(parameters, Mapping) else None
+    return None
+
+
 def coerce_tool_arguments(
     raw_args: Any,
     *,
@@ -352,14 +653,23 @@ def coerce_tool_arguments(
     tool_name: str = "",
     tool_schemas = None,
 ) -> CoercedArguments:
-    """Normalize model-emitted ``function.arguments`` to a dictionary."""
+    """Normalize model-emitted ``function.arguments`` to a dictionary.
+
+    Typing against ``tool_schemas`` is not gated on ``heal``: healing invents structure the
+    model never sent, while reading a value as its schema declares it is the tool's contract.
+    """
+    properties = _declared_properties(tool_name, tool_schemas) if tool_name else None
     if isinstance(raw_args, Mapping):
-        return CoercedArguments(dict(raw_args), False)
+        return CoercedArguments(
+            coerce_arguments_by_schema(raw_args, properties, repair = heal), False
+        )
     if isinstance(raw_args, str):
         try:
             parsed = json.loads(raw_args)
             if isinstance(parsed, Mapping):
-                return CoercedArguments(dict(parsed), False)
+                return CoercedArguments(
+                    coerce_arguments_by_schema(parsed, properties, repair = heal), False
+                )
         except (json.JSONDecodeError, ValueError):
             pass
         if heal:
