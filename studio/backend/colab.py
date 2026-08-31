@@ -18,6 +18,7 @@ import _platform_compat  # noqa: F401
 from loggers import get_logger
 
 logger = get_logger(__name__)
+_DELIVERY_MARKER_CLEAR_ATTEMPTS = 3
 
 
 def get_colab_url(port: int = 8888) -> str:
@@ -636,6 +637,20 @@ def _display_admin_credentials(
             return False
 
 
+def _clear_displayed_credential_marker(username: str) -> bool:
+    """Retry marker cleanup only after the one-time card was confirmed displayed."""
+    from auth.storage import clear_credential_undelivered, credential_undelivered
+
+    for _attempt in range(_DELIVERY_MARKER_CLEAR_ATTEMPTS):
+        try:
+            clear_credential_undelivered()
+            if not credential_undelivered(username):
+                return True
+        except Exception:
+            continue
+    return False
+
+
 # Literal on purpose: the strip below must run even if importing auth fails, so it
 # cannot depend on auth.terminal_prompt.SUPPLIED_PASSWORD_ENV being importable. A
 # test asserts the two stay equal.
@@ -737,7 +752,6 @@ def start_cloudflare_tunnel(port: int) -> "str | None":
     """
     from auth.storage import (
         DEFAULT_ADMIN_USERNAME,
-        clear_credential_undelivered,
         credential_undelivered,
     )
 
@@ -767,7 +781,10 @@ def start_cloudflare_tunnel(port: int) -> "str | None":
             "completes, or reset it with `unsloth studio reset-password`."
         )
         return None
-    if generated is not None and not _display_admin_credentials(DEFAULT_ADMIN_USERNAME, generated):
+    displayed = generated is not None and _display_admin_credentials(
+        DEFAULT_ADMIN_USERNAME, generated
+    )
+    if generated is not None and not displayed:
         # The password was rotated and committed, but it could not be surfaced in
         # this notebook (no IPython display channel, or every publish raised). The
         # shared link would then be live under a password nobody saw, locking every
@@ -781,8 +798,17 @@ def start_cloudflare_tunnel(port: int) -> "str | None":
         )
         return None
     if generated is not None:
-        # The card rendered, so the operator has the credential.
-        clear_credential_undelivered()
+        # The card rendered, so marker removal is now safe. Retry transient SQLite
+        # failures locally; if all attempts fail, retain the marker and keep this
+        # tunnel closed. A process crash can therefore never turn an unproven
+        # delivery into a published credential.
+        if not _clear_displayed_credential_marker(DEFAULT_ADMIN_USERNAME):
+            logger.warning(
+                "Cloudflare link not started: the admin password was shown, but its "
+                "delivery state could not be saved after retrying. The link remains "
+                "closed; retry after the database is writable, or reset the password."
+            )
+            return None
     if _bootstrap_password_pending():
         # Auto-generation is the primary protection; only reached if it failed
         # (e.g. the auth DB could not be read/written). Fail safe: no shared link.

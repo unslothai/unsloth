@@ -323,6 +323,72 @@ def test_start_cloudflare_tunnel_refuses_after_an_undelivered_rotation(monkeypat
     assert started["called"] is False
 
 
+def test_transient_marker_clear_retries_before_opening_tunnel(monkeypatch):
+    admin = _seed_admin(must_change_password = True)
+    monkeypatch.setattr(colab, "_display_admin_credentials", lambda *a, **k: True)
+    clears: list[int] = []
+
+    def _transient_clear():
+        clears.append(1)
+        if len(clears) == 1:
+            raise OSError("database is locked")
+        conn = storage.get_connection()
+        try:
+            conn.execute(
+                "DELETE FROM app_secrets WHERE key = ?",
+                (storage._CREDENTIAL_UNDELIVERED_KEY,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    monkeypatch.setattr(storage, "clear_credential_undelivered", _transient_clear)
+    import cloudflare_tunnel
+
+    started = {"called": False}
+    monkeypatch.setattr(
+        cloudflare_tunnel,
+        "start_studio_tunnel",
+        lambda port, **_kwargs: started.update(called = True)
+        or "https://example.trycloudflare.com",
+    )
+
+    assert colab.start_cloudflare_tunnel(8888) == "https://example.trycloudflare.com"
+    assert len(clears) == 2
+    assert storage.credential_undelivered(admin) is False
+    assert started["called"] is True
+
+
+def test_marker_clear_exhaustion_retains_guard_and_keeps_tunnel_closed(monkeypatch):
+    admin = _seed_admin(must_change_password = True)
+    monkeypatch.setattr(colab, "_display_admin_credentials", lambda *a, **k: True)
+    clears: list[int] = []
+
+    def _persistent_clear_failure():
+        clears.append(1)
+        raise OSError("database is locked")
+
+    monkeypatch.setattr(
+        storage,
+        "clear_credential_undelivered",
+        _persistent_clear_failure,
+    )
+    import cloudflare_tunnel
+
+    started = {"called": False}
+    monkeypatch.setattr(
+        cloudflare_tunnel,
+        "start_studio_tunnel",
+        lambda port, **_kwargs: started.update(called = True)
+        or "https://example.trycloudflare.com",
+    )
+
+    assert colab.start_cloudflare_tunnel(8888) is None
+    assert len(clears) == colab._DELIVERY_MARKER_CLEAR_ATTEMPTS
+    assert storage.credential_undelivered(admin) is True
+    assert started["called"] is False
+
+
 def test_undelivered_sentinel_clears_on_the_next_password_change(monkeypatch):
     # Self-healing is what keeps the guard from bricking the install: it matches
     # on the committed hash, so `unsloth studio reset-password` releases it even
