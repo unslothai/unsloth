@@ -345,6 +345,8 @@ def test_markup_tags_named_in_a_plan_are_not_a_page():
         "First, I'll draw <svg width='10' and then close with </svg>",
         "First, I'll add the <html> element, search for the content, and finish with </html>.",
         "First, I'll open <svg>, search for the data, and finish with </svg>.",
+        # A comparison operator is not child markup.
+        "First, I'll wrap the results in <html>, filter values < 3, then finish with </html>.",
     ]
     for text in samples:
         assert not _has_answer_artifact(text), text
@@ -1096,6 +1098,10 @@ def test_prefilled_reasoning_closes_without_an_opener():
         assert not _gate_would_reprompt(text, "", True), closer
         # Nothing after the closer is still the stall.
         assert _gate_would_reprompt(f"First, I will search the web.{closer}", "", True), closer
+    # A complete pair the shared splitter does not know, opening the turn.
+    assert not _gate_would_reprompt(
+        "<thinking>First, I will search.</thinking>The answer is Paris.", "", True
+    )
 
 
 def test_whitespace_only_fence_is_not_an_answer():
@@ -1105,6 +1111,10 @@ def test_whitespace_only_fence_is_not_an_answer():
         text = f"First, I'll run it.\n```bash\n{body}\n```"
         assert not _has_answer_artifact(text), body
         assert _would_reprompt(text), body
+    # A quote marker is the container, not content, so a quoted blank block is blank.
+    quoted = "First, I will run it.\n> ```bash\n>   \n> ```"
+    assert not _has_answer_artifact(quoted)
+    assert _would_reprompt(quoted)
     # A blank first line with real code after it is still an answer.
     assert _has_answer_artifact("First, let me show it.\n```bash\n \necho hi\n```")
 

@@ -861,8 +861,8 @@ _CLOSED_CODE_FENCE = re.compile(
     re.IGNORECASE,
 )
 _CLOSED_MARKUP_ARTIFACT = re.compile(
-    r"(?:<!doctype\b[\s\S]{0,200}?)?<html\b[^>]{0,200}>[^<]{0,400}<[\s\S]{0,4000}?</html\s*>"
-    r"|<svg\b[^>]{0,200}>[^<]{0,400}<[\s\S]{0,4000}?</svg\s*>",
+    r"(?:<!doctype\b[\s\S]{0,200}?)?<html\b[^>]{0,200}>[^<]{0,400}<[a-zA-Z!/][\s\S]{0,4000}?</html\s*>"
+    r"|<svg\b[^>]{0,200}>[^<]{0,400}<[a-zA-Z!/][\s\S]{0,4000}?</svg\s*>",
     re.IGNORECASE,
 )
 _HAS_ANSWER_ARTIFACT = re.compile(
@@ -871,8 +871,8 @@ _HAS_ANSWER_ARTIFACT = re.compile(
     # must end cleanly, so ``` ```not actually closed ``` does not count.
     r"(?<!`)(?P<bf>`{3,})(?!`)[^\r\n]{0,200}\r?\n[\s\S]{1,4000}?\r?\n[ \t>]*(?P=bf)`*[ \t]*(?:\r?\n|\Z)"
     r"|(?<!~)(?P<tf>~{3,})(?!~)[^\r\n]{0,200}\r?\n[\s\S]{1,4000}?\r?\n[ \t>]*(?P=tf)~*[ \t]*(?:\r?\n|\Z)"
-    r"|(?:<!doctype\b[\s\S]{0,200}?)?<html\b[^>]{0,200}>[^<]{0,400}<[\s\S]{0,4000}?</html\s*>"
-    r"|<svg\b[^>]{0,200}>[^<]{0,400}<[\s\S]{0,4000}?</svg\s*>",
+    r"|(?:<!doctype\b[\s\S]{0,200}?)?<html\b[^>]{0,200}>[^<]{0,400}<[a-zA-Z!/][\s\S]{0,4000}?</html\s*>"
+    r"|<svg\b[^>]{0,200}>[^<]{0,400}<[a-zA-Z!/][\s\S]{0,4000}?</svg\s*>",
     re.IGNORECASE,
 )
 
@@ -1008,7 +1008,7 @@ def _is_blank_fence(matched: str) -> bool:
     if not matched[:1] in ("`", "~"):
         return False
     lines = matched.splitlines()
-    return not any(line.strip() for line in lines[1:-1])
+    return not any(_BLOCKQUOTE_PREFIX.sub("", line).strip() for line in lines[1:-1])
 
 
 def _first_real_artifact(text: str):
@@ -1056,15 +1056,19 @@ def _text_outside_think(text: str) -> str:
     if kept != text:
         return kept
     # A prefilled reasoning template emits the opening marker itself, so the
-    # generated text carries only the closer and the splitter sees no block. Same
-    # marker pairs the strip paths recognise.
+    # generated text carries only the closer and the splitter sees no block. A pair
+    # the splitter does not know is unhandled too, but only when the opener starts
+    # the turn: further in, "plan <think>...</think> answer" is the ordinary shape
+    # where the plan was on screen.
     for opener, closer in (
         ("<think", "</think>"),
         ("[THINK]", "[/THINK]"),
         ("<thinking", "</thinking>"),
     ):
         close = text.find(closer)
-        if close >= 0 and opener not in text[:close]:
+        if close < 0:
+            continue
+        if opener not in text[:close] or text.lstrip().startswith(opener):
             return text[close + len(closer) :]
     return kept
 
