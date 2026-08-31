@@ -1830,6 +1830,31 @@ def _openai_llama_admission_media_tokens(
     return extra
 
 
+def _openai_llama_admission_injected_tool_tokens(injected_tools) -> int:
+    """The tool catalogue Unsloth adds itself, in tokens.
+
+    ``payload.tools`` is what the CLIENT sent, and for Unsloth's own tool loop that is
+    usually nothing: Web Search and the rest are resolved server-side and rendered into the
+    prompt after admission has already priced the request. Measured on
+    Qwen3.5-4B-MTP-GGUF, the same user turn is 1716 prompt tokens with tools off and 2969
+    with them on, so the catalogue is around 1250 tokens that the message list cannot see.
+
+    Leaving it out is not a rounding error, it is the difference between four tool chats
+    fitting and four tool chats being killed together: at ``-c 4096`` four requests priced
+    at an equal share were all admitted and llama.cpp answered every one of them with
+    ``Context size has been exceeded``.
+    """
+    if not injected_tools:
+        return 0
+    try:
+        text = json.dumps(injected_tools, default = str)
+    except Exception:
+        return 0
+    if not text:
+        return 0
+    return estimate_messages_tokens_dense([{"role": "system", "content": text}])
+
+
 def _openai_llama_admission_tokens(
     payload,
     *,
@@ -1837,6 +1862,7 @@ def _openai_llama_admission_tokens(
     capacity: int,
     tool_loop: bool = False,
     image_tokens: int = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
+    injected_tools = None,
 ) -> Optional[int]:
     """KV a request will occupy: what is sent, plus what it may generate.
 
@@ -1858,6 +1884,7 @@ def _openai_llama_admission_tokens(
             )
             prompt_tokens = estimate_messages_tokens_dense(estimate_messages)
             prompt_tokens += _openai_llama_admission_extra_prompt_tokens(payload)
+            prompt_tokens += _openai_llama_admission_injected_tool_tokens(injected_tools)
             prompt_tokens += _openai_llama_admission_media_tokens(
                 payload,
                 message_image_parts = message_image_parts,
@@ -1889,7 +1916,8 @@ def _openai_llama_admission_tokens(
     else:
         output_tokens = cap
     # A tool loop opens at its own estimate with an equal share as the floor, and
-    # re-costs as it grows (ToolLoopPolicy.on_conversation_grew -> lease.recost).
+    # re-costs as it grows (generate_chat_completion_with_tools on_conversation_grew ->
+    # lease.recost_waiting).
     #
     # #9392 reserved the WHOLE cache here instead. One lease covers up to 25 rounds and
     # each round appends its results and re-sends the conversation, so a run that opens
@@ -1914,14 +1942,18 @@ def _openai_llama_admission_tokens(
     # undercharged Unsloth's own tool traffic; and a passthrough or /responses request
     # that merely forwards `tools` to llama-server runs ONE generation per HTTP call.
     if tool_loop:
+        # Exactly what an equivalent request without tools is charged, with an equal share
+        # as the floor. A tool loop is no longer a special case at admission time; it is a
+        # special case at ROUND time, where recost_waiting raises the figure as the
+        # conversation actually grows.
+        #
+        # Not clamped to the share. Charging less than prompt + output would open a window
+        # #9392 had closed: a first round may generate its whole output allowance before
+        # any re-cost can run, so under-reserving here would let four loops overflow the
+        # cache before the first boundary. The floor only helps a SMALL request, which is
+        # the one that would otherwise re-cost on its very first round.
         share = max(1, budget // max(1, capacity))
-        # The opening figure only has to cover the FIRST round; recost_waiting raises it at
-        # every round boundary as the conversation actually grows. So the nominal output
-        # cap is clamped to a share here rather than taken at face value: Max Tokens on
-        # "Max" sends max_tokens = the whole context length, and admitting that as an
-        # estimate would reserve the entire cache for a round that will emit a 50-token
-        # tool call, which is the serialisation this change exists to remove.
-        return max(1, min(budget, max(share, prompt_tokens + min(output_tokens, share))))
+        return max(1, min(budget, max(share, prompt_tokens + output_tokens)))
     # Clamped to the budget so an oversized request stays schedulable: the queue
     # admits it alone rather than stranding it, and llama-server refuses it with a
     # message naming both counts.
@@ -1934,6 +1966,7 @@ def _openai_llama_admission_reserve(
     llama_backend,
     payload = None,
     tool_loop: bool = False,
+    injected_tools = None,
 ) -> tuple[LlamaAdmissionReservation, LlamaAdmissionConfig]:
     config = llama_admission_config_from_env()
     capacity = _openai_llama_admission_capacity(request, llama_backend)
@@ -1949,6 +1982,7 @@ def _openai_llama_admission_reserve(
             capacity = capacity,
             tool_loop = tool_loop,
             image_tokens = _openai_llama_admission_image_tokens(llama_backend),
+            injected_tools = injected_tools,
         )
         if payload is not None
         else None,
@@ -1964,6 +1998,7 @@ def _openai_llama_admission_recost(
     llama_backend,
     output_tokens: int = 0,
     cancel_event = None,
+    injected_tools = None,
 ) -> None:
     """Charge a tool loop for what its conversation now is, not what it opened as.
 
@@ -1996,6 +2031,9 @@ def _openai_llama_admission_recost(
         prompt_tokens = estimate_messages_tokens_dense(
             _openai_llama_admission_messages_for_estimate(conversation)[0]
         )
+        # Re-sent on every round alongside the conversation, so it belongs in every
+        # re-costing too, not just the opening estimate.
+        prompt_tokens += _openai_llama_admission_injected_tool_tokens(injected_tools)
         share = max(1, budget // max(1, capacity))
         want = max(1, min(budget, max(share, prompt_tokens + max(0, output_tokens))))
         lease.recost_waiting(want, cancel_event = cancel_event)
@@ -20486,6 +20524,7 @@ async def produce_openai_chat_completions(
                     request = request,
                     llama_backend = llama_backend,
                     output_tokens = effective_max_tokens or 0,
+                    injected_tools = tools_to_use,
                     # A round waiting for cache room must still answer Stop. This is the
                     # same event the loop polls at the top of every iteration, so a wait
                     # ends exactly where an ordinary cancel would have.
@@ -20566,6 +20605,10 @@ async def produce_openai_chat_completions(
                     request = request,
                     llama_backend = llama_backend,
                     payload = payload,
+                    # The catalogue Unsloth resolves server-side. payload.tools does not
+                    # carry it and it is roughly 1250 tokens of the prompt, so leaving it
+                    # out admits four chats the cache cannot hold.
+                    injected_tools = tools_to_use,
                     # This branch IS the resolved server-side loop (use_tools is true
                     # here whether it came from tools, enable_tools, mcp_enabled, the
                     # CLI policy or a checkpoint repair), so it opens at an equal share
@@ -27831,6 +27874,7 @@ async def anthropic_messages(
             request = request,
             llama_backend = llama_backend,
             output_tokens = payload.max_tokens or 0,
+            injected_tools = openai_tools,
             cancel_event = cancel_event,
         )
 
@@ -27841,6 +27885,8 @@ async def anthropic_messages(
                 llama_backend = llama_backend,
                 payload = payload,
                 tool_loop = tool_loop,
+                # Only the tool branch resolves a catalogue; the plain branch sends none.
+                injected_tools = openai_tools if tool_loop else None,
             )
             if tool_loop:
                 _anthropic_admission_hold["reservation"] = reservation

@@ -27359,16 +27359,22 @@ class LlamaCppBackend:
         bypass_permissions: bool = False,
         permission_mode: Optional[str] = None,
         promote_reasoning_only: bool = True,
-        # Called at the top of every round with the conversation as it now stands, so KV
-        # admission can charge what this run occupies rather than the estimate it opened
-        # with. See routes/inference _openai_llama_admission_tokens. Must not block.
-        on_conversation_grew: Optional[Callable[[list], None]] = None,
         perf_callback: Optional[Callable[[dict], None]] = None,
         reasoning_provenance: Optional[dict] = None,
         context_overflow: Optional[str] = None,
         context_policy: Optional[str] = None,
         compaction_headroom_ratio: Optional[float] = None,
         tool_choice: Any = None,
+        # Appended, never inserted. This signature has no bare `*`, so every parameter is
+        # positional-or-keyword and adding one anywhere but the end silently rebinds the
+        # arguments after it for any caller that passes them positionally.
+        #
+        # Called at the top of every round with the conversation as it now stands, so KV
+        # admission can charge what this run occupies rather than the estimate it opened
+        # with. MAY BLOCK: recost_waiting waits for cache room rather than letting the
+        # round run over its reservation. The top of a round is where that is safe, since
+        # the previous round's request has completed.
+        on_conversation_grew: Optional[Callable[[list], None]] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.

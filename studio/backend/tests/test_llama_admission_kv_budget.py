@@ -459,7 +459,7 @@ class TestToolLoopsOpenAtAShareAndGrow:
     0.1s, 2.8s, 4.6s and 8.8s, one after another.
 
     A tool loop now opens at an equal share and re-costs as it grows
-    (``ToolLoopPolicy.on_conversation_grew`` -> ``lease.recost``), which is the alternative
+    (``on_conversation_grew`` -> ``lease.recost_waiting``), which is the alternative
     #9392 named and skipped for the plumbing. The growth is still accounted for; it is
     charged when it happens instead of assumed up front.
     """

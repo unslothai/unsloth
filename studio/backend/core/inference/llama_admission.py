@@ -65,6 +65,11 @@ DEFAULT_ADMISSION_MIN_QUEUE = 64
 # reports n_ctx_slot = n_ctx to every slot, so N generations are admitted against a
 # cache that may hold one. When they collide, llama.cpp kills every task involved.
 DEFAULT_ADMISSION_KV_BUDGET = True
+# Ceiling on one round's wait for cache room. Deliberately generous: a legitimate wait is
+# bounded by the longest round in flight, and cutting one short only costs accuracy. It
+# exists because a reparker holds the wait line shut for every other caller, so an
+# unbounded wait would turn one stuck run into a frozen queue. See recost_waiting.
+DEFAULT_RECOST_WAIT_TIMEOUT_S = 300.0
 
 
 def _executor_workers() -> int:
@@ -458,6 +463,7 @@ class LlamaAdmissionLease:
         *,
         cancel_event = None,
         poll_s: float = 0.05,
+        timeout_s: Optional[float] = DEFAULT_RECOST_WAIT_TIMEOUT_S,
     ) -> bool:
         """Re-state this lease's cost, waiting for room rather than running over it.
 
@@ -467,13 +473,25 @@ class LlamaAdmissionLease:
         ``Context size has been exceeded`` that kills every decoding slot at once.
 
         Call this only where the conversation is between rounds. There the previous round's
-        request has finished, so llama-server has released the slot and (with
-        ``--cache-idle-slots``, on by default) spilled its cells to the RAM prompt cache.
-        Yielding the commitment there gives back capacity that really is free, and the
-        prefix stays warm so reclaiming it costs a cache hit rather than a re-prefill.
+        request has finished and llama-server has released the slot, so the capacity yielded
+        is genuinely free rather than pinned by a decode in progress. That is what makes
+        this correct; it does not depend on the cache.
 
-        False means the caller was cancelled while waiting, not that the growth was
-        refused: this returns only once the new figure is in force.
+        What the cache changes is the PRICE. With ``--cache-ram`` above zero,
+        ``--cache-idle-slots`` (on by default, and it requires cache-ram) spills an idle
+        slot's cells to host RAM, so reclaiming costs a prefix hit. Studio launches with
+        ``--cache-ram 0`` on Windows under full GPU offload (#5692, WDDM overhead), and
+        there a yielded round may be re-prefilled instead. Slower on that one platform,
+        still correct everywhere.
+
+        False means this lease still holds the figure it came in with: cancelled, released,
+        or waited past ``timeout_s``. True means the new figure is in force.
+
+        The timeout is not a tuning knob, it is the blast radius. A reparker holds the wait
+        line shut for everyone (see ``yield_commitment``), so a wait that never ends does
+        not stall one chat, it freezes the whole queue. Giving up restores the old
+        commitment and returns to the pre-existing decline-and-continue behaviour, which is
+        a worse trade for that one run and no worse than any release before this existed.
         """
         want = max(0, int(tokens or 0))
         # The cheap path first. Growth that already fits never touches the wait line, which
@@ -486,6 +504,7 @@ class LlamaAdmissionLease:
                 return True
             held, self._tokens = self._tokens, 0
         queue.yield_commitment(held)
+        deadline = None if not timeout_s or timeout_s <= 0 else time.monotonic() + timeout_s
         try:
             while True:
                 if queue.try_reclaim_commitment(want):
@@ -497,24 +516,37 @@ class LlamaAdmissionLease:
                             return True
                         self._tokens = want
                     return True
-                if cancel_event is not None and cancel_event.is_set():
-                    # Restore what this lease actually occupies, so the run that carries on
-                    # to tear down is still accounted for until it releases.
+                # Checked every pass, not only on the two exits below. release() runs from
+                # the route's teardown and does not touch the cancel event, so a Stop that
+                # tears down before the event is seen would otherwise leave this spinning
+                # on a dead lease, holding the wait line shut for every other caller.
+                if self._released:
                     queue.abandon_repark()
-                    with self._release_lock:
-                        if self._released:
-                            return False
-                        self._tokens = held
-                    queue.try_recost(0, held)
                     return False
+                if cancel_event is not None and cancel_event.is_set():
+                    return self._give_up_repark(queue, held, cancelled = True)
+                if deadline is not None and time.monotonic() >= deadline:
+                    return self._give_up_repark(queue, held, cancelled = False)
                 time.sleep(poll_s)
         except BaseException:
-            queue.abandon_repark()
-            with self._release_lock:
-                if not self._released:
-                    self._tokens = held
-            queue.try_recost(0, held)
+            self._give_up_repark(queue, held, cancelled = True)
             raise
+
+    def _give_up_repark(self, queue, held: int, *, cancelled: bool) -> bool:
+        """Stop waiting and go back to holding ``held``.
+
+        Always in this order: stop counting as a reparker first, so the wait line reopens
+        even if re-committing cannot fit, then take the old figure back. This lease still
+        occupies that much of llama-server's cache until it releases, so the pool has to
+        know about it however the wait ended.
+        """
+        queue.abandon_repark()
+        with self._release_lock:
+            if self._released:
+                return False
+            self._tokens = held
+        queue.try_recost(0, held)
+        return False
 
     def release(self) -> None:
         queue = None
