@@ -1359,9 +1359,7 @@ def test_noninteractive_missing_agent_stops_before_connect(agent, monkeypatch):
     assert f"`{agent}` not found on PATH" in result.output
 
 
-@pytest.mark.parametrize(
-    "agent", ["claude", "codex", "openclaw", "hermes", "pi", "dsh"]
-)
+@pytest.mark.parametrize("agent", ["claude", "codex", "openclaw", "hermes", "pi", "dsh"])
 def test_no_launch_skips_agent_resolution(agent, monkeypatch):
     monkeypatch.setattr(
         start,
@@ -5399,10 +5397,7 @@ def test_write_dsh_config_fresh(dsh_settings):
     assert provider["baseURL"] == f"{BASE}/v1"
     assert provider["apiKeyEnv"] == "UNSLOTH_API_KEY"
     assert "sk-unsloth" not in dsh_settings.read_text()
-    assert provider["compat"] == {
-        "supportsDeveloperRole": False,
-        "maxTokensField": "max_tokens",
-    }
+    assert provider["compat"] == {"supportsDeveloperRole": False, "maxTokensField": "max_tokens"}
     assert provider["models"] == [
         {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 8192}
     ]
