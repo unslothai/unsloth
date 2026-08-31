@@ -190,6 +190,10 @@ class ToolCallDecision:
     tool_name: str
     arguments: dict[str, Any]
     tool_call_id: str = ""
+    # The id the card carries on screen. For a call the provider gave no id to
+    # this is the spelling the client already minted, which is not the id the
+    # conversation replays; for every other call the two are the same.
+    card_call_id: str = ""
     key: str = ""
     provenance: dict[str, Any] = field(default_factory = dict)
     status_text: str = ""
@@ -198,6 +202,11 @@ class ToolCallDecision:
     @property
     def should_execute(self) -> bool:
         return self.action == "execute"
+
+    @property
+    def card_id(self) -> str:
+        """The id every frontend-visible event for this call is addressed to."""
+        return self.card_call_id or self.tool_call_id
 
     @property
     def emit_visible_events(self) -> bool:
@@ -232,7 +241,7 @@ class ToolCallDecision:
         arguments = {"raw": fragment} if fragment is not None else self.arguments
         return {
             "tool_name": self.tool_name,
-            "tool_call_id": self.tool_call_id,
+            "tool_call_id": self.card_id,
             "arguments": arguments,
             "provenance": self.provenance,
         }
@@ -282,7 +291,7 @@ class ToolCallCompletion:
         """Build the payload fields for a real tool_end event."""
         return {
             "tool_name": self.decision.tool_name,
-            "tool_call_id": self.decision.tool_call_id,
+            "tool_call_id": self.decision.card_id,
             "result": self.result,
             "provenance": self.decision.provenance,
         }
@@ -723,6 +732,7 @@ class ToolLoopController:
             tool_name = tool_name,
             arguments = coerced.arguments,
             tool_call_id = str(tool_call.get("id") or ""),
+            card_call_id = str(tool_call.get("card_id") or ""),
             key = key,
             provenance = provenance,
             status_text = status_for_tool(tool_name, coerced.arguments),
