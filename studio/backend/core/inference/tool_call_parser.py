@@ -2594,11 +2594,17 @@ def _parse_gemma_tool_calls(
             break
         blocked_spans.append((_reh.start(), _reh_end + 1))
         _reh_cursor = _reh_end + 1
+    # Monotonic index into the (sorted, non-overlapping) blocked spans: the scan cursor only
+    # moves forward, so re-testing every span per match would be quadratic on a turn full of
+    # them.
+    blocked_i = 0
     while True:
         m = _GEMMA_BARE_TC_RE.search(content, cursor)
         if m is None:
             break
-        if any(s <= m.start() < e for s, e in blocked_spans):
+        while blocked_i < len(blocked_spans) and blocked_spans[blocked_i][1] <= m.start():
+            blocked_i += 1
+        if blocked_i < len(blocked_spans) and blocked_spans[blocked_i][0] <= m.start():
             cursor = m.end()
             continue
         name = m.group(1)

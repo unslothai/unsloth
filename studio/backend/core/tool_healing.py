@@ -172,12 +172,11 @@ def strip_tool_patterns(text: str, patterns) -> str:
 def _rehearsal_strip(m, pat, text, spans, enabled_tool_names) -> str:
     """Replacement for one rehearsal strip match: "" to remove it, else what to keep.
 
-    An inactive name or a quoted example is kept. The tail pattern runs to EOF, so a match
-    that opens on a quoted example can still cover a later real call; keep the quoted part
-    and strip from that call on, or the truncated markup leaks into the answer."""
-    if not _markerless_promotable(m.group(1), enabled_tool_names):
-        return m.group(0)
-    if not _in_code(spans, m.start()):
+    An inactive or execution-class name, or a quoted example, is kept. The tail pattern runs
+    to EOF, so ANY kept match can still cover a later real call; keep the kept part and strip
+    from that call on, or the truncated markup leaks into the answer."""
+    # Kept as prose: an inactive or execution-class NAME, or a quoted example in code.
+    if _markerless_promotable(m.group(1), enabled_tool_names) and not _in_code(spans, m.start()):
         return ""
     pos = m.start()
     while True:

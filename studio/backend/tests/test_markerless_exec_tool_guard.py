@@ -513,3 +513,32 @@ def test_blocked_span_collection_is_one_forward_pass():
     started = time.monotonic()
     assert parse_tool_calls_from_text(text, enabled_tool_names = EXEC_ENABLED) == []
     assert time.monotonic() - started < 5.0
+
+
+def test_blocked_span_lookup_is_linear_in_the_gemma_scan():
+    """Both the spans and the Gemma matches grow with the input.
+
+    Re-testing every blocked span per match is quadratic, and a turn full of blocked
+    rehearsals whose bodies quote ``call:`` is cheap for a model to emit.
+    """
+    import time
+
+    text = 'terminal[ARGS]{"command":"call:x{y:1}"}' * 16000
+    started = time.monotonic()
+    assert parse_tool_calls_from_text(text, enabled_tool_names = EXEC_ENABLED) == []
+    assert time.monotonic() - started < 5.0
+
+
+def test_a_kept_rehearsal_does_not_shelter_a_truncated_real_call():
+    # The tail arm runs to EOF, so one match covers the blocked call AND the truncated call
+    # after it. Keeping the whole match leaves an enabled tool's partial markup on screen,
+    # which is exactly what the end-of-turn cleanup exists to remove.
+    out = strip_tool_markup(
+        'terminal[ARGS]{"command":"id"} web_search[ARGS]{',
+        final = True,
+        enabled_tool_names = EXEC_ENABLED,
+    )
+    assert out == 'terminal[ARGS]{"command":"id"}'
+    # Ordinary prose after a blocked call is not markup and survives.
+    prose = 'terminal[ARGS]{"command":"id"} and prose'
+    assert strip_tool_markup(prose, final = True, enabled_tool_names = EXEC_ENABLED) == prose

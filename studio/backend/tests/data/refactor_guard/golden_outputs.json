@@ -60,8 +60,8 @@
     "starved_result_message": "b1eadfc967db807f41712d430237eec49b095ea6a1f1219972057434c9870f07",
     "strip_leading_bare_json_call": "4dfe14fa258e30d340cfa8400eec6dde4cbbcdbaba20ac5ace312d54176c83d3",
     "strip_llama3_leading_sentinels": "7ba3f83eee7f9c5aed00d24c8cc26e5cdd82cdca7e8aca747f02566c417eef9d",
-    "strip_segment": "6feb0ddeab2929915953a9a806766a07fba35be1e96bff66563128364daded17",
-    "strip_tool_markup": "fb2df4ad97d8e280dec296b615ab454b8990e1bcb3ad1caad1bfc7b4a73fd573",
+    "strip_segment": "93c538fa46fd03fcde9ae9441474a02e0b7386a4f02d24e8a56ca5d9609c0dbd",
+    "strip_tool_markup": "1face2afffc60c2ae5cfa1def1fc6dca72b51f966783702f3c56ffeff27cd6c7",
     "unfinished_thought_progress": "9ea96157cabd83756b4217f82ed18a19c96c80713009269b7cf93811f872a9aa"
   },
   "core.tool_healing": {
@@ -84,15 +84,15 @@
     "_strip_bracket_tag_calls": "64ff33fa93cedbaf8a78ac01dd365a7f86cf0975c66983bc0c02bda719dd8b5c",
     "_strip_closed_blocks_outside_gemma": "41195d67fab19a4d0cd7616ee9844e1053f91b7f51464c9a634891666c55153e",
     "_strip_gemma_native_spans": "7894bf2a19dd468eea3a78e367c39024967fc7d9fb5f32fe0bfb573c35f59607",
-    "_strip_markup_segment": "3e7485b243047d89270535f9c3576ff9ecc402beb31adc77bef24129a462cdc6",
+    "_strip_markup_segment": "dceb0fb9fe4cd8300710f011f1dcf951975ee3c7774ac043823cc3faacd7532e",
     "_think_spans_outside_tool_markup": "a460e6199ccf63181dc2b3a2df91ec9d0343bbc5d6f7b2f9c88eb58080895624",
     "_tool_call_markup_spans": "53e2324fb9ee343b8781a8fc9b2a7fccd80764fb18f40a8923a88a221667db70",
     "_trim_param_value": "20db8b88d3755a29038cd4874a952de75e003c84cd0f03589fe95ee9e49c2ad5",
-    "apply_tool_strip_patterns": "935b0d6136baae498c141197c95e41eb0da3bfd2334fee2e103be3038237575d",
+    "apply_tool_strip_patterns": "bcaa30b1bb9bd8b25fc088cf61fddeece89d6a04f50268576aceab7e19e1e02d",
     "marker_coverage": "598f1082bce68116d480bac3d3c00e13ace048602f1d0043c11defe42181bcb2",
     "parse_tool_calls_from_text": "774adb48e160ec8da4f378442d57ca799cc297c6c770ec8f89f71c9651a3856e",
     "strip_outside_think": "d887d6a2447d5ffc1bd33ee864f8d7b659dce4d7d19748bb3efec882d38c3f36",
-    "strip_tool_call_markup": "0468d8e52d46c8231be103832a192a93976b6d9090a2140eb17fdfc2b601a2db",
+    "strip_tool_call_markup": "e6ee98a0ba00f7114d311581ae88ff10933a552262eaf2b31ff033b6ed43bf66",
     "strip_tool_patterns": "974b320634ca31e0262a384fa55e7d2f66330863a10f8eaeccc87ece0cb9fc4f"
   },
   "corpus": "fd80a31cdc4c8c2961064be34ec509e4cdc3766932fbf334b9ea72b323f6d31c"
