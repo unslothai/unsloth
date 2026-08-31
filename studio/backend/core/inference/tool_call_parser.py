@@ -207,8 +207,6 @@ INTENT_SIGNAL = re.compile(
     r"|(?:^|[.!?]\s+)\s*first\s*[,:–—-]?\s+(?:my|our)\s+(?:plan|approach|step)\b"
     r"|(?:^|[.!?]\s+)\s*first\s*[,:–—-]?\s+(?:i|we|let['’]?s|let us)\b"
     r"|(?:^|[.!?]\s+)\s*first\s*[,:–—-]?\s+" + _ACTION_VERB + r"\b"
-    r"|(?:^|[.!?]\s+)\s*first\s*[,:-]?\s+(?:parse|create)\b"
-    r"[^\r\n]*\r?\n[ \t]*\d+\."
     r"|"
     r"\b(?:step \d+:?|here['\u2019]?s (?:my |the |a )?(?:plan|approach))"
     r"|"

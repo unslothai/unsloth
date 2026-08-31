@@ -3702,6 +3702,12 @@ class TestGGUFSafetensorsHealingParity:
             "First class is available",
             # Advice to the user, not work for this turn.
             "First, install the package.",
+            # Same for "create"/"parse" leading a numbered walkthrough. Only
+            # this loop and the hosted one consume the signal without the GGUF
+            # artifact guard, so a verb widened here regenerates their finished
+            # instructional answers outright.
+            "First, create a virtual environment:\n1. Run python -m venv .venv.\n2. Activate it.",
+            "First, parse the CSV header:\n1. Open the file.\n2. Read the first line.",
         ):
             assert not shared_re.search(plain), f"wrongly fired on {plain!r}"
             assert not shared_fn(plain), f"helper wrongly fired on {plain!r}"
