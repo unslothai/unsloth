@@ -166,7 +166,11 @@ def _runtime_target_is_gfx906() -> bool:
     override = (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower().split(":")[0]
     if override:
         return override == "gfx906"
-    return set(_detect_amd_gfx_codes()) == {"gfx906"}
+    # Unmasked, because "the SOLE arch" is a question about the machine. rocminfo is filtered
+    # by ROCR_VISIBLE_DEVICES before it answers, so a mask naming the MI50 on a mixed host
+    # would present it as the only card and unlock the very downgrade the sole-arch rule
+    # exists to withhold there -- persistently, for a mask that lasts one session.
+    return set(_detect_amd_gfx_codes(ignore_visible_masks = True)) == {"gfx906"}
 
 
 def _torch_below_211(installed_ver: str) -> bool:
@@ -1954,6 +1958,26 @@ def _generic_tag_lacks_kernels(gfx: "str | None", ver: "tuple[int, int]") -> boo
     return _tag_key is None or _tag_key < _min
 
 
+def _generic_only_target_below_floor(
+    gfx: "str | None", ver: "tuple[int, int] | None"
+) -> bool:
+    """Whether a target with NO per-arch index is on a generic tag that predates it.
+
+    The repair question for gfx950 and the other parts AMD ships no per-arch leaf for.
+    _generic_rocm_wheel_lacks_kernels answers False for them by design -- it decides between
+    INDEXES, and there is no second index -- so every caller that asks only that one reads
+    them as healthy on a wheel with no code for them. Their repair is a newer generic tag,
+    which is a different question and has to be asked separately.
+
+    An unreadable version answers True: it is the absence of a reading, not a reading that
+    the installed tag clears the floor, and the host these parts run on is exactly the one
+    whose ROCm version does not read (the wheels bundle their own runtime).
+    """
+    if not gfx or gfx in _GFX_TO_AMD_INDEX_ARCH or gfx not in _GENERIC_WHEEL_GFX_MIN_ROCM:
+        return False
+    return ver is None or _generic_tag_lacks_kernels(gfx, ver)
+
+
 def _runtime_gfx_target(
     inferred_linux_gfx: "str | None",
 ) -> "tuple[str | None, list[str], str | None, list[str]]":
@@ -2039,8 +2063,25 @@ def _runtime_gfx_target(
         gfx_devices = [inferred_linux_gfx]
     # The machine as the probes saw it, before the ROCr layer can reduce it to a lone
     # survivor. _gfx_route_on_host needs this shape: a mask hides a card from us but not from
-    # the legacy-tag decision, which re-probes the whole host.
-    host_codes = list(dict.fromkeys(gfx_devices))
+    # the legacy-tag decision, which re-probes the whole host. "Before the ROCr layer" is
+    # only true of a probe ROCr does not filter. rocminfo runs on the ROCm user-mode stack,
+    # so ROCR_VISIBLE_DEVICES has already reduced its output before this function sees it,
+    # and the machine would read as single-architecture -- which is the one premise
+    # _MIXED_HOST_UNROUTABLE exists to deny. A mask-selected MI50 beside a dGPU would then be
+    # granted the rocm6.3 legacy tag, a persistent multi-GB downgrade of a shared install
+    # made on the strength of one session's mask. Ask the whole machine instead.
+    # Read once, up here: the re-probe below rewrites the provenance, and the ROCr
+    # composition further down asks the same question about the probe that produced
+    # ``gfx_devices``, not about the extra one asked on its behalf.
+    _probe_source = _LAST_AMD_GFX_PROBE
+    if _probe_source == "rocminfo" and "ROCR_VISIBLE_DEVICES" in os.environ:
+        try:
+            _unmasked = _detect_amd_gfx_codes(dedup = False, ignore_visible_masks = True)
+        except Exception:
+            _unmasked = []
+        host_codes = list(dict.fromkeys(_unmasked or gfx_devices))
+    else:
+        host_codes = list(dict.fromkeys(gfx_devices))
     # The two mask layers COMPOSE: ROCr filters first and HIP indexes the survivors (AMD's
     # GPU isolation guide: "the ROCR env var is processed first, which then reduces the
     # number of GPUs that HIP can select from"). Only rocminfo is renumbered by ROCr, and
@@ -2049,7 +2090,7 @@ def _runtime_gfx_target(
     # sysfs are filtered by nothing, so for those the ROCr layer must be applied here before
     # the HIP index resolves against it -- indexing the unfiltered list picks a GPU the
     # runtime never exposes and installs a wheel that faults on its first operation.
-    rocr_applied = _LAST_AMD_GFX_PROBE == "rocminfo" and "ROCR_VISIBLE_DEVICES" in os.environ
+    rocr_applied = _probe_source == "rocminfo" and "ROCR_VISIBLE_DEVICES" in os.environ
     _unlike_adapters = len(set(gfx_devices)) > 1
     if not rocr_applied:
         # amd-smi enumerates in DISCOVERY order over its KFD view, while the masks index
@@ -2063,7 +2104,7 @@ def _runtime_gfx_target(
         # through the HIP map and declines on unlike adapters whether or not a mask is set,
         # for that reason -- like adapters are unaffected either way, since every ordinal
         # gives the same arch.
-        _discovery_ordered = _LAST_AMD_GFX_PROBE == "amd-smi"
+        _discovery_ordered = _probe_source == "amd-smi"
         if _discovery_ordered and _unlike_adapters:
             # Discovery order is unusable, but the kernel's topology is not: KFD nodes ARE the
             # order HIP and ROCr index, which is why the branch above reads them when no
@@ -3576,7 +3617,15 @@ def _rocm_torch_family_needs_repair(
     # on ordinary hosts: pin rocm6.3 once, or upgrade /opt/rocm afterwards, and a gfx1200 box
     # runs a 2.9.1+rocm6.3 build with no kernels for it while the host reads 7.2 -- judged by
     # the host, that install looks healthy forever. ``ver`` stays the fallback.
-    return _generic_rocm_wheel_lacks_kernels(runtime_gfx, _installed_generic_rocm_tag() or ver)
+    # Both readings of "these wheels have no code for this card": the reroute question, and
+    # the tag floor for a target with no index to be rerouted TO. Asking only the first kept
+    # the fast path on a gfx950 sitting on a rocm6.3 build, so the floor the install path
+    # applies was never reached from `studio update` -- repaired once on a fresh install and
+    # never again, which is the shape this preflight exists to prevent.
+    _installed_tag = _installed_generic_rocm_tag() or ver
+    return _generic_rocm_wheel_lacks_kernels(
+        runtime_gfx, _installed_tag
+    ) or _generic_only_target_below_floor(runtime_gfx, _installed_tag)
 
 
 def _ensure_rocm_torch() -> None:
@@ -4057,6 +4106,21 @@ def _ensure_rocm_torch() -> None:
                     # kernel puts gfx950 on rocm6.3, which predates it. Both take the newest
                     # generic index this installer knows, which does carry the target.
                     ver = max(_ROCM_TORCH_INDEX)
+            elif _have is None and _generic_only_target_below_floor(
+                _runtime_gfx, _installed_generic_rocm_tag() or ver
+            ):
+                # A GENERIC build whose own tag predates the target. There is no family to
+                # compare here and no per-arch index to move to, so the two arms above both
+                # decline and torch.version.hip keeps the fallback from ever running: a
+                # gfx950 pinned to rocm6.3 once stays on a wheel with no kernels for it
+                # through every update. Demoting is the whole repair -- the floor below picks
+                # the tag -- and the preflight forces the pass for exactly this state, so
+                # declining costs a dependency pass per update and never a working torch.
+                _safe_print(
+                    f"   installed ROCm torch is a generic build whose own tag predates\n"
+                    f"   {_runtime_gfx} -- reinstalling from an index that carries it.\n"
+                )
+                rocm_torch_ready = False
 
         # The floor above is reached only by a host already on ROCm wheels that had to be
         # demoted. A host with no ROCm torch at all -- a fresh install, or a CPU/CUDA build --

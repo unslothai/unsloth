@@ -64,6 +64,7 @@ def _run_install(
     rocm_gpu_visible = True,
     torch_owns_rocm = True,
     probe_source = "kfd",
+    unmasked_gfx_devices = None,
 ):
     """Drive _ensure_rocm_torch() over a host with ``gfx_devices`` and return the pip calls."""
     # The torch probe is cached for the process, and the autouse fixture clears it once per
@@ -83,7 +84,14 @@ def _run_install(
         ignore_visible_masks = False,
     ):
         probes.append(dedup)
-        codes = list(gfx_devices)
+        # rocminfo runs on the ROCr stack, so its answer is already mask-filtered; only a
+        # re-probe that strips the masks sees the whole machine. A caller that sets
+        # unmasked_gfx_devices is modelling exactly that gap.
+        codes = list(
+            unmasked_gfx_devices
+            if (ignore_visible_masks and unmasked_gfx_devices is not None)
+            else gfx_devices
+        )
         # The real probe records which tool answered, and callers read it to decide whether
         # the list is ROCr-filtered and whether it is in HIP order. This one hands back the
         # whole machine in device order, which is KFD sysfs; leaving the global at whatever
@@ -1648,3 +1656,114 @@ def test_a_spoof_survives_wheels_that_are_not_the_targets_family():
         env = {"UNSLOTH_ROCM_GFX_ARCH": "gfx1100", "HSA_OVERRIDE_GFX_VERSION": "10.3.0"},
     )
     assert _run_install.hsa_override_after == "10.3.0", _run_install.hsa_override_after
+
+
+def test_a_rocr_masked_mi50_beside_a_dgpu_keeps_the_generic_wheels():
+    """The mixed-host rule withholds the rocm6.3 legacy tag from a gfx906 sharing a machine,
+    because the downgrade is persistent and every tag above rocm6.3 dropped the dGPU's
+    kernels, while the mask that selected the MI50 lasts one session. rocminfo runs on the
+    ROCr stack, so with ROCR_VISIBLE_DEVICES naming the MI50 it reports that card alone and
+    the machine read as single-architecture -- the one premise the rule exists to deny."""
+    calls = _run_install(
+        gfx_devices = ("gfx906",),
+        unmasked_gfx_devices = ("gfx1100", "gfx906"),
+        rocm_version = (7, 2),
+        probe_source = "rocminfo",
+        env = {"ROCR_VISIBLE_DEVICES": "1"},
+    )
+    assert "rocm6.3" not in calls, calls
+    assert f"{_GENERIC}7.2" in calls, calls
+    # The dGPU's bitsandbytes is part of what the downgrade cost.
+    assert "bitsandbytes" in calls, calls
+    # A machine that really is gfx906 alone still takes the legacy tag under the same mask,
+    # including a mask whose ordinal names no device: the sole-arch question is about the
+    # machine, and the answer decides which wheels carry kernels for the card that is there.
+    for _ordinal in ("0", "1"):
+        _sole = _run_install(
+            gfx_devices = ("gfx906",),
+            unmasked_gfx_devices = ("gfx906",),
+            rocm_version = (7, 2),
+            probe_source = "rocminfo",
+            env = {"ROCR_VISIBLE_DEVICES": _ordinal},
+        )
+        assert f"{_GENERIC}6.3" in _sole, (_ordinal, _sole)
+
+
+def test_a_generic_only_target_on_a_stale_tag_is_repaired_on_update_too():
+    """gfx950 has no per-arch leaf, so _generic_rocm_wheel_lacks_kernels answers False for it
+    by design and the preflight read a rocm6.3 build as healthy. The install path applies a
+    tag floor those wheels fail, so the card was repaired once on a fresh install and never
+    from `studio update`, which is the exact shape this preflight exists to prevent."""
+    for _tag, _hip, _repair in (
+        ("2.9.1+rocm6.3", "6.3.0", True),
+        ("2.11.0+rocm7.2", "7.2.0", False),
+    ):
+        with (
+            patch.object(stack_mod, "_probe_torch_runtime",
+                         return_value = (True, True, _tag, _hip, "")),
+            patch.object(stack_mod, "_torch_requires_rocm_sdk", return_value = False),
+            patch.object(stack_mod, "_installed_rocm_wheel_family", return_value = None),
+        ):
+            assert stack_mod._rocm_torch_family_needs_repair(
+                "gfx950", (7, 2), ["gfx950"]
+            ) is _repair, _tag
+    # An arch with a leaf is still judged by the reroute question, not by this one.
+    with (
+        patch.object(stack_mod, "_probe_torch_runtime",
+                     return_value = (True, True, "2.11.0+rocm7.2", "7.2.0", "")),
+        patch.object(stack_mod, "_torch_requires_rocm_sdk", return_value = False),
+        patch.object(stack_mod, "_installed_rocm_wheel_family", return_value = None),
+    ):
+        assert stack_mod._rocm_torch_family_needs_repair("gfx1103", (7, 2), ["gfx1103"]) is True
+
+
+def test_a_generic_only_target_installs_when_the_rocm_version_is_unreadable():
+    """The unreadable-version exit asks the reroute question, which gfx950 answers False to
+    for want of a leaf, so a runtime-only host with one was left on CPU torch on every retry.
+    An unreadable version is the absence of a reading, not evidence the tag clears the floor,
+    and it is the shape these hosts have: the wheels bundle their own ROCm."""
+    assert f"{_GENERIC}7.2" in _run_install(
+        gfx_devices = ("gfx950",),
+        rocm_version = None,
+        torch_probe = _CPU_TORCH,
+        torch_owns_rocm = False,
+    )
+    # An arch the generic wheel serves at every tag still exits there.
+    _served = _run_install(
+        gfx_devices = ("gfx1100",),
+        rocm_version = None,
+        torch_probe = _CPU_TORCH,
+        torch_owns_rocm = False,
+    )
+    assert "torch" not in _served, _served
+
+
+def test_a_generic_only_target_pinned_to_a_stale_tag_is_reinstalled():
+    """Forcing the dependency pass is only half a repair: a generic build names no family, so
+    the family arm declines, there is no per-arch index to move to, and torch.version.hip
+    keeps the generic fallback from running at all. A gfx950 pinned to rocm6.3 once therefore
+    survived every update, and the preflight would ask for a pass the install then refused."""
+    for _ver in ((7, 2), None):
+        assert f"{_GENERIC}7.2" in _run_install(
+            gfx_devices = ("gfx950",),
+            rocm_version = _ver,
+            torch_probe = _ROCM_GENERIC_TORCH_63,
+            torch_owns_rocm = False,
+        ), _ver
+    # A generic build whose tag DOES carry the target is left alone, at either version.
+    for _ver in ((7, 2), None):
+        _kept = _run_install(
+            gfx_devices = ("gfx950",),
+            rocm_version = _ver,
+            torch_probe = _ROCM_GENERIC_TORCH,
+            torch_owns_rocm = False,
+        )
+        assert "torch" not in _kept, (_ver, _kept)
+    # So is an arch the generic wheel serves at every tag.
+    _served = _run_install(
+        gfx_devices = ("gfx1100",),
+        rocm_version = (7, 2),
+        torch_probe = _ROCM_GENERIC_TORCH_63,
+        torch_owns_rocm = False,
+    )
+    assert "torch" not in _served, _served
