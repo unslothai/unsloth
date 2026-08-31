@@ -1281,7 +1281,7 @@ def test_subagent_model_id_warns_when_status_unavailable(monkeypatch, capsys):
     assert "could not verify the loaded GGUF variant" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("agent", ["openclaw", "hermes"])
+@pytest.mark.parametrize("agent", ["openclaw", "hermes", "dsh"])
 @pytest.mark.parametrize("flag", ["--as-subagent", "--as-subagent=true", "--as-subagent=false"])
 def test_unsupported_agents_reject_as_subagent(agent, flag):
     result = CliRunner().invoke(start.start_app, [agent, flag])
@@ -1289,7 +1289,9 @@ def test_unsupported_agents_reject_as_subagent(agent, flag):
     assert f"--as-subagent is not supported for {agent}." in result.output
 
 
-@pytest.mark.parametrize("agent", ["claude", "codex", "openclaw", "opencode", "hermes", "pi"])
+@pytest.mark.parametrize(
+    "agent", ["claude", "codex", "openclaw", "opencode", "hermes", "pi", "dsh"]
+)
 def test_launch_preflights_agent_before_connect(agent, monkeypatch):
     events = []
     if agent == "opencode":
@@ -1335,7 +1337,9 @@ def test_declined_opencode_subagent_install_stops_before_connect(monkeypatch):
     assert installs[0][0] == "opencode"
 
 
-@pytest.mark.parametrize("agent", ["claude", "codex", "openclaw", "opencode", "hermes", "pi"])
+@pytest.mark.parametrize(
+    "agent", ["claude", "codex", "openclaw", "opencode", "hermes", "pi", "dsh"]
+)
 def test_noninteractive_missing_agent_stops_before_connect(agent, monkeypatch):
     monkeypatch.setattr(start, "_which_with_install_dirs", lambda _: None)
     monkeypatch.setattr(
@@ -1355,7 +1359,9 @@ def test_noninteractive_missing_agent_stops_before_connect(agent, monkeypatch):
     assert f"`{agent}` not found on PATH" in result.output
 
 
-@pytest.mark.parametrize("agent", ["claude", "codex", "openclaw", "hermes", "pi"])
+@pytest.mark.parametrize(
+    "agent", ["claude", "codex", "openclaw", "hermes", "pi", "dsh"]
+)
 def test_no_launch_skips_agent_resolution(agent, monkeypatch):
     monkeypatch.setattr(
         start,
@@ -3346,7 +3352,7 @@ def test_connect_load_knobs_reach_server_even_when_id_loaded(fake_studio):
 
 
 @pytest.mark.parametrize(
-    "command_name", ["claude", "codex", "openclaw", "opencode", "hermes", "pi"]
+    "command_name", ["claude", "codex", "openclaw", "opencode", "hermes", "pi", "dsh"]
 )
 def test_start_agents_expose_gpu_memory_mode_option(command_name):
     import inspect
@@ -5376,6 +5382,116 @@ def test_connect_pi_no_launch_windows_relocates_userprofile(fake_studio, tmp_pat
     assert f'$env:USERPROFILE = "{home}"' in result.output
 
 
+# ── DeepSeek Harness (OpenAI /v1, key via env, ~/.dsh relocated) ─────
+
+
+@pytest.fixture()
+def dsh_settings(tmp_path):
+    return tmp_path / "settings.yaml"
+
+
+def test_write_dsh_config_fresh(dsh_settings):
+    yaml = pytest.importorskip("yaml")
+    start.write_dsh_config(BASE, MODEL, dsh_settings)
+    config = yaml.safe_load(dsh_settings.read_text())
+    provider = config["llm-pi-ai"]["providers"]["unsloth"]
+    assert provider["api"] == "openai-completions"
+    assert provider["baseURL"] == f"{BASE}/v1"
+    assert provider["apiKeyEnv"] == "UNSLOTH_API_KEY"
+    assert "sk-unsloth" not in dsh_settings.read_text()
+    assert provider["compat"] == {
+        "supportsDeveloperRole": False,
+        "maxTokensField": "max_tokens",
+    }
+    assert provider["models"] == [
+        {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 8192}
+    ]
+    assert config["agent-default-model"] == {"provider": "unsloth", "model": MODEL["id"]}
+
+
+def test_write_dsh_config_without_window_omits_limits(dsh_settings):
+    yaml = pytest.importorskip("yaml")
+    start.write_dsh_config(BASE, {"id": "unsloth/unknown-window"}, dsh_settings)
+    config = yaml.safe_load(dsh_settings.read_text())
+    assert config["llm-pi-ai"]["providers"]["unsloth"]["models"] == [
+        {"id": "unsloth/unknown-window"}
+    ]
+
+
+def test_write_dsh_config_preserves_and_idempotent(dsh_settings):
+    yaml = pytest.importorskip("yaml")
+    dsh_settings.write_text(
+        yaml.safe_dump(
+            {
+                "ui-onboarding": {"welcomeNoticeVersion": "2026-08-13.1"},
+                "llm-pi-ai": {"providers": {"anthropic": {"apiKeyEnv": "ANTHROPIC_API_KEY"}}},
+            }
+        )
+    )
+    start.write_dsh_config(BASE, MODEL, dsh_settings)
+    config = yaml.safe_load(dsh_settings.read_text())
+    assert config["ui-onboarding"] == {"welcomeNoticeVersion": "2026-08-13.1"}
+    assert config["llm-pi-ai"]["providers"]["anthropic"] == {"apiKeyEnv": "ANTHROPIC_API_KEY"}
+    assert config["llm-pi-ai"]["providers"]["unsloth"]["baseURL"] == f"{BASE}/v1"
+    before = dsh_settings.read_text()
+    start.write_dsh_config(BASE, MODEL, dsh_settings)
+    assert dsh_settings.read_text() == before
+
+
+def test_write_dsh_config_preserves_non_mapping_file(dsh_settings, capsys):
+    pytest.importorskip("yaml")
+    original = "- just\n- a\n- list\n"  # valid YAML, but not a mapping
+    dsh_settings.write_text(original)
+    start.write_dsh_config(BASE, MODEL, dsh_settings)
+    assert dsh_settings.read_text() == original  # user-managed file left untouched
+    assert "couldn't parse" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        ([], ["dsh", "web"]),
+        (["--no-open"], ["dsh", "web", "--no-open"]),
+        (["--port", "3099"], ["dsh", "web", "--port", "3099"]),
+        (["--profile", "headless", "fix the bug"], ["dsh", "--profile", "headless", "fix the bug"]),
+        (["--profile=headless", "fix"], ["dsh", "--profile=headless", "fix"]),
+        (
+            ["plugin", "--profile", "web", "add", "x"],
+            ["dsh", "plugin", "--profile", "web", "add", "x"],
+        ),
+        (["web", "--no-open"], ["dsh", "web", "--no-open"]),
+    ],
+)
+def test_dsh_command_selects_web_only_for_app_arguments(args, expected):
+    assert start._dsh_command(args) == expected
+
+
+def test_connect_dsh_no_launch(fake_studio, tmp_path):
+    yaml = pytest.importorskip("yaml")
+    result = CliRunner().invoke(start.start_app, ["dsh", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    _assert_env_set(result.output, "UNSLOTH_API_KEY", "sk-unsloth-feedfacefeedface")
+    home = tmp_path / "agents" / "dsh"
+    _assert_env_set(result.output, "DSH_HOME", str(home))
+    _assert_env_set(result.output, "DSH_TELEMETRY_DISABLED", "1")
+    assert _launch_command(result.output) == ["dsh", "web"]
+    config = yaml.safe_load((home / "settings.yaml").read_text())
+    assert config["agent-default-model"] == {"provider": "unsloth", "model": MODEL["id"]}
+    assert config["llm-pi-ai"]["providers"]["unsloth"]["baseURL"] == f"{BASE}/v1"
+
+
+def test_dsh_yolo_sets_permission_mode(fake_studio):
+    result = CliRunner().invoke(start.start_app, ["dsh", "--yolo", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    _assert_env_set(result.output, "DSH_PERMISSION_MODE", "danger-full-access")
+
+
+def test_dsh_without_yolo_leaves_permission_mode_unset(fake_studio):
+    result = CliRunner().invoke(start.start_app, ["dsh", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    assert "DSH_PERMISSION_MODE" not in result.output
+
+
 # ── WSLENV path translation + PowerShell quoting (helper units) ──
 
 
@@ -6447,6 +6563,7 @@ _RESUME_ENV_VAR = {
     "openclaw": "OPENCLAW_STATE_DIR",
     "hermes": "HERMES_HOME",
     "pi": "HOME",
+    "dsh": "DSH_HOME",
 }
 
 
@@ -6543,7 +6660,7 @@ def test_default_launch_has_no_resume_token(fake_studio, monkeypatch):
 
 def test_resume_persist_only_agents_have_no_resume_token(fake_studio, monkeypatch):
     # Persistence alone must not select a session.
-    for agent in ("openclaw", "hermes"):
+    for agent in ("openclaw", "hermes", "dsh"):
         monkeypatch.setattr(start.shutil, "which", lambda _, a = agent: f"/usr/local/bin/{a}")
         captured = _capture_launch(monkeypatch, [agent, "--persist"])
         assert "resume" not in captured["command"]

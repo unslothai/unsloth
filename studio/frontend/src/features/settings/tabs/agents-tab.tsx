@@ -185,6 +185,13 @@ const SUPPORTED_AGENTS: AgentDetails[] = [
     icon: "opencode-light.svg",
     darkIcon: "opencode-dark.svg",
   },
+  {
+    id: "dsh",
+    name: "DeepSeek Harness",
+    docsUrl: "https://github.com/deepseek-ai/deepseek-harness",
+    color: "#4D6BFE",
+    mark: "ds",
+  },
 ];
 
 const FALLBACK_AGENT = SUPPORTED_AGENTS[0];

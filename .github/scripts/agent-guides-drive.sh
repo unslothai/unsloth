@@ -8,8 +8,8 @@
 # already installed, so a failure here means the documented recipe in
 # unsloth_cli/commands/start.py no longer produces a working flow.
 #
-# Self-updating: for all six agents (claude, codex, hermes, openclaw,
-# opencode, pi) we obtain the exact env + command from
+# Self-updating: for all seven agents (claude, codex, hermes, openclaw,
+# opencode, pi, dsh) we obtain the exact env + command from
 # `unsloth start <agent> --no-launch` and run THAT, so a recipe change is
 # exercised automatically.
 #
@@ -225,7 +225,11 @@ parse_connect() {
   # here, the same intent as claude/codex's per-call bypass flags.
   local yolo=()
   [ -n "${CONNECT_YOLO:-}" ] && yolo=(--yolo)
-  if ! unsloth start "$AGENT" --no-launch "${yolo[@]}" --api-key "$UNSLOTH_API_KEY" > "$raw" 2>&1; then
+  # dsh's `--profile headless`: its default recipe opens the browser UI instead.
+  # shellcheck disable=SC2206
+  local passthrough=(${CONNECT_START_ARGS:-})
+  if ! unsloth start "$AGENT" --no-launch "${yolo[@]}" --api-key "$UNSLOTH_API_KEY" \
+      "${passthrough[@]}" > "$raw" 2>&1; then
     cat_redacted "$raw"
     guide_fail "'unsloth start ${AGENT} --no-launch' exited non-zero"
   fi
@@ -295,6 +299,18 @@ crosscheck_contract() {
         grep -q '"openai-completions"' "$cfg" \
           || echo "::warning::Pi provider api is no longer 'openai-completions' (write_pi_config)"
         cp "$cfg" "$REDACTED_DIR/pi-models.json"
+      fi
+      ;;
+    dsh)
+      grep -q 'UNSLOTH_API_KEY' "$raw" \
+        || guide_fail "dsh env key is no longer UNSLOTH_API_KEY (start.py _DSH_ENV_KEY)"
+      home="$(raw_env DSH_HOME)"
+      [ -n "$home" ] || guide_fail "DSH_HOME missing from connect output (start.py dsh())"
+      cfg="$home/settings.yaml"
+      if [ -f "$cfg" ]; then
+        grep -q 'openai-completions' "$cfg" \
+          || echo "::warning::dsh provider api is no longer 'openai-completions' (write_dsh_config)"
+        cp "$cfg" "$REDACTED_DIR/dsh-settings.yaml"
       fi
       ;;
   esac
@@ -435,6 +451,7 @@ case "$MODE" in
   connection)
     PROMPT='Reply with exactly the single word: pong'
     OUT="$LOGS_DIR/${AGENT}-connection.txt"
+    case "$AGENT" in dsh) CONNECT_START_ARGS='--profile headless' ;; esac
     parse_connect
     crosscheck_contract
     # claude/codex run in print mode via the flags start.py emits
@@ -493,7 +510,11 @@ case "$MODE" in
     # from the repo root BEFORE cd-ing into the scratch work dir. opencode/openclaw
     # gate tool approval through their config (prompting by default), so file-edit
     # opts them into auto-approval to run edits/commands headlessly.
-    case "$AGENT" in opencode|openclaw) CONNECT_YOLO=1 ;; esac
+    case "$AGENT" in
+      opencode|openclaw) CONNECT_YOLO=1 ;;
+      # A headless run has nobody to answer dsh's approval asks.
+      dsh) CONNECT_YOLO=1; CONNECT_START_ARGS='--profile headless' ;;
+    esac
     parse_connect
     crosscheck_contract
     # File-edit needs real tools, so we cannot zero them as in connection.

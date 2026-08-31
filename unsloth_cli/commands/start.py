@@ -97,6 +97,9 @@ _HERMES_POSIX_INSTALL_HINT = (
 # overrides in config.yaml. write_hermes_config claims this value for smaller
 # windows and scales the compaction threshold back down to the real window.
 _HERMES_MIN_CONTEXT = 65536
+_DSH_PROVIDER = "unsloth"
+_DSH_ENV_KEY = "UNSLOTH_API_KEY"
+_DSH_PACKAGE = "@deepseek-ai/dsh"
 _PI_PROVIDER = "unsloth"
 _SUBAGENT_NAME = "unsloth"
 _SUBAGENT_DESCRIPTION = (
@@ -369,7 +372,7 @@ _PERSIST_OPTION = typer.Option(
     rich_help_panel = _PANEL_SESSION,
     help = (
         "Keep this agent's Unsloth-managed session dir so you can resume it later. "
-        "codex/openclaw/hermes/pi have their whole home relocated into an Unsloth dir "
+        "codex/openclaw/hermes/pi/dsh have their whole home relocated into an Unsloth dir "
         "that is a throwaway temp dir (wiped on exit) by default; with --persist it "
         "lives under the Unsloth agents dir and survives, so their own resume can reopen "
         "it. claude and opencode keep sessions in your own stores (~/.claude, "
@@ -590,6 +593,18 @@ def _hermes_resume_oneshot_args(args: list[str]) -> list[str]:
         rewritten = prefix + rewritten
         return rewritten
     return args
+
+
+_DSH_LAUNCHER_ARGS = frozenset(
+    "--profile --patch --dump-config --dump-default-config -V --version plugin web".split()
+)
+
+
+def _dsh_command(args: list[str]) -> list[str]:
+    head = args[0] if args else ""
+    if head in _DSH_LAUNCHER_ARGS or head.startswith(("--profile=", "--patch=")):
+        return ["dsh", *args]
+    return ["dsh", "web", *args]
 
 
 class LoadOptions(NamedTuple):
@@ -1416,6 +1431,20 @@ def _write_private_text(path: Path, text: str) -> None:
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding = "utf-8") as handle:
         handle.write(text)
+
+
+def _read_yaml_object(path: Path) -> Optional[dict]:
+    import yaml
+
+    if not path.exists():
+        return {}
+    try:
+        data = yaml.safe_load(path.read_text(encoding = "utf-8"))
+    except (yaml.YAMLError, OSError):
+        return None
+    if data is None:
+        return {}
+    return data if isinstance(data, dict) else None
 
 
 def _read_json_object(path: Path) -> Optional[dict]:
@@ -4496,6 +4525,43 @@ def write_pi_subagent_config(
     )
 
 
+def write_dsh_config(base: str, model: dict, path: Path) -> None:
+    import yaml
+
+    config = _read_yaml_object(path)
+    if config is None:
+        typer.echo(
+            f"Warning: couldn't parse {path} — add an '{_DSH_PROVIDER}' provider "
+            "there yourself, or move the file aside and re-run.",
+            err = True,
+        )
+        return
+    model_entry = {"id": model["id"]}
+    window = model.get("context_length") or model.get("max_context_length")
+    if window:
+        window = int(window)
+        model_entry["contextWindow"] = window
+        model_entry["maxTokens"] = min(window // 4, 8192)
+    _subdict(_subdict(config, "llm-pi-ai"), "providers")[_DSH_PROVIDER] = {
+        "displayName": "Unsloth Studio",
+        "api": "openai-completions",
+        "baseURL": f"{base}/v1",
+        "apiKeyEnv": _DSH_ENV_KEY,
+        # pi-ai reads an unknown base URL as OpenAI itself.
+        "compat": {"supportsDeveloperRole": False, "maxTokensField": "max_tokens"},
+        "models": [model_entry],
+    }
+    _subdict(config, "agent-default-model").update(
+        provider = _DSH_PROVIDER,
+        model = model["id"],
+    )
+    text = yaml.safe_dump(config, sort_keys = False)
+    if not path.exists() or path.read_text(encoding = "utf-8") != text:
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_text(text, encoding = "utf-8")
+        typer.echo(f"Updated {path}")
+
+
 @start_app.command("claude", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
 def claude(
     ctx: typer.Context,
@@ -5202,3 +5268,66 @@ def pi(
             install_hint = install_hint,
             clear_screen = True,
         )
+
+
+@start_app.command("dsh", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
+def dsh(
+    ctx: typer.Context,
+    model: Optional[str] = _MODEL_OPTION,
+    api_key: Optional[str] = _KEY_OPTION,
+    launch: bool = _LAUNCH_OPTION,
+    gguf_variant: Optional[str] = _GGUF_VARIANT_OPTION,
+    max_seq_length: int = _CONTEXT_OPTION,
+    load_in_4bit: bool = _LOAD_4BIT_OPTION,
+    tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+    gpu_memory_mode: Optional[Literal["auto", "manual"]] = _GPU_MEMORY_MODE_OPTION,
+    enable_tools: bool = _ENABLE_TOOLS_OPTION,
+    tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
+    tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
+    reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
+    temperature: Optional[float] = _TEMPERATURE_OPTION,
+    top_p: Optional[float] = _TOP_P_OPTION,
+    top_k: Optional[int] = _TOP_K_OPTION,
+    min_p: Optional[float] = _MIN_P_OPTION,
+    repetition_penalty: Optional[float] = _REPETITION_PENALTY_OPTION,
+    presence_penalty: Optional[float] = _PRESENCE_PENALTY_OPTION,
+    serve: bool = _SERVE_OPTION,
+    yolo: bool = _YOLO_OPTION,
+    persist: bool = _PERSIST_OPTION,
+):
+    """Point DeepSeek Harness (dsh) at the running Unsloth server and start it."""
+    model, ctx.args[:] = _consume_positional_model(model, ctx.args)
+    _reject_as_subagent("dsh", ctx.args)
+    command = _dsh_command(ctx.args)
+    install_hint = _npm_install_hint(_DSH_PACKAGE)
+    _require_agent_for_launch("dsh", install_hint, launch)
+    base, key, entry = _connect(
+        api_key,
+        model,
+        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode),
+        serve = serve,
+        launch = launch,
+        server_options = ServerOptions(
+            enable_tools = enable_tools,
+            tool_call_healing = tool_call_healing,
+            tool_call_nudging = tool_call_nudging,
+            reasoning = reasoning,
+            temperature = temperature,
+            top_p = top_p,
+            top_k = top_k,
+            min_p = min_p,
+            repetition_penalty = repetition_penalty,
+            presence_penalty = presence_penalty,
+        ),
+    )
+    with _session_config("dsh", launch, persist = persist) as home:
+        write_dsh_config(base, entry, home / "settings.yaml")
+        env = {
+            _DSH_ENV_KEY: key,
+            "DSH_HOME": str(home),
+            # dsh uploads session records once a user records /feedback.
+            "DSH_TELEMETRY_DISABLED": "1",
+        }
+        if yolo:
+            env["DSH_PERMISSION_MODE"] = "danger-full-access"
+        _run(base, entry, env, command, launch = launch, install_hint = install_hint)
