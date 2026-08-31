@@ -253,6 +253,22 @@ def test_bare_delimiter_in_prose_after_a_closed_block():
     assert _has_answer_artifact("First, here is code: ```\nx = 1\n```")
 
 
+def test_closer_must_start_its_own_line():
+    """CommonMark closes on a delimiter that starts and ends its line, so a body
+    line reading ``Use three backticks: ``` `` is content, not the closer."""
+    text = "First, let me show it.\n```text\nUse three backticks: ```\nmore body\n```"
+    assert _has_answer_artifact(text)
+    assert not _would_reprompt(text)
+
+
+def test_prose_delimiter_and_real_opener_on_one_line():
+    """Every run on a line is examined, so a prose delimiter earlier in the line
+    does not hide the opener that follows it."""
+    text = "First, let me explain: use ``` for fences; here is code: ```python\nx = 1\n```"
+    assert _has_answer_artifact(text)
+    assert not _would_reprompt(text)
+
+
 def test_closing_tag_in_prose_does_not_eat_a_fence_closer():
     """Removing complete markup must not span a fence: an opening tag inside a
     block paired with a closing one in the prose after it took the fence's own

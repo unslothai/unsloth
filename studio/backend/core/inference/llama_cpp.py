@@ -877,6 +877,9 @@ _HAS_ANSWER_ARTIFACT = re.compile(
 _FENCE_RUN_RE = re.compile(r"(?<!`)(?P<backticks>`{3,})(?!`)|(?<!~)(?P<tildes>~{3,})(?!~)")
 # Structure, not content: stripped so a quoted fence is judged at its real column.
 _BLOCKQUOTE_PREFIX = re.compile(r"^[ \t]*(?:>[ \t]?)+")
+# A language token, the only trailing text that makes an inline run an opener
+# rather than prose: python3, c++, c#, objective-c, ts-node, bash-session.
+_FENCE_INFO_STRING_RE = re.compile(r"[A-Za-z][\w.+#-]*")
 
 
 def _has_unclosed_code_fence(text: str) -> bool:
@@ -898,39 +901,41 @@ def _has_unclosed_code_fence(text: str) -> bool:
         quote = _BLOCKQUOTE_PREFIX.match(raw_line)
         quote_depth = quote.group(0).count(">") if quote else 0
         line = raw_line[quote.end() :] if quote else raw_line
-        m = _FENCE_RUN_RE.search(line)
-        if not m:
-            continue
-        fence = m.group("backticks") or m.group("tildes")
-        raw_trailing = line[m.end() :]
-        trailing = raw_trailing.strip()
-        ch = fence[0]
-        is_inline = bool(line[: m.start()].strip())
-        if is_inline:
-            # A later run closes an inline span ("the marker is ```python```").
-            if _FENCE_RUN_RE.search(raw_trailing):
+        runs = list(_FENCE_RUN_RE.finditer(line))
+        for index, m in enumerate(runs):
+            fence = m.group("backticks") or m.group("tildes")
+            trailing = line[m.end() :].strip()
+            ch = fence[0]
+            at_line_start = not line[: m.start()].strip()
+            if active_char is not None:
+                # CommonMark closes only on a delimiter that starts its own line
+                # and ends it, so "Use three backticks: ```" inside a block is
+                # body text. Everything else here is body too.
+                if (
+                    at_line_start
+                    and ch == active_char
+                    and len(fence) >= active_len
+                    and quote_depth == active_quote
+                    and not trailing
+                ):
+                    active_char, active_len, active_quote = None, 0, 0
+                    closed_any = True
                 continue
-            # Bare delimiter once something has closed: a literal ("wrap it in
-            # ```"). Gated on closed_any so "here is code: ```" still opens.
-            if not trailing and closed_any and active_char is None:
+            if at_line_start:
+                active_char, active_len, active_quote = ch, len(fence), quote_depth
                 continue
-            # Multi-word or space-led trailing text is prose ("Use ``` to start").
-            if raw_trailing and raw_trailing[0] == " " and trailing:
+            # Inline. Models do open a fence mid-line, but only the last run can
+            # be that opener: an earlier one is closed by the later ("the marker
+            # is ```python```"), and only a bare info string tells an opener from
+            # prose. A bare delimiter once a block has closed is a literal ("wrap
+            # it in ```"); before any close, "here is code: ```" still opens.
+            if index != len(runs) - 1:
                 continue
-            if trailing and (" " in trailing or "\t" in trailing):
+            if trailing and not _FENCE_INFO_STRING_RE.fullmatch(trailing):
                 continue
-        if active_char is None:
+            if not trailing and closed_any:
+                continue
             active_char, active_len, active_quote = ch, len(fence), quote_depth
-        elif (
-            ch == active_char
-            and len(fence) >= active_len
-            and quote_depth == active_quote
-            and not trailing
-        ):
-            active_char = None
-            active_len = 0
-            active_quote = 0
-            closed_any = True
     return active_char is not None
 
 
