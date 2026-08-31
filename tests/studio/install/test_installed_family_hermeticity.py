@@ -81,7 +81,8 @@ AMBIENT_STATES: "dict[str, tuple]" = {
         ["rocm", "rocm-sdk-libraries-gfx110X-all"],
     ),
     "two-families-after-switch": (
-        None, ["filelock"],
+        None,
+        ["filelock"],
         ["rocm-sdk-libraries-gfx110X-all", "rocm-sdk-libraries-gfx1151"],
     ),
 }
@@ -123,8 +124,13 @@ def ambient(state: str):
         yield
 
 
-def _route(gfx: str, torch_line: str, env: "dict | None" = None,
-           family: "str | None" = None, torch_owns_rocm: bool = False) -> str:
+def _route(
+    gfx: str,
+    torch_line: str,
+    env: "dict | None" = None,
+    family: "str | None" = None,
+    torch_owns_rocm: bool = False,
+) -> str:
     """Every pip argument _ensure_rocm_torch() produced for this host, as one string.
 
     ``family`` / ``torch_owns_rocm`` pin the installed-wheel pair the way a test that
@@ -156,13 +162,20 @@ def _route(gfx: str, torch_line: str, env: "dict | None" = None,
         patch.object(stack_mod.os.path, "isdir", return_value = True),
         patch.object(stack_mod.subprocess, "run", return_value = probe),
     ):
-        for _stale in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES",
-                       "UNSLOTH_ROCM_GFX_ARCH", "UNSLOTH_TORCH_INDEX_URL",
-                       "UNSLOTH_AMD_ROCM_MIRROR", "UNSLOTH_ROCM_TORCH_INSTALLED"):
+        for _stale in (
+            "HIP_VISIBLE_DEVICES",
+            "ROCR_VISIBLE_DEVICES",
+            "CUDA_VISIBLE_DEVICES",
+            "UNSLOTH_ROCM_GFX_ARCH",
+            "UNSLOTH_TORCH_INDEX_URL",
+            "UNSLOTH_AMD_ROCM_MIRROR",
+            "UNSLOTH_ROCM_TORCH_INSTALLED",
+        ):
             if _stale not in (env or {}):
                 os.environ.pop(_stale, None)
         stack_mod._invalidate_torch_runtime_probe()
         import contextlib
+
         with contextlib.redirect_stdout(buf):
             stack_mod._ensure_rocm_torch()
     stack_mod._invalidate_torch_runtime_probe()
@@ -228,8 +241,9 @@ def test_the_installed_family_decides_the_skip(family, torch_owns_rocm, expect_r
     they gate quietly stopped working.
     """
     with ambient("bare"):
-        calls = _route("gfx1103", "2.10.0+rocm7.13.0|7.13|",
-                       family = family, torch_owns_rocm = torch_owns_rocm)
+        calls = _route(
+            "gfx1103", "2.10.0+rocm7.13.0|7.13|", family = family, torch_owns_rocm = torch_owns_rocm
+        )
     rerouted = "repo.amd.com/rocm/whl/gfx110X-all/" in calls
     assert rerouted is expect_reinstall, (
         f"family={family!r} torch_owns_rocm={torch_owns_rocm} should "
