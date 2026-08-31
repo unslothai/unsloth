@@ -8,6 +8,7 @@ Self-contained; can be moved to any directory.
 
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -1068,6 +1069,23 @@ def _apply_cli_tool_policy(enable_tools: "Optional[bool]") -> None:
     set_tool_policy(enable_tools)
 
 
+def _start_sandbox_probe() -> None:
+    """Warm the optional OS-sandbox probe without affecting startup."""
+    def _warm_sandbox_probe():
+        try:
+            from core.inference.sandbox import sandbox_available
+            sandbox_available()
+        except Exception as exc:
+            logger.debug("sandbox availability probe failed at startup: %s", exc)
+
+    try:
+        threading.Thread(target = _warm_sandbox_probe, daemon = True).start()
+    except Exception as exc:
+        # Thread creation can fail under process/thread exhaustion.  The probe
+        # is only a warm-up; the first tool call can still run it synchronously.
+        logger.debug("sandbox availability probe could not start: %s", exc)
+
+
 def run_server(
     host: str = "127.0.0.1",
     port: int = 8888,
@@ -1360,14 +1378,7 @@ def run_server(
     # sandboxed / unsandboxed" status is logged at startup instead of being
     # deferred to the first tool call, and so that first call does not pay the
     # probe's timeout. Best effort: a failure here must never block startup.
-    def _warm_sandbox_probe():
-        try:
-            from core.inference.sandbox import sandbox_available
-            sandbox_available()
-        except Exception as exc:  # never let the probe crash server startup
-            logger.debug("sandbox availability probe failed at startup: %s", exc)
-
-    Thread(target = _warm_sandbox_probe, daemon = True).start()
+    _start_sandbox_probe()
 
     _write_pid_file()
     import atexit

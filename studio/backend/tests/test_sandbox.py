@@ -79,19 +79,19 @@ def sandboxed_workdir(tmp_path, monkeypatch):
 
 @pytest.fixture
 def home_sentinel(tmp_path_factory):
-    """Yield a sentinel file path + secret, kept outside the sandbox workdir.
+    """Yield a sentinel file path and marker kept outside the sandbox workdir.
 
     The sentinel proves *negative*: if the sandboxed code reads the
-    file, the secret appears in the tool output. Placed under a
+    file, the marker appears in the tool output. Placed under a
     pytest tmp_path so the test is hermetic and works on rootless CI
     where the real $HOME is read-only.
     """
-    secret = f"SECRET-{uuid.uuid4().hex}"
+    marker = f"SENTINEL-{uuid.uuid4().hex}"
     sentinel_dir = tmp_path_factory.mktemp("studio_sandbox_sentinel")
     path = str(sentinel_dir / f"sentinel_{uuid.uuid4().hex}.txt")
-    Path(path).write_text(secret)
+    Path(path).write_text(marker)
     try:
-        yield path, secret
+        yield path, marker
     finally:
         if os.path.exists(path):
             os.unlink(path)
@@ -117,7 +117,7 @@ def test_workdir_write_succeeds(sandboxed_workdir):
 
 def test_home_read_denied(sandboxed_workdir, home_sentinel):
     sid, _ = sandboxed_workdir
-    path, secret = home_sentinel
+    path, marker = home_sentinel
     code = (
         f"try:\n"
         f"    with open({path!r}) as f: print('LEAKED:', f.read())\n"
@@ -125,7 +125,7 @@ def test_home_read_denied(sandboxed_workdir, home_sentinel):
         f"    print('DENIED:', type(e).__name__)\n"
     )
     out = _run_python(code, sid)
-    assert secret not in out, out
+    assert marker not in out, out
     assert "LEAKED:" not in out, out
     assert "DENIED:" in out, out
 
@@ -133,9 +133,9 @@ def test_home_read_denied(sandboxed_workdir, home_sentinel):
 def test_bash_home_read_denied(sandboxed_workdir, home_sentinel):
     """The terminal tool must enforce the same $HOME-denial as the python tool."""
     sid, _ = sandboxed_workdir
-    path, secret = home_sentinel
+    path, marker = home_sentinel
     out = _run_bash(f"/bin/cat {shlex.quote(path)}", sid)
-    assert secret not in out, out
+    assert marker not in out, out
     # Confirm cat actually ran and was denied, not silently no-op'd.
     assert any(
         s in out for s in ("Permission denied", "Operation not permitted", "No such file")
@@ -192,9 +192,9 @@ def test_sandbox_off_actually_leaks(tmp_path, monkeypatch, home_sentinel):
     sid = "_sbtest_off"
     monkeypatch.setitem(tools._workdirs, sid, str(tmp_path))
 
-    path, secret = home_sentinel
+    path, marker = home_sentinel
     out = _run_bash(f"/bin/cat {shlex.quote(path)}", sid)
-    assert secret in out, out
+    assert marker in out, out
 
 
 @pytest.mark.skipif(
