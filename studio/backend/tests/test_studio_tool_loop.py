@@ -466,6 +466,22 @@ def test_zero_budget_withdraws_the_catalog(executed):
     assert transport.requests[0]["tool_choice"] == "none"
 
 
+def test_tool_choice_none_skips_rag_autoinject(executed, monkeypatch):
+    def fail_autoinject(*_args, **_kwargs):
+        raise AssertionError("tool_choice none must not run RAG retrieval")
+
+    monkeypatch.setattr(loop_mod, "build_rag_autoinject", fail_autoinject)
+    transport = FakeTransport([[_sse({"content": "plain answer"}), _sse(finish = "stop"), _DONE]])
+    lines = _run(
+        transport,
+        tool_choice = "none",
+        rag_scope = {"project_id": "p1", "autoinject": False},
+    )
+
+    assert executed == []
+    assert "plain answer" in _visible_text(lines)
+
+
 def test_denied_call_does_not_spend_an_iteration(executed, monkeypatch):
     decisions = ["deny", "allow"]
     monkeypatch.setattr(loop_mod, "begin_tool_decision", lambda session, approval: object())
