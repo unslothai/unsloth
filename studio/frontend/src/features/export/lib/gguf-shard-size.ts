@@ -26,3 +26,12 @@ export function normalizeGgufShardSize(value: string): string | null {
 export function isValidGgufShardSize(value: string): boolean {
   return normalizeGgufShardSize(value) !== null;
 }
+
+export function ggufShardSaveDirectory(
+  baseDirectory: string,
+  shardSize: string | null,
+): string {
+  return shardSize && shardSize !== "0"
+    ? `${baseDirectory}-split-${shardSize}`
+    : baseDirectory;
+}

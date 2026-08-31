@@ -86,6 +86,7 @@ import {
 import { useExportSizeEstimate } from "./hooks/use-export-size-estimate";
 import {
   type GgufShardMode,
+  ggufShardSaveDirectory,
   isValidGgufShardSize,
   normalizeGgufShardSize,
 } from "./lib/gguf-shard-size";
@@ -592,7 +593,7 @@ export function ExportPage() {
   const estimatedSize = getEstimatedSize(exportMethod, quantLevels, fp16Bytes);
   const selectedExportSource =
     sourceMode === "checkpoint" ? checkpoint : selectedSourceModel;
-  const defaultSaveDirectory = useMemo(() => {
+  const baseDefaultSaveDirectory = useMemo(() => {
     const relative = buildRelativeSaveDirectory(
       exportMethod,
       sourceMode,
@@ -625,7 +626,6 @@ export function ExportPage() {
     sourceBaseModelName,
     sourceMode,
   ]);
-  const saveDirectory = customSaveDirectory?.trim() || defaultSaveDirectory;
   // Each merged format uploads a full model to the repo root, so several to one repo would collide.
   // GGUF method exporting an adapter checkpoint as a GGUF LoRA; reuses the LoRA export path.
   const ggufAsLora =
@@ -643,6 +643,11 @@ export function ExportPage() {
       : supportsGgufSharding
         ? "0"
         : null;
+  const defaultSaveDirectory = ggufShardSaveDirectory(
+    baseDefaultSaveDirectory,
+    normalizedGgufShardSize,
+  );
+  const saveDirectory = customSaveDirectory?.trim() || defaultSaveDirectory;
   const ggufShardSizeValid =
     !supportsGgufSharding ||
     ggufShardMode === "single" ||

@@ -6,6 +6,7 @@ import { register } from "node:module";
 import test from "node:test";
 
 import {
+  ggufShardSaveDirectory,
   isValidGgufShardSize,
   normalizeGgufShardSize,
 } from "../src/features/export/lib/gguf-shard-size.ts";
@@ -46,6 +47,15 @@ test("invalid and empty split sizes fail validation", () => {
     assert.equal(normalizeGgufShardSize(value), null, value);
     assert.equal(isValidGgufShardSize(value), false, value);
   }
+});
+
+test("split defaults use a separate save directory", () => {
+  assert.equal(
+    ggufShardSaveDirectory("Qwen-GGUF", "512MB"),
+    "Qwen-GGUF-split-512MB",
+  );
+  assert.equal(ggufShardSaveDirectory("Qwen-GGUF", "0"), "Qwen-GGUF");
+  assert.equal(ggufShardSaveDirectory("Qwen-GGUF", null), "Qwen-GGUF");
 });
 
 function params(ggufShardSize: string | null) {
