@@ -189,14 +189,26 @@ _TAURI_CORS_ORIGINS = (
     "http://127.0.0.1:5173",  # Tauri dev/Vite fallback
 )
 
+_LOOPBACK_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:[0-9]{1,5})?$"
+
 
 def cors_origins_for_mode(*, api_only: bool, secure: bool) -> list[str]:
     """Allowed CORS origins. Default is any-origin (["*"]); api-only locks down
     to the Tauri desktop app, except in secure mode where the API is published
-    over Cloudflare and must stay reachable from remote browser origins."""
+    over Cloudflare and must stay reachable from remote browser origins.
+    Can be overridden via UNSLOTH_CORS_ORIGINS."""
+    if custom := os.environ.get("UNSLOTH_CORS_ORIGINS"):
+        return [origin.strip() for origin in custom.split(",") if origin.strip()]
     if api_only and not secure:
         return list(_TAURI_CORS_ORIGINS)
     return ["*"]
+
+
+def cors_origin_regex_for_mode(*, api_only: bool, secure: bool) -> str | None:
+    """Allowed CORS origin regex for local loopback web applications."""
+    if api_only and not secure:
+        return _LOOPBACK_ORIGIN_REGEX
+    return None
 
 
 def apply_stdio_mcp_loopback_default(host: str, *, is_colab: bool = False) -> None:
