@@ -639,7 +639,10 @@ test("a per-call thought signature forces a publish", () => {
   // cannot be replayed.
   const update = source.indexOf("const prevExtra =");
   assert.notEqual(update, -1, "the existing-call update path is gone");
-  const window = source.slice(update, update + 700);
+  // Wide enough for the parking branch that now sits between the anchor and
+  // the latch: the ambiguous metadata of a repeated name waits rather than
+  // landing on the closed call.
+  const window = source.slice(update, update + 1400);
   assert.ok(
     window.includes("replayStateChanged = true"),
     "a changed per-call extra_content does not force a publish",

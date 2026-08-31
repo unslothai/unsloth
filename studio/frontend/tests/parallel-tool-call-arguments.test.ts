@@ -638,30 +638,62 @@ test("the resumable scan agrees with scanning from the start", () => {
   }
 });
 
-test("one argument streamed a character at a time stays linear", () => {
+test("one argument streamed a character at a time is scanned once", () => {
   // Rescanning per fragment made a 20 KB argument cost over a second on the
-  // thread that paints the stream. A ratio, not a deadline: four times the
-  // argument must cost four times the work, so a slow runner moves both.
-  const timeFeed = (size: number): number => {
-    const payload = '{"code":"' + "x".repeat(size) + '"}';
-    const stream = makeStream();
-    stream.feed([{ index: 0, function: { name: "write", arguments: "" } }]);
-    const started = performance.now();
-    for (const ch of payload) {
-      stream.feed([{ index: 0, function: { arguments: ch } }]);
+  // thread that paints the stream. Counted, not timed: the scan parses a
+  // segment when it closes one, so a resumable scan parses once per object
+  // however many deltas it arrived in, and a restarting one parses every
+  // object again on every delta after it closed. A wall-clock ratio said the
+  // same thing with about 25 percent of margin, which is not enough on a
+  // loaded runner.
+  const parses = (size: number, feed: (text: string) => unknown): number => {
+    const real = JSON.parse;
+    let calls = 0;
+    (JSON as { parse: typeof JSON.parse }).parse = ((
+      text: string,
+      reviver?: unknown,
+    ) => {
+      calls += 1;
+      return (real as (t: string, r?: unknown) => unknown)(text, reviver);
+    }) as typeof JSON.parse;
+    try {
+      const payload = '{"a":1}{"code":"' + "x".repeat(size) + '"}';
+      let text = "";
+      for (const ch of payload) {
+        text += ch;
+        feed(text);
+      }
+      return calls;
+    } finally {
+      (JSON as { parse: typeof JSON.parse }).parse = real;
     }
-    const elapsed = performance.now() - started;
-    assert.deepEqual(shape(stream.parts), [["write", payload]]);
-    return elapsed;
   };
-  timeFeed(4000);
-  const small = timeFeed(4000);
-  const large = timeFeed(16000);
-  // Linear is 4x and quadratic 16x, so the line between them is 8x.
+
+  for (const size of [500, 2000]) {
+    const scan = createBoundaryScan();
+    assert.equal(
+      parses(size, (text) => scan.feed(text)),
+      2,
+      "the scan is parsing more than once per object it closes",
+    );
+  }
+
+  // The shape it replaces, measured the same way, so the test says what it
+  // guards against rather than only asserting a number.
+  const restarting = parses(2000, splitTopLevelJsonObjects);
   assert.ok(
-    large < small * 8,
-    `four times the payload cost ${(large / small).toFixed(1)}x the time`,
+    restarting > 2000,
+    `restarting from the beginning parsed ${restarting} times, so this test is no longer measuring the difference it was written for`,
   );
+
+  // And the loop still reads it as one call, whatever the scan costs.
+  const stream = makeStream();
+  const payload = '{"code":"' + "x".repeat(400) + '"}';
+  stream.feed([{ index: 0, function: { name: "write", arguments: "" } }]);
+  for (const ch of payload) {
+    stream.feed([{ index: 0, function: { arguments: ch } }]);
+  }
+  assert.deepEqual(shape(stream.parts), [["write", payload]]);
 });
 
 test("metadata arriving alone stays on the call that closed", () => {
@@ -1164,6 +1196,54 @@ test("a claim that turns out not to be a call gives the number back", () => {
     stream.parts.map((p) => [p.toolCallId, p.toolName]),
     [["tool_call_0", "alpha"]],
   );
+});
+
+test("a repeated name's metadata waits for the call it announced", () => {
+  // The same tool twice on one slot, the second announced by a name-only delta
+  // carrying its own signature. Merging it where it landed both overwrote the
+  // closed call's signature and left the new call unsigned, and Gemini
+  // validates a signature against the call it is replayed on, so the turn was
+  // rejected either way round.
+  const stream = makeStream();
+  stream.feed([
+    {
+      index: 0,
+      function: { name: "lookup", arguments: '{"q":"a"}' },
+      extra_content: { sig: "A" },
+    },
+  ]);
+  stream.feed([
+    { index: 0, function: { name: "lookup" }, extra_content: { sig: "B" } },
+  ]);
+  stream.feed([{ index: 0, function: { arguments: '{"q":"b"}' } }]);
+  stream.feed([], true);
+
+  assert.deepEqual(shape(stream.parts), [
+    ["lookup", '{"q":"a"}'],
+    ["lookup", '{"q":"b"}'],
+  ]);
+  assert.deepEqual(stream.parts[0].extra_content, { sig: "A" });
+  assert.deepEqual(stream.parts[1].extra_content, { sig: "B" });
+});
+
+test("a repeated name that announced nothing keeps its metadata", () => {
+  // No object followed, so the repeated name really was that call's resent and
+  // the signature riding it is that call's too.
+  const stream = makeStream();
+  stream.feed([
+    {
+      index: 0,
+      function: { name: "lookup", arguments: '{"q":"a"}' },
+      extra_content: { own: 1 },
+    },
+  ]);
+  stream.feed([
+    { index: 0, function: { name: "lookup" }, extra_content: { sig: "B" } },
+  ]);
+  stream.feed([], true);
+
+  assert.deepEqual(shape(stream.parts), [["lookup", '{"q":"a"}']]);
+  assert.deepEqual(stream.parts[0].extra_content, { own: 1, sig: "B" });
 });
 
 test("a stable id naming a longer tool opens its own call", () => {

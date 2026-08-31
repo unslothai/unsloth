@@ -5308,6 +5308,11 @@ export function createOpenAIStreamAdapter(
       // `{"a":1}{` is not marked truncated, so the lone brace would persist as
       // a card nothing completes. Kept while the turn runs, to be written to.
       const openTailIds = new Set<string>();
+      // Metadata from a delta whose name repeated the one a closed card holds.
+      // That name is either the call's, resent, or the next call to the same
+      // tool announcing itself, and only the object that follows tells them
+      // apart, so it waits here rather than landing on the wrong call.
+      const pendingExtraByPartId = new Map<string, Record<string, unknown>>();
       const endProviderTurn = (): boolean => {
         let changed = false;
         // _call_is_finished, on the arguments alone: the backend holds the
@@ -5360,6 +5365,22 @@ export function createOpenAIStreamAdapter(
           releaseStreamedCard(part.toolCallId);
           changed = true;
         }
+        for (const [partId, waiting] of pendingExtraByPartId) {
+          // No object ever came, so the repeated name was that call's after all
+          // and so is the metadata that rode it.
+          const at = toolCallParts.findIndex((part) => part.toolCallId === partId);
+          if (at === -1) continue;
+          const part = toolCallParts[at] as PositionedToolCallPart;
+          toolCallParts[at] = {
+            ...part,
+            extra_content: {
+              ...(isPlainRecord(part.extra_content) ? part.extra_content : {}),
+              ...waiting,
+            },
+          };
+          changed = true;
+        }
+        pendingExtraByPartId.clear();
         // Numbering is the backend's pass, and it runs over the calls that
         // survive: a card dropped above leaves a gap, and a claim displaced one
         // for a call that turned out not to be one at all. Both are settled
@@ -7310,6 +7331,17 @@ export function createOpenAIStreamAdapter(
                   if (announcesOverAnnouncement && matched) {
                     (matched as PositionedToolCallPart)._superseded = true;
                   }
+                  // A name repeating the one a closed card holds says nothing
+                  // new about that call, so metadata riding it belongs to
+                  // whichever call the next object opens; merged now it
+                  // overwrites the signature the closed call arrived with and
+                  // leaves the next call unsigned.
+                  const extraIsAmbiguous =
+                    closedSlot &&
+                    !!call.function?.name &&
+                    !!matched?.toolName &&
+                    call.function.name === matched.toolName &&
+                    isPlainRecord(call.extra_content);
                   const opensNextCall =
                     (closedSlot &&
                       (bringsArgs || idNamesAnotherCall || namesNextCall) &&
@@ -7383,8 +7415,15 @@ export function createOpenAIStreamAdapter(
                     // Merged, not replaced: a signature announced with the
                     // name and one arriving with the arguments are different
                     // fields of one call.
-                    const incomingExtra =
-                      isPlainRecord(prevExtra) && isPlainRecord(call.extra_content)
+                    if (extraIsAmbiguous && isPlainRecord(call.extra_content)) {
+                      pendingExtraByPartId.set(existing.toolCallId, {
+                        ...(pendingExtraByPartId.get(existing.toolCallId) ?? {}),
+                        ...call.extra_content,
+                      });
+                    }
+                    const incomingExtra = extraIsAmbiguous
+                      ? prevExtra
+                      : isPlainRecord(prevExtra) && isPlainRecord(call.extra_content)
                         ? { ...prevExtra, ...call.extra_content }
                         : call.extra_content;
                     if (
@@ -7482,12 +7521,25 @@ export function createOpenAIStreamAdapter(
                     const freshName = nameFragment || heldName;
                     // Across several calls the metadata belongs to the one
                     // this delta closes, the last. Same as the backend.
-                    const freshOwnExtra = freshIsSplit
-                      ? undefined
-                      : call.extra_content;
-                    const bornExtra = freshIsSplit
-                      ? call.extra_content
+                    // The object proved the repeated name announced this call,
+                    // so what was waiting on the card it reached is this one's.
+                    const waiting = matched
+                      ? pendingExtraByPartId.get(matched.toolCallId)
                       : undefined;
+                    if (waiting && matched) {
+                      pendingExtraByPartId.delete(matched.toolCallId);
+                    }
+                    const withWaiting =
+                      waiting === undefined
+                        ? call.extra_content
+                        : {
+                            ...waiting,
+                            ...(isPlainRecord(call.extra_content)
+                              ? call.extra_content
+                              : {}),
+                          };
+                    const freshOwnExtra = freshIsSplit ? undefined : withWaiting;
+                    const bornExtra = freshIsSplit ? withWaiting : undefined;
                     const argsText = freshIsSplit
                       ? freshSegments[0]
                       : argsFragment;

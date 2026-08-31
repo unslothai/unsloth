@@ -525,6 +525,11 @@ class _Turn:
     # Forks whose object never closed: reported only once it does, or a stream
     # cut short after '{"a":1}{' runs the tool again on half an argument.
     open_tail_keys: set[Any] = field(default_factory = set)
+    # Metadata from a delta whose name repeated the one the slot holds. That
+    # name is either the call's, resent, or the next call to the same tool
+    # announcing itself, and only the object that follows tells them apart, so
+    # the metadata waits here rather than landing on the wrong call.
+    pending_extra: dict[Any, dict[str, Any]] = field(default_factory = dict)
     round: int = 0
     healed: list[dict[str, Any]] = field(default_factory = list)
     text: list[str] = field(default_factory = list)
@@ -736,12 +741,28 @@ class _Turn:
                 closed, unfinished = self._scan(key, held["function"]["arguments"])
                 slot_is_closed = bool(closed) and not unfinished
             extra = raw_call.get("extra_content")
+            # A name repeating the one a closed slot holds says nothing new
+            # about that call, so metadata riding it belongs to whichever call
+            # the next object opens; merged here it overwrites the signature the
+            # closed call arrived with and leaves the next call unsigned.
+            extra_is_ambiguous = bool(
+                slot_is_closed
+                and isinstance(new_name, str)
+                and new_name
+                and new_name == held_name_now
+                and isinstance(extra, dict)
+                and extra
+            )
             if (slot_is_closed and opens_next_call) or announces_over_announcement:
                 if announces_over_announcement and held is not None:
                     # Taken over while it held only its name.
                     held["superseded"] = True
                 self.split_seq += 1
+                waiting = self.pending_extra.pop(key, None)
                 key = (index, "_split", self.split_seq)
+                if waiting:
+                    # The object proved the repeated name announced this call.
+                    extra = {**waiting, **extra} if isinstance(extra, dict) else waiting
             self.last_index = index
             self.open_key_by_index[index] = key
             if key not in self.by_index:
@@ -780,7 +801,12 @@ class _Turn:
                 self.key_by_call_id.setdefault(call_id, key)
             # So a fork below can hand this delta's metadata to its own call.
             extra_before = current.get("extra_content")
-            if isinstance(extra, dict) and extra:
+            if extra_is_ambiguous:
+                self.pending_extra[key] = {
+                    **self.pending_extra.get(key, {}),
+                    **extra,
+                }
+            elif isinstance(extra, dict) and extra:
                 # Gemini 3 stows this call's thoughtSignature here, and the
                 # native translator rejects a replayed functionCall without it.
                 # Per call, so it cannot ride along on the delta-level slot.
@@ -943,6 +969,13 @@ class _Turn:
         # the provider opened is kept (a zero-parameter tool looks like that).
         # Its metadata goes to the call it was mistaken for: Gemini stows a
         # thought signature there and rejects a replay without one.
+        for key, waiting in self.pending_extra.items():
+            # No object ever came, so the repeated name was that call's after
+            # all and so is the metadata that rode it.
+            held = self.by_index.get(key)
+            if held is not None and waiting:
+                held["extra_content"] = {**held.get("extra_content", {}), **waiting}
+        self.pending_extra.clear()
         kept: list[tuple[Any, dict[str, Any]]] = []
         for index, call in ordered:
             never_ran = not call["function"]["arguments"]
