@@ -28,9 +28,7 @@ so the patch has to be one too.
 
 import re
 
-_PATCH_LINE = re.compile(
-    r"accelerate\.accelerator\.Accelerator\.distributed_type\s*=\s*(.+)"
-)
+_PATCH_LINE = re.compile(r"accelerate\.accelerator\.Accelerator\.distributed_type\s*=\s*(.+)")
 
 
 def _find_patch_expression():
@@ -40,7 +38,7 @@ def _find_patch_expression():
     import pathlib
 
     utils_path = pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "models" / "_utils.py"
-    text = utils_path.read_text(encoding="utf-8")
+    text = utils_path.read_text(encoding = "utf-8")
     match = _PATCH_LINE.search(text)
     assert match is not None, "could not find the Accelerator.distributed_type patch in _utils.py"
     return match.group(1).strip()
