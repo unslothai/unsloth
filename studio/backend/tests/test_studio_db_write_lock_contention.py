@@ -12,6 +12,7 @@ poll query, and log levels.
 """
 
 import asyncio
+import hashlib
 import logging
 import sqlite3
 import threading
@@ -738,3 +739,59 @@ def test_server_errors_keep_their_traceback(status):
     log_and_http_error(raised, status, "public", event = "e", log = log)
     level, kwargs = log.calls[0]
     assert level == "error" and kwargs.get("exc_info") is raised
+
+
+def test_wal_keeper_declines_when_the_filesystem_refused_wal(db, caplog):
+    """Network shares and some FUSE mounts leave the file on a rollback journal.
+
+    There is no WAL to hold open there, and the saving is not worth failing startup over:
+    the keeper reports that it did not engage and Studio boots as before.
+    """
+    conn = sqlite3.connect(str(db))
+    conn.execute("PRAGMA journal_mode=DELETE")
+    conn.close()
+    assert _journal_mode(db) == "delete"
+
+    with caplog.at_level(logging.INFO, logger = studio_db.logger.name):
+        assert studio_db.open_wal_keeper() is None
+    assert "not WAL" in caplog.text
+
+
+def test_wal_keeper_holds_the_wal_open_for_short_lived_writers(db):
+    """The #9934 write amplification: without a keeper every close rewrites studio.db."""
+    wal = Path(f"{db}-wal")
+
+    for index in range(5):
+        _short_lived_write(db, f"unkept-{index}")
+        assert not wal.exists()
+    unkept = _digest(db)
+
+    keeper = studio_db.open_wal_keeper()
+    assert keeper is not None
+    for index in range(5):
+        _short_lived_write(db, f"kept-{index}")
+        assert wal.is_file()
+    assert _digest(db) == unkept
+
+    keeper.close()
+    assert not wal.exists()
+    assert _digest(db) != unkept
+
+
+def _digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _short_lived_write(path: Path, value: str) -> None:
+    """One writer with the lifetime every studio_db accessor gives its connection."""
+    conn = studio_db.get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "INSERT OR REPLACE INTO app_settings (key, value_json, updated_at) "
+            "VALUES ('wal-probe', ?, '0')",
+            (value,),
+        )
+        conn.commit()
+    finally:
+        conn.close()

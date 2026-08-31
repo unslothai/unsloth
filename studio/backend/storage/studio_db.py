@@ -1259,21 +1259,30 @@ def get_connection(busy_timeout_seconds: float = _BUSY_TIMEOUT_SECONDS) -> sqlit
     return conn
 
 
-def open_wal_keeper() -> sqlite3.Connection:
-    """Open an idle lifespan connection that prevents last-close WAL checkpoints."""
+def open_wal_keeper() -> sqlite3.Connection | None:
+    """Open an idle lifespan connection that prevents last-close WAL checkpoints.
+
+    None when the database is not in WAL mode, which is not a fault: journal_mode=WAL
+    silently declines on filesystems without shared-memory support (network shares, some
+    FUSE and container mounts) and is persistent in the file, so this reads what is in
+    force. There is no WAL to hold open there, and those installs go without the saving
+    rather than without Studio, as _apply_wal_synchronous already treats them.
+
+    Reading the mode is also what opens the WAL: a connection sqlite has not had to
+    engage is not a participant and would keep nothing.
+    """
     conn = get_connection()
     try:
-        # sqlite3.connect() is lazy enough that merely holding the object does not
-        # register it as a WAL participant.  Reading journal_mode engages the file;
-        # subsequent short-lived writers can then close without each becoming the
-        # last connection and checkpointing the WAL back into studio.db.
         mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
-        if str(mode).lower() != "wal":
-            raise RuntimeError(f"studio.db is not in WAL mode: {mode}")
-        return conn
-    except Exception:
+    except (sqlite3.Error, TypeError, IndexError) as exc:
         conn.close()
-        raise
+        logger.warning("Could not read studio.db journal mode: %s", exc)
+        return None
+    if not isinstance(mode, str) or mode.lower() != "wal":
+        conn.close()
+        logger.info("studio.db is in %s mode, not WAL; WAL keeper not engaged.", mode)
+        return None
+    return conn
 
 
 def create_run(
