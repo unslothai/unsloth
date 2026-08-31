@@ -17,12 +17,34 @@ type RefreshResponse = {
   must_change_password: boolean;
 };
 
+type AuthFetchOptions = {
+  retryNetworkErrors?: boolean;
+  /** Synchronous policy check run immediately before any retry sends bytes. */
+  beforeRetry?: () => void;
+};
+
 let isRedirecting = false;
 let refreshInflight: Promise<boolean> | null = null;
 let refreshInflightToken: string | null = null;
 let logoutGeneration = 0;
 
 const TAURI_FETCH_RETRY_DELAYS_MS = [250, 750, 1500] as const;
+const BROWSER_TIMEZONE_HEADER = "X-Unsloth-Timezone";
+const BROWSER_TIMEZONE_OFFSET_HEADER =
+  "X-Unsloth-Timezone-Offset-Minutes";
+
+function addBrowserTimezoneHeaders(headers: Headers): void {
+  try {
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (timezone) headers.set(BROWSER_TIMEZONE_HEADER, timezone);
+    headers.set(
+      BROWSER_TIMEZONE_OFFSET_HEADER,
+      String(new Date().getTimezoneOffset()),
+    );
+  } catch {
+    // runtimes without Intl keep the backend-local fallback.
+  }
+}
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -35,6 +57,8 @@ function clearAuthTokensIfCurrent(refreshToken: string | null): void {
 async function fetchWithTauriNetworkRetry(
   input: RequestInfo | URL,
   init?: RequestInit,
+  retryNetworkErrors = true,
+  beforeRetry?: () => void,
 ): Promise<Response> {
   for (let attempt = 0; ; attempt++) {
     try {
@@ -42,17 +66,21 @@ async function fetchWithTauriNetworkRetry(
     } catch (error) {
       if (
         !isTauri ||
+        !retryNetworkErrors ||
         !(error instanceof TypeError) ||
         attempt >= TAURI_FETCH_RETRY_DELAYS_MS.length
       ) {
         throw error;
       }
       await wait(TAURI_FETCH_RETRY_DELAYS_MS[attempt]);
+      beforeRetry?.();
     }
   }
 }
 
-async function isPasswordChangeRequiredResponse(response: Response): Promise<boolean> {
+async function isPasswordChangeRequiredResponse(
+  response: Response,
+): Promise<boolean> {
   if (response.status !== 403) return false;
 
   try {
@@ -82,26 +110,70 @@ async function redirectToAuth(): Promise<void> {
     // Fall through to /login on error
   }
 
+  if (window.location.pathname === target) {
+    isRedirecting = false;
+    return;
+  }
   window.location.href = target;
+}
+
+function asTransportFailure(err: unknown): unknown {
+  // fetch TypeError = offline | backend down | CORS/DNS. Tagged so callers tell "never reached"
+  // from "rejected"; Tauri is always backend-down, the web build distinguishes offline.
+  if (!(err instanceof TypeError)) return err;
+  if (
+    !isTauri &&
+    typeof navigator !== "undefined" &&
+    navigator.onLine === false
+  ) {
+    return Object.assign(
+      new Error(
+        "You appear to be offline. Check your network connection and try again.",
+      ),
+      { unslothTransportFailure: true },
+    );
+  }
+  return Object.assign(
+    new Error("Unsloth isn't running -- please relaunch it."),
+    { unslothTransportFailure: true },
+  );
 }
 
 async function retryWithCurrentToken(
   input: RequestInfo | URL,
   init?: RequestInit,
+  retryNetworkErrors = true,
+  beforeRetry?: () => void,
 ): Promise<Response> {
+  beforeRetry?.();
   const retryHeaders = new Headers(init?.headers);
+  addBrowserTimezoneHeaders(retryHeaders);
   const token = getAuthToken();
   if (token) retryHeaders.set("Authorization", `Bearer ${token}`);
-  return fetchWithTauriNetworkRetry(input, { ...init, headers: retryHeaders });
+  // Retries are tagged like the first attempt; an untagged TypeError reads as a rejection.
+  try {
+    return await fetchWithTauriNetworkRetry(
+      input,
+      { ...init, headers: retryHeaders },
+      retryNetworkErrors,
+      beforeRetry,
+    );
+  } catch (err) {
+    throw asTransportFailure(err);
+  }
 }
 
 async function retryWithTauriAutoAuth(
   input: RequestInfo | URL,
   init?: RequestInit,
+  retryNetworkErrors = true,
+  beforeRetry?: () => void,
 ): Promise<Response | null> {
   clearAuthTokens();
   const { tauriAutoAuth } = await import("./tauri-auto-auth");
-  if (await tauriAutoAuth()) return retryWithCurrentToken(input, init);
+  if (await tauriAutoAuth()) {
+    return retryWithCurrentToken(input, init, retryNetworkErrors, beforeRetry);
+  }
   return null;
 }
 
@@ -152,9 +224,11 @@ export async function refreshSession(): Promise<boolean> {
 export async function authFetch(
   input: RequestInfo | URL,
   init?: RequestInit,
+  options?: AuthFetchOptions,
 ): Promise<Response> {
-  const resolvedInput = typeof input === 'string' ? apiUrl(input) : input;
+  const resolvedInput = typeof input === "string" ? apiUrl(input) : input;
   const headers = new Headers(init?.headers);
+  addBrowserTimezoneHeaders(headers);
   const accessToken = getAuthToken();
   if (accessToken) {
     headers.set("Authorization", `Bearer ${accessToken}`);
@@ -162,28 +236,29 @@ export async function authFetch(
 
   let response: Response;
   try {
-    response = await fetchWithTauriNetworkRetry(resolvedInput, {
-      ...init,
-      headers,
-    });
+    response = await fetchWithTauriNetworkRetry(
+      resolvedInput,
+      {
+        ...init,
+        headers,
+      },
+      options?.retryNetworkErrors ?? true,
+      options?.beforeRetry,
+    );
   } catch (err) {
-    if (err instanceof TypeError) {
-      // fetch TypeError = offline | backend down | CORS/DNS. In Tauri
-      // it's always backend-down; in the web build distinguish offline
-      // so the user gets the right recovery path.
-      if (!isTauri && typeof navigator !== "undefined" && navigator.onLine === false) {
-        throw new Error(
-          "You appear to be offline. Check your network connection and try again.",
-        );
-      }
-      throw new Error("Studio isn't running -- please relaunch it.");
-    }
-    throw err;
+    throw asTransportFailure(err);
   }
 
   if (await isPasswordChangeRequiredResponse(response)) {
     if (isTauri) {
-      return (await retryWithTauriAutoAuth(resolvedInput, init)) ?? response;
+      return (
+        (await retryWithTauriAutoAuth(
+          resolvedInput,
+          init,
+          options?.retryNetworkErrors ?? true,
+          options?.beforeRetry,
+        )) ?? response
+      );
     }
     void redirectToAuth();
     return response;
@@ -194,7 +269,14 @@ export async function authFetch(
   const refreshed = await refreshSession();
   if (!refreshed) {
     if (isTauri) {
-      return (await retryWithTauriAutoAuth(resolvedInput, init)) ?? response;
+      return (
+        (await retryWithTauriAutoAuth(
+          resolvedInput,
+          init,
+          options?.retryNetworkErrors ?? true,
+          options?.beforeRetry,
+        )) ?? response
+      );
     }
     clearAuthTokensIfCurrent(refreshToken);
     void redirectToAuth();
@@ -203,17 +285,31 @@ export async function authFetch(
 
   if (mustChangePassword()) {
     if (isTauri) {
-      return (await retryWithTauriAutoAuth(resolvedInput, init)) ?? response;
+      return (
+        (await retryWithTauriAutoAuth(
+          resolvedInput,
+          init,
+          options?.retryNetworkErrors ?? true,
+          options?.beforeRetry,
+        )) ?? response
+      );
     }
     void redirectToAuth();
     return response;
   }
 
   if (!getAuthToken()) clearAuthTokens();
-  return retryWithCurrentToken(resolvedInput, init);
+  return retryWithCurrentToken(
+    resolvedInput,
+    init,
+    options?.retryNetworkErrors ?? true,
+    options?.beforeRetry,
+  );
 }
 
-async function postLogout(accessToken: string | null): Promise<Response | null> {
+async function postLogout(
+  accessToken: string | null,
+): Promise<Response | null> {
   try {
     return await fetchWithTauriNetworkRetry(apiUrl("/api/auth/logout"), {
       method: "POST",
@@ -227,10 +323,9 @@ async function postLogout(accessToken: string | null): Promise<Response | null> 
 }
 
 export async function logout(): Promise<void> {
-  // Server-side revoke. If the access token is expired the 401 fires
-  // BEFORE revoke runs; rotate via the refresh token and retry so the
-  // refresh family is actually revoked. Generation bump in finally
-  // invalidates any in-flight refresh from before this call.
+  // Server-side revoke. If the access token is expired the 401 fires before revoke runs, so
+  // rotate via the refresh token and retry to revoke the family. The finally generation bump
+  // invalidates in-flight refreshes.
   try {
     let response = await postLogout(getAuthToken());
     if (response && response.status === 401 && getRefreshToken()) {

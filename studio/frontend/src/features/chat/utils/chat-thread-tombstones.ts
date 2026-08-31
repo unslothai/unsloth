@@ -2,10 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Tombstones mask deleted threads in the Dexie read fallback. Each
- * carries a `deletedAt` timestamp so old entries can be GC'd, keeping
- * localStorage bounded. Reads accept both the legacy plain-string
- * format and the new {id, deletedAt} tuple form.
+ * Tombstones mask deleted threads in the Dexie read fallback. Each carries a
+ * `deletedAt` so old entries can be GC'd, keeping localStorage bounded. Reads
+ * accept both the legacy plain-string format and the {id, deletedAt} tuple.
  */
 
 interface Tombstone {
@@ -62,8 +61,7 @@ function gc(): void {
   for (const [id, t] of deletedThreads) {
     if (t.deletedAt < cutoff) deletedThreads.delete(id);
   }
-  // Cap absolute size: drop oldest if we somehow exceed the limit
-  // (e.g. a script clearing thousands of threads at once).
+  // Cap size: drop oldest if we exceed the limit (e.g. a bulk thread clear).
   if (deletedThreads.size > TOMBSTONE_MAX_COUNT) {
     const sorted = Array.from(deletedThreads.entries()).sort(
       (a, b) => a[1].deletedAt - b[1].deletedAt,

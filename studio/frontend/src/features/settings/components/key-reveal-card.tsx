@@ -2,9 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
-import { Copy01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useState } from "react";
 
@@ -15,6 +17,7 @@ export function KeyRevealCard({
   rawKey: string;
   onDone: () => void;
 }) {
+  const t = useT();
   const [copied, setCopied] = useState(false);
 
   const handleCopy = async () => {
@@ -32,7 +35,7 @@ export function KeyRevealCard({
           className="size-3.5 text-emerald-600 dark:text-emerald-500"
         />
         <span className="text-xs font-medium text-emerald-700 dark:text-emerald-500">
-          New access token created
+          {t("settings.apiKeys.newTokenCreated")}
         </span>
       </div>
       <button
@@ -40,12 +43,19 @@ export function KeyRevealCard({
         onClick={handleCopy}
         className={cn(
           "flex w-full items-center justify-between gap-3 rounded-md border border-border bg-muted/40 px-3 py-2.5 font-mono text-sm transition-colors hover:bg-muted/60",
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
+          "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
           copied && "border-emerald-500/40 bg-emerald-500/10",
         )}
-        aria-label={copied ? "Access token copied" : "Copy access token"}
+        aria-label={
+          copied
+            ? t("settings.apiKeys.accessTokenCopied")
+            : t("settings.apiKeys.copyAccessToken")
+        }
       >
-        <code className="min-w-0 flex-1 break-all text-left text-foreground">
+        <code
+          className="min-w-0 flex-1 break-all text-left text-foreground"
+          data-reload-snapshot-sensitive
+        >
           {rawKey}
         </code>
         <HugeiconsIcon
@@ -54,16 +64,16 @@ export function KeyRevealCard({
         />
       </button>
       <div className="flex items-center justify-between gap-3 pt-0.5">
-        <p className="text-[11px] text-muted-foreground">
-          Copy now — this won't be shown again.
+        <p className="text-ui-11 text-muted-foreground">
+          {t("settings.apiKeys.copyNow")}
         </p>
         <Button
           type="button"
           size="sm"
           onClick={onDone}
-          className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+          className="focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
-          Done
+          {t("common.done")}
         </Button>
       </div>
     </div>

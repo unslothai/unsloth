@@ -106,7 +106,7 @@ Non_flash_attention = B * num_attention_heads * S^2 * 2 * 12.0 * effective_layer
 Activations = max(Per_layer_with_gc, Non_flash_attention)
 ```
 
-Studio resolves the attention implementation with Unsloth's
+Unsloth resolves the attention implementation with Unsloth's
 `resolve_attention_implementation` helper and uses that result directly. The
 estimator does not duplicate model-family attention policy.
 

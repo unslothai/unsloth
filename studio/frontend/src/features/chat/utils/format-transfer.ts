@@ -2,14 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Format a byte-per-second rate as a human-readable string.
- *
- *   512            → "512 B/s"
- *   1_234_567      → "1.2 MB/s"
- *   1_234_567_890  → "1.15 GB/s"
- *
- * Returns `"--"` for non-finite or non-positive inputs so callers can
- * render the label safely before the first stable sample arrives.
+ * Format a byte-per-second rate (e.g. 1_234_567 → "1.2 MB/s"). Returns `"--"`
+ * for non-finite or non-positive inputs so the label renders safely before the
+ * first stable sample.
  */
 export function formatRate(bytesPerSecond: number): string {
   if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return "--";
@@ -21,17 +16,20 @@ export function formatRate(bytesPerSecond: number): string {
 }
 
 /**
- * Format an ETA (in seconds) as a short human-readable string.
- *
- *   47       → "47s"
- *   125      → "2m 5s"
- *   3725     → "1h 2m"
- *
- * Returns `"--"` for non-finite or non-positive inputs.
+ * Beyond a day the number is noise. The hub formatter has clamped since #7679;
+ * this one did not, so one estimate read "> 24h left" on a hub row and an
+ * unbounded hour count on the model-load toast.
+ */
+const MAX_DISPLAYABLE_ETA_SECONDS = 24 * 60 * 60;
+
+/**
+ * Format an ETA in seconds as a short string (e.g. 125 → "2m 5s", 3725 →
+ * "1h 2m"). Returns `"--"` for non-finite or non-positive inputs.
  */
 export function formatEta(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds <= 0) return "--";
   const s = Math.round(seconds);
+  if (s >= MAX_DISPLAYABLE_ETA_SECONDS) return "> 24h";
   if (s < 60) return `${s}s`;
   if (s < 3600) {
     const m = Math.floor(s / 60);

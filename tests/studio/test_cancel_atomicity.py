@@ -1,38 +1,22 @@
-"""
-TOCTOU atomicity guards for the cancel path.
-
-Structural: cancel_inference, _cancel_by_cancel_id_or_stash, and
-_TrackedCancel.__enter__ must each use a single _CANCEL_LOCK critical
-section over lookup + stash / register + consume-pending.
-
-Behavioral: parallel cancel-POST vs __enter__ must never drop a cancel.
-"""
+"""TOCTOU atomicity guards for the cancel path: single _CANCEL_LOCK critical sections; parallel cancel-POST vs __enter__ never drops a cancel."""
 
 from __future__ import annotations
 
 import ast
+import importlib.util
 import random
 import threading
 from pathlib import Path
 
 
-SOURCE_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "studio"
-    / "backend"
-    / "routes"
-    / "inference.py"
-)
-_SRC = SOURCE_PATH.read_text()
+SOURCE_PATH = Path(__file__).resolve().parents[2] / "studio" / "backend" / "routes" / "inference.py"
+_SRC = SOURCE_PATH.read_text(encoding = "utf-8")
 _TREE = ast.parse(_SRC)
 
 
 def _find_function(name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
     for node in ast.walk(_TREE):
-        if (
-            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and node.name == name
-        ):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
             return node
     raise AssertionError(f"function {name!r} not found")
 
@@ -124,6 +108,20 @@ _WANTED = {
 }
 
 
+def _load_active_generations():
+    """The real registry `_TrackedCancel` records runs in.
+
+    Loaded straight off disk rather than imported, so the extracted class runs
+    against the genuine module without pulling in the whole route package (and
+    without putting studio/backend on sys.path for the rest of the session).
+    """
+    path = SOURCE_PATH.parents[1] / "state" / "active_generations.py"
+    spec = importlib.util.spec_from_file_location("studio_active_generations", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _load_registry_module():
     chunks = []
     for n in _TREE.body:
@@ -142,7 +140,7 @@ def _load_registry_module():
             and n.target.id in _WANTED
         ):
             chunks.append(seg)
-    mod = {}
+    mod = {"active_generations": _load_active_generations()}
     exec(
         "import threading, time\nfrom typing import Optional\n" + "\n\n".join(chunks),
         mod,
@@ -187,8 +185,7 @@ def test_parallel_cancel_vs_register_never_drops():
         tracker.__exit__(None, None, None)
 
     assert dropped == 0, (
-        f"TOCTOU regression: {dropped}/{trials} parallel trials silently "
-        f"dropped the cancel"
+        f"TOCTOU regression: {dropped}/{trials} parallel trials silently " f"dropped the cancel"
     )
 
 
