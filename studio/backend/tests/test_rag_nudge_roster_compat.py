@@ -454,7 +454,7 @@ def test_cancellation_is_not_swallowed_as_a_roster_failure(rag_conn, monkeypatch
     CancelledError is a BaseException on 3.8+, so the broad handler correctly misses it."""
     from routes import inference
 
-    def _cancel(_scope):
+    def _cancel(_scope, **_kwargs):
         raise asyncio.CancelledError()
 
     monkeypatch.setattr(inference, "_read_roster", _cancel)
@@ -502,10 +502,10 @@ def test_the_read_does_not_run_on_the_event_loop(rag_conn, monkeypatch):
 
     real = inference._read_roster
 
-    def _record(scope):
+    def _record(scope, **kwargs):
         import threading
         loop_thread["read"] = threading.get_ident()
-        return real(scope)
+        return real(scope, **kwargs)
 
     monkeypatch.setattr(inference, "_read_roster", _record)
     asyncio.run(_go())

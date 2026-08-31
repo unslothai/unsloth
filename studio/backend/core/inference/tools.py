@@ -10867,6 +10867,22 @@ def _autoinject_enabled() -> bool:
     )
 
 
+def _normalize_rag_autoinject(value) -> bool | None:
+    """``rag_scope.autoinject`` as a tri-state: True, False, or None for "not set".
+
+    The field is read straight off an unvalidated request dict, so it arrives in whatever
+    shape the caller sent. Bare truthiness is wrong for the string forms: a cached frontend
+    bundle, or a run persisted by an older build, can still carry ``"off"``, which is a
+    non-empty string and so reads as ON. The env kill switch already spells the off-words
+    out in `_autoinject_enabled`; this uses the same set so the wire and the environment
+    cannot disagree about what "off" means."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value.strip().lower() not in ("", "0", "false", "no", "off")
+    return bool(value)
+
+
 def _autoinject_floor() -> float:
     raw = os.environ.get("RAG_AUTOINJECT_MIN_SCORE")
     if raw is not None:
@@ -11168,20 +11184,22 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     attachments consulted regardless of model size."""
     if not rag_scope:
         return None
-    enabled = rag_scope.get("autoinject")
-    if enabled is None:
-        enabled = _autoinject_enabled()
+    requested = _normalize_rag_autoinject(rag_scope.get("autoinject"))
+    enabled = _autoinject_enabled() if requested is None else requested
     thread_id = rag_scope.get("thread_id")
     project_id = rag_scope.get("project_id")
     whole_doc_requested = (
         bool(thread_id) and not rag_scope.get("kb_id") and _thread_whole_doc_enabled(rag_scope)
     )
-    # Project-only scopes always pre-retrieve: the Search pill only gates
-    # web_search, so grounding must not depend on the model calling the tool or
-    # on the user's autoinject setting. A thread attachment keeps the caller's
-    # autoinject flag so the whole-doc fallback (thread first, then project
-    # companion) still runs instead of a combined search.
-    if project_id and not rag_scope.get("kb_id") and not thread_id:
+    # Project-only scopes pre-retrieve by default: the Search pill only gates
+    # web_search, so grounding must not depend on the model calling the tool.
+    # `requested is not False` keeps that a default rather than an override --
+    # Auto-retrieve Off is a separate control whose own UI promises "On and Off
+    # force it either way", and a run persisted by an older build carries the
+    # same explicit flag. A thread attachment keeps the caller's autoinject flag
+    # so the whole-doc fallback (thread first, then project companion) still
+    # runs instead of a combined search.
+    if requested is not False and project_id and not rag_scope.get("kb_id") and not thread_id:
         enabled = True
     if not enabled and not whole_doc_requested:
         return None

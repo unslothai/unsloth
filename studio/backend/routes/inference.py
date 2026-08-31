@@ -4409,7 +4409,11 @@ def _roster_name(raw: object) -> str:
     return name.replace("\\", "\\\\").replace('"', '\\"')
 
 
-def _read_roster(rag_scope: dict) -> tuple[list[str], int]:
+def _read_roster(
+    rag_scope: dict,
+    *,
+    max_bytes: int = _RAG_ROSTER_MAX_BYTES,
+) -> tuple[list[str], int]:
     import sqlite3 as _sqlite3
 
     from storage import rag_db
@@ -4433,7 +4437,7 @@ def _read_roster(rag_scope: dict) -> tuple[list[str], int]:
             conn.create_function("roster_name", 1, _roster_name)
         names: list[str] = []
         seen: set[str] = set()
-        budget = _RAG_ROSTER_MAX_BYTES
+        budget = max(0, max_bytes)
         truncated = False
         for scope in scopes:
             rows = conn.execute(_ROSTER_NAMES_SQL, (scope, _RAG_ROSTER_MAX_NAMES + 1))
@@ -4465,12 +4469,16 @@ def _read_roster(rag_scope: dict) -> tuple[list[str], int]:
         conn.close()
 
 
-async def _rag_roster_sentence(rag_scope: dict) -> str:
+async def _rag_roster_sentence(
+    rag_scope: dict,
+    *,
+    max_bytes: int = _RAG_ROSTER_MAX_BYTES,
+) -> str:
     global _roster_failure_logged
     from starlette.concurrency import run_in_threadpool
 
     try:
-        names, total = await run_in_threadpool(_read_roster, rag_scope)
+        names, total = await run_in_threadpool(_read_roster, rag_scope, max_bytes = max_bytes)
     except Exception as exc:  # noqa: BLE001
         if not _roster_failure_logged:
             _roster_failure_logged = True
@@ -4807,19 +4815,35 @@ async def _apply_rag_nudge(
 
     When no built-in internet tool is present, adds guidance against inventing or
     substituting public-web knowledge while preserving explicitly requested tools. When
-    ``web_search`` is present and a project scope is set, tells the model not
-    to treat web_search as an automatic fallback after an empty document search.
+    ``web_search`` is present, tells the model not to treat it as an automatic fallback
+    after an empty document search -- for every retrieval scope, since a thread
+    attachment and a selected knowledge base are closed corpora in exactly the way a
+    project is.
+
+    Whichever of the two applies is priced against the roster's byte budget before the
+    roster is read, so the assembled instruction stays inside the envelope
+    `_RAG_ROSTER_MAX_BYTES` was chosen to hold. Growing the fixed text shortens the file
+    list rather than the model's context.
 
     Returns ``nudge`` unchanged when RAG isn't active or the caller disabled tools."""
     tool_names = {(t.get("function") or {}).get("name") for t in (tools or [])}
     if tool_choice == "none" or "search_knowledge_base" not in tool_names or not rag_scope:
         return nudge
-    grounding = _RAG_GROUNDING_NUDGE + await _rag_roster_sentence(rag_scope)
     has_internet_tool = bool(tool_names & _RAG_INTERNET_TOOL_NAMES)
+    conditional = ""
     if not has_internet_tool:
-        grounding = grounding + " " + _RAG_CLOSED_CORPUS_NUDGE
-    elif "web_search" in tool_names and rag_scope.get("project_id"):
-        grounding = grounding + " " + _RAG_WEB_SEARCH_PRIORITY_NUDGE
+        conditional = _RAG_CLOSED_CORPUS_NUDGE
+    elif "web_search" in tool_names:
+        conditional = _RAG_WEB_SEARCH_PRIORITY_NUDGE
+    roster_budget = _RAG_ROSTER_MAX_BYTES
+    if conditional:
+        roster_budget = max(0, roster_budget - len((" " + conditional).encode("utf-8")))
+    grounding = _RAG_GROUNDING_NUDGE + await _rag_roster_sentence(
+        rag_scope,
+        max_bytes = roster_budget,
+    )
+    if conditional:
+        grounding = grounding + " " + conditional
     if not nudge:
         return grounding
     return nudge + " " + grounding
@@ -27168,7 +27192,10 @@ async def chat_count_tokens(
                 ),
                 tools_to_use,
                 rag_scope = payload.rag_scope,
-                tool_choice = payload.tool_choice,
+                # ChatCountTokensRequest has no tool_choice field, so read it defensively:
+                # the attribute access raised AttributeError and 500'd every count that
+                # reached the RAG branch.
+                tool_choice = getattr(payload, "tool_choice", None),
             )
             openai_messages = _append_to_system_message(openai_messages, _count_nudge)
 

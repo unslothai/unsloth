@@ -50,7 +50,6 @@ import {
   type SearchImageEntry,
   type SearchImagesToolResult,
 } from "../search-images/search-images";
-import { parseParamCountB } from "@/lib/model-size";
 import { createLoadingToastIcon, toast } from "@/lib/toast";
 import { notifyPromptQueueRunFailed } from "../utils/prompt-queue-boundary";
 import {
@@ -136,9 +135,9 @@ import {
   providerSupportsFastMode,
 } from "../provider-capabilities";
 import { selectCodeToolNames } from "./code-tool-placement";
+import { resolveRagAutoinject } from "./rag-autoinject";
 import {
   type PendingImageEditReference,
-  type RagAutoInject,
   GPU_LAYERS_AUTO,
   loadedGpuMemoryFields,
   reconcilePersistedGpuIds,
@@ -283,10 +282,6 @@ import {
   supportsChatGenerationRuns,
 } from "./chat-generation-api";
 
-// Small models (<=9B) answer from memory instead of calling search, so "auto"
-// forces retrieval for them and leaves it to larger ones.
-const AUTOINJECT_AUTO_MAX_SIZE_B = 9;
-
 class ChatGenerationTerminalError extends Error {
   readonly generationStatus: "cancelled" | "failed";
 
@@ -298,26 +293,6 @@ class ChatGenerationTerminalError extends Error {
 }
 
 type ThreadRecordReader = () => Promise<ThreadRecord | undefined>;
-
-function resolveAutoInject(mode: RagAutoInject, checkpoint: string): boolean {
-  if (mode === "on") return true;
-  if (mode === "off") return false;
-  const size = parseParamCountB(checkpoint);
-  // Unknown size -> enable.
-  return size === null || size <= AUTOINJECT_AUTO_MAX_SIZE_B;
-}
-
-/** Project-only scopes are always pre-retrieved so the Search pill cannot
- * block grounding. KB and mixed thread/project scopes keep the user's
- * Auto-retrieve setting. */
-function resolveRagAutoinject(
-  mode: RagAutoInject,
-  checkpoint: string,
-  projectOnlyScope: boolean,
-): boolean {
-  if (projectOnlyScope) return true;
-  return resolveAutoInject(mode, checkpoint);
-}
 
 /** Server-side usage data from llama-server (via stream_options.include_usage). */
 interface ServerUsage {

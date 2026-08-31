@@ -238,12 +238,30 @@ def test_roster_bounds_the_whole_list_by_bytes(rag_conn):
         name = ("研究資料経営報告書四半期" * 12)[: inference._RAG_ROSTER_MAX_NAME_CHARS - 4]
         _doc(rag_conn, "project_p1", f"d{i}", f"{name}{i:03d}.pdf")
     out = _nudge({"project_id": "p1"})
-    roster = out[out.index("The attached documents are") :]
-    closed = inference._RAG_CLOSED_CORPUS_NUDGE
-    if roster.endswith(closed):
-        roster = roster[: -len(closed)].rstrip()
-    assert len(roster.encode("utf-8")) < inference._RAG_ROSTER_MAX_BYTES + 400
-    assert ", and " in roster
+    # The whole tail, roster plus whichever conditional instruction was appended beside
+    # it, because that is what the model actually pays for. The conditional text is
+    # charged against the roster's budget in `_apply_rag_nudge`, so adding to it shortens
+    # the file list rather than widening this bound.
+    tail = out[out.index("The attached documents are") :]
+    assert tail.endswith(inference._RAG_CLOSED_CORPUS_NUDGE)
+    assert len(tail.encode("utf-8")) < inference._RAG_ROSTER_MAX_BYTES + 400
+    assert ", and " in tail
+
+
+def test_the_conditional_instruction_does_not_widen_the_roster_envelope(rag_conn):
+    """Whichever guidance is appended, the assembled tail stays inside one budget."""
+    from routes import inference
+
+    for i in range(inference._RAG_ROSTER_MAX_NAMES):
+        name = ("研究資料経営報告書四半期" * 12)[: inference._RAG_ROSTER_MAX_NAME_CHARS - 4]
+        _doc(rag_conn, "project_p1", f"d{i}", f"{name}{i:03d}.pdf")
+    with_web = TOOLS + [{"type": "function", "function": {"name": "web_search"}}]
+    out = asyncio.run(
+        inference._apply_rag_nudge("", with_web, rag_scope = {"project_id": "p1"})
+    )
+    tail = out[out.index("The attached documents are") :]
+    assert tail.endswith(inference._RAG_WEB_SEARCH_PRIORITY_NUDGE)
+    assert len(tail.encode("utf-8")) < inference._RAG_ROSTER_MAX_BYTES + 400
 
 
 def test_roster_says_the_names_are_data(rag_conn):
