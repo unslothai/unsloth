@@ -337,6 +337,24 @@ def test_closing_tag_in_prose_does_not_eat_a_fence_closer():
     assert not _would_reprompt(enclosing)
 
 
+def test_artifact_nested_in_an_unclosed_page_does_not_count():
+    """A complete inner artifact says nothing about the page around it, so a stream
+    that stopped after the SVG but before ``</html>`` is still unfinished."""
+    for text in (
+        'First, let me build it.\n<html><body><svg width="10"><circle r="3"/></svg>',
+        "First, let me build it.\n<html><body>\n```python\nx = 1\n```",
+    ):
+        assert not _has_answer_artifact(text), text
+        assert _would_reprompt(text), text
+    # Closed, it is an answer, and a bare tag AFTER one is prose either way.
+    assert _has_answer_artifact(
+        'First, let me build it.\n<html><body><svg width="10"><circle r="3"/></svg></body></html>'
+    )
+    assert _has_answer_artifact(
+        "First, let me show it.\n```python\nx = 1\n```\nNow replace <html> with something."
+    )
+
+
 def test_markup_opening_tag_must_terminate():
     """`<html lang='en'` with no `>` never opened a page, so pairing it with a
     closing tag mentioned later in a plan is not a completed artifact."""
@@ -964,7 +982,7 @@ def test_no_reprompt_on_html_containing_backtick_literal():
 
 def test_empty_markup_before_real_artifact_still_counts_real_artifact():
     """An empty <html></html> / <svg></svg> skeleton that PRECEDES a
-    real complete artifact must not hide it. _looks_like_real_artifact
+    real complete artifact must not hide it. _first_real_artifact
     iterates every match."""
     samples = [
         (

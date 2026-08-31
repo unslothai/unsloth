@@ -997,14 +997,14 @@ def _is_empty_markup_skeleton(matched: str) -> bool:
     return _EMPTY_MARKUP_SKELETON.fullmatch(candidate) is not None
 
 
-def _looks_like_real_artifact(text: str) -> bool:
-    """Match _HAS_ANSWER_ARTIFACT but reject empty markup skeletons.
+def _first_real_artifact(text: str):
+    """First _HAS_ANSWER_ARTIFACT match that is not an empty markup skeleton.
 
     Every match is inspected, so a skeleton followed by a real page counts."""
     for m in _HAS_ANSWER_ARTIFACT.finditer(text):
         if not _is_empty_markup_skeleton(m.group(0)):
-            return True
-    return False
+            return m
+    return None
 
 
 def _strip_markup_outside_fences(text: str) -> str:
@@ -1051,21 +1051,23 @@ def _text_outside_think(text: str) -> str:
 def _has_answer_artifact(text: str) -> bool:
     """True if ``text`` looks like a completed answer artifact.
 
-    A closed code fence, a complete HTML page, or a complete SVG, and none of
-    them left unfinished. Empty skeletons do not count.
+    A closed code fence, a complete HTML page, or a complete SVG, and none of them
+    left unfinished. Empty skeletons do not count.
     """
     # Strip closed artifacts first: a `html = '<html>'` literal in a finished
     # snippet, or backticks inside finished HTML, are content, not open state.
-    text_without_closed_fences = _CLOSED_CODE_FENCE.sub("", text)
-    text_without_both = _CLOSED_MARKUP_ARTIFACT.sub("", text_without_closed_fences)
     if _has_unclosed_code_fence(_strip_markup_outside_fences(text)):
         return False
-    # Only meaningful before any artifact lands: afterwards, prose mentioning
-    # a bare <html> tag is common and would unbalance the count.
-    real_artifact = _looks_like_real_artifact(text)
-    if not real_artifact and _has_unclosed_markup_block(text_without_both):
+    real_artifact = _first_real_artifact(text)
+    if real_artifact is None:
         return False
-    return real_artifact
+    # An artifact says nothing about a page it is nested in, so the text BEFORE it
+    # is checked too: `<html><body><svg>...</svg>` stopped mid-page. Only before,
+    # because prose mentioning a bare <html> after a finished answer is common and
+    # would unbalance the count.
+    head = text[: real_artifact.start()]
+    head = _CLOSED_MARKUP_ARTIFACT.sub("", _CLOSED_CODE_FENCE.sub("", head))
+    return not _has_unclosed_markup_block(head)
 
 
 # Default max_tokens to the effective context when known. The floor is high
