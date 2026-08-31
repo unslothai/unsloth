@@ -18526,16 +18526,21 @@ async def _proxy_to_external_provider(
             # Only the Full access sentence is added: the path has never carried
             # the general tool nudge, and widening it would change every
             # non-Full-access Codex run as a side effect.
+            _codex_nudge = ""
             if payload.bypass_permissions:
-                _codex_full_access_nudge = _build_tool_action_nudge(
+                _codex_nudge = _build_tool_action_nudge(
                     tools = studio_tool_payloads,
                     model_name = model,
                     full_access = True,
                     full_access_only = True,
                 )
-                chat_messages = _append_to_codex_instructions(
-                    chat_messages, _codex_full_access_nudge
-                )
+            _codex_nudge = await _apply_rag_nudge(
+                _codex_nudge,
+                studio_tool_payloads,
+                rag_scope = payload.rag_scope,
+            )
+            if _codex_nudge:
+                chat_messages = _append_to_codex_instructions(chat_messages, _codex_nudge)
         chat_messages = _prepend_current_date_to_messages(
             chat_messages,
             request,

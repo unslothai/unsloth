@@ -56,12 +56,17 @@ def test_deep_research_skips_closed_corpus_nudge():
     assert inference._RAG_WEB_SEARCH_PRIORITY_NUDGE not in out
 
 
-def test_external_provider_route_applies_rag_nudge():
+def test_external_provider_routes_apply_rag_nudge_before_streaming():
     import inspect
 
     src = inspect.getsource(inference._proxy_to_external_provider)
-    assert "_apply_rag_nudge" in src
-    assert src.index("_apply_rag_nudge") < src.index("stream_with_studio_tools")
+    codex_branch = src.index('if provider_type == "openai_codex":')
+    codex_return = src.index("return StreamingResponse(", codex_branch)
+    codex_rag_nudge = src.index("_apply_rag_nudge", codex_branch)
+    external_tool_loop = src.index("stream_with_studio_tools", codex_return)
+    external_rag_nudge = src.index("_apply_rag_nudge", codex_return)
+    assert codex_rag_nudge < codex_return
+    assert external_rag_nudge < external_tool_loop
 
 
 def test_rag_nudge_unchanged_without_scope():
