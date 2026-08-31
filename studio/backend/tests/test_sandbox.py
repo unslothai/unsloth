@@ -238,7 +238,8 @@ def test_macos_profile_narrows_private_etc(tmp_path):
     for required in (
         '(literal "/private/etc/hosts")',
         '(literal "/private/etc/resolv.conf")',
-        '(subpath "/private/etc/ssl")',
+        '(literal "/private/etc/ssl/cert.pem")',
+        '(subpath "/private/etc/ssl/certs")',
     ):
         assert required in profile, required
     for forbidden in (
@@ -268,7 +269,12 @@ def test_linux_argv_narrows_etc(tmp_path, monkeypatch):
         if token in bind_flags and i + 2 < len(argv):
             bound_targets.add(argv[i + 2])
     assert "/etc" not in bound_targets
-    for required in ("/etc/hosts", "/etc/resolv.conf", "/etc/ssl"):
+    for required in (
+        "/etc/hosts",
+        "/etc/resolv.conf",
+        "/etc/ssl/certs",
+        "/etc/pki/tls/certs",
+    ):
         assert required in bound_targets, (required, bound_targets)
 
 

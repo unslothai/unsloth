@@ -47,6 +47,24 @@ _MACOS_EXTRA_EXEC_PREFIXES = (
     "/opt/homebrew/Cellar",
 )
 
+_MACOS_CA_READ_PATHS = (
+    "/private/etc/ssl/cert.pem",
+    "/private/etc/ssl/certs",
+    "/private/etc/ssl/openssl.cnf",
+    "/private/etc/ca-certificates",
+)
+
+_LINUX_CA_READ_PATHS = (
+    "/etc/ssl/cert.pem",
+    "/etc/ssl/certs",
+    "/etc/ssl/openssl.cnf",
+    "/etc/ca-certificates",
+    "/etc/pki/ca-trust",
+    "/etc/pki/tls/cert.pem",
+    "/etc/pki/tls/certs",
+    "/etc/pki/tls/openssl.cnf",
+)
+
 
 class _ProbeResult:
     """Three-way probe result: True / False / transient timeout.
@@ -293,6 +311,12 @@ def _python_read_paths() -> list[str]:
         rp = os.path.realpath(p)
         if rp in seen or not os.path.isdir(rp):
             continue
+        # A root-valued prefix would turn the deny-by-default sandbox into a
+        # read-all-files profile or bind mount. Embedded Python builds and
+        # root-prefix containers can legitimately report this value.
+        if os.path.dirname(rp) == rp:
+            logger.warning("Ignoring unsafe filesystem-root Python read path: %s", rp)
+            continue
         seen.add(rp)
         out.append(rp)
     return out
@@ -304,6 +328,12 @@ def _macos_seatbelt_profile(workdir: str) -> str:
 
     wd = _safe_subpath(os.path.realpath(workdir))
     py_block = "\n    ".join(py_subpaths)
+    ca_block = "\n    ".join(
+        f'(literal "{_safe_subpath(p)}")'
+        if os.path.splitext(p)[1]
+        else f'(subpath "{_safe_subpath(p)}")'
+        for p in _MACOS_CA_READ_PATHS
+    )
     # Optional Homebrew prefixes (Intel + Apple Silicon). Skipped when
     # the directory doesn't exist so the profile stays minimal on macs
     # without Homebrew. Without this, _build_safe_env's PATH includes
@@ -363,7 +393,7 @@ def _macos_seatbelt_profile(workdir: str) -> str:
 (allow process-exec
     {process_exec_block}
 )
-(allow signal (target self))
+(allow signal (target same-sandbox))
 (allow process-info-pidinfo (target self))
 (allow process-info-pidfdinfo (target self))
 (allow sysctl-read)
@@ -399,8 +429,7 @@ def _macos_seatbelt_profile(workdir: str) -> str:
     (literal "/private/etc/localtime")
     (literal "/private/etc/protocols")
     (literal "/private/etc/services")
-    (subpath "/private/etc/ssl")
-    (subpath "/private/etc/ca-certificates")
+    {ca_block}
     (literal "/dev/null")
     (literal "/dev/zero")
     (literal "/dev/random")
@@ -420,6 +449,12 @@ def _macos_seatbelt_profile(workdir: str) -> str:
 (allow file-read* (subpath "{wd}"))
 (allow file-write* (subpath "{wd}"))
 (allow file-ioctl (subpath "{wd}"))
+(allow file-write-data
+    (require-all
+        (path "/dev/null")
+        (vnode-type CHARACTER-DEVICE)
+    )
+)
 
 ; coreservices.launchservicesd + lsd.mapdb are intentionally NOT allowed:
 ; together with (allow process-exec /usr/bin) they let a tool run
@@ -537,9 +572,7 @@ def _linux_bwrap_argv(inner_argv: list[str], workdir: str) -> list[str]:
         "/etc/ld.so.cache",
         "/etc/ld.so.conf",
         "/etc/ld.so.conf.d",
-        "/etc/ssl",
-        "/etc/ca-certificates",
-        "/etc/pki",
+        *_LINUX_CA_READ_PATHS,
     )
 
     assert _linux_bwrap_path is not None, "bwrap path unset despite successful probe"
