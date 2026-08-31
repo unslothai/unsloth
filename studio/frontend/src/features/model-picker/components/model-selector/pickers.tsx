@@ -3389,8 +3389,8 @@ export function HubModelPicker({
           // it to GGUF left this gate disagreeing with searchRowFitsDevice about the same row.
           mediaLoad: diffusionLoad,
           hostPooledMemory: gpu.loadDeviceSharesHostMemory,
-          // One device on a task page, so the per-card reserve is charged once there.
-          gpuCount: taskScoped ? 1 : inferenceGpu.deviceCount,
+          // The scoped inventory's own count, so it always describes rowInferenceGpu's capacity.
+          gpuCount: rowInferenceGpu.deviceCount,
         }));
     const unslothRows = orderRecommendedRows({
       seeds: catalogSeedRows,
@@ -3830,6 +3830,12 @@ export function HubModelPicker({
       : undefined;
   const expanderGpuGb = expanderGpuGbFrom(inferenceGpu);
   const expanderSystemGpuGb = expanderGpuGbFrom(gpu);
+  // From the SAME scoping decision as the capacity above: loadScopedGpu narrows the count to 1
+  // with memoryTotalGb, so the per-card reserve is never charged host-wide against one card.
+  const expanderGpuCount = loadScopedGpu(
+    inferenceGpu,
+    Boolean(task),
+  ).deviceCount;
 
   // Each local section's search is scoped to its own models (matched by name).
   const localQuery = normalizeForSearch(debouncedQuery.trim());
@@ -4397,7 +4403,6 @@ export function HubModelPicker({
           // this picks the diffusion RULE, which only Images and Video use.
           diffusionLoad,
           budgetFraction,
-          gpuCount: inferenceGpu.deviceCount,
           hostPooledMemory: gpu.loadDeviceSharesHostMemory,
         },
       ),
@@ -5374,7 +5379,7 @@ export function HubModelPicker({
           <GgufVariantExpander
             diffusionLoad={diffusionLoad}
             hostPooledMemory={gpu.loadDeviceSharesHostMemory}
-            gpuCount={inferenceGpu.deviceCount}
+            gpuCount={expanderGpuCount}
             repoId={c.repo_id}
             pipelineTag={c.task ?? null}
             loadId={c.load_id}
@@ -6268,7 +6273,7 @@ export function HubModelPicker({
                                 <GgufVariantExpander
                                   diffusionLoad={diffusionLoad}
                                   hostPooledMemory={gpu.loadDeviceSharesHostMemory}
-                                  gpuCount={inferenceGpu.deviceCount}
+                                  gpuCount={expanderGpuCount}
                                   repoId={m.id}
                                   onDevice={true}
                                   onSelect={onSelect}
@@ -6414,7 +6419,7 @@ export function HubModelPicker({
                               <GgufVariantExpander
                                 diffusionLoad={diffusionLoad}
                                 hostPooledMemory={gpu.loadDeviceSharesHostMemory}
-                                gpuCount={inferenceGpu.deviceCount}
+                                gpuCount={expanderGpuCount}
                                 repoId={m.id}
                                 onDevice={true}
                                 onSelect={onSelect}
@@ -6545,7 +6550,7 @@ export function HubModelPicker({
                               <GgufVariantExpander
                                 diffusionLoad={diffusionLoad}
                                 hostPooledMemory={gpu.loadDeviceSharesHostMemory}
-                                gpuCount={inferenceGpu.deviceCount}
+                                gpuCount={expanderGpuCount}
                                 repoId={m.id}
                                 onDevice={true}
                                 onSelect={onSelect}
@@ -6641,7 +6646,7 @@ export function HubModelPicker({
                               <GgufVariantExpander
                                 diffusionLoad={diffusionLoad}
                                 hostPooledMemory={gpu.loadDeviceSharesHostMemory}
-                                gpuCount={inferenceGpu.deviceCount}
+                                gpuCount={expanderGpuCount}
                                 repoId={id}
                                 pipelineTag={pipelineTagById.get(id) ?? null}
                                 onSelect={onSelect}
@@ -6766,7 +6771,7 @@ export function HubModelPicker({
                             <GgufVariantExpander
                               diffusionLoad={diffusionLoad}
                               hostPooledMemory={gpu.loadDeviceSharesHostMemory}
-                              gpuCount={inferenceGpu.deviceCount}
+                              gpuCount={expanderGpuCount}
                               repoId={id}
                               pipelineTag={pipelineTagById.get(id) ?? null}
                               onSelect={onSelect}
@@ -6882,7 +6887,7 @@ export function HubModelPicker({
                               <GgufVariantExpander
                                 diffusionLoad={diffusionLoad}
                                 hostPooledMemory={gpu.loadDeviceSharesHostMemory}
-                                gpuCount={inferenceGpu.deviceCount}
+                                gpuCount={expanderGpuCount}
                                 repoId={id}
                                 pipelineTag={pipelineTagById.get(id) ?? null}
                                 onSelect={onSelect}

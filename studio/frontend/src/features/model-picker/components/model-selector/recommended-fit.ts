@@ -217,14 +217,19 @@ export function loadScopedGpu<
     loadDeviceSharedMemory?: boolean;
     systemRamAvailableGb: number;
     systemRamAvailableHostGb?: number;
+    deviceCount?: number;
   },
->(gpu: T, taskScoped: boolean): T {
+>(gpu: T, taskScoped: boolean): T & { deviceCount?: number } {
   if (!taskScoped || !gpu.available) return gpu;
   const deviceGb = gpu.loadDeviceMemoryGb || gpu.maxDeviceMemoryGb;
   if (deviceGb <= 0) return gpu;
   return {
     ...gpu,
     memoryTotalGb: deviceGb,
+    // Narrowed with the capacity it describes, or the loader's per-card VRAM reserve gets charged
+    // once per HOST GPU against a ONE-card budget. Two 24 GiB cards at a 1.0 setting scored an
+    // audio quant against 23.28 GiB where the loader offers the selected card's 23.5.
+    deviceCount: 1,
     systemRamAvailableGb:
       gpu.loadDeviceSharedMemory === false
         ? (gpu.systemRamAvailableHostGb ?? gpu.systemRamAvailableGb)
@@ -244,6 +249,7 @@ export function searchRowFitsDevice<
     loadDeviceMemoryGb: number;
     systemRamAvailableGb: number;
     budgetKnown?: boolean;
+    deviceCount?: number;
   },
 >(
   row: {
@@ -262,26 +268,30 @@ export function searchRowFitsDevice<
      *  picks the diffusion RULE, which Audio must not get: its GGUFs run under llama.cpp. */
     diffusionLoad?: boolean;
     budgetFraction?: number;
-    /** How many GPUs the unscoped aggregate sums. A task-scoped row is narrowed to one device by
-     *  loadScopedGpu, so this only ever applies to chat. */
+    /** How many GPUs the aggregate sums, when the caller's inventory does not carry the count
+     *  itself. loadScopedGpu narrows it to 1 with the capacity, so a task page needs nothing here. */
     gpuCount?: number;
     /** The image/video load device's pool is host RAM, so RAM is not a second budget. */
     hostPooledMemory?: boolean;
   },
 ): boolean {
-  const source = opts.isGguf ? opts.inferenceGpu : opts.gpu;
+  const source = loadScopedGpu(
+    opts.isGguf ? opts.inferenceGpu : opts.gpu,
+    opts.taskScoped,
+  );
   return hfModelFitsDevice(
     {
       ...row,
       isGguf: opts.isGguf,
       curatedSizeBytes: row.curatedSizeBytes ?? opts.curatedSizeBytes,
     },
-    loadScopedGpu(source, opts.taskScoped),
+    source,
     // A task-scoped row is a media load, so it takes the media rule as well as the single-device
     // budget. Without this the search gate disagreed with the quant rows it gates.
     {
       budgetFraction: opts.budgetFraction,
-      gpuCount: opts.taskScoped ? 1 : opts.gpuCount,
+      // From the SCOPED budget, so the count always describes the capacity beside it.
+      gpuCount: source.deviceCount ?? opts.gpuCount,
       mediaLoad: opts.diffusionLoad,
       hostPooledMemory: opts.hostPooledMemory,
     },

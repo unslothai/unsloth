@@ -219,10 +219,21 @@ test("chat and the Hub answer the fit question with one formula", () => {
     3,
     "every Hub gate and the inspector",
   );
-  assert.ok(PICKERS.includes("gpuCount: inferenceGpu.deviceCount"));
+  // The count is narrowed WITH the capacity, so it can never describe a different inventory than
+  // the gpuGb beside it. A task page puts the load on one device; charging the per-card reserve
+  // once per host GPU against that one card scored an audio quant at 23.28 GiB where the loader
+  // offers the selected card's 23.5.
+  assert.ok(RECOMMENDED.includes("deviceCount: 1,"), "scoped to one device");
+  assert.ok(PICKERS.includes("gpuCount: rowInferenceGpu.deviceCount"));
+  assert.ok(RECOMMENDED.includes("gpuCount: source.deviceCount ?? opts.gpuCount"));
+  assert.equal(
+    PICKERS.split("gpuCount={expanderGpuCount}").length - 1,
+    7,
+    "every expander counts the scoped inventory",
+  );
   assert.ok(
-    PICKERS.includes("gpuCount: taskScoped ? 1 : inferenceGpu.deviceCount"),
-    "one device on a task page, so one reserve",
+    !PICKERS.includes("gpuCount={inferenceGpu.deviceCount}"),
+    "never the unscoped host count",
   );
   assert.ok(HUB_CARD.includes("gpuCount?: number;"));
   assert.ok(RECOMMENDED.includes("budgetFraction: opts.budgetFraction,"));

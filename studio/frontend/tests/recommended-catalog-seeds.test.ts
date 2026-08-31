@@ -272,6 +272,16 @@ test("a task row is sized against the device the load lands on", () => {
   const sdxl = seed(SDXL);
   assert.equal(hfModelFitsDevice(sdxl, twoCards), true);
   assert.equal(hfModelFitsDevice(sdxl, loadScopedGpu(twoCards, true)), false);
+  // The device COUNT narrows with the capacity. classifyGgufFit charges the loader's per-card VRAM
+  // reserve once per card, so leaving the host count of 2 on a one-card budget held back two
+  // floors against a single device and under-budgeted every scoped quant.
+  assert.equal(loadScopedGpu(twoCards, false).deviceCount, undefined);
+  assert.equal(loadScopedGpu(twoCards, true).deviceCount, 1);
+  const twoOfThree = { ...twoCards, deviceCount: 3 };
+  assert.equal(loadScopedGpu(twoOfThree, false).deviceCount, 3);
+  assert.equal(loadScopedGpu(twoOfThree, true).deviceCount, 1);
+  // An unscoped load keeps the host count, so chat still charges one floor per card.
+  assert.equal(loadScopedGpu(twoOfThree, true).memoryTotalGb, 8);
 });
 
 test("a dedicated task device keeps RAM reserved by a shared GPU", () => {
