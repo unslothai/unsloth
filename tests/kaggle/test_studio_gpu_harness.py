@@ -54,8 +54,6 @@ build_kernel = _load("studio_ci_build_kernel", CI_DIR / "build_kernel.py")
 collect_evidence = _load("studio_ci_collect_evidence", CI_DIR / "collect_evidence.py")
 
 
-
-
 # --------------------------------------------------------------- nvidia-smi
 def test_compute_apps_parses_the_bare_csv_the_payload_asks_for():
     apps = gpu_assert.parse_compute_apps("1234, 2048\n5678, 96\n")
@@ -75,8 +73,6 @@ def test_compute_apps_skips_a_header_and_an_unreported_size():
 
 def test_no_compute_apps_at_all_is_an_empty_dict_not_a_crash():
     assert gpu_assert.parse_compute_apps("") == {}
-
-
 
 
 # ------------------------------------------------------------ llama.cpp log
@@ -103,8 +99,6 @@ def test_the_device_model_buffer_is_read_in_mib():
 def test_a_cpu_only_log_reports_no_device_buffer():
     log = "load_tensors:   CPU model buffer size =   1918.35 MiB\n"
     assert gpu_assert.cuda_buffer_mib(log) is None
-
-
 
 
 # ------------------------------------------------------------ install kinds
@@ -147,8 +141,6 @@ def test_a_missing_or_unreadable_marker_is_not_a_cuda_install(tmp_path):
     assert gpu_assert.install_kind(broken) is None
 
 
-
-
 # -------------------------------------------------------------- GGUF magic
 def test_a_real_gguf_header_passes_and_a_truncated_one_does_not(tmp_path):
     good = tmp_path / "a.gguf"
@@ -158,8 +150,6 @@ def test_a_real_gguf_header_passes_and_a_truncated_one_does_not(tmp_path):
     assert gpu_assert.gguf_magic_ok(good)
     assert not gpu_assert.gguf_magic_ok(bad)
     assert not gpu_assert.gguf_magic_ok(tmp_path / "absent.gguf")
-
-
 
 
 # ----------------------------------------------------------- offload verdict
@@ -247,8 +237,6 @@ def test_auto_mode_gpu_layers_of_minus_one_is_not_treated_as_zero():
     assert verdict["passed"]
 
 
-
-
 # ------------------------------------------------------------------ health
 def test_health_is_not_ready_until_hardware_detection_settles():
     """Unsloth answers healthy while still detecting, and refuses to start a
@@ -257,8 +245,6 @@ def test_health_is_not_ready_until_hardware_detection_settles():
     assert studio_client.health_is_ready({"status": "healthy"})
     assert not studio_client.health_is_ready({"status": "starting"})
     assert not studio_client.health_is_ready("connection refused")
-
-
 
 
 # -------------------------------------------------------------------- wait
@@ -324,8 +310,6 @@ def test_a_probe_that_raises_is_retried_rather_than_fatal():
     assert ok and last == "ready" and attempts["n"] == 3
 
 
-
-
 # ---------------------------------------------------------------- training
 def test_a_running_job_is_not_terminal():
     for phase in (
@@ -357,8 +341,6 @@ def test_steps_with_a_logged_loss_are_counted_and_nulls_are_not():
     assert studio_client.trained_steps(status) == 3
     assert studio_client.trained_steps({}) == 0
     assert studio_client.trained_steps({"metric_history": {"loss": "nope"}}) == 0
-
-
 
 
 # ------------------------------------------------------------------ export
@@ -404,8 +386,6 @@ def test_the_newest_gguf_is_found_recursively(tmp_path):
     os.utime(old, (time.time() - 600, time.time() - 600))
     assert studio_client.newest_gguf(tmp_path) == new
     assert studio_client.newest_gguf(tmp_path / "absent") is None
-
-
 
 
 # ----------------------------------------------------------------- adapter
@@ -456,8 +436,6 @@ def test_no_output_dir_at_all_fails_rather_than_passing_vacuously():
 def test_an_output_dir_that_does_not_exist_fails(tmp_path):
     ok, failures, _ = studio_client.adapter_verdict(tmp_path / "never-created")
     assert not ok and failures
-
-
 
 
 # ----------------------------------------------------------- kernel builder
@@ -609,8 +587,6 @@ def test_the_result_prefix_matches_the_shared_launcher():
     assert f'RESULT_PREFIX = "{build_kernel.RESULT_PREFIX}"' in payload
 
 
-
-
 # ---------------------------------------------------------------- evidence
 def _bundle(names: dict[str, bytes]) -> bytes:
     buf = io.BytesIO()
@@ -760,8 +736,6 @@ def test_a_complete_later_copy_repairs_a_truncated_earlier_one():
     )
     assert total == 2
     assert "".join(chunks[i] for i in (1, 2)) == "PPPPQQ"
-
-
 
 
 # ---------------------------------------------------------------- workflow
@@ -978,8 +952,6 @@ def test_the_gate_and_launcher_are_the_shared_ones():
     assert not (CI_DIR / "launch.py").exists()
 
 
-
-
 _PASSING = [{"label": "studio-gpu", "passed": True, "assertions": []}]
 _FAILING = [{"label": "studio-gpu", "passed": False, "failures": ["x"], "assertions": []}]
 # A training leg from the merged kernel. Not this reporter's payload.
@@ -1076,8 +1048,6 @@ def test_the_reporter_survives_the_shared_module_being_unavailable(monkeypatch, 
     report = _load("studio_ci_report_2", CI_DIR / "report.py")
     monkeypatch.setattr(report, "_SHARED", tmp_path / "gone.py")
     assert report._load_shared() is None
-
-
 
 
 # ------------------------------------------------- the forced password change
@@ -1662,8 +1632,6 @@ def test_a_nested_executed_notebook_is_read_too(tmp_path):
     assert total and len(chunks) == total
 
 
-
-
 # ------------------------------------------------------- a diverged training run
 def test_a_nan_loss_is_not_a_trained_step():
     """A T4 has no bf16, so this trains in fp16, and an fp16 run that diverges
@@ -1684,8 +1652,6 @@ def test_real_losses_still_count():
     status = {"metric_history": {"loss": [2.0, 1.5, 1.1]}}
     assert studio_client.trained_steps(status) == 3
     assert studio_client.nonfinite_losses(status) == []
-
-
 
 
 # ------------------------------------------------------ which Unsloth gets started
@@ -1728,8 +1694,6 @@ def test_without_a_console_script_the_same_interpreter_runs_the_module(tmp_path,
     command = session.studio_command()
     assert command[0] == str(venv_bin / "python")
     assert command[1] == "-c"
-
-
 
 
 # ------------------------------------------------------- the llama-server pid
@@ -1794,8 +1758,6 @@ def test_the_payload_can_find_a_llama_server_in_the_process_table(tmp_path):
         proc.wait()
 
 
-
-
 # ------------------------------------------- evidence belongs to the load it follows
 def test_an_earlier_loads_offload_line_is_not_evidence_for_the_next(tmp_path):
     """The exported-model reload used to inherit the chat model's
@@ -1827,8 +1789,6 @@ def test_a_log_that_was_rotated_under_us_is_read_whole(tmp_path):
     marks = module.log_marks(server_log, home)
     server_log.write_text("offloaded 7/7 layers to GPU\n", encoding = "utf-8")
     assert "offloaded" in module.studio_log_text(server_log, home, since = marks)
-
-
 
 
 # ---------------------------------------------- the log across the UI restart
@@ -1864,8 +1824,6 @@ class _DeadProc:
 
     def wait(self, timeout = None):
         return 0
-
-
 
 
 # ------------------------------------------------- an export that outlives its request
@@ -1949,8 +1907,6 @@ def test_an_export_that_outlives_its_http_request_is_still_polled(tmp_path, monk
     assert ok, detail.get("failures")
 
 
-
-
 # ---------------------------------------------------- the oversized bundle
 def test_the_capped_bundle_still_carries_the_logs(tmp_path, monkeypatch):
     """The fallback used to rebuild with the report ALONE while its message
@@ -1981,8 +1937,6 @@ def test_the_capped_bundle_still_carries_the_logs(tmp_path, monkeypatch):
         assert "studio.log" in names
         assert "playwright_chat_ui.log" in names
         assert "studio_gpu_report.json" in names
-
-
 
 
 # ------------------------------------------------- one report, and it is the last
@@ -2020,8 +1974,6 @@ def test_a_crash_while_packaging_the_evidence_does_not_publish_a_pass(tmp_path, 
     published = json.loads(reports[0][len(module.RESULT_PREFIX) :])
     assert published["passed"] is False
     assert code == 1
-
-
 
 
 # ------------------------------------- an installer failure is a failure, not infra
@@ -2220,8 +2172,6 @@ def test_a_timeout_before_the_payload_started_is_still_infra(tmp_path):
     }
     exec(compile(runner, "<runner>", "exec"), namespace)
     assert not [line for line in emitted if line.startswith(build_kernel.RESULT_PREFIX)]
-
-
 
 
 # ---------------------------------------------------------------- the gate flags

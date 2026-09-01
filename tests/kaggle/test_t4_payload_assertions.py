@@ -33,8 +33,6 @@ NAN = float("nan")
 INF = float("inf")
 
 
-
-
 # ------------------------------------------------------- determinism.py
 def test_a_field_logged_by_only_one_run_is_a_difference():
     """grad_norm in cycle 0 and not in cycle 1 is nondeterminism, not a skip.
@@ -109,8 +107,6 @@ def test_an_infinity_only_one_run_logged_is_still_a_difference(norm_a, norm_b):
     assert compare_metrics(a, b)["identical"] is False
 
 
-
-
 # -------------------------------------------------- run_t4_smoke.py: canary
 def test_the_canary_must_be_the_whole_answer():
     from run_t4_smoke import CANARY, canary_failures
@@ -137,8 +133,6 @@ def test_the_canary_can_be_downgraded_to_a_warning():
     assert canary_failures({"run_index": 1, "generated": "nope"}, require = False) == []
 
 
-
-
 # -------------------------------------- run_t4_smoke.py: optimisation checks
 def test_an_infinite_gradient_norm_is_not_an_applied_update():
     """fp16 overflow reports the norm as inf as readily as NaN.
@@ -161,8 +155,6 @@ def test_one_finite_gradient_norm_is_enough():
         {"step": 3, "loss": 1.0, "grad_norm": 11.2},
     ]
     assert optimisation_failures(metrics) == []
-
-
 
 
 # ------------------------------------------- run_t4_smoke.py: saved adapter
@@ -509,8 +501,6 @@ def test_an_adapter_config_for_a_different_adapter_than_the_one_trained_fails(tm
     good = verify_saved_adapter(tmp_path, expected = requested, peft_keys = keys)
     assert good["config_differences"] == []
     assert saved_adapter_failures(good) == []
-
-
 
 
 # ------------------------------------------ run_t4_smoke.py: the reference
@@ -898,8 +888,6 @@ def test_the_committed_reference_pins_the_model_it_was_captured_on():
     assert reference["model"] == DEFAULT_MODEL
 
 
-
-
 def _batch_record(**over):
     """A healthy batched-generation record, with fields overridable per test."""
     base = {
@@ -1020,8 +1008,6 @@ def test_a_failed_cycle_still_reports_its_environment(monkeypatch, tmp_path):
     assert report["environment"]["resolved"]
     assert report["config"]["max_steps"] == 3
     assert report["label"] == "t4-smoke"
-
-
 
 
 # ------------------------------------------------------- run_gptoss_t4.py
@@ -1344,8 +1330,6 @@ def test_grpo_reads_the_adapter_when_the_trainer_logged_no_norms():
     assert failures_for(result, _grpo_args()) == []
 
 
-
-
 # ------------------------------------------------- training_evidence.py
 class _Tensor:
     """The two calls adapter_fingerprint makes on a parameter, and no more."""
@@ -1543,8 +1527,6 @@ def test_two_fingerprints_over_different_tensor_counts_are_not_compared():
     assert "not comparable" in verdict["error"]
 
 
-
-
 # --------------------------------------------------------- run_grpo_t4.py
 def _grpo_args(**over):
     base = {"max_steps": 3}
@@ -1643,8 +1625,6 @@ def test_grpo_still_reports_an_engine_that_never_built(monkeypatch, tmp_path):
     assert run_grpo_t4.main() == 1
     report = json.loads((tmp_path / "t4_smoke_report.json").read_text(encoding = "utf-8"))
     assert report["engine_built"] is False
-
-
 
 
 # ------------------------------------------------------- references/README
