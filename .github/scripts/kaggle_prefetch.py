@@ -110,16 +110,34 @@ def _repo_bytes(repo):
     that matters: the legs are downloading into this same cache CONCURRENTLY,
     so a whole-cache delta silently credits their bytes to this lane and
     reports a download rate the Hub never delivered.
+
+    Counted ONCE per blob. A hub snapshot is a tree of symlinks into `blobs/`,
+    so `os.stat` follows the link and the same bytes are then counted again
+    under the blob's own name -- roughly 2x, which is not a rounding error in a
+    number whose whole purpose is a MB/s rate. `lstat` measures the link
+    itself, and the inode set also collapses hardlinks, which is what a
+    filesystem without symlink support gives instead.
     """
     root = os.environ.get("HF_HOME") or os.path.expanduser("~/.cache/huggingface")
     folder = "models--" + repo.replace("/", "--")
     total = 0
-    for dirpath, _dirnames, filenames in os.walk(os.path.join(root, "hub", folder)):
+    seen = set()
+    for dirpath, _dirnames, filenames in os.walk(
+        os.path.join(root, "hub", folder), followlinks = False
+    ):
         for name in filenames:
+            path = os.path.join(dirpath, name)
+            if os.path.islink(path):
+                continue
             try:
-                total += os.stat(os.path.join(dirpath, name)).st_size
+                info = os.lstat(path)
             except OSError:
-                pass
+                continue
+            key = (info.st_dev, info.st_ino)
+            if key in seen:
+                continue
+            seen.add(key)
+            total += info.st_size
     return total
 
 

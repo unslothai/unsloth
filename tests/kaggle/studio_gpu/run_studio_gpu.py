@@ -823,6 +823,19 @@ class Payload:
                 f"(a clamp to the model's layer count looks like this)"
             )
 
+        # Speculative decoding, read off the status rather than inferred from
+        # the repo name. Pointing --chat-model at an MTP repo does NOT prove the
+        # drafter engaged: if the companion is missing, llama.cpp was built
+        # without MTP, or the drafter was downgraded for VRAM, the main GGUF
+        # loads and generates exactly as it does otherwise and every assertion
+        # here stays green. `spec_fallback_reason` is what names which of those
+        # happened, so it is recorded whether or not it fires.
+        spec = {
+            "drafter_kind": status_body.get("spec_drafter_kind"),
+            "fallback_reason": status_body.get("spec_fallback_reason"),
+            "supports_mtp": status_body.get("llama_cpp_supports_mtp"),
+        }
+
         return {
             "model": model_path,
             "variant": variant,
@@ -830,6 +843,7 @@ class Payload:
             "effective_gpu_layers": effective,
             "llama_server_pids": server_pids,
             "device_vram_delta_mib": None if delta is None else round(delta, 1),
+            "spec_decoding": spec,
             "evidence": verdict["evidence"],
             "positives": verdict["positives"],
             "failures": failures,
@@ -865,6 +879,25 @@ class Payload:
                 detail["failures"].append(f"/v1/chat/completions returned HTTP {code}")
             elif not text.strip():
                 detail["failures"].append("the model on the GPU returned empty content")
+
+            # The MTP claim, checked rather than assumed from the repo name.
+            # An MTP repo whose drafter never engaged serves ordinary decoding
+            # and passes everything above it, so selecting the repo is a request
+            # and this is the result. The reason is named rather than reported
+            # as "MTP off", because "llama.cpp has no MTP support" and "the
+            # drafter was downgraded for VRAM" are different findings and only
+            # one of them is about this leg.
+            spec = detail.get("spec_decoding") or {}
+            if "MTP" in (self.args.chat_model or "").upper() and spec.get("drafter_kind") != "mtp":
+                detail["failures"].append(
+                    f"--chat-model is {self.args.chat_model}, which was chosen to "
+                    f"exercise multi-token prediction, and Unsloth reports "
+                    f"spec_drafter_kind={spec.get('drafter_kind')!r} "
+                    f"(fallback_reason={spec.get('fallback_reason')!r}, "
+                    f"llama_cpp_supports_mtp={spec.get('supports_mtp')!r}). The "
+                    f"model served ordinary decoding, so nothing here covers the "
+                    f"MTP path and pointing at the MTP repo bought nothing"
+                )
         return self.record("gpu_inference", not detail["failures"], detail)
 
     def assert_server_flags(self) -> bool:
@@ -1094,14 +1127,23 @@ class Payload:
         # was asked for, and the field name in the request would be decorative.
         code, body = self.chat(long_messages, max_tokens = 32)
         detail["long_status_default_policy"] = code
-        if code != 400:
+        # The CODE, not just the 400. `openai_error_body` always emits the key
+        # and leaves it None for an unclassified failure, so a validation error
+        # or a code-less generation error is also a 400 and would satisfy a
+        # status-only check while proving nothing about the overflow semantics
+        # this failure text promises.
+        refusal_code = None
+        if isinstance(body, dict):
+            refusal_code = (body.get("error") or {}).get("code")
+        detail["long_default_policy_code"] = refusal_code
+        if code != 400 or refusal_code != "context_length_exceeded":
             failures.append(
                 f"with the default context_overflow the same over-length "
-                f"conversation returned HTTP {code} rather than 400. The "
-                f"documented default is to refuse with "
-                f"code=context_length_exceeded so a client's own trim loop can "
-                f"see it, and if everything is compacted anyway then asking "
-                f"for truncate_oldest above proved nothing"
+                f"conversation returned HTTP {code} with error code "
+                f"{refusal_code!r}, not 400 with code=context_length_exceeded. "
+                f"That code is what a client's own trim loop detects, and if "
+                f"everything is compacted anyway then asking for "
+                f"truncate_oldest above proved nothing"
             )
 
         # The LENGTH control, and it is not optional either: without it a
@@ -2023,8 +2065,7 @@ class Payload:
             # The PNG itself, fetched raw. The JSON client decodes to utf-8,
             # which would corrupt the bytes the whole check is about.
             request = urllib.request.Request(
-                f"http://127.0.0.1:{self.args.port}/api/inference/images/"
-                f"gallery/{image_id}/file"
+                f"http://127.0.0.1:{self.args.port}/api/inference/images/gallery/{image_id}/file"
             )
             if self.studio.token:
                 request.add_header("Authorization", f"Bearer {self.studio.token}")

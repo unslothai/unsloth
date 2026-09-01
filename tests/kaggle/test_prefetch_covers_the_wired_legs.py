@@ -146,3 +146,53 @@ def test_the_lower_case_qwen3_redirect_is_not_tidied_away():
     """It looks like a typo and it is a measurement. Written down so the next
     reader corrects the capitals in the report, not in this file."""
     assert legs.LOAD_REDIRECTS["unsloth/Qwen3-0.6B"] == "unsloth/qwen3-0.6b-unsloth-bnb-4bit"
+
+
+def test_a_blob_is_counted_once_not_once_per_symlink(tmp_path, monkeypatch):
+    """`snapshot_download` writes each file once under `blobs/` and links to it
+    from `snapshots/`, so an `os.stat` walk follows the link and counts the same
+    bytes twice.
+
+    Measured on kernel unsloth-probe-prefetch-verify-9568-7a0bdd: gpt-oss came
+    back as 25109731082 bytes for a ~12.5 GB checkpoint, and the reported
+    407.0 MB/s was really ~203. This is the number the second-wave ordering and
+    the makespan argument rest on, so a 2x is not cosmetic.
+
+    Drives the REAL generated cell body rather than a copy of the walk: the
+    function under test only ever exists inside that f-string, and a
+    reimplementation here would pass while the shipped one doubles.
+    """
+    import importlib.util
+    import os
+
+    spec = importlib.util.spec_from_file_location(
+        "kaggle_prefetch_under_test", ROOT / ".github" / "scripts" / "kaggle_prefetch.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    folder = tmp_path / "hub" / "models--org--model"
+    blobs = folder / "blobs"
+    snapshot = folder / "snapshots" / "rev"
+    blobs.mkdir(parents = True)
+    snapshot.mkdir(parents = True)
+    for index in range(3):
+        blob = blobs / f"sha{index}"
+        blob.write_bytes(b"x" * 1000)
+        (snapshot / f"shard{index}.safetensors").symlink_to(blob)
+    # A config is a real file in both places on a filesystem without symlinks,
+    # which is the other way the same bytes get counted twice.
+    (blobs / "cfg").write_bytes(b"y" * 10)
+    os.link(blobs / "cfg", snapshot / "config.json")
+
+    source = module.prefetch_cell(repos = [("org/model", None)], hf_home = str(tmp_path))
+    match = re.search(r"def _repo_bytes\(repo\):.*?\n\ndef ", source, re.S)
+    assert match, "the generated cell no longer defines _repo_bytes"
+    namespace = {"os": os}
+    exec(match.group(0)[: -len("\n\ndef ")], namespace)  # noqa: S102
+
+    monkeypatch.setenv("HF_HOME", str(tmp_path))
+    assert namespace["_repo_bytes"]("org/model") == 3010, (
+        "the walk counts a blob once per link to it, so every reported size and "
+        "MB/s in the prefetch evidence is inflated"
+    )

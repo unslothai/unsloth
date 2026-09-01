@@ -64,9 +64,9 @@ def test_it_runs_after_the_window_is_pinned():
 def test_the_over_length_case_must_report_dropped_messages():
     func = _func("assert_compaction")
     tests = [ast.unparse(n.test) for n in ast.walk(func) if isinstance(n, ast.If)]
-    assert any(
-        "long_dropped" in t for t in tests
-    ), "nothing depends on the long conversation having been shortened"
+    assert any("long_dropped" in t for t in tests), (
+        "nothing depends on the long conversation having been shortened"
+    )
 
 
 def test_the_short_control_is_present_and_is_the_opposite_claim():
@@ -81,9 +81,9 @@ def test_the_short_control_is_present_and_is_the_opposite_claim():
     for node in short:
         # It must fail when the short chat DID drop, which is the opposite
         # polarity to the long one.
-        assert not (
-            isinstance(node.test, ast.UnaryOp) and isinstance(node.test.op, ast.Not)
-        ), "the control must fire when a SHORT conversation reports a drop"
+        assert not (isinstance(node.test, ast.UnaryOp) and isinstance(node.test.op, ast.Not)), (
+            "the control must fire when a SHORT conversation reports a drop"
+        )
 
 
 def test_a_refusal_is_a_failure_rather_than_a_pass():
@@ -169,8 +169,7 @@ def test_compaction_is_REQUESTED_rather_than_expected_by_default():
     body = _body()
     assert 'context_overflow = "truncate_oldest"' in body
     assert 'context_overflow = "truncate_middle"' not in body, (
-        "truncate_middle does not apply to a plain chat, so it would report a "
-        "policy that never ran"
+        "truncate_middle does not apply to a plain chat, so it would report a policy that never ran"
     )
 
 
@@ -188,6 +187,40 @@ def test_the_default_policy_control_is_present_and_expects_a_refusal():
     ]
     assert refusals, "nothing asserts the default policy still refuses"
     assert "long_status_default_policy" in _body()
+
+
+def test_the_refusal_is_checked_by_CODE_and_not_by_the_status_alone():
+    """400 is not the claim. `openai_error_body` always emits the `code` key and
+    leaves it None for an unclassified failure, so a validation error and a
+    code-less generation error are both 400 -- and a status-only check accepts
+    either as proof of overflow semantics the failure text promises.
+
+    `code=context_length_exceeded` is what a client's trim loop detects
+    (routes/inference.py, `_openai_stream_error_chunk`), so it is the assertion.
+    """
+    func = _func("assert_compaction")
+    body = ast.unparse(func)
+    # `ast.unparse` normalises quoting, so match the value not the literal.
+    assert "context_length_exceeded" in body, (
+        "the default-policy control never reads the error code, so any 400 passes"
+    )
+    compares = [
+        ast.unparse(node)
+        for node in ast.walk(func)
+        if isinstance(node, ast.Compare) and "context_length_exceeded" in ast.unparse(node)
+    ]
+    assert compares, "context_length_exceeded appears but is never compared against"
+    # And it has to gate the SAME branch as the status, or a run can refuse with
+    # the wrong code and still pass.
+    guards = [
+        ast.unparse(node.test)
+        for node in ast.walk(func)
+        if isinstance(node, ast.If) and "context_length_exceeded" in ast.unparse(node.test)
+    ]
+    assert any("400" in guard for guard in guards), (
+        "the code and the status are checked in separate branches, so one can "
+        "pass while the other is wrong"
+    )
 
 
 def test_the_over_length_conversation_is_sent_twice_under_two_policies():
