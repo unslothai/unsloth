@@ -184,6 +184,26 @@ class _ColabCredentialHandoffFailed(RuntimeError):
     """A live credential could not be safely handed to the notebook operator."""
 
 
+def _handoff_or_purge_legacy_colab_credentials() -> None:
+    """Remove the pre-#7392 plaintext cache without losing a live credential."""
+    cached = _load_colab_login_credentials()
+    if cached is None:
+        return
+    valid = _colab_credentials_still_valid(*cached)
+    if valid is None:
+        raise _ColabCredentialHandoffFailed("cached admin credentials could not be validated")
+    if valid is True and (
+        not _display_channel_active()
+        or not _display_admin_credentials(*cached, final_cached_copy = True)
+    ):
+        raise _ColabCredentialHandoffFailed("cached admin credentials could not be shown")
+    if not _clear_colab_login_credentials():
+        description = "live " if valid else "stale "
+        raise _ColabCredentialHandoffFailed(
+            f"the {description}plaintext credential cache could not be removed"
+        )
+
+
 def _colab_wants_cloudflare(cloudflare: "bool | None") -> bool:
     """Resolve whether to open a Cloudflare tunnel.
 
@@ -491,28 +511,7 @@ def _auto_generate_colab_admin_password() -> "str | None":
             # copy a user who cleared their earlier cell output still had, leaving
             # a working password nobody can discover. Showing it once and then
             # removing it keeps the CWE-256 fix and still leaves the user a way in.
-            cached = _load_colab_login_credentials()
-            if cached is not None:
-                valid = _colab_credentials_still_valid(*cached)
-                if valid is None:
-                    raise _ColabCredentialHandoffFailed(
-                        "cached admin credentials could not be validated"
-                    )
-                if valid is True:
-                    if not _display_channel_active() or not _display_admin_credentials(
-                        *cached,
-                        final_cached_copy = True,
-                    ):
-                        raise _ColabCredentialHandoffFailed(
-                            "cached admin credentials could not be shown"
-                        )
-                    if not _clear_colab_login_credentials():
-                        raise _ColabCredentialHandoffFailed(
-                            "the live plaintext credential cache could not be removed"
-                        )
-                    return None
-            # A proven-stale credential is safe to discard without displaying.
-            _clear_colab_login_credentials()
+            _handoff_or_purge_legacy_colab_credentials()
             return None
         _clear_colab_login_credentials()
         if not _display_channel_active():
@@ -1082,6 +1081,16 @@ def start(port: int = 8888, *, cloudflare: "bool | None" = None):
 
     logger.info("🦥 Starting Unsloth Studio...")
     use_cloudflare = _colab_wants_cloudflare(cloudflare)
+    # Cache migration is independent of tunnel selection. In particular, the
+    # documented cloudflare=False path must not retain a pre-#7392 plaintext
+    # credential indefinitely. A still-live value is shown once before removal.
+    try:
+        _handoff_or_purge_legacy_colab_credentials()
+    except _ColabCredentialHandoffFailed as e:
+        logger.warning(
+            f"Could not safely remove legacy Colab credentials ({e}); refusing to start."
+        )
+        return
 
     # Fast path: already running (cell re-run); re-show link/iframe instead of rebinding the port.
     if _is_studio_healthy(port):

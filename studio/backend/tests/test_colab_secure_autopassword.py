@@ -744,6 +744,27 @@ def test_start_cloudflare_never_finalizes_or_caches_credentials(monkeypatch):
     assert "colab_login" not in embed_kwargs or embed_kwargs["colab_login"] is None
 
 
+def test_start_without_cloudflare_purges_legacy_plaintext_cache(monkeypatch):
+    # Cache migration is independent of tunnel selection: an upgraded runtime
+    # using the documented proxy-only path must not retain the old plaintext.
+    admin = _seed_admin(must_change_password = False)
+    colab._store_colab_login_credentials(admin, "bootstrap-secret-123")
+    cache = colab._colab_login_credentials_path()
+    assert cache.exists()
+    finalize_calls: list[str] = []
+    embed_kwargs: dict = {}
+    _patch_start_for_cloudflare(
+        monkeypatch,
+        finalize_calls = finalize_calls,
+        embed_kwargs = embed_kwargs,
+    )
+    monkeypatch.setattr(colab, "_display_admin_credentials", lambda *args, **kwargs: True)
+
+    colab.start(cloudflare = False)
+
+    assert not cache.exists()
+
+
 def test_notebook_text_warns_that_cell_output_is_saved():
     # The runtime card already says the notebook saves its output; the notebook's
     # own intro cell and code comment must not contradict it by promising the
