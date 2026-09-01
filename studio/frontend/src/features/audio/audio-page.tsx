@@ -30,7 +30,6 @@ import {
 
 import { AdvancedDisclosure } from "@/components/advanced-disclosure";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -38,6 +37,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
+import { Progress } from "@/components/ui/progress";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { usePlatformStore } from "@/config/env";
@@ -79,13 +80,13 @@ import type {
   ModelSelectorChangeMeta,
 } from "@/features/model-picker/components/model-selector/types";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
+import { useSettingsDialogStore } from "@/features/settings";
 import {
   isTrackingSttDownload,
   trackSttDownload,
 } from "@/features/settings/lib/stt-download-mirror";
 import { sttModelSize } from "@/features/settings/stores/stt-model-catalog";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
-import { useSettingsDialogStore } from "@/features/settings";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { fetchSystemInfo } from "@/hooks/use-system";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
@@ -100,14 +101,22 @@ import {
   clearAudioGallery,
   deleteAudioClip,
   fetchClipObjectUrl,
-  getAudioDownloadPlan,
   generateAudio,
+  getAudioDownloadPlan,
   listAudioGallery,
   setAudioClipFlags,
 } from "./api";
 import {
   type AudioBusy,
+  type AudioGenerationPhase,
+  MINIMAX_MUSIC_DEFAULT_SECONDS,
+  MINIMAX_MUSIC_FRAMES_PER_SECOND,
+  MINIMAX_MUSIC_MAX_SECONDS,
+  MOSS_TTS_DEFAULT_SECONDS,
+  MOSS_TTS_FRAMES_PER_SECOND,
+  MOSS_TTS_MAX_FRAMES,
   type SttDownloadedArtifact,
+  audioGenerationPresentation,
   canTransitionAudioMode,
   exactGgufLoadSelector,
   expectedGgufDownloadBytes,
@@ -115,15 +124,9 @@ import {
   macTtsPickAction,
   mergeGalleryPage,
   micStreamRequestIsCurrent,
-  MOSS_TTS_DEFAULT_SECONDS,
-  MOSS_TTS_FRAMES_PER_SECOND,
-  MOSS_TTS_MAX_FRAMES,
-  MINIMAX_MUSIC_DEFAULT_SECONDS,
-  MINIMAX_MUSIC_FRAMES_PER_SECOND,
-  MINIMAX_MUSIC_MAX_SECONDS,
   minimaxMusicFramesForSeconds,
-  mossTtsMaxFrames,
   mossTtsFramesForSeconds,
+  mossTtsMaxFrames,
   nativeAudioInstructionsKind,
   persistedClipForGeneration,
   reconcileSttSelection,
@@ -131,10 +134,10 @@ import {
   resolveSttResidency,
   selectAutoGgufVariant,
   stagedTtsLoadIsOwned,
-  trainedTtsCheckpointIsLoadable,
-  trainedTtsCheckpointIsRunnableOnMac,
   sttDownloadedArtifacts,
   sttSelectionReady,
+  trainedTtsCheckpointIsLoadable,
+  trainedTtsCheckpointIsRunnableOnMac,
 } from "./audio-page-policy";
 import {
   audioCapabilityLine,
@@ -327,6 +330,17 @@ export function AudioPage({
   const [busy, setBusy] = useState<AudioBusy>(null);
   const busyRef = useRef<AudioBusy>(busy);
   busyRef.current = busy;
+  const [generationPhase, setGenerationPhase] =
+    useState<AudioGenerationPhase>(null);
+  const generationPhaseRef = useRef<AudioGenerationPhase>(generationPhase);
+  const updateGenerationPhase = useCallback(
+    (nextPhase: AudioGenerationPhase) => {
+      generationPhaseRef.current = nextPhase;
+      setGenerationPhase(nextPhase);
+    },
+    [],
+  );
+  const generationPresentation = audioGenerationPresentation(generationPhase);
 
   // --- TTS (main inference slot) -----------------------------------------
   const [status, setStatus] = useState<InferenceStatusResponse | null>(null);
@@ -351,6 +365,12 @@ export function AudioPage({
     MINIMAX_MUSIC_DEFAULT_SECONDS,
   );
   const generateAbort = useRef<AbortController | null>(null);
+  const handleStopGeneration = useCallback(() => {
+    const controller = generateAbort.current;
+    if (!controller || controller.signal.aborted) return;
+    updateGenerationPhase("stopping");
+    controller.abort();
+  }, [updateGenerationPhase]);
   const ttsLoadInFlight = useRef(false);
   // A pick that lost the race with a load still settling. Replayed once it does.
   const pendingRoutedTtsPick = useRef<{
@@ -1073,7 +1093,9 @@ export function AudioPage({
         if (nextMode === "transcribe") invalidatePendingTtsSelection();
         return true;
       }
-      if (!canTransitionAudioMode(busyRef.current)) {
+      if (
+        !canTransitionAudioMode(busyRef.current, generationPhaseRef.current)
+      ) {
         toast.info(
           "Wait for the active audio task to finish before switching modes.",
         );
@@ -1081,7 +1103,7 @@ export function AudioPage({
       }
 
       if (nextMode === "transcribe") invalidatePendingTtsSelection();
-      if (busyRef.current === "generating") generateAbort.current?.abort();
+      if (busyRef.current === "generating") handleStopGeneration();
       stopAndDiscardRecording();
       setMode(nextMode);
       // Held through Generate, the sidecar keeps a dictation model in VRAM beside the speech one.
@@ -1116,6 +1138,7 @@ export function AudioPage({
     },
     [
       invalidatePendingTtsSelection,
+      handleStopGeneration,
       mode,
       releaseTranscribeSelection,
       stopAndDiscardRecording,
@@ -1849,8 +1872,10 @@ export function AudioPage({
     if (busyRef.current) return;
     busyRef.current = "generating";
     setBusy("generating");
+    updateGenerationPhase("preparing");
     const releaseInFlight = pendingTranscribeRelease.current;
     if (releaseInFlight && !(await releaseInFlight)) {
+      updateGenerationPhase(null);
       busyRef.current = null;
       setBusy(null);
       setMode("transcribe");
@@ -1858,6 +1883,7 @@ export function AudioPage({
     }
     const instructions = audioInstructions.trim();
     if (musicGeneration && !instructions) {
+      updateGenerationPhase(null);
       busyRef.current = null;
       setBusy(null);
       toast.error("Add a music description for MiniMax Music 3.");
@@ -1866,6 +1892,7 @@ export function AudioPage({
     const language = audioLanguage.trim();
     const controller = new AbortController();
     generateAbort.current = controller;
+    updateGenerationPhase("generating");
     try {
       const generated = await generateAudio(text, {
         ...(!musicGeneration && temperatureEdited ? { temperature } : {}),
@@ -1882,6 +1909,7 @@ export function AudioPage({
           : {}),
         signal: controller.signal,
       });
+      updateGenerationPhase("finishing");
       const refreshed = await refreshGallery();
       const generatedClip = persistedClipForGeneration(
         generated.clip_id,
@@ -1918,6 +1946,7 @@ export function AudioPage({
       }
     } catch (error) {
       if (!controller.signal.aborted) {
+        updateGenerationPhase("finishing");
         toast.error(
           error instanceof Error ? error.message : "Audio generation failed.",
         );
@@ -1925,6 +1954,7 @@ export function AudioPage({
       }
     } finally {
       generateAbort.current = null;
+      updateGenerationPhase(null);
       busyRef.current = null;
       setBusy(null);
       if (activeRef.current && modeRef.current === "speak")
@@ -1942,16 +1972,13 @@ export function AudioPage({
     instructionsKind,
     temperature,
     temperatureEdited,
+    updateGenerationPhase,
     maxTokens,
     refreshGallery,
     refreshStatus,
     replayQueuedTtsPick,
     selectClip,
   ]);
-
-  const handleStopGeneration = useCallback(() => {
-    generateAbort.current?.abort();
-  }, []);
 
   // Only unmount aborts. RootLayout keeps this page mounted precisely so leaving
   // the tab does not cancel synthesis, and the clip is persisted server-side, so
@@ -2721,30 +2748,52 @@ export function AudioPage({
           {mode === "speak" ? (
             /* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */
             <div className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-4">
-              <Button
-                className="relative z-10 h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
-                onClick={
-                  busy === "generating" ? handleStopGeneration : handleGenerate
-                }
-                disabled={
-                  busy === "generating"
-                    ? false
-                    : busy !== null ||
-                      !ttsLoaded ||
-                      !prompt.trim() ||
-                      (musicGeneration && !audioInstructions.trim())
-                }
-                variant={busy === "generating" ? "destructive" : "default"}
-              >
-                {busy === "generating" ? (
+              <div className="flex w-full max-w-sm flex-col gap-2">
+                {busy === "generating" && generationPresentation ? (
                   <>
-                    <HugeiconsIcon icon={StopIcon} className="mr-2 size-4" />
-                    Stop
+                    <output
+                      aria-live="polite"
+                      aria-atomic="true"
+                      className="text-center text-ui-12 text-muted-foreground"
+                    >
+                      {generationPresentation.status}
+                    </output>
+                    <Progress
+                      indeterminate
+                      aria-label="Audio task in progress"
+                      className="h-1.5"
+                    />
                   </>
-                ) : (
-                  "Generate"
-                )}
-              </Button>
+                ) : null}
+                <Button
+                  className="relative z-10 mx-auto h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+                  onClick={
+                    generationPresentation?.canStop
+                      ? handleStopGeneration
+                      : handleGenerate
+                  }
+                  disabled={
+                    generationPresentation
+                      ? !generationPresentation.canStop
+                      : busy !== null ||
+                        !ttsLoaded ||
+                        !prompt.trim() ||
+                        (musicGeneration && !audioInstructions.trim())
+                  }
+                  variant={
+                    generationPresentation?.canStop ? "destructive" : "default"
+                  }
+                >
+                  {generationPresentation?.canStop ? (
+                    <>
+                      <HugeiconsIcon icon={StopIcon} className="mr-2 size-4" />
+                      Stop
+                    </>
+                  ) : (
+                    (generationPresentation?.actionLabel ?? "Generate")
+                  )}
+                </Button>
+              </div>
             </div>
           ) : null}
         </div>

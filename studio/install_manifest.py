@@ -275,6 +275,7 @@ def write_manifest(
     package_name: str = "unsloth",
     no_torch: Optional[bool] = None,
     expected_torch_tag: Optional[str] = None,
+    expected_torch_tag_pinned: Optional[bool] = None,
 ) -> Optional[Path]:
     """Record a completed install. Never raises: no manifest reads as incomplete,
     which is the safe answer."""
@@ -307,6 +308,12 @@ def write_manifest(
     # by verify-install, desktop-capabilities and the setup fast path.
     if expected_torch_tag:
         payload["expected_torch_tag"] = str(expected_torch_tag).strip().lower()
+    # Whether that flavor was NAMED by whoever ran the install, or merely what the selection
+    # landed on: setup.ps1 picks /cpu automatically on a GPU-less host and publishes it exactly
+    # as it publishes a pinned one, and reading the automatic case as deliberate leaves a later
+    # eGPU with no repair offered. Absent means unknown, as with every other additive key.
+    if expected_torch_tag_pinned is not None:
+        payload["expected_torch_tag_pinned"] = bool(expected_torch_tag_pinned)
     path = manifest_path(root)
     try:
         tmp = path.with_suffix(".json.tmp")
@@ -401,6 +408,26 @@ def recorded_torch_flavor(root: Optional[Path] = None) -> Optional[str]:
         return None
     value = value.strip().lower()
     return value or None
+
+
+def recorded_torch_flavor_was_pinned(root: Optional[Path] = None) -> bool:
+    """Whether the recorded flavor was NAMED rather than automatically selected.
+
+    False when nothing recorded it, including a manifest written before the key
+    existed. That is the safe direction here and the opposite of the usual "unknown
+    falls back to the old behaviour": treating an unproven CPU record as deliberate is
+    what leaves a host that has since gained a GPU with no repair offered at all, which
+    is the failure this whole field exists to distinguish. A repair is something the
+    user can decline; a silently CPU-only GPU box is not.
+    """
+    manifest = read_manifest(root)
+    if manifest is None:
+        return False
+    # An ACTUAL boolean. bool("false") is True, so a migrated or hand-edited manifest
+    # carrying the string would read as a deliberate pin and suppress the repair on a
+    # host that never chose one. Anything that is not a bool is unknown provenance, and
+    # the safe answer for unknown is the same False an absent key gets.
+    return manifest.get("expected_torch_tag_pinned") is True
 
 
 def _parse_requirement_line(line: str) -> Optional[Tuple[str, str, str]]:

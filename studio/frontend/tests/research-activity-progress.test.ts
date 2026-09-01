@@ -368,9 +368,12 @@ test("a stalled watcher does not stop events reaching the store", async () => {
   const iterator = watchResearchRun(RUN_ID)[Symbol.asyncIterator]();
   await iterator.next();
 
+  const plan = { title: "Plan", steps: [{ title: "One", query: "q" }] };
   const planned = run({
     status: "awaiting_approval",
-    plan: { title: "Plan", steps: [{ title: "One", query: "q" }] },
+    plan,
+    planRevision: 1,
+    planHash: "plan-hash",
     lastEventSeq: 1,
   });
   ingest(planned, event(1, "plan.ready", { planRevision: 1 }, planned));
@@ -379,6 +382,13 @@ test("a stalled watcher does not stop events reaching the store", async () => {
     useResearchRunStore.getState().sessions[RUN_ID].run.status,
     "awaiting_approval",
   );
+
+  assert.deepEqual(useResearchRunStore.getState().planReviewByRunId[RUN_ID], {
+    revision: 1,
+    open: true,
+    editing: false,
+    draft: plan,
+  });
   const next = await iterator.next();
   assert.equal(next.value?.status, "awaiting_approval");
   await iterator.return?.(undefined);

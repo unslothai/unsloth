@@ -1714,6 +1714,110 @@ def _within(spans, index: int) -> bool:
     return any(start <= index < end for start, end in spans)
 
 
+_ENDRAW = re.compile(r"\{%-?\s*endraw\s*-?%\}")
+
+
+def _evaluated_spans(template: str) -> tuple:
+    """The ranges Jinja evaluates, walked quote-aware, with string literals taken out.
+
+    ``_jinja_expression_spans`` ends a block at the first ``}}``, so a template printing
+    literal Jinja -- ``{{ "{{ example.0 }}" }}`` -- reads as code. That scanner is shared
+    with ``model_markup`` (#7066) and stays as it is; this repair edits the template
+    llama-server launches with, so it walks the blocks itself.
+
+    A comment and a ``{% raw %}`` body are both skipped. Raw is tracked through this same
+    walk rather than matched in the source, so tag text that only appears inside a comment
+    or a literal cannot make a real expression between two of them look verbatim. Inside a
+    raw body nothing is interpreted at all, the way Jinja reads it: the walk runs to the
+    terminator, so a comment marker there stays text.
+    """
+    spans: list = []
+    index, end = 0, len(template)
+    verbatim = False
+    while index < end - 1:
+        if verbatim:
+            terminator = _ENDRAW.search(template, index)
+            if not terminator:
+                break
+            index = terminator.end()
+            verbatim = False
+            continue
+        if template[index] != "{" or template[index + 1] not in "{%#":
+            index += 1
+            continue
+        if template[index + 1] == "#":
+            closed = template.find("#}", index + 2)
+            index = end if closed < 0 else closed + 2
+            continue
+        closer = "}}" if template[index + 1] == "{" else "%}"
+        block: list = []
+        cursor = index + 2
+        run = cursor
+        quote = ""
+        closed = False
+        while cursor < end:
+            char = template[cursor]
+            if quote:
+                if char == "\\":
+                    cursor += 2
+                    continue
+                if char == quote:
+                    quote = ""
+                    run = cursor + 1
+            elif char in "'\"":
+                block.append((run, cursor))
+                quote = char
+            elif template.startswith(closer, cursor):
+                block.append((run, cursor))
+                closed = True
+                break
+            cursor += 1
+        if not closed:
+            # An unterminated block is text, not code, so nothing in it is rewritten.
+            break
+        tag = template[index + 2 : cursor].strip().strip("-").strip()
+        if closer == "%}" and tag == "raw":
+            verbatim = True
+        else:
+            spans.extend(block)
+        index = cursor + 2
+    return tuple(spans)
+
+
+_NUMERIC_MEMBER = re.compile(r"([A-Za-z_]\w*|\)|\])((?:\s*\.\s*\d+)+)")
+
+
+def repair_numeric_member_access(template) -> Optional[str]:
+    """Rewrite ``x.0`` as ``x[0]`` in evaluated code, or None when nothing needs it.
+
+    llama.cpp's Jinja rejects a numeric member property. The throw lands inside its
+    capability probe, which swallows it, so ``supports_object_arguments`` stays false and a
+    replayed tool call's arguments are never decoded back into an object -- the template's
+    own ``arguments.items()`` then dies on the JSON string (GLM-5.3).
+
+    Only the ranges Jinja evaluates are rewritten, never prompt text, a quoted literal, a
+    raw block, or Jinja syntax a template prints as an example.
+    A chain rewrites whole ("x.0.1" -> "x[0][1]"): leaving the tail behind still throws.
+    Jinja lets whitespace sit around each dot, and llama.cpp throws on that spelling too.
+    """
+    if not isinstance(template, str) or not template:
+        return None
+    spans = _evaluated_spans(template)
+    out: list = []
+    cursor = 0
+    for match in _NUMERIC_MEMBER.finditer(template):
+        if not _within(spans, match.start()):
+            continue
+        out.append(template[cursor : match.start()])
+        indices = "".join(f"[{n}]" for n in re.findall(r"\d+", match.group(2)))
+        out.append(f"{match.group(1)}{indices}")
+        cursor = match.end()
+    if not out:
+        return None
+    out.append(template[cursor:])
+    return "".join(out)
+
+
 def _reads_tools_variable(body: str) -> bool:
     """True when *body* evaluates the ``tools`` variable, rather than printing the word."""
     return any(_TOOLS_VARIABLE.search(_JINJA_STRING.sub("", code)) for code in _jinja_code(body))
