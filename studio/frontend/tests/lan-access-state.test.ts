@@ -2,9 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
-// lan-access-section.tsx pulls in hugeicons, so only its pure helpers are tested here
+// lan-access-section.tsx pulls in hugeicons, so runtime tests stay on pure helpers.
 import {
   type ApiLanAccessStatus,
   type LanAccessStatus,
@@ -12,13 +13,22 @@ import {
   lanAccessAutoStartReadOnly,
   lanAccessBlockMessage,
   lanAccessErrorMessage,
+  lanAccessPortReadOnly,
   lanAccessStopDisconnectsOrigin,
   normalizeLanAccessStatus,
+  validLanAccessPort,
 } from "../src/features/settings/api/lan-access-state.ts";
 
 const LAN = "http://192.168.1.24:8888";
 const SECOND = "http://10.0.0.7:8888";
 const PUBLIC = "http://64.227.100.5:8888";
+const SECTION_SOURCE = readFileSync(
+  new URL(
+    "../src/features/settings/components/lan-access-section.tsx",
+    import.meta.url,
+  ),
+  "utf8",
+);
 
 function apiStatus(over: Partial<ApiLanAccessStatus> = {}): ApiLanAccessStatus {
   return {
@@ -43,6 +53,9 @@ test("normalize maps every snake_case field onto its camelCase name", () => {
       error: null,
       // biome-ignore lint/style/useNamingConvention: API schema
       auto_start: true,
+
+      configured_port: 43210,
+      active_port: 43210,
       // biome-ignore lint/style/useNamingConvention: API schema
       managed_by: "settings",
       // biome-ignore lint/style/useNamingConvention: API schema
@@ -67,6 +80,10 @@ test("normalize maps every snake_case field onto its camelCase name", () => {
     publicUrls: [],
     error: null,
     autoStart: true,
+
+    portConfigurationSupported: true,
+    configuredPort: 43210,
+    activePort: 43210,
     managedBy: "settings",
     canStart: false,
     canStop: true,
@@ -85,6 +102,11 @@ test("normalize defaults the optional fields an older backend may omit", () => {
   assert.deepEqual(s.urls, []);
   assert.deepEqual(s.publicUrls, []);
   assert.equal(s.error, null);
+
+  assert.equal(s.configuredPort, null);
+  assert.equal(s.activePort, null);
+  assert.equal(s.portConfigurationSupported, false);
+  assert.equal(lanAccessPortReadOnly(s), true);
   assert.equal(s.managedBy, null);
   assert.equal(s.blockReason, null);
   assert.equal(s.bindHost, null);
@@ -93,6 +115,38 @@ test("normalize defaults the optional fields an older backend may omit", () => {
   assert.equal(s.keylessLanEligible, false);
   assert.equal(s.keylessScope, "off");
   assert.equal(s.keylessTools, false);
+});
+
+test("an explicit automatic port remains distinct from an old backend", () => {
+  const s = normalizeLanAccessStatus(
+    apiStatus({ configured_port: null, active_port: null }),
+  );
+  assert.equal(s.portConfigurationSupported, true);
+  assert.equal(s.configuredPort, null);
+  assert.equal(lanAccessPortReadOnly(s), false);
+});
+
+test("the port form is capability-gated and keeps its live error region mounted", () => {
+  assert.equal(
+    SECTION_SOURCE.match(/["'`]Port["'`]/g)?.length,
+    1,
+  );
+  assert.match(
+    SECTION_SOURCE,
+    /\{status\?\.portConfigurationSupported\s*\?\s*\(\s*<SettingsRow\s+label="Port"/,
+  );
+  assert.match(
+    SECTION_SOURCE,
+    /aria-describedby=\{portErrorVisible\s*\?\s*portErrorId\s*:\s*undefined\}/,
+  );
+  assert.match(
+    SECTION_SOURCE,
+    /<\/div>\s*<span\s+id=\{portErrorId\}\s+role="status"\s+aria-live="polite"[\s\S]*?>[\s\S]*?\{portErrorVisible\s*\?\s*portInvalid/,
+  );
+  assert.doesNotMatch(
+    SECTION_SOURCE,
+    /\{portErrorVisible\s*\?\s*\(\s*<span\s+id=\{portErrorId\}/,
+  );
 });
 
 test("keyless state and messaging preserve every security boundary", () => {
@@ -200,6 +254,41 @@ test("auto-start is read-only with no status, or under Colab", () => {
     lanAccessAutoStartReadOnly(normalizeLanAccessStatus(apiStatus())),
     false,
   );
+});
+
+test("port editing is limited to stopped, non-Colab LAN access", () => {
+  assert.equal(lanAccessPortReadOnly(null), true);
+  assert.equal(
+    lanAccessPortReadOnly(
+      normalizeLanAccessStatus(
+        apiStatus({ state: "online", configured_port: null }),
+      ),
+    ),
+    true,
+  );
+  assert.equal(
+    lanAccessPortReadOnly(
+      normalizeLanAccessStatus(
+        apiStatus({ block_reason: "colab", configured_port: null }),
+      ),
+    ),
+    true,
+  );
+  assert.equal(
+    lanAccessPortReadOnly(
+      normalizeLanAccessStatus(apiStatus({ configured_port: null })),
+    ),
+    false,
+  );
+});
+
+test("custom LAN ports accept only whole ports in range", () => {
+  for (const value of ["1", "8888", "43210", "65535"]) {
+    assert.equal(validLanAccessPort(value), true, value);
+  }
+  for (const value of ["", "0", "1.5", "65536", "nope"]) {
+    assert.equal(validLanAccessPort(value), false, value);
+  }
 });
 
 // ── lanAccessStopDisconnectsOrigin ──
@@ -365,6 +454,14 @@ test("every listener failure the backend can raise has a message", () => {
     const msg = lanAccessErrorMessage(error);
     assert.ok(msg && msg.length > 0, `no message for ${error}`);
   }
+});
+
+
+test("bind failures distinguish automatic from an occupied custom port", () => {
+  assert.ok(lanAccessErrorMessage("bind_failed")?.includes("8888 to 8908"));
+  const custom = lanAccessErrorMessage("bind_failed", 43210);
+  assert.ok(custom?.includes("43210"));
+  assert.ok(custom?.includes("choose another"));
 });
 
 test("no error means no message, and an unknown one still says something", () => {
