@@ -2251,12 +2251,8 @@ def test_the_diffusion_load_worker_runs_in_the_requesting_workspace(
         name = "flux"
         base_repo = "base/repo"
 
-    monkeypatch.setattr(
-        DiffusionBackend, "validate_load_request", lambda self, *a, **k: _Fam()
-    )
-    monkeypatch.setattr(
-        DiffusionBackend, "assert_precision_available", lambda self, *a, **k: None
-    )
+    monkeypatch.setattr(DiffusionBackend, "validate_load_request", lambda self, *a, **k: _Fam())
+    monkeypatch.setattr(DiffusionBackend, "assert_precision_available", lambda self, *a, **k: None)
     monkeypatch.setattr(DiffusionBackend, "status", lambda self: {})
 
     seen: dict[str, object] = {}
@@ -2344,12 +2340,8 @@ def test_me_reports_this_accounts_own_password_requirement(
             },
         )
         assert changed.status_code == 200
-        settled_headers = {
-            "Authorization": f"Bearer {changed.json()['access_token']}"
-        }
+        settled_headers = {"Authorization": f"Bearer {changed.json()['access_token']}"}
         assert (
-            client.get("/api/auth/me", headers = settled_headers).json()[
-                "must_change_password"
-            ]
+            client.get("/api/auth/me", headers = settled_headers).json()["must_change_password"]
             is False
         )
