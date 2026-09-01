@@ -1050,11 +1050,7 @@ def _strip_markup_outside_fences(text: str) -> str:
     def _keep_examples(m):
         # Either endpoint inside a fence makes the match that example's content:
         # prose may open a tag the fenced fragment goes on to close.
-        return (
-            m.group(0)
-            if any(s <= m.start() < e or s < m.end() <= e for s, e in fences)
-            else ""
-        )
+        return m.group(0) if any(s <= m.start() < e or s < m.end() <= e for s, e in fences) else ""
 
     return _CLOSED_MARKUP_ARTIFACT.sub(_keep_examples, text)
 
