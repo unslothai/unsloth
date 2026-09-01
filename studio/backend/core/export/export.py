@@ -623,7 +623,7 @@ class ExportBackend:
                 raise _CpuSpillRetry(f"{_offloaded} module(s) offloaded to CPU/disk")
 
             if _IS_MLX:
-                # MLX doesn't use PeftModel — detect LoRA via adapter_config.json
+                # MLX doesn't use PeftModel - detect LoRA via adapter_config.json
                 self.is_peft = adapter_config.exists()
             else:
                 self.is_peft = isinstance(model, (PeftModel, PeftModelForCausalLM))

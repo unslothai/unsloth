@@ -2973,9 +2973,10 @@ class UnslothTrainer:
 
             if self.should_stop:
                 logger.info("Stopped before applying chat template\n")
-                # No separate HF eval split — caller handles programmatic splitting
+                # No separate HF eval split - caller handles programmatic splitting
                 return None
 
+            # ========== AUDIO MODELS: custom preprocessing ==========
             # An inconclusive probe must not read as "not an audio model": falling through lands on the text
             # path, which fails later with a column-mapping complaint. _dataset_has_audio_column is the
             # tiebreaker because _is_dataset_audio is true on a column-NAME match alone; raw/CPT is exempt.
@@ -3279,7 +3280,7 @@ class UnslothTrainer:
 
         # Pre-import heavy transformers modules on the main thread: Unsloth's patched_import is not thread-
         # safe with importlib's cache.
-        import transformers  # noqa: F401 – ensures submodules are cached
+        import transformers  # noqa: F401 - ensures submodules are cached
         from transformers import (  # noqa: F401
             Trainer as _HFTrainer,
             TrainingArguments as _TrainingArguments,
@@ -4027,7 +4028,7 @@ class UnslothTrainer:
                         f"Sequence packing: {'enabled' if packing_enabled else 'disabled'}\n"
                     )
 
-            # Audio codec overrides — BiCodec/DAC use the text SFTTrainer path
+            # Audio codec overrides - BiCodec/DAC use the text SFTTrainer path
             if self._audio_type == "bicodec":
                 config_args["packing"] = False
                 logger.info("Applied BiCodec overrides: packing=False\n")

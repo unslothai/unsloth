@@ -375,7 +375,7 @@ class ExportOrchestrator:
                     )
                 continue
 
-            # Other response types during wait — skip.
+            # Other response types during wait - skip.
             logger.debug(
                 "Skipping response type '%s' while waiting for '%s'",
                 rtype,
@@ -664,7 +664,7 @@ class ExportOrchestrator:
                 except RuntimeError:
                     success = False
 
-                # Shut down subprocess after cleanup — no model loaded.
+                # Shut down subprocess after cleanup - no model loaded.
                 self._shutdown_subprocess()
 
                 self.current_checkpoint = None

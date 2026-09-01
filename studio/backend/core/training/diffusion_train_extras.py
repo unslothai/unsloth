@@ -231,7 +231,7 @@ def _hub_cache_roots() -> list[str]:
     longer changed this key and a warm run silently reused the old embeddings and latents. The
     constant stays as a fallback, since the trainer subprocess may run without Unsloth's settings
     module importable."""
-    import os  # noqa: PLC0415 — keep the module import list light for the subprocess
+    import os  # noqa: PLC0415 - keep the module import list light for the subprocess
 
     roots: list[str] = []
     try:
@@ -269,7 +269,7 @@ def source_revision(ref: Any) -> str:
     never touches the encoders, since the point of the cache is that a warm run does
     not load them.
     """
-    import os  # noqa: PLC0415 — keep the module import list light for the subprocess
+    import os  # noqa: PLC0415 - keep the module import list light for the subprocess
     try:
         name = str(ref or "").strip()
         if not name:
@@ -307,7 +307,7 @@ def source_revision(ref: Any) -> str:
                     if len(names) == 1:
                         return f"rev-{names[0][:16]}"
         return "unresolved"
-    except Exception:  # noqa: BLE001 — best-effort, never block a run
+    except Exception:  # noqa: BLE001 - best-effort, never block a run
         return "unresolved"
 
 
