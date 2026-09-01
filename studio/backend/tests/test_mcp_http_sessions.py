@@ -557,6 +557,37 @@ def test_a_concurrent_checkout_cannot_cancel_another_borrowers_recheck(monkeypat
     assert clients[0].probes == 2, f"a borrower skipped its recheck: {clients[0].probes}"
 
 
+def test_a_second_borrower_still_proves_a_session_that_went_idle(monkeypatch, clients):
+    """last_used is refreshed at checkout, so a borrower arriving while the first
+    one's probe is still outstanding would see a near-zero gap and dispatch on a
+    session nobody has proved yet. If the server expired it, that user's call is
+    the thing that finds out, and it cannot be replayed."""
+    monkeypatch.setattr(mcp_client, "_HTTP_IDLE_RECHECK", 0.2)
+    _call(HTTP_URL, scope = SCOPE)
+    client = clients[0]
+    probes = {"n": 0}
+    started = threading.Event()
+    real_list = client.list_tools_mcp
+
+    async def gated():
+        probes["n"] += 1
+        if probes["n"] == 1:
+            started.set()
+            await asyncio.sleep(0.5)  # hold the first probe open
+        return await real_list()
+
+    client.list_tools_mcp = gated
+    time.sleep(0.3)  # past the recheck threshold
+    out: list[str] = []
+    first = threading.Thread(target = lambda: out.append(_call(HTTP_URL, scope = SCOPE)))
+    first.start()
+    assert started.wait(10), "the first borrower never began its probe"
+    out.append(_call(HTTP_URL, scope = SCOPE))
+    first.join(30)
+    assert len(out) == 2 and not any(r.startswith("Error:") for r in out), out
+    assert probes["n"] == 2, "the second borrower dispatched on an unproven session"
+
+
 def test_closing_many_sessions_does_not_run_serially(monkeypatch, clients):
     """A popular HTTP server holds a session per chat, and close runs on the
     request thread during an edit or delete."""
@@ -634,6 +665,74 @@ def test_evicting_another_scope_does_not_run_on_the_callers_deadline(monkeypatch
     assert closed.wait(10), "the evicted session was never closed"
 
 
+def test_a_surviving_call_does_not_pay_for_the_retirement(monkeypatch, clients):
+    """Parallel borrowers share one session, so one transport failure retires it
+    while another call is still succeeding. That makes the survivor the last
+    borrower, and its result is already waiting on this thread when the close
+    would run."""
+    closing = threading.Event()
+
+    class SlowExit(RecordingClient):
+        async def __aexit__(self, *exc):
+            closing.set()
+            await asyncio.sleep(1.5)
+            return await super().__aexit__(*exc)
+
+    monkeypatch.setattr(
+        mcp_client,
+        "_client",
+        lambda url, headers, use_oauth = False: SlowExit(url, headers, use_oauth),
+    )
+    _call(HTTP_URL, scope = SCOPE)
+    session = next(iter(mcp_client._mcp_sessions.values()))
+    client = clients[0]
+    client.call_delay = 0.3
+
+    out: list[str] = []
+    slow = threading.Thread(target = lambda: out.append(_call(HTTP_URL, scope = SCOPE)))
+    slow.start()
+    while session.in_flight < 1:
+        time.sleep(0.01)
+    # A sibling borrower's transport error retires the session under it.
+    mcp_client._drop_session(next(iter(mcp_client._mcp_sessions)), session)
+    started = time.monotonic()
+    slow.join(30)
+    elapsed = time.monotonic() - started
+    assert out == ["call-2"], out
+    assert elapsed < 1.0, f"the surviving call waited on the close: {elapsed:.2f}s"
+    assert closing.wait(10), "the retired session was never closed"
+
+
+def test_evictions_do_not_spawn_a_thread_each(monkeypatch, clients):
+    """A run of new chat scopes against a server that hangs on shutdown would
+    otherwise leave a cleanup thread per eviction alive for the close timeout."""
+    monkeypatch.setattr(mcp_client, "_MAX_SESSIONS", 1)
+    release = threading.Event()
+
+    class HangingExit(RecordingClient):
+        async def __aexit__(self, *exc):
+            await asyncio.get_running_loop().run_in_executor(None, release.wait, 30)
+            return await super().__aexit__(*exc)
+
+    monkeypatch.setattr(
+        mcp_client,
+        "_client",
+        lambda url, headers, use_oauth = False: HangingExit(url, headers, use_oauth),
+    )
+    try:
+        before = threading.active_count()
+        for i in range(12):  # 11 evictions, all of them stuck in __aexit__
+            _call(HTTP_URL, scope = f"chat-{i}")
+        # Not a total thread count: a transport stuck in __aexit__ keeps its own
+        # session loop thread alive whatever closes it. What must stay bounded is
+        # the cleanup machinery itself.
+        cleanup = [t for t in threading.enumerate() if t.name in ("mcp-cleanup", "mcp-evict")]
+        assert len(cleanup) <= 1, f"a cleanup thread per eviction: {len(cleanup)}"
+        assert threading.active_count() >= before
+    finally:
+        release.set()
+
+
 def test_a_slow_probe_still_condemns_a_dirty_session(monkeypatch, clients):
     """The counterpart that must not change: a session whose last call was
     abandoned is under suspicion, so silence within the window condemns it."""
@@ -654,11 +753,11 @@ def test_a_failed_session_is_uncached_before_the_borrow_is_released(clients):
     seen = {}
     real_release = mcp_client._release_session
 
-    def watching_release(session):
+    def watching_release(session, **kw):
         # Whatever a concurrent caller could observe at this instant.
         seen["cached"] = mcp_client._mcp_sessions.get(key) is session
         seen["defunct"] = session.defunct
-        return real_release(session)
+        return real_release(session, **kw)
 
     async def _boom(name, args, raise_on_error = True):
         raise RuntimeError("stream closed")

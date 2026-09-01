@@ -615,6 +615,7 @@ def _session_responsive(
     except Exception:  # noqa: BLE001
         return False
     session.dirty = False
+    session.proved_at = time.monotonic()
     return True
 
 
@@ -663,6 +664,11 @@ class _McpSession:
         # one-shot path had.
         self.serialize_calls = is_stdio(url)
         self.last_used = time.monotonic()
+        # When the transport was last shown to be alive, as opposed to merely
+        # borrowed. Checkout refreshes last_used immediately, so the idle gap the
+        # recheck needs has to be measured from here or a second borrower arriving
+        # during the first one's probe would see no gap at all.
+        self.proved_at = self.last_used
         self.in_flight = 0  # guarded by _mcp_sessions_lock
         # On Windows a bare new_event_loop() can be a SelectorEventLoop (if any
         # component set that policy), which cannot spawn subprocesses natively;
@@ -811,6 +817,11 @@ class _McpKeyLock:
 _mcp_key_locks: dict[tuple, _McpKeyLock] = {}
 _mcp_sessions_lock = threading.Lock()
 _mcp_reaper_started = False
+# Sessions discarded while somebody else was mid-call, closed by one worker off
+# the request path. See _close_detached.
+_mcp_cleanup_lock = threading.Lock()
+_mcp_cleanup_queue: list = []
+_mcp_cleanup_worker: Optional[threading.Thread] = None
 # close_mcp_sessions() can only close sessions already published in _mcp_sessions;
 # one still inside connect() would be missed and then cached already
 # stale. Bump a generation on every close so that connect discards its
@@ -861,7 +872,7 @@ def _checkout_session(key: tuple) -> tuple[Optional[_McpSession], float]:
     session = _mcp_sessions.get(key)
     if session is not None and session.is_connected():
         now = time.monotonic()
-        idle_for = now - session.last_used
+        idle_for = now - session.proved_at
         session.last_used = now
         session.in_flight += 1
         return session, idle_for
@@ -978,6 +989,8 @@ def _get_session(
                                 target = _session_reaper, name = "mcp-session-reaper", daemon = True
                             ).start()
                             atexit.register(close_mcp_sessions)
+                for victim in evicted:
+                    logger.info("Evicting LRU idle MCP session: %s", _session_log_id(victim.url))
                 if evicted:
                     # Detached: these belong to other scopes and nobody is waiting
                     # on them, but an unresponsive transport costs
@@ -994,7 +1007,7 @@ def _get_session(
         _return_key_lock(key, key_lock)
 
 
-def _release_session(session: _McpSession) -> None:
+def _release_session(session: _McpSession, defer_close: bool = False) -> None:
     victims: list = []
     with _mcp_sessions_lock:
         session.in_flight = max(0, session.in_flight - 1)
@@ -1015,7 +1028,15 @@ def _release_session(session: _McpSession) -> None:
             _, oldest = min(idle, key = lambda item: item[0])
             victims.append(_mcp_sessions.pop(oldest))
             _discard_key_lock(oldest)
-    if close_now:
+    if close_now and defer_close:
+        # Somebody else retired this session while this call was succeeding on
+        # it, which happens to make this borrower the last one. Its result is
+        # still waiting on this thread, so that close does not belong here. A
+        # borrower that retired the session itself keeps closing it inline: for a
+        # one-shot call the teardown is the call's own work, and callers rely on
+        # the subprocess being gone by the time the call returns.
+        victims.append(session)
+    elif close_now:
         session.close()
     if victims:
         _close_detached(victims)
@@ -1076,7 +1097,7 @@ def close_mcp_sessions(url: Optional[str] = None, headers = _ANY_HEADERS) -> Non
             else:
                 cfg = _cfg_close_key(url, headers)
                 _mcp_cfg_close_gen[cfg] = _mcp_cfg_close_gen.get(cfg, 0) + 1
-    _close_all(sessions)
+    _close_all(sessions + _drain_cleanup_queue())
 
 
 def _close_all(sessions: list) -> None:
@@ -1114,25 +1135,55 @@ def _close_all(sessions: list) -> None:
 
 
 def _close_detached(sessions: list) -> None:
-    """Close sessions nobody is waiting on, without blocking the caller.
+    """Hand sessions nobody is waiting on to the cleanup worker.
 
-    Used for LRU victims: they belong to other scopes, and the thread that
-    happened to trip the cap is in the middle of serving a tool call with its own
-    deadline. Daemon threads, so an unresponsive transport cannot hold up exit
-    either; close_mcp_sessions stays synchronous because its caller (a server
-    edit, or atexit) does need the teardown to have happened."""
-    for session in sessions:
-        logger.info("Evicting LRU idle MCP session: %s", _session_log_id(session.url))
-        threading.Thread(
-            target = _close_quietly, args = (session,), name = "mcp-evict", daemon = True
-        ).start()
+    Used for LRU victims and for the deferred close of a retired session: those
+    belong to another scope or to a call that has already ended, while the thread
+    holding them is in the middle of serving a tool call on its own deadline and
+    an unresponsive transport costs _SESSION_CLOSE_TIMEOUT to shut down.
+
+    One worker rather than a thread per session: nobody is waiting on these, so
+    closing them one at a time is fine, and a run of new chat scopes against a
+    server that hangs on shutdown then cannot spawn threads without bound.
+    close_mcp_sessions stays synchronous and drains this queue, because its caller
+    (a server edit, or atexit) does need the teardown to have happened."""
+    global _mcp_cleanup_worker
+    if not sessions:
+        return
+    with _mcp_cleanup_lock:
+        _mcp_cleanup_queue.extend(sessions)
+        if _mcp_cleanup_worker is None:
+            _mcp_cleanup_worker = threading.Thread(
+                target = _cleanup_worker, name = "mcp-cleanup", daemon = True
+            )
+            _mcp_cleanup_worker.start()
+
+
+def _cleanup_worker() -> None:
+    global _mcp_cleanup_worker
+    while True:
+        with _mcp_cleanup_lock:
+            if not _mcp_cleanup_queue:
+                _mcp_cleanup_worker = None  # _close_detached starts the next one
+                return
+            session = _mcp_cleanup_queue.pop(0)
+        _close_quietly(session)
+
+
+def _drain_cleanup_queue() -> list:
+    """Take back whatever the worker has not started on yet, so a synchronous
+    close_mcp_sessions still finishes the job it was asked to do."""
+    with _mcp_cleanup_lock:
+        pending = list(_mcp_cleanup_queue)
+        _mcp_cleanup_queue.clear()
+    return pending
 
 
 def _close_quietly(session) -> None:
     try:
         session.close()
     except Exception:  # noqa: BLE001
-        logger.exception("Closing an evicted MCP session failed")
+        logger.exception("Closing a discarded MCP session failed")
 
 
 # The cache stopped being stdio-only, but an in-place upgrade can leave a caller
@@ -1149,6 +1200,7 @@ def _reset_after_fork() -> None:
     for HTTP. Nothing here is closed: those objects belong to the parent, which
     is still using them."""
     global _mcp_reaper_started, _mcp_connects_in_flight, _mcp_sessions_lock
+    global _mcp_cleanup_lock, _mcp_cleanup_worker
     # Replaced, not just cleared: a lock the fork caught held belongs to a thread
     # that no longer exists here, so the child would block on it forever.
     _mcp_sessions_lock = threading.Lock()
@@ -1156,6 +1208,11 @@ def _reset_after_fork() -> None:
     _mcp_key_locks.clear()
     _mcp_connects_in_flight = 0
     _mcp_reaper_started = False
+    # The cleanup worker did not survive the fork either, and its queue holds the
+    # parent's sessions.
+    _mcp_cleanup_lock = threading.Lock()
+    _mcp_cleanup_queue.clear()
+    _mcp_cleanup_worker = None
 
 
 if hasattr(os, "register_at_fork"):
@@ -1587,7 +1644,11 @@ def _call_session_tool(
                     # Only a cached session is worth waiting on.
                     0.0 if ephemeral else _CANCEL_UNWIND_TIMEOUT,
                 )
-                return session.run(coro, rem)
+                out = session.run(coro, rem)
+                # A completed round trip proves the transport better than any
+                # probe could, so it resets the idle clock the recheck reads.
+                session.proved_at = time.monotonic()
+                return out
         except (_MCPCancelled, asyncio.TimeoutError):
             # Keep the session so a Stop doesn't destroy the server's state; the
             # SDK drops the abandoned reply, and reuse is gated on a live probe.
@@ -1625,7 +1686,7 @@ def _call_session_tool(
             # here, so the close defers to the release below.
             if discard_session:
                 _drop_session(key, session)
-            _release_session(session)
+            _release_session(session, defer_close = not discard_session)
             if locked:
                 session.call_lock.release()
         if not retry:

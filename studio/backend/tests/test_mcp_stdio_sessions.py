@@ -619,7 +619,12 @@ def test_stale_session_close_deferred_until_borrower_drains(fake_clients):
     assert fake_clients[0].exited == 0
     slow.join(10.0)
     assert results == ["call-2"]
-    assert fake_clients[0].exited == 1  # last borrower performed the deferred close
+    # The last borrower hands the deferred close to the cleanup worker rather
+    # than paying for it after its own result is ready, so wait for that.
+    deadline = time.monotonic() + 10.0
+    while fake_clients[0].exited == 0 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert fake_clients[0].exited == 1
     assert len(mcp_client._mcp_sessions) == 1
 
 
