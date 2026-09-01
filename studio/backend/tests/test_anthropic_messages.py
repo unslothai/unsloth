@@ -809,7 +809,6 @@ class TestAnthropicMessagesToOpenAI:
 
     def test_folding_is_a_no_op_without_tool_messages(self):
         from core.inference.anthropic_compat import fold_tool_results_into_user
-
         msgs = [
             {"role": "user", "content": "hi"},
             {"role": "assistant", "content": "hello"},
