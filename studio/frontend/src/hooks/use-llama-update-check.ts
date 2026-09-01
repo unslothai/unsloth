@@ -11,6 +11,7 @@ import {
   llamaUpdateAdoptsRunningJob,
   llamaUpdatePresentation,
 } from "@/lib/llama-job-lifecycle";
+import { flushPendingChatSettings } from "@/features/chat";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 // Initial check plus hourly reminders until dismissed or applied.
@@ -367,6 +368,9 @@ export function useLlamaUpdateCheck({
       job?: unknown;
     } | null = null;
     try {
+      // Updating llama.cpp unloads/restarts the backend. Persist the active preset
+      // before that window so a debounced selection cannot be lost by the update.
+      await flushPendingChatSettings();
       const res = await authFetch("/api/llama/update", { method: "POST" });
       if (!res.ok) {
         setApplying(false);
