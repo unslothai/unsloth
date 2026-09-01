@@ -8,6 +8,7 @@ instead of torch/transformers for model loading and generation.
 import json
 import os
 import re
+import sys
 import threading
 from contextlib import contextmanager
 from typing import Optional, Generator
@@ -732,6 +733,46 @@ def _kv_quant_probe(language_model, entries, bits):
         _restore_mlx_rng_key(rng_key)
 
 
+# A no-argument mx.synchronize() waits on the default stream, which generation does not
+# use. mlx-vlm moves the symbol between layouts, and speculative decoding owns its own.
+_GENERATION_STREAM_MODULES = (
+    "mlx_lm.generate",
+    "mlx_vlm.generate",
+    "mlx_vlm.generate.dispatch",
+    "mlx_vlm.generate.ar",
+    "mlx_vlm.speculative.common",
+)
+
+
+def _drain_generation_streams(mx):
+    """Best effort: every caller is a cleanup path whose old body could not fail.
+
+    At the mlx-vlm pin floor generation_stream is a plain mx.new_stream, which raises
+    when synchronized off its creating thread (mlx made command encoders thread local
+    in 0.31.2). Draining is a margin on top of the clear, never a precondition, so a
+    drain we cannot perform is skipped.
+    """
+
+    synchronize = getattr(mx, "synchronize", None)
+    if not callable(synchronize):
+        return
+    drained = []
+    for name in _GENERATION_STREAM_MODULES:
+        try:
+            stream = getattr(sys.modules.get(name), "generation_stream", None)
+            # 0.6.x aliases one object across every mlx_vlm.generate name.
+            if stream is None or any(stream is seen for seen in drained):
+                continue
+            drained.append(stream)
+            synchronize(stream)
+        except Exception as error:
+            logger.debug("MLX stream drain skipped for %s: %s", name, error)
+    try:
+        synchronize()
+    except Exception as error:
+        logger.debug("MLX default stream drain skipped: %s", error)
+
+
 def _kv_quant_eligibility(
     model,
     is_vlm,
@@ -766,6 +807,7 @@ def _kv_quant_eligibility(
 
     entries.clear()
     del entries
+    _drain_generation_streams(mx)
     mx.clear_cache()
     if failure is not None:
         return "refused", f"this model's KV cache cannot be quantized: {failure}", True
@@ -1989,6 +2031,7 @@ class MLXInferenceBackend:
             self.active_model_name = None
         self._clear_prompt_cache()
         gc.collect()
+        _drain_generation_streams(mx)
         mx.clear_cache()
 
         if mx.metal.is_available() and self._memory_limits_applied and not self.models:
@@ -2861,4 +2904,5 @@ class MLXInferenceBackend:
         import gc
 
         gc.collect()
+        _drain_generation_streams(mx)
         mx.clear_cache()

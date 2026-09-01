@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
+import ast
 import asyncio
 import contextlib
 import copy
@@ -31,6 +32,10 @@ class _DummyMX:
     def device_info():
         return {"max_recommended_working_set_size": 1024}
 
+    @staticmethod
+    def synchronize(_stream = None):
+        return None
+
 
 class _DummyTokenizer:
     pass
@@ -51,6 +56,7 @@ def _install_fake_mlx(monkeypatch):
     mlx_core.metal = _DummyMetal()
     mlx_core.set_wired_limit = _DummyMX.set_wired_limit
     mlx_core.device_info = _DummyMX.device_info
+    mlx_core.synchronize = _DummyMX.synchronize
     mlx_utils.tree_unflatten = dict
     mlx_pkg.core = mlx_core
     mlx_pkg.utils = mlx_utils
@@ -3285,6 +3291,144 @@ def test_rng_capture_stays_quiet_when_the_state_cannot_be_read(monkeypatch):
 
     assert mlx_inference._mlx_rng_key_words() is None
     assert warnings == []
+
+
+_BACKEND_SOURCE = Path(__file__).resolve().parents[1] / "core" / "inference" / "mlx_inference.py"
+_BACKEND_TREE = ast.parse(_BACKEND_SOURCE.read_text(encoding = "utf-8"))
+
+
+def _is_call(
+    node,
+    name,
+    receiver = "mx",
+):
+    if not (isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)):
+        return False
+    func = node.value.func
+    if isinstance(func, ast.Attribute):
+        return func.attr == name and isinstance(func.value, ast.Name) and func.value.id == receiver
+    return isinstance(func, ast.Name) and func.id == name
+
+
+def _clear_cache_sites():
+    for node in ast.walk(_BACKEND_TREE):
+        for field in ("body", "orelse", "finalbody"):
+            block = getattr(node, field, None)
+            if not isinstance(block, list):
+                continue
+            for index, statement in enumerate(block):
+                if _is_call(statement, "clear_cache"):
+                    yield statement.lineno, (block[index - 1] if index else None)
+
+
+def test_backend_has_mlx_cache_clear_sites():
+    assert list(_clear_cache_sites()), "no mx.clear_cache() found -- test is stale"
+
+
+def test_every_cache_clear_drains_gpu_work_first():
+    """MLX does not pin a dropped output array, so every clear must drain first."""
+    unguarded = [
+        line
+        for line, previous in _clear_cache_sites()
+        if not _is_call(previous, "_drain_generation_streams", receiver = None)
+    ]
+    assert not unguarded, (
+        f"mx.clear_cache() at line(s) {unguarded} is not immediately preceded by "
+        "_drain_generation_streams()"
+    )
+
+
+def test_the_drain_covers_both_generation_stream_modules():
+    """Draining only the default stream would miss the stream generation actually uses."""
+    assigned = [
+        node
+        for node in ast.walk(_BACKEND_TREE)
+        if isinstance(node, ast.Assign)
+        and any(getattr(t, "id", None) == "_GENERATION_STREAM_MODULES" for t in node.targets)
+    ]
+    assert len(assigned) == 1
+    names = {element.value for element in assigned[0].value.elts}
+    assert names == {
+        "mlx_lm.generate",
+        "mlx_vlm.generate",
+        "mlx_vlm.generate.dispatch",
+        "mlx_vlm.generate.ar",
+        # A second stream since 0.6.0, never wired-limited.
+        "mlx_vlm.speculative.common",
+    }
+
+
+def _fake_stream_module(monkeypatch, name, stream):
+    monkeypatch.setitem(sys.modules, name, types.SimpleNamespace(generation_stream = stream))
+
+
+def _recording_mx(monkeypatch, synchronize = None):
+    from core.inference import mlx_inference
+
+    events = []
+    mx = types.SimpleNamespace(
+        synchronize = synchronize
+        or (
+            lambda stream = None: events.append(
+                f"synchronize:{'default' if stream is None else stream}"
+            )
+        ),
+    )
+    for name in mlx_inference._GENERATION_STREAM_MODULES:
+        monkeypatch.delitem(sys.modules, name, raising = False)
+    return mlx_inference, mx, events
+
+
+def test_a_stream_that_cannot_be_drained_does_not_stop_the_caller(monkeypatch):
+    """A plain mx.new_stream raises when synchronized off its creating thread."""
+
+    def synchronize(stream = None):
+        if stream == "foreign":
+            raise RuntimeError("There is no Stream(gpu, 0) in current thread.")
+        events.append(f"synchronize:{'default' if stream is None else stream}")
+
+    mlx_inference, mx, events = _recording_mx(monkeypatch, synchronize)
+    _fake_stream_module(monkeypatch, "mlx_lm.generate", "foreign")
+
+    mlx_inference._drain_generation_streams(mx)
+
+    assert events == ["synchronize:default"]
+
+
+def test_a_module_getattr_that_raises_does_not_stop_the_caller(monkeypatch):
+    mlx_inference, mx, events = _recording_mx(monkeypatch)
+    module = types.ModuleType("mlx_vlm.generate")
+    module.__getattr__ = lambda name: (_ for _ in ()).throw(RuntimeError(name))
+    monkeypatch.setitem(sys.modules, "mlx_vlm.generate", module)
+
+    mlx_inference._drain_generation_streams(mx)
+
+    assert events == ["synchronize:default"]
+
+
+def test_one_stream_shared_by_several_modules_is_drained_once(monkeypatch):
+    """0.6.x defines the stream once and re-exports it from every candidate name."""
+    mlx_inference, mx, events = _recording_mx(monkeypatch)
+    for name in ("mlx_vlm.generate", "mlx_vlm.generate.dispatch", "mlx_vlm.generate.ar"):
+        _fake_stream_module(monkeypatch, name, "shared")
+
+    mlx_inference._drain_generation_streams(mx)
+
+    assert events == ["synchronize:shared", "synchronize:default"]
+
+
+def test_the_speculative_decoding_stream_is_drained_too(monkeypatch):
+    mlx_inference, mx, events = _recording_mx(monkeypatch)
+    _fake_stream_module(monkeypatch, "mlx_vlm.speculative.common", "speculative")
+
+    mlx_inference._drain_generation_streams(mx)
+
+    assert events == ["synchronize:speculative", "synchronize:default"]
+
+
+def test_a_runtime_without_synchronize_is_not_an_error():
+    from core.inference import mlx_inference
+    mlx_inference._drain_generation_streams(types.SimpleNamespace())
 
 
 # Llama 3.1 carries the second beside its scaled window, mlx-lm's Kimi Linear the third.
