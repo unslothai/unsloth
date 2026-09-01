@@ -2811,7 +2811,14 @@ def _bare_json_call_shaped(obj) -> bool:
 
 
 def blocked_bare_json_chain_may_continue(text: str, enabled_tool_names: Optional[set]) -> bool:
-    """Whether a leading guarded call still owns a possible ``; {peer}`` chain."""
+    """Whether a leading guarded call still owns a possible ``; {peer}`` chain.
+
+    Walks the whole run: a peer that has closed and is itself guarded is not an answer, so the
+    scan keeps going. It stops as soon as something settles the turn -- a non-object suffix, a
+    peer that is not call-shaped, or a disabled name, which ends ``_parse_llama3_bare_json``
+    outright. Holding past that point keeps the response private to EOS for nothing, and a
+    cancel before EOS would lose it.
+    """
     probe = strip_llama3_leading_sentinels(text.lstrip())
     if not probe.startswith("{"):
         return False
@@ -2830,26 +2837,26 @@ def blocked_bare_json_chain_may_continue(text: str, enabled_tool_names: Optional
     if not _bare_json_call_shaped(obj):
         return False
     suffix = probe[end + 1 :].lstrip(" \t\n\r;")
-    if not suffix:
-        return True
-    if not suffix.startswith("{"):
-        return False
-    peer_end = _balanced_brace_end(suffix, 0)
-    if peer_end is None:
-        return True  # still arriving; it may yet close as a call
-    # A peer that has CLOSED settles the question. Only a call-shaped one whose NAME the
-    # chain scan would accept can extend it: ``{"answer":1}`` ends it, and so does a
-    # disabled name, which stops ``_parse_llama3_bare_json`` outright.
-    try:
-        peer = json.loads(suffix[: peer_end + 1])
-    except (json.JSONDecodeError, ValueError):
-        return False
-    if not isinstance(peer, dict) or not _bare_json_call_shaped(peer):
-        return False
-    peer_name = peer.get("name") or peer.get("function") or ""
-    return _markerless_promotable(peer_name, enabled_tool_names) or _markerless_blocked_execution(
-        peer_name, enabled_tool_names
-    )
+    while True:
+        if not suffix:
+            return True  # more may still arrive
+        if not suffix.startswith("{"):
+            return False  # settled prose: nothing here can become a call
+        peer_end = _balanced_brace_end(suffix, 0)
+        if peer_end is None:
+            return True  # still arriving; it may yet close as a call
+        try:
+            peer = json.loads(suffix[: peer_end + 1])
+        except (json.JSONDecodeError, ValueError):
+            return False
+        if not isinstance(peer, dict) or not _bare_json_call_shaped(peer):
+            return False
+        peer_name = peer.get("name") or peer.get("function") or ""
+        if _markerless_promotable(peer_name, enabled_tool_names):
+            return True  # this peer WILL be promoted; it must not stream first
+        if not _markerless_blocked_execution(peer_name, enabled_tool_names):
+            return False  # a disabled name stops the chain scan
+        suffix = suffix[peer_end + 1 :].lstrip(" \t\n\r;")
 
 
 def blocked_gemma_chain_may_continue(text: str, enabled_tool_names: Optional[set]) -> bool:
