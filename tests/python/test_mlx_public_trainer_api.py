@@ -223,9 +223,7 @@ def test_mlx_clear_gpu_memory_drains_gpu_work_before_clearing(monkeypatch, shape
     monkeypatch.setattr(
         mx,
         "synchronize",
-        lambda stream = None: events.append(
-            f"synchronize:{'default' if stream is None else stream}"
-        ),
+        lambda stream = None: events.append(f"synchronize:{'default' if stream is None else stream}"),
     )
     clear = lambda: events.append("clear_cache")
     if shape == "core":
@@ -261,9 +259,7 @@ def test_mlx_clear_gpu_memory_drains_only_the_streams_that_exist(monkeypatch):
     monkeypatch.setattr(
         mx,
         "synchronize",
-        lambda stream = None: events.append(
-            f"synchronize:{'default' if stream is None else stream}"
-        ),
+        lambda stream = None: events.append(f"synchronize:{'default' if stream is None else stream}"),
     )
     monkeypatch.setattr(mx, "clear_cache", lambda: events.append("clear_cache"))
     _stub_generation_streams(monkeypatch, "mlx_lm.generate")
@@ -287,11 +283,17 @@ def test_mlx_clear_gpu_memory_is_a_noop_without_cache_clearing(monkeypatch):
     assert events == []
 
 
-def _recording_synchronize(monkeypatch, mx, events, failing = ()):
+def _recording_synchronize(
+    monkeypatch,
+    mx,
+    events,
+    failing = (),
+):
     def synchronize(stream = None):
         if stream in failing:
             raise RuntimeError("There is no Stream(gpu, 0) in current thread.")
         events.append(f"synchronize:{'default' if stream is None else stream}")
+
     monkeypatch.setattr(mx, "synchronize", synchronize)
     monkeypatch.setattr(mx, "clear_cache", lambda: events.append("clear_cache"))
 
@@ -344,7 +346,9 @@ def test_mlx_clear_gpu_memory_drains_the_speculative_stream(monkeypatch):
     unsloth.clear_gpu_memory()
 
     assert events == [
-        "synchronize:mlx_vlm.speculative.common", "synchronize:default", "clear_cache",
+        "synchronize:mlx_vlm.speculative.common",
+        "synchronize:default",
+        "clear_cache",
     ]
 
 

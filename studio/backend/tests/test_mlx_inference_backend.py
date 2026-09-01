@@ -3370,7 +3370,8 @@ def _recording_mx(monkeypatch, synchronize = None):
 
     events = []
     mx = types.SimpleNamespace(
-        synchronize = synchronize or (
+        synchronize = synchronize
+        or (
             lambda stream = None: events.append(
                 f"synchronize:{'default' if stream is None else stream}"
             )
@@ -3383,6 +3384,7 @@ def _recording_mx(monkeypatch, synchronize = None):
 
 def test_a_stream_that_cannot_be_drained_does_not_stop_the_caller(monkeypatch):
     """A plain mx.new_stream raises when synchronized off its creating thread."""
+
     def synchronize(stream = None):
         if stream == "foreign":
             raise RuntimeError("There is no Stream(gpu, 0) in current thread.")
@@ -3429,8 +3431,9 @@ def test_the_speculative_decoding_stream_is_drained_too(monkeypatch):
 
 def test_a_runtime_without_synchronize_is_not_an_error():
     from core.inference import mlx_inference
-
     mlx_inference._drain_generation_streams(types.SimpleNamespace())
+
+
 # Llama 3.1 carries the second beside its scaled window, mlx-lm's Kimi Linear the third.
 @pytest.mark.parametrize("name", ["n_ctx", "original_max_position_embeddings", "model_max_length"])
 def test_mlx_native_context_length_reads_every_spelling_and_every_config(name):
