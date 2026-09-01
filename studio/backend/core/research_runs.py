@@ -2564,6 +2564,7 @@ class ResearchSupervisor:
         )
         await self._check_active(run["id"])
         report = _select_synthesis_report(report, synthesis_reasoning)
+        truncation_notice = ""
         if _synthesis_needs_recovery(report, synthesis_finish_reason):
             recovery_reason = (
                 "exhausted its output budget"
@@ -2601,17 +2602,35 @@ class ResearchSupervisor:
                 enable_thinking = False,
             )
             synthesis_reasoning += recovery_reasoning
-            report = _select_synthesis_report(recovered_report, recovery_reasoning)
-            synthesis_finish_reason = recovery_finish_reason
-            synthesis_usage = recovery_usage
-            await self._check_active(run["id"])
-            if synthesis_finish_reason == "length":
-                raise ValueError(
-                    _synthesis_length_limit_error(
-                        synthesis_usage,
-                        requested_max_tokens = recovery_max_tokens,
-                    )
+            recovered = _select_synthesis_report(recovered_report, recovery_reasoning)
+            # A second attempt at the SAME report under the same budget, not a correction of
+            # the first. A draft that ran to a natural stop beats one cut off mid-sentence
+            # whatever their lengths -- `length` is the one finish reason that means the
+            # text is unfinished -- and only between two drafts of equal standing does the
+            # longer one win.
+            first_whole = bool(report) and synthesis_finish_reason != "length"
+            recovered_whole = bool(recovered) and recovery_finish_reason != "length"
+            if recovered_whole != first_whole:
+                take_recovery = recovered_whole
+            else:
+                take_recovery = len(recovered) >= len(report)
+            requested_max_tokens = recovery_max_tokens
+            if take_recovery:
+                report = recovered
+                synthesis_finish_reason = recovery_finish_reason
+                synthesis_usage = recovery_usage
+            else:
+                requested_max_tokens = _resolve_max_tokens(
+                    16384,
+                    run["config"].get("inferenceRequest") or {},
+                    synthesis_messages,
                 )
+            await self._check_active(run["id"])
+            if report and synthesis_finish_reason == "length":
+                truncation_notice = _synthesis_length_limit_error(
+                    synthesis_usage,
+                    requested_max_tokens = requested_max_tokens,
+                ).rstrip(".")
         if not report:
             raise ValueError(
                 "Local model returned no safely identifiable final report. Disable thinking or "
@@ -2619,6 +2638,9 @@ class ResearchSupervisor:
             )
         report = _validate_report_sources(report, sources)
         report = _validate_report_document_sources(report, document_sources)
+        # After the validators, so they only ever see what the model wrote.
+        if truncation_notice:
+            report = f"{report.rstrip()}\n\n> **Incomplete report.** {truncation_notice}."
         reasoning = await asyncio.to_thread(db.get_reasoning_text, run["id"])
         if synthesis_reasoning and synthesis_reasoning not in reasoning:
             reasoning += synthesis_reasoning
