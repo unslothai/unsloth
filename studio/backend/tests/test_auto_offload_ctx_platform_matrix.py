@@ -129,7 +129,13 @@ SITE_A = _one_anchor("effective_ctx = min(_AUTO_OFFLOAD_CTX, effective_ctx)")
 # The line the re-check awards residency on. Two subset loops assign it; the award
 # is the one after Site A.
 _AWARDS = _anchor_lines("gpu_indices = sorted(idx for idx, _ in subset)")
-assert len(_AWARDS) == 2 and max(_AWARDS) > SITE_A, (_AWARDS, SITE_A)
+# The one this suite needs is the LAST, which is the fallback re-check's, and it
+# is always below SITE A. The count is deliberately not pinned: the fitted-context
+# loop above awards residency through this same statement only while it takes the
+# first subset that fits. Once it instead keeps the best subset and unpacks it
+# after the loop, that copy is gone and this anchor is the only one, which is a
+# refactor of the loop above rather than a change to the site under test here.
+assert _AWARDS and max(_AWARDS) > SITE_A, (_AWARDS, SITE_A)
 SITE_A_AWARD = max(_AWARDS)
 # Site B: the file-size-only arm's relabel. Placement was already decided by
 # _select_gpus on the line above, so nothing downstream of this can move a device.
