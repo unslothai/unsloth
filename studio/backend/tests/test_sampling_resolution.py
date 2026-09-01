@@ -907,23 +907,12 @@ def test_a_loaded_template_that_cannot_reason_keeps_the_flat_preset(monkeypatch,
     assert (payload.temperature, payload.presence_penalty) == (0.7, 1.5)
 
 
-@pytest.mark.parametrize(
-    "effort, expected_thinking",
-    [("hihg", None), ("", None), ("high", True), ("none", False)],
-)
-def test_count_tokens_ignores_an_effort_the_templates_do_not_know(effort, expected_thinking):
-    """ChatCountTokensRequest types effort as a plain str, unlike the chat Literal.
-
-    A typo must not price the prompt in thinking mode for a request that
-    /v1/chat/completions would reject.
-    """
+@pytest.mark.parametrize("effort", ["hihg", ""])
+def test_count_tokens_rejects_an_effort_the_chat_endpoint_would_reject(effort):
     from models.inference import ChatCountTokensRequest
-    from routes import inference as inference_route
+    from pydantic import ValidationError
 
-    payload = ChatCountTokensRequest.model_validate(
-        {"messages": [{"role": "user", "content": "hi"}], "reasoning_effort": effort}
-    )
-    inference_route._normalize_chat_reasoning_controls(payload)
-
-    assert payload.enable_thinking is expected_thinking
-    assert payload.reasoning_effort == (effort if expected_thinking is not None else None)
+    with pytest.raises(ValidationError):
+        ChatCountTokensRequest.model_validate(
+            {"messages": [{"role": "user", "content": "hi"}], "reasoning_effort": effort}
+        )

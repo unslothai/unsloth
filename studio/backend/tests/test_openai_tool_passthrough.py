@@ -10338,14 +10338,10 @@ def test_every_gguf_choice_gets_a_seed_of_its_own():
 
 
 def test_the_two_seed_helpers_agree_on_which_seeds_are_random():
-    """``-1`` is not the only request seed that reaches LLAMA_DEFAULT_SEED.
-
-    The seed is a uint32 there, so ``-1``, ``4294967295`` and ``2**64-1`` are all
-    the sentinel and all draw at random; the schemas accept all three. Both
-    helpers must agree, or one request disagrees with itself: choice 0 keeps the
-    caller's random seed while choice 1 is offset into a fixed one, so half the
-    choices are reproducible and only half disable prompt caching.
-    """
+    """``-1`` is not the only request seed that reaches LLAMA_DEFAULT_SEED: the seed is a
+    uint32 there, so ``-1``, ``4294967295`` and ``2**64-1`` are all the sentinel and the
+    schemas accept all three. Both helpers must agree, or choice 0 keeps the caller's random
+    seed while choice 1 is offset into a fixed one, half reproducible and half uncached."""
     from core.inference.llama_cpp import _LLAMA_RANDOM_SEED, _apply_seeded_llama_request
     from routes.inference import _choice_seed
 
@@ -10353,14 +10349,11 @@ def test_the_two_seed_helpers_agree_on_which_seeds_are_random():
         served = [_choice_seed(seed, i, negative_is_random = True) for i in range(3)]
         assert all((v & 0xFFFFFFFF) == _LLAMA_RANDOM_SEED for v in served), (seed, served)
 
-        # And the cache policy must reach the same verdict for every choice.
         for value in served:
             payload: dict = {}
             _apply_seeded_llama_request(payload, value)
             assert "cache_prompt" not in payload, (seed, value, payload)
 
-    # The converse: a fixed seed stays fixed for every choice, and every choice
-    # turns the cache off.
     for seed in (0, 5, 4294967294):
         served = [_choice_seed(seed, i, negative_is_random = True) for i in range(3)]
         assert all((v & 0xFFFFFFFF) != _LLAMA_RANDOM_SEED for v in served), (seed, served)

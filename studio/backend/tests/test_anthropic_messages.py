@@ -737,6 +737,198 @@ class TestAnthropicMessagesToOpenAI:
         assert result[0]["tool_call_id"] == "tu_1"
         assert result[0]["content"] == "Result text"
 
+    def test_tool_result_precedes_trailing_user_text(self):
+        msgs = [
+            {"role": "user", "content": [{"type": "text", "text": "what files are here?"}]},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Let me look."},
+                    {"type": "tool_use", "id": "tu_1", "name": "Bash", "input": {"command": "ls"}},
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "tu_1", "content": "README.md\nsrc/"},
+                    {"type": "text", "text": "<system-reminder>Keep going.</system-reminder>"},
+                ],
+            },
+        ]
+        result = anthropic_messages_to_openai(msgs)
+        assert [m["role"] for m in result] == ["user", "assistant", "tool", "user"]
+        assert result[2]["tool_call_id"] == "tu_1"
+        assert result[2]["content"] == "README.md\nsrc/"
+        assert result[3]["content"] == "<system-reminder>Keep going.</system-reminder>"
+
+    def test_tool_result_with_image_keeps_user_parts_after_tool(self):
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "tu_1", "content": "ok"},
+                    {"type": "text", "text": "and this?"},
+                    {
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": "image/jpeg", "data": "AAAA"},
+                    },
+                ],
+            }
+        ]
+        result = anthropic_messages_to_openai(msgs)
+        assert [m["role"] for m in result] == ["tool", "user"]
+        parts = result[1]["content"]
+        assert parts[0] == {"type": "text", "text": "and this?"}
+        assert parts[1]["type"] == "image_url"
+
+    def test_tool_results_fold_into_user_turns_for_a_toolless_template(self):
+        """Gemma 2 / 3 have no `tool` role and check alternation by parity, so a
+        tool message makes llama-server 400 the whole request."""
+        from core.inference.anthropic_compat import fold_tool_results_into_user
+
+        msgs = [
+            {"role": "user", "content": "what files are here?"},
+            {
+                "role": "assistant",
+                "content": "Let me look.",
+                "tool_calls": [
+                    {
+                        "id": "tu_1",
+                        "type": "function",
+                        "function": {"name": "Bash", "arguments": '{"command": "ls"}'},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tu_1", "content": "README.md"},
+            {"role": "user", "content": "keep going"},
+        ]
+        folded = fold_tool_results_into_user(msgs)
+        assert [m["role"] for m in folded] == ["user", "assistant", "user", "user"]
+        payload = json.loads(folded[2]["content"])
+        assert payload == {
+            "tool_response": {
+                "tool": "Bash",
+                "content": "README.md",
+                "tool_call_id": "tu_1",
+            }
+        }
+        assert folded[1] is msgs[1]  # assistant turn untouched, tool_calls intact
+
+    def test_folding_is_a_no_op_without_tool_messages(self):
+        from core.inference.anthropic_compat import fold_tool_results_into_user
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+        ]
+        assert fold_tool_results_into_user(msgs) == msgs
+
+    def test_folding_survives_an_orphan_tool_result(self):
+        """No tool_calls to resolve the name against: the id still carries."""
+        from core.inference.anthropic_compat import fold_tool_results_into_user
+
+        msgs = [{"role": "tool", "tool_call_id": "nope", "content": "R"}]
+        folded = fold_tool_results_into_user(msgs)
+        assert [m["role"] for m in folded] == ["user"]
+        assert json.loads(folded[0]["content"]) == {
+            "tool_response": {"content": "R", "tool_call_id": "nope"}
+        }
+
+    def test_sanitizer_folds_only_when_the_template_lacks_tool_support(self):
+        """A tool-capable template keeps role=tool as the converter emitted it."""
+        from routes.inference import _sanitize_anthropic_openai_messages
+
+        class Backend:
+            def __init__(self, supports_tools):
+                self.supports_tools = supports_tools
+
+        anthropic = [
+            {"role": "user", "content": [{"type": "text", "text": "q"}]},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "tu_1", "name": "Bash", "input": {"command": "ls"}}
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "tu_1", "content": "README.md"},
+                    {"type": "text", "text": "keep going"},
+                ],
+            },
+        ]
+        converted = anthropic_messages_to_openai(anthropic)
+
+        tool_capable = _sanitize_anthropic_openai_messages(converted, Backend(True))
+        assert [m["role"] for m in tool_capable] == ["user", "assistant", "tool", "user"]
+
+        toolless = _sanitize_anthropic_openai_messages(converted, Backend(False))
+        assert [m["role"] for m in toolless] == ["user", "assistant", "user"]
+        assert "README.md" in toolless[-1]["content"]
+        assert "keep going" in toolless[-1]["content"]
+
+    def test_sanitizer_defaults_to_not_folding_when_the_backend_cannot_answer(self):
+        from routes.inference import _sanitize_anthropic_openai_messages
+
+        class Hostile:
+            @property
+            def supports_tools(self):
+                raise RuntimeError("backend not ready")
+
+        msgs = [{"role": "tool", "tool_call_id": "tu_1", "content": "R"}]
+        assert _sanitize_anthropic_openai_messages(msgs, Hostile()) == msgs
+        assert _sanitize_anthropic_openai_messages(msgs, object()) == msgs
+
+    def test_folding_follows_the_passthrough_capability_not_the_tool_loop_one(self):
+        """DiffusionGemma reports supports_tools=False to stay out of the agentic
+        loop, but its template renders tool roles and client tools dispatch on
+        supports_tool_passthrough; folding on the former strips that framing."""
+        from routes.inference import _sanitize_anthropic_openai_messages, _template_supports_tools
+
+        class DiffusionGemma:
+            supports_tools = False  # forced off: keeps it out of the tool loop
+            supports_tool_passthrough = True  # the real template capability
+
+        class ToollessTemplate:
+            supports_tools = False
+            supports_tool_passthrough = False
+
+        assert _template_supports_tools(DiffusionGemma()) is True
+        assert _template_supports_tools(ToollessTemplate()) is False
+
+        msgs = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "tu_1",
+                        "type": "function",
+                        "function": {"name": "Bash", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tu_1", "content": "README.md"},
+            {"role": "user", "content": "keep going"},
+        ]
+        kept = _sanitize_anthropic_openai_messages(msgs, DiffusionGemma())
+        assert [m["role"] for m in kept] == ["assistant", "tool", "user"]
+
+        folded = _sanitize_anthropic_openai_messages(msgs, ToollessTemplate())
+        assert [m["role"] for m in folded] == ["assistant", "user"]
+
+    def test_folding_gate_prefers_passthrough_even_when_supports_tools_raises(self):
+        from routes.inference import _template_supports_tools
+        class HalfReady:
+            supports_tool_passthrough = False
+
+            @property
+            def supports_tools(self):
+                raise RuntimeError("not ready")
+
+        # Passthrough answers first, so a raising supports_tools cannot skip the fold.
+        assert _template_supports_tools(HalfReady()) is False
+
     def test_mixed_text_and_tool_use_blocks(self):
         msgs = [
             {
