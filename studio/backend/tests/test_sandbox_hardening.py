@@ -3080,3 +3080,85 @@ class TestCurrentHeadReviewRegressions:
             "pd.read_sql(\"SELECT * FROM files WHERE path = '/etc/shadow'\", connection)"
         )
         assert not _is_blocked(code), "SQL query text was misclassified as a file path"
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "printf '%s\\n' '/etc/shad*'",
+            r"echo /etc/shad\*",
+        ],
+    )
+    def test_quoted_sensitive_glob_text_allowed(self, cmd):
+        assert not _find_sensitive_paths(cmd), f"literal glob text was treated as active: {cmd!r}"
+
+    def test_unquoted_sensitive_glob_still_blocked(self):
+        assert _find_sensitive_paths("cat /etc/shad*")
+
+    def test_annotated_network_alias_rebinding_clears_stale_identity(self):
+        code = (
+            "import requests as client\n"
+            "client: object = LocalClient()\n"
+            "client.get('https://private.example')"
+        )
+        assert not _is_blocked(code), "annotated rebinding retained a stale network alias"
+
+    def test_conditional_annotated_alias_rebinding_remains_conservative(self):
+        code = (
+            "import requests as client\n"
+            "if condition:\n client: object = LocalClient()\n"
+            "client.get('http://169.254.169.254/latest')"
+        )
+        assert _is_blocked(code), "conditional annotated rebinding bypassed metadata policy"
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "file:///etc/shadow",
+            "file:///etc/%73hadow",
+            "file://localhost/etc/shadow",
+        ],
+    )
+    def test_shell_file_urls_to_sensitive_paths_blocked(self, url):
+        cmd = f'python -c "import urllib.request; urllib.request.urlopen({url!r}).read()"'
+        assert _find_sensitive_paths(cmd), f"sensitive file URL leaked: {url!r}"
+
+    def test_shell_file_url_to_benign_path_allowed(self):
+        cmd = "python -c \"import urllib.request; urllib.request.urlopen('file:///tmp/x').read()\""
+        assert not _find_sensitive_paths(cmd)
+
+    def test_make_archive_positional_base_dir_blocked(self):
+        code = (
+            "import shutil\nshutil.make_archive('/tmp/keys', 'zip', './project', '/root/.ssh')"
+        )
+        assert _is_blocked(code), "positional make_archive base_dir exposed credentials"
+
+    def test_untracked_local_import_module_callable_allowed(self):
+        code = (
+            "def import_module(name): return LocalRunner()\n"
+            "import_module('os').system('sudo whoami')"
+        )
+        assert not _is_blocked(code), "local import_module callable was treated as importlib"
+
+    def test_untracked_import_module_method_allowed(self):
+        code = (
+            "class LocalLoader:\n"
+            " def import_module(self, name): return LocalRunner()\n"
+            "loader = LocalLoader()\n"
+            "loader.import_module('os').system('sudo whoami')"
+        )
+        assert not _is_blocked(code), "untracked method was treated as importlib.import_module"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            ("from importlib import import_module\nimport_module('os').system('sudo whoami')"),
+            "import importlib as il\nil.import_module('os').system('sudo whoami')",
+            (
+                "import importlib\n"
+                "loader = importlib\n"
+                "loader.import_module('os').system('sudo whoami')"
+            ),
+        ],
+    )
+    def test_tracked_importlib_callables_still_blocked(self, code):
+        assert _is_blocked(code), "tracked importlib callable bypassed shell policy"

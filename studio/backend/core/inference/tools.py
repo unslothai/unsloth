@@ -2075,14 +2075,22 @@ def _find_sensitive_paths(command: str) -> set[str]:
     seed_targets.update(_decode_ansi_c(text, keep_one_word = True) for text in tuple(seed_targets))
 
     raw_targets: set[str] = set()
+    active_glob_targets: set[str] = set()
     for seed in seed_targets:
         raw_targets.add(seed)
         normalized_seed = seed.replace("\\", "/") if "\\" in seed else seed
         raw_targets.add(normalized_seed)
+        for match in re.finditer(r"(?i)\bfile:(?://)?[^\s'\";&|)<>]+", seed):
+            parsed_file = urllib.parse.urlparse(match.group(0))
+            if parsed_file.scheme == "file" and parsed_file.netloc in ("", "localhost"):
+                raw_targets.add(urllib.parse.unquote(parsed_file.path))
         for projected_tokens in _path_scan_token_streams(seed):
             if not projected_tokens:
                 continue
             raw_targets.add(" ".join(projected_tokens))
+            active_glob_indexes = _unquoted_glob_indexes(seed, projected_tokens, ";&|()`")
+            for index in active_glob_indexes:
+                active_glob_targets.update(_expand_token_normalisations(projected_tokens[index]))
             # Preserve the surrounding command when normalising an operand so
             # the directory-copy policy still sees both the verb and source.
             for index, token in enumerate(projected_tokens):
@@ -2107,6 +2115,12 @@ def _find_sensitive_paths(command: str) -> set[str]:
             if normalized_path != projected:
                 scan_targets.add(normalized_path)
 
+    glob_scan_targets: set[str] = set()
+    for text in active_glob_targets:
+        for projected in _expand_brace_projections(text):
+            glob_scan_targets.add(projected)
+            glob_scan_targets.add(_normalize_path_separators(projected))
+
     found: set[str] = set()
     for text in scan_targets:
         for m in _HOME_SENSITIVE_RE.finditer(text):
@@ -2117,12 +2131,6 @@ def _find_sensitive_paths(command: str) -> set[str]:
         # cannot statically resolve (``cat /etc/$(printf shadow)``).
         for m in _SENSITIVE_ROOT_WITH_EXPANSION_RE.finditer(text):
             found.add(m.group(0))
-        # Sensitive prefix + bash glob. Match the complete token and
-        # reject it only when it can expand to a protected path, keeping
-        # benign reads such as ``cat /etc/*.conf`` available.
-        for m in _SENSITIVE_ROOT_WITH_GLOB_RE.finditer(text):
-            if _glob_can_reach_sensitive_path(m.group(0)):
-                found.add(m.group(0))
         # Directory-copy verbs (``cp -r``, ``mv``, ``tar`` etc.) that
         # reference a sensitive directory. Asymmetry-fix for the
         # Python shutil dir-exfil gate that the round-4 commit added;
@@ -2146,6 +2154,14 @@ def _find_sensitive_paths(command: str) -> set[str]:
             _VAR_SPOOL_BRACE_RE,
         ):
             for m in regex.finditer(text):
+                found.add(m.group(0))
+
+    # Only pathname-expansion metacharacters that survive shell quoting are
+    # active globs. Scanning dequoted projections here made literal output such
+    # as ``printf '%s' '/etc/shad*'`` look like a filesystem read.
+    for text in glob_scan_targets:
+        for m in _SENSITIVE_ROOT_WITH_GLOB_RE.finditer(text):
+            if _glob_can_reach_sensitive_path(m.group(0)):
                 found.add(m.group(0))
 
     # Recurse into nested shells. Mirrors the structure in
@@ -15122,11 +15138,9 @@ def _check_signal_escape_patterns(code: str):
     def _resolve_dynamic_module_name(node):
         """Return the module string for dynamic import expressions.
 
-        Recognises:
-          * ``__import__('os')``
-          * ``importlib.import_module('os')``
-          * bare ``import_module('os')`` (after ``from importlib import
-            import_module``)
+        Recognises the builtin ``__import__('os')`` form. The visitor-aware
+        resolver below handles importlib receivers and from-import aliases,
+        whose validity depends on tracked imports.
 
         Returns the literal first-argument string when matched, else
         ``None``. Used to ensure ``__import__('os').system(...)`` and
@@ -15139,9 +15153,7 @@ def _check_signal_escape_patterns(code: str):
         if not (isinstance(arg0, ast.Constant) and isinstance(arg0.value, str)):
             return None
         f = node.func
-        if isinstance(f, ast.Name) and f.id in ("__import__", "import_module"):
-            return arg0.value
-        if isinstance(f, ast.Attribute) and f.attr == "import_module":
+        if isinstance(f, ast.Name) and f.id == "__import__":
             return arg0.value
         return None
 
@@ -15186,7 +15198,8 @@ def _check_signal_escape_patterns(code: str):
             # ``from importlib import import_module as IM; IM('os')...``
             # flows through ``_resolve_dynamic_module`` the same as
             # ``import importlib; importlib.import_module('os')...``.
-            self.import_module_aliases = {"import_module"}
+            self.import_module_aliases: set[str] = set()
+            self.importlib_aliases: set[str] = set()
             self.loop_depth = 0
             # Cap recursion into nested eval/exec literals; an adversarial
             # ``eval("eval('eval(...)')")`` should not blow the stack.
@@ -15204,6 +15217,8 @@ def _check_signal_escape_patterns(code: str):
                     self.builtins_aliases.add(alias.asname or "builtins")
                 elif alias.name == "subprocess":
                     self.subprocess_aliases.add(alias.asname or "subprocess")
+                elif alias.name == "importlib":
+                    self.importlib_aliases.add(alias.asname or "importlib")
             self.generic_visit(node)
 
         def visit_ImportFrom(self, node):
@@ -15293,6 +15308,10 @@ def _check_signal_escape_patterns(code: str):
                     for tgt in node.targets:
                         if isinstance(tgt, ast.Name):
                             self.subprocess_aliases.add(tgt.id)
+                if src in self.importlib_aliases:
+                    for tgt in node.targets:
+                        if isinstance(tgt, ast.Name):
+                            self.importlib_aliases.add(tgt.id)
                 if src in eval_exec_aliases:
                     for tgt in node.targets:
                         if isinstance(tgt, ast.Name):
@@ -15336,6 +15355,13 @@ def _check_signal_escape_patterns(code: str):
                     if (
                         isinstance(node.func, ast.Name)
                         and node.func.id in self.import_module_aliases
+                    ):
+                        return arg0.value
+                    if (
+                        isinstance(node.func, ast.Attribute)
+                        and node.func.attr == "import_module"
+                        and isinstance(node.func.value, ast.Name)
+                        and node.func.value.id in self.importlib_aliases
                     ):
                         return arg0.value
             return None
@@ -16400,6 +16426,27 @@ def _check_signal_escape_patterns(code: str):
 
         def visit_AnnAssign(self, node):
             if node.value is not None:
+                if isinstance(node.target, ast.Name) and isinstance(
+                    _parent_by_node.get(node),
+                    (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef),
+                ):
+                    target = node.target.id
+                    self.pathlib_aliases.discard(target)
+                    self.builtins_aliases.discard(target)
+                    self.path_aliases.discard(target)
+                    self.file_reader_aliases.discard(target)
+                    for bindings in (
+                        self.file_reader_module_aliases,
+                        self.file_copy_aliases,
+                        self.network_module_aliases,
+                        self.network_call_aliases,
+                        self.network_instance_aliases,
+                        self.request_url_bindings,
+                        bare_shutil_copy_aliases,
+                        eval_exec_aliases,
+                    ):
+                        bindings.pop(target, None)
+                    shutil_module_aliases.discard(target)
                 self._record_constructed_binding([node.target], node.value)
             self.generic_visit(node)
 
@@ -16849,6 +16896,8 @@ def _check_signal_escape_patterns(code: str):
                 if file_copy_fq == "shutil.make_archive":
                     if len(node.args) > 2:
                         source_nodes.append(node.args[2])
+                    if len(node.args) > 3:
+                        source_nodes.append(node.args[3])
                     source_nodes.extend(
                         kw.value for kw in node.keywords or [] if kw.arg in ("root_dir", "base_dir")
                     )
