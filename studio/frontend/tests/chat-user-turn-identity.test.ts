@@ -2,8 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // A user turn is identified by its id, never by its text (#9984). Neither function here is
-// exported and both files pull in React, so these assert on structure rather than behaviour:
-// they must fail for ANY reinserted dedupe, not just one that reuses the old names.
+// exported, so these assert structure: they must fail for ANY reinserted dedupe, not just
+// one that reuses the old names.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -42,8 +42,7 @@ const historyAppend = slice(
 );
 
 test("the outbound prune keeps every turn the abandoned-turn guard did not drop", () => {
-  // The guard's `continue` runs straight into the push, so there is nowhere for a content
-  // comparison to live. Renaming a helper or inlining JSON.stringify cannot get past this.
+  // The guard's continue runs straight into the push, leaving nowhere for a comparison.
   assert.match(
     outboundPrune,
     /if \(refused \|\| abandoned\[index\]\) \{[\s\S]*?\n {6}continue;\n {4}\}\n {4}surviving\.push\(message\);\n {2}\}/,
@@ -67,8 +66,7 @@ test("appending a message does not read the whole thread", () => {
 });
 
 test("loading a thread passes on every stored message", () => {
-  // msgs is assigned once per branch and never rewritten, so nothing can filter the tree
-  // before it is rebuilt. A dangling parent makes the whole thread unimportable.
+  // Nothing may filter the tree before it is rebuilt: a dangling parent breaks the thread.
   assert.deepEqual(
     historyLoad.match(/\bmsgs\s*=\s*[^=][^;\n]*/g),
     ["msgs = snapshot.messages", "msgs = []"],

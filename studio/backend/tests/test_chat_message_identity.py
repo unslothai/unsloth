@@ -137,9 +137,8 @@ def test_sync_keeps_every_message_and_its_links(db):
 def _regenerate_sequence(regenerations = 3):
     """The rows a regenerate writes: one assistant sibling per attempt, no new user turn.
 
-    MessageRuntime.reload calls startRun({ parentId }), so history.append never runs for the
-    user turn. That runtime path is guarded in studio/frontend/tests/chat-user-turn-identity
-    .test.ts; these tests only cover what studio_db does with the rows it is handed.
+    Storage only. reload calls startRun({ parentId }); the runtime path is guarded in
+    studio/frontend/tests/chat-user-turn-identity.test.ts.
     """
     yield _msg("u-doc", "user", None, "summarise the attached spec", 1000, _doc())
     for attempt in range(regenerations + 1):
@@ -164,7 +163,7 @@ def test_storing_a_regenerate_sequence_keeps_one_copy_of_the_document(db):
 
 
 def test_syncing_a_regenerate_sequence_keeps_one_user_turn(db):
-    """The same sequence via the whole-thread write."""
+    """Sync writes the whole thread each time."""
     records = list(_regenerate_sequence())
     for end in range(1, len(records) + 1):
         db.sync_chat_messages(THREAD, records[:end])
@@ -209,7 +208,7 @@ _OPERATIONS = ("send", "regenerate", "stop_regenerate", "edit_resend", "resync")
 
 
 def _apply(operation, state, counter):
-    """One runtime action, written straight through to studio_db."""
+    """One runtime action, written straight through."""
     if operation == "send" or not state["records"]:
         user_id = f"u{next(counter)}"
         record = _msg(user_id, "user", state["head"], "continue", next(counter))
