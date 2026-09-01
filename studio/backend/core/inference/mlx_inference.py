@@ -1660,17 +1660,16 @@ class _TextBatchSession:
         backend,
         *,
         width,
-        record_stats,
         adapter_state = None,
         owns_model = False,
     ):
         from mlx_lm.generate import BatchGenerator
 
         self.backend = backend
-        self._record_stats = record_stats
         self._adapter_state = adapter_state
         self._rows = {}
         self._by_uid = {}
+        self._settled = {}
         self._held = ExitStack()
         try:
             if owns_model:
@@ -1698,6 +1697,15 @@ class _TextBatchSession:
     def handles(self):
         """The replies still in the batch, oldest first."""
         return list(self._rows)
+
+    @property
+    def ending(self):
+        """The replies asked to end that the batch has not given up."""
+        return []
+
+    def take_stats(self, handle):
+        """The usage a retired reply settled with, once. None for any other."""
+        return self._settled.pop(handle, None)
 
     def admit(self, request, handle):
         """Take one reply into the batch, answering with what precedes its first"""
@@ -1845,16 +1853,13 @@ class _TextBatchSession:
         ready_at = row.ready_at or time.perf_counter()
         decoded = time.perf_counter() - ready_at
         prefill_s = ready_at - (row.processing_at or ready_at)
-        self._record_stats(
-            row.handle,
-            _build_generation_stats(
-                row.prompt_len,
-                (row.prompt_len / prefill_s) if prefill_s > 0 else 0.0,
-                row.generated,
-                row.generated / max(decoded, 1e-9),
-                row.cached,
-                finish_reason = row.reason,
-            ),
+        self._settled[row.handle] = _build_generation_stats(
+            row.prompt_len,
+            (row.prompt_len / prefill_s) if prefill_s > 0 else 0.0,
+            row.generated,
+            row.generated / max(decoded, 1e-9),
+            row.cached,
+            finish_reason = row.reason,
         )
         yield row.handle, None
 
@@ -1868,6 +1873,7 @@ class _TextBatchSession:
         finally:
             self._rows.clear()
             self._by_uid.clear()
+            self._settled.clear()
             self._held.close()
 
 
@@ -1929,17 +1935,16 @@ class _VisionBatchSession:
         backend,
         *,
         width,
-        record_stats,
         adapter_state = None,
         owns_model = False,
     ):
         from unsloth_zoo.mlx.generate import BatchStream, GenerationDefaults
 
         self.backend = backend
-        self._record_stats = record_stats
         self._adapter_state = adapter_state
         self._rows = {}
         self._by_row = {}
+        self._settled = {}
         self._held = ExitStack()
         try:
             if owns_model:
@@ -1967,6 +1972,15 @@ class _VisionBatchSession:
     def handles(self):
         """The replies still in the batch, oldest first."""
         return list(self._rows)
+
+    @property
+    def ending(self):
+        """The replies asked to end that the stream has not given up."""
+        return [handle for handle, row in self._rows.items() if row.cancelled]
+
+    def take_stats(self, handle):
+        """The usage a retired reply settled with, once. None for any other."""
+        return self._settled.pop(handle, None)
 
     def admit(self, request, handle):
         """Take one reply into the batch, answering with what precedes its first"""
@@ -2079,15 +2093,12 @@ class _VisionBatchSession:
         ready_at = row.ready_at or time.perf_counter()
         decoded = time.perf_counter() - ready_at
         prefill_s = ready_at - row.admitted_at
-        self._record_stats(
-            row.handle,
-            _build_generation_stats(
-                row.prompt_tokens,
-                (row.prompt_tokens / prefill_s) if prefill_s > 0 else 0.0,
-                row.generated,
-                row.generated / max(decoded, 1e-9),
-                finish_reason = row.reason or "stop",
-            ),
+        self._settled[row.handle] = _build_generation_stats(
+            row.prompt_tokens,
+            (row.prompt_tokens / prefill_s) if prefill_s > 0 else 0.0,
+            row.generated,
+            row.generated / max(decoded, 1e-9),
+            finish_reason = row.reason or "stop",
         )
         yield row.handle, None
 
@@ -2097,6 +2108,7 @@ class _VisionBatchSession:
         finally:
             self._rows.clear()
             self._by_row.clear()
+            self._settled.clear()
             self._held.close()
 
 
@@ -3460,7 +3472,6 @@ class MLXInferenceBackend:
         self,
         *,
         width,
-        record_stats,
         adapter_state = None,
     ):
         """A batch replies join and leave while it decodes."""
@@ -3471,7 +3482,6 @@ class MLXInferenceBackend:
         return session(
             self,
             width = width,
-            record_stats = record_stats,
             adapter_state = adapter_state,
             owns_model = True,
         )
@@ -3529,14 +3539,17 @@ class MLXInferenceBackend:
     ):
         """The text half of ``generate_chat_batch``, over mlx-lm's own batch."""
 
-        def record(row, stats):
-            self.last_batch_generation_stats[row] = stats
+        def report(events):
+            """Pass the batch's events on, collecting each reply's usage as it ends."""
+            for row, snapshot in events:
+                if snapshot is None:
+                    self.last_batch_generation_stats[row] = session.take_stats(row)
+                yield row, snapshot
 
         with self._generation_lock, _temporary_mlx_adapter_state(self._model, _adapter_state):
             session = _TextBatchSession(
                 self,
                 width = len(requests),
-                record_stats = record,
                 adapter_state = _adapter_state,
             )
             try:
@@ -3547,9 +3560,9 @@ class MLXInferenceBackend:
                     if prefix:
                         yield row, prefix
                 while session.rows_in_flight:
-                    yield from session.step()
+                    yield from report(session.step())
                     if cancel_event is not None and cancel_event.is_set():
-                        yield from session.withdraw(list(session.handles))
+                        yield from report(session.withdraw(list(session.handles)))
             finally:
                 session.close()
 

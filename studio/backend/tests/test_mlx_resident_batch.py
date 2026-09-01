@@ -26,10 +26,11 @@ class _RespQueue:
 class _Session:
     """A batch that hands back whatever the test scripted for each reply."""
 
-    def __init__(self, *, width, record_stats):
+    def __init__(self, *, width):
         self.width = width
-        self.record_stats = record_stats
         self.rows = []
+        self.settled = {}
+        self.ending = []
         self.closed = False
         self.admitted = []
         self.withdrawn = []
@@ -43,6 +44,13 @@ class _Session:
     @property
     def rows_in_flight(self):
         return len(self.rows)
+
+    @property
+    def handles(self):
+        return list(self.rows)
+
+    def take_stats(self, handle):
+        return self.settled.pop(handle, None)
 
     def admit(self, request, handle):
         if handle[0] in self.will_not_take or handle in self.will_not_take:
@@ -61,19 +69,21 @@ class _Session:
             event = events.pop(0)
             if event is None:
                 self.rows.remove(handle)
-                # Closing a reply out records what it managed, as the real session
-                # does, before the terminal event its caller sees.
-                self.record_stats(handle, self.stats_at_retire.get(handle, {}))
+                if handle in self.ending:
+                    self.ending.remove(handle)
+                self.settled[handle] = self.stats_at_retire.get(handle, {})
             yield handle, event
 
     def withdraw(self, handles):
-        held = [handle for handle in handles if handle in self.rows and handle not in self.holds]
+        asked = [handle for handle in handles if handle in self.rows]
+        held = [handle for handle in asked if handle not in self.holds]
         self.withdrawn.append(held)
+        for handle in asked:
+            if handle in self.holds and handle not in self.ending:
+                self.ending.append(handle)
         for handle in held:
             self.rows.remove(handle)
-            # Taking a reply back closes it out, and closing it out records what it
-            # managed -- as the real session does, on the way to its terminal event.
-            self.record_stats(handle, self.stats_at_retire.get(handle, {}))
+            self.settled[handle] = self.stats_at_retire.get(handle, {})
             yield handle, None
 
     def close(self):
@@ -101,10 +111,9 @@ class _Backend:
         self,
         *,
         width,
-        record_stats,
         adapter_state = None,
     ):
-        session = _Session(width = width, record_stats = record_stats)
+        session = _Session(width = width)
         session.script.update(self.script)
         if self.on_open is not None:
             self.on_open(session)

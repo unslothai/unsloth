@@ -1002,19 +1002,17 @@ class _ResidentBatch:
         self.backend = backend
         self.resp_queue = resp_queue
         self.session = None
-        self._stats: dict[Any, Any] = {}
-        # request id -> the rows it is still waiting on. A handle carries a row
-        # number when its command asked for several replies and None when it asked
-        # for one, which is the whole difference in how the two are answered.
-        self._pending: dict[str, set] = {}
-        #: Requests whose stop the session could not finish, because it would not
-        #: give a row back yet. Their rows still report, so nothing more is owed
-        #: unless the batch closes with one still in it.
-        self._ending: set = set()
+        self._owed: dict = {}
 
     @property
     def rows_in_flight(self) -> int:
         return self.session.rows_in_flight if self.session is not None else 0
+
+    def _live(self, request_id: str) -> list:
+        """The replies of one request the session still holds."""
+        if self.session is None:
+            return []
+        return [handle for handle in self.session.handles if handle[0] == request_id]
 
     def unavailable_reason(self, cmd: dict) -> Optional[str]:
         """Why this command cannot join the batch, or None if it can."""
@@ -1041,10 +1039,9 @@ class _ResidentBatch:
         if self.session is None:
             self.session = self.backend.open_resident_batch(
                 width = max(1, int(cmd.get("parallel_slots") or 1), len(requests)),
-                record_stats = self._stats.__setitem__,
             )
         handles = [(request_id, row if rows else None) for row in range(len(requests))]
-        self._pending[request_id] = set(handles)
+        self._owed[request_id] = None
         prefixes = []
         try:
             for request, handle in zip(requests, handles):
@@ -1075,29 +1072,29 @@ class _ResidentBatch:
 
     def cancel(self, request_id: str) -> bool:
         """Withdraw one request's replies, leaving every other reply decoding."""
-        pending = self._pending.get(request_id)
-        if not pending or self.session is None:
+        if request_id not in self._owed:
+            return False
+        live = self._live(request_id)
+        if not live:
             return False
         logger.info("Cancelling request_id=%s in a batch of %d", request_id, self.rows_in_flight)
         try:
-            for handle, snapshot in self.session.withdraw(sorted(pending, key = _handle_order)):
+            for handle, snapshot in self.session.withdraw(sorted(live, key = _handle_order)):
                 self._report(handle, snapshot)
         except Exception as exc:
             logger.error("Batched cancellation error: %s", exc, exc_info = True)
             self._fail_all(exc)
             return True
-        if self._pending.get(request_id):
-            self._ending.add(request_id)
         self._close_if_empty()
         return True
 
     def cancel_all(self) -> None:
-        for request_id in list(self._pending):
+        for request_id in list(self._owed):
             self.cancel(request_id)
 
     def drop_stopped(self, stopped) -> None:
         """Withdraw the replies whose callers have stopped them."""
-        for request_id in list(self._pending):
+        for request_id in list(self._owed):
             if request_id in stopped:
                 self.cancel(request_id)
 
@@ -1117,7 +1114,7 @@ class _ResidentBatch:
     def _fail_all(self, exc: BaseException) -> None:
         """Give up on the batch: a session that cannot be stepped or withdrawn from"""
         stack = traceback.format_exc(limit = 20)
-        for request_id in list(self._pending):
+        for request_id in list(self._owed):
             self._fail(request_id, exc, stack)
         self.close()
 
@@ -1127,12 +1124,13 @@ class _ResidentBatch:
             self.close()
 
     def close(self) -> None:
-        session, self.session = self.session, None
-        for request_id in [r for r in self._pending if r in self._ending]:
+        ending = (
+            {handle[0] for handle in self.session.ending} if self.session is not None else set()
+        )
+        for request_id in [r for r in self._owed if r in ending]:
             self._abandon(request_id)
-        self._ending.clear()
-        self._pending.clear()
-        self._stats.clear()
+        session, self.session = self.session, None
+        self._owed.clear()
         if session is None:
             return
         try:
@@ -1142,14 +1140,8 @@ class _ResidentBatch:
 
     def _report(self, handle, snapshot) -> None:
         request_id, row = handle
-        pending = self._pending.get(request_id)
-        if pending is None or handle not in pending:
-            # A reply the batch no longer records. A row taken back when its
-            # command could not join is still the stream's until the stream will
-            # give it up, so it reports after its caller has been sent elsewhere
-            # -- and being told a row finished would end a reply that has not
-            # started yet.
-            self._stats.pop(handle, None)
+        if request_id not in self._owed:
+            self._take_stats(handle)
             return
         if snapshot is not None:
             self._send_token(handle, snapshot)
@@ -1161,11 +1153,10 @@ class _ResidentBatch:
                     "type": "row_done",
                     "request_id": request_id,
                     "row": row,
-                    "stats": self._stats.pop(handle, None),
+                    "stats": self._take_stats(handle),
                 },
             )
-        pending.discard(handle)
-        if not pending:
+        if not self._live(request_id):
             self._finish(request_id)
 
     def _send_token(self, handle, text) -> None:
@@ -1176,7 +1167,7 @@ class _ResidentBatch:
         _send_response(self.resp_queue, event)
 
     def _finish(self, request_id: str) -> None:
-        stats = self._stats.pop((request_id, None), None)
+        stats = self._take_stats((request_id, None))
         self._forget(request_id, withdraw = False)
         _send_response(
             self.resp_queue,
@@ -1190,7 +1181,7 @@ class _ResidentBatch:
 
     def _abandon(self, request_id: str) -> None:
         """End a turn with the batch it was in, rather than with a reply."""
-        stats = self._stats.pop((request_id, None), None)
+        stats = self._take_stats((request_id, None))
         self._forget(request_id, withdraw = False)
         _send_response(
             self.resp_queue,
@@ -1216,23 +1207,24 @@ class _ResidentBatch:
         )
 
     def _forget(self, request_id: str, *, withdraw: bool) -> bool:
-        """Drop what the batch records for a request. False where taking its rows
-        back failed, which leaves them decoding with nothing recording them."""
-        self._ending.discard(request_id)
-        pending = self._pending.pop(request_id, None) or set()
+        """Stop answering for a request. False where taking its rows back failed,"""
+        live = self._live(request_id)
+        self._owed.pop(request_id, None)
         taken_back = True
-        if withdraw and pending and self.session is not None:
+        if withdraw and live:
             try:
-                for _handle, _snapshot in self.session.withdraw(sorted(pending, key = _handle_order)):
+                for _handle, _snapshot in self.session.withdraw(sorted(live, key = _handle_order)):
                     pass
             except Exception:
                 logger.error("Could not withdraw rows for request_id=%s", request_id, exc_info = True)
                 taken_back = False
-        # After the withdrawal, which closes each reply out and records what it
-        # managed -- for a request that is no longer here to be told any of it.
-        for handle in pending:
-            self._stats.pop(handle, None)
+        for handle in live:
+            self._take_stats(handle)
         return taken_back
+
+    def _take_stats(self, handle):
+        """What a retired reply settled with, dropped from the session as it is read."""
+        return self.session.take_stats(handle) if self.session is not None else None
 
 
 def _handle_order(handle):
