@@ -623,6 +623,10 @@ def resolved_set(install_cell: str, colab: dict[str, str]) -> dict[str, str]:
 # ----- Rules ----- #
 
 
+# A `git+` target runs to the next shell or quoting boundary.
+_GIT_SOURCE_RE = re.compile(r"""git\+[^\s'"]+""")
+
+
 def rule_inst_001_git_plus(install_cell: str, file: str, cell_idx: int) -> list[Finding]:
     """Whole lines, not parsed commands.
 
@@ -636,9 +640,12 @@ def rule_inst_001_git_plus(install_cell: str, file: str, cell_idx: int) -> list[
         commands = [parse_pip_line(command, line_no) for command, _ in _split_chained(line)]
         if not any(inv is not None for inv in commands) and PIP_LINE_RE.match(line) is None:
             continue
-        if "git+" not in line:
-            continue
-        if any(allowed in line for allowed in GIT_PLUS_ALLOWLIST):
+        # Per source, not per line: one allowlisted repository beside a prohibited one must
+        # not clear the whole line.
+        sources = _GIT_SOURCE_RE.findall(line)
+        if not any(
+            not any(allowed in source for allowed in GIT_PLUS_ALLOWLIST) for source in sources
+        ):
             continue
         findings.append(
             Finding(
@@ -741,8 +748,19 @@ _ARCHIVE_RE = re.compile(
 )
 
 
-def _archive_requirement(argument: str) -> tuple[str, str] | None:
-    """`(project, version)` for a direct archive install, or None when it is not one."""
+def _archive_requirement(argument: str) -> tuple[str, str | None] | None:
+    """`(project, version)` for a direct archive install, or None when it is not one.
+
+    The version is None when the target is named but its archive does not encode one, as in
+    `torchcodec @ https://.../v0.13.0.zip`: the package is replaced, by something this cannot
+    name.
+    """
+    named, sep, reference = argument.partition("@")
+    if sep and "://" in reference:
+        argument = reference.strip()
+        named = named.strip().split("[", 1)[0].replace("_", "-").lower()
+    else:
+        named = ""
     lowered = argument.lower().split("#", 1)[0].split("?", 1)[0]
     if "://" not in argument and not lowered.endswith((".whl", ".tar.gz", ".zip")):
         return None
@@ -750,8 +768,9 @@ def _archive_requirement(argument: str) -> tuple[str, str] | None:
     leaf = urllib.parse.unquote(leaf)  # a URL spells the local tag `%2Bcu130`
     match = _ARCHIVE_RE.match(leaf)
     if match is None:
-        return None
-    return match.group("name").replace("_", "-").lower(), match.group("version")
+        return (named, None) if named else None
+    project = match.group("name").replace("_", "-").lower()
+    return (named or project), match.group("version")
 
 
 def cmp_releases(a: str, b: str) -> int:
@@ -818,9 +837,12 @@ def _spec_window(
         elif op == "!=":
             exclusions.append(ver)
         elif op in (">=", ">", "~="):
-            if floor is None or cmp_versions(ver, floor) > 0:
+            if floor is None or cmp_releases(ver, floor) > 0:
                 floor = ver
                 floor_excludes_itself = op == ">"
+            elif cmp_releases(ver, floor) == 0 and op == ">":
+                # Same version, stricter operator: intersecting them keeps the exclusion.
+                floor_excludes_itself = True
         elif op == "<=":
             if cap is None or cmp_versions(ver, cap) < 0:
                 cap = ver
@@ -867,6 +889,7 @@ def _effective_version(
         # arguments into a single requirement, so they have to be one window here too.
         pins: list[tuple[str, str]] = []
         named = False
+        replaced_unnamed = False
         for raw in inv.packages:
             # Before parse_spec, which reads `./torchcodec-0.13.0-...whl` as a project called
             # `.` and hides the archive behind a name that never matches.
@@ -874,7 +897,10 @@ def _effective_version(
             if archive is not None:
                 if archive[0] == target:
                     named = True
-                    pins.append(("==", archive[1]))
+                    if archive[1] is None:
+                        replaced_unnamed = True  # installed, by something with no version here
+                    else:
+                        pins.append(("==", archive[1]))
                 continue
             sp = parse_spec(raw)
             if sp is None or sp.name != target:
@@ -885,6 +911,9 @@ def _effective_version(
             continue
         if inv.action == "uninstall":
             current = None  # removed; a later install can put it back
+            continue
+        if replaced_unnamed:
+            current, exact_known = None, True
             continue
         exact, floor, cap, ceiling, exclusions, exclusive_floor = _spec_window(pins)
         # Where an install lands when it has to move, or None when nothing names it.

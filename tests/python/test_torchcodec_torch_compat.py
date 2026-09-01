@@ -359,19 +359,33 @@ def test_pyproject_declares_torch211_audio_extra_with_python_gate():
     assert "python_version >= '3.10'" in match.group(1)
 
 
-def test_security_audit_covers_both_installable_torchcodec_lines():
-    """extras-no-deps.txt used to put torchcodec 0.10 in the audit set. It no longer pins
-    it, and torch 2.10 is still installable (`_TORCH_FLAVOR_REPAIR_PKG_SPEC` and the default
-    ROCm repair both cap below 2.11), so dropping audio-torch210 loses live coverage. The
-    two lines cannot share one resolve, hence the separate input."""
+def test_security_audit_covers_every_installable_torchcodec_line():
+    """extras-no-deps.txt used to pin torchcodec flat, so 0.10 was the only line that ever
+    installed and the only one audited. `_select_torchcodec_spec` now picks per torch minor,
+    and the repairs still resolve torch 2.10, 2.9 and 2.8, so each of those lines needs an
+    input of its own: the ranges are disjoint and cannot share a resolve."""
     text = SECURITY_AUDIT_YML.read_text(encoding = "utf-8")
+    ips = _load_install_python_stack()
+    tomllib = _tomllib()
+    extras = tomllib.loads(PYPROJECT.read_text(encoding = "utf-8"))["project"][
+        "optional-dependencies"
+    ]
+
+    audited = ["audio-torch211", "audio-torch210", "audio-torch290", "audio-torch280"]
     # Both halves of the workflow build the inputs; one is the advisory audit, one is
-    # scan_packages.
+    # scan_packages. 211 is folded into unsloth-deps.txt, the rest get a file each.
     assert text.count('optional-dependencies"]["audio-torch211"]') == 2
-    assert text.count('optional-dependencies"]["audio-torch210"]') == 2
-    assert text.count("audit-reqs/audio-torch210.txt") >= 2  # generated + osv-scanner
-    assert "for f in unsloth-deps audio-torch210 " in text  # pip-audit
-    assert "files: 'studio overrides extras-no-deps audio-torch210'" in text  # scan_packages
+    assert text.count("for extra in audio-torch210 audio-torch290 audio-torch280; do") == 2
+    for extra in audited[1:]:
+        assert f"audit-reqs/{extra}.txt" in text, extra
+        assert f" {extra} " in text or f" {extra};" in text or f" {extra}'" in text, extra
+
+    # Whatever the selector installs on a reachable torch minor has to be in that set.
+    for torch_minor in ("2.10", "2.9", "2.8"):
+        spec = ips._select_torchcodec_spec(f"{torch_minor}.0")
+        assert any(spec in dep for extra in audited for dep in extras[extra]), (
+            f"torch {torch_minor} installs {spec}, which no audited extra declares"
+        )
 
 
 def test_extras_no_deps_has_no_unconditional_torchcodec_pin():
@@ -998,6 +1012,64 @@ def test_notebook_validator_reads_an_archive_given_as_a_path():
         )
         == 1
     )
+
+
+def test_git_allowlist_is_scoped_to_each_source():
+    """One allowlisted repository on a line must not clear a prohibited one beside it. The
+    line-level scan finds every `git+` target; the allowlist then applies to each."""
+    nv = _load_notebook_validator_module()
+
+    allowed = "git+https://github.com/unslothai/unsloth-zoo.git"
+    evil = "git+https://example.com/evil.git"
+
+    assert nv.rule_inst_001_git_plus(f"!pip install {allowed}", "nb.ipynb", 0) == []
+    for cell in (
+        f"!pip install {evil}",
+        f"!pip install {allowed} ; pip install {evil}",
+        f"!pip install {allowed} || pip install {evil}",
+        f"!pip install {allowed} {evil}",
+    ):
+        assert any(
+            f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(cell, "nb.ipynb", 0)
+        ), cell
+
+    two_allowed = "!pip install {} git+https://github.com/state-spaces/mamba.git".format(allowed)
+    assert nv.rule_inst_001_git_plus(two_allowed, "nb.ipynb", 0) == []
+
+
+def test_notebook_validator_keeps_the_stricter_of_two_equal_floors():
+    """`>=0.8.0,>0.8.0` intersect to the exclusive one, so the installed 0.8.0 still moves."""
+    nv = _load_notebook_validator_module()
+
+    for spelling in ("torchcodec>=0.8.0,>0.8.0", "torchcodec>0.8.0,>=0.8.0"):
+        assert nv._spec_window(nv.parse_spec(spelling).pins)[5] is True, spelling
+        assert nv._effective_version(
+            f'!pip install "{spelling}"', "torchcodec", "0.8.0"
+        ) == (None, True), spelling
+
+    # Two inclusive floors still name the endpoint.
+    assert nv._effective_version(
+        '!pip install "torchcodec>=0.8.0,>=0.8.0"', "torchcodec", "0.8.0"
+    ) == ("0.8.0", True)
+
+
+def test_notebook_validator_reads_a_named_direct_reference():
+    """`name @ url` replaces the package even when the archive filename does not name it, so
+    the old version cannot be reported as if it were still installed."""
+    nv = _load_notebook_validator_module()
+
+    tag = "torchcodec @ https://github.com/meta-pytorch/torchcodec/archive/refs/tags/v0.13.0.zip"
+    assert nv._archive_requirement(tag) == ("torchcodec", None)
+    assert nv.rule_inst_004_torchcodec_torch(
+        f'!pip install "torch==2.12.0" "{tag}"', COLAB_TORCH211, "nb.ipynb", 0
+    ) == []
+
+    # A named reference whose archive does name a version still yields it, either way.
+    wheel = "torchcodec @ https://x/torchcodec-0.10.0-cp312-cp312-manylinux_2_28_x86_64.whl"
+    assert nv._archive_requirement(wheel) == ("torchcodec", "0.10.0")
+    assert len(nv.rule_inst_004_torchcodec_torch(
+        f'!pip install "torch==2.11.0" "{wheel}"', COLAB_TORCH211, "nb.ipynb", 0
+    )) == 1
 
 
 def test_notebook_validator_reads_a_range_as_one_window():
