@@ -540,6 +540,9 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "format_type": _tpl_info.get("format_type", "generic"),
                         "template_name": _tpl_info.get("template_name"),
                         "special_tokens": _tpl_info.get("special_tokens", {}) or {},
+                        # The IMAGE-turn body; the whitelist is the only way out.
+                        "processor_template": _tpl_info.get("processor_template"),
+                        "renders_image": _tpl_info.get("renders_image"),
                     }
             except Exception as _tpl_exc:
                 logger.warning("chat_template_info forward failed: %s", _tpl_exc)

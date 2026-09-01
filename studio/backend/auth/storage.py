@@ -29,9 +29,6 @@ MIN_PASSWORD_LENGTH = 8
 # change so the credential never lingers on disk.
 _BOOTSTRAP_PW_PATH = DB_PATH.parent / ".bootstrap_password"
 
-# Hash of an auto-generated password awaiting delivery, committed with auth_user.
-_CREDENTIAL_UNDELIVERED_KEY = "credential_undelivered_password_hash"
-
 # In-process cache to avoid re-reading the file on every HTML serve.
 _bootstrap_password: Optional[str] = None
 
@@ -213,82 +210,6 @@ def clear_bootstrap_password() -> None:
                     "prevent reuse after a reset."
                 )
             print(message, file = sys.stderr, flush = True)
-
-
-def mark_credential_undelivered(username: str) -> None:
-    """Mark the current credential pending delivery.
-
-    New auto-generation code must prefer ``update_password(...,
-    mark_credential_undelivered=True)`` so the password and marker commit
-    atomically. This helper remains for callers that need to mark an already-live
-    credential, but it uses the same database state rather than a fallible sidecar
-    file.
-    """
-    conn = get_connection()
-    try:
-        row = conn.execute(
-            "SELECT password_hash FROM auth_user WHERE username = ?",
-            (username,),
-        ).fetchone()
-        if row is None:
-            conn.rollback()
-            return
-        conn.execute(
-            "INSERT OR REPLACE INTO app_secrets (key, value) VALUES (?, ?)",
-            (_CREDENTIAL_UNDELIVERED_KEY, row["password_hash"]),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def clear_credential_undelivered(conn: Optional[sqlite3.Connection] = None) -> None:
-    """Clear transactional delivery state after the credential is displayed."""
-    if conn is not None:
-        conn.execute("DELETE FROM app_secrets WHERE key = ?", (_CREDENTIAL_UNDELIVERED_KEY,))
-        return
-    conn = get_connection()
-    try:
-        clear_credential_undelivered(conn)
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def credential_undelivered(username: str) -> bool:
-    """True when the live admin password is one that was committed but never shown.
-
-    Requires both the pending row and a hash match, so it answers "is the CURRENT
-    password the undelivered one?" rather than "did a delivery ever fail?". The
-    marker is written in the same transaction as an auto-generated password;
-    database errors propagate so a launch cannot fail open on unreadable state.
-    """
-    conn = get_connection()
-    try:
-        pending = conn.execute(
-            """
-            SELECT s.value AS pending_hash,
-                   (SELECT password_hash FROM auth_user WHERE username = ?) AS current_hash
-            FROM app_secrets AS s
-            WHERE s.key = ?
-            """,
-            (username, _CREDENTIAL_UNDELIVERED_KEY),
-        ).fetchone()
-        if pending is None:
-            return False
-        pending_hash = pending["pending_hash"]
-        current_hash = pending["current_hash"]
-        if pending_hash and current_hash and hmac.compare_digest(pending_hash, current_hash):
-            return True
-        # Heal older databases without deleting a concurrent launcher's marker.
-        conn.execute(
-            "DELETE FROM app_secrets WHERE key = ? AND value = ?",
-            (_CREDENTIAL_UNDELIVERED_KEY, pending_hash),
-        )
-        conn.commit()
-        return False
-    finally:
-        conn.close()
 
 
 def _hash_token(token: str) -> str:
@@ -848,8 +769,6 @@ def update_password(
     *,
     revoke_refresh_tokens: bool = False,
     expect_password_hash: Optional[str] = None,
-    require_must_change: bool = False,
-    mark_credential_undelivered: bool = False,
     preserve_desktop_secret: bool = False,
 ) -> Optional[str]:
     """Update password, clear first-login requirement, rotate JWT secret.
@@ -865,91 +784,46 @@ def update_password(
     ``expect_password_hash`` makes the write conditional on the credential the
     caller verified still being current, so a request that checked the old
     password cannot overwrite a reset that landed while it was in flight.
-    Returns None when the credential moved underneath it.
-
-    ``require_must_change`` makes it conditional on the account still holding a
-    seeded credential. Auto-generated launch credentials use it so a user who
-    completes /change-password in another tab between a
-    ``requires_password_change()`` read and this call is not silently overwritten
-    (and no already-replaced generated password is displayed).
-
-    Both guards ride the SAME statement rather than branching per guard: SQLite
-    applies the whole WHERE atomically, so exactly one of two racing writers sees
-    rowcount > 0 no matter which guard the loser tripped. A guard that rejects the
-    write commits NOTHING -- no revocation, no rotation -- because the credential
-    a rejected caller would be revoking belongs to the writer that won.
-
-    (``expect_password_hash`` strictly subsumes ``require_must_change``: every
-    write rehashes with a fresh salt, so any concurrent change trips it too. The
-    two are kept separate because they state different policies -- "the credential
-    I verified is still current" versus "only ever replace a never-set credential"
-    -- and the auto-generate callers hold no credential to pass. Collapsing them
-    is a follow-up, not a rebase.)
-
-    ``mark_credential_undelivered`` stores the newly committed password hash in
-    ``app_secrets`` before this transaction commits. A launcher can therefore
-    safely rotate first and display second: every other process observes either
-    the old password with no pending marker, or the new password with its matching
-    marker. Ordinary password changes delete any older pending marker in this same
-    transaction.
+    Returns False when the credential moved underneath it.
 
     ``preserve_desktop_secret`` keeps the local desktop credential valid. It is
     for a caller that already authenticated as the desktop app: revoking the
     secret it is currently using would break desktop auto-auth for a change the
     desktop itself made.
-
-    The desktop secret (unless preserved) is revoked in this same transaction. It
-    authenticates as this user without the password and is keyed off the JWT
-    secret rotated below, so it has to die with the rotation. A post-commit
-    ``clear_desktop_secret()`` opens a SECOND connection and can raise
-    ``sqlite3.OperationalError`` on a busy database, leaving a pre-change desktop
-    credential live against the new password, and would propagate that error to a
-    caller whose new password is already committed. The only remaining post-commit
-    step is the best-effort bootstrap FILE removal, which cannot join a SQL
-    transaction and never fails the change.
     """
     from .hashing import hash_password
 
     salt, pwd_hash = hash_password(new_password)
     jwt_secret = secrets.token_urlsafe(64)
-
-    # Values remain bound parameters. Parameter order is SET, username, then guard.
-    guards = ""
-    params = [salt, pwd_hash, jwt_secret, username]
-    if require_must_change:
-        guards += " AND must_change_password = 1"
-    if expect_password_hash is not None:
-        guards += " AND password_hash = ?"
-        params.append(expect_password_hash)
-
     conn = get_connection()
     try:
-        cursor = conn.execute(
-            f"""
-            UPDATE auth_user
-            SET password_salt = ?, password_hash = ?, jwt_secret = ?, must_change_password = 0
-            WHERE username = ?{guards}
-            """,
-            tuple(params),
-        )
-        if cursor.rowcount == 0:
-            # The user or guard failed; roll back before revoking anything.
-            conn.rollback()
-            return None
-        if not preserve_desktop_secret:
-            clear_desktop_secret(conn)
-        if revoke_refresh_tokens:
-            conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (username,))
-        if mark_credential_undelivered:
-            conn.execute(
-                "INSERT OR REPLACE INTO app_secrets (key, value) VALUES (?, ?)",
-                (_CREDENTIAL_UNDELIVERED_KEY, pwd_hash),
+        if expect_password_hash is None:
+            cursor = conn.execute(
+                """
+                UPDATE auth_user
+                SET password_salt = ?, password_hash = ?, jwt_secret = ?, must_change_password = 0
+                WHERE username = ?
+                """,
+                (salt, pwd_hash, jwt_secret, username),
             )
         else:
-            clear_credential_undelivered(conn)
+            cursor = conn.execute(
+                """
+                UPDATE auth_user
+                SET password_salt = ?, password_hash = ?, jwt_secret = ?, must_change_password = 0
+                WHERE username = ? AND password_hash = ?
+                """,
+                (salt, pwd_hash, jwt_secret, username, expect_password_hash),
+            )
+        if revoke_refresh_tokens and cursor.rowcount > 0:
+            conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (username,))
         conn.commit()
-        clear_bootstrap_password()
-        return jwt_secret
+        if cursor.rowcount > 0:
+            clear_bootstrap_password()
+            if not preserve_desktop_secret:
+                clear_desktop_secret()
+            return jwt_secret
+        return None
     finally:
         conn.close()
 
@@ -1144,21 +1018,8 @@ def validate_desktop_secret(raw_secret: str) -> Optional[str]:
     return verified[0] if verified else None
 
 
-def clear_desktop_secret(conn: Optional[sqlite3.Connection] = None) -> None:
-    """Remove backend-side desktop auth state.
-
-    Given an open *conn*, the delete joins the CALLER's transaction and the caller
-    commits it (``update_password`` revokes the desktop secret in the same atomic
-    write as the password rotation, so a failure cannot leave a pre-change desktop
-    credential able to authenticate without the password). Otherwise it runs
-    standalone on its own connection.
-    """
-    if conn is not None:
-        conn.execute(
-            "DELETE FROM app_secrets WHERE key IN (?, ?)",
-            (_DESKTOP_SECRET_HASH_KEY, _DESKTOP_SECRET_CREATED_AT_KEY),
-        )
-        return
+def clear_desktop_secret() -> None:
+    """Remove backend-side desktop auth state."""
     conn = get_connection()
     try:
         conn.execute(
