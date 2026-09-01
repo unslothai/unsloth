@@ -4340,9 +4340,23 @@ def rocm_gpu_ids_without_torch_kernels() -> set[int]:
         if physical_ids is None:
             return set()
 
+        # device_count() is frozen at the first torch.cuda call, while the spec
+        # above re-reads the env every time, so a mask applied after torch woke
+        # up leaves more ordinals than ids. Naming the overflow ordinals into the
+        # physical namespace collides with real ids and drops covered cards.
+        device_count = torch.cuda.device_count()
+        if device_count > len(physical_ids):
+            logger.debug(
+                "Skipping torch arch gate: %s torch devices but %s visible ids",
+                device_count,
+                len(physical_ids),
+            )
+            return set()
+
         unsupported: set[int] = set()
+        unsupported_ordinals = 0
         readable = 0
-        for ordinal in range(torch.cuda.device_count()):
+        for ordinal in range(device_count):
             try:
                 props = torch.cuda.get_device_properties(ordinal)
             except Exception:
@@ -4358,10 +4372,13 @@ def rocm_gpu_ids_without_torch_kernels() -> set[int]:
                 continue
             readable += 1
             if arch not in supported:
-                unsupported.add(physical_ids[ordinal] if ordinal < len(physical_ids) else ordinal)
+                unsupported_ordinals += 1
+                unsupported.add(physical_ids[ordinal])
 
         # Dropping every device would leave the caller no GPU and silently force CPU.
-        if readable and len(unsupported) >= readable:
+        # Counted in ordinals, not ids: a mask may name one id twice, and the
+        # deduplicated set then reads as fewer devices than were actually rejected.
+        if readable and unsupported_ordinals >= readable:
             logger.warning(
                 "The installed PyTorch build has no kernels for any GPU on this host "
                 "(built for %s); leaving device selection alone.",

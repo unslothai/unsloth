@@ -51,6 +51,7 @@ def _fake_torch(
     arch_list = GFX110X,
     vendor = "amd",
     available = True,
+    device_count = None,
 ):
     torch = types.ModuleType("torch")
     if vendor == "amd":
@@ -76,7 +77,7 @@ def _fake_torch(
 
     torch.cuda = types.SimpleNamespace(
         is_available = lambda: available,
-        device_count = lambda: len(devices),
+        device_count = lambda: len(devices) if device_count is None else device_count,
         get_arch_list = _get_arch_list,
         get_device_properties = _get_device_properties,
     )
@@ -287,6 +288,63 @@ class TestIdSpace:
         self._rocr_only(monkeypatch, "win32")
         monkeypatch.setenv("HIP_VISIBLE_DEVICES", "2,3")
         assert rocm_gpu_ids_without_torch_kernels() == {3}
+
+
+class TestTheOrdinalToIdMapMustBeTotal:
+    """torch.cuda.device_count() freezes at the first torch.cuda call, but the
+    visible spec re-reads the env, so the two disagree once a mask is applied
+    after torch has woken up. Naming the overflow ordinals into the physical
+    namespace collides with real ids and drops a card the wheel does cover."""
+
+    def test_more_ordinals_than_ids_gates_nothing(self, monkeypatch, no_mask):
+        # ordinal 0 is physical 2 (covered); ordinal 2 has no id, and reusing it
+        # as a physical id would drop physical 2, the good card.
+        monkeypatch.setenv("HIP_VISIBLE_DEVICES", "2,0")
+        _install(
+            monkeypatch,
+            _fake_torch(
+                [_props("gfx1101"), _props("gfx1036"), _props("gfx1036")],
+                device_count = 3,
+            ),
+        )
+        assert rocm_gpu_ids_without_torch_kernels() == set()
+
+    def test_the_selector_keeps_the_covered_card(self, monkeypatch, no_mask):
+        # The regression this guards: an empty list is not "inherit", it is
+        # "no GPU", so the run silently drops to CPU.
+        monkeypatch.setenv("HIP_VISIBLE_DEVICES", "2,0")
+        _install(
+            monkeypatch,
+            _fake_torch(
+                [_props("gfx1101"), _props("gfx1036"), _props("gfx1036")],
+                device_count = 3,
+            ),
+        )
+        monkeypatch.setattr(_hw_module, "get_device", lambda: DeviceType.CUDA)
+        monkeypatch.setattr(
+            _hw_module,
+            "get_visible_gpu_utilization",
+            lambda: {
+                "devices": [
+                    {"index": 0, "vram_total_gb": 16.0, "vram_used_gb": 1.0},
+                    {"index": 2, "vram_total_gb": 32.0, "vram_used_gb": 1.0},
+                ]
+            },
+        )
+        gpu_ids, _ = auto_select_gpu_ids("m", required_override_gb = 8.0)
+        assert gpu_ids == [2]
+
+    def test_an_id_named_twice_still_trips_the_all_uncovered_guard(
+        self, monkeypatch, no_mask
+    ):
+        # Both ordinals are physical 0, so the deduplicated set holds one id
+        # against two rejected devices and reads as a partial drop.
+        monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0,0")
+        _install(
+            monkeypatch,
+            _fake_torch([_props("gfx1036"), _props("gfx1036")]),
+        )
+        assert rocm_gpu_ids_without_torch_kernels() == set()
 
 
 class TestSelectorWiring:
