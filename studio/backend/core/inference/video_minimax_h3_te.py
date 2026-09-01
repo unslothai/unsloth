@@ -57,10 +57,14 @@ from .diffusion_convrot import (  # noqa: F401  (re-export: callers and tests na
     rotate_convrot_activation,
 )
 
-# The repo the Diffusers H3 path already pulls its VAEs from, so this adds no new dependency.
-from .video_minimax_h3 import H3_COMPONENT_REPO
-
-H3_TE_QUANT_REPO = H3_COMPONENT_REPO
+# The repo the prequantized denoisers already come from, so this adds no new dependency. It is no
+# longer H3_COMPONENT_REPO: the VAEs moved to the GGUF mirror and the conditioner did not, so the
+# two are now separate repos and aliasing them would send this file to the wrong one.
+H3_TE_QUANT_REPO = "unsloth/MiniMax-H3-FP8"
+# The community repack these quants were mirrored from, for an install whose cache predates the
+# move. Same reasoning as H3_LEGACY_COMPONENT_REPO, and the same owner: the pairing itself lives
+# in diffusion_families' _SD_CPP_LEGACY_SOURCES and is read through h3_te_quant_source below.
+H3_LEGACY_TE_QUANT_REPO = "Comfy-Org/MiniMax-H3"
 
 # Hosted quantized conditioners, by ``text_encoder_quant`` scheme.
 #
@@ -131,6 +135,30 @@ def h3_te_quant_filename(scheme: Optional[str]) -> Optional[str]:
     return H3_TE_QUANT_FILES.get(scheme or "")
 
 
+def h3_te_quant_source(scheme: Optional[str]) -> str:
+    """The repo to fetch the hosted quantized conditioner for ``scheme`` from: our mirror, or the
+    repack it was mirrored from when this install already holds that exact artifact under the old
+    id.
+
+    The conditioner's half of ``h3_component_source``, and it matters more than the VAEs do: the
+    artifact is ~27 GB, and the load that wants it has already dropped the dense encoder shards
+    from its pull. So on an upgraded install a live re-download is not merely slow -- offline it
+    leaves the pipeline with no encoder at all, because the base snapshot it would fall back to
+    was never staged either.
+
+    PURE, and the same shared owner (``prefer_cached_legacy_source``, both cache roots) the VAEs
+    use, so planning, prefetching and loading cannot name different repos.
+    """
+    filename = h3_te_quant_filename(scheme)
+    if filename is None:
+        return H3_TE_QUANT_REPO
+    try:
+        from .diffusion_families import prefer_cached_legacy_source
+        return prefer_cached_legacy_source(H3_TE_QUANT_REPO, (filename,))
+    except Exception:  # noqa: BLE001 -- an unreadable cache just means "not cached"
+        return H3_TE_QUANT_REPO
+
+
 def h3_te_resident_gb(scheme: Optional[str], *, bf16_gb: float) -> float:
     """Resident decimal GB of the conditioner this pick loads: the hosted quantized size when one
     exists for ``scheme``, else the released bfloat16 ``bf16_gb``."""
@@ -147,7 +175,7 @@ def h3_te_resident_gb(scheme: Optional[str], *, bf16_gb: float) -> float:
 # rotation, 137% without).
 #
 # This mirrors comfy-kitchen's ``_build_hadamard`` / ``_rotate_activation`` / ``_rotate_weight``
-# exactly, in a few lines of torch, rather than taking a dependency on a wheel Studio does not ship.
+# exactly, in a few lines of torch, rather than taking a dependency on a wheel Unsloth does not ship.
 #
 # ``build_convrot_hadamard`` and ``rotate_convrot_activation`` are imported at the top of this
 # module from ``diffusion_convrot``, where they now live. The DENOISER runs the same ConvRot on its
@@ -306,7 +334,7 @@ def load_h3_quantized_text_encoder(
     ``cache_dir`` pins the config resolution to the live cache root for the hub-id case, exactly as
     the artifact download above and every other loader call in this backend do -- unset, it
     resolves through huggingface_hub's import-time constant instead and can re-download into a root
-    Studio no longer reads (or fail outright on an offline host that has already staged it).
+    Unsloth no longer reads (or fail outright on an offline host that has already staged it).
 
     ``local_files_only`` is a load nobody asked for, which may not fetch anything. The artifact is
     ~27 GB, and the caller's staging phase (``_fetch_h3_te_quant``) has already accepted it -- so
@@ -330,8 +358,12 @@ def load_h3_quantized_text_encoder(
 
         from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
+        # The repack when this install pulled the artifact before the move, else the mirror. The
+        # stager resolved the same way, so a load that was cleared on a cached copy reads it from
+        # the id it is actually cached under rather than 401ing or re-pulling 27 GB.
+        source_repo = h3_te_quant_source(scheme)
         path = hf_hub_download_with_xet_fallback(
-            H3_TE_QUANT_REPO,
+            source_repo,
             filename,
             hf_token,
             cache_dir = cache_dir,
@@ -473,7 +505,7 @@ def load_h3_quantized_text_encoder(
                 "video.h3_te_quant: loaded the hosted %s conditioner (%s, %s), "
                 "%d ConvRot INT8 projections over %d decoder layers",
                 scheme,
-                H3_TE_QUANT_REPO,
+                source_repo,
                 filename,
                 len(quantized),
                 H3_TE_READ_LAYER,

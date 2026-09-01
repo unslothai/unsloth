@@ -2,175 +2,175 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import test, { after } from "node:test";
+import test, { type TestContext } from "node:test";
 
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
-const source = await readFile(
-  new URL("../src/hooks/use-tauri-update.ts", import.meta.url),
-  "utf8",
-);
-
-function constant(name: string): number {
-  const match = new RegExp(`const ${name} = ([^;]+);`).exec(source);
-  assert.ok(match, `${name} is no longer declared in use-tauri-update.ts`);
-  return Function(`"use strict"; return (${match[1]});`)() as number;
-}
-
-const effectStart = source.indexOf(
-  "    if (!isTauri) {",
-  source.indexOf("const scheduledCheckRef"),
-);
-const effectEndMarker = "      replaceUpdate(null);\n    };";
-const effectEnd = source.indexOf(effectEndMarker, effectStart);
-assert.ok(
-  effectStart > 0 && effectEnd > effectStart,
-  "the desktop update schedule moved",
-);
-const effectBody = source.slice(
-  effectStart,
-  effectEnd + effectEndMarker.length,
-);
-
-const startSchedule = new Function(
-  "isTauri",
-  "lifecycleRef",
-  "checkedRef",
-  "scheduledCheckRef",
-  "replaceUpdate",
-  "setTimeout",
-  "clearTimeout",
-  "setInterval",
-  "clearInterval",
-  "STARTUP_UPDATE_CHECK_DELAY_MS",
-  "PERIODIC_UPDATE_CHECK_INTERVAL_MS",
-  effectBody,
-) as (
-  isTauri: boolean,
-  lifecycleRef: { current: number },
-  checkedRef: { current: boolean },
-  scheduledCheckRef: { current: () => void },
-  replaceUpdate: (update: null) => void,
-  setTimeout: (fn: () => void, delay: number) => number,
-  clearTimeout: (id: number) => void,
-  setInterval: (fn: () => void, delay: number) => number,
-  clearInterval: (id: number) => void,
-  startupDelay: number,
-  periodicInterval: number,
-) => (() => void) | undefined;
-
-function harness({ checked = false, tauri = true } = {}) {
-  const timeouts = new Map<number, () => void>();
-  const intervals = new Map<number, () => void>();
-  const delays: number[] = [];
-  let nextId = 1;
-  let checks = 0;
-  const cleanup = startSchedule(
-    tauri,
-    { current: 0 },
-    { current: checked },
-    {
-      current: () => {
-        checks += 1;
-      },
-    },
-    () => {},
-    (fn, delay) => {
-      const id = nextId++;
-      timeouts.set(id, fn);
-      delays.push(delay);
-      return id;
-    },
-    (id) => {
-      timeouts.delete(id);
-    },
-    (fn, delay) => {
-      const id = nextId++;
-      intervals.set(id, fn);
-      delays.push(delay);
-      return id;
-    },
-    (id) => {
-      intervals.delete(id);
-    },
-    constant("STARTUP_UPDATE_CHECK_DELAY_MS"),
-    constant("PERIODIC_UPDATE_CHECK_INTERVAL_MS"),
-  );
-  return {
-    cleanup,
-    delays,
-    checks: () => checks,
-    fireStartup: () => {
-      for (const fn of timeouts.values()) {
-        fn();
-      }
-    },
-    firePeriodic: () => {
-      for (const fn of intervals.values()) {
-        fn();
-      }
-    },
-    activeTimers: () => timeouts.size + intervals.size,
-  };
-}
-
-test("desktop update checks continue after the startup check", () => {
-  const schedule = harness();
-  assert.deepEqual(schedule.delays, [5000, 60 * 60 * 1000]);
-  schedule.fireStartup();
-  schedule.firePeriodic();
-  schedule.firePeriodic();
-  assert.equal(schedule.checks(), 3);
-});
-
-test("a manual check suppresses only the delayed startup check", () => {
-  const schedule = harness({ checked: true });
-  schedule.fireStartup();
-  schedule.firePeriodic();
-  assert.equal(schedule.checks(), 1);
-});
-
-test("desktop update timers stop when the update layer unmounts", () => {
-  const schedule = harness();
-  assert.equal(schedule.activeTimers(), 2);
-  schedule.cleanup?.();
-  assert.equal(schedule.activeTimers(), 0);
-  schedule.fireStartup();
-  schedule.firePeriodic();
-  assert.equal(schedule.checks(), 0);
-});
-
-test("web sessions do not schedule desktop update checks", () => {
-  const schedule = harness({ tauri: false });
-  assert.equal(schedule.activeTimers(), 0);
-  assert.equal(schedule.cleanup, undefined);
-});
-
-type FakeUpdate = {
-  version: string;
-  currentVersion: string;
-  rawJson: Record<string, unknown> | undefined;
-  body?: string;
-  date?: string;
-  close: () => Promise<void>;
-};
+const STARTUP_DELAY_MS = 5_000;
+const PERIODIC_INTERVAL_MS = 60 * 60 * 1_000;
 
 type UpdateController = {
   checkForUpdate: () => Promise<void>;
 };
 
-function fakeUpdate(version: string, valid = true) {
-  let closeCalls = 0;
-  const update: FakeUpdate = {
-    version,
-    currentVersion: "1.0.0",
-    rawJson: valid ? {} : undefined,
-    close: async () => {
-      closeCalls += 1;
+type Listener = EventListenerOrEventListenerObject;
+
+function createEventTarget() {
+  const listeners = new Map<string, Set<Listener>>();
+  return {
+    addEventListener(type: string, listener: Listener): void {
+      const registered = listeners.get(type) ?? new Set<Listener>();
+      registered.add(listener);
+      listeners.set(type, registered);
+    },
+    removeEventListener(type: string, listener: Listener): void {
+      listeners.get(type)?.delete(listener);
+    },
+    fire(type: string): void {
+      const event = new Event(type);
+      for (const listener of listeners.get(type) ?? []) {
+        if (typeof listener === "function") listener(event);
+        else listener.handleEvent(event);
+      }
+    },
+    listenerCount(): number {
+      let count = 0;
+      for (const registered of listeners.values()) count += registered.size;
+      return count;
     },
   };
-  return { update, closeCalls: () => closeCalls };
+}
+
+function restoreProperty(
+  target: object,
+  key: PropertyKey,
+  descriptor: PropertyDescriptor | undefined,
+): void {
+  if (descriptor) Object.defineProperty(target, key, descriptor);
+  else Reflect.deleteProperty(target, key);
+}
+
+function installBrowserClock() {
+  const windowTarget = createEventTarget();
+  const documentTarget = createEventTarget();
+  const timeouts = new Map<number, { callback: () => void; delay: number }>();
+  const intervals = new Map<number, { callback: () => void; delay: number }>();
+  const originalDescriptors = {
+    window: Object.getOwnPropertyDescriptor(globalThis, "window"),
+    document: Object.getOwnPropertyDescriptor(globalThis, "document"),
+    setTimeout: Object.getOwnPropertyDescriptor(globalThis, "setTimeout"),
+    clearTimeout: Object.getOwnPropertyDescriptor(globalThis, "clearTimeout"),
+    setInterval: Object.getOwnPropertyDescriptor(globalThis, "setInterval"),
+    clearInterval: Object.getOwnPropertyDescriptor(globalThis, "clearInterval"),
+    dateNow: Object.getOwnPropertyDescriptor(Date, "now"),
+  };
+  let hidden = false;
+  let now = 1_000;
+  let nextTimerId = 1;
+
+  const windowStub = {
+    addEventListener: windowTarget.addEventListener,
+    removeEventListener: windowTarget.removeEventListener,
+  };
+  const documentStub = {
+    addEventListener: documentTarget.addEventListener,
+    removeEventListener: documentTarget.removeEventListener,
+  };
+  Object.defineProperty(documentStub, "hidden", {
+    configurable: true,
+    get: () => hidden,
+  });
+
+  Object.defineProperties(globalThis, {
+    window: { configurable: true, writable: true, value: windowStub },
+    document: { configurable: true, writable: true, value: documentStub },
+    setTimeout: {
+      configurable: true,
+      writable: true,
+      value: ((callback: () => void, delay = 0) => {
+        const id = nextTimerId++;
+        timeouts.set(id, { callback, delay });
+        return id;
+      }) as unknown as typeof setTimeout,
+    },
+    clearTimeout: {
+      configurable: true,
+      writable: true,
+      value: ((id: number) =>
+        timeouts.delete(id)) as unknown as typeof clearTimeout,
+    },
+    setInterval: {
+      configurable: true,
+      writable: true,
+      value: ((callback: () => void, delay = 0) => {
+        const id = nextTimerId++;
+        intervals.set(id, { callback, delay });
+        return id;
+      }) as unknown as typeof setInterval,
+    },
+    clearInterval: {
+      configurable: true,
+      writable: true,
+      value: ((id: number) =>
+        intervals.delete(id)) as unknown as typeof clearInterval,
+    },
+  });
+  Object.defineProperty(Date, "now", {
+    configurable: true,
+    writable: true,
+    value: () => now,
+  });
+
+  return {
+    activeTimers: () => timeouts.size + intervals.size,
+    advance: (elapsed: number) => {
+      now += elapsed;
+    },
+    delays: () => [
+      ...[...timeouts.values()].map(({ delay }) => delay),
+      ...[...intervals.values()].map(({ delay }) => delay),
+    ],
+    fireDocument: (type: string) => documentTarget.fire(type),
+    fireIntervals: (delay: number) => {
+      for (const timer of intervals.values()) {
+        if (timer.delay === delay) timer.callback();
+      }
+    },
+    fireTimeouts: (delay: number) => {
+      for (const [id, timer] of [...timeouts]) {
+        if (timer.delay !== delay) continue;
+        timeouts.delete(id);
+        timer.callback();
+      }
+    },
+    fireWindow: (type: string) => windowTarget.fire(type),
+    listenerCount: () =>
+      windowTarget.listenerCount() + documentTarget.listenerCount(),
+    setHidden: (nextHidden: boolean) => {
+      hidden = nextHidden;
+    },
+    restore(): void {
+      restoreProperty(globalThis, "window", originalDescriptors.window);
+      restoreProperty(globalThis, "document", originalDescriptors.document);
+      restoreProperty(globalThis, "setTimeout", originalDescriptors.setTimeout);
+      restoreProperty(
+        globalThis,
+        "clearTimeout",
+        originalDescriptors.clearTimeout,
+      );
+      restoreProperty(
+        globalThis,
+        "setInterval",
+        originalDescriptors.setInterval,
+      );
+      restoreProperty(
+        globalThis,
+        "clearInterval",
+        originalDescriptors.clearInterval,
+      );
+      restoreProperty(Date, "now", originalDescriptors.dateNow);
+    },
+  };
 }
 
 function createHookReact() {
@@ -179,7 +179,7 @@ function createHookReact() {
   return {
     react: {
       useState<T>(initial: T): [T, (next: unknown) => void] {
-        return [initial, () => {}];
+        return [initial, () => undefined];
       },
       useRef<T>(initial: T): { current: T } {
         return { current: initial };
@@ -191,67 +191,79 @@ function createHookReact() {
     mount(): void {
       for (const effect of effects) {
         const cleanup = effect();
-        if (typeof cleanup === "function") {
-          cleanups.push(cleanup as () => void);
-        }
+        if (typeof cleanup === "function") cleanups.push(cleanup as () => void);
       }
     },
     unmount(): void {
-      for (const cleanup of cleanups) {
-        cleanup();
-      }
-      cleanups.length = 0;
+      for (const cleanup of cleanups.splice(0)) cleanup();
     },
   };
 }
 
-const originalTimers = {
-  setTimeout: globalThis.setTimeout,
-  clearTimeout: globalThis.clearTimeout,
-  setInterval: globalThis.setInterval,
-  clearInterval: globalThis.clearInterval,
-};
-let timerId = 1;
-Object.assign(globalThis, {
-  setTimeout: (() => timerId++) as unknown as typeof setTimeout,
-  clearTimeout: (() => {}) as typeof clearTimeout,
-  setInterval: (() => timerId++) as unknown as typeof setInterval,
-  clearInterval: (() => {}) as typeof clearInterval,
-});
-after(() => Object.assign(globalThis, originalTimers));
-
-function hookHarness() {
+function hookHarness(t: TestContext, { tauri = true } = {}) {
+  const browser = installBrowserClock();
   const host = createHookReact();
-  const checks: Array<() => Promise<FakeUpdate | null>> = [];
-  let policyMode: "in_app" | "manual_linux_package" = "in_app";
-  let manualUpdate: Record<string, unknown> | null = null;
+  t.after(() => {
+    host.unmount();
+    browser.restore();
+  });
+  let checks = 0;
+  const initialPreparation = {
+    shell: "pending",
+    backend: "pending",
+    shellProgress: 0,
+  };
   const hook = loadWithStubs<{
     useTauriUpdate: () => UpdateController;
   }>(new URL("../src/hooks/use-tauri-update.ts", import.meta.url), {
     react: host.react,
-    "@/lib/api-base": { isTauri: true },
+    "@/features/training": {
+      isTrainingStartPending: () => false,
+      useTrainingRuntimeStore: { getState: () => ({}) },
+    },
+    "@/lib/api-base": { apiUrl: (path: string) => path, isTauri: tauri },
     "@/lib/tauri-diagnostics": {
       copySupportDiagnostics: async () => ({ copied: true }),
     },
     "@/lib/tauri-updater": {
+      adoptStagedUpdate: () => Promise.resolve({}),
+      cancelStagedUpdate: () => Promise.resolve(),
       checkDesktopUpdate: () => {
-        const check = checks.shift();
-        assert.ok(check, "an unexpected desktop update check ran");
-        return check();
+        checks += 1;
+        return Promise.resolve({
+          version: "2.0.0",
+          currentVersion: "1.0.0",
+          rawJson: {},
+        });
       },
+      desktopUpdateBundleStatus: () => Promise.resolve({ downloaded: false }),
+      discardStagedUpdate: () => Promise.resolve(),
+      downloadDesktopUpdate: () => Promise.resolve(),
+      installDesktopUpdate: () => Promise.resolve(),
+      stagedUpdateStatus: () => Promise.resolve({ staging: false }),
+      startStagedUpdate: () => Promise.resolve(),
+      waitForDesktopUpdateDownload: () => Promise.resolve(),
     },
-    "@/lib/toast": { toast: { error: () => {} } },
+    "@/lib/toast": { toast: { error: () => undefined } },
+    "@/lib/update-preparation": {
+      INITIAL_PREPARATION: initialPreparation,
+      backendIdle: () => true,
+      desktopDownloadDecision: () => "ready",
+      preparationStatus: () => "available",
+      restartPlan: () => "classic",
+      sameUpdateVersion: () => true,
+      settleWithin: async () => null,
+      stagingDecision: () => "skip",
+      waitForBackendIdle: async () => "cancelled",
+    },
     "@tauri-apps/api/core": {
       invoke: async (command: string) => {
         if (command === "desktop_update_policy") {
           return {
-            mode: policyMode,
+            mode: "in_app",
             releasePageBaseUrl: "https://example.com/",
             releaseTagPrefix: "v",
           };
-        }
-        if (command === "check_desktop_manual_update") {
-          return manualUpdate;
         }
         throw new Error(`unexpected invoke: ${command}`);
       },
@@ -260,87 +272,89 @@ function hookHarness() {
   const controller = hook.useTauriUpdate();
   host.mount();
   return {
+    browser,
+    checks: () => checks,
     controller,
     host,
-    enqueue: (check: () => Promise<FakeUpdate | null>) => checks.push(check),
-    useManualUpdate: (update: Record<string, unknown> | null) => {
-      policyMode = "manual_linux_package";
-      manualUpdate = update;
-    },
   };
 }
 
-test("periodic update resources close on replacement and no-update", async () => {
-  const hook = hookHarness();
-  const first = fakeUpdate("2.0.0");
-  const second = fakeUpdate("2.0.1");
-  hook.enqueue(async () => first.update);
-  await hook.controller.checkForUpdate();
-  hook.enqueue(async () => second.update);
-  await hook.controller.checkForUpdate();
-  assert.equal(first.closeCalls(), 1);
-  assert.equal(second.closeCalls(), 0);
+function settle(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
 
-  hook.enqueue(async () => null);
-  await hook.controller.checkForUpdate();
-  assert.equal(second.closeCalls(), 1);
-  hook.host.unmount();
+test("the desktop hook checks at startup and every hour", async (t) => {
+  const hook = hookHarness(t);
+  assert.deepEqual(hook.browser.delays(), [
+    STARTUP_DELAY_MS,
+    PERIODIC_INTERVAL_MS,
+  ]);
+
+  hook.browser.fireWindow("focus");
+  await settle();
+  assert.equal(hook.checks(), 0);
+
+  hook.browser.fireTimeouts(STARTUP_DELAY_MS);
+  await settle();
+  assert.equal(hook.checks(), 1);
+
+  hook.browser.fireIntervals(PERIODIC_INTERVAL_MS);
+  await settle();
+  assert.equal(hook.checks(), 2);
 });
 
-test("a post-check error closes the unowned update resource", async (t) => {
-  t.mock.method(console, "error", () => {});
-  const hook = hookHarness();
-  const retained = fakeUpdate("2.0.0");
-  const malformed = fakeUpdate("2.0.1", false);
-  hook.enqueue(async () => retained.update);
+test("a manual check suppresses only the startup check", async (t) => {
+  const hook = hookHarness(t);
   await hook.controller.checkForUpdate();
-  hook.enqueue(async () => malformed.update);
-  await hook.controller.checkForUpdate();
-  assert.equal(malformed.closeCalls(), 1);
-  assert.equal(retained.closeCalls(), 0);
-  hook.host.unmount();
-  assert.equal(retained.closeCalls(), 1);
+
+  hook.browser.fireTimeouts(STARTUP_DELAY_MS);
+  await settle();
+  assert.equal(hook.checks(), 1);
+
+  hook.browser.fireIntervals(PERIODIC_INTERVAL_MS);
+  await settle();
+  assert.equal(hook.checks(), 2);
 });
 
-test("manual update discovery releases the in-app update resource", async () => {
-  const hook = hookHarness();
-  const retained = fakeUpdate("2.0.0");
-  hook.enqueue(async () => retained.update);
-  await hook.controller.checkForUpdate();
-  hook.useManualUpdate({
-    version: "2.0.1",
-    currentVersion: "1.0.0",
-  });
-  await hook.controller.checkForUpdate();
-  assert.equal(retained.closeCalls(), 1);
-  hook.host.unmount();
+test("restoring an overdue hidden window checks immediately", async (t) => {
+  const hook = hookHarness(t);
+  hook.browser.fireTimeouts(STARTUP_DELAY_MS);
+  await settle();
+  assert.equal(hook.checks(), 1);
+
+  hook.browser.setHidden(true);
+  hook.browser.advance(PERIODIC_INTERVAL_MS + 1);
+  hook.browser.fireDocument("visibilitychange");
+  await settle();
+  assert.equal(hook.checks(), 1);
+
+  hook.browser.setHidden(false);
+  hook.browser.fireDocument("visibilitychange");
+  hook.browser.fireWindow("focus");
+  await settle();
+  assert.equal(hook.checks(), 2);
 });
 
-test("unmount closes owned and late in-flight update resources", async () => {
-  const hook = hookHarness();
-  const retained = fakeUpdate("2.0.0");
-  hook.enqueue(async () => retained.update);
-  await hook.controller.checkForUpdate();
+test("unmount removes update timers and wake listeners", async (t) => {
+  const hook = hookHarness(t);
+  assert.equal(hook.browser.activeTimers(), 2);
+  assert.equal(hook.browser.listenerCount(), 2);
 
-  let resolveLate: ((update: FakeUpdate) => void) | undefined;
-  let markStarted: (() => void) | undefined;
-  const started = new Promise<void>((resolve) => {
-    markStarted = resolve;
-  });
-  const lateResult = new Promise<FakeUpdate>((resolve) => {
-    resolveLate = resolve;
-  });
-  hook.enqueue(() => {
-    markStarted?.();
-    return lateResult;
-  });
-  const inFlight = hook.controller.checkForUpdate();
-  await started;
   hook.host.unmount();
-  assert.equal(retained.closeCalls(), 1);
+  assert.equal(hook.browser.activeTimers(), 0);
+  assert.equal(hook.browser.listenerCount(), 0);
 
-  const late = fakeUpdate("2.0.1");
-  resolveLate?.(late.update);
-  await inFlight;
-  assert.equal(late.closeCalls(), 1);
+  hook.browser.advance(PERIODIC_INTERVAL_MS + 1);
+  hook.browser.fireTimeouts(STARTUP_DELAY_MS);
+  hook.browser.fireIntervals(PERIODIC_INTERVAL_MS);
+  hook.browser.fireDocument("visibilitychange");
+  hook.browser.fireWindow("focus");
+  await settle();
+  assert.equal(hook.checks(), 0);
+});
+
+test("web sessions do not schedule desktop update checks", (t) => {
+  const hook = hookHarness(t, { tauri: false });
+  assert.equal(hook.browser.activeTimers(), 0);
+  assert.equal(hook.browser.listenerCount(), 0);
 });

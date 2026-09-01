@@ -9,8 +9,11 @@ from __future__ import annotations
 import struct
 from pathlib import Path
 from typing import Iterable, Mapping
+from unittest.mock import patch
 
 from utils.models.gguf_metadata import (
+    is_gguf_embedding_architecture,
+    is_gguf_embedding_model,
     is_mmproj_by_metadata,
     mmproj_accepts_image,
     pairing_score,
@@ -64,12 +67,14 @@ def _write_synthetic_gguf(
     path: Path,
     general_strings: Mapping[str, str],
     *,
+    tensor_names: Iterable[str] | None = None,
     extra_uint32: Mapping[str, int] | None = None,
     extra_uint64: Mapping[str, int] | None = None,
     extra_string_arrays: Mapping[str, Iterable[str]] | None = None,
     extra_bools: Mapping[str, bool] | None = None,
 ) -> Path:
-    """Minimal GGUF: header + KV body, no tensors."""
+    """Minimal GGUF header with optional tensor-table entries and no tensor data."""
+    tensor_names = list(tensor_names or ())
     extra_uint32 = extra_uint32 or {}
     extra_uint64 = extra_uint64 or {}
     extra_string_arrays = extra_string_arrays or {}
@@ -92,15 +97,22 @@ def _write_synthetic_gguf(
         body += _enc_kv_string_array(k, v)
     for k, v in extra_bools.items():
         body += _enc_kv_bool(k, v)
+    tensor_info = b""
+    for name in tensor_names:
+        tensor_info += _enc_string(name)
+        tensor_info += struct.pack("<I", 1)  # n_dimensions
+        tensor_info += struct.pack("<Q", 1)  # dimensions
+        tensor_info += struct.pack("<I", 0)  # GGML_TYPE_F32
+        tensor_info += struct.pack("<Q", 0)  # data offset
     header = struct.pack(
         "<IIQQ",
         _GGUF_MAGIC,
         3,  # version
-        0,  # tensor_count
+        len(tensor_names),
         kv_count,
     )
     path.parent.mkdir(parents = True, exist_ok = True)
-    path.write_bytes(header + body)
+    path.write_bytes(header + body + tensor_info)
     return path
 
 
@@ -333,6 +345,94 @@ def test_pairing_score_base_model_url_mismatch():
     assert pairing_score(weight, mmproj) == -1
 
 
+def test_pairing_score_base_model_url_derivative_repack_match():
+    weight = {
+        "general.basename": "gemma-4-26B-A4B-it",
+        "general.base_model.0.repo_url": (
+            "https://huggingface.co/lmstudio-community/gemma-4-26B-A4B-it-GGUF"
+        ),
+    }
+    mmproj = {
+        "general.basename": "gemma-4-26B-A4B-it",
+        "general.base_model.0.repo_url": "https://huggingface.co/google/gemma-4-26B-A4B-it",
+    }
+    assert pairing_score(weight, mmproj) == 90
+
+
+def test_pairing_score_base_model_url_derivative_quant_match():
+    weight = {
+        "general.basename": "gemma-4-26B-A4B-it",
+        "general.base_model.0.repo_url": (
+            "https://huggingface.co/vendor/gemma-4-26B-A4B-it-qat-q4_0-uncensored-heretic"
+        ),
+    }
+    mmproj = {
+        "general.basename": "gemma-4-26B-A4B-it",
+        "general.base_model.0.repo_url": "https://huggingface.co/google/gemma-4-26B-A4B-it",
+    }
+    assert pairing_score(weight, mmproj) == 90
+
+
+def test_pairing_score_derivative_url_handles_non_hf_hosts():
+    weight = {
+        "general.basename": "Model-VL",
+        "general.base_model.0.repo_url": "https://github.com/acme/Model-VL-GGUF",
+    }
+    mmproj = {
+        "general.basename": "Model-VL",
+        "general.base_model.0.repo_url": "https://gitlab.example.com/acme/Model-VL",
+    }
+    assert pairing_score(weight, mmproj) == 90
+
+
+def test_pairing_score_derivative_url_handles_nested_namespaces():
+    weight = {
+        "general.basename": "Model-VL",
+        "general.base_model.0.repo_url": ("https://gitlab.example.com/acme/models/Model-VL-GGUF"),
+    }
+    mmproj = {
+        "general.basename": "Model-VL",
+        "general.base_model.0.repo_url": "https://gitlab.example.com/acme/models/Model-VL",
+    }
+    assert pairing_score(weight, mmproj) == 90
+
+
+def test_pairing_score_derivative_url_handles_bare_repo_ids():
+    weight = {
+        "general.basename": "Model-VL",
+        "general.base_model.0.repo_url": "acme/Model-VL-GGUF",
+    }
+    mmproj = {
+        "general.basename": "Model-VL",
+        "general.base_model.0.repo_url": "acme/Model-VL",
+    }
+    assert pairing_score(weight, mmproj) == 90
+
+
+def test_pairing_score_derivative_url_handles_dotted_bare_owner():
+    weight = {
+        "general.basename": "Model",
+        "general.base_model.0.repo_url": "acme.ai/Model-GGUF",
+    }
+    mmproj = {
+        "general.basename": "Model",
+        "general.base_model.0.repo_url": "acme.ai/Model",
+    }
+    assert pairing_score(weight, mmproj) == 90
+
+
+def test_pairing_score_derivative_url_rejects_basename_mismatch():
+    weight = {
+        "general.basename": "gemma-4-26B-A4B-it",
+        "general.base_model.0.repo_url": "https://huggingface.co/google/gemma-4-26B-A4B-it",
+    }
+    mmproj = {
+        "general.basename": "gemma-4-26B",
+        "general.base_model.0.repo_url": "https://huggingface.co/google/gemma-4-26B",
+    }
+    assert pairing_score(weight, mmproj) == -1
+
+
 def test_pairing_score_base_model_url_trailing_slash_normalised():
     weight = {
         "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-9B/",
@@ -341,6 +441,106 @@ def test_pairing_score_base_model_url_trailing_slash_normalised():
         "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-9B",
     }
     assert pairing_score(weight, mmproj) == 100
+
+
+def test_pairing_score_base_model_url_scheme_and_git_normalised():
+    weight = {
+        "general.base_model.0.repo_url": "http://huggingface.co/Qwen/Qwen3.5-9B.GIT",
+    }
+    mmproj = {
+        "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-9B",
+    }
+    assert pairing_score(weight, mmproj) == 100
+
+
+def test_pairing_score_hosted_and_bare_repo_ids_match():
+    weight = {
+        "general.base_model.0.repo_url": "https://huggingface.co/acme/Model",
+    }
+    mmproj = {
+        "general.base_model.0.repo_url": "acme/Model",
+    }
+    assert pairing_score(weight, mmproj) == 100
+
+
+def test_pairing_score_non_hf_url_and_bare_repo_ids_do_not_match():
+    weight = {
+        "general.base_model.0.repo_url": "https://github.com/acme/Model",
+    }
+    mmproj = {
+        "general.base_model.0.repo_url": "acme/Model",
+    }
+    assert pairing_score(weight, mmproj) == -1
+
+
+def test_pairing_score_derivative_url_requires_basename_evidence():
+    weight = {
+        "general.base_model.0.repo_url": "https://huggingface.co/vendor/model-v2-GGUF",
+    }
+    mmproj = {
+        "general.base_model.0.repo_url": "https://huggingface.co/vendor/model",
+    }
+    assert pairing_score(weight, mmproj) == -1
+
+
+def test_pairing_score_rejects_arbitrary_slug_prefix():
+    weight = {
+        "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-9B",
+        "general.basename": "Qwen3.5",
+    }
+    mmproj = {
+        "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5",
+        "general.basename": "Qwen3.5",
+    }
+    assert pairing_score(weight, mmproj) == -1
+
+
+def test_pairing_score_rejects_qualifier_without_separator():
+    weight = {
+        "general.base_model.0.repo_url": "org/ModelGGUF",
+        "general.basename": "Model",
+    }
+    mmproj = {
+        "general.base_model.0.repo_url": "other/Model",
+        "general.basename": "Model",
+    }
+    assert pairing_score(weight, mmproj) == -1
+
+
+def test_pairing_score_preserves_case_sensitive_repo_paths():
+    weight = {
+        "general.base_model.0.repo_url": "https://git.example.com/Org/Model",
+        "general.basename": "Model",
+    }
+    mmproj = {
+        "general.base_model.0.repo_url": "https://git.example.com/org/model",
+        "general.basename": "Model",
+    }
+    assert pairing_score(weight, mmproj) == -1
+
+
+def test_pairing_score_preserves_case_sensitive_bare_repo_ids():
+    weight = {
+        "general.base_model.0.repo_url": "Org/Model",
+        "general.basename": "Model",
+    }
+    mmproj = {
+        "general.base_model.0.repo_url": "org/Model",
+        "general.basename": "Model",
+    }
+    assert pairing_score(weight, mmproj) == -1
+
+
+def test_pairing_score_rejects_derivative_projector_for_base_weight():
+    weight = {
+        "general.basename": "model",
+        "general.base_model.0.repo_url": "https://huggingface.co/org/model",
+    }
+    mmproj = {
+        "general.basename": "model",
+        "general.base_model.0.repo_url": "https://huggingface.co/other/model-ft",
+    }
+    assert pairing_score(weight, mmproj) == -1
 
 
 def test_pairing_score_basename_plus_org_fallback():
@@ -563,3 +763,101 @@ def test_declared_audio_false_is_not_an_audio_claim(tmp_path: Path):
     """A vision projector writing audio=False is still a vision tower."""
     p = _projector(tmp_path, **{"clip.has_vision_encoder": True, "clip.has_audio_encoder": False})
     assert mmproj_accepts_image(p) is True
+
+
+def test_is_gguf_embedding_architecture_recognises_encoder_arches():
+    assert is_gguf_embedding_architecture("nomic-bert")
+    assert is_gguf_embedding_architecture("NOMIC-BERT-MOE")
+    assert not is_gguf_embedding_architecture("bert")
+    assert not is_gguf_embedding_architecture("llama")
+    assert not is_gguf_embedding_architecture(None)
+
+
+def test_is_gguf_embedding_model_from_architecture(tmp_path: Path):
+    p = _write_synthetic_gguf(
+        tmp_path / "nomic.gguf",
+        {"general.architecture": "nomic-bert"},
+    )
+    assert is_gguf_embedding_model(str(p)) is True
+
+
+def test_is_gguf_embedding_model_from_name_hint(tmp_path: Path):
+    p = _write_synthetic_gguf(
+        tmp_path / "Qwen3-Embedding-4B-Q4_K_M.gguf",
+        {"general.architecture": "qwen3"},
+    )
+    with patch("utils.models.model_config.is_embedding_model") as remote_classifier:
+        assert (
+            is_gguf_embedding_model(str(p), model_identifier = "unsloth/Qwen3-Embedding-4B") is True
+        )
+    remote_classifier.assert_not_called()
+
+
+def test_is_gguf_embedding_model_ignores_owner_name_hint(tmp_path: Path):
+    p = _write_synthetic_gguf(
+        tmp_path / "Llama-3-Q4_K_M.gguf",
+        {"general.architecture": "llama"},
+    )
+    with patch("utils.models.model_config.is_embedding_model") as remote_classifier:
+        assert (
+            is_gguf_embedding_model(str(p), model_identifier = "embedding-lab/Llama-3-GGUF") is False
+        )
+    remote_classifier.assert_not_called()
+
+
+def test_is_gguf_embedding_model_from_intrinsic_name_hints(tmp_path: Path):
+    for index, (key, value) in enumerate(
+        (
+            ("general.name", "Qwen3 Embedding 4B"),
+            ("general.basename", "Qwen3-Embedding"),
+        )
+    ):
+        p = _write_synthetic_gguf(
+            tmp_path / f"model-{index}.gguf",
+            {"general.architecture": "qwen3", key: value},
+        )
+        assert is_gguf_embedding_model(str(p), model_identifier = "local/model") is True
+
+
+def test_is_gguf_embedding_model_excludes_reranker_without_pooling(tmp_path: Path):
+    p = _write_synthetic_gguf(
+        tmp_path / "bge-reranker-v2-m3-Q4_K_M.gguf",
+        {"general.architecture": "bert", "general.name": "Bge M3"},
+    )
+    assert (
+        is_gguf_embedding_model(str(p), model_identifier = "gpustack/bge-reranker-v2-m3-GGUF")
+        is False
+    )
+
+
+def test_is_gguf_embedding_model_rejects_generic_bert_without_pooling(tmp_path: Path):
+    p = _write_synthetic_gguf(
+        tmp_path / "bge-small-en-v1.5.gguf",
+        {"general.architecture": "bert", "general.name": "Bge Small Encoder"},
+    )
+    # No classifier head proves this is not a reranker, but it cannot tell us
+    # whether the missing pooling strategy should be CLS or MEAN.
+    assert is_gguf_embedding_model(str(p), model_identifier = "local/bge-small") is False
+
+
+def test_is_gguf_embedding_model_excludes_unnamed_encoder_classifier_heads(tmp_path: Path):
+    for index, classifier_tensor in enumerate(("cls.weight", "cls.output.weight")):
+        p = _write_synthetic_gguf(
+            tmp_path / f"model-{index}.gguf",
+            {"general.architecture": "modern-bert", "general.name": "MS MARCO Encoder"},
+            tensor_names = (classifier_tensor,),
+        )
+        assert is_gguf_embedding_model(str(p), model_identifier = "local/model") is False
+
+
+def test_is_gguf_embedding_model_checks_every_split_for_classifier_head(tmp_path: Path):
+    first = _write_synthetic_gguf(
+        tmp_path / "model-00001-of-00002.gguf",
+        {"general.architecture": "modern-bert"},
+    )
+    _write_synthetic_gguf(
+        tmp_path / "model-00002-of-00002.gguf",
+        {"general.architecture": "modern-bert"},
+        tensor_names = ("cls.weight",),
+    )
+    assert is_gguf_embedding_model(str(first), model_identifier = "local/model") is False

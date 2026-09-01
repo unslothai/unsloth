@@ -47,6 +47,19 @@ import os
 import sys
 import types
 
+import pytest
+
+
+@pytest.fixture(autouse = True)
+def _contain_installer_venv_root(tmp_path_factory, monkeypatch):
+    """Mechanism: tests/_shared/installer_venv_root.py.
+
+    Imported inside the body because tests/_shared reaches sys.path further down this file,
+    and an autouse fixture must not depend on where in the module it is defined.
+    """
+    from installer_venv_root import contain_installer_venv_root
+    contain_installer_venv_root(monkeypatch, tmp_path_factory)
+
 
 def _has_real_accelerator() -> bool:
     try:
@@ -152,6 +165,10 @@ def _install_device_type_stub(name: str) -> None:
     stub.device_synchronize = lambda *a, **k: None
     stub.device_empty_cache = lambda *a, **k: None
     stub.device_is_bf16_supported = lambda *a, **k: False
+    stub.arch_lacks_bf16 = lambda arch: (
+        str(arch or "").split(":", 1)[0].strip().lower().startswith("gfx10")
+    )
+    stub.hip_visible_archs = lambda: []
     sys.modules[name] = stub
 
 
