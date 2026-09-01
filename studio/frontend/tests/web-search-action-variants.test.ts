@@ -38,17 +38,26 @@ test("a finished find_in_page does not claim it found the pattern", () => {
   );
 });
 
-test("the url variants show the page they read", () => {
-  // open_page and find_in_page report no text of their own, so without the link
-  // the card body is empty.
-  const start = CARD.indexOf("        ) : safeUrl || resultText ? (");
-  assert.notEqual(start, -1, "the url/result branch changed shape");
-  const branch = CARD.slice(
-    start,
-    CARD.indexOf("</ToolFallbackContent>", start),
+test("the url variants show the page they read, whatever else the card has", () => {
+  // open_page and find_in_page report no text of their own. The link also has to
+  // survive the terminal citation backfill replacing this card's result with the
+  // run's sources, which would otherwise take the sources branch and drop it.
+  const body = CARD.slice(
+    CARD.indexOf("      <ToolFallbackContent>"),
+    CARD.indexOf("</ToolFallbackContent>"),
   );
-  assert.ok(branch.indexOf("href={safeUrl}") !== -1, "the link is gone");
-  assert.ok(branch.indexOf("{resultText}") !== -1, "the result body is gone");
+  assert.notEqual(body.length, 0, "the card body moved");
+  const link = body.indexOf("href={safeUrl}");
+  assert.ok(link !== -1, "the link is gone");
+  for (const branch of [
+    "{sources.length === 0 && images.length > 0 ? (",
+    ") : sources.length > 0 ? (",
+    ") : resultText ? (",
+  ]) {
+    const at = body.indexOf(branch);
+    assert.notEqual(at, -1, `branch moved: ${branch}`);
+    assert.ok(link < at, `the link must render above ${branch.trim()}`);
+  }
   // Only http(s) reaches an href: the url is provider-controlled.
   assert.match(
     CARD,

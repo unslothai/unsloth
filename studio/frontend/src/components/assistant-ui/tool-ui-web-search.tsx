@@ -216,53 +216,11 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
               )}
             </span>
           </div>
-        ) : sources.length === 0 && images.length > 0 ? (
+        ) : (
           <div className="flex flex-col gap-2">
-            <div
-              className="flex flex-wrap gap-1.5"
-              data-testid="web-search-images"
-            >
-              {images.map((entry) => (
-                <SearchImageThumb key={entry.id} entry={entry} size="strip" />
-              ))}
-            </div>
-            {resultText && (
-              <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
-                {resultText}
-              </pre>
-            )}
-          </div>
-        ) : sources.length > 0 ? (
-          <div className="flex flex-col gap-2">
-            <div className="flex flex-wrap gap-1.5">
-              {sources.map((source, i) => (
-                <Source
-                  key={`${source.url}-${i}`}
-                  href={source.url}
-                  variant="outline"
-                  size="sm"
-                  className="inline-flex items-center gap-1.5"
-                >
-                  <SourceIcon url={source.url} size={3} />
-                  <SourceTitle>{source.title}</SourceTitle>
-                </Source>
-              ))}
-            </div>
-            {images.length > 0 && (
-              <div
-                className="flex flex-wrap gap-1.5"
-                data-testid="web-search-images"
-              >
-                {images.map((entry) => (
-                  <SearchImageThumb key={entry.id} entry={entry} size="strip" />
-                ))}
-              </div>
-            )}
-          </div>
-        ) : safeUrl || resultText ? (
-          <div className="flex flex-col gap-2">
-            {/* open_page and find_in_page report no text of their own, so the
-            page they read is all the card has to show. */}
+            {/* The page a url action read. Above the body rather than inside one
+            branch: the terminal citation backfill can replace this card's result
+            with the run's sources, and the card must still name what it opened. */}
             {safeUrl ? (
               <a
                 href={safeUrl}
@@ -273,13 +231,64 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
                 {url}
               </a>
             ) : null}
-            {resultText ? (
+            {sources.length === 0 && images.length > 0 ? (
+              <div className="flex flex-col gap-2">
+                <div
+                  className="flex flex-wrap gap-1.5"
+                  data-testid="web-search-images"
+                >
+                  {images.map((entry) => (
+                    <SearchImageThumb
+                      key={entry.id}
+                      entry={entry}
+                      size="strip"
+                    />
+                  ))}
+                </div>
+                {resultText && (
+                  <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
+                    {resultText}
+                  </pre>
+                )}
+              </div>
+            ) : sources.length > 0 ? (
+              <div className="flex flex-col gap-2">
+                <div className="flex flex-wrap gap-1.5">
+                  {sources.map((source, i) => (
+                    <Source
+                      key={`${source.url}-${i}`}
+                      href={source.url}
+                      variant="outline"
+                      size="sm"
+                      className="inline-flex items-center gap-1.5"
+                    >
+                      <SourceIcon url={source.url} size={3} />
+                      <SourceTitle>{source.title}</SourceTitle>
+                    </Source>
+                  ))}
+                </div>
+                {images.length > 0 && (
+                  <div
+                    className="flex flex-wrap gap-1.5"
+                    data-testid="web-search-images"
+                  >
+                    {images.map((entry) => (
+                      <SearchImageThumb
+                        key={entry.id}
+                        entry={entry}
+                        size="strip"
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : resultText ? (
               <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
                 {resultText}
               </pre>
             ) : null}
           </div>
-        ) : null}
+        )}
       </ToolFallbackContent>
     </ToolFallbackRoot>
   );
