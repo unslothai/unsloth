@@ -2194,7 +2194,8 @@ def _preflight_agent_gguf(
     launch: bool = True,
 ) -> None:
     # Hub-listing preflight for the auto-start path only: with a server running, identifiers
-    # instead. Only a complete listing with no .gguf files rejects; unknown defers to the
+    # resolve against its cwd/cache/token, so _attach_gguf_check asks the server instead.
+    # Only a complete listing with no .gguf files rejects; unknown defers to the
     # post-connect check. Mirrors _require_studio's auto-start condition, so with no start
     # possible its "no running server" error comes first, without a hub probe.
     if not (serve and launch and model):
@@ -2447,6 +2448,8 @@ def _attach_gguf_check(
 
 
 def _require_gguf_for_agent(agent: _GgufAgent, base: str, key: str, model_id: str) -> None:
+    # Both callers stream from a llama-server-only endpoint: Codex from /v1/responses,
+    # Claude Code from /v1/messages. Neither is served by the transformers/MLX backend.
     try:
         status = _http_json("GET", f"{base}/api/inference/status", key)
     except urllib.error.HTTPError as exc:
@@ -4569,6 +4572,9 @@ def claude(
             presence_penalty = presence_penalty,
         ),
     )
+    # Same reason as codex below: this runs before the launch that takes over the server's
+    # lifecycle, so tear it down here if the model is rejected (e.g. a transformers-backend
+    # model) rather than leaving it on the atexit backstop.
     try:
         _require_gguf_for_agent(_CLAUDE_GGUF_AGENT, base, key, entry["id"])
     except BaseException:

@@ -1277,8 +1277,8 @@ export function AgentsTab() {
     selectedModel,
   ]);
 
-  // No GGUF warning for `codex` (unsloth_cli's _require_gguf_for_codex): the
-  // picker only ever offers GGUF models.
+  // No GGUF warning for `codex` or `claude` (unsloth_cli's
+  // _require_gguf_for_agent): the picker only ever offers GGUF models.
 
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-8">

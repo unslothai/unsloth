@@ -128,3 +128,46 @@ export function buildAgentShellCommands(
     dryRun: `${buildAgentCommand(base, null, os, "claude")} --no-launch`,
   };
 }
+
+// Codex and Claude Code both stream from a llama-server-only endpoint -- Codex from
+// /v1/responses, Claude Code from /v1/messages -- so unsloth_cli's
+// _require_gguf_for_agent exits unless the active model is a GGUF. Every other agent
+// is wired as an OpenAI-compatible provider and talks to /v1/chat/completions, which
+// serves safetensors and MLX models fine.
+export const GGUF_ONLY_AGENTS: readonly string[] = ["codex", "claude"];
+
+export function agentRunsOnActiveModel(agent: string, isGguf: boolean): boolean {
+  return isGguf || !GGUF_ONLY_AGENTS.includes(agent);
+}
+
+// Where the picker resets to when the auto-pick is no longer trustworthy.
+// DEFAULT_AGENT is itself GGUF-only, so on a non-GGUF model it would just swap one
+// command unsloth_cli rejects for another; opencode runs on anything the server can
+// load, so it is the honest reset there.
+const UNIVERSAL_AGENT = "opencode";
+
+export function fallbackAgent(isGguf: boolean): string {
+  return agentRunsOnActiveModel(DEFAULT_AGENT, isGguf)
+    ? DEFAULT_AGENT
+    : UNIVERSAL_AGENT;
+}
+
+// The agent the picker should settle on, or null to leave the current one alone.
+// Prefers the first detected agent that can actually run the active model; if none
+// can and the current pick cannot either, resets rather than leaving a command the
+// CLI will refuse.
+export function pickCompatibleAgent(
+  detectedAgents: readonly string[],
+  currentAgent: string,
+  isGguf: boolean,
+): string | null {
+  const preferred = detectedAgents.find((agent) =>
+    agentRunsOnActiveModel(agent, isGguf),
+  );
+  if (preferred) {
+    return preferred;
+  }
+  return agentRunsOnActiveModel(currentAgent, isGguf)
+    ? null
+    : fallbackAgent(isGguf);
+}
