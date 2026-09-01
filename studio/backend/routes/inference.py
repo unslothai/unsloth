@@ -12817,6 +12817,41 @@ def _mlx_runtime_settings_match(backend, request) -> bool:
     ) == (request.chat_template_override or None)
 
 
+def _non_gguf_runtime_settings_match(backend, request) -> bool:
+    """Whether the resident non-GGUF model already runs the request's load settings.
+
+    The GGUF path compares its full intent in _runtime_matches_intent; this side used to
+    compare the identifier alone, so `{"model_path": <resident>, "max_seq_length": 32768}`
+    answered "already_loaded" and left the old context in place.
+
+    Two deliberate blind spots keep that fix from evicting anyone. Only fields the caller
+    actually set are compared, and an unrecorded resident value counts as a match, the
+    same convention _mlx_runtime_settings_match uses above: every UI call site ships
+    max_seq_length and load_in_4bit on every load whether or not the user touched them,
+    so treating an unknown as a mismatch would reload the model on every pick.
+
+    max_seq_length == 0 means "model default", i.e. no preference, so it never forces a
+    reload here. An explicit `--context-length 0` reset is therefore honoured on GGUF
+    (llama.cpp compares n_ctx exactly) but not on transformers/MLX.
+    """
+    if getattr(request, "force_reload", False):
+        return False
+    fields_set = getattr(request, "model_fields_set", set()) or set()
+    entry = backend.models.get(backend.active_model_name, {}) or {}
+    if "max_seq_length" in fields_set and int(request.max_seq_length or 0) > 0:
+        resident = entry.get("max_seq_length_requested")
+        if resident is not None and int(resident) != int(request.max_seq_length):
+            return False
+    if "load_in_4bit" in fields_set:
+        # The value as REQUESTED last time, not as resolved: _effective_load_in_4bit
+        # rewrites it for LoRA and for the latest-transformers tier, so comparing the
+        # incoming raw field against a resolved one would never match.
+        resident = entry.get("load_in_4bit_requested")
+        if resident is not None and bool(resident) != bool(request.load_in_4bit):
+            return False
+    return True
+
+
 class _ScopedLoadAttempt(NamedTuple):
     token: str
     request_id: Optional[str]
@@ -13258,9 +13293,11 @@ async def _load_model_impl(
                     await asyncio.to_thread(acquire_for, CHAT)
                 return reused
         if not (request.gguf_variant or is_direct_gguf_request):
-            if _same_loaded_identifier(
-                backend.active_model_name, model_identifier
-            ) and _mlx_runtime_settings_match(backend, request):
+            if (
+                _same_loaded_identifier(backend.active_model_name, model_identifier)
+                and _mlx_runtime_settings_match(backend, request)
+                and _non_gguf_runtime_settings_match(backend, request)
+            ):
                 api_monitor.discard(_load_event)  # nothing loaded, no monitor row
                 logger.info(f"Model already loaded (Unsloth): {model_log_label}, skipping reload")
                 # A no-op Unsloth load of a preview-owned checkpoint still claims it.
@@ -13965,6 +14002,16 @@ async def _load_model_impl(
                     "so the load was cancelled. Unload that model, then try again."
                 ),
             )
+
+        # Record what the caller asked for, next to what the load resolved. The
+        # already-loaded check compares the next request's raw fields, so it has to
+        # compare them against raw ones: load_in_4bit is normalized for LoRA and for
+        # the latest-transformers tier, and comparing a raw `true` against a resolved
+        # `False` would reload the model on every request.
+        _resident_entry = backend.models.get(backend.active_model_name)
+        if isinstance(_resident_entry, dict):
+            _resident_entry["max_seq_length_requested"] = int(request.max_seq_length or 0)
+            _resident_entry["load_in_4bit_requested"] = bool(request.load_in_4bit)
 
         logger.info(
             f"Loaded model: {model_log_label if native_grant_backed else config.identifier}"
@@ -16143,6 +16190,11 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             preserve_thinking_default = _sf_flags.get("preserve_thinking_default", False),
             supports_tools = _sf_flags["supports_tools"],
             context_length = _positive_int_or_none(model_info.get("context_length")),
+            # What this load asked for, which context_length cannot show: the resolved
+            # value is clamped, so it cannot tell a client whether re-sending the same
+            # request would be a no-op or a reload of the shared server.
+            requested_context_length = model_info.get("max_seq_length_requested"),
+            load_in_4bit = model_info.get("load_in_4bit_requested"),
             chat_template = chat_template,
             llama_cpp_supports_mtp = _supports_mtp,
             llama_cpp_prebuilt_stale = _stale,
