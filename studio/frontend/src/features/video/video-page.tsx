@@ -206,6 +206,16 @@ function defaultsFor(repoId: string): { steps: number; guidance: number } {
   return MODEL_DEFAULTS.find((d) => id.includes(d.match)) ?? DEFAULT_GEN;
 }
 
+function defaultsKeyFor(
+  repoId: string,
+  familyOverride: string | null | undefined,
+): string {
+  const id = repoId.toLowerCase();
+  if (MODEL_DEFAULTS.some((entry) => id.includes(entry.match))) return repoId;
+  const family = familyOverride?.trim();
+  return family && family.toLowerCase() !== "auto" ? family : repoId;
+}
+
 // Resolution presets offered before a model is loaded. Once loaded, status.defaults.resolution_presets replaces these.
 const FALLBACK_RESOLUTION_PRESETS: Array<[number, number]> = [
   [768, 512],
@@ -1353,9 +1363,7 @@ function VideoGenerator({
       // is whether the user takes the form after THIS pick, not after the one it replaced.
       const claimedAt = videoFormClaimId();
       pickRecipeSuperseded.current = () => videoFormClaimId() !== claimedAt;
-      const explicitFamily = familyOverride.trim();
-      const defaultsKey = explicitFamily !== "auto" ? explicitFamily : repoId;
-      const recommended = defaultsFor(defaultsKey);
+      const recommended = defaultsFor(defaultsKeyFor(repoId, familyOverride));
       setPendingModelDefaults(recommended);
       setSteps(recommended.steps);
       setGuidance(recommended.guidance);

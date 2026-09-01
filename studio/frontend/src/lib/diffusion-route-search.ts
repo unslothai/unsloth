@@ -19,16 +19,16 @@ type DiffusionPickSource = "hub" | "lora" | "exported" | "local" | "external";
 
 /** Resolve a complete cached pipeline row to the exact snapshot that established its manifest.
  *
- * A loadId is only attached to complete snapshots outside the active cache. Treating that path as
- * local avoids resolving the bare Hub id through a different cache (or the network) after the row
- * was admitted from on-device evidence.
+ * Active-cache rows repeat the Hub id as loadId and must keep the Hub preflight/staging path.
+ * A distinct loadId is a pinned snapshot/path; treating only that identity as local avoids resolving
+ * the bare Hub id through a different cache (or the network) after admission from on-device evidence.
  */
 export function diffusionPipelineLoadTarget(
   model: string,
   meta: { loadId?: string | null; source: DiffusionPickSource },
 ): { repoId: string; source: DiffusionPickSource } {
   const loadId = trimmed(meta.loadId);
-  return loadId
+  return loadId && loadId !== model.trim()
     ? { repoId: loadId, source: "local" }
     : { repoId: model, source: meta.source };
 }

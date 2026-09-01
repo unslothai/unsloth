@@ -29,6 +29,13 @@ test("a cached pipeline loads the exact snapshot that established its manifest",
     diffusionPipelineLoadTarget("Org/Opaque", { source: "hub" }),
     { repoId: "Org/Opaque", source: "hub" },
   );
+  assert.deepEqual(
+    diffusionPipelineLoadTarget("Org/Opaque", {
+      source: "hub",
+      loadId: "Org/Opaque",
+    }),
+    { repoId: "Org/Opaque", source: "hub" },
+  );
 });
 
 test("an expander pick routes its exact filename as the quant", () => {
