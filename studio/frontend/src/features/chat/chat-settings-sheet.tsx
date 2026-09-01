@@ -572,10 +572,8 @@ export function ChatSettingsPanel({
   // fallback that already happened, so a staged edit (or a preset applied without
   // a reload) must not re-label it and point at the wrong file.
   const speculativeDrafterLabel: "MTP" | "DSpark" | "DFlash" | "ngram-mod" =
-    // The LOADED mode, for the same reason as the comment above: staging ngram over
-    // a resident MTP failure must not relabel that notice. Checked before the drafter
-    // kind, not after, since ngram-mod opens no drafter and spec_drafter_kind still
-    // carries whatever the MTP resolution left there.
+    // The LOADED mode, per the comment above. Before the drafter kind, not after:
+    // ngram-mod opens none, so spec_drafter_kind still holds the MTP resolution's.
     loadedSpeculativeType === "ngram"
       ? "ngram-mod"
       : (specDrafterKind ?? speculativeType) === "dspark"

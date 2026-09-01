@@ -325,11 +325,9 @@ const SETTING_CHECKS: SettingCheck[] = [
     // as the status carries a count only when a depth-consuming load recorded an override.
     pinned: () => true,
     agrees: (c, s) =>
-      // The MTP-free recovery is the one state whose depth the status cannot express:
-      // it clears the runtime value while _runtime_matches_intent keeps comparing
-      // against the count retained in _last_load_intent, so a null here is "unknown",
-      // not "the default". Decline and let /load answer, which is what the comment on
-      // RETRYABLE_SPEC_FALLBACKS assumes this comparison already does.
+      // The MTP-free recovery clears the runtime value while _runtime_matches_intent
+      // still compares against _last_load_intent's count, so null here is "unknown",
+      // not "the default". Let /load answer, as RETRYABLE_SPEC_FALLBACKS assumes.
       s.spec_fallback_reason !== "runtime_error" &&
       (c.specDraftNMax ?? null) === (s.spec_draft_n_max ?? null),
   },

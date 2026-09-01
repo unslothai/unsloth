@@ -439,10 +439,8 @@ function canonicalizeSpeculativeType(value: string): string | null {
   if (s === "auto" || s === "default") {
     return null;
   }
-  // The same four spellings _LEGACY_SPEC_MODE_MAP reads as "off". A server-side
-  // override reaches here raw, and falling through to the null below would file an
-  // explicit disable as "follow the global preference", which enables a drafter
-  // whenever that preference is Auto.
+  // _LEGACY_SPEC_MODE_MAP's four. A stored override arrives raw, and the null below
+  // is "follow the global preference", which would enable a drafter under Auto.
   if (s === "off" || s === "none" || s === "disable" || s === "disabled") {
     return "off";
   }
