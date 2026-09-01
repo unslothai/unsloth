@@ -858,8 +858,8 @@ _CLOSED_CODE_FENCE = re.compile(
     re.IGNORECASE,
 )
 _CLOSED_MARKUP_ARTIFACT = re.compile(
-    r"(?:<!doctype\b[\s\S]{0,200}?)?<html\b[^>]{0,200}>[^<]{0,400}<[a-zA-Z!/][\s\S]{0,4000}?</html\s*>"
-    r"|<svg\b[^>]{0,200}>[^<]{0,400}<[a-zA-Z!/][\s\S]{0,4000}?</svg\s*>",
+    r"(?:<!doctype\b[\s\S]{0,200}?)?<html\b[^>]{0,600}>[^<]{0,400}<[a-zA-Z!/][\s\S]{0,4000}?</html\s*>"
+    r"|<svg\b[^>]{0,600}>[^<]{0,400}<[a-zA-Z!/][\s\S]{0,4000}?</svg\s*>",
     re.IGNORECASE,
 )
 _HAS_ANSWER_ARTIFACT = re.compile(
@@ -868,8 +868,8 @@ _HAS_ANSWER_ARTIFACT = re.compile(
     # ``` ```not actually closed ``` does not count.
     r"(?<!`)(?P<bf>`{3,})(?!`)[^\r\n]{0,200}\r?\n[\s\S]{1,4000}?\r?\n[ \t>]*(?P=bf)`*[ \t]*(?:\r?\n|\Z)"
     r"|(?<!~)(?P<tf>~{3,})(?!~)[^\r\n]{0,200}\r?\n[\s\S]{1,4000}?\r?\n[ \t>]*(?P=tf)~*[ \t]*(?:\r?\n|\Z)"
-    r"|(?:<!doctype\b[\s\S]{0,200}?)?<html\b[^>]{0,200}>[^<]{0,400}<[a-zA-Z!/][\s\S]{0,4000}?</html\s*>"
-    r"|<svg\b[^>]{0,200}>[^<]{0,400}<[a-zA-Z!/][\s\S]{0,4000}?</svg\s*>",
+    r"|(?:<!doctype\b[\s\S]{0,200}?)?<html\b[^>]{0,600}>[^<]{0,400}<[a-zA-Z!/][\s\S]{0,4000}?</html\s*>"
+    r"|<svg\b[^>]{0,600}>[^<]{0,400}<[a-zA-Z!/][\s\S]{0,4000}?</svg\s*>",
     re.IGNORECASE,
 )
 
@@ -878,8 +878,10 @@ _FENCE_RUN_RE = re.compile(r"(?<!`)(?P<backticks>`{3,})(?!`)|(?<!~)(?P<tildes>~{
 # One list marker may precede the quote, since "- > ```py" is a quote in a list item.
 _BLOCKQUOTE_PREFIX = re.compile(r"^[ \t]*(?:[-*+]|\d{1,9}[.)])?[ \t]*(?:>[ \t]?)+")
 # A language token, the only trailing text that makes an inline run an opener
-# rather than prose: python3, c++, c#, objective-c, ts-node, bash-session.
-_FENCE_INFO_STRING_RE = re.compile(r"[A-Za-z][\w.+#-]*")
+# rather than prose: python3, c++, c#, objective-c, ts-node, bash-session. It may
+# contain a dot (asp.net) but never ends in one, which is how "here." stays a
+# sentence rather than an info string.
+_FENCE_INFO_STRING_RE = re.compile(r"[A-Za-z][\w+#-]*(?:\.[\w+#-]+)*")
 # A fence on a list-marker line is block level, so the prose rules below do not apply.
 _LIST_MARKER_ONLY = re.compile(r"^[ \t]*(?:[-*+]|\d{1,9}[.)])[ \t]+$")
 _ONE_QUOTE_MARKER = re.compile(r"[ \t]*>[ \t]?")

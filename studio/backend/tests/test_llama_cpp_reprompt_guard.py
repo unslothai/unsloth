@@ -339,6 +339,30 @@ def test_closing_tag_in_prose_does_not_eat_a_fence_closer():
     assert not _would_reprompt(enclosing)
 
 
+def test_root_tag_may_carry_many_attributes():
+    """A real SVG root carries namespace, accessibility and data attributes; the
+    opener bound has to fit one."""
+    tag = (
+        '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" '
+        'width="200" height="100" viewBox="0 0 200 100" fill="none" stroke="black" '
+        'stroke-width="2" role="img" aria-label="A circle" data-testid="chart">'
+    )
+    assert len(tag) > 200
+    text = 'First, let me draw it.\n' + tag + '<circle cx="50" r="30"/></svg>'
+    assert _has_answer_artifact(text)
+    assert not _would_reprompt(text)
+
+
+def test_a_sentence_word_is_not_an_info_string():
+    """``Use ```html``` here.`` is a balanced span in prose. A language token may
+    contain a dot (asp.net) but never ends in one, so "here." is not one."""
+    text = "First, let me show it.\n<html><body>hi</body></html>\nUse ```html``` here."
+    assert _has_answer_artifact(text)
+    assert not _would_reprompt(text)
+    # A real mid-line opener still opens.
+    assert _would_reprompt("First, let me write it. ```text\n1. Install deps\n2. Run it")
+
+
 def test_markup_tags_named_in_a_plan_are_not_a_page():
     """A page carries child markup. A plan that only names the root tags, closed or
     not, is describing work still to do."""
