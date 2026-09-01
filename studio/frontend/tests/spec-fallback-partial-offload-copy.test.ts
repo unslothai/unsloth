@@ -64,8 +64,17 @@ test("the forced-ngram stand-down reaches the settings notice", () => {
   assert.ok(label, "speculativeDrafterLabel moved");
   assert.match(label[0], /"ngram-mod"/);
   assert.ok(
-    label[0].indexOf('speculativeType === "ngram"') <
+    label[0].indexOf('loadedSpeculativeType === "ngram"') <
       label[0].indexOf("specDrafterKind"),
     "the ngram check must precede the drafter-kind checks",
+  );
+
+  // And it reads the LOADED mode, not the pending control. Staging ngram over a
+  // resident MTP failure, or MTP over a forced-ngram stand-down, would otherwise
+  // relabel a notice that explains something already on disk.
+  assert.doesNotMatch(
+    label[0],
+    /(?<!loaded)[sS]peculativeType === "ngram"/,
+    "the label must come from loadedSpeculativeType",
   );
 });

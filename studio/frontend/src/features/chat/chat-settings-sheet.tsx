@@ -565,14 +565,18 @@ export function ChatSettingsPanel({
   const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
   const specFallbackReason = useChatRuntimeStore((s) => s.specFallbackReason);
   const specDrafterKind = useChatRuntimeStore((s) => s.specDrafterKind);
+  const loadedSpeculativeType = useChatRuntimeStore(
+    (s) => s.loadedSpeculativeType,
+  );
   // The loaded model's own kind, not the pending control: the notice explains a
   // fallback that already happened, so a staged edit (or a preset applied without
   // a reload) must not re-label it and point at the wrong file.
   const speculativeDrafterLabel: "MTP" | "DSpark" | "DFlash" | "ngram-mod" =
-    // Checked before the drafter kind, not after: ngram-mod opens no drafter, so
-    // spec_drafter_kind still carries whatever the MTP resolution left there and
-    // would label a forced ngram stand-down "MTP".
-    speculativeType === "ngram"
+    // The LOADED mode, for the same reason as the comment above: staging ngram over
+    // a resident MTP failure must not relabel that notice. Checked before the drafter
+    // kind, not after, since ngram-mod opens no drafter and spec_drafter_kind still
+    // carries whatever the MTP resolution left there.
+    loadedSpeculativeType === "ngram"
       ? "ngram-mod"
       : (specDrafterKind ?? speculativeType) === "dspark"
         ? "DSpark"
