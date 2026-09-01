@@ -1190,7 +1190,7 @@ def test_repeated_identical_user_sends_persist_separately(tmp_path, monkeypatch)
     """Repeated identical user sends (e.g. user sending 'Hello' multiple times) have distinct IDs and persist separately."""
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread("thread-1"))
-    
+
     msg1 = {
         "id": "u1",
         "threadId": "thread-1",
@@ -1201,7 +1201,7 @@ def test_repeated_identical_user_sends_persist_separately(tmp_path, monkeypatch)
         "createdAt": 1000,
     }
     studio_db.upsert_chat_message(msg1)
-    
+
     # Second turn with identical text & attachments, but distinct message ID
     msg2 = {
         "id": "u2",
@@ -1214,7 +1214,7 @@ def test_repeated_identical_user_sends_persist_separately(tmp_path, monkeypatch)
     }
     res = studio_db.upsert_chat_message(msg2)
     assert res["id"] == "u2"
-    
+
     # Both messages must persist separately
     messages = studio_db.list_chat_messages("thread-1")
     assert len(messages) == 2
@@ -1225,7 +1225,7 @@ def test_repeated_identical_sends_in_flat_thread_persist_separately(tmp_path, mo
     """In a flat thread where parent_id is None, repeated identical sends with different IDs must not collapse."""
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread("thread-1"))
-    
+
     payload = [
         {
             "id": "u1",

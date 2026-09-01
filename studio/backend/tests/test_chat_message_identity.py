@@ -29,7 +29,15 @@ def db(tmp_path, monkeypatch):
     return studio_db
 
 
-def _msg(message_id, role, parent, text, created, attachments = None, thread_id = THREAD):
+def _msg(
+    message_id,
+    role,
+    parent,
+    text,
+    created,
+    attachments = None,
+    thread_id = THREAD,
+):
     record = {
         "id": message_id,
         "threadId": thread_id,
@@ -56,9 +64,9 @@ def _walk(stored, message_id):
     seen = set()
     current = message_id
     while current is not None and current != "":
-        assert current in stored, (
-            f"{message_id} has ancestor {current!r}, which is not a stored row: {sorted(stored)}"
-        )
+        assert (
+            current in stored
+        ), f"{message_id} has ancestor {current!r}, which is not a stored row: {sorted(stored)}"
         assert current not in seen, f"parent chain from {message_id} loops at {current!r}"
         seen.add(current)
         current = stored[current]["parentId"]
