@@ -332,7 +332,6 @@ def test_no_private_api_but_rocm_clang_cl_on_disk_is_gated(tmp_path, monkeypatch
     assert _msvc_env.crt_headers_reachable() is False
 
 
-
 def test_a_split_toolchain_is_judged_over_the_union(tmp_path, monkeypatch):
     """clang-cl reads INCLUDE as system include paths and Triton passes its dirs as /I, so the
     compile sees both. Judging each source alone gates a machine whose halves are split across
@@ -360,6 +359,7 @@ def test_the_union_still_gates_when_neither_half_is_there(tmp_path, monkeypatch)
     monkeypatch.setenv("INCLUDE", str(tmp_path / "empty"))
     _fake_triton(monkeypatch, [str(ucrt)])
     assert _msvc_env.crt_headers_reachable() is False
+
 
 def test_rocm_clang_cl_present_probes_the_platlib_path(tmp_path, monkeypatch):
     import sysconfig
