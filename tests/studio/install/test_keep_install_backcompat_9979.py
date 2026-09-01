@@ -57,8 +57,13 @@ def _windows_runnable_stub() -> bytes | None:
             copy = Path(probe_dir) / "llama-server.exe"
             try:
                 shutil.copyfile(source, copy)
-                subprocess.run([str(copy)], capture_output = True, timeout = 30)
+                probe = subprocess.run([str(copy)], capture_output = True, timeout = 30)
             except Exception:
+                continue
+            # A loader failure returns rather than raises, so an unchecked run would
+            # accept the very missing-DLL image this is picking a candidate to avoid,
+            # and every healthy fixture after it would inherit it.
+            if probe.returncode >= 0xC0000000:
                 continue
         return source.read_bytes()
     return None
