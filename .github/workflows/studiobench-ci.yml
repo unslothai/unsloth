@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Keep `studiobench` working, so that the day someone needs to measure a Studio
+# Keep `studiobench` working, so that the day someone needs to measure an Unsloth
 # performance regression the tool is not itself the thing that needs fixing.
 #
 # WHAT THIS WORKFLOW DELIBERATELY DOES NOT DO: gate on a timing. A shared
@@ -40,7 +40,7 @@ on:
       # change to either can break it without touching a file under tests/.
       - 'studio/frontend/**'
       - 'studio/backend/**'
-      # The liveness job installs Unsloth to get a Studio to drive.
+      # The liveness job installs Unsloth to get an Unsloth to drive.
       - 'install.sh'
       - 'pyproject.toml'
       - '.github/actions/install-unsloth-local/action.yml'
@@ -217,7 +217,7 @@ jobs:
       # No --api-only: studiobench drives the real SPA, so the server has to be
       # serving `studio/frontend/dist`. It needs no model, because the reply it
       # measures comes from its own pacer over an external provider.
-      - name: Boot Studio
+      - name: Boot Unsloth
         run: |
           bash .github/scripts/boot-studio-api-only.sh \
             --port "$STUDIO_PORT" --log logs/studio.log --pid-var STUDIO_PID
@@ -228,11 +228,11 @@ jobs:
       # The smallest rung, and quick rather than fast: this job is asking whether
       # every moving part still moves, not how fast anything is. 1K keeps it
       # inside a runner's patience while still running the whole film.
-      # The password has to be handed over explicitly. Studio mints a bootstrap
+      # The password has to be handed over explicitly. Unsloth mints a bootstrap
       # password on a boot with no auth directory, which is exactly what the boot
       # script arranges by wiping rather than resetting. When studiobench installs
-      # its own Studio it reads that file itself; when it ATTACHES to one somebody
-      # else booted, it has no way to know where that Studio's home is, and the
+      # its own Unsloth it reads that file itself; when it ATTACHES to one somebody
+      # else booted, it has no way to know where that Unsloth's home is, and the
       # failure is a 401 that reads like a harness bug.
       #
       # It then rotates the password and clears `must_change_password`. That gate
@@ -275,7 +275,7 @@ jobs:
       # every cell of every 100K run measured, always with the same evidence: the
       # composer's attachments button is in the DOM with a zero box and
       # `mounted: false`, alongside `model_loaded_hint: false`. This fixture drives
-      # an external provider and loads no model, so Studio does not mount the
+      # an external provider and loads no model, so Unsloth does not mount the
       # control. That is a property of the fixture rather than of any change under
       # test, which is the only thing this flag is for. Every name here is a hole in
       # the gate and this one is documented so it can be closed rather than inherited.
@@ -313,14 +313,14 @@ jobs:
             --tier fast --rungs 100K
           test -s outputs/studiobench-ci/summary.md
 
-      - name: Stop Studio
+      - name: Stop Unsloth
         if: always()
         run: kill "${STUDIO_PID:-0}" 2>/dev/null || true
 
       # Uploaded on failure only. The payload is the whole diagnostic: it carries
       # each action's reason for not running, which is the first thing anyone
       # debugging this job wants and the last thing a step log preserves.
-      - name: Upload the payload and the Studio log
+      - name: Upload the payload and the Unsloth log
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:

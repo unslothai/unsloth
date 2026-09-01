@@ -15,7 +15,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-from storage.studio_db import get_connection
+from storage.studio_db import get_connection, is_sqlite_busy_error
 
 
 # Kept aligned with the API monitor's defensive upper bound. The storage layer
@@ -94,8 +94,8 @@ def canonical_api_model(model: object) -> str:
 
 
 def _is_busy_error(exc: sqlite3.OperationalError) -> bool:
-    message = str(exc).lower()
-    return "locked" in message or "busy" in message
+    # One definition, in the module that owns the contended file.
+    return is_sqlite_busy_error(exc)
 
 
 def _sleep_after_busy(delay: float) -> None:
@@ -165,7 +165,7 @@ def record_api_usage(receipt: ApiUsageReceipt) -> bool:
             if not _is_busy_error(exc) or attempt + 1 == _WRITE_RETRIES:
                 raise
             # The worker is the only production writer of these receipts. A
-            # short bounded backoff lets unrelated Studio transactions finish
+            # short bounded backoff lets unrelated Unsloth transactions finish
             # without ever holding up the inference/streaming caller.
             _sleep_after_busy(min(0.01 * (2**attempt), _WORKER_BUSY_RETRY_SECONDS))
 
@@ -243,7 +243,7 @@ class ApiUsageWriter:
                             break
                         # record_api_usage already made its bounded fast retries.
                         # Retain this accepted item at the head of the single
-                        # writer until a normal long Studio transaction releases
+                        # writer until a normal long Unsloth transaction releases
                         # SQLite. The stop sentinel remains behind it, so final
                         # shutdown drains rather than silently dropping usage.
                         busy_failures += 1

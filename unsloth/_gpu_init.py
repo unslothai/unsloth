@@ -193,6 +193,7 @@ from unsloth_zoo.device_type import (
 # Fix other issues
 from .import_fixes import (
     fix_transformers5_bare_annotation_configs,
+    fix_transformers_fully_masked_rows,
     fix_xformers_performance_issue,
     fix_flash_attn_4_namespace_shadow,
     fix_vllm_aimv2_issue,
@@ -228,6 +229,11 @@ from .import_fixes import (
 
 # Must run first: guards PretrainedConfig before vLLM defines its config classes.
 fix_transformers5_bare_annotation_configs()
+# Probe-gated: no-ops unless this transformers really hands SDPA a query row
+# that attends to nothing. Ordered here, before anything imports a model, so a
+# plain `transformers.generate` in the same process is covered too -- which is
+# the case unsloth #9708 was measured on.
+fix_transformers_fully_masked_rows()
 fix_xformers_performance_issue()
 # Must run AFTER fix_xformers_performance_issue (it rewrites xformers' cutlass.py on disk, so it
 # must precede any xformers import) and BEFORE models/_utils.py imports xformers.ops.

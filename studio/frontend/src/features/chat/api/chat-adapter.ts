@@ -61,6 +61,15 @@ import {
   releasePreStreamRunReservation,
 } from "../utils/pre-stream-run-reservation";
 import { readThreadCreationClaim } from "../utils/chat-thread-creation-claim";
+import { ggufCompactionRequestFields } from "../utils/auto-compaction";
+import {
+  studioToolHistoryRequestFields,
+  type ToolHistoryMessage,
+} from "../utils/studio-tool-history";
+import {
+  newDeepResearchHandoff,
+  readDeepResearchToolEvent,
+} from "../utils/deep-research-handoff";
 import {
   consumeQueuedChatRunSettings,
   shouldPersistResolvedQueuedModel,
@@ -80,7 +89,6 @@ import {
   isPromptCacheTtl,
   loadExternalProviders,
   parseExternalModelId,
-
   providerModelSupportsStudioTools,
   providerModelSupportsVision,
   supportsProviderPromptCacheTtl,
@@ -90,20 +98,23 @@ import {
 
 import {
   addCodexReasoning,
-
   codexLocalToolRoundId,
   codexReasoningForToolCalls,
   readCodexReasoning,
-
   shouldReplayAssistantReasoning,
-
   startsNewCodexToolRound,
   type CodexReasoningLedger,
 } from "../codex-reasoning";
 
-import { toolCallReplayArguments } from "../tool-call-arguments";
 import {
+  createBoundaryScan,
+  splitTopLevelJsonObjects,
+  toolCallReplayArguments,
+} from "../tool-call-arguments";
+import {
+  bindStreamedToolCallCard,
   findStreamedToolCallPartIndex,
+  mintStreamedToolCallId,
   resolveToolCallPartId,
 } from "../tool-call-id";
 
@@ -114,6 +125,7 @@ import {
   resolveInferenceCheckpointId,
   tryAdoptServerActiveModel,
 } from "../lib/apply-inference-status-to-store";
+import { isSpeechOnlyStatus } from "../lib/speech-only-status";
 import { syncModelCapabilities } from "../hooks/use-chat-model-runtime";
 import {
   clampReasoningEffortToLevels,
@@ -146,7 +158,10 @@ import {
   flushPendingChatSettings,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
-import { resolveFitMaxSeqLength, resolveManualAutoCtxPin } from "../presets/preset-policy";
+import {
+  resolveFitMaxSeqLength,
+  resolveExplicitCtxPin,
+} from "../presets/preset-policy";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
 import {
@@ -167,7 +182,7 @@ import type {
   OpenAIMessageContent,
   OpenAIReasoningContentPart,
 } from "../types/api";
-import type { ChatModelSummary } from "../types/runtime";
+import { modelReadsSamplingSeed, type ChatModelRow } from "../types/runtime";
 import { loadFallbackNotice } from "../utils/mmproj-fallback";
 import {
   getStoredChatThread,
@@ -217,13 +232,21 @@ import type { CachedGgufRepo, CachedModelRepo } from "./chat-api";
 import {
   budgetImpliesTruncation,
   CONTINUE_INSTRUCTION,
+  createContinuationMerger,
   type IncompleteReason,
-  joinContinuation,
   readIncompleteInfo,
   readContinuationRequest,
   rejectsAssistantPrefill,
   resumesExactly,
 } from "../utils/continuation";
+import {
+  claimLiveGenerationRun,
+  forgetServerActiveGenerationRun,
+  generationChunkCountsTowardTiming,
+  generationChunkHasSubstantiveDelta,
+  generationIsSettled,
+  releaseLiveGenerationRun,
+} from "../utils/chat-generation-recovery";
 import {
   generateAudio,
   GenerationLengthError,
@@ -253,10 +276,32 @@ import {
   watchResearchRun,
 } from "../stores/research-run-store";
 import { cancelResearchRun, createResearchRun } from "./research-api";
+import {
+  cancelChatGenerationRun,
+  ChatGenerationStalledError,
+  chatGenerationStopPlan,
+  isLegacyFallbackChatGenerationAdmissionError,
+  type ChatGenerationRun,
+  type ChatGenerationStatus,
+  createChatGenerationRunUntilAbort,
+  explicitStopSignal,
+  followChatGenerationRun,
+  supportsChatGenerationRuns,
+} from "./chat-generation-api";
 
 // Small models (<=9B) answer from memory instead of calling search, so "auto"
 // forces retrieval for them and leaves it to larger ones.
 const AUTOINJECT_AUTO_MAX_SIZE_B = 9;
+
+class ChatGenerationTerminalError extends Error {
+  readonly generationStatus: "cancelled" | "failed";
+
+  constructor(generationStatus: "cancelled" | "failed", message: string) {
+    super(message);
+    this.name = "ChatGenerationTerminalError";
+    this.generationStatus = generationStatus;
+  }
+}
 
 type ThreadRecordReader = () => Promise<ThreadRecord | undefined>;
 
@@ -455,7 +500,10 @@ function getNestedValue(
   values: Record<string, unknown>,
   path: string,
 ): unknown | undefined {
-  const parts = path.split(".").map((part) => part.trim()).filter(Boolean);
+  const parts = path
+    .split(".")
+    .map((part) => part.trim())
+    .filter(Boolean);
   if (parts.length === 0) {
     return undefined;
   }
@@ -675,8 +723,7 @@ function documentCitationToSource(
   // Anthropic numbers inline [N] per citation, not per source URL.
   // Fold citation type + position-bearing fields into the id so distinct
   // citations on the same source keep separate Sources entries.
-  const citationType =
-    typeof cit.type === "string" ? String(cit.type) : "";
+  const citationType = typeof cit.type === "string" ? String(cit.type) : "";
   const positionParts = [
     cit.search_result_index,
     cit.start_char_index,
@@ -1084,9 +1131,7 @@ function isSandboxWrapper(
   return isSandboxToolResult(result);
 }
 
-export function isMcpImageToolResult(
-  val: unknown,
-): val is McpImageToolResult {
+export function isMcpImageToolResult(val: unknown): val is McpImageToolResult {
   if (typeof val !== "object" || val === null) {
     return false;
   }
@@ -1164,6 +1209,26 @@ function canReplayToolCallWithoutRoleTool(part: ToolCallMessagePart): boolean {
   return getToolPartReplayMetadata(part).isServerSideBuiltin;
 }
 
+function toolCallPartSurvivesOpenAIReplay(part: ToolCallMessagePart): boolean {
+  if (!serializeAssistantToolCallPart(part)) return false;
+  if (
+    !serializeToolResultPart(part) &&
+    !canReplayToolCallWithoutRoleTool(part)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function studioToolHistoryRequestFieldsAfterReplay(
+  messages: readonly ToolHistoryMessage[],
+): { studio_tool_history?: true } {
+  return studioToolHistoryRequestFields(messages, {
+    toolCallSurvives: (part) =>
+      toolCallPartSurvivesOpenAIReplay(part as unknown as ToolCallMessagePart),
+  });
+}
+
 function sanitizeAssistantReplayText(text: string): string {
   // Same reason as the tool result above: the tokens the model wrote last turn
   // are renderer markup scoped to that message, not prose it should repeat.
@@ -1211,7 +1276,6 @@ function setAssistantCodexReasoning(
       : {};
   message.extra_content = { ...extra, openai_codex_reasoning: reasoning };
 }
-
 
 function attachAssistantThoughtSignature(
   messages: SerializedMessage[],
@@ -1357,7 +1421,6 @@ function serializeAssistantReplayMessages(
       if (!toolResult && !canReplayToolCallWithoutRoleTool(toolPart)) {
         continue;
       }
-
 
       const provenance = getToolReplayProvenance(toolPart);
       const localRoundId = codexLocalToolRoundId(provenance);
@@ -1689,7 +1752,8 @@ function extractVideoPartBase64(
 ): string | undefined {
   if (!part || part.type !== "file") return undefined;
   const filePart = part as unknown as { data?: string; mimeType?: string };
-  if (!filePart.data || !/^video\//i.test(filePart.mimeType ?? "")) return undefined;
+  if (!filePart.data || !/^video\//i.test(filePart.mimeType ?? ""))
+    return undefined;
   return filePart.data.startsWith("data:")
     ? filePart.data.split(",")[1]
     : filePart.data;
@@ -1729,15 +1793,19 @@ export const CANVAS_FALLBACK_INSTRUCTION =
   "When the user asks for an HTML, CSS, or JavaScript canvas, return one complete self-contained fenced html code block. Embed CSS and JavaScript inside the document. Do not emit tool-call syntax.";
 
 /**
- * The OpenAI-form messages a completion would send. Mirrors the prune + system-prompt half of
- * createOpenAIStreamAdapter; the tool catalog is priced server-side instead, since --enable-tools
- * can inject schemas the client cannot see.
+ * The OpenAI-form history fields a completion would send. Mirrors the prune + system-prompt half
+ * of createOpenAIStreamAdapter; the tool catalog is priced server-side instead, since
+ * --enable-tools can inject schemas the client cannot see.
  */
-export async function buildOutboundMessagesForTokenCount(
+export async function buildLocalTokenCountHistory(
   messages: RunMessages,
   threadId: string | undefined,
-): Promise<OpenAIChatMessage[]> {
-  const outboundMessages = pruneOutboundHistory(messages, true)
+): Promise<{
+  messages: OpenAIChatMessage[];
+  studio_tool_history?: true;
+}> {
+  const survivingMessages = pruneOutboundHistory(messages, true);
+  const outboundMessages = survivingMessages
     .flatMap((message) => toOpenAIMessages(message, true))
     .filter((message): message is NonNullable<typeof message> =>
       Boolean(message),
@@ -1789,7 +1857,12 @@ export async function buildOutboundMessagesForTokenCount(
     }
   }
 
-  return outboundMessages as OpenAIChatMessage[];
+  return {
+    messages: outboundMessages as OpenAIChatMessage[],
+    ...studioToolHistoryRequestFieldsAfterReplay(
+      survivingMessages as unknown as ToolHistoryMessage[],
+    ),
+  };
 }
 
 /**
@@ -1851,6 +1924,7 @@ export async function buildLocalTokenCountExtras(
     ragTopK,
     autoHealToolCalls,
     bypassPermissions,
+    deepResearchEnabled,
   } = useChatRuntimeStore.getState();
   if (!supportsTools) return {};
 
@@ -1864,7 +1938,8 @@ export async function buildLocalTokenCountExtras(
     !codeToolsEnabled &&
     !artifactsEnabled &&
     !mcpEnabledForChat &&
-    !ragOn
+    !ragOn &&
+    !deepResearchEnabled
   ) {
     // Explicit false, not an omitted field: the server defaults tools on for a
     // request that never mentions them, so every pill being off has to say so.
@@ -1890,6 +1965,8 @@ export async function buildLocalTokenCountExtras(
       ...(artifactsEnabled ? ["render_html"] : []),
     ],
     mcp_enabled: mcpEnabledForChat,
+    // Armed research puts the deep_research schema in the prompt, so the count carries it.
+    ...(deepResearchEnabled ? { deep_research_armed: true } : {}),
     // the ids name the attached documents in the nudge server-side; no retrieval runs for a count.
     ...(ragOn
       ? {
@@ -1930,7 +2007,8 @@ async function resolveUseAdapter(
     return undefined;
   }
   try {
-    const thread = await (readThreadRecord?.() ?? getStoredChatThread(threadId));
+    const thread = await (readThreadRecord?.() ??
+      getStoredChatThread(threadId));
     if (!thread?.pairId) {
       return undefined;
     }
@@ -2110,10 +2188,14 @@ function autoLoadCandidateKey(
   return `${kind}:${normalizeTarget(id)}:${(ggufVariant ?? "").toLowerCase()}`;
 }
 
-function hasBigEndianGgufMarker(filename: string, quant?: string | null): boolean {
+function hasBigEndianGgufMarker(
+  filename: string,
+  quant?: string | null,
+): boolean {
   const normalized = filename.replace(/\\/g, "/").toLowerCase();
   const separatorIndex = normalized.lastIndexOf("/");
-  const basename = separatorIndex >= 0 ? normalized.slice(separatorIndex + 1) : normalized;
+  const basename =
+    separatorIndex >= 0 ? normalized.slice(separatorIndex + 1) : normalized;
   const parent = separatorIndex >= 0 ? normalized.slice(0, separatorIndex) : "";
   const stem = basename.replace(/\.[^.]*$/, "");
   const quantKey = quant?.trim().toLowerCase() || "";
@@ -2127,7 +2209,9 @@ function hasBigEndianGgufMarker(filename: string, quant?: string | null): boolea
     if (quantIndex >= 0 && quantIndex < (match.index ?? 0)) {
       return true;
     }
-    const tail = stem.slice((match.index ?? 0) + match[0].length).replace(/^[._-]+/, "");
+    const tail = stem
+      .slice((match.index ?? 0) + match[0].length)
+      .replace(/^[._-]+/, "");
     if (!tail || !GGUF_KNOWN_QUANT_RE.test(tail)) {
       return !quantInParentOnly;
     }
@@ -2270,12 +2354,11 @@ function snapshotVisibleModelState(
 
 function restoreVisibleModelState(snapshot: VisibleModelStateSnapshot): void {
   const liveUsage = useChatRuntimeStore.getState();
-  liveUsage
-    .setCheckpoint(snapshot.settings.params.checkpoint, undefined, {
-      trackQueuedSettings: false,
-      // The model being stepped off is the one the background load put there.
-      persist: false,
-    });
+  liveUsage.setCheckpoint(snapshot.settings.params.checkpoint, undefined, {
+    trackQueuedSettings: false,
+    // The model being stepped off is the one the background load put there.
+    persist: false,
+  });
   useChatRuntimeStore.setState({
     ...snapshot.runtime,
     ...snapshot.settings,
@@ -2310,6 +2393,9 @@ function queuedResolvedModelFromStore(
       ? {
           isVision: activeModel.isVision,
           isGguf: activeModel.isGguf,
+          // The queued run mints its own summary for a model with no catalog row, and
+          // the sampling seed is gated on this.
+          isMlx: activeModel.isMlx,
           isAudio: activeModel.isAudio,
           audioType: activeModel.audioType,
           hasAudioInput: activeModel.hasAudioInput,
@@ -2359,19 +2445,23 @@ function isChattableCachedRepo(repo: {
     // weights, so /load fetches the base from the Hub when it is not cached,
     // and can_chat is reported true for the format on file layout alone.
     repo.model_format !== "adapter" &&
-    // Cached diffusion repos report can_chat true on file format alone.
-    !IMAGE_OR_VIDEO_TASKS.has(repo.task ?? "")
+    // Cached diffusion and speech repos report can_chat true on file format alone.
+    !NON_CHAT_TASKS.has(repo.task ?? "")
   );
 }
 
-// Chat models are tagged "text-generation" or left null, so this is a list
-// rather than a "has a task" test. The picker routes these rows to the
-// Images/Video page on click; a background load has no routing step, so
-// without this the chat turn goes to a diffusion runtime.
-const IMAGE_OR_VIDEO_TASKS: ReadonlySet<string> = new Set([
+// Chat models are tagged "text-generation" or left null, so this is a list rather than
+// a "has a task" test. The picker routes these rows to their own page on click; a
+// background load has no routing step. For the audio tasks the backend answers a chat
+// completion with synthesized speech rather than refusing it.
+const NON_CHAT_TASKS: ReadonlySet<string> = new Set([
   "text-to-image",
   "text-to-video",
   "image-diffusion-unsupported",
+  "text-to-speech",
+  "text-to-audio",
+  "audio-to-audio",
+  "automatic-speech-recognition",
 ]);
 
 // Scan folders the picker exposes. hf_cache is already in the cached lists.
@@ -2411,7 +2501,7 @@ function isAutoLoadableLocalRow(
     // safetensors one, so this has to fail closed; GGUF is still recognised by
     // suffix, so an unclassified .gguf row keeps loading.
     (isGgufLocalRow(row) || row.model_format === "safetensors") &&
-    !IMAGE_OR_VIDEO_TASKS.has(row.task ?? "") &&
+    !NON_CHAT_TASKS.has(row.task ?? "") &&
     runsOnThisPlatform(row) &&
     !isHiddenModelId(row.model_id, row.id, row.path)
   );
@@ -2421,7 +2511,9 @@ function isAutoLoadableLocalRow(
 // Reading only the field made such a row a Transformers source, which sends the
 // safetensors context length to /load and remembers the wrong kind.
 function isGgufLocalRow(row: LocalModelInfo): boolean {
-  return row.model_format === "gguf" || row.path.toLowerCase().endsWith(".gguf");
+  return (
+    row.model_format === "gguf" || row.path.toLowerCase().endsWith(".gguf")
+  );
 }
 
 /** Chat-only installs run GGUF anywhere and MLX on a Mac; the picker hides
@@ -2429,7 +2521,7 @@ function isGgufLocalRow(row: LocalModelInfo): boolean {
 function runsOnThisPlatform(row: LocalModelInfo): boolean {
   const platform = usePlatformStore.getState();
   // Until the backend reports it, chatOnly is a BROWSER guess: a Mac browser on
-  // a remote Linux Studio would hide every local safetensors model and fetch
+  // a remote Linux Unsloth would hide every local safetensors model and fetch
   // the default. Failing open is safe: validation refuses an ineligible pick.
   if (!platform.fetched || !platform.isChatOnly()) return true;
   if (isGgufLocalRow(row)) {
@@ -2875,18 +2967,24 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
 
   function noteLoadFailure(label: string, error: unknown): void {
     const detail =
-      error instanceof Error && error.message.trim() ? error.message.trim() : "";
+      error instanceof Error && error.message.trim()
+        ? error.message.trim()
+        : "";
     // loadModel also rejects before /api/inference/load is sent (dismissed token dialog, dead
     // backend): those stop the Hub download, but must not blame the model.
-    const marker = error as { unslothTransportFailure?: boolean; unslothUserCancelled?: boolean };
+    const marker = error as {
+      unslothTransportFailure?: boolean;
+      unslothUserCancelled?: boolean;
+    };
     const blamesModel = !(
-      marker?.unslothTransportFailure === true || marker?.unslothUserCancelled === true
+      marker?.unslothTransportFailure === true ||
+      marker?.unslothUserCancelled === true
     );
     loadFailure.current = {
       label,
       // Older backends and non-Error throws carry no detail; still name the model that failed.
       detail:
-        detail || "The server did not report a reason. Check the Studio logs.",
+        detail || "The server did not report a reason. Check the Unsloth logs.",
       blamesModel,
     };
   }
@@ -2976,7 +3074,10 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     const failureLabel = candidate.ggufVariant
       ? `${candidate.id} (${candidate.ggufVariant})`
       : candidate.id;
-    const { config } = resolveInitialConfig(candidate.id, candidate.ggufVariant);
+    const { config } = resolveInitialConfig(
+      candidate.id,
+      candidate.ggufVariant,
+    );
     const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
       modelId: candidate.id,
       ggufVariant: candidate.ggufVariant,
@@ -3088,9 +3189,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         // comes up as it did before the feature existed.
       }
     }
-    const effectiveTensorParallel = isDiffusion
-      ? false
-      : config.tensorParallel;
+    const effectiveTensorParallel = isDiffusion ? false : config.tensorParallel;
     // The diffusion runner has no projector to skip, so the toggle is inert there.
     const effectiveDisableVision = isDiffusion ? false : config.disableVision;
     const effectiveGpuIds =
@@ -3252,7 +3351,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
             : { maxSeqLength: effectiveMaxSeqLength }),
           maxTokens:
             candidate.kind === "gguf"
-              ? loadResp.context_length ?? 131072
+              ? (loadResp.context_length ?? 131072)
               : effectiveMaxSeqLength,
         },
         {
@@ -3274,27 +3373,19 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         is_gguf: loadResp.is_gguf ?? candidate.kind === "gguf",
       });
       if (candidate.kind === "gguf") {
-        // Keep an explicit Manual+Auto context pin the load just applied (so a
-        // later Apply doesn't silently revert it to auto-fit sizing), mirroring
-        // the interactive path's keepCustomCtx; other cases baseline on
-        // ggufContextLength.
-        const keepCustomCtx = resolveManualAutoCtxPin(
-          effectiveGpuMemoryMode,
-          effectiveGpuLayers,
-          config.customContextLength ?? null,
-        );
+        // The Context Length saved for this model, not fitMaxSeqLength: the wire
+        // value is Auto-resolved for a same-model reload, so pinning it would
+        // convert Auto into a number the user never set (see resolveExplicitCtxPin).
+        const keepCustomCtx = resolveExplicitCtxPin(config.customContextLength);
         // Slots this auto-load committed. Diffusion ignores --parallel, so a count
         // there would mint a phantom override a saved preset carries onto a GGUF.
-        const committedSlots = (loadResp.is_diffusion ?? false)
-          ? null
-          : (config.nParallel ?? null);
+        const committedSlots =
+          (loadResp.is_diffusion ?? false) ? null : (config.nParallel ?? null);
         // same rule for the batch sizes
-        const committedNBatch = (loadResp.is_diffusion ?? false)
-          ? null
-          : (config.nBatch ?? null);
-        const committedNUbatch = (loadResp.is_diffusion ?? false)
-          ? null
-          : (config.nUbatch ?? null);
+        const committedNBatch =
+          (loadResp.is_diffusion ?? false) ? null : (config.nBatch ?? null);
+        const committedNUbatch =
+          (loadResp.is_diffusion ?? false) ? null : (config.nUbatch ?? null);
         useChatRuntimeStore.setState({
           ggufContextLength: loadResp.context_length ?? 131072,
           ggufMaxContextLength:
@@ -3336,16 +3427,14 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           // own model and config, so a stale true would show Vision off over a
           // loaded projector, and the next Apply would send it.
           disableVision: loadResp.disable_vision ?? false,
-          loadedVisionDisabledByUser:
-            loadResp.vision_disabled_by_user ?? false,
+          loadedVisionDisabledByUser: loadResp.vision_disabled_by_user ?? false,
           ...loadedGpuMemoryFields(loadResp),
           loadedCustomContextLength: keepCustomCtx,
           defaultChatTemplate: loadResp.chat_template ?? null,
           chatTemplateOverride: effectiveChatTemplateOverride,
           loadedChatTemplateOverride: effectiveChatTemplateOverride,
-          // Retain the saved requested context so re-saving the config keeps the
-          // override; null stays null (auto/VRAM-fit).
-          customContextLength: config.customContextLength,
+          // Same value as the baseline above, so the control opens undirtied.
+          customContextLength: keepCustomCtx,
           loadedIsMultimodal: isMultimodalResponse(loadResp),
           mmprojFallbackReason: loadResp.mmproj_fallback_reason ?? null,
           loadedIsDiffusion: loadResp.is_diffusion ?? false,
@@ -3454,7 +3543,9 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         cachedModelsRunOnThisPlatform()
           ? allModelRepos.filter(isChattableCachedRepo)
           : [],
-        localRows.filter((row) => isAutoLoadableLocalRow(row, cachedInventoryFailed)),
+        localRows.filter((row) =>
+          isAutoLoadableLocalRow(row, cachedInventoryFailed),
+        ),
         store.params.maxSeqLength,
         options?.abortSignal,
       ),
@@ -3488,7 +3579,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         while (!autoLoadCancelled && loadAttempts < MAX_AUTO_LOAD_ATTEMPTS) {
           const candidate = await resolveAutoLoadCandidate(
             source,
-            isRemembered ? lastLoaded?.ggufVariant ?? null : null,
+            isRemembered ? (lastLoaded?.ggufVariant ?? null) : null,
             isTried,
           );
           options?.abortSignal?.throwIfAborted();
@@ -3651,11 +3742,9 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         persistGpuMemoryModeOnLoad(loadResp, rt.gpuMemoryMode);
         useChatRuntimeStore
           .getState()
-          .setCheckpoint(
-            DEFAULT_CHAT_MODEL_REPO,
-            DEFAULT_CHAT_MODEL_VARIANT,
-            { trackQueuedSettings: !options?.preserveVisibleSettings },
-          );
+          .setCheckpoint(DEFAULT_CHAT_MODEL_REPO, DEFAULT_CHAT_MODEL_VARIANT, {
+            trackQueuedSettings: !options?.preserveVisibleSettings,
+          });
         const store = useChatRuntimeStore.getState();
         store.setModelRequiresTrustRemoteCode(
           loadResp.requires_trust_remote_code ?? false,
@@ -3672,57 +3761,62 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
             maxTokensCap: loadResp.context_length ?? undefined,
           },
         );
-        const defaultModel: ChatModelSummary = {
+        const defaultModel: ChatModelRow = {
           id: DEFAULT_CHAT_MODEL_REPO,
           name: loadResp.display_name ?? DEFAULT_CHAT_MODEL_LABEL,
           isVision: loadResp.is_vision ?? false,
           isLora: false,
           isGguf: true,
+          isMlx: false,
+          isAudio: false,
+          hasAudioInput: false,
         };
         if (!store.models.some((m) => m.id === DEFAULT_CHAT_MODEL_REPO)) {
           store.setModels([...store.models, defaultModel]);
         }
         useChatRuntimeStore.setState({
-        ggufContextLength: loadResp.context_length ?? 131072,
-        ggufMaxContextLength:
-          loadResp.max_context_length ?? loadResp.context_length ?? 131072,
-        supportsReasoning: loadResp.supports_reasoning ?? false,
-        reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
-        reasoningEnabled: loadResp.supports_reasoning ?? false,
-        ...reasoningCapsFromLoad(loadResp),
-        supportsPreserveThinking: loadResp.supports_preserve_thinking ?? false,
-        preserveThinking: resolvePreserveThinkingOnLoad(loadResp),
-        supportsTools: loadResp.supports_tools ?? false,
-        ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
-        kvCacheDtype: loadResp.cache_type_kv ?? null,
-        loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
-        ...mlxRuntimeStateFrom(loadResp),
-        // The request above omits n_parallel: a staged override left from a
-        // preset would read as applied and be re-sent by the next Apply.
-        nParallel: null,
-        loadedNParallel: null,
-        nBatch: null,
-        loadedNBatch: null,
-        nUbatch: null,
-        loadedNUbatch: null,
-        ...clearedServerTuningState(),
-        tensorParallel: loadResp.tensor_parallel ?? false,
-        loadedTensorParallel: loadResp.tensor_parallel ?? false,
-        loadedDisableVision: loadResp.disable_vision ?? false,
-        // The request above omits disable_vision, so the echo is what the load
-        // ran with; adopting it stops a previous model's Vision-off carrying over.
-        disableVision: loadResp.disable_vision ?? false,
-        loadedVisionDisabledByUser: loadResp.vision_disabled_by_user ?? false,
-        ...loadedGpuMemoryFields(loadResp),
-        // Drives the GPU Memory controls' diffusion gate; set alongside the
-        // GPU fields on every load path so the gate can't read stale.
-        loadedIsDiffusion: loadResp.is_diffusion ?? false,
-        defaultChatTemplate: loadResp.chat_template ?? null,
-        chatTemplateOverride: null,
-        loadedIsMultimodal: isMultimodalResponse(loadResp),
-        mmprojFallbackReason: loadResp.mmproj_fallback_reason ?? null,
-        activeModelIsLocal: loadResp.is_local_model ?? false,
-        ...resolveLoadedSpeculativeSettings(loadResp),
+          ggufContextLength: loadResp.context_length ?? 131072,
+          ggufMaxContextLength:
+            loadResp.max_context_length ?? loadResp.context_length ?? 131072,
+          supportsReasoning: loadResp.supports_reasoning ?? false,
+          reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
+          reasoningEnabled: loadResp.supports_reasoning ?? false,
+          ...reasoningCapsFromLoad(loadResp),
+          supportsPreserveThinking:
+            loadResp.supports_preserve_thinking ?? false,
+          preserveThinking: resolvePreserveThinkingOnLoad(loadResp),
+          supportsTools: loadResp.supports_tools ?? false,
+          ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
+          kvCacheDtype: loadResp.cache_type_kv ?? null,
+          loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
+          ...mlxRuntimeStateFrom(loadResp),
+          // The request above omits n_parallel: a staged override left from a
+          // preset would read as applied and be re-sent by the next Apply.
+          nParallel: null,
+          loadedNParallel: null,
+          nBatch: null,
+          loadedNBatch: null,
+          nUbatch: null,
+          loadedNUbatch: null,
+          ...clearedServerTuningState(),
+          tensorParallel: loadResp.tensor_parallel ?? false,
+          loadedTensorParallel: loadResp.tensor_parallel ?? false,
+          loadedDisableVision: loadResp.disable_vision ?? false,
+          // The request above omits disable_vision, so the echo is what the load
+          // ran with; adopting it stops a previous model's Vision-off carrying over.
+          disableVision: loadResp.disable_vision ?? false,
+          loadedVisionDisabledByUser:
+            loadResp.vision_disabled_by_user ?? false,
+          ...loadedGpuMemoryFields(loadResp),
+          // Drives the GPU Memory controls' diffusion gate; set alongside the
+          // GPU fields on every load path so the gate can't read stale.
+          loadedIsDiffusion: loadResp.is_diffusion ?? false,
+          defaultChatTemplate: loadResp.chat_template ?? null,
+          chatTemplateOverride: null,
+          loadedIsMultimodal: isMultimodalResponse(loadResp),
+          mmprojFallbackReason: loadResp.mmproj_fallback_reason ?? null,
+          activeModelIsLocal: loadResp.is_local_model ?? false,
+          ...resolveLoadedSpeculativeSettings(loadResp),
         });
         recordLastLocalModelLoad({
           id: DEFAULT_CHAT_MODEL_REPO,
@@ -3757,9 +3851,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
   }
 }
 
-async function resolveQueuedEmptyLocalModel(
-  abortSignal: AbortSignal,
-): Promise<{
+async function resolveQueuedEmptyLocalModel(abortSignal: AbortSignal): Promise<{
   loaded: boolean;
   blockedByTrustRemoteCode: boolean;
   loadFailureReported?: boolean;
@@ -3784,7 +3876,12 @@ async function resolveQueuedEmptyLocalModel(
       // model with the recorded/default auto-load candidate.
       const status = await getInferenceStatus();
       abortSignal.throwIfAborted();
-      const checkpoint = resolveInferenceCheckpointId(status);
+      // The other door into adoption, bypassing tryAdoptServerActiveModel: a speech
+      // model is not one chat can queue against, so read the slot as empty and let the
+      // sweep below load a real chat model.
+      const checkpoint = isSpeechOnlyStatus(status)
+        ? null
+        : resolveInferenceCheckpointId(status);
       if (checkpoint) {
         return {
           loaded: true,
@@ -3806,6 +3903,7 @@ async function resolveQueuedEmptyLocalModel(
             modelCapabilities: {
               isVision: status.is_vision ?? false,
               isGguf: status.is_gguf ?? false,
+              isMlx: status.is_mlx ?? false,
               isAudio: status.is_audio ?? false,
               audioType: status.audio_type ?? null,
               hasAudioInput: status.has_audio_input ?? false,
@@ -3942,12 +4040,8 @@ export function createOpenAIStreamAdapter(
         ? async () => (await sharedThreadRecordRead()).thread
         : undefined;
       const releaseCurrentPreStreamRun = () =>
-        releasePreStreamRunForThreadIds([
-          unstable_threadId,
-          resolvedThreadId,
-        ]);
-      const queuedRunSettings =
-        consumeQueuedChatRunSettings(resolvedThreadId);
+        releasePreStreamRunForThreadIds([unstable_threadId, resolvedThreadId]);
+      const queuedRunSettings = consumeQueuedChatRunSettings(resolvedThreadId);
       let queuedEmptyModelRuntime: QueuedResolvedModelRuntime | null = null;
       const persistResolvedQueuedModel = async (
         modelId: string,
@@ -3985,15 +4079,16 @@ export function createOpenAIStreamAdapter(
           runtime = useChatRuntimeStore.getState();
         }
       }
-      if (
-        runtime.deepResearchEnabled &&
-        !options.pairId &&
-        (options.modelType === undefined || options.modelType === "base")
+      // Started only when the model hands this turn off, never on the toggle alone: arming
+      // research offers it the tool, and it decides whether the message wants researching.
+      const startDeepResearch = async function* (
+        researchQuestion: string,
+        transitionSignal: AbortSignal = abortSignal,
       ) {
         if (runtime.modelLoading) {
           toast.info("Waiting for model to finish loading…");
           try {
-            await waitForModelReady(abortSignal);
+            await waitForModelReady(transitionSignal);
           } catch (error) {
             throw error;
           }
@@ -4003,7 +4098,7 @@ export function createOpenAIStreamAdapter(
             ReturnType<typeof resolveQueuedEmptyLocalModel>
           >;
           try {
-            resolution = await resolveQueuedEmptyLocalModel(abortSignal);
+            resolution = await resolveQueuedEmptyLocalModel(transitionSignal);
           } catch (error) {
             throw error;
           }
@@ -4025,65 +4120,61 @@ export function createOpenAIStreamAdapter(
             throw new Error("Load a model first.");
           }
         }
-        const liveRuntime = useChatRuntimeStore.getState();
+        // The turn's own settings, not the store's now. This generator runs AFTER the
+        // model's stream, and the model selector stays usable while a turn is streaming: a
+        // live read researched the question model A handed off with whichever model B had
+        // since been picked, or failed outright when B runs no Studio tools. The one thing
+        // that legitimately happened after the send is the empty-model resolution above.
+        const sendTimeRuntime = runtime;
+        const withResolvedModel = <T extends typeof sendTimeRuntime>(base: T): T =>
+          queuedEmptyModelRuntime === null
+            ? base
+            : {
+                ...base,
+                params: {
+                  ...base.params,
+                  checkpoint: queuedEmptyModelRuntime.checkpoint,
+                },
+                activeGgufVariant: queuedEmptyModelRuntime.activeGgufVariant,
+                supportsTools: queuedEmptyModelRuntime.supportsTools,
+                supportsReasoning: queuedEmptyModelRuntime.supportsReasoning,
+                reasoningAlwaysOn: queuedEmptyModelRuntime.reasoningAlwaysOn,
+                reasoningStyle: queuedEmptyModelRuntime.reasoningStyle,
+                supportsReasoningOff: queuedEmptyModelRuntime.supportsReasoningOff,
+                reasoningEffortLevels: queuedEmptyModelRuntime.reasoningEffortLevels,
+                supportsPreserveThinking:
+                  queuedEmptyModelRuntime.supportsPreserveThinking,
+                preserveThinking: queuedEmptyModelRuntime.preserveThinking,
+                ggufContextLength: queuedEmptyModelRuntime.ggufContextLength,
+                models: mergeQueuedModelCapabilities(
+                  base.models,
+                  queuedEmptyModelRuntime.checkpoint,
+                  queuedEmptyModelRuntime.modelCapabilities,
+                ),
+              };
         runtime = queuedRunSettings
           ? queuedRunSettings.params.checkpoint
-            ? { ...liveRuntime, ...queuedRunSettings }
-            : {
-                ...liveRuntime,
+            ? { ...sendTimeRuntime, ...queuedRunSettings }
+            : withResolvedModel({
+                ...sendTimeRuntime,
                 ...queuedRunSettings,
+                // The queued snapshot carries no model of its own; without a resolution
+                // this turn's own is the answer.
                 params: {
                   ...queuedRunSettings.params,
-                  checkpoint:
-                    queuedEmptyModelRuntime?.checkpoint ??
-                    liveRuntime.params.checkpoint,
+                  checkpoint: sendTimeRuntime.params.checkpoint,
                 },
-                activeGgufVariant:
-                  queuedEmptyModelRuntime !== null
-                    ? queuedEmptyModelRuntime.activeGgufVariant
-                    : liveRuntime.activeGgufVariant,
-                supportsTools:
-                  queuedEmptyModelRuntime?.supportsTools ??
-                  liveRuntime.supportsTools,
-                supportsReasoning:
-                  queuedEmptyModelRuntime?.supportsReasoning ??
-                  liveRuntime.supportsReasoning,
-                reasoningAlwaysOn:
-                  queuedEmptyModelRuntime?.reasoningAlwaysOn ??
-                  liveRuntime.reasoningAlwaysOn,
-                reasoningStyle:
-                  queuedEmptyModelRuntime?.reasoningStyle ??
-                  liveRuntime.reasoningStyle,
-                supportsReasoningOff:
-                  queuedEmptyModelRuntime?.supportsReasoningOff ??
-                  liveRuntime.supportsReasoningOff,
-                reasoningEffortLevels:
-                  queuedEmptyModelRuntime?.reasoningEffortLevels ??
-                  liveRuntime.reasoningEffortLevels,
-                supportsPreserveThinking:
-                  queuedEmptyModelRuntime?.supportsPreserveThinking ??
-                  liveRuntime.supportsPreserveThinking,
-                preserveThinking:
-                  queuedEmptyModelRuntime?.preserveThinking ??
-                  liveRuntime.preserveThinking,
-                ggufContextLength:
-                  queuedEmptyModelRuntime !== null
-                    ? queuedEmptyModelRuntime.ggufContextLength
-                    : liveRuntime.ggufContextLength,
-                models: mergeQueuedModelCapabilities(
-                  liveRuntime.models,
-                  queuedEmptyModelRuntime?.checkpoint ?? "",
-                  queuedEmptyModelRuntime?.modelCapabilities ?? null,
-                ),
-              }
-          : liveRuntime;
+              })
+          : withResolvedModel(sendTimeRuntime);
         if (!resolvedThreadId) throw new Error("Research requires a saved chat.");
         if (!unstable_assistantMessageId) {
           throw new Error(
             "Deep research could not bind its assistant message. Please retry the send.",
           );
         }
-        const userMessage = [...messages].reverse().find((m) => m.role === "user");
+        const userMessage = [...messages]
+          .reverse()
+          .find((m) => m.role === "user");
         if (!userMessage) throw new Error("Research requires a user message.");
         const userMessageIndex = messages.indexOf(userMessage);
         const userMessageParentId =
@@ -4094,10 +4185,12 @@ export function createOpenAIStreamAdapter(
           runtime.activeGgufVariant,
         );
         const selectedCheckpoint = params.checkpoint.trim();
-        const researchExternalSelection = parseExternalModelId(selectedCheckpoint);
+        const researchExternalSelection =
+          parseExternalModelId(selectedCheckpoint);
         const researchExternalProvider = researchExternalSelection
           ? loadExternalProviders().find(
-              (provider) => provider.id === researchExternalSelection.providerId,
+              (provider) =>
+                provider.id === researchExternalSelection.providerId,
             )
           : null;
         if (
@@ -4109,7 +4202,7 @@ export function createOpenAIStreamAdapter(
             ) !== true)
         ) {
           throw new Error(
-            "Deep research requires a selected local model or a connection whose provider supports Studio tools.",
+            "Deep research requires a selected local model or a connection whose provider supports Unsloth tools.",
           );
         }
         const reasoningRequested =
@@ -4147,15 +4240,16 @@ export function createOpenAIStreamAdapter(
           params.systemVariables,
           readThreadRecord,
         );
+        if (transitionSignal.aborted) return;
         const ragScope =
           runtime.ragEnabled || projectRagEnabled
             ? runtime.ragEnabled && runtime.ragSource.type === "kb"
               ? {
                   kb_id: runtime.ragSource.kbId,
-                   default_top_k: runtime.ragTopK,
-                   mode: runtime.ragMode,
-                   autoinject: runtime.ragAutoInject,
-                   autoinject_min_score: runtime.ragAutoInjectMinScore,
+                  default_top_k: runtime.ragTopK,
+                  mode: runtime.ragMode,
+                  autoinject: runtime.ragAutoInject,
+                  autoinject_min_score: runtime.ragAutoInjectMinScore,
                 }
               : {
                   ...(runtime.ragEnabled
@@ -4164,10 +4258,10 @@ export function createOpenAIStreamAdapter(
                   ...(projectRagEnabled && researchProjectId
                     ? { project_id: researchProjectId }
                     : {}),
-                   default_top_k: runtime.ragTopK,
-                   mode: runtime.ragMode,
-                   autoinject: runtime.ragAutoInject,
-                   autoinject_min_score: runtime.ragAutoInjectMinScore,
+                  default_top_k: runtime.ragTopK,
+                  mode: runtime.ragMode,
+                  autoinject: runtime.ragAutoInject,
+                  autoinject_min_score: runtime.ragAutoInjectMinScore,
                 }
             : undefined;
 
@@ -4186,7 +4280,9 @@ export function createOpenAIStreamAdapter(
         };
         runtime.registerThreadServerCancel(threadKey, researchServerCancel);
         releaseCurrentPreStreamRun();
-        runtime.setThreadRunning(threadKey, true, { owner: researchServerCancel });
+        runtime.setThreadRunning(threadKey, true, {
+          owner: researchServerCancel,
+        });
         let report = "";
         let releaseResearchFollow: (() => void) | null = null;
         const researchFollowController = new AbortController();
@@ -4196,13 +4292,15 @@ export function createOpenAIStreamAdapter(
         const forwardAdapterAbort = () => {
           researchFollowController.abort(abortSignal.reason);
         };
-        abortSignal.addEventListener("abort", forwardAdapterAbort, { once: true });
+        abortSignal.addEventListener("abort", forwardAdapterAbort, {
+          once: true,
+        });
         try {
           // The normal history adapter persists messages after model execution,
           // but research validates the user message before it can start.
-          const storedUserMessage = (await listStoredChatMessages(resolvedThreadId)).find(
-            (message) => message.id === userMessage.id,
-          );
+          const storedUserMessage = (
+            await listStoredChatMessages(resolvedThreadId)
+          ).find((message) => message.id === userMessage.id);
           await saveStoredChatMessage({
             id: userMessage.id,
             threadId: resolvedThreadId,
@@ -4219,6 +4317,9 @@ export function createOpenAIStreamAdapter(
             userMessageId: userMessage.id,
             assistantMessageId: unstable_assistantMessageId,
             inferenceRequest,
+            // Omitted when empty rather than sent as "": CreateResearchRun forbids unknown
+            // fields, so an unconditional send 422s against a backend that predates it.
+            ...(researchQuestion ? { question: researchQuestion } : {}),
             ...(researchInstructions ? { instructions: researchInstructions } : {}),
             ...(ragScope ? { ragScope } : {}),
             budgets: {
@@ -4240,13 +4341,8 @@ export function createOpenAIStreamAdapter(
             createdRun,
             detachResearchFollow,
           );
-          if (
-            !queuedRunSettings ||
-            resolvedThreadId ===
-              useChatRuntimeStore.getState().activeThreadId
-          ) {
-            runtime.setDeepResearchEnabled(false);
-          }
+          // The toggle stays on through the run: it is what the user turned on, and it is what
+          // is happening. The composer takes it away only once the chat's research is spent.
           if (abortSignal.aborted) {
             const detached = Boolean(
               (abortSignal.reason as { detach?: boolean } | undefined)?.detach,
@@ -4287,17 +4383,27 @@ export function createOpenAIStreamAdapter(
             };
           }
         } catch (error) {
-          if (!abortSignal.aborted && !researchFollowController.signal.aborted) {
+          if (
+            !abortSignal.aborted &&
+            !researchFollowController.signal.aborted
+          ) {
             throw error;
           }
         } finally {
           abortSignal.removeEventListener("abort", forwardAdapterAbort);
           releaseResearchFollow?.();
           runtime.clearThreadServerCancel(threadKey, researchServerCancel);
-          runtime.setThreadRunning(threadKey, false, { owner: researchServerCancel });
+          runtime.setThreadRunning(threadKey, false, {
+            owner: researchServerCancel,
+          });
         }
-        return;
-      }
+      };
+      const deepResearchHandoff = newDeepResearchHandoff();
+      const continuation = readContinuationRequest(runConfig);
+      let deepResearchArmed =
+        runtime.deepResearchEnabled &&
+        !options.pairId &&
+        (options.modelType === undefined || options.modelType === "base");
       const toolConfirmationIdsByBackendId = new Map<string, string>();
       // Local tool ids ("call_0") repeat across turns, panes and conversations, so scope by pane
       // AND thread. unstable_threadId alone, no activeThreadId fallback: the reader has only
@@ -4464,6 +4570,18 @@ export function createOpenAIStreamAdapter(
         ragAutoInject,
         ragAutoInjectMinScore,
       } = runtime;
+      if (
+        deepResearchArmed &&
+        !supportsTools &&
+        !isExternalModelId(params.checkpoint)
+      ) {
+        deepResearchArmed = false;
+        if (!queuedRunSettings) {
+          runtime.setDeepResearchEnabled(false);
+        }
+        runtime = { ...runtime, deepResearchEnabled: false };
+        toast.info("Deep Research needs a model that supports tools");
+      }
       // Project sources auto-scope: a chat inside a project retrieves from the
       // project's indexed sources even when the Docs pill is off. The probe is
       // cached, so this is one round trip per project every ~30s at most.
@@ -4533,7 +4651,6 @@ export function createOpenAIStreamAdapter(
         isExternalRequest &&
         !externalApiKey &&
         !externalProvider?.hasApiKey &&
-
         !externalProviderUsesOAuth &&
         !externalProviderIsCustom &&
         !externalProviderIsGeminiCustomBase
@@ -4598,16 +4715,18 @@ export function createOpenAIStreamAdapter(
       // Which side of the connection the Code pill runs code on. Hosted
       // `code_execution` and local `python` / `terminal` are two trust
       // boundaries, not two spellings of one feature, so the stored pill keeps
-      // meaning the provider's sandbox wherever it meant that before the Studio
+      // meaning the provider's sandbox wherever it meant that before the Unsloth
       // loop reached these providers. See code-tool-placement.ts.
-      const { local: studioLocalCodeTools, hosted: hostedCodeToolsForThisTurn } =
-        selectCodeToolNames({
-          codeToolsEnabled,
-          hostedCodeExecutionForThisTurn: codeExecEnabledForThisTurn,
-          providerHostsCodeExecution: providerHostsCodeExecution(
-            externalProvider?.providerType,
-          ),
-        });
+      const {
+        local: studioLocalCodeTools,
+        hosted: hostedCodeToolsForThisTurn,
+      } = selectCodeToolNames({
+        codeToolsEnabled,
+        hostedCodeExecutionForThisTurn: codeExecEnabledForThisTurn,
+        providerHostsCodeExecution: providerHostsCodeExecution(
+          externalProvider?.providerType,
+        ),
+      });
 
       if (selectedImageEditReference && !imageGenerationEnabledForThisTurn) {
         clearSelectedImageEditReference();
@@ -4622,14 +4741,11 @@ export function createOpenAIStreamAdapter(
         messages,
         !isExternalRequest,
       );
-
       // toOpenAIMessages emits assistant tool_calls + role="tool"
       // follow-ups; the backend Gemini translator rebuilds the
       // functionCall / functionResponse parts (with thoughtSignature).
       const outboundMessages = survivingMessages
-        .flatMap((message) =>
-          toOpenAIMessages(message, !isExternalRequest),
-        )
+        .flatMap((message) => toOpenAIMessages(message, !isExternalRequest))
         .filter((message): message is NonNullable<typeof message> =>
           Boolean(message),
         );
@@ -4664,7 +4780,6 @@ export function createOpenAIStreamAdapter(
 
       // The run's messages stop at the user turn (this is a sibling branch), so the
       // partial is appended here for the backend to resume.
-      const continuation = readContinuationRequest(runConfig);
       if (continuation) {
         outboundMessages.push({
           role: "assistant",
@@ -4908,6 +5023,56 @@ export function createOpenAIStreamAdapter(
       const activeModel = runtime.models.find(
         (m) => m.id === params.checkpoint,
       );
+      const generationUserMessage = [...survivingMessages]
+        .reverse()
+        .find((message) => message.role === "user");
+      const generationCandidate = Boolean(
+        !isExternalRequest &&
+          !activeModel?.isAudio &&
+          !runtime.loadedIsDiffusion &&
+          !imageBase64 &&
+          !audioBase64 &&
+          !videoBase64 &&
+          // Continue seeds the partial into the sibling assistant and yields it before the
+          // request starts, so the autosave can land before admission does. Admission
+          // refuses a substantive placeholder with a 409, which is not a fallback error,
+          // and the turn would fail outright. Continuations keep the legacy stream.
+          !continuation &&
+          resolvedThreadId &&
+          !isThreadIncognito(resolvedThreadId) &&
+          unstable_assistantMessageId &&
+          generationUserMessage,
+      );
+      let generationDecision: "pending" | "durable" | "legacy" =
+        generationCandidate ? "pending" : "legacy";
+      let generationRun: ChatGenerationRun | null = null;
+      let generationRunId: string | null = null;
+      let generationSeq = 0;
+      let generationStatus: ChatGenerationStatus | null = null;
+      let generationFirstChunkAt: number | undefined;
+      let generationChunkCount = 0;
+      let generationStopRequested = false;
+      // Set when the no-progress deadline fires on THIS stream rather than on a recovery
+      // follower. Both must persist the marker, or the next reload attaches another
+      // follower and blocks the composer for a further deadline.
+      let generationStalled = false;
+      const generationCustom = () =>
+        generationRunId
+          ? {
+              generationRunId,
+              generationSeq,
+              generationStatus,
+              generationFirstChunkAt,
+              generationChunkCount,
+              generationSettled: generationIsSettled(
+                generationStatus,
+                generationSeq,
+                generationRun?.lastEventSeq ?? Number.POSITIVE_INFINITY,
+              ),
+              generationLocallyInterrupted: generationStalled,
+              serverManaged: true,
+            }
+          : {};
       if (activeModel?.isAudio && !activeModel?.hasAudioInput) {
         const audioCancel = () => runAbort.abort();
         runtime.registerThreadServerCancel(threadKey, audioCancel);
@@ -5035,18 +5200,20 @@ export function createOpenAIStreamAdapter(
       // is for providers that may ignore the prefill and repeat or restart.
       const repairContinuation =
         isExternalRequest && !resumesExactly(externalProvider?.providerType);
-      const mergeContinuation = (text: string): string =>
-        continuationPartial && repairContinuation
-          ? joinContinuation(
-              continuationPartial,
-              text.slice(continuationPartial.length),
-            )
-          : text;
+      // Streamed publishes get the cumulative text unchanged; the repairs run once, on
+      // the finished turn. Both of them re-decide as the continuation grows, so running
+      // them per arrival published a SHORTER text than the arrival before it, and the
+      // restart branch published only the continuation, dropping the whole partial the
+      // reader was already looking at.
+      const mergeContinuation = createContinuationMerger(
+        continuationPartial,
+        repairContinuation,
+      );
       // The parse of everything already streamed, extended by each delta.
-      // `mergeContinuation` can rewrite the prefix it is handed, and a rewritten
-      // prefix is exactly what an extend-only parse cannot follow, so that one
-      // path keeps reparsing the whole reply as before. It is a continuation of
-      // an external provider that may repeat itself, not the streaming case.
+      // The final merge can rewrite the prefix it is handed, and a rewritten prefix is
+      // exactly what an extend-only parse cannot follow, so that one path keeps
+      // reparsing the whole reply as before. It is a continuation of an external
+      // provider that may repeat itself, not the streaming case.
       const segmentedText = createSegmentedAssistantText({
         trustAppends: !(continuationPartial && repairContinuation),
       });
@@ -5084,6 +5251,7 @@ export function createOpenAIStreamAdapter(
         openaiCodexReasoning: codexReasoningLedger,
         contextTruncation,
         incomplete: { reason: "cancelled" as const },
+        ...generationCustom(),
       });
       // Why this turn stopped early. Drives the Continue affordance.
       let incompleteReason: IncompleteReason | null = null;
@@ -5110,15 +5278,267 @@ export function createOpenAIStreamAdapter(
         textCursor?: number;
         _delta_index?: number;
         _has_stable_id?: boolean;
+        // No `arguments` field at all; a zero-parameter tool sends """".
+        _announced_only?: boolean;
+        _resend_suspect?: boolean;
+        _superseded?: boolean;
+        _from_fork?: boolean;
         extra_content?: unknown;
         provenance?: ToolCallProvenance;
       };
       // Tool call parts, cumulative; result lands on tool_end.
       const toolCallParts: PositionedToolCallPart[] = [];
+      // Ids for calls the stream gave none (issue #9807). A card is minted
+      // before its part joins `toolCallParts`, so without this a batch opening
+      // three calls mints one id three times.
+      const reservedToolCallIds = new Set<string>();
+      // Of those, the ones the provider sent. `_has_stable_id` cannot say which:
+      // a split marks every card but the last with it, to keep a late id off the
+      // calls already spoken for.
+      const providerSentToolCallIds = new Set<string>();
+      const boundaryScans = new Map<
+        string,
+        ReturnType<typeof createBoundaryScan>
+      >();
+      const isPlainRecord = (v: unknown): v is Record<string, unknown> =>
+        typeof v === "object" && v !== null && !Array.isArray(v);
+      // Forks whose last object never closed, the backend's open_tail_keys.
+      // `{"a":1}{` is not marked truncated, so the lone brace would persist as a
+      // card nothing completes.
+      const openTailIds = new Set<string>();
+      // Metadata from a delta repeating a closed card's name. That name is
+      // either that call's, resent, or the next call to the same tool announcing
+      // itself, and only the object that follows tells them apart.
+      const pendingExtraByPartId = new Map<string, Record<string, unknown>>();
+      const endProviderTurn = (): boolean => {
+        let changed = false;
+        // _call_is_finished, on the arguments alone: the backend holds the
+        // fork back whatever id reached it.
+        for (const tailId of openTailIds) {
+          const at = toolCallParts.findIndex((p) => p.toolCallId === tailId);
+          if (at === -1) continue;
+          const part = toolCallParts[at];
+          const scanned = splitTopLevelJsonObjects(part.argsText ?? "");
+          if (scanned.complete.length > 0 && !scanned.tail) continue;
+          toolCallParts.splice(at, 1);
+          releaseStreamedCard(part.toolCallId);
+          changed = true;
+        }
+        // An announcement another call took over, and a name that only looked like
+        // a resent, were never calls. A lone announcement stays: a zero-parameter
+        // tool looks like that.
+        for (let at = toolCallParts.length - 1; at >= 0; at -= 1) {
+          const part = toolCallParts[at] as PositionedToolCallPart;
+          if (
+            (!part._superseded &&
+              !part._resend_suspect &&
+              !(part._announced_only && part._from_fork)) ||
+            part.argsText
+          )
+            continue;
+          // Its metadata goes to the call it was mistaken for: Gemini stows a
+          // thought signature there and rejects a replay without one.
+          const previous = toolCallParts[at - 1] as
+            | PositionedToolCallPart
+            | undefined;
+          if (part.extra_content !== undefined && previous) {
+            previous.extra_content = {
+              ...(previous.extra_content ?? {}),
+              ...part.extra_content,
+            };
+          }
+          toolCallParts.splice(at, 1);
+          releaseStreamedCard(part.toolCallId);
+          changed = true;
+        }
+        // _normalized_call drops a nameless call before reserving a card id, so a
+        // card kept here holds a number the backend gives the next round, whose
+        // events then land on this blank card.
+        for (let at = toolCallParts.length - 1; at >= 0; at -= 1) {
+          const part = toolCallParts[at] as PositionedToolCallPart;
+          if (part.toolName || part._delta_index === undefined) continue;
+          toolCallParts.splice(at, 1);
+          releaseStreamedCard(part.toolCallId);
+          changed = true;
+        }
+        for (const [partId, waiting] of pendingExtraByPartId) {
+          // No object ever came, so the repeated name was that call's after all
+          // and so is the metadata that rode it.
+          const at = toolCallParts.findIndex((part) => part.toolCallId === partId);
+          if (at === -1) continue;
+          const part = toolCallParts[at] as PositionedToolCallPart;
+          toolCallParts[at] = {
+            ...part,
+            extra_content: {
+              ...(isPlainRecord(part.extra_content) ? part.extra_content : {}),
+              ...waiting,
+            },
+          };
+          changed = true;
+        }
+        pendingExtraByPartId.clear();
+        // The backend numbers the calls that survive: a card dropped above leaves
+        // a gap, and a claim displaced one for what turned out not to be a call.
+        // Both are settled here, where the backend settles them.
+        if (changed) renumberMintedCards();
+        openTailIds.clear();
+        // The next round opens at index 0 again, and without this "B" then
+        // "C" across the boundary named one call "BC".
+        for (let at = 0; at < toolCallParts.length; at += 1) {
+          const part = toolCallParts[at] as PositionedToolCallPart;
+          if (part._delta_index === undefined) continue;
+          const closed = { ...part };
+          delete closed._delta_index;
+          toolCallParts[at] = closed;
+        }
+        return changed;
+      };
+      const scanArgsText = (partId: string, text: string) => {
+        let scan = boundaryScans.get(partId);
+        if (!scan) {
+          scan = createBoundaryScan();
+          boundaryScans.set(partId, scan);
+        }
+        return scan.feed(text);
+      };
+      const mintStreamedCardId = (deltaIndex: number | undefined): string =>
+        mintStreamedToolCallId(toolCallParts, deltaIndex, reservedToolCallIds);
+      const paintStreamedCard = (partId: string): void => {
+        reservedToolCallIds.add(partId);
+        bindStreamedToolCallCard(toolPartIdByBackendId, partId);
+      };
       // Raw tool_args accumulator per card: the backend forwards arguments while
       // the model is still WRITING them, and the partial parse below feeds the
       // card's args so the code renders live.
       const liveArgsTextById = new Map<string, string>();
+      // A dropped card gives its id back: the backend never reserved it, so
+      // holding it makes the next round's mint skip a number it then reuses.
+      const releaseStreamedCard = (partId: string): void => {
+        reservedToolCallIds.delete(partId);
+        toolPartIdByBackendId.delete(partId);
+        // A card that took a late id answers to a run-unique part id, so the id
+        // the provider sent is a separate key pointing at it. Left behind, it makes
+        // the next round's mint skip a number the backend reuses.
+        for (const [backendId, mapped] of [...toolPartIdByBackendId]) {
+          if (mapped !== partId) continue;
+          toolPartIdByBackendId.delete(backendId);
+          reservedToolCallIds.delete(backendId);
+          providerSentToolCallIds.delete(backendId);
+        }
+        boundaryScans.delete(partId);
+        openTailIds.delete(partId);
+        liveArgsTextById.delete(partId);
+        pendingExtraByPartId.delete(partId);
+      };
+      // The backend reserves provider ids before it mints; the client can
+      // only move a card aside once the claim lands.
+      const renameStreamedCard = (from: string, to: string): void => {
+        reservedToolCallIds.delete(from);
+        toolPartIdByBackendId.delete(from);
+        const scan = boundaryScans.get(from);
+        if (scan) boundaryScans.set(to, scan);
+        boundaryScans.delete(from);
+        if (openTailIds.delete(from)) openTailIds.add(to);
+        const live = liveArgsTextById.get(from);
+        if (live !== undefined) liveArgsTextById.set(to, live);
+        liveArgsTextById.delete(from);
+        // The turn-end sweep claims parked metadata by the part id the card holds
+        // then, so it has to travel with the rename or the sweep finds nothing.
+        const pending = pendingExtraByPartId.get(from);
+        if (pending) pendingExtraByPartId.set(to, pending);
+        pendingExtraByPartId.delete(from);
+        const at = codexRoundToolCallIds.indexOf(from);
+        if (at !== -1) codexRoundToolCallIds[at] = to;
+        paintStreamedCard(to);
+      };
+      // The backend reserves provider ids before minting any card id, so a claim
+      // mid-response moves every card already numbered. Renumber in the order the
+      // backend walks them, or tool_start reaches the wrong card: three calls in
+      // one delta and a later `tool_call_1` cross-wire the second and third.
+      const renumberMintedCards = (claimed?: string): void => {
+        const minted = toolCallParts.filter(
+          (part) =>
+            !providerSentToolCallIds.has(part.toolCallId) &&
+            // This round's cards only. Earlier ones may carry a result, and the
+            // backend's ledger is append-only: it never renumbers, so neither may this.
+            (part as PositionedToolCallPart)._delta_index !== undefined,
+        ) as PositionedToolCallPart[];
+        const carried = minted.map((part) => ({
+          part,
+          from: part.toolCallId,
+          scan: boundaryScans.get(part.toolCallId),
+          live: liveArgsTextById.get(part.toolCallId),
+          openTail: openTailIds.has(part.toolCallId),
+          pending: pendingExtraByPartId.get(part.toolCallId),
+        }));
+        for (const held of carried) {
+          reservedToolCallIds.delete(held.from);
+          toolPartIdByBackendId.delete(held.from);
+          boundaryScans.delete(held.from);
+          liveArgsTextById.delete(held.from);
+          openTailIds.delete(held.from);
+          pendingExtraByPartId.delete(held.from);
+          // Cleared before any is minted again: the mint reads the ids the parts
+          // hold, and a stale one makes the first card skip the backend's number.
+          const at = toolCallParts.indexOf(held.part);
+          if (at !== -1) toolCallParts[at] = { ...held.part, toolCallId: "" };
+        }
+        // Held back only now: the loop above frees every minted id, and one of
+        // them is the spelling being claimed.
+        if (claimed !== undefined) reservedToolCallIds.add(claimed);
+        for (const held of carried) {
+          const to = mintStreamedCardId(held.part._delta_index);
+          paintStreamedCard(to);
+          if (held.scan) boundaryScans.set(to, held.scan);
+          if (held.live !== undefined) liveArgsTextById.set(to, held.live);
+          if (held.openTail) openTailIds.add(to);
+          if (held.pending) pendingExtraByPartId.set(to, held.pending);
+          const at = codexRoundToolCallIds.indexOf(held.from);
+          if (at !== -1) codexRoundToolCallIds[at] = to;
+          const index = toolCallParts.findIndex((part) => part.toolCallId === "");
+          if (index !== -1) {
+            toolCallParts[index] = { ...held.part, toolCallId: to };
+          }
+        }
+      };
+      /**
+       * Parts for the calls after the first in a slot holding several. Nothing
+       * per-call is copied: the thought signature goes only to the last.
+       */
+      const bornSplitToolCalls = (
+        extraSegments: string[],
+        toolName: string,
+        deltaIndex: number | undefined,
+        extraContent: unknown,
+      ): PositionedToolCallPart[] =>
+        extraSegments.map((segment, n) => {
+          const isLast = n === extraSegments.length - 1;
+          let segmentArgs: ToolCallMessagePart["args"] = {};
+          try {
+            segmentArgs = JSON.parse(segment) as ToolCallMessagePart["args"];
+          } catch {
+            segmentArgs = { _raw: segment } as ToolCallMessagePart["args"];
+          }
+          const bornId = mintStreamedCardId(deltaIndex);
+          paintStreamedCard(bornId);
+          if (!codexRoundToolCallIds.includes(bornId)) {
+            codexRoundToolCallIds.push(bornId);
+          }
+          return {
+            type: "tool-call" as const,
+            toolCallId: bornId,
+            toolName,
+            argsText: segment,
+            args: segmentArgs,
+            textCursor: cumulativeText.length,
+            ...(isLast && extraContent !== undefined
+              ? { extra_content: extraContent }
+              : {}),
+            // All but the last are spoken for; the last stays claimable.
+            ...(isLast ? {} : { _has_stable_id: true }),
+            ...(deltaIndex !== undefined ? { _delta_index: deltaIndex } : {}),
+          };
+        });
       // Backend tool ids ("call_0", ...) restart every response, so a bare id as
       // store key lets a later turn's stream overwrite the preserved output an
       // earlier still-mounted finished card reads (the tool_start stale-clear
@@ -5270,6 +5690,15 @@ export function createOpenAIStreamAdapter(
         if ((runSignal.reason as { detach?: boolean } | undefined)?.detach) {
           return;
         }
+        generationStopRequested = true;
+        const stopPlan = chatGenerationStopPlan(
+          generationDecision,
+          generationRunId,
+        );
+        if (stopPlan.cancelRunId) {
+          void cancelChatGenerationRun(stopPlan.cancelRunId).catch(() => {});
+        }
+        if (!stopPlan.postLegacyCancel) return;
         const body: Record<string, string> = { cancel_id: cancelId };
         if (sandboxSessionId) body.session_id = sandboxSessionId;
         // Plain fetch, not authFetch: authFetch redirects to login on
@@ -5324,9 +5753,7 @@ export function createOpenAIStreamAdapter(
             params.checkpoint ||
             "Unknown model",
           responseModelId:
-            responseModelId ||
-            externalSelection?.modelId ||
-            params.checkpoint,
+            responseModelId || externalSelection?.modelId || params.checkpoint,
           ...(externalProvider?.id ? { providerId: externalProvider.id } : {}),
           providerName:
             externalProvider?.name ??
@@ -5356,10 +5783,10 @@ export function createOpenAIStreamAdapter(
               codeExecEnabledForThisTurn ||
               (!isExternalRequest && supportsTools && codeToolsEnabled),
             images: imageGenerationEnabledForThisTurn,
-            mcp:
-              supportsStudioToolsForThisTurn && mcpEnabledForChat,
+            mcp: supportsStudioToolsForThisTurn && mcpEnabledForChat,
             docs:
-              supportsStudioToolsForThisTurn && (ragEnabled || projectRagEnabled),
+              supportsStudioToolsForThisTurn &&
+              (ragEnabled || projectRagEnabled),
             artifacts: renderHtmlToolEnabledForThisTurn,
             confirmToolCalls,
             bypassPermissions,
@@ -5567,7 +5994,7 @@ export function createOpenAIStreamAdapter(
               ...(externalCapabilities?.presencePenalty
                 ? { presence_penalty: params.presencePenalty }
                 : {}),
-              // Studio executes the calls for any provider that advertises the
+              // Unsloth executes the calls for any provider that advertises the
               // capability. Providers that do not keep their provider-hosted
               // tool envelope in the branch below.
               // studioLocalCodeTools, not codeToolsEnabled: a Code pill that
@@ -5580,7 +6007,12 @@ export function createOpenAIStreamAdapter(
                 studioLocalCodeTools.length > 0 ||
                 mcpEnabledForChat ||
                 ragEnabled ||
-                projectRagEnabled)
+                projectRagEnabled ||
+                // Armed research needs Studio's loop for the same reason the local body
+                // does: deep_research is appended past every tool filter, but only for a
+                // request that asked for the loop at all. Without it the turn proxies
+                // through, the model is never offered the tool, and arming does nothing.
+                deepResearchArmed)
                 ? {
                     enable_tools: true,
                     enabled_tools: [
@@ -5589,13 +6021,13 @@ export function createOpenAIStreamAdapter(
                         : []),
                       ...(toolsEnabled ? ["web_search"] : []),
                       ...studioLocalCodeTools,
-                      // Hosted tools Studio has no local stand-in for. Their
-                      // pills stay lit whether or not a Studio tool is on, so
+                      // Hosted tools Unsloth has no local stand-in for. Their
+                      // pills stay lit whether or not an Unsloth tool is on, so
                       // listing only the local names here would silently drop
                       // Images (or Fetch) the moment Search, Code, MCP or a
                       // project's automatic RAG selected this branch. Search
                       // deliberately does not ride along: that is the one
-                      // Studio runs itself just above. Code rides along only
+                      // Unsloth runs itself just above. Code rides along only
                       // when it resolved to the provider's sandbox, which is
                       // mutually exclusive with the local names above.
                       ...(imageGenerationEnabledForThisTurn
@@ -5628,8 +6060,12 @@ export function createOpenAIStreamAdapter(
                     // older bundle sent meaning hosted search, so without this
                     // flag Search silently stayed hosted.
                     run_tools_locally: true,
-                    ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
-                    ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
+                    ...(sandboxSessionId
+                      ? { session_id: sandboxSessionId }
+                      : {}),
+                    ...(resolvedThreadId
+                      ? { thread_id: resolvedThreadId }
+                      : {}),
                     ...(ragEnabled || projectRagEnabled
                       ? {
                           rag_scope: {
@@ -5682,6 +6118,9 @@ export function createOpenAIStreamAdapter(
                     // server's tools-on default, which would bill provider
                     // server tools.
                     { enable_tools: false }),
+              // Also on this body, not just the local one: a provider whose models run Studio
+              // tools can hand off too, and omitting it here makes arming research a no-op.
+              ...(deepResearchArmed ? { deep_research_armed: true } : {}),
               provider_id: externalProvider.id,
               provider_type: externalBackendProviderType,
               external_model: externalSelection.modelId,
@@ -5737,7 +6176,11 @@ export function createOpenAIStreamAdapter(
                       : {
                           reasoning_effort: fallbackExternalEffort,
                         }
-                  : { thinking: { type: reasoningEnabled ? "enabled" : "disabled" } }
+                  : {
+                      thinking: {
+                        type: reasoningEnabled ? "enabled" : "disabled",
+                      },
+                    }
                 : {}),
             };
           }
@@ -5747,12 +6190,18 @@ export function createOpenAIStreamAdapter(
             messages: outboundMessages,
             stream: true,
             ...(continuation ? { continue_final_message: true } : {}),
+            ...studioToolHistoryRequestFieldsAfterReplay(
+              survivingMessages as unknown as ToolHistoryMessage[],
+            ),
             // Opt into the trailing usage chunk so the context-usage bar
             // and tok/s readout populate (backend gates it on include_usage).
             stream_options: { include_usage: true },
-            ...(activeModel?.isGguf === true
-              ? { context_overflow: "truncate_oldest" as const }
-              : {}),
+            ...ggufCompactionRequestFields({
+              isGguf: activeModel?.isGguf === true,
+              autoCompactEnabled: runtime.autoCompactEnabled,
+              contextPolicy: runtime.contextPolicy,
+              compactionHeadroomRatio: runtime.compactionHeadroomRatio,
+            }),
             temperature: params.temperature,
             top_p: params.topP,
             max_tokens: params.maxTokens,
@@ -5760,6 +6209,12 @@ export function createOpenAIStreamAdapter(
             min_p: params.minP,
             repetition_penalty: params.repetitionPenalty,
             presence_penalty: params.presencePenalty,
+            // Omitted when unset so the server keeps drawing a fresh seed, and when the
+            // backend does not read one, so a pin left over from a GGUF is not sent
+            // invisibly after a switch to transformers.
+            ...(params.seed == null || !modelReadsSamplingSeed(activeModel)
+              ? {}
+              : { seed: params.seed }),
             image_base64: imageBase64,
             audio_base64: audioBase64,
             video_base64: videoBase64,
@@ -5804,13 +6259,15 @@ export function createOpenAIStreamAdapter(
               ? {}
               : { confirm_tool_calls: permissionMode === "ask" }),
             bypass_permissions: bypassPermissions,
+            ...(deepResearchArmed ? { deep_research_armed: true } : {}),
             ...(supportsTools &&
             (toolsEnabled ||
               codeToolsEnabled ||
               renderHtmlToolEnabledForThisTurn ||
               mcpEnabledForChat ||
               ragEnabled ||
-              projectRagEnabled)
+              projectRagEnabled ||
+              deepResearchArmed)
               ? {
                   enable_tools: true,
                   enabled_tools: [
@@ -5855,7 +6312,9 @@ export function createOpenAIStreamAdapter(
                             ? { whole_doc: false }
                             : {}),
                           context_length:
-                            runtime.ggufContextLength ?? params.maxSeqLength ?? undefined,
+                            runtime.ggufContextLength ??
+                            params.maxSeqLength ??
+                            undefined,
                         },
                       }
                     : {}),
@@ -5889,7 +6348,162 @@ export function createOpenAIStreamAdapter(
             clearSelectedImageEditReference();
             requestedMaxTokens = requestPayload.max_tokens;
             await ThreadAutosaveHandle.awaitFirstSave(resolvedThreadId);
-            const stream = streamChatCompletions(requestPayload, runSignal);
+            if (generationDecision === "pending") {
+              const clientTools = (
+                requestPayload as unknown as { tools?: unknown }
+              ).tools;
+              if (
+                requestPayload.enable_tools === true ||
+                (Array.isArray(clientTools) && clientTools.length > 0)
+              ) {
+                // Confirmation and browser-executed tool chains still use the
+                // subscriber-owned stream in this PR.
+                generationDecision = "legacy";
+              } else {
+                const admission = explicitStopSignal(runSignal);
+                const supported = await supportsChatGenerationRuns(
+                  resolvedThreadId!,
+                  admission.signal,
+                ).finally(admission.dispose);
+                if (!supported) {
+                  generationDecision = "legacy";
+                } else {
+                  generationDecision = "durable";
+                  // Before admission, not after. The run id is ours (`cancelId` is passed as
+                  // `runId`), and the run becomes visible through /active as soon as the POST
+                  // lands, so a visibility, pageshow, online or history-load trigger during
+                  // this await could otherwise start a recovery that the later claim would
+                  // not stop: the scheduler only tests ownership at startup.
+                  // Provisional: it owns recovery without marking the thread bounded.
+                  // The await below can outlast the checkpoint cap, and a capped thread
+                  // is dropped from the schedule for good.
+                  claimLiveGenerationRun(cancelId, resolvedThreadId!, {
+                    provisional: true,
+                  });
+                  try {
+                    generationRun = await createChatGenerationRunUntilAbort(
+                      {
+                        runId: cancelId,
+                        threadId: resolvedThreadId!,
+                        userMessageId: generationUserMessage!.id,
+                        assistantMessageId: unstable_assistantMessageId!,
+                        requestPayload,
+                      },
+                      runSignal,
+                    );
+                  } catch (error) {
+                    if (!isLegacyFallbackChatGenerationAdmissionError(error)) {
+                      throw error;
+                    }
+                    // Durable recovery does not yet replay server-side tool events.
+                    // Use the subscriber-owned stream for this policy-forced case.
+                    generationDecision = "legacy";
+                    // Dropped here rather than in the outer finally: this stream is about
+                    // to become subscriber-owned, and leaving the claim would let the cap
+                    // fire on a stream whose only persistence is those checkpoints.
+                    releaseLiveGenerationRun(cancelId);
+                  }
+                  if (!generationRun) {
+                    if (generationDecision === "durable") return;
+                  } else {
+                    generationRunId = generationRun.id;
+                    // Normally the same id we claimed above; claimed again in case the server
+                    // ever echoes a different one. Both are released in the finally below.
+                    claimLiveGenerationRun(generationRunId, resolvedThreadId!);
+                    generationStatus = generationRun.status;
+                    if (generationStopRequested) {
+                      void cancelChatGenerationRun(generationRun.id).catch(
+                        () => {},
+                      );
+                    }
+                  }
+                }
+              }
+            }
+
+            const durableStream = async function* () {
+              try {
+                for await (const update of followChatGenerationRun(
+                  generationRunId!,
+                  {
+                    initialRun: generationRun!,
+                    replayFrom: 0,
+                    signal: runSignal,
+                  },
+                )) {
+                  generationRun = update.run;
+                  generationStatus = update.run.status;
+                  if (update.event) {
+                    generationSeq = Math.max(generationSeq, update.event.seq);
+                    if (update.event.type === "chunk") {
+                      const chunk = update.event.payload as OpenAIChatChunk;
+                      if (generationChunkCountsTowardTiming(chunk)) {
+                        generationChunkCount += 1;
+                        if (generationChunkHasSubstantiveDelta(chunk)) {
+                          generationFirstChunkAt ??= update.event.createdAt;
+                        }
+                      }
+                      yield chunk;
+                    }
+                  }
+                }
+              } catch (error) {
+                if (!(error instanceof ChatGenerationStalledError)) throw error;
+                // End the stream rather than rethrow, keeping everything replayed so
+                // far, as the recovery follower does. The checks below stay quiet
+                // because a stalled run is still non-terminal.
+                generationStalled = true;
+                // Different job from the marker: this is what makes the final yield
+                // carry `incomplete`, without which assistant-ui reads the partial reply
+                // as finished and offers no Continue until a reload rebuilds the reason.
+                incompleteReason = "interrupted";
+              }
+              if (generationStatus === "failed") {
+                throw new ChatGenerationTerminalError(
+                  "failed",
+                  generationRun?.error ||
+                    "The Studio backend restarted during generation.",
+                );
+              }
+              if (generationStatus === "cancelled" && !runSignal.aborted) {
+                throw new ChatGenerationTerminalError(
+                  "cancelled",
+                  "Generation was cancelled.",
+                );
+              }
+            };
+            // The window is passed so a length-stop can tell a Max Tokens the user chose
+            // from the backend's stand-in for "Max" (the whole context length). The two
+            // need opposite advice, and "Increase Max Tokens" cannot be acted on when it
+            // is already unlimited.
+            const stream =
+              generationDecision === "durable"
+                ? durableStream()
+                : streamChatCompletions(
+                    requestPayload,
+                    runSignal,
+                    // Only when the request targets the LOCAL model. ggufContextLength
+                    // stays populated for a resident GGUF even while an external model is
+                    // selected, so an external request with a 16K cap was being measured
+                    // against an unrelated 4096-token local window and reported as having
+                    // unlimited Max Tokens and no context left.
+                    // `maxSeqLength` last, and coerced from 0: a local safetensors or
+                    // MLX request on this path has neither GGUF field set, and reading
+                    // that as "no window" makes every context-length stop look like a
+                    // user-set Max Tokens one -- advice to raise a value already at the
+                    // model's maximum. Same order the RAG `context_length` above uses.
+                    // `loadedCustomContextLength`, not `customContextLength`: the
+                    // latter is the EDITABLE field, and the store's own definition of a
+                    // pending edit is the two differing. A model still serving at 4096
+                    // while the field reads 8192 would make its 4096 stop look
+                    // user-imposed, and the toast would advise raising Max Tokens
+                    // instead of reloading at the larger context.
+                    isExternalRequest
+                      ? null
+                      : (runtime.loadedCustomContextLength ??
+                        runtime.ggufContextLength ??
+                        (params.maxSeqLength || null)),
+                  );
             // Per run, not per module: two turns must not share a cycle.
             const canPublish = createStreamPublishGate();
 
@@ -5904,6 +6518,11 @@ export function createOpenAIStreamAdapter(
                 chunk as unknown as { _toolStatus?: string }
               )._toolStatus;
               if (toolStatusText !== undefined) {
+                // The one boundary every round has: only-disabled rounds emit
+                // no card and a [DONE] upstream sends no finish_reason.
+                if (!toolStatusText) {
+                  endProviderTurn();
+                }
                 runtime.setToolStatus(
                   liveThreadKey(serverCancel),
                   toolStatusText || null,
@@ -5939,7 +6558,7 @@ export function createOpenAIStreamAdapter(
                         "context. They are saved and searchable, and relevant parts are " +
                         "brought back automatically."
                       : "The full conversation is still visible and saved. " +
-                        "Studio removed complete older turns from this request so the chat can continue.",
+                        "Unsloth removed complete older turns from this request so the chat can continue.",
                     duration: 8000,
                   });
                 }
@@ -5952,9 +6571,7 @@ export function createOpenAIStreamAdapter(
               const reasoningMs = (
                 chunk as { _reasoningDurationMs?: number } | null | undefined
               )?._reasoningDurationMs;
-              if (
-                reasoningDurationTracker.recordServerDuration(reasoningMs)
-              ) {
+              if (reasoningDurationTracker.recordServerDuration(reasoningMs)) {
                 continue;
               }
 
@@ -5990,6 +6607,23 @@ export function createOpenAIStreamAdapter(
                 chunk as unknown as { _toolEvent?: Record<string, unknown> }
               )._toolEvent;
               if (toolEvent !== undefined) {
+                // Unsloth's own tool events end the turn that asked for them; finish_reason
+                // alone is not enough. A hosted tool runs INSIDE the turn and rides a whole
+                // chunk, where Unsloth's are bare {"type": "tool_start"} frames.
+                if (!chunk.choices) {
+                  endProviderTurn();
+                }
+                // Deep Research is an ordinary tool to every loop that runs it, so the handoff
+                // is read off the events they all publish rather than a bespoke frame. An
+                // ungated pair is not rendered: the research card is the reply, a tool pill
+                // would just precede it saying the same thing.
+                if (
+                  toolEvent.tool_name === "deep_research" &&
+                  readDeepResearchToolEvent(deepResearchHandoff, toolEvent)
+                ) {
+                  if (deepResearchHandoff.question !== null) break;
+                  continue;
+                }
                 // Persist container_id onto the thread (OpenAI / Anthropic).
                 if (toolEvent.type === "container_ready") {
                   const newContainerId = toolEvent.container_id as
@@ -6134,8 +6768,7 @@ export function createOpenAIStreamAdapter(
                       ? `${toolConfirmationScopeId}:${approvalId}`
                       : backendToolCallId
                         ? resolveToolPartId(backendToolCallId)
-                        : approvalId ||
-                          `${toolEvent.tool_name}_${Date.now()}`;
+                        : approvalId || `${toolEvent.tool_name}_${Date.now()}`;
                   if (awaitingConfirmation && backendToolCallId) {
                     toolConfirmationIdsByBackendId.set(backendToolCallId, id);
                   }
@@ -6269,7 +6902,8 @@ export function createOpenAIStreamAdapter(
                           text: rawResult.slice(0, mcpImgIdx),
                           images,
                         };
-                        if (isMcpImageToolResult(candidate)) mcpImages = candidate;
+                        if (isMcpImageToolResult(candidate))
+                          mcpImages = candidate;
                       } catch {
                         // Not a valid envelope; fall through below.
                       }
@@ -6489,10 +7123,8 @@ export function createOpenAIStreamAdapter(
               }
               const rawDelta = chunk.choices?.[0]?.delta?.content;
               // Normalize structured delta.content (mistral magistral).
-              const {
-                text: delta,
-                structuredReasoningContinues,
-              } = extractDeltaText(rawDelta);
+              const { text: delta, structuredReasoningContinues } =
+                extractDeltaText(rawDelta);
               // Latest Gemini text-part thoughtSignature for next-turn replay.
               const deltaExtraContent = (
                 chunk.choices?.[0]?.delta as
@@ -6504,17 +7136,24 @@ export function createOpenAIStreamAdapter(
               // replay. Pace previews, never state.
               let replayStateChanged = false;
               if (deltaExtraContent && typeof deltaExtraContent === "object") {
-                const extraRecord = deltaExtraContent as Record<string, unknown>;
+                const extraRecord = deltaExtraContent as Record<
+                  string,
+                  unknown
+                >;
                 const eGoogle = extraRecord.google;
                 if (eGoogle && typeof eGoogle === "object") {
-                  const sig = (eGoogle as Record<string, unknown>).thought_signature;
+                  const sig = (eGoogle as Record<string, unknown>)
+                    .thought_signature;
                   if (typeof sig === "string" && sig) {
                     replayStateChanged ||= sig !== latestTextThoughtSignature;
                     latestTextThoughtSignature = sig;
                   }
                 }
                 const codexReasoning = extraRecord.openai_codex_reasoning;
-                if (Array.isArray(codexReasoning) && codexReasoning.length > 0) {
+                if (
+                  Array.isArray(codexReasoning) &&
+                  codexReasoning.length > 0
+                ) {
                   codexReasoningLedger = addCodexReasoning(
                     codexReasoningLedger,
                     codexReasoning,
@@ -6580,13 +7219,40 @@ export function createOpenAIStreamAdapter(
                   const idx =
                     typeof call.index === "number" ? call.index : undefined;
                   const stableId = call.id;
-                  // Studio's local Codex loop follows the OpenAI tool-call delta with
+                  // The chunk is cast, not validated, and llama-server has
+                  // shipped `arguments` as a decoded object.
+                  const deltaArgs =
+                    typeof call.function?.arguments === "string"
+                      ? call.function.arguments
+                      : "";
+                  // Unsloth's local Codex loop follows the OpenAI tool-call delta with
                   // tool_start/tool_end events. Resolve the backend id now so all three
                   // event shapes update one run-unique card instead of leaving the raw
                   // provisional card beside a second execution card.
+                  // Before resolving: a provider claiming a minted spelling
+                  // would resolve onto that card and merge the two calls. The
+                  // backend's reserve-then-mint order lands on the same pair.
+                  if (
+                    stableId &&
+                    !providerSentToolCallIds.has(stableId) &&
+                    toolCallParts.some((part) => part.toolCallId === stableId)
+                  ) {
+                    // Renumber first: a minted card holds the claimed spelling until this runs,
+                    // and marking it provider-sent earlier would exempt it from the move.
+                    renumberMintedCards(stableId);
+                    providerSentToolCallIds.add(stableId);
+                    reservedToolCallIds.add(stableId);
+                  }
                   const stablePartId = stableId
                     ? resolveToolPartId(stableId)
                     : undefined;
+                  // Reserved before any card id is minted, so a provider that
+                  // happens to spell an id `tool_call_0` keeps it to itself.
+                  if (stableId) {
+                    reservedToolCallIds.add(stableId);
+                    providerSentToolCallIds.add(stableId);
+                  }
+                  if (stablePartId) providerSentToolCallIds.add(stablePartId);
                   // match by resolved id when the fragment carries one, else by
                   // index slot; streams that send neither get a minted
                   // tool_call_<n> id.
@@ -6595,10 +7261,88 @@ export function createOpenAIStreamAdapter(
                     stablePartId,
                     idx,
                   );
-                  const existing =
+                  const matched =
                     existingIndex === -1
                       ? undefined
                       : toolCallParts[existingIndex];
+                  // A closed object takes no more content, so a name or arguments reaching it
+                  // open the next call. Splitting the text alone is too late.
+                  const slotIsClosed = (() => {
+                    if (!matched?.argsText) return false;
+                    const held = scanArgsText(
+                      matched.toolCallId,
+                      matched.argsText,
+                    );
+                    return held.complete.length > 0 && !held.tail;
+                  })();
+                  // A fragment repeating the id this part holds continues it
+                  // however complete the arguments look.
+                  const namesThisCall =
+                    !!stablePartId && matched?.toolCallId === stablePartId;
+                  // A next call opens with its own "{"; cutting on anything
+                  // else runs the tool twice on a stray scalar suffix.
+                  const bringsArgs = deltaArgs.trim().startsWith("{");
+                  const closedSlot = slotIsClosed && !namesThisCall;
+                  // An id naming a DIFFERENT call opens the next even before
+                  // its arguments arrive; alone it is that call's, stamped late.
+                  const idNamesAnotherCall =
+                    !!stablePartId &&
+                    !!call.function?.name &&
+                    !!matched?.toolName &&
+                    // Not a prefix test: a catalog holds both "web" and
+                    // "web_search".
+                    call.function.name !== matched.toolName;
+                  // A snapshot provider repeats the finished call verbatim
+                  // once it has an id. Exact repeats only, so parallel calls
+                  // differing anywhere still open separately.
+                  const resendsThisCall =
+                    !!stablePartId &&
+                    !!matched &&
+                    !matched._has_stable_id &&
+                    call.function?.name === matched.toolName &&
+                    deltaArgs === matched.argsText;
+                  // A name at a closed slot announces the next call: names
+                  // grow before the arguments, so nothing is left to extend. A
+                  // shared prefix is no proof ("web" after "web_search" is a
+                  // second call), but the SAME name is that call's, resent, and
+                  // llama-server and vLLM both resend it.
+                  const namesNextCall =
+                    !!call.function?.name &&
+                    !!matched?.toolName &&
+                    call.function.name !== matched.toolName;
+                  // An announcement has no object to close, so the rule above
+                  // cannot reach it. A different name bringing an object is the
+                  // next call; gluing gave "A_longB", which matches no tool.
+                  const announcesOverAnnouncement =
+                    ((matched as PositionedToolCallPart | undefined)
+                      ?._announced_only === true ||
+                      (matched as PositionedToolCallPart | undefined)
+                        ?._resend_suspect === true) &&
+                    !matched?.argsText &&
+                    !!call.function?.name &&
+                    !!matched?.toolName &&
+                    call.function.name !== matched.toolName &&
+                    bringsArgs;
+                  if (announcesOverAnnouncement && matched) {
+                    (matched as PositionedToolCallPart)._superseded = true;
+                  }
+                  // A name repeating the one a closed card holds says nothing
+                  // new about that call, so metadata riding it belongs to
+                  // whichever call the next object opens; merged now it
+                  // overwrites the signature the closed call arrived with and
+                  // leaves the next call unsigned.
+                  const extraIsAmbiguous =
+                    closedSlot &&
+                    !!call.function?.name &&
+                    !!matched?.toolName &&
+                    call.function.name === matched.toolName &&
+                    isPlainRecord(call.extra_content);
+                  const opensNextCall =
+                    (closedSlot &&
+                      (bringsArgs || idNamesAnotherCall || namesNextCall) &&
+                      !resendsThisCall) ||
+                    announcesOverAnnouncement;
+                  const existing = opensNextCall ? undefined : matched;
 
                   if (
                     stablePartId &&
@@ -6606,32 +7350,80 @@ export function createOpenAIStreamAdapter(
                   ) {
                     codexRoundToolCallIds.push(stablePartId);
                   }
-                  const argsFragment = call.function?.arguments ?? "";
+                  const argsFragment = deltaArgs;
                   streamedChars +=
                     argsFragment.length + (call.function?.name?.length ?? 0);
                   if (existing) {
                     const prevName = existing.toolName ?? "";
-                    const nextName = call.function?.name ?? prevName;
-                    const merged = (existing.argsText ?? "") + argsFragment;
+                    // Two dialects, and either alone breaks the other:
+                    // llama-server resends the whole name as it grows, OpenAI
+                    // streams it in fragments. Same rule as the backend.
+                    const nameFragment = call.function?.name ?? "";
+                    // Never once the object has closed AND a name is set: that
+                    // would put one tool's arguments under another's name.
+                    // Naming a card that has none is not a rename, and servers
+                    // do send the arguments first.
+                    const nextName =
+                      !nameFragment || (closedSlot && prevName)
+                        ? prevName
+                        : nameFragment.startsWith(prevName)
+                          ? nameFragment
+                          : prevName + nameFragment;
+                    // A snapshot repeated to carry the id adds nothing;
+                    // appending gives `{"a":1}{"a":1}` and splits it in two.
+                    const merged = resendsThisCall
+                      ? (existing.argsText ?? "")
+                      : (existing.argsText ?? "") + argsFragment;
+                    // A slot holding two objects is holding two calls: this is
+                    // how vLLM's id-less deltas glue `{"url":"a"}` and
+                    // `{"url":"b"}` into one unparsable string (issue #9807).
+                    // Cut on the object boundary, since the same tool twice has
+                    // no name to cut on; a delta with an id addresses its own.
+                    const split = stablePartId
+                      ? { complete: [], tail: "" }
+                      : scanArgsText(existing.toolCallId, merged);
+                    // Whether the last segment is still open decides who may
+                    // go on writing to it.
+                    const splitTailIsOpen = split.tail.length > 0;
+                    const segments = splitTailIsOpen
+                      ? [...split.complete, split.tail]
+                      : split.complete;
+                    const isSplit = segments.length > 1;
+                    // The slot keeps the object it opened with, under the name
+                    // and id it had; the rest are calls this delta introduced.
+                    const slotText = isSplit ? segments[0] : merged;
                     let parsedArgs: ToolCallMessagePart["args"] =
                       existing.args ?? {};
-                    if (merged) {
+                    if (slotText) {
                       try {
                         parsedArgs = JSON.parse(
-                          merged,
+                          slotText,
                         ) as ToolCallMessagePart["args"];
                       } catch {
                         parsedArgs = {
-                          _raw: merged,
+                          _raw: slotText,
                         } as ToolCallMessagePart["args"];
                       }
                     }
                     const prevExtra = (existing as PositionedToolCallPart)
                       .extra_content;
+                    // Merged, not replaced: a signature announced with the
+                    // name and one arriving with the arguments are different
+                    // fields of one call.
+                    if (extraIsAmbiguous && isPlainRecord(call.extra_content)) {
+                      pendingExtraByPartId.set(existing.toolCallId, {
+                        ...(pendingExtraByPartId.get(existing.toolCallId) ?? {}),
+                        ...call.extra_content,
+                      });
+                    }
+                    const incomingExtra = extraIsAmbiguous
+                      ? prevExtra
+                      : isPlainRecord(prevExtra) && isPlainRecord(call.extra_content)
+                        ? { ...prevExtra, ...call.extra_content }
+                        : call.extra_content;
                     if (
-                      call.extra_content !== undefined &&
-                      JSON.stringify(call.extra_content) !==
-                        JSON.stringify(prevExtra)
+                      incomingExtra !== undefined &&
+                      JSON.stringify(incomingExtra) !== JSON.stringify(prevExtra)
                     ) {
                       // Gemini puts the thought signature on the call, and
                       // the next turn is rejected without it.
@@ -6644,25 +7436,108 @@ export function createOpenAIStreamAdapter(
                       ...(stablePartId
                         ? { toolCallId: stablePartId, _has_stable_id: true }
                         : {}),
-                      toolName: nextName,
-                      argsText: merged,
+                      toolName: isSplit ? prevName || nextName : nextName,
+                      argsText: slotText,
                       args: parsedArgs,
-                      ...(call.extra_content !== undefined
-                        ? { extra_content: call.extra_content }
+                      ...(incomingExtra !== undefined && !isSplit
+                        ? { extra_content: incomingExtra }
                         : prevExtra !== undefined
                           ? { extra_content: prevExtra }
                           : {}),
                       ...(idx !== undefined ? { _delta_index: idx } : {}),
+                      // Any arguments field, "" included, means the call has
+                      // started, so the card survives the boundary sweep.
+                      _announced_only:
+                        (existing as PositionedToolCallPart)._announced_only ===
+                          true && call.function?.arguments === undefined,
+                      // A name that brought its own arguments was no resend.
+                      _resend_suspect:
+                        (existing as PositionedToolCallPart)._resend_suspect ===
+                          true && !slotText,
                     };
                     toolCallParts[existingIndex] = updated;
+                    // The card answers to its late id from here on, so what was
+                    // keyed on the provisional one moves and the id itself goes
+                    // back: the backend never reserved it for a call the
+                    // provider went on to name, and holding it makes the next
+                    // mint skip the number the backend hands out.
+                    if (stablePartId && stablePartId !== existing.toolCallId) {
+                      renameStreamedCard(existing.toolCallId, stablePartId);
+                    }
+                    if (isSplit) {
+                      // The slot keeps one segment, not the whole string, so
+                      // the resumable scan no longer describes it.
+                      boundaryScans.delete(existing.toolCallId);
+                      boundaryScans.delete(updated.toolCallId);
+                      // Appended, not inserted beside the slot, so a call
+                      // opened third reads third whichever index it reused.
+                      // This delta's own metadata, not the merge: the merged
+                      // fields belong to the call the slot was holding, and
+                      // Gemini validates a signature against the functionCall
+                      // part it was returned on.
+                      const born = bornSplitToolCalls(
+                        segments.slice(1),
+                        nextName,
+                        idx,
+                        call.extra_content,
+                      );
+                      // The last is the object still being written, if one is:
+                      // kept for later fragments, dropped if it never closes.
+                      if (splitTailIsOpen && born.length > 0) {
+                        openTailIds.add(born[born.length - 1].toolCallId);
+                      }
+                      toolCallParts.push(...born);
+                      // New calls are state, so they never wait on the gate.
+                      addedToolCall = true;
+                    }
                   } else {
                     const callId =
-                      stablePartId || `tool_call_${idx ?? toolCallParts.length}`;
+                      stablePartId ||
+                      mintStreamedCardId(idx ?? toolCallParts.length);
+                    if (!stablePartId) paintStreamedCard(callId);
 
                     if (!codexRoundToolCallIds.includes(callId)) {
                       codexRoundToolCallIds.push(callId);
                     }
-                    const argsText = argsFragment;
+                    // vLLM bundles several calls into one delta when the model
+                    // writes them in one pass. Same boundary as above.
+                    const freshSplit = stablePartId
+                      ? { complete: [], tail: "" }
+                      : splitTopLevelJsonObjects(argsFragment);
+                    const freshTailIsOpen = freshSplit.tail.length > 0;
+                    const freshSegments = freshTailIsOpen
+                      ? [...freshSplit.complete, freshSplit.tail]
+                      : freshSplit.complete;
+                    const freshIsSplit = freshSegments.length > 1;
+                    const nameFragment = call.function?.name ?? "";
+                    const heldName = matched?.toolName ?? "";
+                    // A second call to the same tool can arrive with no name,
+                    // the first delta having given it; blank names nothing.
+                    const freshName = nameFragment || heldName;
+                    // Across several calls the metadata belongs to the one
+                    // this delta closes, the last. Same as the backend.
+                    // The object proved the repeated name announced this call,
+                    // so what was waiting on the card it reached is this one's.
+                    const waiting = matched
+                      ? pendingExtraByPartId.get(matched.toolCallId)
+                      : undefined;
+                    if (waiting && matched) {
+                      pendingExtraByPartId.delete(matched.toolCallId);
+                    }
+                    const withWaiting =
+                      waiting === undefined
+                        ? call.extra_content
+                        : {
+                            ...waiting,
+                            ...(isPlainRecord(call.extra_content)
+                              ? call.extra_content
+                              : {}),
+                          };
+                    const freshOwnExtra = freshIsSplit ? undefined : withWaiting;
+                    const bornExtra = freshIsSplit ? withWaiting : undefined;
+                    const argsText = freshIsSplit
+                      ? freshSegments[0]
+                      : argsFragment;
                     let parsedArgs: ToolCallMessagePart["args"] = {};
                     if (argsText) {
                       try {
@@ -6678,19 +7553,55 @@ export function createOpenAIStreamAdapter(
                     const fresh: PositionedToolCallPart = {
                       type: "tool-call" as const,
                       toolCallId: callId,
-                      toolName: call.function?.name ?? "",
+                      toolName: freshName,
                       argsText,
                       args: parsedArgs,
                       textCursor: cumulativeText.length,
-                      ...(call.extra_content !== undefined
-                        ? { extra_content: call.extra_content }
+                      ...(freshOwnExtra !== undefined
+                        ? { extra_content: freshOwnExtra }
                         : {}),
                       ...(stablePartId ? { _has_stable_id: true } : {}),
                       ...(idx !== undefined ? { _delta_index: idx } : {}),
+                      ...(call.function?.arguments === undefined && freshName
+                        ? { _announced_only: true }
+                        : {}),
+                      // A fork's guess, or a slot the provider opened itself.
+                      // Only the provider's own announcement runs unfilled.
+                      ...(matched ? { _from_fork: true } : {}),
+                      // A name extending the one this fork left behind is most
+                      // likely it, resent. It still opens a card (the prefix is
+                      // no proof) but gives way rather than gluing
+                      // "alpha_longbeta".
+                      ...(freshName &&
+                      heldName &&
+                      freshName !== heldName &&
+                      freshName.startsWith(heldName)
+                        ? { _resend_suspect: true }
+                        : {}),
                     };
-                    toolCallParts.push(fresh);
+                    const born = freshIsSplit
+                      ? bornSplitToolCalls(
+                          freshSegments.slice(1),
+                          freshName,
+                          idx,
+                          bornExtra,
+                        )
+                      : [];
+                    // As above: the fork whose object is still open is held
+                    // only for the rest of the turn.
+                    if (freshTailIsOpen && born.length > 0) {
+                      openTailIds.add(born[born.length - 1].toolCallId);
+                    }
+                    toolCallParts.push(fresh, ...born);
                     addedToolCall = true;
                   }
+                }
+                // After this chunk's deltas: a provider can put finish_reason
+                // on the same chunk as the turn's last name-only delta.
+                if (chunk.choices?.[0]?.finish_reason) {
+                  // Ending the turn drops cards, so the publish below has to
+                  // see it rather than wait for the pacing gate.
+                  replayStateChanged ||= endProviderTurn();
                 }
                 if (
                   addedToolCall ||
@@ -6710,6 +7621,9 @@ export function createOpenAIStreamAdapter(
                   };
                 }
                 continue;
+              }
+              if (chunk.choices?.[0]?.finish_reason) {
+                replayStateChanged ||= endProviderTurn();
               }
               // extra_content can arrive with no content at all: a Gemini
               // thoughtSignature fragment, or the codex reasoning ledger on a
@@ -6771,8 +7685,7 @@ export function createOpenAIStreamAdapter(
               const parsedReasoningGroupCount =
                 countReasoningGroups(assistantContent);
               if (
-                parsedReasoningGroupCount >
-                reasoningDurationTracker.groupCount
+                parsedReasoningGroupCount > reasoningDurationTracker.groupCount
               ) {
                 reasoningDurationTracker.startGroup(
                   parsedReasoningGroupCount - 1,
@@ -6840,8 +7753,39 @@ export function createOpenAIStreamAdapter(
               retriedWithRefreshedKey = true;
               continue;
             }
+            // The tool ran, so the run it announced is owed whatever the acknowledgement
+            // did next: a small model that stalls on the follow-up sentence, a timeout, a
+            // dropped connection. Its card replaces this reply anyway, so nothing the
+            // failed acknowledgement would have said is lost. Not after Stop.
+            if (deepResearchHandoff.question !== null && !runSignal.aborted) {
+              try {
+                yield* startDeepResearch(deepResearchHandoff.question, runSignal);
+                return;
+              } catch (researchError) {
+                toast.error("Deep research could not start", {
+                  description:
+                    researchError instanceof Error
+                      ? researchError.message
+                      : String(researchError),
+                });
+              }
+            }
             throw streamError;
           }
+        }
+        // The model asked for Deep Research, so the run takes over from here and its card
+        // replaces this reply. Not after Stop: the user ended the turn before it got there.
+        if (deepResearchHandoff.question !== null && !runSignal.aborted) {
+          try {
+            yield* startDeepResearch(deepResearchHandoff.question, runSignal);
+          } catch (error) {
+            // The reply the model already wrote stays; the user can send again.
+            toast.error("Deep research could not start", {
+              description:
+                error instanceof Error ? error.message : String(error),
+            });
+          }
+          return;
         }
         // Strip a trailing ${...} template-literal fragment from external
         // streams (mistral magistral occasionally emits one at the end of an
@@ -6951,7 +7895,8 @@ export function createOpenAIStreamAdapter(
           }
           if (
             usageThreadIsVisible &&
-            useChatRuntimeStore.getState().params.checkpoint === params.checkpoint
+            useChatRuntimeStore.getState().params.checkpoint ===
+              params.checkpoint
           ) {
             useChatRuntimeStore.getState().setContextUsage(usage);
           }
@@ -7005,7 +7950,7 @@ export function createOpenAIStreamAdapter(
         ) {
           // Rendered parts, not the raw stream: `cumulativeText` carries <think>.
           const answerText = answerTextFromParts(
-            buildAssistantContent(mergeContinuation(cumulativeText)),
+            buildAssistantContent(mergeContinuation(cumulativeText, { final: true })),
           );
           const subjects = missingListSubjects(answerText, toolCallParts);
           if (subjects.length > 0) {
@@ -7083,7 +8028,7 @@ export function createOpenAIStreamAdapter(
         reasoningDurationTracker.finishGroup();
         yield {
           content: [
-            ...buildAssistantContent(mergeContinuation(cumulativeText)),
+            ...buildAssistantContent(mergeContinuation(cumulativeText, { final: true })),
             ...sourceParts,
             ...documentCitationParts,
           ],
@@ -7095,7 +8040,9 @@ export function createOpenAIStreamAdapter(
 
               openaiCodexReasoning: codexReasoningLedger,
               contextTruncation,
-              incomplete: incompleteReason ? { reason: incompleteReason } : undefined,
+              incomplete: incompleteReason
+                ? { reason: incompleteReason }
+                : undefined,
               // Persisted refusal flag driving the two-pass prune.
               anthropicRefusal: anthropicRefusalSeen || undefined,
               serverTimings: meta?.timings ?? undefined,
@@ -7111,6 +8058,7 @@ export function createOpenAIStreamAdapter(
                 : undefined,
               responseDetails: buildResponseDetails(finishedAt),
               timing: finalTiming,
+              ...generationCustom(),
             },
           },
         };
@@ -7122,12 +8070,26 @@ export function createOpenAIStreamAdapter(
           const msg = err instanceof Error ? err.message : String(err);
           if (err instanceof GenerationLengthError) {
             toast.error("Response ran out of tokens", {
+              // The error already chose between the Max Tokens and Context Length
+              // remedies from the cap and the prompt size. Repeating the Max Tokens
+              // advice here overrode that choice in the one place the user reads,
+              // sending them to a setting that is already at its maximum.
               description:
+                msg ||
                 "The model used the full Max Tokens budget while thinking " +
-                "and did not produce a final answer. Increase Max Tokens in " +
-                "chat Settings or turn off thinking, then retry.",
+                  "and did not produce a final answer. Increase Max Tokens in " +
+                  "chat Settings or turn off thinking, then retry.",
               duration: 8000,
             });
+          } else if (err instanceof ChatGenerationTerminalError) {
+            if (err.generationStatus === "failed") {
+              toast.error("Response interrupted", {
+                description:
+                  err.message ||
+                  "The Studio backend stopped during generation.",
+                duration: 8000,
+              });
+            }
           } else if (err instanceof StreamInterruptedError) {
             // Connection dropped mid-turn: surface it explicitly (the rethrow
             // below also marks the message with an inline error + Retry).
@@ -7204,7 +8166,7 @@ export function createOpenAIStreamAdapter(
         }
         if (!abortSignal.aborted) {
           closeReasoningContent();
-          const partialText = mergeContinuation(cumulativeText);
+          const partialText = mergeContinuation(cumulativeText, { final: true });
           const partialContent = buildAssistantContent(partialText);
           if (partialContent.length > 0) {
             const partialTiming = buildTiming(
@@ -7227,9 +8189,13 @@ export function createOpenAIStreamAdapter(
                     reason:
                       err instanceof GenerationLengthError
                         ? "length"
-                        : "interrupted",
+                        : err instanceof ChatGenerationTerminalError &&
+                            err.generationStatus === "cancelled"
+                          ? "cancelled"
+                          : "interrupted",
                   },
                   timing: partialTiming,
+                  ...generationCustom(),
                 },
               },
             };
@@ -7237,6 +8203,21 @@ export function createOpenAIStreamAdapter(
         }
         throw err;
       } finally {
+        // Unconditional, and both ids: the pre-admission claim uses `cancelId`, and a run
+        // left claimed after its stream died is one this tab would never recover.
+        releaseLiveGenerationRun(cancelId);
+        if (generationRunId) releaseLiveGenerationRun(generationRunId);
+        // A durable run that finished here is no longer active, and only a later
+        // history load would otherwise say so. Until then the thread reads as durable
+        // and a subscriber-owned stream started on it next would be capped.
+        if (
+          generationRunId &&
+          (generationStatus === "completed" ||
+            generationStatus === "failed" ||
+            generationStatus === "cancelled")
+        ) {
+          forgetServerActiveGenerationRun(generationRunId);
+        }
         runSignal.removeEventListener("abort", onAbortCancel);
         abortSignal.removeEventListener("abort", forwardAbort);
         // Resolve once: the clears below drop the owner the lookup keys on.
@@ -7288,8 +8269,7 @@ export function createOpenAIStreamAdapter(
         args.unstable_threadId,
         useChatRuntimeStore.getState().activeThreadId,
       );
-      const reservationToken =
-        findPreStreamRunReservation(preStreamThreadIds);
+      const reservationToken = findPreStreamRunReservation(preStreamThreadIds);
       if (reservationToken) {
         adoptPreStreamRunReservation(reservationToken, preStreamThreadIds);
       }

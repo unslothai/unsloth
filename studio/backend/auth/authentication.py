@@ -45,7 +45,7 @@ def is_keyless(credentials: Optional[HTTPAuthorizationCredentials]) -> bool:
 
 
 def _names_a_session(token: str) -> bool:
-    """Whether this bearer claims a Studio sign-in this install actually knows.
+    """Whether this bearer claims an Unsloth sign-in this install actually knows.
 
     A session token stays authoritative even under keyless API access: letting an
     expired one through would leave the app running as the admin instead of prompting
@@ -125,7 +125,7 @@ def request_admitted_without_credential(request: Request) -> bool:
 
 
 def admitted_without_session(request: Any) -> bool:
-    """True when keyless API access lets this request through with no Studio sign-in.
+    """True when keyless API access lets this request through with no Unsloth sign-in.
 
     The single predicate behind both the auth dependency below and the route-level
     checks that ask whether a caller is the Unsloth UI or a programmatic client.
@@ -450,20 +450,15 @@ def _invalid_api_key_detail(token: str) -> str:
     return "Invalid or expired API key"
 
 
-def _admin_credential(*, allow_password_change: bool) -> Tuple[str, Optional[str]]:
-    """Resolve the local admin for a caller admitted by the keyless API access setting."""
+def _admin_credential() -> Tuple[str, Optional[str]]:
+    """Resolve the local admin for a keyless caller, without the UI password gate."""
     record = get_user_and_secret(DEFAULT_ADMIN_USERNAME)
     if record is None:
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = "Invalid or expired token",
         )
-    _salt, _pwd_hash, jwt_secret, must_change_password = record
-    if must_change_password and not allow_password_change:
-        raise HTTPException(
-            status_code = status.HTTP_403_FORBIDDEN,
-            detail = "Password change required",
-        )
+    _salt, _pwd_hash, jwt_secret, _must_change_password = record
     return DEFAULT_ADMIN_USERNAME, credential_generation(jwt_secret)
 
 
@@ -479,9 +474,7 @@ async def _get_current_credential(
     Credential reads run in the threadpool so stalled SQLite cannot block the event loop.
     """
     if credentials.scheme == KEYLESS_SCHEME:
-        return await run_in_threadpool(
-            _admin_credential, allow_password_change = allow_password_change
-        )
+        return await run_in_threadpool(_admin_credential)
 
     if credentials.scheme == KEYLESS_FALLBACK_SCHEME:
         from utils.keyless_api_access import APPROVED_DUMMY_BEARERS
@@ -490,9 +483,7 @@ async def _get_current_credential(
                 status_code = status.HTTP_401_UNAUTHORIZED,
                 detail = "Invalid authentication credentials",
             )
-        return await run_in_threadpool(
-            _admin_credential, allow_password_change = allow_password_change
-        )
+        return await run_in_threadpool(_admin_credential)
 
     token = credentials.credentials
 

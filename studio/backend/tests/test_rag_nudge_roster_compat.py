@@ -4,7 +4,7 @@
 """The document roster on old installs, hostile file names, and every platform.
 
 The roster reads ``rag.db`` on the request path and puts what it finds in the system
-prompt, so the two ways it can go wrong are a database written by an older Studio that
+prompt, so the two ways it can go wrong are a database written by an older Unsloth that
 does not have the tables the predicate names, and a file name carrying something the
 quoting does not stop. Both are covered here, along with the async conversion and a
 proof that none of it depends on the host or the accelerator.
@@ -45,7 +45,7 @@ def _more(out):
 @pytest.fixture
 def fresh_process(monkeypatch):
     """rag_home resets _schema_ready but not _extension_loaded, and rag_available()
-    short-circuits on the latter. Reset both, which is what a Studio start looks like."""
+    short-circuits on the latter. Reset both, which is what an Unsloth start looks like."""
     from storage import rag_db
 
     monkeypatch.setattr(rag_db, "_extension_loaded", False)
@@ -223,7 +223,7 @@ def test_roster_is_quiet_when_the_vector_extension_is_missing(rag_home, monkeypa
 
 
 def test_roster_ignores_columns_and_tables_it_does_not_know(rag_conn):
-    """A9. Forwards compatibility: a newer Studio's extra columns must not confuse it."""
+    """A9. Forwards compatibility: a newer Unsloth's extra columns must not confuse it."""
     _doc(rag_conn, "project_p1", "d1", "future.pdf")
     rag_conn.execute("ALTER TABLE documents ADD COLUMN some_future_column TEXT")
     rag_conn.execute("CREATE TABLE some_future_table (x TEXT)")

@@ -399,6 +399,137 @@ def test_a_partial_spill_across_two_gpus_abstains():
     assert two_cards.changed is False
 
 
+def test_a_safe_partial_spill_across_two_gpus_is_planned():
+    sizes = [GIB // 2, GIB // 2, GIB // 2, 2 * GIB]
+    layout = ModelLayout(
+        arch = "qwen35",
+        n_layers = 4,
+        n_attention_layers = 4,
+        blocks = tuple(
+            BlockLayout(index = i, spillable_bytes = size, resident_bytes = GIB // 10)
+            for i, size in enumerate(sizes)
+        ),
+        lm_head_bytes = GIB // 10,
+        token_embd_bytes = 0,
+        kv_bytes_per_token_f16 = 0,
+        recurrent_bytes = 0,
+        n_ctx_train = 4096,
+        complete = True,
+    )
+    opts = PlanOptions(
+        overhead_bytes_per_device = GIB,
+        pipeline_overhead_bytes = GIB,
+        host_ram_headroom_bytes = 0,
+    )
+
+    plan = plan_placement(
+        layout,
+        [23 * GIB // 10, 22 * GIB // 10],
+        64 * GIB,
+        4096,
+        opts = opts,
+    )
+
+    assert plan.changed is True
+    assert plan.spilled_blocks == (0, 3)
+
+
+def test_partial_spill_selection_covers_each_device_shortfall():
+    sizes = [1200 * MIB, 0, 0, 600 * MIB, 600 * MIB]
+    layout = ModelLayout(
+        arch = "qwen35",
+        n_layers = 5,
+        n_attention_layers = 5,
+        blocks = tuple(
+            BlockLayout(index = i, spillable_bytes = size, resident_bytes = 0)
+            for i, size in enumerate(sizes)
+        ),
+        lm_head_bytes = 0,
+        token_embd_bytes = 0,
+        kv_bytes_per_token_f16 = 0,
+        recurrent_bytes = 0,
+        n_ctx_train = 4096,
+        complete = True,
+    )
+    plan = plan_placement(
+        layout,
+        [1300 * MIB, 100 * MIB],
+        64 * GIB,
+        4096,
+        opts = PlanOptions(overhead_bytes_per_device = 0, host_ram_headroom_bytes = 0),
+        split_weights_per_device = [1, 1],
+    )
+
+    assert plan.spilled_blocks == (3, 4)
+
+
+def test_per_device_selection_cannot_drop_cache_remainder_from_the_pool():
+    spillable = [17, 4, 14, 20, 3, 5, 17, 17]
+    resident = [1, 5, 5, 1, 6, 6, 5, 0]
+    layout = ModelLayout(
+        arch = "qwen35",
+        n_layers = 8,
+        n_attention_layers = 8,
+        blocks = tuple(
+            BlockLayout(index = i, spillable_bytes = spill, resident_bytes = keep)
+            for i, (spill, keep) in enumerate(zip(spillable, resident))
+        ),
+        lm_head_bytes = 0,
+        token_embd_bytes = 0,
+        other_resident_bytes = 8,
+        kv_bytes_per_token_f16 = 3,
+        recurrent_bytes = 0,
+        n_ctx_train = 4096,
+        complete = True,
+    )
+    opts = PlanOptions(
+        overhead_bytes_per_device = 8,
+        pipeline_overhead_bytes = 5,
+        extra_resident_bytes = 4,
+        host_ram_headroom_bytes = 0,
+    )
+    plan = plan_placement(
+        layout,
+        [90, 25],
+        1024,
+        5,
+        opts = opts,
+        split_weights_per_device = [56, 27],
+    )
+
+    assert not plan.changed or plan.vram_bytes <= 90
+
+
+def test_output_device_shortfall_can_reach_the_lm_head_rung():
+    layout = ModelLayout(
+        arch = "qwen35",
+        n_layers = 3,
+        n_attention_layers = 3,
+        blocks = tuple(
+            BlockLayout(index = i, spillable_bytes = size, resident_bytes = 0)
+            for i, size in enumerate([100, 100, 10])
+        ),
+        lm_head_bytes = 100,
+        token_embd_bytes = 0,
+        kv_bytes_per_token_f16 = 0,
+        recurrent_bytes = 0,
+        n_ctx_train = 4096,
+        complete = True,
+    )
+    plan = plan_placement(
+        layout,
+        [100, 20],
+        1024,
+        1,
+        opts = PlanOptions(overhead_bytes_per_device = 0, host_ram_headroom_bytes = 0),
+        split_weights_per_device = [1, 1],
+    )
+
+    assert plan.spilled_blocks == (0,)
+    assert plan.spilled_lm_head is True
+    assert plan.vram_bytes <= 120
+
+
 def test_a_full_spill_is_checked_per_device_not_assumed():
     """A full spill used to be waved through on the theory that "every device
     keeps its layer share". It does keep its ROW share -- llama.cpp splits rows
@@ -453,6 +584,46 @@ def test_the_row_split_matches_llama_cpp():
     assert _device_slots(4, [0, 0]) == [[0, 1, 2, 3], []]
 
 
+def test_the_row_split_uses_llama_cpp_float32_boundaries():
+    rows = _device_slots(353, [39407 * MIB, 12114 * MIB])
+    assert len(rows[0]) == 270
+    assert 270 in rows[1]
+
+
+def test_a_float32_split_boundary_cannot_approve_an_oom():
+    blocks = tuple(
+        BlockLayout(
+            index = i,
+            spillable_bytes = 2 * GIB,
+            resident_bytes = 2 * GIB if i == 270 else 0,
+        )
+        for i in range(352)
+    )
+    layout = ModelLayout(
+        arch = "qwen35",
+        n_layers = 352,
+        n_attention_layers = 352,
+        blocks = blocks,
+        lm_head_bytes = 0,
+        token_embd_bytes = 0,
+        kv_bytes_per_token_f16 = 0,
+        recurrent_bytes = 0,
+        n_ctx_train = 4096,
+        complete = True,
+    )
+    plan = plan_placement(
+        layout,
+        [2 * GIB, GIB],
+        1024 * GIB,
+        4096,
+        opts = PlanOptions(overhead_bytes_per_device = 0, host_ram_headroom_bytes = 0),
+        split_weights_per_device = [39407 * MIB, 12114 * MIB],
+    )
+
+    assert plan.changed is False
+    assert "device 1" in plan.reason
+
+
 def test_the_per_device_check_passes_when_the_shares_really_fit():
     """The check must not be a disguised "never plan on two GPUs". Cards sized so
     that each one's row share fits with room to spare return None -- no abstain
@@ -487,6 +658,87 @@ def test_the_per_device_check_passes_when_the_shares_really_fit():
         )
         is None
     )
+
+
+def test_the_per_device_check_charges_each_secondary_pipeline_reserve():
+    layout = uneven_layout()
+    spilled = {b.index for b in layout.blocks}
+    cache_per_layer = layout.kv_bytes(4096, 2) // layout.n_layers
+    device_one_used = layout.blocks[3].resident_bytes + cache_per_layer + layout.lm_head_bytes
+    pipeline_reserve = GIB
+    opts = PlanOptions(overhead_bytes_per_device = 0, pipeline_overhead_bytes = pipeline_reserve)
+
+    below = _per_device_shortfall(
+        layout,
+        opts,
+        4096,
+        spilled,
+        False,
+        [4 * GIB, device_one_used + pipeline_reserve - 1],
+        quantised = False,
+        kv_bytes_floor = 0,
+        split_weights_per_device = [1, 1],
+    )
+    exact = _per_device_shortfall(
+        layout,
+        opts,
+        4096,
+        spilled,
+        False,
+        [4 * GIB, device_one_used + pipeline_reserve],
+        quantised = False,
+        kv_bytes_floor = 0,
+        split_weights_per_device = [1, 1],
+    )
+    above = _per_device_shortfall(
+        layout,
+        opts,
+        4096,
+        spilled,
+        False,
+        [4 * GIB, device_one_used + pipeline_reserve + 1],
+        quantised = False,
+        kv_bytes_floor = 0,
+        split_weights_per_device = [1, 1],
+    )
+
+    assert below is not None and "device 1" in below
+    assert exact is None
+    assert above is None
+
+
+def test_an_empty_secondary_still_has_to_fit_its_fixed_reserves():
+    layout = uneven_layout()
+    spilled = {b.index for b in layout.blocks}
+    pipeline_reserve = GIB
+    opts = PlanOptions(overhead_bytes_per_device = 0, pipeline_overhead_bytes = pipeline_reserve)
+
+    below = _per_device_shortfall(
+        layout,
+        opts,
+        4096,
+        spilled,
+        True,
+        [4 * GIB, pipeline_reserve - 1],
+        quantised = False,
+        kv_bytes_floor = 0,
+        split_weights_per_device = [1000, 1],
+    )
+    exact = _per_device_shortfall(
+        layout,
+        opts,
+        4096,
+        spilled,
+        True,
+        [4 * GIB, pipeline_reserve],
+        quantised = False,
+        kv_bytes_floor = 0,
+        split_weights_per_device = [1000, 1],
+    )
+
+    assert _device_slots(layout.n_layers + 1, [1000, 1])[1] == []
+    assert below is not None and "device 1" in below
+    assert exact is None
 
 
 def test_multi_gpu_credit_sums():
@@ -1086,3 +1338,155 @@ def test_a_sliding_window_model_abstains_on_a_multi_gpu_split():
     # One card has no split to mislocate the caches across.
     one = plan_placement(swa, [_ALL_SPILL_VRAM], 256 * GIB, 4096, opts = _NO_OVERHEAD)
     assert len(one.spilled_blocks) == len(layout.blocks)
+
+
+def _moe_reader(names):
+    """A 2-block MoE GGUF whose expert tensors use ``names``."""
+    fields = dict(_shard_fields())
+    fields["llama.block_count"] = 2
+    fields["llama.expert_count"] = 64
+    fields["llama.expert_used_count"] = 8
+    tensors = []
+    for i in range(2):
+        for n in names:
+            tensors.append(_StubTensor(f"blk.{i}.{n}.weight", 400 * MIB))
+        tensors.append(_StubTensor(f"blk.{i}.attn_q.weight", 10 * MIB))
+    tensors.append(_StubTensor("token_embd.weight", 100 * MIB))
+    tensors.append(_StubTensor("output.weight", 100 * MIB))
+    return _StubReader(fields, tensors)
+
+
+@pytest.mark.parametrize(
+    "label,names,expect_mib",
+    [
+        ("split", ["ffn_up_exps", "ffn_gate_exps", "ffn_down_exps"], 1200),
+        # Fused gate+up: the same two matrices under one tensor name.
+        ("fused", ["ffn_gate_up_exps", "ffn_down_exps"], 800),
+        # grovemoe's chunked experts, one tensor per chunk-expert.
+        ("chunked", ["ffn_up_chexps", "ffn_gate_chexps", "ffn_down_chexps"], 1200),
+    ],
+)
+def test_every_expert_spelling_is_spillable(label, names, expect_mib):
+    """ffn_gate_up_exps and ffn_*_chexps are experts under another name: created
+    per expert and dispatched with GGML_OP_MUL_MAT_ID, so just as cheap to spill.
+    Matching only the split form left every fused-expert GGUF with nothing the
+    planner was allowed to move."""
+    layout = _layout_from_reader(_moe_reader(names))
+    assert layout.is_moe
+    assert layout.blocks[0].spillable_bytes == expect_mib * MIB
+
+    # The pattern must move exactly what the layout counted.
+    pattern = spill_pattern_for(layout, None)
+    for n in names:
+        assert re.search(pattern, f"blk.0.{n}.weight"), f"{label}: {n} not matched"
+
+
+def test_routed_latent_projections_are_never_spilled():
+    """kimi-k3's ffn_routed_up/down read like experts and are not: no expert axis
+    and plain GGML_OP_MUL_MAT, so every token crosses them. Spilling one puts a
+    hot tensor on the host at the rate the cost model reserves for cold ones."""
+    layout = _layout_from_reader(_moe_reader(["ffn_routed_up", "ffn_routed_down"]))
+    assert layout.blocks[0].spillable_bytes == 0
+    pattern = spill_pattern_for(layout, None)
+    assert not re.search(pattern, "blk.0.ffn_routed_up.weight")
+    assert not re.search(pattern, "blk.0.ffn_routed_down.weight")
+
+
+def _swa_layout(n_blocks = 64):
+    """Every layer is attention AND the cache is per-layer uneven -- the shape
+    n_attention_layers cannot describe."""
+    layout = _layout_from_reader(_StubReader(_shard_fields(), _shard_tensors(range(n_blocks))))
+    return replace(layout, has_swa = True)
+
+
+def test_a_per_layer_vector_replaces_the_sliding_window_abstain():
+    """Gemma3 interleaves 5:1, so a window layer's cache is a fraction of a
+    full-context one. Without a vector the planner would have to spread the cache
+    evenly, so it refuses; with one it knows where the big caches land."""
+    layout = _swa_layout()
+    half = _ALL_SPILL_VRAM // 2
+    spilled = {b.index for b in layout.blocks}
+
+    without = _per_device_shortfall(
+        layout,
+        _NO_OVERHEAD,
+        4096,
+        spilled,
+        False,
+        [half, half],
+        quantised = False,
+        kv_bytes_floor = 0,
+    )
+    assert without is not None and "sliding-window" in without
+
+    # 1 full-attention layer in every 5, the rest windowed at a 64th of the cost.
+    weights = [64 if (i % 5 == 0) else 1 for i in range(layout.n_layers)]
+    with_vector = _per_device_shortfall(
+        layout,
+        _NO_OVERHEAD,
+        4096,
+        spilled,
+        False,
+        [half, half],
+        quantised = False,
+        kv_bytes_floor = 0,
+        kv_layer_weights = weights,
+    )
+    assert with_vector is None or "sliding-window" not in with_vector
+
+
+def test_the_vector_places_the_cache_it_does_not_resize_it():
+    """Scaled to the total the caller already priced, so changing only its SHAPE
+    moves the cache between devices without changing how much cache there is."""
+    layout = _swa_layout()
+    spilled = {b.index for b in layout.blocks}
+    n = layout.n_layers
+    budgets = [_ALL_SPILL_VRAM // 2, _ALL_SPILL_VRAM // 2]
+
+    # All the cache on the rows device 0 owns, then all on device 1's.
+    front = [1] * (n // 2) + [0] * (n - n // 2)
+    back = [0] * (n // 2) + [1] * (n - n // 2)
+    a = _per_device_shortfall(
+        layout,
+        _NO_OVERHEAD,
+        32768,
+        spilled,
+        False,
+        budgets,
+        quantised = False,
+        kv_bytes_floor = 8 * GIB,
+        kv_layer_weights = front,
+    )
+    b = _per_device_shortfall(
+        layout,
+        _NO_OVERHEAD,
+        32768,
+        spilled,
+        False,
+        budgets,
+        quantised = False,
+        kv_bytes_floor = 8 * GIB,
+        kv_layer_weights = back,
+    )
+    assert a is not None and b is not None
+    assert "device 0" in a, "the front-loaded cache overflows the first card"
+    assert "device 1" in b, "the back-loaded cache overflows the second"
+
+
+def test_a_wrong_length_vector_is_ignored_rather_than_trusted():
+    """A vector of the wrong length is not evidence: abstain, do not stretch it."""
+    layout = _swa_layout()
+    spilled = {b.index for b in layout.blocks}
+    half = _ALL_SPILL_VRAM // 2
+    got = _per_device_shortfall(
+        layout,
+        _NO_OVERHEAD,
+        4096,
+        spilled,
+        False,
+        [half, half],
+        quantised = False,
+        kv_bytes_floor = 0,
+        kv_layer_weights = [1, 2, 3],
+    )
+    assert got is not None and "sliding-window" in got

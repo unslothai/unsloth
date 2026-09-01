@@ -2,7 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
-import { mirrorHfTokenInto, useHfTokenStore } from "@/features/hub";
+import {
+  mirrorHfTokenInto,
+  useHfTokenStore,
+} from "@/features/hub/stores/hf-token-store";
 import {
   cachedPinnableGpuIndexKind,
   reconcileCachedGpuSelection,
@@ -47,7 +50,7 @@ import {
 } from "../lib/per-model-params";
 import {
   type ChatLoraSummary,
-  type ChatModelSummary,
+  type ChatModelRow,
   DEFAULT_INFERENCE_PARAMS,
   type InferenceParams,
 } from "../types/runtime";
@@ -63,6 +66,12 @@ import {
   normalizeStoredRagAutoInject,
 } from "../utils/mirrored-chat-settings";
 import { retryablePatchAfterFailure } from "../utils/settings-retry";
+import {
+  DEFAULT_AUTO_COMPACT_ENABLED,
+  DEFAULT_COMPACTION_HEADROOM_RATIO,
+  DEFAULT_CONTEXT_POLICY,
+  type LocalContextPolicy,
+} from "../utils/auto-compaction";
 import { preserveThinkingDefaultFromLoad } from "../lib/resolve-preserve-thinking-default";
 import {
   THREAD_SCOPED_PARAM_KEYS,
@@ -81,8 +90,17 @@ import {
 import { shouldAdvanceQueuedSettingsEpoch } from "../utils/queued-settings-epoch";
 import type { MmprojFallbackReason } from "../types/api";
 import type { ResearchWebsitePolicy } from "../types/research";
+import {
+  CHAT_GPU_MEMORY_MODE_KEY,
+  CHAT_SPECULATIVE_TYPE_KEY,
+} from "./chat-runtime-keys";
 import { useExternalProvidersStore } from "./external-providers-store";
 import { PLUS_MENU_PINS_STORAGE_KEY } from "./plus-menu-prefs-store";
+
+export {
+  CHAT_GPU_MEMORY_MODE_KEY,
+  CHAT_SPECULATIVE_TYPE_KEY,
+} from "./chat-runtime-keys";
 
 export const CHAT_REASONING_ENABLED_KEY = "unsloth_chat_reasoning_enabled";
 export const CHAT_TOOLS_ENABLED_KEY = "unsloth_chat_tools_enabled";
@@ -108,6 +126,7 @@ export const CHAT_EXPAND_QUANTIZATIONS_KEY =
   "unsloth_chat_expand_quantizations";
 export const CHAT_SHOW_ALL_QUANTIZATIONS_KEY =
   "unsloth_chat_show_all_quantizations";
+export const CHAT_SHOW_MEMORY_BAR_KEY = "unsloth_chat_show_memory_bar";
 export const MODELS_FIT_ON_DEVICE_ONLY_KEY =
   "unsloth_models_fit_on_device_only";
 export const CHAT_BYPASS_PERMISSIONS_KEY = "unsloth_chat_bypass_permissions";
@@ -134,9 +153,6 @@ export const CHAT_RAG_AUTOINJECT_MIN_SCORE_KEY =
   "unsloth_chat_rag_autoinject_min_score";
 export const CHAT_RAG_OCR_KEY = "unsloth_chat_rag_ocr_scanned";
 export const CHAT_RAG_CAPTION_KEY = "unsloth_chat_rag_caption_figures";
-export const CHAT_SPECULATIVE_TYPE_KEY = "unsloth_chat_speculative_type";
-export const CHAT_GPU_MEMORY_MODE_KEY = "unsloth_chat_gpu_memory_mode";
-
 // Persist only the model-agnostic intents (auto/ngram/off). The model-specific
 // drafter modes (mtp/mtp+ngram/dspark/dflash) and spec_draft_n_max stay session-only:
 // a persisted choice would silently no-op on a model with no MTP head or no
@@ -959,6 +975,14 @@ function heldThreadScopedParamValue(key: string): unknown {
 }
 
 /**
+ * The first value that is actually set. `??` cannot do this any more: `seed` is null when
+ * the pin is cleared, and null there is the chat's own choice rather than a missing key.
+ */
+function firstSetThreadScopedValue(...values: unknown[]): unknown {
+  return values.find((value) => value !== undefined);
+}
+
+/**
  * Put back the sampling keys the open chat owns, so a model load or status poll applying
  * that model's recommendation leaves the chat running on what it stored. Only an unpinned
  * chat falls through to the model's values.
@@ -966,8 +990,12 @@ function heldThreadScopedParamValue(key: string): unknown {
 function restoreThreadScopedParams(params: InferenceParams): InferenceParams {
   const kept: Record<string, unknown> = {};
   for (const key of THREAD_SCOPED_PARAM_KEYS) {
-    // ?? and not ||: 0, "" and -1 are all values a user sets on purpose here.
-    const held = heldThreadScopedParamValue(key) ?? threadScopedOverride(key);
+    // Not ||, and not ?? either: 0, "", -1 and a cleared seed's null are all values a
+    // user sets on purpose here.
+    const held = firstSetThreadScopedValue(
+      heldThreadScopedParamValue(key),
+      threadScopedOverride(key),
+    );
     if (held === undefined || isSameThreadScopedValue(held, params[key])) {
       continue;
     }
@@ -1005,10 +1033,11 @@ function withoutActiveThreadParams(
     if (held === undefined && threadScopedOverride(key) === undefined) continue;
     // For a held key the installation copy can still be null and the store no longer
     // holds the pre-edit value; the sample taken when the window opened is that value.
-    const own =
-      remembered?.[key] ??
-      globalThreadScopedDefaults?.[key] ??
-      (held !== undefined ? pairingWindowDefaults?.[key] : undefined);
+    const own = firstSetThreadScopedValue(
+      remembered?.[key],
+      globalThreadScopedDefaults?.[key],
+      held !== undefined ? pairingWindowDefaults?.[key] : undefined,
+    );
     if (own === undefined || isSameThreadScopedValue(own, params[key])) {
       continue;
     }
@@ -2415,8 +2444,9 @@ type ChatRuntimeStore = {
   customPresets: Preset[];
   activePreset: string;
   activePresetSource: ChatPresetSource;
-  models: ChatModelSummary[];
+  models: ChatModelRow[];
   loras: ChatLoraSummary[];
+  loraInventorySettled: boolean;
   runningByThreadId: Record<string, boolean>;
   /**
      * The subset of `runningByThreadId` decoding on the local llama-server. Swapping the local
@@ -2595,6 +2625,9 @@ type ChatRuntimeStore = {
   generatingStatus: string | null;
   autoHealToolCalls: boolean;
   nudgeToolCalls: boolean;
+  autoCompactEnabled: boolean;
+  contextPolicy: LocalContextPolicy;
+  compactionHeadroomRatio: number;
   maxToolCallsPerMessage: number;
   toolCallTimeout: number;
   kvCacheDtype: string | null;
@@ -2715,6 +2748,10 @@ type ChatRuntimeStore = {
   expandQuantizations: boolean;
   /** Persisted: show non-downloaded quantizations too, not just downloaded. */
   showAllQuantizations: boolean;
+  /** Persisted, off by default: chart each downloaded model's VRAM footprint
+   *  under its row. Opt-in because the figures are estimates, and a row that
+   *  cannot be sized is better left plain than annotated with a guess. */
+  showMemoryBar: boolean;
   /** Persisted, shared by the chat model selector and the Hub page: list only
    *  models whose size fits this device's memory budget. */
   fitOnDeviceOnly: boolean;
@@ -2791,7 +2828,7 @@ type ChatRuntimeStore = {
   setCustomPresets: (presets: Preset[]) => void;
   setActivePreset: (name: string) => void;
   setActivePresetSource: (source: ChatPresetSource) => void;
-  setModels: (models: ChatModelSummary[]) => void;
+  setModels: (models: ChatModelRow[]) => void;
   setLoras: (loras: ChatLoraSummary[]) => void;
   /**
      * `local` defaults to true, so an unqualified caller still counts for the model-swap gate.
@@ -2932,6 +2969,9 @@ type ChatRuntimeStore = {
   clearActiveDiffusionCanvasForThread: (threadId: string | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
   setNudgeToolCalls: (enabled: boolean) => void;
+  setAutoCompactEnabled: (enabled: boolean) => void;
+  setContextPolicy: (policy: LocalContextPolicy) => void;
+  setCompactionHeadroomRatio: (ratio: number) => void;
   setMaxToolCallsPerMessage: (value: number) => void;
   setToolCallTimeout: (value: number) => void;
   setGpuMemoryMode: (mode: "auto" | "manual") => void;
@@ -2944,6 +2984,7 @@ type ChatRuntimeStore = {
   ) => void;
   setExpandQuantizations: (value: boolean) => void;
   setShowAllQuantizations: (value: boolean) => void;
+  setShowMemoryBar: (value: boolean) => void;
   setFitOnDeviceOnly: (value: boolean) => void;
   setPendingAudio: (base64: string, name: string) => void;
   clearPendingAudio: () => void;
@@ -2975,6 +3016,9 @@ type ScalarSettingKey =
   | "searchImages"
   | "autoHealToolCalls"
   | "nudgeToolCalls"
+  | "autoCompactEnabled"
+  | "contextPolicy"
+  | "compactionHeadroomRatio"
   | "maxToolCallsPerMessage"
   | "toolCallTimeout"
   | "reasoningEnabled"
@@ -3025,6 +3069,9 @@ const SCALAR_SETTING_KEYS = [
   "searchImages",
   "autoHealToolCalls",
   "nudgeToolCalls",
+  "autoCompactEnabled",
+  "contextPolicy",
+  "compactionHeadroomRatio",
   "maxToolCallsPerMessage",
   "toolCallTimeout",
   "reasoningEnabled",
@@ -3673,6 +3720,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   activePresetSource: getPresetSource("Default"),
   models: [],
   loras: [],
+  loraInventorySettled: false,
   runningByThreadId: {},
   localRunByThreadId: {},
   runOwnerByThreadId: {},
@@ -3754,6 +3802,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   activeDiffusionCanvasByThreadId: {},
   autoHealToolCalls: true,
   nudgeToolCalls: true,
+  autoCompactEnabled: DEFAULT_AUTO_COMPACT_ENABLED,
+  contextPolicy: DEFAULT_CONTEXT_POLICY,
+  compactionHeadroomRatio: DEFAULT_COMPACTION_HEADROOM_RATIO,
   maxToolCallsPerMessage: 25,
   toolCallTimeout: 5,
   kvCacheDtype: null,
@@ -3808,6 +3859,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   expandQuantizations: loadBool(CHAT_EXPAND_QUANTIZATIONS_KEY, false),
   // Off by default: On Device lists what is on disk, not the whole repo.
   showAllQuantizations: loadBool(CHAT_SHOW_ALL_QUANTIZATIONS_KEY, false),
+  showMemoryBar: loadBool(CHAT_SHOW_MEMORY_BAR_KEY, false),
   fitOnDeviceOnly: loadBool(MODELS_FIT_ON_DEVICE_ONLY_KEY, false),
   loadedIsMultimodal: false,
   loadedIsDiffusion: false,
@@ -4038,7 +4090,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return { activePresetSource };
     }),
   setModels: (models) => set({ models }),
-  setLoras: (loras) => set({ loras }),
+  setLoras: (loras) => set({ loras, loraInventorySettled: true }),
   setThreadRunning: (threadId, running, options) =>
     set((state) => {
       const next = { ...state.runningByThreadId };
@@ -4283,7 +4335,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
               specDrafterKind: null,
             }
           : {}),
-        // Switching to a connection whose provider cannot run Studio's tool
+        // Switching to a connection whose provider cannot run Unsloth's tool
         // loop disables Deep Research; a capable one keeps the user's choice.
         ...(clampsDeepResearch ? { deepResearchEnabled: false } : {}),
       };
@@ -4404,7 +4456,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           continue;
         }
         // a key the snapshot omits falls back to the defaults, not to the outgoing chat's value.
-        const value = stored?.[key] ?? globalThreadScopedDefaults?.[key];
+        const value = firstSetThreadScopedValue(
+          stored?.[key],
+          globalThreadScopedDefaults?.[key],
+        );
         if (value === undefined) continue;
         applied[key] = value;
         if (isSameThreadScopedValue(value, readThreadScopedValue(state, key))) {
@@ -5142,6 +5197,42 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),
+  setAutoCompactEnabled: (autoCompactEnabled) =>
+    set((state) => {
+      setScalarSettingVersion(
+        "autoCompactEnabled",
+        autoCompactEnabled,
+        state.autoCompactEnabled,
+      );
+      return {
+        autoCompactEnabled,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
+    }),
+  setContextPolicy: (contextPolicy) =>
+    set((state) => {
+      setScalarSettingVersion(
+        "contextPolicy",
+        contextPolicy,
+        state.contextPolicy,
+      );
+      return {
+        contextPolicy,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
+    }),
+  setCompactionHeadroomRatio: (compactionHeadroomRatio) =>
+    set((state) => {
+      setScalarSettingVersion(
+        "compactionHeadroomRatio",
+        compactionHeadroomRatio,
+        state.compactionHeadroomRatio,
+      );
+      return {
+        compactionHeadroomRatio,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
+    }),
   setMaxToolCallsPerMessage: (maxToolCallsPerMessage) =>
     set((state) => {
       setScalarSettingVersion(
@@ -5186,6 +5277,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setShowAllQuantizations: (showAllQuantizations) => {
     saveBool(CHAT_SHOW_ALL_QUANTIZATIONS_KEY, showAllQuantizations);
     set({ showAllQuantizations });
+  },
+  setShowMemoryBar: (showMemoryBar) => {
+    saveBool(CHAT_SHOW_MEMORY_BAR_KEY, showMemoryBar);
+    set({ showMemoryBar });
   },
   setFitOnDeviceOnly: (fitOnDeviceOnly) => {
     saveBool(MODELS_FIT_ON_DEVICE_ONLY_KEY, fitOnDeviceOnly);

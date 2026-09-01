@@ -693,7 +693,7 @@ export const ru = {
         sectionTitle: "Автопереключение модели (OpenAI API)",
         enable: "Переключать модель по запросу",
         enableDescription:
-          "Загружать скачанную модель GGUF, указанную в запросе к API, перед обработкой запроса. По умолчанию выключено.",
+          "Загружать скачанную модель, указанную в запросе к API, перед обработкой запроса. По умолчанию выключено.",
         idleUnload: "Автовыгрузка при простое",
         idleUnloadDescription:
           "Освобождать VRAM после указанного числа секунд простоя. 0 оставляет модель загруженной; минимальное значение: 60.",
@@ -798,7 +798,7 @@ export const ru = {
         embeddingModel: "Модель эмбеддингов",
         embeddingModelDescription:
           "Модель Hugging Face или локальный путь для индексации и поиска по вашим документам. По умолчанию {defaultModel}.",
-        searchPlaceholder: "Поиск embedding-моделей",
+        searchPlaceholder: "Поиск любой модели на HF",
         reindexWarning:
           "Влияет только на вновь индексируемые документы. После смены модели загрузите существующие документы заново.",
         emptyError: "Введите ID модели Hugging Face или локальный путь.",
@@ -806,7 +806,24 @@ export const ru = {
         saveError: "Не удалось сохранить модель эмбеддингов.",
         saved: "Модель эмбеддингов сохранена.",
         saveAnyway: "Всё равно сохранить",
-        resetAction: "Восстановить значение по умолчанию",
+        recommended: "Рекомендуется",
+        onDevice: "На устройстве",
+        searching: "Поиск в Hugging Face…",
+        checking: "Проверка…",
+        noResults: "Модели эмбеддингов не найдены",
+        download: "Скачать",
+        unload: "Выгрузить",
+        unloadFailed: "Не удалось выгрузить модель эмбеддингов",
+        downloadingStatus: "Загрузка…",
+        notDownloaded: "Не загружено",
+        notDownloadedSized: "Не загружено · {size}",
+        loaded: "Загружено",
+        downloading: "Загрузка {model}",
+        downloadingDescription:
+          "Прогресс виден на панели загрузок. После завершения он будет использован для индексации.",
+        downloadFailed: "Не удалось начать загрузку",
+        downloadConflict: "Возобновите эту загрузку в Hub",
+        downloadBusy: "Загрузка уже выполняется",
       },
       storage: {
         sectionTitle: "Хранилище",
@@ -896,7 +913,7 @@ export const ru = {
         tokensIn: "Отправлено токенов",
         tokensOut: "Сгенерировано токенов",
         totalTokens: "Всего токенов",
-        studioChatTokens: "Токены Studio Chat",
+        studioChatTokens: "Токены Unsloth Chat",
         apiTokens: "Токены API",
         cachedTokens: "Токенов из кеша",
         cachedValue: "{tokens} ({percent}% ввода)",
@@ -1195,6 +1212,7 @@ export const ru = {
         processMemory: "Память процесса",
         notInstalled: "Не установлено",
         unknown: "Неизвестно",
+        vramWithShared: "{vram} VRAM + {shared} общей памяти",
       },
     },
     agents: {
@@ -1224,6 +1242,15 @@ export const ru = {
       docs: "Документация",
       agentDocs: "Открыть документацию по настройке {agent}",
       copyGeneratedCommand: "Копировать сформированную команду",
+      // English is the baseline until these are translated. The three-part
+      // sentence below is assembled in a fixed order around an inline link, so
+      // it needs restructuring before it can be translated well.
+      automaticSettingsNote:
+        "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
+      configurationNote:
+        "You can also adjust any configuration. See further below or",
+      configurationDocs: "docs",
+      configurationFlagsSuffix: "for flags.",
       modelNote:
         "Codex требует модель GGUF, обслуживаемую llama-server. Другие агенты могут работать и с моделями на основе transformers; уберите --model, чтобы использовать модель, уже загруженную в Unsloth.",
       subagent: {
@@ -1316,6 +1343,9 @@ export const ru = {
         showAllQuantizations: "Показывать все квантизации",
         showAllQuantizationsDescription:
           "Включено: показываются все квантизации из раздела «On Device», в том числе не скачанные. Выключено: показываются только скачанные квантизации.",
+        showMemoryBar: "Показывать шкалу использования VRAM",
+        showMemoryBarDescription:
+          "Показывает под строкой каждой скачанной модели её ожидаемое потребление VRAM: веса, KV-кеш при той длине контекста, с которой модель будет загружена, и резерв для спекулятивного черновика.",
       },
       menu: {
         title: "Меню чата",
@@ -1342,16 +1372,46 @@ export const ru = {
       rememberParamsPerModel: "Запоминать настройки для каждой модели",
       rememberParamsPerModelDescription:
         "При переключении модели восстанавливаются температура, промпт и другие настройки, которые вы использовали с ней в последний раз. Если выключено, для всех моделей действует один набор настроек.",
+      autoCompact: "Автоматически сжимать длинные чаты",
+      autoCompactDescription:
+        "Когда локальный чат GGUF достигает заданной длины контекста, удалять старые ходы вместо возврата ошибки. Это не зависит от свободной VRAM.",
+      compactionStyle: "Когда контекст заполнен",
+      compactionStyleDescription:
+        "Настройка сервера сохраняет UNSLOTH_CONTEXT_POLICY. Сброс беседы оставляет последний ход и постоянные инструкции. Скользящее окно удаляет самые старые ходы и может сохранить больше недавней истории.",
+      compactionStyleInherit: "Использовать настройку сервера",
+      compactionStyleCheckpoint: "Сбросить беседу",
+      compactionStyleRollingDefault:
+        "Удалять старые ходы (~25% дополнительного места)",
+      compactionStyleRolling10:
+        "Удалять старые ходы (~10% дополнительного места)",
+      compactionStyleRolling5:
+        "Удалять старые ходы (~5% дополнительного места)",
+      compactionStyleRollingNone:
+        "Удалять старые ходы (без дополнительного сокращения)",
+      autoCompactKeywords:
+        "сжатие автоматически контекст окно обрезка скользящее контрольная точка запас compaction rolling checkpoint headroom",
       thinking: {
         collapseByDefault: "Сворачивать размышления по умолчанию",
         collapseByDefaultDescription:
           "Размышления остаются свёрнутыми, пока модель думает, вместо автоматического раскрытия. Разверните блок, чтобы прочитать его.",
       },
+      currentDate: {
+        label: "Сообщать модели сегодняшнюю дату",
+        description:
+          "Добавляет текущую дату в запрос, чтобы веб-поиск и Deep Research искали свежие источники, а не исходили из даты окончания обучения модели.",
+        loadError: "Не удалось загрузить настройки текущей даты",
+        saveError: "Не удалось обновить настройки текущей даты",
+      },
+      tools: {
+        collapseByDefault: "Сворачивать действия инструментов по умолчанию",
+        collapseByDefaultDescription:
+          "Входные и выходные данные инструментов остаются свёрнутыми во время работы. Разверните строку инструмента для просмотра.",
+      },
       webSearch: {
         title: "Веб-поиск",
         images: "Показывать изображения из веб-поиска",
         imagesDescription:
-          "Позволяет веб-поиску возвращать изображения и подбирает по одному для каждого пункта, который перечисляет ответ. Миниатюры загружает и уменьшает Studio, поэтому браузер никогда не обращается к хостам изображений.",
+          "Позволяет веб-поиску возвращать изображения и подбирает по одному для каждого пункта, который перечисляет ответ. Миниатюры загружает и уменьшает Unsloth, поэтому браузер никогда не обращается к хостам изображений.",
       },
       artifacts: {
         title: "Canvas",
@@ -1364,6 +1424,11 @@ export const ru = {
         blockedBanner: "Заблокирован {count} внешний ресурс с {hosts}.",
         blockedBannerPlural: "Заблокировано внешних ресурсов: {count} с {hosts}.",
         blockedBannerAction: "Разрешить для этого Canvas",
+        blockedTitle: "Доступ Canvas к сети отключён",
+        blockedHint:
+          "Включите «{setting}» в разделе Настройки → Чат, чтобы Canvas мог загружать внешние ресурсы, или разрешите только для этого Canvas.",
+        blockedSettingsAction: "Открыть настройки",
+        blockedDismiss: "Закрыть",
       },
       data: "Данные",
       exportHistory: "Экспортировать историю чатов",
@@ -1436,6 +1501,8 @@ export const ru = {
       archivedImagesDescription: "Просмотр и управление изображениями, которые вы архивировали.",
       archivedVideos: "Архивные видео",
       archivedVideosDescription: "Просмотр и управление видео, которые вы архивировали.",
+      archivedAudio: "Архивированные аудио",
+      archivedAudioDescription: "Просмотр и управление аудиоклипами, которые вы архивировали.",
       manageAction: "Управлять",
       manageChats: "Управление чатами",
       manageChatsDescription:
@@ -1622,7 +1689,7 @@ export const ru = {
         desktopAvailable:
           "Доступна версия {version} настольного приложения",
         desktopAvailableDescription:
-          "Установите обновление сейчас. После установки настольное приложение перезапустится.",
+          "Установите обновление сейчас, чтобы подготовить его в фоновом режиме. Вы можете продолжать работу и перезапустить приложение, когда всё будет готово.",
         desktopExternalServer:
           "Выполните `unsloth studio update` в терминале, из которого был запущен сервер.",
         desktopManualInstall:
@@ -1634,11 +1701,20 @@ export const ru = {
           "Установлена последняя версия настольного приложения",
         desktopCurrentDescription:
           "Unsloth продолжит автоматически проверять наличие обновлений.",
+        desktopPreparingDescription:
+          "Обновление готовится в фоновом режиме. Вы можете продолжать работу.",
+        desktopReadyToRestartDescription:
+          "Всё готово. Перезапустите приложение, чтобы завершить установку обновления.",
+        desktopReadyToInstallDescription:
+          "Обновление приложения загружено. Завершите обновление бэкенда, чтобы установить его.",
         checkForUpdates: "Проверить наличие обновлений",
         checkAgain: "Проверить снова",
         retryCheck: "Повторить попытку",
         checking: "Проверка…",
+        preparing: "Подготовка…",
         updateNow: "Обновить сейчас",
+        restartToUpdate: "Перезапустить для обновления",
+        finishUpdate: "Завершить обновление",
         openReleasePage: "Открыть страницу выпуска",
         unknownInstall:
           "Не удалось определить способ установки Unsloth. Для установки через установщик или PyPI используйте команды выше.",
@@ -2352,5 +2428,14 @@ export const ru = {
       datasetStreaming: "Датасет: потоковая передача (без полной загрузки)",
       modelWeights: "Веса модели",
     },
+  },
+  modelMemory: {
+    readout:
+      "Веса {model} + контекст {context} = {total} из {budget} доступной VRAM",
+    readoutWithSpec:
+      "Веса {model} + KV {kv} + черновик MTP {spec} = {total} из {budget} доступной VRAM",
+    kvRate: "KV зарезервирован, ~{rate}/токен",
+    oomLikely: "При текущих настройках вероятна нехватка памяти",
+    tooLarge: "Больше объёма VRAM, часть уйдёт на CPU. Меньшая квантизация работает быстрее",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

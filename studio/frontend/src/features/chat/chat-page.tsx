@@ -66,6 +66,7 @@ import {
   INVENTORY_FRESHNESS_WINDOW_MS,
   useDeviceInventorySources,
 } from "@/features/hub/inventory";
+import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { DeleteChatFilesSwitch } from "./components/delete-chat-files-switch";
 import { chatLocalModelOptions } from "./local-model-options";
 import {
@@ -219,6 +220,12 @@ import { useResearchRunStore } from "./stores/research-run-store";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { buildChatTourSteps } from "./tour";
 import type { ChatView, MessageRecord } from "./types";
+import {
+  type ComparePairReadState,
+  checkpointCompareClass,
+  comparePairReadState,
+  resolveComparePaneThreadIds,
+} from "./utils/compare-pane-threads";
 import { clearNewChatDraft } from "./utils/composer-draft";
 import { isChatThreadDeleted } from "./utils/chat-thread-tombstones";
 import {
@@ -543,12 +550,95 @@ function modelMatchesDeleted(
  * True when the loaded checkpoint is a LoRA, meaning a base-vs-fine-tuned
  * compare that uses the fast simultaneous adapter-toggle path.
  */
-function useIsLoraCompare(): boolean {
-  return useChatRuntimeStore((s) => {
-    const cp = s.params.checkpoint;
-    const selected = cp ? s.loras.find((l) => l.id === cp) : undefined;
-    return selected?.exportType === "lora";
-  });
+function useIsLoraCompare(): boolean | null {
+  return useChatRuntimeStore((s) =>
+    checkpointCompareClass({
+      checkpoint: s.params.checkpoint,
+      isExternal: isExternalModelId(s.params.checkpoint),
+      residentUnknown: s.residentCheckpoint === undefined,
+      models: s.models,
+      loras: s.loras,
+      inventorySettled: s.loraInventorySettled,
+    }),
+  );
+}
+
+/** `pending` while the pair is still being read, so neither component hydrates first. */
+function useCompareVariant(pairId: string): {
+  state: ComparePairReadState;
+  retry: () => void;
+} {
+  const checkpointIsLora = useIsLoraCompare();
+  const [read, setRead] = useState<{
+    pairId: string;
+    state: ComparePairReadState;
+  }>();
+  const [storageRetry, setStorageRetry] = useState<{
+    pairId: string;
+    count: number;
+  }>();
+  const settled = read?.pairId === pairId ? read.state : undefined;
+  const retryCount = storageRetry?.pairId === pairId ? storageRetry.count : 0;
+
+  useEffect(() => {
+    if (settled) return;
+    let isActive = true;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    const settle = (state: ComparePairReadState) => {
+      if (!isActive || state.status === "pending") return;
+      if (state.status === "retry") {
+        retryTimer = setTimeout(() => {
+          if (isActive) setStorageRetry({ pairId, count: retryCount + 1 });
+        }, 250);
+        return;
+      }
+      setRead({ pairId, state });
+    };
+    listStoredChatThreads({ pairId })
+      .then((threads) =>
+        settle(comparePairReadState({ threads }, checkpointIsLora, retryCount)),
+      )
+      .catch((error) => {
+        if (!isExpectedBackgroundChatStorageError(error)) {
+          console.error("Could not read a comparison's stored threads", error);
+        }
+        settle(
+          comparePairReadState({ failed: true }, checkpointIsLora, retryCount),
+        );
+      });
+    return () => {
+      isActive = false;
+      if (retryTimer !== null) clearTimeout(retryTimer);
+    };
+  }, [pairId, checkpointIsLora, retryCount, settled]);
+
+  const retry = useCallback(() => {
+    setRead(undefined);
+    setStorageRetry({ pairId, count: 0 });
+  }, [pairId]);
+
+  return { state: settled ?? { status: "pending" }, retry };
+}
+
+/**
+ * The pair read failed. Its persisted shape is unknown, and picking a renderer from the
+ * loaded checkpoint would relabel existing histories, so offer the read again instead.
+ */
+function CompareUnreadable({
+  onRetry,
+}: {
+  onRetry: () => void;
+}): ReactElement {
+  return (
+    <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col items-center justify-center gap-3 p-6 text-center">
+      <p className="text-sm text-muted-foreground">
+        Could not load this comparison's history.
+      </p>
+      <Button variant="outline" size="sm" onClick={onRetry}>
+        Try again
+      </Button>
+    </div>
+  );
 }
 
 const CompareContent = memo(function CompareContent({
@@ -574,9 +664,15 @@ const CompareContent = memo(function CompareContent({
   deleteDisabled?: boolean;
   onExitCompare?: () => void;
 }): ReactElement {
-  const isLoraCompare = useIsLoraCompare();
+  const { state: compareRead, retry: retryCompareRead } =
+    useCompareVariant(pairId);
 
-  return isLoraCompare ? (
+  if (compareRead.status === "unreadable") {
+    return <CompareUnreadable onRetry={retryCompareRead} />;
+  }
+  if (compareRead.status !== "ready") return <></>;
+
+  return compareRead.variant === "lora" ? (
     <LoraCompareContent
       pairId={pairId}
       onExitCompare={onExitCompare}
@@ -739,9 +835,12 @@ const LoraCompareContent = memo(function LoraCompareContent({
   const handlesRef = useRef<Record<string, CompareHandle>>({});
   const [baseThreadId, setBaseThreadId] = useState<string>();
   const [loraThreadId, setLoraThreadId] = useState<string>();
+  const [pairLoraModelId, setPairLoraModelId] = useState<string>();
   const [threadsSettled, setThreadsSettled] = useState(false);
   const markInitialHistoryReady = useCompareReloadReadiness(pairId);
   const active = useChatActive();
+  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
+  const checkpointIsLora = useIsLoraCompare();
 
   // Global on purpose: a first compare run starts before either thread exists, so there is
   // no pair id to scope BY -- it files its handles under "__default" until initialize()
@@ -749,7 +848,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
   // `initialThreadId`, so learning them mid-run points ThreadAutoSwitch at a thread that is
   // still generating.
   const anyRunning = useChatRuntimeStore(
-    (s) => Object.keys(s.runningByThreadId).length > 0,
+    (s) => Object.keys(s.localRunByThreadId).length > 0,
   );
   // ...but only RE-lists wait. The shared provider (#8908) keeps a base chat's run alive
   // across the switch into compare, so `anyRunning` is true on arrival for a reason that has
@@ -765,8 +864,16 @@ const LoraCompareContent = memo(function LoraCompareContent({
     listStoredChatThreads({ pairId })
       .then((threads) => {
         if (!isActive) return;
-        setBaseThreadId(threads.find((t) => t.modelType === "base")?.id);
-        setLoraThreadId(threads.find((t) => t.modelType === "lora")?.id);
+        // No model1/model2 fallback: useCompareVariant never routes a generalized
+        // pair here, so adopting one could only mislabel it and write adapter
+        // answers into its histories.
+        const baseThread = threads.find((t) => t.modelType === "base");
+        const loraThread = threads.find((t) => t.modelType === "lora");
+        setBaseThreadId(baseThread?.id);
+        setLoraThreadId(loraThread?.id);
+        setPairLoraModelId(
+          loraThread?.modelId?.trim() || baseThread?.modelId?.trim() || undefined,
+        );
       })
       .catch((error) => {
         if (!isExpectedBackgroundChatStorageError(error)) {
@@ -792,6 +899,16 @@ const LoraCompareContent = memo(function LoraCompareContent({
     threadsSettled,
   ]);
 
+  const sendUnavailableReason = !threadsSettled
+    ? "Loading comparison history."
+    : checkpointIsLora === null
+      ? "Checking the loaded model."
+      : !checkpointIsLora ||
+          (pairLoraModelId !== undefined &&
+            !modelIdsMatch(pairLoraModelId, checkpoint))
+        ? "Load the LoRA saved with this comparison before sending."
+        : undefined;
+
   return (
     <CompareShell
       handlesRef={handlesRef}
@@ -802,6 +919,8 @@ const LoraCompareContent = memo(function LoraCompareContent({
             onExitCompare={onExitCompare}
             model1ThreadId={baseThreadId}
             model2ThreadId={loraThreadId}
+            sendUnavailableReason={sendUnavailableReason}
+            requireStableCheckpoint={true}
           />
         ) : (
           <></>
@@ -993,16 +1112,9 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     listStoredChatThreads({ pairId })
       .then((threads) => {
         if (!isActive) return;
-        setModel1ThreadId(
-          threads.find(
-            (t) => t.modelType === "model1" || t.modelType === "base",
-          )?.id,
-        );
-        setModel2ThreadId(
-          threads.find(
-            (t) => t.modelType === "model2" || t.modelType === "lora",
-          )?.id,
-        );
+        const pair = resolveComparePaneThreadIds(threads);
+        setModel1ThreadId(pair.first);
+        setModel2ThreadId(pair.second);
       })
       .catch((error) => {
         if (!isExpectedBackgroundChatStorageError(error)) {
@@ -2500,7 +2612,7 @@ export function ChatPage({
     const storedWebFetchToolsEnabled =
       threadScopedOverride("webFetchToolsEnabled") ??
       loadOptionalBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY);
-    // Studio runs Search and Code itself for any provider that advertises the
+    // Unsloth runs Search and Code itself for any provider that advertises the
     // capability, so a self-hosted connection has no hosted builtin to key off.
     // Keying the pill state on the hosted flags alone discarded the user's saved
     // preference on every reload and sent enable_tools: false, even though the
@@ -2511,7 +2623,7 @@ export function ChatPage({
         selection.modelId,
       ) === true;
     const canSearch = supportsBuiltinWebSearch || supportsStudioToolsHere;
-    // Read out of the placement rule, not off the Studio-tools flag: a model on
+    // Read out of the placement rule, not off the Unsloth-tools flag: a model on
     // a sandbox-owning provider that cannot use it runs nothing either way, and
     // offering the pill there restored a preference that sent no tools at all.
     const canRunCode = codeToolCanRun({
@@ -3865,7 +3977,7 @@ export function ChatPage({
           <body> costs 0.10 ms either way, so the cost is the thread being under
           the subject and nothing else. Chromium only: WebKitGTK and Firefox are
           flat across all four selector forms, so this neither helps nor hurts
-          the engine Studio uses on Linux.
+          the engine Unsloth uses on Linux.
 
           ChatModelNotice renders a direct child of this element (see below), so
           the child combinator matches exactly what the descendant form matched.

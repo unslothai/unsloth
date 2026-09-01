@@ -53,7 +53,7 @@ LUMINA_2 = [
     )
 ]
 
-# Every OS Studio ships on. The classifier reads the device and the driver's `integrated`
+# Every OS Unsloth ships on. The classifier reads the device and the driver's `integrated`
 # flag and never sys.platform, so these are here to prove that rather than to vary it.
 PLATFORMS = ("linux", "wsl", "win32", "darwin")
 

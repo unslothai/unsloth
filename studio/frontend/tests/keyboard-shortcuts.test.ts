@@ -347,7 +347,11 @@ test("the workspace chords land where the guard lets them", async () => {
   );
   assert.match(
     root,
-    /useShortcut\("switchToTrain", goTo\("\/studio"\), \{\n\s*enabled: !isAuthFlowRoute && !chatOnlyMeasured,/,
+    /const routeShortcutEnabled = !isAuthFlowRoute && !settingsDialogOpen;/,
+  );
+  assert.match(
+    root,
+    /useShortcut\("switchToTrain", goTo\("\/studio"\), \{\n\s*enabled: routeShortcutEnabled && !chatOnlyMeasured,/,
   );
   // Video has its own predicate rather than the chat-only one: /video checks
   // auth and nothing else, so the chord would land on the unsupported-hardware
@@ -358,7 +362,7 @@ test("the workspace chords land where the guard lets them", async () => {
   );
   assert.match(
     root,
-    /useShortcut\("switchToVideo", goTo\("\/video"\), \{\n\s*enabled: !isAuthFlowRoute && !videoDisabled,/,
+    /useShortcut\("switchToVideo", goTo\("\/video"\), \{\n\s*enabled: routeShortcutEnabled && !videoDisabled,/,
   );
   const sidebar = await readFile(
     new URL("../src/components/app-sidebar.tsx", import.meta.url),
@@ -459,7 +463,7 @@ test("the browsers' own run on macOS is reserved there and only there", () => {
 // Three actions whose macOS chord Chrome owns: view source, the element picker
 // and Page Setup. Each keeps its letter on the run the composer pair uses, so
 // the mnemonic survives the platform swap.
-test("view source, the element picker and Page Setup carry no Studio action", () => {
+test("view source, the element picker and Page Setup carry no Unsloth action", () => {
   for (const [id, mac, other] of [
     ["toggleApiMonitor", "Ctrl+Shift+KeyU", "Mod+Alt+Shift+KeyM"],
     ["copySessionId", "Ctrl+Shift+KeyC", "Mod+Alt+KeyC"],
@@ -505,7 +509,7 @@ test("no default sits on Linux's own text-composition prefix", () => {
 });
 
 test("no default takes a chord the browser owns without a reason", () => {
-  // The exceptions are the spec chords Studio keeps for the desktop build,
+  // The exceptions are the spec chords Unsloth keeps for the desktop build,
   // where they work; everything else has to be reachable on the web.
   const deliberate = new Set([
     "Mod+KeyN",
@@ -1372,7 +1376,7 @@ test("the new-chat chords stay out of the auth flow", async () => {
     const at = root.indexOf(`"${id}"`);
     assert.ok(at !== -1, `${id} is registered`);
     const call = root.slice(at, root.indexOf("\n  );", at) + 5);
-    assert.match(call, /enabled: !isAuthFlowRoute/, `${id} is gated`);
+    assert.match(call, /enabled: routeShortcutEnabled/, `${id} is gated`);
   }
 });
 
@@ -1387,7 +1391,7 @@ test("switching back to Chat lands on the view the user left", async () => {
   assert.ok(at !== -1, "switchToChat is registered");
   const call = root.slice(at, root.indexOf("\n  );", at) + 5);
   assert.match(call, /navigate\(\{ to: "\/chat", search: chatSearch \}\)/);
-  assert.match(call, /enabled: !isAuthFlowRoute/);
+  assert.match(call, /enabled: routeShortcutEnabled/);
   // The other workspaces keep the bare helper; only chat carries a search.
   assert.match(root, /useShortcut\("switchToImages", goTo\("\/images"\)/);
   // location.search is the raw URL's, not the matched route's, so a seeded

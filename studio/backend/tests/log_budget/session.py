@@ -1,14 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""What an idle Studio actually asks for, and how often.
+"""What an idle Unsloth actually asks for, and how often.
 
 Every path the middleware classifies has to appear here with a poll period. That is the
 whole mechanism: you cannot quiet a path without saying how often it is polled, and you
 cannot start polling a path without classifying it. ``test_log_budget`` checks both
 directions, so this file and ``loggers/handlers.py`` cannot drift apart silently.
 
-Periods marked "measured" come from driving two real Studio instances for twelve minutes
+Periods marked "measured" come from driving two real Unsloth instances for twelve minutes
 and reading the access log back. The rest are the interval the UI declares at its call
 site, and are marked "declared"; they are used identically by the replay and by the
 expectation, so an imprecise one costs realism in the global envelope, never correctness of
@@ -86,6 +86,12 @@ BUSY_POLLS: dict[str, tuple[float, str]] = {
     # to the log being watched.
     "/api/settings/debug/logs": (3.0, "declared"),
     "/api/settings/debug/logs/sources": (3.0, "declared"),
+    # Chat detail reads, driven by the streaming persistence loop rather than a timer, so
+    # busy-only. Measured over four tabs on Qwen3.8-27B UD-Q4_K_XL: thread reads 0.57s
+    # apart, fork reads 0.40s apart, aggregated per template because a template shares one
+    # bucket. Rounded to the replay's 0.5s tick, the nearest value it can poll on.
+    "/api/chat/threads/{id}": (0.5, "measured"),
+    "/api/chat/threads/{id}/forks": (0.5, "measured"),
     # Training panels, live only while a run is going.
     "/api/train/status": (2.0, "declared"),
     "/api/train/metrics": (2.0, "declared"),
@@ -117,7 +123,7 @@ KNOWN_UNCLASSIFIED_POLLS: frozenset[str] = frozenset()
 # class formula perfectly and still push the total up, which is exactly what happened to
 # /api/liveness, whose 15s probe sat in the 300ms burst class and logged every single time.
 #
-# Raising either of these is a product decision about how much Studio is allowed to write.
+# Raising either of these is a product decision about how much Unsloth is allowed to write.
 # It is not a knob to turn because a test went red. The class formulas tell you whether the
 # suppression rules are being honoured; these tell you whether the result is acceptable.
 #
@@ -133,8 +139,13 @@ KNOWN_UNCLASSIFIED_POLLS: frozenset[str] = frozenset()
 #
 # Re-measure and ratchet again whenever a suppression rule changes. An envelope carrying
 # the old number after a fix has stopped guarding anything.
+#
+# Busy rose from 260 to 325 for an ACCOUNTING change, not a volume regression.
+# /api/chat/threads/{id} and its /forks sibling sat in the `normal` class, in no scenario,
+# so the envelope never saw them: modelled over the busy window, 675 lines. A heartbeat
+# class brings them in at 59. The number goes up because they are finally being counted.
 STEADY_IDLE_LINE_ENVELOPE = 1170
-BUSY_LINE_ENVELOPE = 260
+BUSY_LINE_ENVELOPE = 325
 
 # One-shot requests the app makes once on startup. Present so the boot window is not
 # mistaken for steady state, and so a mutation record and a failure record exist to assert
