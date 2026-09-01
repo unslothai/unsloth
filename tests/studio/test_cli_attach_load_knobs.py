@@ -240,6 +240,108 @@ def test_explicit_flags_matching_defaults_still_reload(monkeypatch):
     ]
 
 
+def test_inferred_attach_pins_the_resident_quant(monkeypatch):
+    """A repo-id GGUF must be re-sent with the quant it is running.
+
+    The load endpoint re-resolves a repo id, and ModelConfig.from_identifier auto-picks
+    the preferred variant when none is sent, so posting model_path alone would evict a
+    UI-chosen Q8_0 and download UD-Q4_K_XL instead of only changing the context.
+    """
+    server = FakeServer(
+        [{"id": "unsloth/Qwen3-30B-A3B-GGUF", "loaded": True}],
+        {
+            "is_gguf": True,
+            "active_model": "unsloth/Qwen3-30B-A3B-GGUF",
+            "model_identifier": "unsloth/Qwen3-30B-A3B-GGUF",
+            "gguf_variant": "Q8_0",
+            "requested_context_length": 0,
+        },
+    ).install(monkeypatch)
+
+    start_cli._resolve_model(
+        BASE,
+        KEY,
+        None,
+        start_cli.LoadOptions(max_seq_length = 8192, supplied = frozenset({"max_seq_length"})),
+    )
+
+    assert server.loads == [
+        {
+            "model_path": "unsloth/Qwen3-30B-A3B-GGUF",
+            "gguf_variant": "Q8_0",
+            "max_seq_length": 8192,
+        }
+    ]
+
+
+def test_inferred_attach_at_the_default_context_does_not_reresolve_the_quant(monkeypatch):
+    """`--context-length 0` is a reset, so it now posts a load where it once posted none.
+
+    That load must still name the running quant, or the reset silently swaps the weights.
+    """
+    server = FakeServer(
+        [{"id": "unsloth/Qwen3-30B-A3B-GGUF", "loaded": True}],
+        {
+            "is_gguf": True,
+            "active_model": "unsloth/Qwen3-30B-A3B-GGUF",
+            "model_identifier": "unsloth/Qwen3-30B-A3B-GGUF",
+            "gguf_variant": "Q8_0",
+            "requested_context_length": 0,
+        },
+    ).install(monkeypatch)
+
+    start_cli._resolve_model(
+        BASE,
+        KEY,
+        None,
+        start_cli.LoadOptions(max_seq_length = 0, supplied = frozenset({"max_seq_length"})),
+    )
+
+    assert server.loads == [
+        {
+            "model_path": "unsloth/Qwen3-30B-A3B-GGUF",
+            "gguf_variant": "Q8_0",
+            "max_seq_length": 0,
+        }
+    ]
+
+
+def test_inferred_attach_does_not_pin_a_variant_onto_a_direct_gguf_file(monkeypatch):
+    """A direct .gguf path is loaded as itself; the server never redirects it by variant."""
+    path = "/srv/models/Foo-Q4_K_M.gguf"
+    server = FakeServer(
+        [{"id": "Foo-Q4_K_M", "loaded": True}],
+        {
+            "is_gguf": True,
+            "active_model": "Foo-Q4_K_M",
+            "model_identifier": path,
+            "gguf_variant": "Q4_K_M",
+            "requested_context_length": 4096,
+        },
+    ).install(monkeypatch)
+
+    start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768))
+
+    assert server.loads == [{"model_path": path, "max_seq_length": 32768}]
+
+
+def test_inferred_attach_to_a_non_gguf_resident_sends_no_variant(monkeypatch):
+    """status.gguf_variant is absent for safetensors/MLX; nothing may be invented."""
+    server = FakeServer(
+        [dict(RESIDENT)],
+        {
+            "is_gguf": False,
+            "active_model": RESIDENT["id"],
+            "model_identifier": RESIDENT["id"],
+            "requested_context_length": 4096,
+        },
+    ).install(monkeypatch)
+
+    start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768))
+
+    assert server.loads == [{"model_path": RESIDENT["id"], "max_seq_length": 32768}]
+
+
 def test_hf_cache_resident_matches_the_advertised_repo_id(monkeypatch):
     """The server maps a cache path to its repo id; our basename helper does not."""
     cache_path = (
