@@ -61,6 +61,7 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import {
   DOWNLOAD_KIND,
   dismissStartToast,
+  dismissStartToastsForModelSelection,
   downloadManager,
   jobKeyOf,
   useRepoDownload,
@@ -2866,6 +2867,12 @@ export function ChatPage({
     async (selection: SelectedModelInput) => {
       const store = useChatRuntimeStore.getState();
       const wantManagerStaging = wantsDownloadManagerStaging(selection);
+
+      if (wantManagerStaging) {
+        // Uncached picks return below and do not reach selectModel until completion.
+        // Invalidate the previous model's notice at the actual picker boundary.
+        dismissStartToastsForModelSelection();
+      }
       if (store.modelLoading) {
         const isLoadingThisPick =
           !!loadingModel &&
