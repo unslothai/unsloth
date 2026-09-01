@@ -22165,8 +22165,8 @@ class LlamaCppBackend:
                 # one nothing would catch it. Before the log below, so what is
                 # logged is what launches; length is preserved, so _spec_start
                 # still indexes the same tokens.
+                _pre_v_reset = cmd
                 if _flash_attn_known_off:
-                    _pre_v_reset = cmd
                     cmd = self._reset_quantized_v_cache(
                         cmd,
                         "this build has no --flash-attn",
@@ -22177,11 +22177,13 @@ class LlamaCppBackend:
                         # Unsloth never rewrites LLAMA_ARG_SPEC_DRAFT_MODEL.
                         draft_mla = self._draft_kv_symmetry(cmd),
                     )
-                    # A -ctv the user typed sits INSIDE the policy block, and the
-                    # reset rewrites its value, so the block the --fit off retry
-                    # searches for by value would no longer be on argv. Re-read it
-                    # from the same offset; this rewrites in place, never resizes.
-                    _mem_policy_argv = _resynced_policy_argv(_pre_v_reset, cmd, _mem_policy_argv)
+
+                # Outside the fixup above, which stays a self-contained V-cache step: a
+                # -ctv the user typed sits INSIDE the policy block, and the reset
+                # rewrites its value, so the block the --fit off retry searches for by
+                # value would no longer be on argv. Re-read it from the same offset;
+                # that pass rewrites in place and never resizes.
+                _mem_policy_argv = _resynced_policy_argv(_pre_v_reset, cmd, _mem_policy_argv)
 
                 kv_cache_unified = _kv_unified_from_args(cmd)
 
