@@ -8,9 +8,18 @@ type ThreadImportExport = {
 
 type ContentPart = { type: "text" | "reasoning" | "tool"; text: string };
 
+export function isEditablePart(part: any): boolean {
+  return part?.type === 'text' || part?.type === 'reasoning';
+}
+
+function toolLabel(part: any): string {
+  if (typeof part?.toolName === 'string' && part.toolName) return part.toolName;
+  return typeof part?.type === 'string' && part.type ? part.type : "tool";
+}
+
 /**
- * Extracts only the editable text and reasoning from a message,
- * ignoring structured parts like tool calls that cannot be edited as plain text.
+ * Extracts the editable text and reasoning from a message, with a placeholder tag
+ * recording where each non-editable part sat among the prose.
  */
 export function extractTaggedText(content: any): string {
   if (typeof content === 'string') return content;
@@ -24,21 +33,19 @@ export function extractTaggedText(content: any): string {
       if (typeof part === 'string') return part;
       if (!part) return "";
 
-      // Only extract text from 'text' or 'reasoning' parts.
-      // Tool calls/responses are ignored here so they aren't accidentally
-      // deleted or corrupted by the user in the textarea.
+      if (!isEditablePart(part)) {
+        return `${open}TOOL${close}${toolLabel(part)}${open}/TOOL${close}`;
+      }
+
       const text = part.text || part.content || "";
       if (!text) return "";
 
-      switch (part.type) {
-        case 'reasoning':
-          // Trim the text first so we don't accumulate newlines
-          // around the tags on every save.
-          return `${open}THINK${close}\n${text.trim()}\n${open}/THINK${close}`;
-        case 'text':
-        default:
-          return text;
+      // Trim the text first so we don't accumulate newlines
+      // around the tags on every save.
+      if (part.type === 'reasoning') {
+        return `${open}THINK${close}\n${text.trim()}\n${open}/THINK${close}`;
       }
+      return text;
     })
     .filter(Boolean)
     .join('\n\n');
@@ -101,22 +108,20 @@ export async function updateThreadMessage(args: {
     let finalContent: any[] = [];
 
     if (Array.isArray(originalContent)) {
-      const firstEditableIndex = originalContent.findIndex((part: any) =>
-        part.type === 'text' || part.type === 'reasoning'
+      const nonEditableParts = originalContent.filter(
+        (part: any) => !isEditablePart(part)
       );
-
-      if (firstEditableIndex === -1) {
-        const nonEditableParts = originalContent.filter((part: any) =>
-          part.type !== 'text' && part.type !== 'reasoning'
-        );
-        finalContent = [...parsedEditableContent, ...nonEditableParts];
-      } else {
-        const before = originalContent.slice(0, firstEditableIndex);
-        const after = originalContent.slice(firstEditableIndex + 1).filter((part: any) =>
-          part.type !== 'text' && part.type !== 'reasoning'
-        );
-        finalContent = [...before, ...parsedEditableContent, ...after];
+      let restored = 0;
+      for (const part of parsedEditableContent) {
+        if (part.type === 'tool') {
+          if (restored < nonEditableParts.length) {
+            finalContent.push(nonEditableParts[restored++]);
+          }
+          continue;
+        }
+        finalContent.push(part);
       }
+      finalContent.push(...nonEditableParts.slice(restored));
     } else {
       finalContent = parsedEditableContent;
     }

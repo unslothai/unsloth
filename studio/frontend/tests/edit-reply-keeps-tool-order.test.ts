@@ -1,0 +1,274 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { loadWithStubs } from "./helpers/module-stubs.ts";
+
+type Exported = {
+  headId: string | null;
+  messages: { parentId: string | null; message: Record<string, unknown> }[];
+};
+
+type Part = Record<string, unknown>;
+
+type Module = {
+  extractTaggedText: (content: unknown) => string;
+  updateThreadMessage: (args: {
+    thread: { export: () => Exported; import: (data: Exported) => void };
+    messageId: string;
+    remoteId: string | undefined;
+    newText: string;
+    isIncognito: boolean;
+  }) => Promise<Part[]>;
+};
+
+const SEARCH: Part = {
+  type: "tool-call",
+  toolCallId: "call-1",
+  toolName: "web_search",
+  args: { query: "unsloth" },
+  result: { ok: true },
+};
+const PYTHON: Part = {
+  type: "tool-call",
+  toolCallId: "call-2",
+  toolName: "python",
+  args: { code: "print(1)" },
+};
+
+function harness() {
+  const saved: Record<string, unknown>[] = [];
+  const module = loadWithStubs<Module>(
+    new URL(
+      "../src/features/chat/utils/update-thread-message.ts",
+      import.meta.url,
+    ),
+    {
+      "../api/chat-api": {
+        saveChatMessage: async (record: Record<string, unknown>) => {
+          saved.push(record);
+          return record;
+        },
+      },
+    },
+  );
+  return { module, saved };
+}
+
+function thread(content: Part[]): Exported {
+  return {
+    headId: "a0",
+    messages: [
+      {
+        parentId: null,
+        message: {
+          id: "u0",
+          role: "user",
+          content: [{ type: "text", text: "search for it" }],
+          createdAt: new Date(1000),
+        },
+      },
+      {
+        parentId: "u0",
+        message: {
+          id: "a0",
+          role: "assistant",
+          content,
+          createdAt: new Date(2000),
+        },
+      },
+    ],
+  };
+}
+
+async function save(content: Part[], newText?: string) {
+  const h = harness();
+  const exported = thread(content);
+  const text = newText ?? h.module.extractTaggedText(content);
+  const result = await h.module.updateThreadMessage({
+    thread: { export: () => exported, import: () => {} },
+    messageId: "a0",
+    remoteId: "remote-1",
+    newText: text,
+    isIncognito: false,
+  });
+  return { result, saved: h.saved[0], text };
+}
+
+test("a no-op Save leaves the tool card between the two sentences", async () => {
+  const content = [
+    { type: "text", text: "Let me look that up." },
+    SEARCH,
+    { type: "text", text: "Here is what I found." },
+  ];
+
+  const { result } = await save(content);
+
+  assert.deepEqual(
+    result.map((part) => part.type),
+    ["text", "tool-call", "text"],
+  );
+  assert.equal(result[0].text, "Let me look that up.");
+  assert.equal(result[1], SEARCH);
+  assert.equal(result[2].text, "Here is what I found.");
+});
+
+test("what is written to the server is what the thread shows", async () => {
+  const content = [
+    { type: "text", text: "Let me look that up." },
+    SEARCH,
+    { type: "text", text: "Here is what I found." },
+  ];
+
+  const { result, saved } = await save(content);
+
+  assert.deepEqual(saved.content, result);
+});
+
+test("several cards keep their order and the prose between them", async () => {
+  const content = [
+    { type: "text", text: "First I search." },
+    SEARCH,
+    { type: "text", text: "Then I compute." },
+    PYTHON,
+    { type: "text", text: "Done." },
+  ];
+
+  const { result } = await save(content);
+
+  assert.deepEqual(
+    result.map((part) => part.type),
+    ["text", "tool-call", "text", "tool-call", "text"],
+  );
+  assert.equal(result[1], SEARCH);
+  assert.equal(result[3], PYTHON);
+});
+
+test("reasoning still round-trips alongside a card", async () => {
+  const content = [
+    { type: "reasoning", text: "The user wants a lookup." },
+    SEARCH,
+    { type: "text", text: "Here is what I found." },
+  ];
+
+  const { result } = await save(content);
+
+  assert.deepEqual(
+    result.map((part) => part.type),
+    ["reasoning", "tool-call", "text"],
+  );
+});
+
+test("an edit that rewrites the prose still keeps the card where it was", async () => {
+  const content = [
+    { type: "text", text: "Let me look that up." },
+    SEARCH,
+    { type: "text", text: "Here is what I found." },
+  ];
+  const { text } = await save(content);
+
+  const { result } = await save(
+    content,
+    text.replace("Here is what I found.", "Rewritten answer."),
+  );
+
+  assert.deepEqual(
+    result.map((part) => part.type),
+    ["text", "tool-call", "text"],
+  );
+  assert.equal(result[2].text, "Rewritten answer.");
+});
+
+test("deleting a marker keeps the call rather than dropping it", async () => {
+  const content = [
+    { type: "text", text: "Let me look that up." },
+    SEARCH,
+    { type: "text", text: "Here is what I found." },
+  ];
+
+  const { result } = await save(
+    content,
+    "Let me look that up.\n\nHere is what I found.",
+  );
+
+  assert.equal(
+    result.filter((part) => part.type === "tool-call").length,
+    1,
+    "the call must survive an edit that removed its marker",
+  );
+});
+
+test("a reply that is only a tool card keeps it", async () => {
+  const { result } = await save([SEARCH]);
+
+  assert.deepEqual(result, [SEARCH]);
+});
+
+function tool(id: string, name = "web_search"): Part {
+  return { type: "tool-call", toolCallId: id, toolName: name, args: {}, result: {} };
+}
+
+async function roundTrip(content: Part[]): Promise<Part[]> {
+  const { result } = await save(content);
+  return result;
+}
+
+const shapes: any[][] = [
+  [{ type: "text", text: "A" }, tool("1"), { type: "text", text: "B" }],
+  [tool("1"), { type: "text", text: "A" }],
+  [{ type: "text", text: "A" }, tool("1")],
+  [tool("1"), tool("2")],
+  [{ type: "text", text: "A" }, tool("1"), { type: "text", text: "B" }, tool("2"),
+   { type: "text", text: "C" }],
+  [{ type: "reasoning", text: "R" }, tool("1"), { type: "text", text: "A" }],
+  [{ type: "text", text: "A" }, { type: "source", title: "S", url: "u" },
+   { type: "text", text: "B" }],
+  [{ type: "text", text: "A" }, tool("1"), tool("2"), { type: "text", text: "B" }],
+  [{ type: "reasoning", text: "R" }],
+  [tool("1")],
+];
+
+test("a no-op save preserves the part sequence for every shape", async () => {
+  for (const shape of shapes) {
+    const out = await roundTrip(shape);
+    assert.deepEqual(out.map((p: any) => p.type), shape.map((p: any) => p.type),
+      `shape ${JSON.stringify(shape.map((p: any) => p.type))}`);
+    assert.deepEqual(
+      out.filter((p: any) => p.type === "tool-call").map((p: any) => p.toolCallId),
+      shape.filter((p: any) => p.type === "tool-call").map((p: any) => p.toolCallId));
+  }
+});
+
+test("a second no-op save changes nothing further (idempotent)", async () => {
+  for (const shape of shapes) {
+    const once = await roundTrip(shape);
+    const twice = await roundTrip(once);
+    assert.deepEqual(twice.map((p: any) => p.type), once.map((p: any) => p.type));
+  }
+});
+
+test("prose that mentions the marker tag is not mistaken for one", async () => {
+  const content = [
+    { type: "text", text: "Write <TOOL>web_search</TOOL> to call it." },
+    tool("1"),
+    { type: "text", text: "Done." },
+  ];
+  const out = await roundTrip(content);
+  assert.equal(out.filter((p: any) => p.type === "tool-call").length, 1,
+    "the call must not be consumed by prose that looks like a marker");
+});
+
+test("no tool part is ever dropped, whatever the edit", async () => {
+  for (const shape of shapes) {
+    const { result } = await save(shape, "the user deleted everything");
+    const before = shape.filter((p) => p.type !== "text" && p.type !== "reasoning");
+    const after = result.filter((p) => p.type !== "text" && p.type !== "reasoning");
+    assert.equal(
+      after.length,
+      before.length,
+      `non-text parts lost for ${JSON.stringify(shape.map((p) => p.type))}`,
+    );
+  }
+});
