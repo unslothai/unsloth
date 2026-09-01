@@ -4,12 +4,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
-  ArrowLeft01Icon,
-  ArrowRight01Icon,
   Cancel01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ChevronDown } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronLeftIcon,
+  ChevronRightIcon,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
@@ -266,7 +268,7 @@ export function DatasetLabelingGrid({
               onClick={() => setPage((p) => Math.max(0, p - 1))}
               aria-label="Previous images"
             >
-              <HugeiconsIcon icon={ArrowLeft01Icon} className="size-3.5" />
+              <ChevronLeftIcon className="size-3.5" />
             </Button>
             <Button
               type="button"
@@ -277,7 +279,7 @@ export function DatasetLabelingGrid({
               onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
               aria-label="Next images"
             >
-              <HugeiconsIcon icon={ArrowRight01Icon} className="size-3.5" />
+              <ChevronRightIcon className="size-3.5" />
             </Button>
           </div>
         )}
