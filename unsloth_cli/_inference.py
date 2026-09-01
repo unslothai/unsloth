@@ -131,10 +131,42 @@ def read_json_checking_deferred_error(url: str, response):
     return require_completed_padded_body(url, raise_for_deferred_error(url, body))
 
 
+_cache_env_seeded = False
+
+
+def _seed_cache_env() -> None:
+    """Pin the cache locations the backend pins, for in-process CLI commands.
+
+    `unsloth studio run` execs run.py, which seeds these itself. `unsloth train`
+    / `inference` / `export` instead import the backend into this process, and
+    without this they inherit unsloth_zoo's bare relative UNSLOTH_COMPILE_LOCATION
+    -- which resolves against the shell's working directory, so running from the
+    home directory leaves an ~/unsloth_compiled_cache that cache_cleanup then
+    refuses to remove (it is not marked as ours). Issue #8865.
+
+    Called from ensure_studio_backend_path rather than package import so that
+    `unsloth --help` does not pay for importing the backend, and so no command
+    that reaches the backend can forget it. Best-effort: a CLI must not die
+    because a cache directory could not be pinned.
+    """
+    global _cache_env_seeded
+    if _cache_env_seeded:
+        return
+    _cache_env_seeded = True
+    try:
+        from utils.paths.storage_roots import setup_cache_env
+        setup_cache_env()
+    except Exception:  # noqa: BLE001 - never fail a command over cache placement
+        pass
+
+
 def ensure_studio_backend_path() -> None:
     backend_dir = str(Path(__file__).resolve().parents[1] / "studio" / "backend")
     if backend_dir not in sys.path:
         sys.path.insert(0, backend_dir)
+    # After the path insert (storage_roots lives under it), before the caller's
+    # backend import, which is what pulls in unsloth_zoo.compiler.
+    _seed_cache_env()
 
 
 def configure_quiet_logging() -> None:

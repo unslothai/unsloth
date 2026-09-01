@@ -145,6 +145,28 @@ def configured_cache_key() -> str:
     return "default"
 
 
+def _portable_cache_home() -> Optional[Path]:
+    """The HF cache home a portable install uses, or None.
+
+    Only a portable install redirects this. A normal install keeps the platform
+    default so models fetched before Unsloth, or shared with LM Studio / Ollama /
+    plain huggingface_hub, are found rather than downloaded a second time.
+
+    Imported lazily: storage_roots reaches into this module during startup, and a
+    module-level import would close that loop.
+    """
+    try:
+        from utils.paths.storage_roots import cache_root, portable_mode
+    except ImportError:
+        return None
+    if not portable_mode():
+        return None
+    try:
+        return _canonical(cache_root() / "huggingface")
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
 def get_hf_cache_paths() -> HuggingFaceCachePaths:
     env_paths = _environment_paths()
     if env_paths is not None:
@@ -158,7 +180,9 @@ def get_hf_cache_paths() -> HuggingFaceCachePaths:
             _canonical(xet) if xet else stored / "xet",
             "studio",
         )
-    home = _default_cache_home()
+    # Below an explicit env var and the user's own Settings choice: portable mode
+    # is an install-time default, not an instruction to override either of those.
+    home = _portable_cache_home() or _default_cache_home()
     xet = _EXPLICIT_CACHE_ENV.get("HF_XET_CACHE")
     return HuggingFaceCachePaths(
         home,

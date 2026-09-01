@@ -42,21 +42,61 @@ def _infer_studio_home_from_venv() -> Path | None:
     return None
 
 
+def _resolved(value: str) -> Path:
+    try:
+        return Path(value).expanduser().resolve()
+    except (OSError, ValueError):
+        return Path(value).expanduser()
+
+
+def unsloth_home() -> Path | None:
+    """The master root every Unsloth-owned directory hangs off, or None.
+
+    Set by a portable install (`install.sh --portable` / `--root DIR`). This is
+    one level above STUDIO_HOME: llama.cpp, node, whisper.cpp and the shared
+    caches are siblings of `studio/`, not children of it.
+    """
+    override = (os.environ.get("UNSLOTH_HOME") or "").strip()
+    return _resolved(override) if override else None
+
+
+def portable_mode() -> bool:
+    """Whether this install promises to keep everything under one directory.
+
+    Implied by UNSLOTH_HOME, since nothing sets that but a portable install, and
+    settable on its own so an existing UNSLOTH_STUDIO_HOME install can opt in.
+    """
+    if (os.environ.get("UNSLOTH_PORTABLE") or "").strip() not in ("", "0", "false", "False"):
+        return True
+    return unsloth_home() is not None
+
+
 def studio_root() -> Path:
     """Unsloth install root.
 
-    Priority: UNSLOTH_STUDIO_HOME, then STUDIO_HOME alias, then sys.prefix
-    inference, then legacy ~/.unsloth/studio. UNSLOTH_STUDIO_HOME wins if
-    both are set (specific signal beats generic alias).
+    Priority: UNSLOTH_STUDIO_HOME, then STUDIO_HOME alias, then UNSLOTH_HOME's
+    studio/ child, then sys.prefix inference, then legacy ~/.unsloth/studio.
+    UNSLOTH_STUDIO_HOME wins if both are set (specific signal beats generic
+    alias), and it also outranks UNSLOTH_HOME: it names this exact directory,
+    while UNSLOTH_HOME only names the tree it would sit in.
     """
     override = (os.environ.get("UNSLOTH_STUDIO_HOME") or "").strip()
     if not override:
         override = (os.environ.get("STUDIO_HOME") or "").strip()
     if override:
-        try:
-            return Path(override).expanduser().resolve()
-        except (OSError, ValueError):
-            return Path(override).expanduser()
+        resolved = _resolved(override)
+        master = unsloth_home()
+        if master is not None and master not in resolved.parents:
+            # Not fatal: a split install still works, it just is not contained,
+            # and failing here would break a resolver called at import time.
+            logger.warning(
+                "UNSLOTH_STUDIO_HOME (%s) is outside UNSLOTH_HOME (%s); this "
+                "install is not self-contained.", resolved, master,
+            )
+        return resolved
+    master = unsloth_home()
+    if master is not None:
+        return master / "studio"
     inferred = _infer_studio_home_from_venv()
     if inferred is not None:
         return inferred
@@ -347,6 +387,27 @@ def well_known_model_dirs() -> list[Path]:
     return _existing_dirs(candidates, resolve = True)
 
 
+def _portable_cache_defaults(root: Path) -> dict[str, str]:
+    """Cache vars that only move under the root in portable mode.
+
+    These hold shared user data or large re-downloads, so a default install
+    leaves them where the rest of the ecosystem looks and only a portable install
+    pays the cold-cache cost. The hub and xet caches are not here: they come from
+    hf_cache_settings.get_hf_cache_paths, which has to agree with the Settings UI
+    and with every worker's child_env, so portable mode is a fallback tier inside
+    that resolver instead of a second opinion out here.
+
+    HF_HOME stays put in every mode: it is where the token lives, and
+    credentials should not follow a cache onto a removable volume.
+    """
+    if not portable_mode():
+        return {}
+    return {
+        "HF_DATASETS_CACHE": str(root / "huggingface" / "datasets"),
+        "TORCH_HOME": str(root / "torch"),
+    }
+
+
 def _setup_cache_env() -> None:
     """Set cache env vars for HuggingFace, uv, and vLLM.
 
@@ -366,7 +427,33 @@ def _setup_cache_env() -> None:
         # cache landed in the user home. Must be set before unsloth_zoo.compiler imports: it reads the value at import
         # time and puts it on sys.path.
         "UNSLOTH_COMPILE_LOCATION": str(root.parent / "compiled_cache"),
+        # Everything below is regenerable and scoped to this process, so pinning
+        # it costs a cold cache once and keeps the home directory clean. Shared
+        # user data (the HF hub cache, torch.hub checkpoints) is deliberately NOT
+        # here: models downloaded before Unsloth, or shared with LM Studio and
+        # Ollama, must stay where the other tools look. Portable mode moves those
+        # too, because there the whole point is a self-contained directory.
+        "TORCHINDUCTOR_CACHE_DIR": str(root / "torchinductor"),
+        # TRITON_HOME is the parent Triton derives ~/.triton from; setting only
+        # TRITON_CACHE_DIR still leaves the dump/override dirs in the home.
+        "TRITON_HOME": str(root / "triton"),
+        "TRITON_CACHE_DIR": str(root / "triton" / "cache"),
+        "TORCH_EXTENSIONS_DIR": str(root / "torch-extensions"),
+        # NVIDIA's JIT compile cache; ~/.nv/ComputeCache otherwise.
+        "CUDA_CACHE_PATH": str(root / "cuda"),
+        # matplotlib is imported for the loss plots and otherwise writes to both
+        # ~/.config/matplotlib and ~/.cache/matplotlib.
+        "MPLCONFIGDIR": str(root / "matplotlib"),
+        "NUMBA_CACHE_DIR": str(root / "numba"),
+        # Read at import time by data_designer.config.utils.constants, so this
+        # has to be set before the Data Recipes worker imports the package.
+        # Unset, the library builds its paths from Path.home() / ".data-designer".
+        "DATA_DESIGNER_HOME": str(root.parent / "data-designer"),
+        "DATA_DESIGNER_MANAGED_ASSETS_PATH": str(
+            root.parent / "data-designer" / "managed-assets"
+        ),
     }
+    defaults.update(_portable_cache_defaults(root))
     for key, value in defaults.items():
         # Blank counts as unset: an inherited KEY= would otherwise pin the cache to "", which puts an empty entry on
         # sys.path and sends the compiler to the system temp directory instead.

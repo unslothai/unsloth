@@ -50,7 +50,7 @@ _ENV_MODE = "UNSLOTH_DIFFUSION_COMPILE_CACHE"
 _ENV_DIR = "UNSLOTH_DIFFUSION_COMPILE_CACHE_DIR"
 _ENV_SAVE = "UNSLOTH_DIFFUSION_COMPILE_CACHE_SAVE"
 
-_DEFAULT_ROOT = Path.home() / ".cache" / "unsloth" / "diffusion_compile_cache"
+_LEGACY_ROOT = Path.home() / ".cache" / "unsloth" / "diffusion_compile_cache"
 
 _MANIFEST_NAME = "manifest.json"
 _BUNDLE_NAME = "cache.bin"
@@ -77,9 +77,31 @@ def _save_enabled(mode: str) -> bool:
     return (os.environ.get(_ENV_SAVE) or "").strip().lower() not in ("0", "off", "false", "no")
 
 
+def _default_root() -> Path:
+    """Bundle root under the Studio cache, resolved per call.
+
+    Not a module constant: storage_roots reads UNSLOTH_STUDIO_HOME, and this
+    module is imported early enough that a constant would freeze the pre-startup
+    value. Falls back to the old ~/.cache/unsloth path when the backend package
+    is not importable, which is how the standalone diffusion tools run.
+    """
+    try:
+        from utils.paths.storage_roots import cache_root as studio_cache_root
+    except ImportError:
+        return _LEGACY_ROOT
+    return studio_cache_root() / "diffusion_compile_cache"
+
+
 def cache_root() -> Path:
     root = os.environ.get(_ENV_DIR)
-    return Path(root) if root else _DEFAULT_ROOT
+    if root:
+        return Path(root)
+    default = _default_root()
+    # A bundle written by an older build is still valid, and re-compiling for a
+    # path change alone would cost every existing user a cold start.
+    if not default.exists() and _LEGACY_ROOT.exists():
+        return _LEGACY_ROOT
+    return default
 
 
 # --------------------------------------------------------------------------- fingerprint
