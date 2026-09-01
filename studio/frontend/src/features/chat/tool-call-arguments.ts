@@ -201,11 +201,8 @@ export function toolCallReplayArguments(
 }
 
 /**
- * The text to render for a tool call's arguments.
- *
- * `JSON.parse` rounds an integer past 2**53 while reading the event, so re-encoding the
- * parsed arguments in the browser would show a value the tool is not being run with. The
- * backend sends its own encoding of the same arguments, which is preferred when present.
+ * Prefers the backend's own encoding: re-encoding after `JSON.parse` rounds integers past
+ * 2**53 and would show a value the tool is not being run with.
  */
 export function toolCallArgumentsText(
   exactText: unknown,
@@ -216,10 +213,8 @@ export function toolCallArgumentsText(
       JSON.parse(exactText);
       return exactText;
     } catch {
-      // Text that does not parse cannot be these arguments, so it is not what the tool
-      // runs with either. This card is an approval boundary, so fall back to the
-      // structured arguments rather than print something unreadable next to Allow.
-      // `toolCallReplayArguments` above screens the same field the same way.
+      // Unparseable text cannot be these arguments, and this card is an approval
+      // boundary, so fall back to the structured ones.
     }
   }
   return JSON.stringify(args ?? {});
@@ -397,12 +392,8 @@ function mergeJsonNode(node: JsonTextNode, current: unknown): string {
 }
 
 /**
- * The text to render once a later event has had the chance to merge more arguments in.
- *
- * Unchanged values retain their original JSON lexemes while new metadata is added from
- * the structured object. Keys explicitly overwritten by tool_end are serialized from
- * that event instead. This keeps an executed integer past 2**53 exact without dropping
- * Gemini result parts or intentional tool_end replacements.
+ * Unchanged values keep their original JSON lexemes (an executed integer past 2**53 stays
+ * exact); keys in `overwrittenKeys` are re-serialized from the tool_end object.
  */
 export function mergedToolCallArgumentsText(
   previousText: unknown,

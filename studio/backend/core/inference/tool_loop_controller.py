@@ -251,9 +251,7 @@ class ToolCallDecision:
             "tool_name": self.tool_name,
             "tool_call_id": self.card_id,
             "arguments": arguments,
-            # The card renders this text rather than re-encoding `arguments` in the browser,
-            # where JSON.parse rounds an integer past 2**53 and would show a different record
-            # id than the one executed.
+            # Re-encoding `arguments` in the browser would round ids past 2**53 (JSON.parse).
             "arguments_text": canonical_arguments_text(arguments),
             "provenance": self.provenance,
         }

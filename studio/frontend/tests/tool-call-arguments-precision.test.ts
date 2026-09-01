@@ -12,8 +12,7 @@ import {
   toolCallReplayArguments,
 } from "../src/features/chat/tool-call-arguments.ts";
 
-// The event as it reaches the adapter: JSON.parse has already rounded the id, which is why
-// the card cannot be built by re-encoding `arguments`.
+// As it reaches the adapter: JSON.parse has already rounded the id in `arguments`.
 const WIRE =
   '{"arguments":{"id":9007199254740993},"arguments_text":"{\\"id\\":9007199254740993}"}';
 
@@ -43,7 +42,6 @@ test("completing a call keeps the exact text when nothing merged in", () => {
   };
   const exact = toolCallArgumentsText(event.arguments_text, event.arguments);
 
-  // tool_end for a locally executed call carries no further arguments.
   assert.equal(
     mergedToolCallArgumentsText(exact, event.arguments),
     '{"id":9007199254740993}',
@@ -60,8 +58,7 @@ test("a merge adds metadata without rewriting the executed integer", () => {
 });
 
 test("an explicitly overwritten key uses the tool_end value", () => {
-  // tool_end setting the id to the value JSON.parse had already rounded it to: the two
-  // encodings collide, so anything comparing them would keep text describing the old value.
+  // The two encodings collide, so comparing them would keep text describing the old value.
   const collided = mergedToolCallArgumentsText(
     '{"id":9007199254740993}',
     { id: 9007199254740992 },
@@ -100,9 +97,7 @@ test("prompt replay prefers exact parsable argument text", () => {
   );
 });
 
-// The helpers only hold the line if the adapter actually routes through them: re-encoding
-// the parsed arguments at either the tool_start or the tool_end branch would put the
-// rounded id back on the card.
+// Read as source: the helpers only hold the line if the adapter routes through them.
 const ADAPTER = readFileSync(
   fileURLToPath(
     new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
@@ -138,8 +133,6 @@ test("prompt export routes through the exact-text replay helper", () => {
 });
 
 test("argument text that does not parse is not shown on an approval card", () => {
-  // A card is what the user approves, so text that cannot be these arguments must not be
-  // rendered next to Allow. The structured arguments stand in, exactly as replay does.
   for (const junk of [
     "not json at all",
     "   ",
@@ -148,7 +141,6 @@ test("argument text that does not parse is not shown on an approval card", () =>
   ]) {
     assert.equal(toolCallArgumentsText(junk, { q: "gpu" }), '{"q":"gpu"}');
   }
-  // Valid text is still preferred, including the whole point of the field.
   assert.equal(
     toolCallArgumentsText('{"id":9007199254740993}', { id: 9007199254740992 }),
     '{"id":9007199254740993}',
@@ -156,9 +148,8 @@ test("argument text that does not parse is not shown on an approval card", () =>
 });
 
 test("a Gemini native_part merge keeps the executed integer", () => {
-  // The adapter computes the overwritten keys from tool_end BEFORE folding native_part
-  // into args.google, so `google` travels the lexeme-preserving path. That is what lets
-  // the id survive a merge that genuinely adds data.
+  // The adapter computes overwritten keys BEFORE folding native_part into args.google, so
+  // `google` takes the lexeme-preserving path.
   const card = '{"google":{"executableCode":{"code":"print(1)"}},"id":9007199254740993}';
   const mergedArgs = {
     google: { executableCode: { code: "print(1)" }, native_part: { inlineData: "AAA" } },
@@ -176,8 +167,6 @@ test("a Gemini native_part merge keeps the executed integer", () => {
 });
 
 test("a card stored before this change still merges", () => {
-  // Sessions persisted by an older build carry the browser's own encoding as argsText.
-  // Reading one back has to keep working, and must not throw.
   const legacy = JSON.stringify({ id: 9007199254740992, q: "gpu" });
   const merged = mergedToolCallArgumentsText(legacy, { id: 9007199254740992, q: "gpu", done: true }, []);
 

@@ -296,7 +296,6 @@ def test_the_card_text_keeps_digits_the_browser_would_round():
 
     assert payload["arguments"]["id"] == exact
     assert payload["arguments_text"] == '{"id":9007199254740993}'
-    # The replay the model sees is encoded the same way, so the two cannot drift apart.
     assert payload["arguments_text"] == decision.as_assistant_tool_call()["function"]["arguments"]
 
 
@@ -310,7 +309,7 @@ def test_an_unreadable_fragment_is_carried_as_the_text_the_card_shows():
 
     assert payload["arguments"] == {"raw": truncated}
     assert json.loads(payload["arguments_text"]) == {"raw": truncated}
-    # The replay substitutes a summary instead, so the two texts are meant to differ here.
+    # The replay substitutes a summary, so these two texts are meant to differ.
     assert payload["arguments_text"] != decision.as_assistant_tool_call()["function"]["arguments"]
 
 
