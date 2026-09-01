@@ -1316,6 +1316,22 @@ def test_launch_preflights_agent_before_connect(agent, monkeypatch):
     assert events == ["agent", "connect"]
 
 
+def test_dsh_rejects_an_unrelated_executable_before_connect(monkeypatch):
+    monkeypatch.setattr(start, "_which_with_install_dirs", lambda _: "/usr/bin/dsh")
+    monkeypatch.setattr(start, "is_deepseek_harness_executable", lambda _: False)
+    monkeypatch.setattr(start, "_install_agent", lambda *_: None)
+    monkeypatch.setattr(
+        start,
+        "_connect",
+        lambda *args, **kwargs: pytest.fail("the wrong dsh must be rejected before connection"),
+    )
+
+    result = CliRunner().invoke(start.start_app, ["dsh"])
+
+    assert result.exit_code == 1
+    assert "`/usr/bin/dsh` is not DeepSeek Harness" in result.output
+
+
 def test_declined_opencode_subagent_install_stops_before_connect(monkeypatch):
     installs = []
     monkeypatch.setattr(start, "_which_with_install_dirs", lambda _: None)
@@ -5501,6 +5517,7 @@ def test_dsh_permission_mode_overrides_an_inherited_bypass(
     # danger-full-access exported in the parent shell survive a run without --yolo.
     monkeypatch.setenv("DSH_PERMISSION_MODE", "danger-full-access")
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/dsh")
+    monkeypatch.setattr(start, "is_deepseek_harness_executable", lambda _: True)
     captured = _capture_launch(monkeypatch, argv)
     assert captured["env"]["DSH_PERMISSION_MODE"] == expected
 
@@ -5527,6 +5544,7 @@ def test_start_dsh_forwards_reasoning_effort(fake_studio, monkeypatch):
     monkeypatch.setattr(start, "_shutdown_server", lambda server: None)
     monkeypatch.setattr(start, "_managed_node_tools", lambda: None)
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/dsh")
+    monkeypatch.setattr(start, "is_deepseek_harness_executable", lambda _: True)
 
     def run(
         command,
@@ -6644,6 +6662,8 @@ def _capture_launch(monkeypatch, argv):
 @pytest.mark.parametrize("agent", sorted(_RESUME_ENV_VAR))
 def test_resume_persists_agent_home_to_stable_dir(agent, fake_studio, tmp_path, monkeypatch):
     monkeypatch.setattr(start.shutil, "which", lambda _: f"/usr/local/bin/{agent}")
+    if agent == "dsh":
+        monkeypatch.setattr(start, "is_deepseek_harness_executable", lambda _: True)
     captured = _capture_launch(monkeypatch, [agent, "--persist"])
     stable = tmp_path / "agents" / agent
     assert captured["env"][_RESUME_ENV_VAR[agent]] == str(stable)
@@ -6654,6 +6674,8 @@ def test_resume_persists_agent_home_to_stable_dir(agent, fake_studio, tmp_path, 
 @pytest.mark.parametrize("agent", sorted(_RESUME_ENV_VAR))
 def test_default_launch_home_is_ephemeral(agent, fake_studio, tmp_path, monkeypatch):
     monkeypatch.setattr(start.shutil, "which", lambda _: f"/usr/local/bin/{agent}")
+    if agent == "dsh":
+        monkeypatch.setattr(start, "is_deepseek_harness_executable", lambda _: True)
     captured = _capture_launch(monkeypatch, [agent])
     home = captured["env"][_RESUME_ENV_VAR[agent]]
     parent = start._ephemeral_session_parent(agent)
@@ -6717,6 +6739,8 @@ def test_resume_persist_only_agents_have_no_resume_token(fake_studio, monkeypatc
     # Persistence alone must not select a session.
     for agent in ("openclaw", "hermes", "dsh"):
         monkeypatch.setattr(start.shutil, "which", lambda _, a = agent: f"/usr/local/bin/{a}")
+        if agent == "dsh":
+            monkeypatch.setattr(start, "is_deepseek_harness_executable", lambda _: True)
         captured = _capture_launch(monkeypatch, [agent, "--persist"])
         assert "resume" not in captured["command"]
         assert "--continue" not in captured["command"]

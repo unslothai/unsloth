@@ -29,6 +29,7 @@ import click
 import typer
 from typer.core import TyperCommand
 
+from studio.backend.utils.coding_agents import is_deepseek_harness_executable
 from unsloth_cli._inference import (
     _USER_AGENT,
     _studio_token,
@@ -3630,10 +3631,25 @@ def _install_agent(name: str, install_hint: str) -> Optional[str]:
 
 
 def _resolve_or_install_agent(name: str, install_hint: str, resolver) -> str:
-    executable = resolver(name) or _install_agent(name, install_hint)
-    if executable is None:
-        _fail(f"`{name}` not found on PATH. Install it with: {install_hint}")
-    return executable
+    executable = resolver(name)
+    invalid_executable = None
+    if executable is not None:
+        if name != "dsh" or is_deepseek_harness_executable(executable):
+            return executable
+        invalid_executable = executable
+
+    executable = _install_agent(name, install_hint)
+    if executable is not None:
+        if name != "dsh" or is_deepseek_harness_executable(executable):
+            return executable
+        invalid_executable = executable
+
+    if invalid_executable is not None:
+        _fail(
+            f"`{invalid_executable}` is not DeepSeek Harness. Install DeepSeek Harness "
+            f"with: {install_hint}"
+        )
+    _fail(f"`{name}` not found on PATH. Install it with: {install_hint}")
 
 
 def _require_agent_for_launch(name: str, install_hint: str, launch: bool) -> Optional[str]:

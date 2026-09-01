@@ -11,6 +11,15 @@ default to one the user can run immediately.
 """
 
 import shutil
+import subprocess
+
+
+_DEEPSEEK_HARNESS_HELP_MARKER = "DeepSeek Harness"
+_DEEPSEEK_HARNESS_FILE_MARKERS = (
+    b"deepseek harness",
+    b"@deepseek-ai/dsh",
+    b"@deepseek-ai+dsh",
+)
 
 # Keep in sync with the `unsloth start <agent>` subcommands defined in
 # unsloth_cli/commands/start.py. Each entry is the exact executable name that
@@ -19,13 +28,51 @@ import shutil
 CODING_AGENTS: tuple[str, ...] = ("claude", "codex", "openclaw", "opencode", "hermes", "pi", "dsh")
 
 
+def is_deepseek_harness_executable(
+    executable: str,
+    *,
+    allow_execution: bool = True,
+) -> bool:
+    """Return whether ``executable`` identifies itself as DeepSeek Harness."""
+    try:
+        with open(executable, "rb") as launcher:
+            contents = launcher.read(256 * 1024).lower()
+    except OSError:
+        contents = b""
+    if any(marker in contents for marker in _DEEPSEEK_HARNESS_FILE_MARKERS):
+        return True
+    if not allow_execution:
+        return False
+    try:
+        result = subprocess.run(
+            [executable, "--help"],
+            check = False,
+            capture_output = True,
+            text = True,
+            timeout = 5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    output = (result.stdout or "") + (result.stderr or "")
+    return result.returncode == 0 and _DEEPSEEK_HARNESS_HELP_MARKER in output
+
+
 def _is_on_path(agent: str) -> bool:
     # shutil.which is documented to return None on a miss, but PATH lookups can
     # still raise (e.g. a permission error while probing a directory entry);
     # this is an advisory check, so a lookup failure should read as "not
     # installed" instead of breaking the settings endpoint.
     try:
-        return shutil.which(agent) is not None
+        executable = shutil.which(agent)
+        if executable is None:
+            return False
+        if agent == "dsh":
+            # Detection runs when the settings panel opens, so it must not execute an
+            # arbitrary same-named program. Official npm/pnpm launchers contain one of
+            # the package or product markers above; explicit launches may additionally
+            # use the bounded --help probe for custom wrappers.
+            return is_deepseek_harness_executable(executable, allow_execution = False)
+        return True
     except OSError:
         return False
 
