@@ -3690,13 +3690,12 @@ _hsa_spoofed_physical_gfx() {
 #                studio/install_python_stack.py.
 #   amd-smi reads the driver, so stripping either variable there is a no-op.
 #
-# A caller that needs the VISIBLE set asks for "physical" and then applies the masks
-# itself with _amd_gfx_select_ordinals, rather than leaving them in the environment for
-# the probe to honour. Leaving them there only works if the tool that answers happens to
-# implement the one you care about: rocminfo applies ROCR_VISIBLE_DEVICES and ignores the
-# HIP pair, and the amd-smi fallback reads the driver and applies NEITHER, so on a host
-# with no rocminfo the "masked" answer was the full inventory. Resolving both by ordinal
-# here gives the same answer whichever tool replied.
+# Neither mode answers "which device will the runtime select". Nothing here can: the
+# answer needs per-device identity and the ROCr/HIP mask layering, and no probe applies
+# both masks anyway (rocminfo honours ROCR and ignores the HIP pair; amd-smi reads the
+# driver and honours neither). _runtime_gfx_target() in install_python_stack.py is where
+# that question is answered, with the per-device list it requires. Callers here get
+# presence, which is all a flat token list can honestly report.
 #
 # shellcheck disable=SC2086  # $_pg_strip is a LIST of variable names for unset; POSIX sh
 # has no arrays, and quoting it would unset one variable whose name contains spaces.
@@ -3727,45 +3726,6 @@ _probe_amd_gfx_arch() {
         fi
     fi
     printf '%s\n' "$_pg"
-}
-
-# Keep the entries a visible-device mask selects out of a gfx token list.
-#   $1 = newline-separated gfx tokens (as _probe_amd_gfx_arch prints them)
-#   $2 = the mask value, a comma-separated list
-# Prints the surviving tokens. Exit 0 when every token resolved, 2 when at least one did
-# NOT -- ROCR_VISIBLE_DEVICES also accepts UUIDs ("0,GPU-DEADBEEFDEADBEEF"), and a probe
-# that reports arches names no UUID, so such a token identifies a device but not a
-# position in this list. Mirrors _rocr_visible_subset() in install_python_stack.py, which
-# reports the same "unresolved" rather than guessing; the caller decides what to do with
-# it, and for the miscomputing gate the answer is to decline ROCm.
-#
-# Ordinals index the DEDUPLICATED list, because rocminfo prints each agent's token more
-# than once (its Name line and its ISA Info line). That is exact only while the visible
-# archs are distinct: two devices of one arch collapse to a single entry and every later
-# ordinal shifts. The gate is safe under that anyway -- a shifted ordinal either lands on
-# a bad arch (CPU, the conservative answer) or runs off the end and resolves to nothing,
-# which the caller also treats as "cannot prove a healthy GPU is visible".
-#
-# The layers compose in this order: ROCR filters the HSA agent list, then HIP ordinals
-# index whatever survived that, so apply ROCR first.
-_amd_gfx_select_ordinals() {
-    [ -n "${2:-}" ] || return 0
-    [ "$2" != "-1" ] || return 0
-    _ago_out=$(printf '%s\n' "$1" | sed 's/:.*$//' | tr '[:upper:]' '[:lower:]' \
-        | awk -v mask="$2" '
-            BEGIN {
-                _n = split(mask, _w, /,/)
-                for (_i = 1; _i <= _n; _i++) {
-                    gsub(/^[ \t]+|[ \t]+$/, "", _w[_i])
-                    if (_w[_i] ~ /^[0-9]+$/) _sel[_w[_i] + 0] = 1
-                }
-            }
-            NF && !_seen[$0]++ { if ((_ord++) in _sel) print }')
-    printf '%s\n' "$_ago_out"
-    case "$2" in
-        *[!0-9,\ ]*) return 2 ;;
-    esac
-    return 0
 }
 
 # Classify the physical NVIDIA inventory for a cu126 fallback: "cu126" when it covers
@@ -4085,6 +4045,23 @@ get_torch_index_url() {
         # moment a ROCm runtime is present. Full measurements in
         # studio/ROCM_RDNA2_APU.md.
         #
+        # PRESENCE, not selection. The question here is only "does this host contain an
+        # arch that must never receive ROCm wheels", which a flat probe can answer and
+        # no environment variable can move. It is deliberately NOT "which GPU will the
+        # runtime pick": answering that needs per-device identity, the ROCr/HIP mask
+        # layering, ordinals AND UUIDs, and knowledge of which probe applied which mask.
+        # install_python_stack.py already implements all of it in _runtime_gfx_target()
+        # and _rocr_visible_subset(); a flat "gfx tokens" list cannot, because rocminfo
+        # repeats each agent's token so two devices of one arch are indistinguishable
+        # here. Asking the answerable question keeps this gate correct by construction.
+        #
+        # The cost is a mixed host -- a Van Gogh APU beside a healthy AMD dGPU -- taking
+        # the cpu index even when the healthy card is the one selected. That host is
+        # vanishingly rare (Van Gogh ships in handhelds), it keeps the documented
+        # UNSLOTH_TORCH_INDEX_URL escape hatch, and _ensure_rocm_torch() can still route
+        # it to ROCm on a later run, where _runtime_gfx_target() resolves the selected
+        # device properly. The precision lives in the layer that can implement it.
+        #
         # Deliberately inline rather than a helper: get_torch_index_url is extracted on
         # its own by several test harnesses, and a helper they did not also extract
         # would be an undefined command whose negation sends every ROCm case to the cpu
@@ -4092,115 +4069,25 @@ get_torch_index_url() {
         #
         # Escape hatch: a pinned UNSLOTH_TORCH_INDEX_URL returns long before this point.
         #
-        # Match a TOKEN, not the whole probe. _probe_amd_gfx_arch keeps every `grep -oE`
+        # The probe is asked in "physical" mode so neither HSA_OVERRIDE_GFX_VERSION (the
+        # circulated Van Gogh workaround, which makes ROCr rename the agent gfx1030) nor a
+        # stale UNSLOTH_ROCM_GFX_ARCH can hide the silicon from a presence test.
+        #
+        # Match a TOKEN, not the whole probe: _probe_amd_gfx_arch keeps every `grep -oE`
         # hit and rocminfo names each GPU agent twice -- its own "Name: gfx1033" and its
-        # "ISA Info" line "amdgcn-amd-amdhsa--gfx1033" -- so a single-GPU Deck already
-        # reads "gfx1033\ngfx1033". An exact-string case on that matched nothing and fell
-        # through to the version-keyed ROCm index below. Flatten to one space-delimited,
-        # lowercased, suffix-stripped line (the surrounding spaces keep gfx10330 out).
-        #
-        # EVERY arch, not any. _probe_amd_gfx_arch unsets the visible-device masks, so
-        # what it returns is the PHYSICAL inventory: on a host pairing a Van Gogh APU
-        # with a healthy AMD dGPU, gating on one token would take the whole install to
-        # CPU and leave the good card unusable without a manual pin. That also keeps this
-        # at the same verdict as _rocm_miscomputing_host() in install_python_stack.py,
-        # which demotes an installed ROCm torch only when every detected arch is bad --
-        # two implementations of one policy, and a host they disagreed about would be
-        # given CPU wheels here and then have ROCm wheels reinstated on the next update.
-        #
-        # HSA_OVERRIDE_GFX_VERSION=10.3.0 is THE circulated Van Gogh workaround, and while
-        # it is set ROCr hands rocminfo the spoofed name, so the probe answers gfx1030 and
-        # this gate sees no bad token on the one host it exists for. Re-read the inventory
-        # with the variable stripped, as _rocm_miscomputing_host() does through
-        # ignore_hsa_override. No corroboration dance, unlike the #7331 Strix correction
-        # below: that one infers from the product name, which can be wrong about a real
-        # dGPU, whereas this is a direct unspoofed probe and only gfx1033 silicon can
-        # answer gfx1033 to it. Kept in its own variable so the runtime reading the rest
-        # of the function uses is untouched.
-        # Judge the VISIBLE targets, not the physical inventory. _probe_amd_gfx_arch
-        # unsets the masks by default, so on a host pairing a Van Gogh APU with a healthy
-        # dGPU a ROCR_VISIBLE_DEVICES that exposes only the APU still counted the hidden
-        # dGPU as "good" and kept ROCm -- while the runtime could reach nothing but
-        # gfx1033, which is the arch this whole gate exists to keep off ROCm. Choosing
-        # wheels is a question about what this run can actually use, so it has to respect
-        # the mask; the mask-free read stays the AMD-PRESENCE probe it always was.
-        #
-        # Note the deliberate asymmetry with _rocm_miscomputing_host() in
-        # install_python_stack.py, which keeps reading the physical inventory. That one
-        # force-reinstalls CPU torch OVER an existing ROCm install, and a transient env
-        # var must not destroy a working multi-GPU setup. Giving CPU wheels to a fresh
-        # install is cheap and reversible; taking ROCm away from an installed one is not.
-        # Neither can protect a device chosen after the install, which is a runtime
-        # concern, not an installer one.
-        #
-        # Falls back to the physical read when nothing is visible (a mask that hides
-        # every device), so an all-hidden host keeps the behaviour it has today rather
-        # than reading as "no AMD at all".
+        # "ISA Info" line -- so a single-GPU Deck already reads "gfx1033\ngfx1033". The
+        # surrounding spaces keep gfx10330 out.
         _amd_gfx_gate_probe=$(_probe_amd_gfx_arch physical 2>/dev/null || true)
-        # Apply BOTH mask layers by ordinal rather than leaving either to the probe.
-        # rocminfo honours ROCR_VISIBLE_DEVICES and ignores the HIP pair; the amd-smi
-        # fallback reads the driver and honours neither, so on a host with no rocminfo an
-        # environment-masked probe returned the full inventory and the hidden dGPU still
-        # set _amd_gfx_good. Doing it here gives the same answer whichever tool replied.
-        # ROCR first, then HIP: HIP ordinals index the set that survived ROCr.
-        _amd_gfx_mask_unresolved=false
-        _amd_gfx_masked=false
-        for _amd_gfx_layer in "${ROCR_VISIBLE_DEVICES:-}" \
-                              "${HIP_VISIBLE_DEVICES:-${CUDA_VISIBLE_DEVICES:-}}"; do
-            [ -n "$_amd_gfx_layer" ] || continue
-            [ "$_amd_gfx_layer" != "-1" ] || continue
-            _amd_gfx_masked=true
-            [ -n "$_amd_gfx_gate_probe" ] || continue
-            _amd_gfx_sel=$(_amd_gfx_select_ordinals "$_amd_gfx_gate_probe" "$_amd_gfx_layer") \
-                || _amd_gfx_mask_unresolved=true
-            _amd_gfx_gate_probe="$_amd_gfx_sel"
-        done
-        # A mask was in force and resolved to nothing we can name -- a UUID token, or an
-        # ordinal past the end of a list dedup may have shortened. Falling back to the
-        # full inventory here is what let a hidden healthy dGPU keep ROCm on a host whose
-        # only visible target was the APU, so prove it instead: keep the physical read for
-        # the all-good case, and let the bad-arch check below decide. _amd_gfx_masked
-        # records that a mask spoke at all, so an unresolvable one cannot read as "no mask".
-        if [ "$_amd_gfx_masked" = true ] && [ -z "$_amd_gfx_gate_probe" ]; then
-            _amd_gfx_mask_unresolved=true
-        fi
-        if [ -z "$_amd_gfx_gate_probe" ]; then
-            _amd_gfx_gate_probe=$(_probe_amd_gfx_arch physical 2>/dev/null || true)
-        fi
         [ -n "$_amd_gfx_gate_probe" ] || _amd_gfx_gate_probe="$_amd_gfx_probe"
         _amd_gfx_tokens=" $(printf '%s\n' "$_amd_gfx_gate_probe" | sed 's/:.*$//' \
             | tr '[:upper:]' '[:lower:]' | tr '\n' ' ')"
-        _amd_gfx_bad=false
-        _amd_gfx_good=false
-        for _amd_gfx_token in $_amd_gfx_tokens; do
-            case "$_amd_gfx_token" in
-                gfx1033) _amd_gfx_bad=true ;;
-                *)       _amd_gfx_good=true ;;
-            esac
-        done
-        if [ "$_amd_gfx_bad" = true ]; then
-            if [ "$_amd_gfx_good" = false ]; then
+        case "$_amd_gfx_tokens" in
+            *" gfx1033 "*)
                 echo "[WARN] AMD gfx1033 (Van Gogh) computes incorrect results under ROCm -- installing CPU-only PyTorch." >&2
                 echo "[WARN] ROCm wheels install on it but training diverges to NaN and gradcheck fails; forward math is fine." >&2
                 echo "[WARN] Details: studio/ROCM_RDNA2_APU.md. Override with UNSLOTH_TORCH_INDEX_URL if you want ROCm anyway." >&2
-                echo "$_base/cpu"; return
-            fi
-            # A healthy arch is only a reason to keep ROCm if it is one the runtime can
-            # actually reach. When a mask was in force and could not be resolved to a
-            # device -- a UUID token, or an ordinal past the end of a dedup-shortened list
-            # -- "good" came from the physical inventory, which is exactly the hidden GPU
-            # the mask may have taken away. Decline rather than guess: the cost of being
-            # wrong here is silent NaNs, and the cost of being wrong the other way is CPU
-            # wheels on a host that can pin UNSLOTH_TORCH_INDEX_URL to get ROCm back.
-            if [ "$_amd_gfx_mask_unresolved" = true ]; then
-                echo "[WARN] AMD gfx1033 (Van Gogh) is present and a visible-device mask names devices this installer cannot resolve -- installing CPU-only PyTorch." >&2
-                echo "[WARN] It cannot prove an unaffected GPU is visible, and gfx1033 computes incorrect results under ROCm (studio/ROCM_RDNA2_APU.md)." >&2
-                echo "[WARN] Use ordinals in ROCR_VISIBLE_DEVICES, or pin UNSLOTH_TORCH_INDEX_URL, if you want ROCm anyway." >&2
-                echo "$_base/cpu"; return
-            fi
-            echo "[WARN] AMD gfx1033 (Van Gogh) is present, but another AMD GPU on this host is not affected -- keeping ROCm PyTorch." >&2
-            echo "[WARN] gfx1033 computes incorrect results under ROCm (studio/ROCM_RDNA2_APU.md); pick the other GPU with ROCR_VISIBLE_DEVICES when you train." >&2
-        fi
+                echo "$_base/cpu"; return ;;
+        esac
         # end of the miscomputing-arch gate -- tests/sh/test_rocm_bad_arch_gate.sh lifts
         # the block between the header comment above and this line, so keep both exact.
         # detect ROCm version
