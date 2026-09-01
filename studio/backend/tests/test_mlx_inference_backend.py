@@ -4529,3 +4529,74 @@ def test_mlx_vlm_keeps_a_stop_token_that_closes_a_tool_envelope(monkeypatch):
         )
     )
     assert snapshots[-1] == envelope + "<|end_message|>"
+
+
+def test_mlx_vlm_drops_an_orphan_closer_that_opened_nothing(monkeypatch):
+    """"the turn mentions a marker" is not enough to keep a closer.
+
+    An ordinary answer that merely writes ``[ARGS]`` opened no envelope, so a trailing
+    ``<|end_message|>`` is orphan markup and must not reach the user.
+    """
+    from core.inference import mlx_inference
+
+    MLXInferenceBackend = mlx_inference.MLXInferenceBackend
+
+    @contextmanager
+    def _adapter_state(_model, _state):
+        yield
+
+    monkeypatch.setattr(mlx_inference, "_temporary_mlx_adapter_state", _adapter_state)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.detect_think_prefill", lambda *_a, **_k: ""
+    )
+
+    class _Tok:
+        _IDS = {5: "<|end_message|>"}
+        all_special_ids = (5,)
+        eos_token_id = 5
+
+        def convert_ids_to_tokens(self, token_id):
+            return self._IDS[token_id]
+
+        def decode(self, token_ids, skip_special_tokens = False, **_kwargs):
+            return "".join(
+                ""
+                if (skip_special_tokens and i in self.all_special_ids)
+                else self._IDS.get(i, "")
+                for i in token_ids
+            )
+
+    prompt_utils = SimpleNamespace(
+        MODEL_CONFIG = {"deepseek_vl_v2": object()},
+        apply_chat_template = lambda *_a, **_k: "<image> model-aware",
+    )
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.prompt_utils = prompt_utils
+
+    def _vlm_stream(*_a, **_k):
+        for token_id, text in ((None, "The [ARGS] marker is neat"), (5, "")):
+            yield SimpleNamespace(
+                text = text, token = token_id, prompt_tokens = 3, generation_tokens = 1
+            )
+
+    mlx_vlm.stream_generate = _vlm_stream
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda _t, _m, **_k: "<image> model-aware",
+    )
+
+    backend = MLXInferenceBackend()
+    backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
+    backend._processor = SimpleNamespace(tokenizer = _Tok())
+    backend._tokenizer = _Tok()
+    args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 1, 1, None)
+
+    snapshots = list(
+        backend._generate_vlm(
+            *args,
+            _adapter_state = False,
+            tools = [{"type": "function", "function": {"name": "get_weather"}}],
+        )
+    )
+    assert snapshots[-1] == "The [ARGS] marker is neat"

@@ -64,6 +64,47 @@ NATIVE_TOOL_CONTROL_TOKENS = frozenset(
 )
 
 
+# Which openers make a native CLOSER load-bearing. A closer is only worth keeping when its
+# own envelope was opened: "the text mentions some tool signal" is far too broad, since an
+# ordinary answer that merely says ``[ARGS]`` would then keep an orphan ``<|end_message|>``.
+_NATIVE_CONTROL_OPENERS = {
+    "</tool_call>": ("<tool_call>",),
+    "<tool_call|>": ("<|tool_call>",),
+    "</function>": ("<function=", '<function name="'),
+    "</parameter>": ("<parameter=", '<parameter name="'),
+    "</param>": ("<param=", '<param name="'),
+    "</arg_key>": ("<arg_key>",),
+    "</arg_value>": ("<arg_value>",),
+    "[/TOOL_CALLS]": ("[TOOL_CALLS]",),
+    "<｜tool▁calls▁end｜>": (
+        "<｜tool▁calls▁begin｜>",
+        "<｜tool_calls_begin｜>",
+        "<｜tool▁calls｜>",
+        "<｜tool calls begin｜>",
+        "<｜tool\\_calls\\_begin｜>",
+    ),
+    "<｜tool▁call▁end｜>": ("<｜tool▁call▁begin｜>",),
+    "<|tool_calls_section_end|>": ("<|tool_calls_section_begin|>",),
+    "<|tool_call_end|>": ("<|tool_call_begin|>", "<|tool_call_argument_begin|>"),
+    "<|end_message|>": ("<|content_invoke_tool_json|>", "<|message_model|>"),
+    "</think>": ("<think>",),
+    "[/THINK]": ("[THINK]",),
+}
+
+
+def closes_an_open_envelope(text: str, token: str) -> bool:
+    """True when ``token`` is a native CLOSER whose own opener appears in ``text``.
+
+    Used where a runtime stop token has to be kept for the parser rather than trimmed for
+    display: only a closer that something actually opened is load-bearing.
+    """
+    openers = _NATIVE_CONTROL_OPENERS.get(token)
+    if not openers:
+        return False
+    body = text[: text.rfind(token)] if token in text else text
+    return any(opener in body for opener in openers)
+
+
 _ATEM_REASONING_MARKERS = ("self", "user")
 _ATEM_REASONING_CONTROL_TOKENS = frozenset({"<|start|>", "<|message|>", "<|eom|>", "<|eot|>"})
 

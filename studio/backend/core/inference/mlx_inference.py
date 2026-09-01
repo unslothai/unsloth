@@ -14,10 +14,10 @@ from typing import Optional, Generator
 from core.inference.message_content import content_to_text
 from core.inference.native_tool_tokens import (
     NativeToolTokenDecoder,
+    closes_an_open_envelope,
     decoder_preserves_token,
     reasoning_control_tokens,
 )
-from core.inference.tool_call_parser import has_tool_signal as _has_tool_signal
 from core.inference.runtime_context import (
     MAX_REQUESTABLE_CONTEXT,
     runtime_context_length,
@@ -2406,8 +2406,9 @@ class MLXInferenceBackend:
                                 # Only when the turn carries no tool markup: the same marker
                                 # can be the required closer (TML Inkling's <|end_message|>),
                                 # and strict parsing rejects the call without it.
-                                _kept = native_token_decoder.decode(_ids[:-1])
-                                if not _has_tool_signal(_kept):
+                                _whole = native_token_decoder.decode(_ids)
+                                _closer = _whole[len(native_token_decoder.decode(_ids[:-1])) :]
+                                if not closes_an_open_envelope(_whole, _closer):
                                     _ids = _ids[:-1]
                             sampled = native_token_decoder.decode(_ids)
                         else:
@@ -2732,16 +2733,17 @@ class MLXInferenceBackend:
                         token_text = response.text if hasattr(response, "text") else str(response)
                         token_id = getattr(response, "token", None)
                         if vlm_token_decoder is not None and token_id is not None:
-                            if int(token_id) in vlm_stop_ids and not _has_tool_signal(sampled):
-                                # Suppressed only for a turn with no tool markup; the same
-                                # marker closes a real envelope and strict parsing needs it.
-                                token_text = ""
-                            else:
-                                # Ordinary ids keep mlx-vlm's own text; only a special id is
-                                # re-decoded, so nothing else about the stream changes.
-                                token_text = vlm_token_decoder.decode_stream_token(
-                                    token_id, token_text
-                                )
+                            # Ordinary ids keep mlx-vlm's own text; only a special id is
+                            # re-decoded, so nothing else about the stream changes.
+                            _decoded = vlm_token_decoder.decode_stream_token(token_id, token_text)
+                            # A stop token is dropped unless it closes an envelope something
+                            # actually opened; strict parsing needs that closer.
+                            token_text = (
+                                ""
+                                if int(token_id) in vlm_stop_ids
+                                and not closes_an_open_envelope(sampled + _decoded, _decoded)
+                                else _decoded
+                            )
                         sampled += token_text
                         if not sequences:
                             yield prefill + sampled

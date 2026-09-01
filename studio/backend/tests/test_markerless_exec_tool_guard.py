@@ -891,15 +891,17 @@ def test_the_transformers_cleanup_keeps_a_stop_token_that_closes_an_envelope():
         if isinstance(node, ast.FunctionDef) and node.name == "_clean_generated_text"
     )
     body = ast.unparse(fn)
-    assert "NATIVE_TOOL_CONTROL_TOKENS" in body
-    assert "_has_tool_signal(text)" in body
+    assert "closes_an_open_envelope(text, token)" in body
 
-    # The two halves of the condition, on the real predicates.
-    from core.inference.native_tool_tokens import NATIVE_TOOL_CONTROL_TOKENS
-    from core.inference.tool_call_parser import has_tool_signal
+    # The predicate itself: only a closer whose OWN opener is present is load-bearing.
+    from core.inference.native_tool_tokens import closes_an_open_envelope
 
     envelope = '<|content_invoke_tool_json|>{"name": "get_weather", "args": {}}<|end_message|>'
-    assert "<|end_message|>" in NATIVE_TOOL_CONTROL_TOKENS
-    assert has_tool_signal(envelope) is True
-    assert has_tool_signal("hi<|end_message|>") is False  # a plain answer: still trimmed
-    assert "<|im_end|>" not in NATIVE_TOOL_CONTROL_TOKENS  # an ordinary EOS is unaffected
+    assert closes_an_open_envelope(envelope, "<|end_message|>") is True
+    assert closes_an_open_envelope("hi<|end_message|>", "<|end_message|>") is False
+    # An answer that merely mentions another marker must not keep an orphan closer.
+    assert closes_an_open_envelope("The [ARGS] marker<|end_message|>", "<|end_message|>") is False
+    # An ordinary EOS is not a native closer at all, and neither is an opener.
+    assert closes_an_open_envelope("hi<|im_end|>", "<|im_end|>") is False
+    assert closes_an_open_envelope("hi<|python_tag|>", "<|python_tag|>") is False
+    assert closes_an_open_envelope("[TOOL_CALLS]x{}[/TOOL_CALLS]", "[/TOOL_CALLS]") is True
