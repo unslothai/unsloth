@@ -594,6 +594,46 @@ def test_a_slow_but_live_idle_session_survives_the_recheck(monkeypatch, clients)
     assert len(clients) == 1, "a slow probe retired a healthy session"
 
 
+def test_a_tight_deadline_skips_the_probe_and_still_runs_the_tool(monkeypatch, clients):
+    """The recheck is there to save someone a failed call, so it must not become
+    the reason one fails. tool_call_timeout goes down to 1s, and a probe that
+    quietly eats the whole budget leaves nothing to dispatch with."""
+    monkeypatch.setattr(mcp_client, "_HTTP_IDLE_RECHECK", 0.0)
+    monkeypatch.setattr(mcp_client, "_SESSION_LIVENESS_TIMEOUT", 0.5)
+    _call(HTTP_URL, scope = SCOPE)
+    clients[0].probe_delay = 1.5
+    clients[0].call_delay = 0.2
+    assert _call(HTTP_URL, scope = SCOPE, timeout = 0.8) == "call-2"
+    assert clients[0].probes == 0, "the probe ran with no budget left for the call"
+
+
+def test_evicting_another_scope_does_not_run_on_the_callers_deadline(monkeypatch, clients):
+    """Whoever happens to trip the cap is mid tool call. The victim belongs to a
+    different chat and nobody is waiting on it, so its teardown must not be
+    charged to that caller's budget."""
+    monkeypatch.setattr(mcp_client, "_MAX_SESSIONS", 1)
+    closed = threading.Event()
+
+    class SlowExit(RecordingClient):
+        async def __aexit__(self, *exc):
+            await asyncio.sleep(1.5)
+            out = await super().__aexit__(*exc)
+            closed.set()
+            return out
+
+    monkeypatch.setattr(
+        mcp_client,
+        "_client",
+        lambda url, headers, use_oauth = False: SlowExit(url, headers, use_oauth),
+    )
+    _call(HTTP_URL, scope = SCOPE)  # fills the cache
+    started = time.monotonic()
+    assert _call(HTTP_URL, scope = SCOPE_B) == "call-1"
+    elapsed = time.monotonic() - started
+    assert elapsed < 0.5, f"the caller paid for an unrelated eviction: {elapsed:.2f}s"
+    assert closed.wait(10), "the evicted session was never closed"
+
+
 def test_a_slow_probe_still_condemns_a_dirty_session(monkeypatch, clients):
     """The counterpart that must not change: a session whose last call was
     abandoned is under suspicion, so silence within the window condemns it."""
@@ -677,11 +717,24 @@ def test_a_fork_resets_the_inherited_cache(clients):
         pytest.skip("no register_at_fork on this platform")
     _call(HTTP_URL, scope = SCOPE)
     assert len(mcp_client._mcp_sessions) == 1
-    mcp_client._reset_after_fork()
-    assert mcp_client._mcp_sessions == {}
-    assert mcp_client._mcp_key_locks == {}
-    assert mcp_client._mcp_connects_in_flight == 0
-    assert mcp_client._mcp_reaper_started is False
+    # The real hook runs in a child that is about to exec or exit, so dropping the
+    # entries is the whole point. Here it runs in the parent, where those objects
+    # are live: hold on to them and close them by hand, or this test leaks a loop
+    # thread and its descriptors into every test that follows.
+    inherited = list(mcp_client._mcp_sessions.values())
+    reaper_was_started = mcp_client._mcp_reaper_started
+    try:
+        mcp_client._reset_after_fork()
+        assert mcp_client._mcp_sessions == {}
+        assert mcp_client._mcp_key_locks == {}
+        assert mcp_client._mcp_connects_in_flight == 0
+        assert mcp_client._mcp_reaper_started is False
+    finally:
+        for session in inherited:
+            session.close()
+        # The parent's reaper thread outlived the call above; leaving the flag
+        # False would start a second one on the next connect.
+        mcp_client._mcp_reaper_started = reaper_was_started
 
 
 def test_transport_dead_is_unknown_for_http():

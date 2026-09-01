@@ -558,18 +558,25 @@ def _transport_dead(session) -> bool:
     return False
 
 
-def _needs_idle_recheck(session, idle_for: float) -> bool:
+def _needs_idle_recheck(session, idle_for: float, remaining: Optional[float]) -> bool:
     """Whether an idle HTTP session must prove itself before the next dispatch.
 
     A server MAY drop an HTTP session whenever it likes, and the client only
     learns on the next request -- which would surface as a failed tool call the
     user has to retry by hand. stdio is exempt: _transport_dead answers there, and
-    a live subprocess does not expire on its own."""
+    a live subprocess does not expire on its own.
+
+    Skipped when the caller cannot afford it. The probe exists to save someone a
+    failed call, so spending their whole budget on it (tool_call_timeout goes down
+    to 1s) would cause the very failure it is meant to avoid; dispatching straight
+    away is the better bet with that little time left."""
     if is_stdio(session.url):
         return False
     # Negative means this borrower connected the session itself, so the handshake
     # it just completed is proof enough.
-    return idle_for >= 0.0 and idle_for >= _HTTP_IDLE_RECHECK
+    if idle_for < 0.0 or idle_for < _HTTP_IDLE_RECHECK:
+        return False
+    return remaining is None or remaining > _SESSION_LIVENESS_TIMEOUT * 2
 
 
 def _session_responsive(
@@ -971,9 +978,12 @@ def _get_session(
                                 target = _session_reaper, name = "mcp-session-reaper", daemon = True
                             ).start()
                             atexit.register(close_mcp_sessions)
-                for victim in evicted:
-                    logger.info("Evicting LRU idle MCP session: %s", _session_log_id(victim.url))
-                    victim.close()
+                if evicted:
+                    # Detached: these belong to other scopes and nobody is waiting
+                    # on them, but an unresponsive transport costs
+                    # _SESSION_CLOSE_TIMEOUT each. Charging that to this caller
+                    # would spend the deadline meant for their tool call.
+                    _close_detached(evicted)
                 if closed_while_connecting:
                     session.close()
                     raise RuntimeError("MCP server was updated or removed while connecting")
@@ -1007,8 +1017,8 @@ def _release_session(session: _McpSession) -> None:
             _discard_key_lock(oldest)
     if close_now:
         session.close()
-    for victim in victims:
-        victim.close()
+    if victims:
+        _close_detached(victims)
 
 
 def _retire_session(session: _McpSession) -> None:
@@ -1101,6 +1111,28 @@ def _close_all(sessions: list) -> None:
         thread.start()
     for thread in threads:
         thread.join(_SESSION_CLOSE_TIMEOUT + 5.0)
+
+
+def _close_detached(sessions: list) -> None:
+    """Close sessions nobody is waiting on, without blocking the caller.
+
+    Used for LRU victims: they belong to other scopes, and the thread that
+    happened to trip the cap is in the middle of serving a tool call with its own
+    deadline. Daemon threads, so an unresponsive transport cannot hold up exit
+    either; close_mcp_sessions stays synchronous because its caller (a server
+    edit, or atexit) does need the teardown to have happened."""
+    for session in sessions:
+        logger.info("Evicting LRU idle MCP session: %s", _session_log_id(session.url))
+        threading.Thread(
+            target = _close_quietly, args = (session,), name = "mcp-evict", daemon = True
+        ).start()
+
+
+def _close_quietly(session) -> None:
+    try:
+        session.close()
+    except Exception:  # noqa: BLE001
+        logger.exception("Closing an evicted MCP session failed")
 
 
 # The cache stopped being stdio-only, but an in-place upgrade can leave a caller
@@ -1532,7 +1564,7 @@ def _call_session_tool(
                 else:
                     raise RuntimeError("MCP server connection is not available")
             elif (
-                session.dirty or _needs_idle_recheck(session, idle_for)
+                session.dirty or _needs_idle_recheck(session, idle_for, _remaining())
             ) and not _session_responsive(
                 session, _remaining(), cancel_event, timeout_is_fatal = session.dirty
             ):
