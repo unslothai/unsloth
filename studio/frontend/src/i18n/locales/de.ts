@@ -1041,6 +1041,10 @@ export const de = {
             "Nicht genug lokaler Speicher für diese Schrift. Entfernen Sie zuerst eine importierte Schrift.",
           errorFailed: "Diese Schriftdatei konnte nicht geladen werden.",
         },
+        interfaceScale: {
+          label: "Oberflächenskalierung",
+          description: "Passen Sie die Größe aller Oberflächenelemente an.",
+        },
         uiFontSize: {
           label: "Schriftgröße der Oberfläche",
           description: "Passen Sie die Grundgröße der Unsloth-Oberfläche an.",

@@ -998,6 +998,10 @@ export const ja = {
           errorStorageFull: "ローカルストレージの空き容量が足りません。先にインポート済みフォントを削除してください。",
           errorFailed: "このフォントファイルを読み込めませんでした。",
         },
+        interfaceScale: {
+          label: "インターフェースの表示倍率",
+          description: "すべてのインターフェース要素のサイズを変更します。",
+        },
         uiFontSize: {
           label: "UI フォントサイズ",
           description: "Unsloth UI の基本サイズを調整します。",

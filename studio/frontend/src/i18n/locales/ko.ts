@@ -1013,6 +1013,10 @@ export const ko = {
             "이 글꼴을 저장할 로컬 저장 공간이 부족합니다. 가져온 글꼴을 먼저 제거하세요.",
           errorFailed: "이 글꼴 파일을 불러올 수 없습니다.",
         },
+        interfaceScale: {
+          label: "인터페이스 배율",
+          description: "모든 인터페이스 요소의 크기를 조정합니다.",
+        },
         uiFontSize: {
           label: "UI 글꼴 크기",
           description: "Unsloth UI에 쓰이는 기본 크기를 조정합니다.",

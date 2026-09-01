@@ -1026,6 +1026,10 @@ export const ptBR = {
           errorStorageFull: "Sem espaço de armazenamento local para esta fonte. Remova uma fonte importada primeiro.",
           errorFailed: "Não foi possível carregar este arquivo de fonte.",
         },
+        interfaceScale: {
+          label: "Escala da interface",
+          description: "Redimensione todos os elementos da interface.",
+        },
         uiFontSize: {
           label: "Tamanho da fonte da interface",
           description: "Ajuste o tamanho base da interface do Unsloth.",

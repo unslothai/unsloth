@@ -47,12 +47,17 @@ import {
   useAppearanceCustomStore,
 } from "../stores/appearance-custom-store";
 import {
+  INTERFACE_SCALE_RANGE,
+  useInterfaceScaleStore,
+} from "../stores/interface-scale-store";
+import {
   type Palette,
   type ResolvedTheme,
   usePalette,
   useTheme,
 } from "../stores/theme-store";
 import { ColorPickerSwatch } from "./color-picker";
+import { normalizeSizeInputDraft } from "./size-input-value";
 
 /* ------------------------------- Colors -------------------------------- */
 
@@ -761,33 +766,31 @@ function useFontImport(onImported: (name: string) => void) {
   return { inputs, requestUpload, requestFolder, importFile };
 }
 
-function FontSizeInput({
+function SizeInput({
   value,
   range,
   onCommit,
   ariaLabel,
+  unit,
 }: {
   value: number | null;
   range: { min: number; max: number; default: number };
   onCommit: (next: number | null) => void;
   ariaLabel: string;
+  unit: string;
 }) {
   const [draft, setDraft] = useState(value === null ? "" : String(value));
   useEffect(() => {
     setDraft(value === null ? "" : String(value));
   }, [value]);
   const commit = () => {
-    const trimmed = draft.trim();
-    if (trimmed === "") {
-      onCommit(null);
-      return;
-    }
-    const parsed = Number.parseInt(trimmed, 10);
-    if (Number.isNaN(parsed)) {
+    const normalized = normalizeSizeInputDraft(draft, range);
+    if (!normalized) {
       setDraft(value === null ? "" : String(value));
       return;
     }
-    onCommit(Math.min(range.max, Math.max(range.min, parsed)));
+    setDraft(normalized.draft);
+    onCommit(normalized.value);
   };
   return (
     <div className="flex items-center gap-1.5">
@@ -809,8 +812,23 @@ function FontSizeInput({
         aria-label={ariaLabel}
         className="h-8 w-20 text-xs"
       />
-      <span className="text-xs text-muted-foreground">px</span>
+      <span className="text-xs text-muted-foreground">{unit}</span>
     </div>
+  );
+}
+
+export function InterfaceScaleRow() {
+  const t = useT();
+  const interfaceScale = useInterfaceScaleStore((s) => s.scale);
+  const setScale = useInterfaceScaleStore((s) => s.setScale);
+  return (
+    <SizeInput
+      value={interfaceScale}
+      range={INTERFACE_SCALE_RANGE}
+      onCommit={(next) => setScale(next ?? INTERFACE_SCALE_RANGE.default)}
+      ariaLabel={t("settings.appearance.custom.interfaceScale.label")}
+      unit="%"
+    />
   );
 }
 
@@ -821,11 +839,12 @@ export function UiFontSizeRow() {
   );
   const patch = useAppearanceCustomStore((s) => s.patch);
   return (
-    <FontSizeInput
+    <SizeInput
       value={uiFontSize}
       range={UI_FONT_SIZE_RANGE}
       onCommit={(next) => patch({ uiFontSize: next })}
       ariaLabel={t("settings.appearance.custom.uiFontSize.label")}
+      unit="px"
     />
   );
 }
@@ -837,11 +856,12 @@ export function CodeFontSizeRow() {
   );
   const patch = useAppearanceCustomStore((s) => s.patch);
   return (
-    <FontSizeInput
+    <SizeInput
       value={codeFontSize}
       range={CODE_FONT_SIZE_RANGE}
       onCommit={(next) => patch({ codeFontSize: next })}
       ariaLabel={t("settings.appearance.custom.codeFontSize.label")}
+      unit="px"
     />
   );
 }
@@ -956,14 +976,21 @@ export function ResetCustomizationButton() {
   const t = useT();
   const customization = useAppearanceCustomStore((s) => s.customization);
   const resetAll = useAppearanceCustomStore((s) => s.resetAll);
-  const pristine = isDefaultCustomization(customization);
+  const interfaceScale = useInterfaceScaleStore((s) => s.scale);
+  const resetInterfaceScale = useInterfaceScaleStore((s) => s.reset);
+  const pristine =
+    isDefaultCustomization(customization) &&
+    interfaceScale === INTERFACE_SCALE_RANGE.default;
   return (
     <Button
       type="button"
       variant="outline"
       size="sm"
       disabled={pristine}
-      onClick={resetAll}
+      onClick={() => {
+        resetAll();
+        resetInterfaceScale();
+      }}
     >
       {t("settings.appearance.custom.resetAll")}
     </Button>

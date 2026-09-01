@@ -26,8 +26,12 @@ import {
 import { LoadedModelsIndicator } from "@/features/loaded-models";
 import { NativeIntentDrain } from "@/features/native-intents/native-intent-drain";
 import {
+  NATIVE_MAC_TITLEBAR_HEIGHT_VAR,
+  NATIVE_MAC_TRAFFIC_LIGHT_INSET_VAR,
   applyCustomizationToDocument,
+  applyInterfaceScale,
   useAppearanceCustomStore,
+  useInterfaceScaleStore,
   useTheme,
 } from "@/features/settings";
 import { SttDownloadPrompt } from "@/features/settings/components/stt-download-prompt";
@@ -472,15 +476,15 @@ const WEB_UPDATE_HIDDEN_ROUTES = new Set([
 
 const MAC_NATIVE_CHROME_STYLE = {
   "--studio-titlebar-height": "0px",
-  "--studio-mac-titlebar-height": "34px",
-  "--studio-desktop-titlebar-height": "34px",
+  "--studio-mac-titlebar-height": NATIVE_MAC_TITLEBAR_HEIGHT_VAR,
+  "--studio-desktop-titlebar-height": NATIVE_MAC_TITLEBAR_HEIGHT_VAR,
   "--studio-titlebar-navigation-offset-y": "4px",
-  "--studio-mac-traffic-light-inset": "78px",
-  "--studio-collapsed-chat-controls-inset": "188px",
-  "--studio-startup-top-inset": "58px",
+  "--studio-mac-traffic-light-inset": NATIVE_MAC_TRAFFIC_LIGHT_INSET_VAR,
+  "--studio-collapsed-chat-controls-inset": `calc(110px + ${NATIVE_MAC_TRAFFIC_LIGHT_INSET_VAR})`,
+  "--studio-startup-top-inset": `calc(24px + ${NATIVE_MAC_TITLEBAR_HEIGHT_VAR})`,
   "--studio-content-top-inset": "0px",
-  "--studio-non-chat-content-top-inset": "34px",
-  "--studio-hidden-route-top-inset": "34px",
+  "--studio-non-chat-content-top-inset": NATIVE_MAC_TITLEBAR_HEIGHT_VAR,
+  "--studio-hidden-route-top-inset": NATIVE_MAC_TITLEBAR_HEIGHT_VAR,
   "--studio-chat-header-height": "44px",
   "--studio-chat-header-padding-top": "9px",
   "--studio-media-header-left-inset": "0.5rem",
@@ -522,13 +526,20 @@ function DesktopChromeVarsEffect({
         ? el.style.removeProperty(name)
         : el.style.setProperty(name, value);
     set("--studio-custom-titlebar-height", usesCustomTitlebar ? "34px" : null);
-    set("--studio-mac-titlebar-height", usesNativeMacTitlebar ? "34px" : null);
+    set(
+      "--studio-mac-titlebar-height",
+      usesNativeMacTitlebar ? NATIVE_MAC_TITLEBAR_HEIGHT_VAR : null,
+    );
     set("--studio-window-control-inset", usesCustomTitlebar ? "112px" : null);
     // How far body-portaled surfaces (dialogs, alert dialogs) must stay clear of the
     // top: either titlebar paints over them, and neither inherits the wrapper's style.
     set(
       "--studio-window-chrome-top",
-      usesCustomTitlebar || usesNativeMacTitlebar ? "34px" : null,
+      usesCustomTitlebar
+        ? "34px"
+        : usesNativeMacTitlebar
+          ? NATIVE_MAC_TITLEBAR_HEIGHT_VAR
+          : null,
     );
     return () => {
       set("--studio-custom-titlebar-height", null);
@@ -877,6 +888,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
 function AppearanceCustomizationEffect() {
   const { theme, resolved } = useTheme();
   const customization = useAppearanceCustomStore((s) => s.customization);
+  const interfaceScale = useInterfaceScaleStore((s) => s.scale);
   useEffect(() => {
     applyCustomizationToDocument(customization, resolved);
   }, [customization, resolved]);
@@ -888,6 +900,9 @@ function AppearanceCustomizationEffect() {
       )
       .catch(() => undefined);
   }, [theme]);
+  useEffect(() => {
+    void applyInterfaceScale(interfaceScale).catch(() => undefined);
+  }, [interfaceScale]);
   return null;
 }
 

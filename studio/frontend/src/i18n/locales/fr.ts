@@ -1040,6 +1040,10 @@ export const fr = {
             "Stockage local insuffisant pour cette police. Retirez d'abord une police importée.",
           errorFailed: "Impossible de charger ce fichier de police.",
         },
+        interfaceScale: {
+          label: "Échelle de l'interface",
+          description: "Redimensionnez tous les éléments de l'interface.",
+        },
         uiFontSize: {
           label: "Taille de police de l'interface",
           description: "Ajustez la taille de base utilisée pour l'interface Unsloth.",

@@ -267,6 +267,10 @@ export function createSettingsSearchIndex({
       // and searching Settings for "repair" answered "No settings found."
       "settings.general.repairInstall.label",
     ],
+    appearance: [
+      ...SETTINGS_SEARCH_INDEX.appearance,
+      "settings.appearance.custom.interfaceScale.label",
+    ],
     about: SETTINGS_SEARCH_INDEX.about.filter(
       (key) => key !== "settings.about.updates",
     ),

@@ -1036,6 +1036,10 @@ export const es = {
             "No hay suficiente almacenamiento local para esta fuente. Quita antes una fuente importada.",
           errorFailed: "No se pudo cargar este archivo de fuente.",
         },
+        interfaceScale: {
+          label: "Escala de la interfaz",
+          description: "Cambia el tamaño de todos los elementos de la interfaz.",
+        },
         uiFontSize: {
           label: "Tamaño de fuente de la interfaz",
           description: "Ajusta el tamaño base usado en la interfaz de Unsloth.",

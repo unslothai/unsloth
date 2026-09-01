@@ -73,6 +73,7 @@ import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
 import { useDesktopBooleanSetting } from "../hooks/use-desktop-boolean-setting";
 import { KEYBOARD_SHORTCUTS_STORAGE_KEY } from "../stores/keyboard-shortcuts-store";
+import { INTERFACE_SCALE_STORAGE_KEY } from "../stores/interface-scale-store";
 import { SETTINGS_PANEL_PREFS_STORAGE_KEY } from "../stores/settings-panel-prefs-store";
 import { CHAT_PROJECT_ATTACHMENT_TARGET_KEY } from "@/features/chat/utils/project-attachment-target";
 
@@ -84,6 +85,7 @@ const PREFS_KEYS: string[] = [
   "theme",
   "palette",
   "unsloth_appearance_customization",
+  INTERFACE_SCALE_STORAGE_KEY,
   LOCALE_STORAGE_KEY,
   // UI state
   "sidebar_pinned",

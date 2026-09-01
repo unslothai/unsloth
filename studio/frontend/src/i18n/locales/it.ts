@@ -1005,6 +1005,10 @@ export const it = {
             "Spazio di archiviazione locale insufficiente per questo font. Rimuovi prima un font importato.",
           errorFailed: "Impossibile caricare questo file di font.",
         },
+        interfaceScale: {
+          label: "Scala dell'interfaccia",
+          description: "Ridimensiona tutti gli elementi dell'interfaccia.",
+        },
         uiFontSize: {
           label: "Dimensione del font dell'interfaccia",
           description:

@@ -1000,6 +1000,10 @@ export const zhCN = {
           errorStorageFull: "本地存储空间不足。请先删除一个已导入的字体。",
           errorFailed: "无法加载此字体文件。",
         },
+        interfaceScale: {
+          label: "界面缩放",
+          description: "调整所有界面元素的大小。",
+        },
         uiFontSize: {
           label: "界面字号",
           description: "调整 Unsloth 界面的基准字号。",

@@ -1012,6 +1012,10 @@ export const en = {
             "Not enough local storage for this font. Remove an imported font first.",
           errorFailed: "Could not load this font file.",
         },
+        interfaceScale: {
+          label: "Interface scale",
+          description: "Resize all interface elements.",
+        },
         uiFontSize: {
           label: "UI font size",
           description: "Adjust the base size used for the Unsloth UI.",
