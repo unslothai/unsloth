@@ -1379,3 +1379,46 @@ def test_a_new_recipe_job_drops_the_previous_accounts_event_subscribers():
     src = inspect.getsource(manager)
     start = src.index("self._events.clear()")
     assert "self._subs.clear()" in src[start : start + 400]
+
+
+def test_install_wide_settings_are_read_from_the_owner_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from storage.studio_db import get_install_setting, upsert_install_settings
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    token = _bind("unsloth")
+    try:
+        upsert_install_settings({"hugging_face_cache_home": "/shared/hf"})
+    finally:
+        reset_workspace_subject(token)
+
+    # A managed account must see the owner's value, not an empty per-account one.
+    token = _bind("alice")
+    try:
+        assert get_install_setting("hugging_face_cache_home") == "/shared/hf"
+        assert studio_db.get_app_setting("hugging_face_cache_home") is None
+    finally:
+        reset_workspace_subject(token)
+
+
+def test_a_preview_capability_names_the_workspace_that_minted_it():
+    from utils.preview_token import (
+        preview_token_subject,
+        sign_preview_ref,
+        verify_preview_ref,
+    )
+
+    tokens = {}
+    for subject in ("unsloth", "alice"):
+        token = _bind(subject)
+        try:
+            tokens[subject] = sign_preview_ref("run-1/checkpoint-100")
+        finally:
+            reset_workspace_subject(token)
+    assert tokens["unsloth"] != tokens["alice"]
+    assert preview_token_subject(tokens["alice"]) == "alice"
+    assert verify_preview_ref("run-1/checkpoint-100", tokens["alice"])
+    # Alice's token must not be reshaped into one for the owner's identical ref.
+    forged = tokens["unsloth"].split(".", 1)[0] + "." + tokens["alice"].split(".", 1)[1]
+    assert not verify_preview_ref("run-1/checkpoint-100", forged)
