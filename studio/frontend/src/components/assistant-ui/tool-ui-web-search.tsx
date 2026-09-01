@@ -13,6 +13,7 @@ import {
   isSearchImagesToolResult,
   useToolAwaitingApproval,
 } from "@/features/chat";
+import { openLink } from "@/lib/open-link";
 import { stringifyToolResult } from "@/lib/strip-ansi";
 import { memo } from "react";
 import { SearchImageThumb } from "./search-image";
@@ -225,7 +226,14 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
               <a
                 href={safeUrl}
                 target="_blank"
-                rel="noreferrer noopener"
+                rel="noopener noreferrer"
+                // Same as the Source pills below: a bare target="_blank" does
+                // nothing in the Desktop webview, so hand the url to the opener.
+                onClick={(e) => {
+                  if (openLink(safeUrl)) {
+                    e.preventDefault();
+                  }
+                }}
                 className="break-all text-xs text-primary underline-offset-4 hover:underline"
               >
                 {url}

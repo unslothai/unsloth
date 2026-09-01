@@ -64,3 +64,18 @@ test("the url variants show the page they read, whatever else the card has", () 
     /const safeUrl = isSafeHttpUrl\(candidateUrl\) \? candidateUrl : "";/,
   );
 });
+
+test("the read-page link opens in Desktop, not just the browser", () => {
+  // A bare target="_blank" does nothing in the Tauri webview. Every external
+  // link in the app pairs it with an opener; the Source pills in this same card
+  // use openLink, so this one does too or Desktop users get a dead link.
+  assert.match(CARD, /import \{ openLink \} from "@\/lib\/open-link";/);
+  const anchor = CARD.slice(
+    CARD.indexOf("href={safeUrl}"),
+    CARD.indexOf("</a>", CARD.indexOf("href={safeUrl}")),
+  );
+  assert.notEqual(anchor.length, 0, "the link moved");
+  assert.match(anchor, /onClick=\{\(e\) => \{/);
+  assert.match(anchor, /openLink\(safeUrl\)/);
+  assert.match(anchor, /e\.preventDefault\(\)/);
+});
