@@ -29,6 +29,13 @@ from utils.prebuilt.freshness_flow import (
 logger = structlog.get_logger(__name__)
 
 MAX_CHANGES = 50
+# The only repository whose notes this module can read. Its bodies are generated
+# (cumulative, one bullet per carried PR); --published-repo can point an install
+# at upstream or a mirror, whose per-release notes are a different document. On
+# ggml-org/llama.cpp, b10721 -> b10734 reported 5 "changes" -- commit-message
+# lines and an attestation URL -- and dropped 324 bullets from the 9 releases in
+# between, because a per-release body says nothing about what is still carried.
+CUMULATIVE_NOTES_REPO = "unslothai/llama.cpp"
 # 4 MiB. A release body is a few KB; the cap only stops an unbounded read if the
 # far side ever stops behaving like the GitHub API.
 MAX_RELEASE_BYTES = 4 * 1024 * 1024
@@ -220,13 +227,16 @@ def release_page_url(repo: str, tag: str) -> Optional[str]:
 def unavailable_reason(repo: str, installed_tag: str, latest_tag: str) -> str:
     """Why a comparison could not be made, for a caller holding ``None``.
 
-    ``notes_not_itemised`` is permanent for that pair -- the release predates the
-    bullet format and no retry can change it -- while ``release_notes_unavailable``
-    is a fetch that may succeed later. The banner uses this to decide whether
-    offering Retry is honest.
+    ``notes_not_itemised`` and ``notes_not_comparable`` are permanent -- the
+    release predates the bullet format, or the install tracks a repository whose
+    notes are not cumulative -- while ``release_notes_unavailable`` is a fetch
+    that may succeed later. The banner uses this to decide whether offering Retry
+    is honest.
     """
     if not _valid_repo(repo) or not installed_tag or not latest_tag:
         return "release_notes_unavailable"
+    if repo != CUMULATIVE_NOTES_REPO:
+        return "notes_not_comparable"
     # Both lookups are memoized, so this re-read costs nothing on the path that
     # has just performed them.
     installed = _release_for_tag(repo, installed_tag)
@@ -254,6 +264,8 @@ def changelog_for_update(
     None means no comparison was possible; do not fall back to the cumulative body.
     """
     if not repo or not installed_tag or not latest_tag or installed_tag == latest_tag:
+        return None
+    if repo != CUMULATIVE_NOTES_REPO:
         return None
     installed = _release_for_tag(repo, installed_tag, force_refresh = force_refresh)
     latest = _release_for_tag(repo, latest_tag, force_refresh = force_refresh)

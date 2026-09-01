@@ -78,11 +78,11 @@ export function LlamaUpdateChangelogPanel({
         {state === "loading" || state === "idle" ? (
           <Message>Loading new changes...</Message>
         ) : state === "unavailable" ? (
-          // Definitive, so no Retry: this build predates the itemised release
-          // notes and re-asking GitHub cannot change the answer.
+          // Definitive, so no Retry: re-asking GitHub cannot change the answer.
           <Message>
-            This build predates itemised release notes, so its changes cannot be
-            compared.
+            {changelog?.error === "notes_not_comparable"
+              ? "This install tracks a custom llama.cpp repository, so its changes cannot be compared."
+              : "This build predates itemised release notes, so its changes cannot be compared."}
           </Message>
         ) : state === "error" ? (
           <Message

@@ -35,8 +35,13 @@ export type LlamaUpdateChangelogState =
   | "unavailable"
   | "error";
 
-// The backend reports this when a release predates the itemised body format.
-const PERMANENT_ERRORS = new Set(["notes_not_itemised"]);
+// notes_not_itemised: the installed release predates the itemised body format.
+// notes_not_comparable: --published-repo points the install at a repository whose
+// notes are per-release rather than cumulative, so there is nothing to diff.
+const PERMANENT_ERRORS = new Set([
+  "notes_not_itemised",
+  "notes_not_comparable",
+]);
 
 function githubUrl(value: unknown): string | null {
   return typeof value === "string" && value.startsWith("https://github.com/")

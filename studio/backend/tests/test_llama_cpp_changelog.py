@@ -296,6 +296,30 @@ def test_unavailable_reason_separates_permanent_from_transient(monkeypatch):
     )
 
 
+def test_a_noncumulative_repo_is_never_compared(monkeypatch):
+    # --published-repo can point the install at upstream, whose notes are
+    # per-release. Diffing two of them omits every release in between: on real
+    # data, b10721 -> b10734 reported 5 "changes" (commit-message lines and an
+    # attestation URL) and dropped 324 bullets from the 9 releases between them.
+    upstream = {
+        "b10721": {"body": "<details open>\n\n- webgpu : avoid a crash (#28045)\n"},
+        "b10734": {"body": "<details open>\n\n- metal : enable Metal 4.0 (#27461)\n"},
+    }
+    monkeypatch.setattr(
+        changes,
+        "_release_for_tag",
+        lambda _repo, tag, *, force_refresh = False: upstream.get(tag),
+    )
+
+    assert changes.changelog_for_update("ggml-org/llama.cpp", "b10721", "b10734") is None
+    # Permanent: that repository will never publish cumulative notes, so the
+    # banner must not offer a Retry.
+    assert (
+        changes.unavailable_reason("ggml-org/llama.cpp", "b10721", "b10734")
+        == "notes_not_comparable"
+    )
+
+
 def test_a_bodyless_target_is_transient_not_permanent(monkeypatch):
     # Only the installed side can be permanently uncomparable. The target is the
     # newest release, so a missing body is a publishing gap that may be filled in,
