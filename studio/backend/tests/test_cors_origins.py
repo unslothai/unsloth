@@ -51,21 +51,21 @@ class DummyRemoteAccessCORSMiddleware(CORSMiddleware):
     ],
 )
 def test_cors_origins_for_mode_wildcard(api_only, secure, expected):
-    origins = cors_origins_for_mode(api_only=api_only, secure=secure)
+    origins = cors_origins_for_mode(api_only = api_only, secure = secure)
     assert origins == expected
 
 
 def test_cors_origins_for_mode_desktop_default():
-    origins = cors_origins_for_mode(api_only=True, secure=False)
+    origins = cors_origins_for_mode(api_only = True, secure = False)
     assert origins == list(_TAURI_CORS_ORIGINS)
 
 
 def test_cors_origins_for_mode_env_override(monkeypatch):
     monkeypatch.setenv("UNSLOTH_CORS_ORIGINS", "https://foo.example, http://localhost:9999")
-    origins = cors_origins_for_mode(api_only=True, secure=False)
+    origins = cors_origins_for_mode(api_only = True, secure = False)
     assert origins == list(_TAURI_CORS_ORIGINS) + ["https://foo.example", "http://localhost:9999"]
 
-    origins_wildcard = cors_origins_for_mode(api_only=False, secure=False)
+    origins_wildcard = cors_origins_for_mode(api_only = False, secure = False)
     assert origins_wildcard == ["https://foo.example", "http://localhost:9999"]
 
 
@@ -81,16 +81,16 @@ def test_cors_origins_for_mode_env_override(monkeypatch):
 def test_cors_origin_regex_for_mode_default_none(api_only, secure):
     # Regex matching is disabled by default across all modes to prevent unauthorized
     # credentialed requests from arbitrary local ports in desktop api-only mode.
-    regex = cors_origin_regex_for_mode(api_only=api_only, secure=secure)
+    regex = cors_origin_regex_for_mode(api_only = api_only, secure = secure)
     assert regex is None
 
 
 def test_cors_origin_regex_for_mode_opt_in(monkeypatch):
     monkeypatch.setenv("UNSLOTH_CORS_ALLOW_LOOPBACK", "1")
-    assert cors_origin_regex_for_mode(api_only=True, secure=False) == _LOOPBACK_ORIGIN_REGEX
+    assert cors_origin_regex_for_mode(api_only = True, secure = False) == _LOOPBACK_ORIGIN_REGEX
 
     monkeypatch.setenv("UNSLOTH_CORS_ORIGIN_REGEX", r"^https?://specific\.local$")
-    assert cors_origin_regex_for_mode(api_only=True, secure=False) == r"^https?://specific\.local$"
+    assert cors_origin_regex_for_mode(api_only = True, secure = False) == r"^https?://specific\.local$"
 
 
 @pytest.mark.parametrize(
@@ -114,15 +114,15 @@ def test_cors_origin_regex_for_mode_opt_in(monkeypatch):
     ],
 )
 def test_desktop_cors_default_locked_down(origin, should_allow):
-    state = SimpleNamespace(cloudflare_url=None)
+    state = SimpleNamespace(cloudflare_url = None)
     middleware = DummyRemoteAccessCORSMiddleware(
         lambda *_: None,
-        remote_access_state=state,
-        allow_origins=cors_origins_for_mode(api_only=True, secure=False),
-        allow_origin_regex=cors_origin_regex_for_mode(api_only=True, secure=False),
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        remote_access_state = state,
+        allow_origins = cors_origins_for_mode(api_only = True, secure = False),
+        allow_origin_regex = cors_origin_regex_for_mode(api_only = True, secure = False),
+        allow_credentials = True,
+        allow_methods = ["*"],
+        allow_headers = ["*"],
     )
 
     request = Headers(
@@ -144,15 +144,15 @@ def test_desktop_cors_default_locked_down(origin, should_allow):
 
 def test_desktop_cors_opt_in_origins(monkeypatch):
     monkeypatch.setenv("UNSLOTH_CORS_ORIGINS", "http://localhost:3000, http://127.0.0.1:8080")
-    state = SimpleNamespace(cloudflare_url=None)
+    state = SimpleNamespace(cloudflare_url = None)
     middleware = DummyRemoteAccessCORSMiddleware(
         lambda *_: None,
-        remote_access_state=state,
-        allow_origins=cors_origins_for_mode(api_only=True, secure=False),
-        allow_origin_regex=cors_origin_regex_for_mode(api_only=True, secure=False),
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        remote_access_state = state,
+        allow_origins = cors_origins_for_mode(api_only = True, secure = False),
+        allow_origin_regex = cors_origin_regex_for_mode(api_only = True, secure = False),
+        allow_credentials = True,
+        allow_methods = ["*"],
+        allow_headers = ["*"],
     )
 
     # Allowed opt-in origins
@@ -204,15 +204,15 @@ def test_desktop_cors_opt_in_origins(monkeypatch):
 )
 def test_desktop_cors_loopback_flag_opt_in(monkeypatch, origin, should_allow):
     monkeypatch.setenv("UNSLOTH_CORS_ALLOW_LOOPBACK", "1")
-    state = SimpleNamespace(cloudflare_url=None)
+    state = SimpleNamespace(cloudflare_url = None)
     middleware = DummyRemoteAccessCORSMiddleware(
         lambda *_: None,
-        remote_access_state=state,
-        allow_origins=cors_origins_for_mode(api_only=True, secure=False),
-        allow_origin_regex=cors_origin_regex_for_mode(api_only=True, secure=False),
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        remote_access_state = state,
+        allow_origins = cors_origins_for_mode(api_only = True, secure = False),
+        allow_origin_regex = cors_origin_regex_for_mode(api_only = True, secure = False),
+        allow_credentials = True,
+        allow_methods = ["*"],
+        allow_headers = ["*"],
     )
 
     request = Headers(
