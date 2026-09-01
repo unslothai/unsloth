@@ -213,6 +213,7 @@ def test_layering_config_then_map_site_is_correct(monkeypatch, dnp):
 
 
 def test_low_memory_auto_path_returns_none_not_one(monkeypatch, dnp):
+    # The old heuristic returned 1 here, which still forked a Pool(1).
     _force_start_method(monkeypatch, dnp, "fork")
     psutil = pytest.importorskip("psutil")
     _force_cpus(monkeypatch, dnp, 32)
@@ -259,7 +260,6 @@ def test_explicit_value_is_clamped_by_memory(monkeypatch, dnp, capsys):
     ~680 MB each on a big-core machine, and the old heuristic bounded only the
     auto path, so that sailed through however little RAM there was.
     """
-    # The old heuristic returned 1 here, which still forked a Pool(1).
     _force_start_method(monkeypatch, dnp, "fork")
     psutil = pytest.importorskip("psutil")
     monkeypatch.setattr(

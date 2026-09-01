@@ -557,12 +557,12 @@ class TestMergeSizing:
         so a model that is a quarter embeddings costs more than half the merge.
         """
         model = _ModelWithEmbeddings(input_numel = 1024**3, output_numel = 1024**3 // 2)
+        # 10GB merge, 3GB of it embeddings -> 7GB at 8 bits + 3GB copied.
         S._preflight_merge_disk(model, "model", "fp8")
         assert sized == [_merge_preflight_ask(10 * GB + 3 * GB + int(3.5 * GB), 10 * GB)]
 
     def test_tied_embeddings_are_counted_once(self, sized):
         model = _ModelWithEmbeddings(input_numel = 1024**3, tied = True)
-        # 10GB merge, 3GB of it embeddings -> 7GB at 8 bits + 3GB copied.
         S._preflight_merge_disk(model, "model", "fp8")
         assert sized == [_merge_preflight_ask(10 * GB + 2 * GB + 4 * GB, 10 * GB)]
 

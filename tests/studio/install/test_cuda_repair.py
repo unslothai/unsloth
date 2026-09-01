@@ -471,6 +471,8 @@ class TestPreTuringWheelFamily:
             assert "cu130" in _index_url(_run_cuda_repair(cuda_version = "13.0", compute_caps = caps))
 
     def test_cu126_venv_is_repaired_after_a_blackwell_upgrade(self):
+        # The span cuts both ways: a cu126 venv predating a GPU swap has nothing for sm_120, and a fresh install on
+        # that host would pick cu130.
         mock_pip = _run_cuda_repair(
             torch_state = "cuda|cu126|2.11.0",
             cuda_version = "13.0",
@@ -497,7 +499,7 @@ class TestPreTuringWheelFamily:
 
     def test_cu118_kepler_build_is_kept(self):
         # torch 2.7's cu118 still built sm_37 and nothing newer does, so the replacement would strand the GPU that
-        # The span cuts both ways: a cu126 venv predating a GPU swap has nothing for sm_120, and a fresh install on
+        # works today.
         mock_pip = _run_cuda_repair(
             torch_state = "cuda|cu118|2.7.1",
             cuda_version = "13.0",

@@ -142,9 +142,14 @@ def check(label: str, first: list[str], second: list[str]) -> None:
 
 def main() -> int:
     for label, runner in (("openai", run_openai), ("anthropic", run_anthropic)):
-        # NOT done by softening check():
-        # Deliberately NOT done by softening check(): #5669 turned this assertion into a
-        # Only a replay disagreement is retried, and only here.
+        # Only a replay disagreement is retried, and only here. Two replays are not two identical requests: each turn
+        # is built from the reply before it, and the second replay meets the server holding cache and slot state the
+        # first one left behind, so a token the model is near-tied on can land differently without decoding being
+        # broken. A server that is actually non-deterministic disagrees on every attempt and still fails.
+        #
+        # Deliberately NOT done by softening check(): #5669 turned this assertion into a printed warning on the Linux
+        # leg and it went unnoticed for three months, so every divergence handed to check() is still a hard failure,
+        # and every other fault -- an empty reply, history not reaching the model -- fails on the first attempt.
         for attempt in range(1, ATTEMPTS + 1):
             try:
                 check(label, runner(), runner())

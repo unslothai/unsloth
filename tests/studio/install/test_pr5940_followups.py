@@ -386,23 +386,31 @@ def test_ps_installers_gate_amd_smi_on_windows():
         text = ps.read_text(encoding = "utf-8")
         assert "UNSLOTH_ENABLE_AMD_SMI" in text, f"{ps.name} missing amd-smi opt-in gate"
         assert "amdSmiAllowed" in text, f"{ps.name} missing amd-smi gate variable"
+        # The HIP-SDK probe must exclude the venv-internal hipInfo.exe (mirrors _path_inside_venv()), else amd-smi
+        # can still pop the DiskPart UAC.
         assert (
             "Test-HipinfoIsVenvInternal" in text
         ), f"{ps.name} missing venv-internal hipinfo exclusion helper"
+        # Get-Command returns only the first hipinfo; scan -All and skip the venv copy so a real SDK hipinfo later
+        # on PATH is not shadowed (codex P2).
         assert (
             "Get-Command hipinfo -CommandType Application -All" in text
         ), f"{ps.name} must enumerate all hipinfo executables on PATH (-CommandType Application -All)"
         assert (
             "Test-HipinfoIsVenvInternal $_.Source" in text
         ), f"{ps.name} must run the venv exclusion while scanning hipinfo candidates"
+        # The HIP_PATH/ROCM_PATH candidate must also be venv-filtered, else an env var pointing into the venv
+        # reopens the gate.
         assert (
             "Test-HipinfoIsVenvInternal $hipinfoCandidate" in text
         ), f"{ps.name} must run the venv exclusion on the HIP_PATH/ROCM_PATH candidate"
+        # VenvDir/VIRTUAL_ENV can be unset at probe time (the update flow), so the venv root must also be derived
+        # from the setup python.
         assert (
             "UNSLOTH_SETUP_PYTHON" in text
         ), f"{ps.name} venv-internal check must seed the venv root from UNSLOTH_SETUP_PYTHON"
-        # The HIP-SDK probe must exclude the venv-internal hipInfo.exe (mirrors _path_inside_venv()), else amd-smi can
-        # Get-Command returns only the first hipinfo;
+        # A custom Unsloth home moves the venv off the default path; it must be seeded too or its hipInfo escapes
+        # the filter and reopens the gate.
         assert (
             "UNSLOTH_STUDIO_HOME" in text
         ), f"{ps.name} venv-internal check must seed the venv root from UNSLOTH_STUDIO_HOME"
@@ -438,18 +446,14 @@ def _ps_floor_map(text, prefix):
 
 
 def test_install_setup_ps_rocm_torch_floors_in_sync():
-    # install.ps1/setup.ps1 pull from AMD's per-arch index;
+    # install.ps1/setup.ps1 pull from AMD's per-arch index; their torch and companion floor maps must match so both
+    # resolve the same ABI-consistent trio (install.ps1 once left companions bare -> incompatible set -> CPU).
     it = _INSTALL_PS1.read_text(encoding = "utf-8")
     st = _SETUP_PS1.read_text(encoding = "utf-8")
     for prefix in ("torch>=", "torchvision>=", "torchaudio>="):
         i_map = _ps_floor_map(it, prefix)
         s_map = _ps_floor_map(st, prefix)
         assert i_map, f"install.ps1 has no {prefix!r} floor map"
-        # The HIP_PATH/ROCM_PATH candidate must also be venv-filtered, else an env var pointing into the venv reopens
-        # VenvDir/VIRTUAL_ENV can be unset at probe time (the update flow), so the venv root must also be derived from
-        # A custom Unsloth home moves the venv off the default path;
-        # HIP_PATH_57) and take the first non-venv hipinfo, so a venv-internal HIP_PATH can't mask a real SDK in
-        # ROCM_PATH (single-root selection would bail on the venv copy).
         assert (
             i_map == s_map
         ), f"{prefix!r} floor map drift:\ninstall.ps1={i_map}\nsetup.ps1={s_map}"
@@ -609,6 +613,9 @@ def test_path_inside_venv_returns_false_for_root_prefix():
 
 @pytest.mark.parametrize("ps", [_INSTALL_PS1, _SETUP_PS1], ids = ["install.ps1", "setup.ps1"])
 def test_ps_venv_probe_skips_drive_root(ps):
+    # A non-venv UNSLOTH_SETUP_PYTHON like C:\Python311\python.exe yields a bare drive root (C:) as a venv root;
+    # without a guard it matches every path on that drive and misclassifies a real HIP SDK as venv-internal,
+    # disabling amd-smi.
     text = ps.read_text(encoding = "utf-8")
     assert "'^[a-zA-Z]:$'" in text, (
         f"{ps.name} venv-internal probe must skip bare drive roots so a non-venv "
@@ -618,9 +625,9 @@ def test_ps_venv_probe_skips_drive_root(ps):
 
 @pytest.mark.parametrize("ps", [_INSTALL_PS1, _SETUP_PS1], ids = ["install.ps1", "setup.ps1"])
 def test_ps_env_fallback_iterates_all_hip_roots(ps):
-    # and take the first non-venv hipinfo, so a venv-internal HIP_PATH can't mask a
-    # A non-venv UNSLOTH_SETUP_PYTHON like C:\Python311\python.exe yields a bare drive root (C:) as a venv root;
-    # The HIP_PATH/ROCM_PATH fallback must iterate every env root (incl.
+    # The HIP_PATH/ROCM_PATH fallback must iterate every env root (incl. HIP_PATH_57) and take the first non-venv
+    # hipinfo, so a venv-internal HIP_PATH can't mask a real SDK in ROCM_PATH (single-root selection would bail on
+    # the venv copy).
     text = ps.read_text(encoding = "utf-8")
     assert 'foreach ($hipEnvLabel in @("HIP_PATH", "HIP_PATH_57", "ROCM_PATH"))' in text, (
         f"{ps.name} must iterate HIP_PATH/HIP_PATH_57/ROCM_PATH in the env fallback, "

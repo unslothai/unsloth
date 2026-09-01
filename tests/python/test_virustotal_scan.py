@@ -1040,9 +1040,9 @@ class TestWorkflowOrdering:
             assert by_name[name]["if"] == "${{ !inputs.draft }}"
 
     def test_the_scan_step_does_not_swallow_its_own_failure(self):
-        # cannot retroactively fail a release that already published; the step
-        # must still surface its exit status, or a broken invocation reads as a
-        # The advisory posture is a property of the job, not of the step.
+        # The advisory posture is a property of the job, not of the step. The job carries `continue-on-error` so a
+        # missing secret or a VirusTotal outage cannot retroactively fail a release that already published; the step
+        # must still surface its exit status, or a broken invocation reads as a clean scan.
         step = self._scan_step_map()["VirusTotal scan"]
         assert "continue-on-error" not in step
 

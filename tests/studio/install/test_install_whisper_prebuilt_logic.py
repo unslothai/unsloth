@@ -754,6 +754,8 @@ def test_windows_gpu_slim_does_not_require_cpu_only_libomp(
 # real cpu bundle reports no profile.
 @pytest.mark.parametrize("profile", ["windows-cpu-x64", ""])
 def test_windows_cpu_bundle_still_requires_manifest_libomp(tmp_path, monkeypatch, profile):
+    # A cpu bundle's ggml really does import libomp, so a runtime that lost the DLL must fail the pairing rather
+    # than install a whisper that cannot load.
     bin_dir = tmp_path / "llama.cpp" / "build" / "bin" / "Release"
     bin_dir.mkdir(parents = True)
     for name in ("ggml.dll", "ggml-base.dll", "ggml-cpu-haswell.dll"):
@@ -815,9 +817,8 @@ def test_windows_rocm_slim_still_requires_ggml_runtime(tmp_path, monkeypatch, mi
 
 
 def test_windows_rocm_slim_rejects_decoy_hip_dlls_alone(tmp_path, monkeypatch):
-    # DLL must fail the pairing rather than install a whisper that cannot load.
-    # Same loss, but with libomp present so the soname gate cannot do the
-    # A cpu bundle's ggml really does import libomp, so a runtime that lost the DLL must fail the pairing rather than
+    # Same loss, but with libomp present so the soname gate cannot do the rejecting: only naming the ggml module
+    # rejects this, which is what the older *hip*.dll glob could not do.
     bin_dir = tmp_path / "llama.cpp" / "build" / "bin" / "Release"
     bin_dir.mkdir(parents = True)
     for name in (
@@ -1211,7 +1212,9 @@ def test_installed_llama_ggml_tree_absent_is_none(tmp_path, prepare):
 
 
 def test_slim_pairs_across_llama_build_bump_with_same_ggml(tmp_path, monkeypatch):
-    # The live failure:
+    # The live failure: the llama installer advances to a newer build that keeps the same ggml commit, so the slim
+    # bundle's paired runtime is ABI-identical and must still select rather than degrade to CPU or report
+    # unavailable.
     bin_dir = _fake_llama_bin(tmp_path)
     monkeypatch.setattr(
         M, "installed_llama_runtime", lambda: (bin_dir, NEWER_LLAMA_TAG, "cuda13-newer")
@@ -1224,6 +1227,8 @@ def test_slim_pairs_across_llama_build_bump_with_same_ggml(tmp_path, monkeypatch
 
 
 def test_slim_build_bump_same_ggml_is_not_a_compatibility_error(tmp_path, monkeypatch):
+    # A same-ggml build bump must not surface as a release incompatibility (the update path reports that as
+    # unavailable); only a real ggml skew does.
     bin_dir = _fake_llama_bin(tmp_path)
     monkeypatch.setattr(
         M, "installed_llama_runtime", lambda: (bin_dir, NEWER_LLAMA_TAG, "cuda13-newer")
@@ -1253,9 +1258,6 @@ def test_link_ggml_runtime_copy_fallback(tmp_path, monkeypatch):
         raise OSError("cross-device link")
 
     monkeypatch.setattr(M.os, "link", no_link)
-    # and must still select rather than degrade to CPU or report unavailable.
-    # A same-ggml build bump must not surface as a release incompatibility (the
-    # The live failure: the llama installer advances to a newer build that keeps the same ggml commit, so the slim
     bin_dir = _fake_llama_bin(tmp_path)
     whisper_bin = tmp_path / "whisper.cpp" / "build" / "bin"
     assert len(M.link_ggml_runtime(bin_dir, whisper_bin)) == 4

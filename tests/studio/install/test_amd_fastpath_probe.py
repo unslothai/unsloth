@@ -480,21 +480,27 @@ def _repair_installs(monkeypatch):
             dict(rocm_ver = None, inferred = "gfx1151", rocm_gpu = False, gfx = ()),
             True,
         ),
+        # Only UNSLOTH_ROCM_GFX_ARCH carries this: a visible GPU defeats the row above's "no runtime" disjunct.
         (
             "UNSLOTH_ROCM_GFX_ARCH rescuing a visible GPU with an unreadable ROCm",
             dict(rocm_ver = None, inferred = "gfx1151", gfx = ("gfx1151",)),
             True,
         ),
+        # The generic download.pytorch.org arm, the one _generic_pytorch_rocm_tag feeds.
         (
             "a non-Strix GPU on a ROCm with a published wheel family",
             dict(rocm_ver = (6, 4), inferred = None, gfx = ("gfx1030",)),
             True,
         ),
+        # The default host here is Strix, whose per-arch index needs no host ROCm version, so an unreadable one is
+        # the shape that route exists for rather than a reason to stop.
         (
             "a visible Strix GPU whose ROCm version cannot be read",
             dict(rocm_ver = None, inferred = None),
             True,
         ),
+        # A non-Strix arch the generic wheel does carry: the repair prints "skipping torch reinstall" and returns,
+        # so the preflight must keep the fast path.
         (
             "a visible GPU whose ROCm version cannot be read",
             dict(rocm_ver = None, inferred = None, gfx = ("gfx1100",)),
@@ -505,10 +511,6 @@ def _repair_installs(monkeypatch):
             dict(rocm_ver = (5, 0), inferred = None, gfx = ("gfx1030",)),
             False,
         ),
-        # Only UNSLOTH_ROCM_GFX_ARCH carries this:
-        # The generic download.pytorch.org arm, the one _generic_pytorch_rocm_tag feeds.
-        # The default host here is Strix, whose per-arch index needs no host ROCm version, so an unreadable one is the
-        # A non-Strix arch the generic wheel does carry:
         (
             "an inferred arch AMD publishes no per-arch index for",
             dict(rocm_ver = None, inferred = "gfx900", rocm_gpu = False, gfx = ()),

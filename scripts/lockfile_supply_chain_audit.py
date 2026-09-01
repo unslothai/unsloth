@@ -672,8 +672,9 @@ def main(argv: list[str] | None = None) -> int:
     if _skip_raw is not None:
         _skip = _skip_raw.strip()
         _invalid_tokens = {"", "1", "0", "true", "false", "yes", "no", "on", "off"}
-        # The raw env var is echoed inside a ``::warning::`` workflow command and can contain ``%``, ``\r``, ``\n`` or
-        # Both branches echo the user-supplied env var inside a ``::warning::`` GH Actions workflow command.
+        # Both branches echo the user-supplied env var inside a ``::warning::`` GH Actions workflow command. The raw
+        # value can contain ``%``, ``\r``, ``\n`` or even another ``::error::`` line (workflow-command injection);
+        # _gha_escape collapses each message onto a single annotation line per the GH workflow-commands spec.
         if _skip.lower() in _invalid_tokens or len(_skip) < 5:
             print(
                 "::warning::"

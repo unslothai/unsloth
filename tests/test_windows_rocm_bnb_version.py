@@ -142,6 +142,7 @@ def test_explicit_opt_out(import_fixes, clean_env):
 
 
 def test_redetects_sitecustomize_seeded_default(import_fixes, clean_env):
+    # A sitecustomize-seeded default must be redetected (the wheel may have changed).
     clean_env.setenv("BNB_ROCM_VERSION", "72")
     clean_env.setenv("UNSLOTH_BNB_ROCM_VERSION_SOURCE", "sitecustomize")
     _force(import_fixes, clean_env, win = True, rocm = True, detected = "713")
@@ -151,7 +152,7 @@ def test_redetects_sitecustomize_seeded_default(import_fixes, clean_env):
 
 
 def test_sitecustomize_default_kept_when_no_dll_found(import_fixes, clean_env):
-    # A sitecustomize-seeded default must be redetected (the wheel may have changed).
+    # A failed redetect must not discard the seeded value.
     clean_env.setenv("BNB_ROCM_VERSION", "72")
     clean_env.setenv("UNSLOTH_BNB_ROCM_VERSION_SOURCE", "sitecustomize")
     _force(import_fixes, clean_env, win = True, rocm = True, detected = None)
@@ -161,6 +162,7 @@ def test_sitecustomize_default_kept_when_no_dll_found(import_fixes, clean_env):
 
 
 def test_user_value_with_non_sitecustomize_marker_untouched(import_fixes, clean_env):
+    # Only the sitecustomize marker makes a value redetectable.
     clean_env.setenv("BNB_ROCM_VERSION", "999")
     clean_env.setenv("UNSLOTH_BNB_ROCM_VERSION_SOURCE", "detected")
     _force(import_fixes, clean_env, win = True, rocm = True, detected = "72")
@@ -169,7 +171,6 @@ def test_user_value_with_non_sitecustomize_marker_untouched(import_fixes, clean_
 
 
 def test_opt_out_unseats_sitecustomize_seeded_value(import_fixes, clean_env):
-    # A failed redetect must not discard the seeded value.
     # Opt-out must also drop a sitecustomize-seeded default so bnb never sees it.
     clean_env.setenv("BNB_ROCM_VERSION", "72")
     clean_env.setenv("UNSLOTH_BNB_ROCM_VERSION_SOURCE", "sitecustomize")
@@ -182,7 +183,6 @@ def test_opt_out_unseats_sitecustomize_seeded_value(import_fixes, clean_env):
 
 def test_opt_out_keeps_explicit_user_value(import_fixes, clean_env):
     # Opt-out must never remove a value the user set themselves (no marker).
-    # Only the sitecustomize marker makes a value redetectable.
     clean_env.setenv("BNB_ROCM_VERSION", "999")
     clean_env.setenv("UNSLOTH_SKIP_BNB_ROCM_VERSION", "1")
     _force(import_fixes, clean_env, win = True, rocm = True, detected = "72")

@@ -642,6 +642,7 @@ def run(page, state: Runtime) -> None:
             str(state.unloads),
         )
 
+    # A row the runtime has already replaced must not unload the replacement.
     state.reset()
     state.diffusion = dict(
         NOTHING_DIFFUSION,
@@ -663,6 +664,9 @@ def run(page, state: Runtime) -> None:
         str(state.unloads),
     )
 
+    # A row over a runtime that is already idle: nothing is unloaded, so the toast must not report an eject. The row
+    # is up to one poll old and the dictation sidecars release themselves, so this is reached without anyone doing
+    # anything.
     state.reset()
     state.diffusion = dict(
         NOTHING_DIFFUSION,
@@ -686,9 +690,7 @@ def run(page, state: Runtime) -> None:
         f"unloads={state.unloads} toasts={said!r}",
     )
 
-    # A row the runtime has already replaced must not unload the replacement.
-    # toast must not report an eject. The row is up to one poll old and the
-    # A row over a runtime that is already idle:
+    # ── The preference ────────────────────────────────────────────────────
     state.reset()
     state.chat = chat(active_model = "unsloth/Qwen3-4B", loaded = ["unsloth/Qwen3-4B"])
     # Nothing stored: a fresh install shows no card even with a model resident.
