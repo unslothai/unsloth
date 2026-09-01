@@ -1813,8 +1813,11 @@ def test_retrying_the_newest_turn_twice_still_resolves_the_proved_branch(monkeyp
     ]
     branch = [
         {"role": "user", "content": "Run the diagnostic."},
-        {"role": "assistant", "content": None, "tool_calls": [
-            {"id": "c1", "function": {"name": "terminal", "arguments": "{}"}}]},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{"id": "c1", "function": {"name": "terminal", "arguments": "{}"}}],
+        },
         {"role": "tool", "tool_call_id": "c1", "content": "PROBE-9915"},
         {"role": "assistant", "content": "The diagnostic passed."},
     ]
@@ -1822,8 +1825,14 @@ def test_retrying_the_newest_turn_twice_still_resolves_the_proved_branch(monkeyp
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
 
     for retry in range(3):
-        rows.append({"id": f"fu{retry}", "parentId": "a1", "role": "user",
-                     "content": f"A retried follow-up {retry}."})
+        rows.append(
+            {
+                "id": f"fu{retry}",
+                "parentId": "a1",
+                "role": "user",
+                "content": f"A retried follow-up {retry}.",
+            }
+        )
         assert llama_cpp._sticky_compaction_state("t1", branch) == (4, True)
         assert inference_routes._thread_has_checkpoint("t1", branch) is True
 
@@ -1837,15 +1846,19 @@ def test_the_unstored_newest_turn_cannot_move_the_request_to_a_sibling(monkeypat
     from core.inference import checkpoint, llama_cpp
 
     def _reply(identifier, boundary):
-        return {"id": identifier, "parentId": "u1", "role": "assistant",
-                "content": "Done.", "metadata": _checkpoint_metadata(boundary)}
+        return {
+            "id": identifier,
+            "parentId": "u1",
+            "role": "assistant",
+            "content": "Done.",
+            "metadata": _checkpoint_metadata(boundary),
+        }
 
     rows = [
         {"id": "u1", "parentId": None, "role": "user", "content": "Do the work."},
         _reply("a-live", 6),
         _reply("a-abandoned", 18),
-        {"id": "u-abandoned", "parentId": "a-abandoned", "role": "user",
-         "content": "Continue."},
+        {"id": "u-abandoned", "parentId": "a-abandoned", "role": "user", "content": "Continue."},
     ]
     branch = [
         {"role": "user", "content": "Do the work."},
@@ -1870,10 +1883,20 @@ def test_an_indistinguishable_placeholder_twin_is_not_dropped_from_the_vote(monk
     for status in ("cancelled", "running"):
         rows = [
             {"id": "u1", "parentId": None, "role": "user", "content": "Do the work."},
-            {"id": "a-live", "parentId": "u1", "role": "assistant", "content": "Done.",
-             "metadata": {"generationStatus": status}},
-            {"id": "a-abandoned", "parentId": "u1", "role": "assistant", "content": "Done.",
-             "metadata": _checkpoint_metadata(18)},
+            {
+                "id": "a-live",
+                "parentId": "u1",
+                "role": "assistant",
+                "content": "Done.",
+                "metadata": {"generationStatus": status},
+            },
+            {
+                "id": "a-abandoned",
+                "parentId": "u1",
+                "role": "assistant",
+                "content": "Done.",
+                "metadata": _checkpoint_metadata(18),
+            },
         ]
         branch = [
             {"role": "user", "content": "Do the work."},
@@ -1892,12 +1915,27 @@ def test_a_research_row_is_recognised_under_custom_metadata(monkeypatch):
 
     rows = [
         {"id": "u1", "parentId": None, "role": "user", "content": "First question."},
-        {"id": "a1", "parentId": "u1", "role": "assistant", "content": "The epoch reply.",
-         "metadata": _checkpoint_metadata(6)},
+        {
+            "id": "a1",
+            "parentId": "u1",
+            "role": "assistant",
+            "content": "The epoch reply.",
+            "metadata": _checkpoint_metadata(6),
+        },
         {"id": "u2", "parentId": "a1", "role": "user", "content": "Continue."},
-        {"id": "a2", "parentId": "u2", "role": "assistant", "content": "The research row.",
-         "metadata": {"custom": {"serverManaged": True, "researchRunId": "run-1",
-                                 "researchStatus": "completed"}}},
+        {
+            "id": "a2",
+            "parentId": "u2",
+            "role": "assistant",
+            "content": "The research row.",
+            "metadata": {
+                "custom": {
+                    "serverManaged": True,
+                    "researchRunId": "run-1",
+                    "researchStatus": "completed",
+                }
+            },
+        },
         {"id": "u3", "parentId": "a2", "role": "user", "content": "Continue again."},
     ]
     branch = [{"role": row["role"], "content": row["content"]} for row in rows]

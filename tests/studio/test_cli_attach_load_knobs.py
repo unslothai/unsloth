@@ -17,6 +17,7 @@ RESIDENT = {"id": "unsloth/Qwen3-8B", "loaded": True}
 
 class FakeServer:
     """Serves /v1/models and /api/inference/status; records every load payload."""
+
     def __init__(self, models, status):
         self.models = models
         self.status = status
@@ -405,6 +406,7 @@ def test_omitted_default_flags_are_not_forwarded(monkeypatch):
 
 class TestExplicitFlagsThroughTheRealCli:
     """`supplied` tracking through the real Typer and Click stack."""
+
     @staticmethod
     def _load_for(argv):
         from typer.testing import CliRunner
@@ -1096,9 +1098,7 @@ def test_a_diffusion_resident_is_never_an_attach_target(monkeypatch):
 )
 def test_a_pending_retry_is_not_a_no_op(monkeypatch, capsys, field):
     """_runtime_matches_intent reloads on an identical intent while a retry is pending."""
-    server = FakeServer(
-        [dict(RESIDENT)], _gguf_status(**{field: True})
-    ).install(monkeypatch)
+    server = FakeServer([dict(RESIDENT)], _gguf_status(**{field: True})).install(monkeypatch)
 
     start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 8192))
 

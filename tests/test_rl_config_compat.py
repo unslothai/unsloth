@@ -357,7 +357,11 @@ def test_setting_the_new_name_to_its_own_default_is_reported_as_ambiguous():
         warmup_steps: float = 0.0
 
     class UnslothSFTConfig(ModernSFTConfig):
-        def __init__(self, warmup_steps = 0.1, **kwargs):
+        def __init__(
+            self,
+            warmup_steps = 0.1,
+            **kwargs,
+        ):
             pass
 
     messages = []
@@ -374,7 +378,9 @@ def test_setting_the_new_name_to_its_own_default_is_reported_as_ambiguous():
     # No `mirrored_from` means no mirrored parameter, so no ambiguity to report.
     messages = []
     filter_config_init_kwargs(
-        ModernSFTConfig, {"warmup_ratio": 0.03}, notify = messages.append,
+        ModernSFTConfig,
+        {"warmup_ratio": 0.03},
+        notify = messages.append,
     )
     assert "cannot be distinguished" not in messages[0]
 

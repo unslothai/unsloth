@@ -359,7 +359,8 @@ def filter_config_init_kwargs(
                         f" If you also passed `{renamed}` as {existing!r}, that is its "
                         f"default here and cannot be distinguished from leaving it "
                         f"unset, so `{key}` was used; drop `{key}` to keep it."
-                        if ambiguous else ""
+                        if ambiguous
+                        else ""
                     )
                 )
             else:
