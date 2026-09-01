@@ -185,9 +185,7 @@ def test_a_filtered_recovery_does_not_outrank_a_longer_draft(research_home, monk
     assert refusal not in finished["report"]
 
 
-def test_a_recovery_padded_with_a_source_list_does_not_win_on_length(
-    research_home, monkeypatch
-):
+def test_a_recovery_padded_with_a_source_list_does_not_win_on_length(research_home, monkeypatch):
     """_validate_report_sources deletes a model-authored source list after the draft is
     chosen, so counting it would trade a real report for one that reduces to nothing."""
     padding = "## Sources\n\n" + "".join(f"- [ref {n}](https://e.test/{n})\n" for n in range(200))
@@ -207,16 +205,23 @@ def test_a_recovery_padded_with_a_source_list_does_not_win_on_length(
 @pytest.mark.parametrize(
     "tail",
     [
-        "```python\nctx = 32768,\nrope_scaling =",          # unterminated top-level fence
-        "  ```python\n  ctx = 32768,",                       # indented, still top level
-        "> ```python\n> ctx = 32768,",                       # fence inside a quote
-        "- step one\n\n  ```python\n  ctx = 32768,",         # fence inside a list
-        "```python `example`\n\nand then",                   # backticks in the info string
-        "| model | ctx |\n|---|---|\n| gemma |",             # cut off mid-table
-        "Demand outran supply because the",                  # cut off mid-sentence
+        "```python\nctx = 32768,\nrope_scaling =",  # unterminated top-level fence
+        "  ```python\n  ctx = 32768,",  # indented, still top level
+        "> ```python\n> ctx = 32768,",  # fence inside a quote
+        "- step one\n\n  ```python\n  ctx = 32768,",  # fence inside a list
+        "```python `example`\n\nand then",  # backticks in the info string
+        "| model | ctx |\n|---|---|\n| gemma |",  # cut off mid-table
+        "Demand outran supply because the",  # cut off mid-sentence
     ],
-    ids = ["fence", "indented-fence", "quoted-fence", "listed-fence", "info-backticks",
-           "table", "prose"],
+    ids = [
+        "fence",
+        "indented-fence",
+        "quoted-fence",
+        "listed-fence",
+        "info-backticks",
+        "table",
+        "prose",
+    ],
 )
 def test_the_notice_leads_the_report_whatever_the_truncation_left_open(
     research_home, monkeypatch, tail

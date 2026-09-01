@@ -2633,9 +2633,7 @@ class ResearchSupervisor:
                 bool(comparable_recovered)
                 and recovery_finish_reason not in _UNFINISHED_FINISH_REASONS
             )
-            take_recovery = (
-                recovered_whole or len(comparable_recovered) >= len(comparable_report)
-            )
+            take_recovery = recovered_whole or len(comparable_recovered) >= len(comparable_report)
             requested_max_tokens = recovery_max_tokens
             if take_recovery:
                 report = recovered
