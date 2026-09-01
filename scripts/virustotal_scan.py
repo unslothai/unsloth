@@ -649,6 +649,7 @@ def _emit(report: FileReport) -> None:
         flush = True,
     )
     if report.detections:
+        # ::warning:: and not ::error:: so the release still ships; see the module docstring.
         print(
             f"::warning title=VirusTotal detection::{_gha_escape(report.name)}: "
             f"{stats.malicious} malicious, {stats.suspicious} suspicious "
@@ -720,8 +721,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.output_markdown.write_text(text, encoding = "utf-8")
 
     if not api_key:
-        # The env var NAME is written literally rather than interpolated:
-        # ::warning:: and not ::error::
+        # A missing secret must never break a release: forks and re-runs by contributors without the org secret still
+        # have to be able to publish.
+        # The env var NAME is written out literally rather than interpolated from API_KEY_ENV.
+        # test_missing_key_skips_without_failing asserts the two stay in step.
         print(
             "virustotal_scan: VT_API_KEY is unset or empty; skipping the scan.",
             flush = True,
@@ -754,10 +757,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     _write_markdown(render_markdown(reports, args.fail_threshold))
 
     if exceeds_threshold(reports, args.fail_threshold):
-        # A missing secret must never break a release: forks and re-runs by contributors without the org secret still
-        # have to be able to publish.
-        # The env var NAME is written out literally rather than interpolated from API_KEY_ENV.
-        # test_missing_key_skips_without_failing asserts the two stay in step.
         print(
             f"virustotal_scan: detections reached the --fail-threshold of {args.fail_threshold}.",
             file = sys.stderr,

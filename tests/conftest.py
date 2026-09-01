@@ -190,6 +190,7 @@ def _preimport_bitsandbytes() -> None:
     try:
         import bitsandbytes  # noqa: F401
     except Exception:
+        # A genuinely absent or broken wheel is unsloth's own degradation path.
         pass
 
 
@@ -207,7 +208,6 @@ def _apply_upstream_import_fixes_for_tests() -> None:
     try:
         import unsloth  # noqa: F401  # runs unsloth/import_fixes.py
     except Exception:
-        # A genuinely absent or broken wheel is unsloth's own degradation path.
         pass
 
 

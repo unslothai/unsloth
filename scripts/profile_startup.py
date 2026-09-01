@@ -346,13 +346,14 @@ def main(argv: list[str]) -> int:
         med = launch.get("healthz_median_seconds")
         failed = launch.get("failed_runs") or 0
         if failed:
+            # Failed launches fail the budget; dropping them would keep only the fast ones.
             print(
                 f"::error::startup regression: {failed} of {len(launch.get('runs') or [])} "
                 f"launches never became healthy within the timeout"
             )
             return 1
         if med is None:
-            # Failed launches fail the budget;
+            # Nothing measured: exiting 0 would pass a requested budget without a single health request, so fail closed.
             print(
                 "::error::startup regression: no healthz measurement, so the "
                 f"{a.max_healthz_seconds}s budget was never checked "
@@ -360,7 +361,6 @@ def main(argv: list[str]) -> int:
             )
             return 1
         elif med > a.max_healthz_seconds:
-            # Nothing measured: exiting 0 would pass a requested budget without a single health request, so fail closed.
             print(
                 f"::error::startup regression: {med}s median to a healthy port "
                 f"exceeds the {a.max_healthz_seconds}s budget"

@@ -336,11 +336,11 @@ _PKG_JSON_SKIP_KEYS = {
 
 # Top-level fields whose contents are never package references.
 _PKG_JSON_OPAQUE_KEYS = {
-    "browserslist",  # browser queries free-form strings node/npm version constraints bool `pnpm@9.0.0` -- the package
-    "keywords",
-    "engines",
-    "engineStrict",
-    "packageManager",
+    "browserslist",  # browser queries
+    "keywords",  # free-form strings
+    "engines",  # node/npm version constraints
+    "engineStrict",  # bool
+    "packageManager",  # `pnpm@9.0.0` -- the package manager binary
     "volta",
     "files",
     "directories",

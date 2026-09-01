@@ -1275,7 +1275,8 @@ def _scan_line_end(view: list[str], start: int) -> int:
         left, right = _bracket_lr(ln)
         depth = max(0, depth - left) + right
         if ln.rstrip().endswith("\\"):
-            continue
+            continue  # explicit backslash continuation: the call (e.g. its `(` and URL/body) is on the next
+            # physical line, so do not close here
         if depth <= 0:
             return j
     # Never closed within the hard limit: bind only the soft cap so a stray opener
@@ -1372,8 +1373,10 @@ def _extract_evidence(
         start = bisect.bisect_left(nl, m.start()) + 1
         end = bisect.bisect_left(nl, m.end()) + 1
         if end <= start or (start, end) in seen:
-            continue  # explicit backslash continuation: the call (e.g.
-        # per-line pass never binds them) between unchanged outer anchors and keep
+            continue  # single-line matches are already covered by the pass above
+        # A giant greedy DOTALL span is bound by the full digest of its content: binding only the anchors leaves the
+        # bridged interior unhashed, so a new cross-line payload could be inserted between unchanged outer anchors and
+        # keep the same key.
         if len(out) < _MAX_EVIDENCE_SPANS:
             seen.add((start, end))
         _emit(_render(start, end))
@@ -2118,7 +2121,7 @@ def _resolve_per_spec_with_deps(
             download_errors.append(f"per-spec --with-deps timed out for {spec}")
             continue
         if proc.returncode == 0:
-            continue
+            continue  # archives landed in dest; collected by the caller
         meta = _pypi_json(name)
         if meta is not None and not _release_has_wheel(meta, version):
             fpath, serr = _download_sdist_direct(name, version, dest, meta = meta)
@@ -2544,7 +2547,7 @@ def find_safe_version(
         if not downloaded:
             for err in download_errors:
                 print(f"    [WARN] {err}", file = sys.stderr)
-            continue  # archives landed in dest; collected by the caller
+            continue
 
         clean = True
         for _, archive_path in downloaded:

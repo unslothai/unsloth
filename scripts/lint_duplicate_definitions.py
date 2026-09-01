@@ -327,17 +327,11 @@ def _import_duplicates(body, scope, out) -> None:
         for alias in node.names:
             if alias.name == "*":
                 continue
-            # `import a.b` binds `a`, not `a.b`;
+            # `import a.b` binds `a`, not `a.b`; only an `as` clause binds the dotted name.
             # Using `alias.asname` raw here instead missed `import urllib.parse` followed by `import urllib.parse as
             # urllib`, which silently repoints `urllib` from the package to the submodule.
             source = module if module is not None else alias.name
             bound = alias.asname or (alias.name if module is not None else alias.name.split(".")[0])
-            # Keyed on the BOUND NAME, with a carve-out for IMPLICIT bindings, whose name was never chosen:
-            # for the case where the name was never chosen: an IMPLICIT binding takes whatever
-            # Keyed on the BOUND NAME, because that is what gets shadowed, with one carve-out for the case where the
-            # Keyed on the bound name alone, two DIFFERENT plain-import duplicates both read as `import:None:x`, so
-            # compare mode charged a newly introduced one against a pre-existing counter entry and passed. DELIMITED,
-            # because `scope` ends in a dot and `source` may contain them: a module-level `from A.m import x` and a
             implicit = alias.asname is None
             # Keyed on the BOUND NAME, because that is what gets shadowed, with one carve-out for the case where the
             # name was never chosen: an IMPLICIT binding takes whatever the source happens to be called, so two of them
@@ -361,7 +355,12 @@ def _import_duplicates(body, scope, out) -> None:
                 out.append(
                     Finding(
                         node.lineno,
-                        # The emitted identity must mirror the detection key:
+                        # The emitted identity must mirror the detection key. Keyed on the bound name alone, two
+                        # DIFFERENT plain-import duplicates both read as `import:None:x`, so compare mode charged a
+                        # newly introduced one against a pre-existing counter entry and passed. DELIMITED, because
+                        # `scope` ends in a dot and `source` may contain them: a module-level `from A.m import x` and
+                        # a `from m import x` inside `class A` both spelled `import:A.m:x`, so compare mode let a
+                        # branch swap one for the other and charged the new one to the old.
                         f"import:{scope}|{source}:{bound}",
                         f"{scope}{bound} is imported {where}",
                     )

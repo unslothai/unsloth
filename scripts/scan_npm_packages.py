@@ -1720,6 +1720,7 @@ def scan_one(pkg: PackageEntry, workspace: Path) -> tuple[list[Finding], str | N
             return [], err
         return scan_extracted_tree(pkg, extract), None
     finally:
+        # Always wipe per-package data to keep the workspace bounded.
         try:
             shutil.rmtree(pkg_dir, ignore_errors = True)
         except Exception:
@@ -1813,7 +1814,6 @@ def _load_baseline(path: str) -> set[tuple[str, str, str, str]]:
     for e in entries:
         if not isinstance(e, dict):
             continue
-        # Always wipe per-package data to keep the workspace bounded.
         try:
             evidence_hash = e.get("evidence_hash") or _evidence_hash(e.get("evidence") or "")
             if not e.get("evidence_hash"):

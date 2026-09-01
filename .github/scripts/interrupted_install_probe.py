@@ -219,6 +219,8 @@ def main(argv: list[str]) -> int:
         if os.name == "posix":
             import signal
 
+            # start_new_session made this child its own group leader.
+            # Read the pgid BEFORE the reap: once waited on, os.getpgid() raises and escalation hits nothing.
             try:
                 pgid = os.getpgid(proc.pid)
             except OSError:
@@ -245,8 +247,6 @@ def main(argv: list[str]) -> int:
             # and CREATE_NEW_PROCESS_GROUP does not make terminate() reach descendants, so killing the wrapper alone
             # leaves the venv locked against the repair.
             run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], timeout = 30)
-            # start_new_session made this child its own group leader.
-            # Read the pgid BEFORE the reap: once waited on, os.getpgid() raises and escalation hits nothing.
             try:
                 proc.wait(timeout = 10)
             except subprocess.TimeoutExpired:
