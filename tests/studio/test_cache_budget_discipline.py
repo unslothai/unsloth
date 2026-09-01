@@ -153,6 +153,11 @@ def _balanced(expr: str) -> bool:
 # expression restricting a save to everything EXCEPT main is the exact inversion of the
 # rule, and a substring search for "refs/heads/main" accepts it.
 _MAIN_ONLY = re.compile(r"github\.ref\s*==\s*['\"]refs/heads/main['\"]")
+# A whole leaf that is nothing but the equality, in either operand order.
+_LEAF_MAIN = re.compile(
+    r"github\.ref\s*==\s*['\"]refs/heads/main['\"]"
+    r"|['\"]refs/heads/main['\"]\s*==\s*github\.ref"
+)
 
 
 def _restricted_to_main(expr: str) -> bool:
@@ -185,15 +190,13 @@ def _restricted_to_main(expr: str) -> bool:
             return any(restricted(p) for p in ands)
         if re.search(r"!(?!=)", part):
             return False
-        # Exactly one comparison, and it must be the main equality. A second one
-        # is how a leaf inverts itself while still containing the equality:
-        # `(github.ref == 'refs/heads/main') == false` is true off main, and
-        # `... != true` is the same trick. Quoted literals are blanked first so a
-        # `==` inside a string is not counted.
-        bare = re.sub(r"'[^']*'|\"[^\"]*\"", "''", part)
-        if len(re.findall(r"[=!]=", bare)) != 1:
-            return False
-        return bool(_MAIN_ONLY.search(part))
+        # The leaf must BE the equality, not merely contain it. Searching inside
+        # accepted every wrapper that inverts it while quoting it: `(... ) == false`
+        # and `... != true` chain a second comparison, and `startsWith(..., 'false')`
+        # is true off main because GitHub casts the inner boolean to the string
+        # 'false' for string functions. A whitelist ends that class rather than
+        # naming its members.
+        return bool(_LEAF_MAIN.fullmatch(part))
 
     return restricted(expr)
 
@@ -231,6 +234,11 @@ def _restricted_to_main(expr: str) -> bool:
         # Comparing the equality to a boolean inverts it while still containing it.
         ("(github.ref == 'refs/heads/main') == false", False),
         ("github.ref == 'refs/heads/main' != true", False),
+        # String functions cast the inner boolean, so these are true only OFF main.
+        ("startsWith(github.ref == 'refs/heads/main', 'false')", False),
+        ("contains(github.ref == 'refs/heads/main', 'false')", False),
+        # The reversed operand order is the same guard and stays accepted.
+        ("'refs/heads/main' == github.ref", True),
         ("always() && (github.ref == 'refs/heads/main' && !cancelled())", True),
     ],
 )
@@ -728,13 +736,16 @@ def _matrix_rows(job) -> list[dict]:
     matching include entry, which GitHub still runs, with those fields empty. The empty
     engine set then trips the assertion in the caller, which is the point.
 
-    An include row that matches no base combination adds a row of its own, per GitHub's
-    rule; one that matches contributes its extra fields to that combination.
+    GitHub's own order: expand the base lists, apply `exclude`, then apply `include`.
+    An include merges into a combination when it overwrites none of that combination's
+    original values, so one that names no base key at all merges into EVERY row rather
+    than becoming a row of its own. An include that fits nowhere adds a row.
     """
     matrix = (job.get("strategy") or {}).get("matrix") or {}
     if not isinstance(matrix, dict):
         return [{}]
     include = [r for r in (matrix.get("include") or []) if isinstance(r, dict)]
+    exclude = [r for r in (matrix.get("exclude") or []) if isinstance(r, dict)]
     base_keys = [k for k, v in matrix.items() if k not in ("include", "exclude")
                  and isinstance(v, list)]
 
@@ -742,12 +753,22 @@ def _matrix_rows(job) -> list[dict]:
     for k in base_keys:
         combos = [{**c, k: v} for c in combos for v in matrix[k]]
 
+    # Exclude first, and it is processed before include, so include can add a
+    # combination back. A partial exclude drops every row agreeing on the keys it names.
+    def excluded(combo):
+        return any(
+            all(str(combo.get(k)) == str(v) for k, v in ex.items()) for ex in exclude
+        )
+    combos = [c for c in combos if not excluded(c)]
+
     rows, matched = [], set()
     for combo in combos:
         row = dict(combo)
         for i, inc in enumerate(include):
-            shared = set(inc) & set(combo)
-            if shared and all(str(inc[k]) == str(combo[k]) for k in shared):
+            # Mergeable when it overwrites nothing original. Keys outside the base
+            # matrix are additions and never block; requiring a shared key instead
+            # dropped a metadata-only include out of every row and into a phantom one.
+            if all(str(inc[k]) == str(combo[k]) for k in set(inc) & set(combo)):
                 row.update(inc)
                 matched.add(i)
         rows.append(row)
