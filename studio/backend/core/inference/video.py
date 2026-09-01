@@ -522,6 +522,8 @@ class _VideoLoadState:
     device: str
     dtype: str
     kind: str
+    # Logical picker identity when repo_id is an exact local snapshot. Never used for loading.
+    display_repo_id: Optional[str] = None
     engine: str = "diffusers"
     # The torch ordinal this pipeline's weights were placed on, or None for an automatic pick.
     # Committed WITH the pipeline, so a load in flight never moves the resident model's card.
@@ -1311,6 +1313,7 @@ class VideoBackend:
         self,
         repo_id: str,
         *,
+        display_repo_id: Optional[str] = None,
         local_files_only: bool = False,
         gguf_filename: Optional[str] = None,
         base_repo: Optional[str] = None,
@@ -1331,6 +1334,9 @@ class VideoBackend:
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
+        display_repo_id = (
+            display_repo_id.strip() if isinstance(display_repo_id, str) else display_repo_id
+        ) or None
         # Resolved ONCE, here, and carried to the worker: outside it so a bad pick is the route's
         # 400 rather than a load that dies tens of GB later, and only once so free VRAM cannot
         # re-rank the choice after the weights land. Gated on the resolved backend, since XPU /
@@ -1403,6 +1409,7 @@ class VideoBackend:
             target = self._run_load,
             kwargs = dict(
                 repo_id = repo_id,
+                display_repo_id = display_repo_id,
                 local_files_only = local_files_only,
                 gguf_filename = gguf_filename,
                 base_repo = base_repo,
@@ -1667,6 +1674,7 @@ class VideoBackend:
         token: Optional[int],
         cancel_event: threading.Event,
         repo_id: str,
+        display_repo_id: Optional[str] = None,
         gguf_filename: Optional[str] = None,
         hf_token: Optional[str] = None,
         memory_mode: Optional[str] = None,
@@ -2011,6 +2019,7 @@ class VideoBackend:
                         pipe = runtime,
                         family = fam,
                         repo_id = repo_id,
+                        display_repo_id = display_repo_id,
                         base_repo = fam.base_repo,
                         device = native_device,
                         gpu_ordinal = native_ordinal,
@@ -3456,6 +3465,7 @@ class VideoBackend:
         self,
         repo_id: str,
         *,
+        display_repo_id: Optional[str] = None,
         local_files_only: bool = False,
         gguf_filename: Optional[str] = None,
         base_repo: Optional[str] = None,
@@ -3477,6 +3487,9 @@ class VideoBackend:
         _te_prequant_skipped: tuple[str, ...] = (),
         _h3_auto_denoiser_planned: Optional[str] = None,
     ) -> dict[str, Any]:
+        display_repo_id = (
+            display_repo_id.strip() if isinstance(display_repo_id, str) else display_repo_id
+        ) or None
         fam = self.validate_load_request(
             repo_id,
             gguf_filename = gguf_filename,
@@ -3496,6 +3509,7 @@ class VideoBackend:
                 token = _load_token,
                 cancel_event = threading.Event(),
                 repo_id = repo_id,
+                display_repo_id = display_repo_id,
                 gguf_filename = gguf_filename,
                 hf_token = hf_token,
                 memory_mode = memory_mode,
@@ -4192,6 +4206,7 @@ class VideoBackend:
                     pipe = pipe,
                     family = fam,
                     repo_id = repo_id,
+                    display_repo_id = display_repo_id,
                     base_repo = base,
                     device = device,
                     gpu_ordinal = target.ordinal,
@@ -4947,6 +4962,7 @@ class VideoBackend:
                 pipe = pipe,
                 family = fam,
                 repo_id = repo_id,
+                display_repo_id = display_repo_id,
                 base_repo = base,
                 device = device,
                 gpu_ordinal = umem_target.ordinal,
@@ -6372,6 +6388,7 @@ class VideoBackend:
             return {
                 "loaded": False,
                 "repo_id": None,
+                "display_repo_id": None,
                 "family": None,
                 "supported_families": supported_families,
                 "modular_families": modular_families,
@@ -6410,6 +6427,7 @@ class VideoBackend:
         return {
             "loaded": True,
             "repo_id": state.repo_id,
+            "display_repo_id": state.display_repo_id,
             "family": fam.name,
             "supported_families": supported_families,
             "modular_families": modular_families,

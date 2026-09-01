@@ -818,6 +818,8 @@ class _LoadState:
     device: str
     dtype: str
     cpu_offload: bool
+    # Logical picker identity when repo_id is an exact local snapshot. Never used for loading.
+    display_repo_id: Optional[str] = None
     # Defaulted so older positional constructions keep working.
     offload_policy: str = OFFLOAD_NONE
     vae_tiling: bool = False
@@ -2002,6 +2004,7 @@ class DiffusionBackend:
         self,
         repo_id: str,
         *,
+        display_repo_id: Optional[str] = None,
         local_files_only: bool = False,
         gguf_filename: Optional[str] = None,
         base_repo: Optional[str] = None,
@@ -2026,6 +2029,9 @@ class DiffusionBackend:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
         # A blank token must mean "anonymous", not an empty credential the Hub 401s.
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
+        display_repo_id = (
+            display_repo_id.strip() if isinstance(display_repo_id, str) else display_repo_id
+        ) or None
         # Resolved ONCE, here, and carried to the worker: outside it so a bad pick is the route's
         # 400 rather than a load that dies mid-download, and only once so free VRAM cannot re-rank
         # the choice after the weights land. Gated on the resolved backend, since XPU / MPS / CPU
@@ -2076,6 +2082,7 @@ class DiffusionBackend:
             target = self._run_load,
             kwargs = dict(
                 repo_id = repo_id,
+                display_repo_id = display_repo_id,
                 local_files_only = local_files_only,
                 gguf_filename = gguf_filename,
                 base_repo = base_repo,
@@ -3427,6 +3434,7 @@ class DiffusionBackend:
         self,
         repo_id: str,
         *,
+        display_repo_id: Optional[str] = None,
         local_files_only: bool = False,
         gguf_filename: Optional[str] = None,
         base_repo: Optional[str] = None,
@@ -3459,6 +3467,9 @@ class DiffusionBackend:
         # A blank token must degrade to anonymous, not be passed as a credential. Normalize once.
         hf_token = hf_token.strip() if isinstance(hf_token, str) else hf_token
         hf_token = hf_token or None
+        display_repo_id = (
+            display_repo_id.strip() if isinstance(display_repo_id, str) else display_repo_id
+        ) or None
 
         # Validate first (no torch/diffusers) so a bad family fails even in a no-diffusers runtime.
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
@@ -4693,6 +4704,7 @@ class DiffusionBackend:
                         pipe = pipe,
                         family = fam,
                         repo_id = repo_id,
+                        display_repo_id = display_repo_id,
                         base_repo = base,
                         device = device,
                         gpu_ordinal = target.ordinal,
@@ -6442,6 +6454,7 @@ class DiffusionBackend:
             return {
                 "loaded": False,
                 "repo_id": None,
+                "display_repo_id": None,
                 "family": None,
                 "base_repo": None,
                 "device": None,
@@ -6469,6 +6482,7 @@ class DiffusionBackend:
         return {
             "loaded": True,
             "repo_id": state.repo_id,
+            "display_repo_id": state.display_repo_id,
             "family": state.family.name,
             "base_repo": state.base_repo,
             "device": state.device,

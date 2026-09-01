@@ -1147,6 +1147,11 @@ function reportLoadFailure(message: string | null | undefined, fallback: string)
 }
 
 type Busy = "loading" | "unloading" | "generating" | null;
+type ImageLoadOptions = {
+  kind: "gguf" | "single_file" | "pipeline";
+  filename?: string;
+  displayRepoId?: string;
+};
 
 // What a pick optimistically replaced, so a load that never takes can put all of it back. The quant
 // label and the generation recipe move together at pick time, so they have to roll back together too.
@@ -1308,12 +1313,7 @@ export function ImagesPage({
   const [transformerCache, setTransformerCache] = useState<"auto" | "off" | "fbcache">("auto");
   const [cpuOffload, setCpuOffload] = useState(false);
   // The last load descriptor, so "Reapply" can reload the same model with new advanced options without the user re-picking it.
-  const lastLoad = useRef<{ repoId: string; kind: "gguf" | "single_file" | "pipeline"; filename?: string } | null>(
-    null,
-  );
-  // A pinned cache snapshot is the physical load target, while its Hub id remains the selector
-  // identity. Keep the stable association so a failed later pick can still display the resident row.
-  const pinnedPipelineDisplayIds = useRef(new Map<string, string>());
+  const lastLoad = useRef<({ repoId: string } & ImageLoadOptions) | null>(null);
   // Render-safe mirror of whether a page-initiated load supplied a complete Reapply target.
   const [canReapply, setCanReapply] = useState(false);
   // Repo id whose defaults were already seeded from a discovered resident model, so we seed once and never clobber a manual edit.
@@ -1330,7 +1330,7 @@ export function ImagesPage({
   const [status, setStatus] = useState<DiffusionStatus | null>(null);
   const selectorModelId =
     status?.loaded && status.repo_id
-      ? (pinnedPipelineDisplayIds.current.get(status.repo_id) ?? status.repo_id)
+      ? (status.display_repo_id ?? status.repo_id)
       : undefined;
   // Controlled so the body-portaled overlays force-close while this page is mounted but off-tab.
   const [selectorOpen, setSelectorOpen] = useState(false);
@@ -2480,10 +2480,7 @@ export function ImagesPage({
     // Resolves true when the background load STARTED (callers may revert optimistic picker state on false).
     async (
       repoId: string,
-      opts: {
-        kind: "gguf" | "single_file" | "pipeline";
-        filename?: string;
-      },
+      opts: ImageLoadOptions,
       // The Advanced values this load must use, when pinned earlier: a staged download plans its file set at pick time and loads
       // minutes later, so reading live state here could run a load the staged files do not cover.
       pinned?: LoadAdvanced,
@@ -2522,7 +2519,12 @@ export function ImagesPage({
       const bakeLoras = advanced.loras ?? [];
       // Whether THIS load carries the selection into the build, so a quantized load that did not can drop it.
       bakedLorasOnLoad.current = bakeLoras.length > 0;
-      lastLoad.current = { repoId, kind: opts.kind, filename: opts.filename };
+      lastLoad.current = {
+        repoId,
+        kind: opts.kind,
+        filename: opts.filename,
+        displayRepoId: opts.displayRepoId,
+      };
       setCanReapply(true);
       // Carry the prior target so the async poll can restore it if the background load fails after starting.
       lastLoadRevert.current = { prev: prevLastLoad };
@@ -2531,6 +2533,7 @@ export function ImagesPage({
         // forward the saved HF token for gated bases. A pipeline load carries no filename; the "auto" sentinels map to omitted.
         const startRequest = loadDiffusionModel({
           model_path: repoId,
+          display_repo_id: opts.displayRepoId,
           model_kind: opts.kind,
           gguf_filename: opts.filename,
           hf_token: hfApiToken(getHfToken()),
@@ -2596,7 +2599,7 @@ export function ImagesPage({
   // Downloads go through the Hub download manager like every other model, so the load finds a warm cache. In a ref so the callback is not a render dep.
   const pendingStagedLoad = useRef<{
     repoId: string;
-    opts: { kind: "gguf" | "single_file" | "pipeline"; filename?: string };
+    opts: ImageLoadOptions;
     // The Advanced values the plan was built from. Staging does not set `busy`, so the user can change precision or LoRAs while
     // the download runs; without this the completed load would use the new values against the old file set.
     advanced: LoadAdvanced;
@@ -2670,7 +2673,7 @@ export function ImagesPage({
   const requestDownloadPlan = useCallback(
     (
       repoId: string,
-      opts: { kind: "gguf" | "single_file" | "pipeline"; filename?: string },
+      opts: ImageLoadOptions,
       advanced: LoadAdvanced,
     ) =>
       getDiffusionDownloadPlan({
@@ -2699,7 +2702,7 @@ export function ImagesPage({
   const loadOrStage = useCallback(
     async (
       repoId: string,
-      opts: { kind: "gguf" | "single_file" | "pipeline"; filename?: string },
+      opts: ImageLoadOptions,
       source: ModelSelectorChangeMeta["source"] = "hub",
       token?: number,
     ): Promise<boolean> => {
@@ -2920,7 +2923,13 @@ export function ImagesPage({
   // Reload the current model with the current advanced options.
   const handleReapply = useCallback(() => {
     const l = lastLoad.current;
-    if (l) void handleLoad(l.repoId, { kind: l.kind, filename: l.filename });
+    if (l) {
+      void handleLoad(l.repoId, {
+        kind: l.kind,
+        filename: l.filename,
+        displayRepoId: l.displayRepoId,
+      });
+    }
   }, [handleLoad]);
 
   // Every pick supersedes the one before it, whichever route it takes. A staged download outlives
@@ -2954,12 +2963,10 @@ export function ImagesPage({
       // sets `busy`, so any pick can land on an awaiting one.
       const token = pickGuard.claim();
       const pipelineTarget = diffusionPipelineLoadTarget(id, meta);
-      if (pipelineTarget.repoId !== pipelineTarget.displayRepoId) {
-        pinnedPipelineDisplayIds.current.set(
-          pipelineTarget.repoId,
-          pipelineTarget.displayRepoId,
-        );
-      }
+      const displayRepoId =
+        pipelineTarget.repoId !== pipelineTarget.displayRepoId
+          ? pipelineTarget.displayRepoId
+          : undefined;
       // Curated non-GGUF model: load as a full pipeline or single-file safetensors.
       const spec = loadSpecFor(id, IMAGE_CATALOG);
       if (spec && spec.kind !== "gguf") {
@@ -2975,7 +2982,7 @@ export function ImagesPage({
         applyImageModelDefaults(id);
         void loadOrStage(
           pipelineTarget.repoId,
-          { kind: spec.kind, filename: spec.filename },
+          { kind: spec.kind, filename: spec.filename, displayRepoId },
           pipelineTarget.source,
           token,
         ).then((started) => {
@@ -3085,7 +3092,7 @@ export function ImagesPage({
       applyImageModelDefaults(id);
       void loadOrStage(
         pipelineTarget.repoId,
-        { kind: "pipeline" },
+        { kind: "pipeline", displayRepoId },
         pipelineTarget.source,
         token,
       ).then((started) => {

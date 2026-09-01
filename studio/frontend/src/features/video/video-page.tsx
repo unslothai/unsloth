@@ -772,6 +772,7 @@ type VideoLoadOptions = {
   kind: "gguf" | "single_file" | "pipeline";
   filename?: string;
   h3Task?: H3Task;
+  displayRepoId?: string;
 };
 /** A pick held back while the user chooses the H3 partition. It carries what the deferred
  *  loadOrStage call would otherwise have been given inline, so the choice only adds `h3Task`:
@@ -1009,9 +1010,6 @@ function VideoGenerator({
   const [familyOverride, setFamilyOverride] = useState("auto");
   // The last load descriptor, so "Reapply" can reload the same model with new advanced options.
   const lastLoad = useRef<({ repoId: string } & VideoLoadOptions) | null>(null);
-  // A pinned cache snapshot is the physical load target, while its Hub id remains the selector
-  // identity. Keep the stable association so a failed later pick can still display the resident row.
-  const pinnedPipelineDisplayIds = useRef(new Map<string, string>());
   // Render-safe mirror of whether a page-initiated load supplied a complete Reapply target.
   const [canReapply, setCanReapply] = useState(false);
 
@@ -1024,7 +1022,7 @@ function VideoGenerator({
   const [status, setStatus] = useState<VideoStatus | null>(null);
   const selectorModelId =
     status?.loaded && status.repo_id
-      ? (pinnedPipelineDisplayIds.current.get(status.repo_id) ?? status.repo_id)
+      ? (status.display_repo_id ?? status.repo_id)
       : undefined;
   // Controlled so the body-portaled model selector force-closes when this page is mounted but off-tab.
   const [selectorOpen, setSelectorOpen] = useState(false);
@@ -2401,6 +2399,7 @@ function VideoGenerator({
         // Returns immediately; the load runs in the background and we poll.
         const startRequest = loadVideoModel({
           model_path: repoId,
+          display_repo_id: opts.displayRepoId,
           model_kind: opts.kind,
           gguf_filename: opts.filename,
           hf_token: hfApiToken(getHfToken()),
@@ -2830,6 +2829,7 @@ function VideoGenerator({
         kind: l.kind,
         filename: l.filename,
         h3Task: l.h3Task,
+        displayRepoId: l.displayRepoId,
       });
     }
   }, [handleLoad]);
@@ -2855,12 +2855,10 @@ function VideoGenerator({
       // sets `busy`, so any pick can land on an awaiting one.
       const token = pickGuard.claim();
       const pipelineTarget = diffusionPipelineLoadTarget(id, meta);
-      if (pipelineTarget.repoId !== pipelineTarget.displayRepoId) {
-        pinnedPipelineDisplayIds.current.set(
-          pipelineTarget.repoId,
-          pipelineTarget.displayRepoId,
-        );
-      }
+      const displayRepoId =
+        pipelineTarget.repoId !== pipelineTarget.displayRepoId
+          ? pipelineTarget.displayRepoId
+          : undefined;
       // Curated non-GGUF model: load as a full pipeline.
       const spec = loadSpecFor(id, VIDEO_CATALOG);
       if (spec && spec.kind !== "gguf") {
@@ -2879,7 +2877,7 @@ function VideoGenerator({
         if (isH3PipelinePick(id, spec.kind, familyOverride)) {
           setPendingH3Load({
             repoId: pipelineTarget.repoId,
-            opts: { kind: spec.kind, filename: spec.filename },
+            opts: { kind: spec.kind, filename: spec.filename, displayRepoId },
             source: pipelineTarget.source,
             token,
           });
@@ -2887,7 +2885,7 @@ function VideoGenerator({
         }
         void loadOrStage(
           pipelineTarget.repoId,
-          { kind: spec.kind, filename: spec.filename },
+          { kind: spec.kind, filename: spec.filename, displayRepoId },
           pipelineTarget.source,
           token,
         ).then((started) => {
@@ -2998,7 +2996,7 @@ function VideoGenerator({
       if (isH3PipelinePick(id, "pipeline", familyOverride)) {
         setPendingH3Load({
           repoId: pipelineTarget.repoId,
-          opts: { kind: "pipeline" },
+          opts: { kind: "pipeline", displayRepoId },
           source: pipelineTarget.source,
           token,
         });
@@ -3006,7 +3004,7 @@ function VideoGenerator({
       }
       void loadOrStage(
         pipelineTarget.repoId,
-        { kind: "pipeline" },
+        { kind: "pipeline", displayRepoId },
         pipelineTarget.source,
         token,
       ).then((started) => {

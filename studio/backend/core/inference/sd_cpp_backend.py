@@ -1223,6 +1223,8 @@ class SdCppDiffusionBackend:
         self,
         repo_id: str,
         *,
+        # Diffusers-only display metadata, accepted for the route's uniform engine call.
+        display_repo_id: Optional[str] = None,
         # Same name, position and default as DiffusionBackend.begin_load: the route calls whichever
         # engine was activated through ONE call site and passes this unconditionally, so an engine
         # that does not declare it TypeErrors every load on the hosts that select it (CPU-only,

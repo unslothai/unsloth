@@ -3558,6 +3558,11 @@ class DiffusionLoadRequest(BaseModel):
     """Request to load a local diffusion (text-to-image) checkpoint."""
 
     model_path: str = Field(..., description = "Diffusion repo id or local path")
+    display_repo_id: Optional[str] = Field(
+        None,
+        description = "Logical Hub repo id shown by clients when model_path is an exact local "
+        "snapshot. Display metadata only; model_path remains the physical load identity.",
+    )
     gguf_filename: Optional[str] = Field(
         None,
         description = "The chosen single-file checkpoint (GGUF or safetensors) inside "
@@ -4162,6 +4167,10 @@ class DiffusionStatusResponse(BaseModel):
 
     loaded: bool = Field(False, description = "Whether a diffusion model is loaded")
     repo_id: Optional[str] = Field(None, description = "Loaded repo id or local path")
+    display_repo_id: Optional[str] = Field(
+        None,
+        description = "Logical Hub repo id for display when repo_id is a pinned local snapshot",
+    )
     family: Optional[str] = Field(None, description = "Detected diffusion family")
     supported_families: List[str] = Field(
         default_factory = list,
@@ -4474,6 +4483,11 @@ class VideoLoadRequest(BaseModel):
     """Request to load a local text-to-video checkpoint."""
 
     model_path: str = Field(..., description = "Video repo id or local path")
+    display_repo_id: Optional[str] = Field(
+        None,
+        description = "Logical Hub repo id shown by clients when model_path is an exact local "
+        "snapshot. Display metadata only; model_path remains the physical load identity.",
+    )
     gguf_filename: Optional[str] = Field(
         None,
         description = "The chosen single-file checkpoint (GGUF or safetensors) inside "
@@ -4965,6 +4979,10 @@ class VideoStatusResponse(BaseModel):
 
     loaded: bool = Field(False, description = "Whether a video model is loaded")
     repo_id: Optional[str] = Field(None, description = "Loaded repo id or local path")
+    display_repo_id: Optional[str] = Field(
+        None,
+        description = "Logical Hub repo id for display when repo_id is a pinned local snapshot",
+    )
     family: Optional[str] = Field(None, description = "Detected video family")
     supported_families: List[str] = Field(
         default_factory = list,

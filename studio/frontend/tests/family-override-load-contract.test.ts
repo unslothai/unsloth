@@ -40,13 +40,16 @@ test("video defaults use the explicit family for opaque paths", () => {
   assert.ok(text.includes("MODEL_DEFAULTS.some((entry) => id.includes(entry.match))"));
 });
 
-test("pinned pipeline paths retain their Hub selector identity", () => {
+test("pinned pipeline paths retain their Hub selector identity across remounts", () => {
   for (const file of [
     "../src/features/images/images-page.tsx",
     "../src/features/video/video-page.tsx",
   ]) {
     const text = source(file);
-    assert.ok(text.includes("pinnedPipelineDisplayIds.current.set("), file);
+    assert.ok(text.includes("display_repo_id: opts.displayRepoId"), file);
+    assert.ok(text.includes("displayRepoId: l.displayRepoId"), file);
+    assert.ok(text.includes("status.display_repo_id ?? status.repo_id"), file);
+    assert.ok(!text.includes("pinnedPipelineDisplayIds"), file);
     assert.ok(text.includes("loadedModelIdOverride={selectorModelId}"), file);
   }
   const picker = source(

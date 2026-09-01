@@ -319,6 +319,7 @@ async def load_video_model_gated(
             # Kicks the (slow) load onto a background thread and returns at once; begin_load itself validates network-free.
             return backend.begin_load(
                 request.model_path,
+                display_repo_id = request.display_repo_id,
                 # a load nobody asked for may not reach the hub: the switch verified locality
                 # from the outside, and this makes that promise the loader's own rule
                 local_files_only = not user_initiated,

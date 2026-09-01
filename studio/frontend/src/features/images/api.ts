@@ -21,6 +21,8 @@ export interface DiffusionResolvedControl {
 export interface DiffusionStatus {
   loaded: boolean;
   repo_id: string | null;
+  /** Logical Hub identity when repo_id is an exact local snapshot. */
+  display_repo_id?: string | null;
   family: string | null;
   supported_families?: string[];
   base_repo: string | null;
@@ -76,6 +78,8 @@ export interface DiffusionLoadProgress {
 
 export interface DiffusionLoadRequest {
   model_path: string;
+  /** Logical Hub identity to publish while model_path remains the physical load target. */
+  display_repo_id?: string;
   // Optional now: required for the gguf / single_file kinds, omitted for a full pipeline loaded via from_pretrained.
   gguf_filename?: string;
   // How to load the model (omit to auto-detect from gguf_filename). Non-GGUF kinds are restricted to unsloth/* repos.
