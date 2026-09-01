@@ -145,12 +145,13 @@ def test_linux_executable_ancestor_symlink_does_not_expose_sibling(tmp_path, mon
     sandbox = _load_sandbox_module()
     if not sandbox.sandbox_available():
         pytest.skip("sandbox unavailable")
+    host_runtime_paths = sandbox._python_read_paths()
 
     real_home = tmp_path / "real-home"
     runtime_bin = real_home / "runtime" / "bin"
     runtime_bin.mkdir(parents = True)
     launcher = runtime_bin / "python"
-    os.symlink(sys.executable, launcher)
+    os.symlink(os.path.realpath(sys.executable), launcher)
     secret = real_home / "credential.txt"
     secret.write_text("must-not-leak")
     alias_home = tmp_path / "alias-home"
@@ -160,7 +161,11 @@ def test_linux_executable_ancestor_symlink_does_not_expose_sibling(tmp_path, mon
     workdir.mkdir()
 
     monkeypatch.setattr(sandbox.sys, "executable", str(alias_launcher))
-    monkeypatch.setattr(sandbox, "_python_read_paths", lambda: [os.path.realpath(runtime_bin.parent)])
+    monkeypatch.setattr(
+        sandbox,
+        "_python_read_paths",
+        lambda: [os.path.realpath(runtime_bin.parent), *host_runtime_paths],
+    )
     code = f"import os; print('LEAKED' if os.path.exists({str(secret)!r}) else 'DENIED')"
     argv = sandbox._linux_bwrap_argv([str(alias_launcher), "-c", code], str(workdir))
     completed = subprocess.run(
