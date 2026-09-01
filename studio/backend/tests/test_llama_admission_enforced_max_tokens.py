@@ -60,32 +60,49 @@ def _enforced(payload, backend):
 
 
 class TestTheInvariant:
-    """`capacity` concurrent requests cannot together exceed the cache."""
+    """The invariant MOVED. It is no longer arithmetic, it is eviction.
 
-    def test_the_configuration_that_lost_four_chats(self):
-        backend = _backend(window = 16384, total = 16384, slots = 4)
-        payload = _chat(max_tokens = 16384)
-        enforced = _enforced(payload, backend)
-        assert enforced is not None
-        prompt_plus_output = _prompt_tokens(payload) + enforced
-        assert prompt_plus_output * 4 <= 16384, (
-            f"four chats may occupy {prompt_plus_output * 4} of a 16384 cache"
-        )
+    This class used to assert `capacity * (prompt + permitted) <= budget`: admission
+    divided the cache so an overrun was impossible by construction. That is safe and it
+    is not what was asked for. It held every chat to about `N / slots` -- measured
+    2026-09-01, ~4049 tokens an attempt on a 16384 cache, with long answers grinding
+    through length continuations and two of four not finishing inside 900s while most of
+    the cache sat idle.
 
-    def test_it_holds_at_every_cache_size(self):
+    Every chat is now permitted the whole window and the cache is overcommitted on
+    purpose, exactly as vLLM admits against the full max_model_len. What keeps the cache
+    inside its bounds is the watermark sweep in `llama_preemption`, which sees each n_i
+    grow and evicts. Those guarantees are asserted in
+    `test_llama_preemption_wiring.py::TestTheWatermarkSweep`, not here.
+
+    What remains true here is narrower and still worth pinning: no single request may be
+    permitted more than the window its own slot holds.
+    """
+
+    def test_no_request_may_exceed_its_own_window(self):
         for total in (2048, 4096, 8192, 16384, 65536, 262144):
             backend = _backend(window = total, total = total, slots = 4)
             payload = _chat(max_tokens = total)
             enforced = _enforced(payload, backend)
-            occupancy = _prompt_tokens(payload) + (enforced if enforced is not None else total)
-            assert occupancy * 4 <= total, f"{total}: four chats occupy {occupancy * 4}"
+            assert enforced is not None
+            assert _prompt_tokens(payload) + enforced <= total, (
+                f"{total}: a single request may occupy more than the whole window"
+            )
 
     def test_it_holds_for_a_long_prompt(self):
         backend = _backend(window = 16384, total = 16384, slots = 4)
         payload = _chat("word " * 600, max_tokens = 16384)
         enforced = _enforced(payload, backend)
         assert enforced is not None
-        assert (_prompt_tokens(payload) + enforced) * 4 <= 16384
+        assert _prompt_tokens(payload) + enforced <= 16384
+
+    def test_the_whole_window_is_offered_not_a_share(self):
+        """The point of the change: a chat is no longer rationed by the slot count."""
+        backend = _backend(window = 16384, total = 16384, slots = 4)
+        enforced = _enforced(_chat(max_tokens = 16384), backend)
+        assert enforced > 16384 // 4 * 3, (
+            f"permitted {enforced} still looks like a share of the cache"
+        )
 
     def test_it_holds_at_other_slot_counts(self):
         for slots in (2, 3, 4, 8):
@@ -93,7 +110,9 @@ class TestTheInvariant:
             payload = _chat(max_tokens = 32768)
             enforced = _enforced(payload, backend)
             assert enforced is not None
-            assert (_prompt_tokens(payload) + enforced) * slots <= 32768
+            assert _prompt_tokens(payload) + enforced <= 32768
+            # And unchanged by how many slots exist: the window is the window.
+            assert enforced > 32768 // max(2, slots) * 1.5
 
 
 class TestWhatIsLeftAlone:
@@ -125,38 +144,38 @@ class TestWhatIsLeftAlone:
 
 
 class TestTheEdges:
-    def test_a_prompt_past_its_share_still_gets_a_token(self):
-        """Zero would be refused upstream. Such a request is charged the flat allowance,
-        which is larger than the single token it is permitted, so the queue admits fewer
-        than `capacity` of them and the invariant survives."""
+    def test_a_prompt_that_fills_the_window_still_gets_a_token(self):
+        """Zero would be refused upstream, so the floor is one. Reached now only by a
+        prompt approaching the WHOLE window rather than a quarter of it."""
         backend = _backend(window = 16384, total = 16384, slots = 4)
-        enforced = _enforced(_chat("word " * 4000, max_tokens = 16384), backend)
+        enforced = _enforced(_chat("word " * 20000, max_tokens = 16384), backend)
         assert enforced == 1
 
-    def test_the_bound_is_exactly_the_charge(self):
-        """These two figures must not drift in EITHER direction.
+    def test_the_bound_deliberately_exceeds_the_charge(self):
+        """They diverge ON PURPOSE now, and that is the whole design.
 
-        An earlier revision asserted the opposite, that the bound should exceed the
-        charge, on the reasoning that the charge is deliberately optimistic so more chats
-        fit while the bound only has to be physically safe. That is unsound: a request
-        admitted on less than it may use lets the permitted total pass the cache while the
-        charged total still fits. See TestChargedAndPermittedCannotDrift. Charging the
-        whole share costs no concurrency, since `capacity * share <= budget` anyway.
+        The charge is what admission RESERVES so several chats fit; the bound is what a
+        single request is physically allowed. Under the divided design these had to be
+        equal, because arithmetic was the only defence and a request admitted on less
+        than it could use overran the cache. That is no longer how safety is obtained:
+        the cache is overcommitted deliberately and the watermark sweep evicts.
+
+        This is the same shape as the bug of 2026-09-01, and the difference is not
+        cosmetic. Then, nothing watched the gap. Now the sweep does, on every 32 tokens,
+        and it is asserted in TestTheWatermarkSweep. If that sweep is ever removed this
+        gap becomes the crash again.
         """
         backend = _backend(window = 16384, total = 16384, slots = 4)
         payload = _chat(max_tokens = 16384)
-        # The SAME budget the bound derives, not the raw cache: admission holds a little
-        # back for the speculative drafts and for estimate error, and comparing a charge
-        # priced against the full cache with a bound priced against the usable one
-        # compares two different caches.
         charged = _openai_llama_admission_tokens(
             payload, budget = _budget(backend), capacity = 4, context_window = 16384
         )
         enforced = _enforced(payload, backend)
-        assert _prompt_tokens(payload) + enforced == charged, (
-            f"charged {charged} but permits {_prompt_tokens(payload) + enforced}"
+        permitted = _prompt_tokens(payload) + enforced
+        assert permitted > charged, (
+            f"permitted {permitted} should exceed the charge {charged}: admission "
+            "reserves a share so several chats fit, while each may use the window"
         )
-        # And it is still generous: a chat gets its share, not a flat thousand tokens.
         assert enforced > _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
 
     def test_the_charge_never_exceeds_what_is_permitted(self):

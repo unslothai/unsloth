@@ -1489,6 +1489,10 @@ _MAX_TOOL_CALLS_PER_TURN = 8
 # the window is too small for this model and another attempt only spends more of the user's
 # time reaching the same place.
 _MAX_LENGTH_CONTINUATIONS = 2
+# How often the live token count is reported to the preemptor. Per token would take a
+# lock per token; per round would be far too late, since one round can generate
+# thousands. 32 trades a bounded overshoot for a cheap check.
+_TOKEN_REPORT_EVERY = 32
 _CONTINUE_AFTER_LENGTH_STATUS = "Continuing after a long thought..."
 _CONTINUE_TRUNCATED_ANSWER_STATUS = "Continuing the answer..."
 # Below this, a tool result carries no content: what comes back is the notice saying it was
@@ -27745,6 +27749,10 @@ class LlamaCppBackend:
         # MAY BLOCK: recost_waiting waits for cache room. Safe at the top of a round,
         # where the previous round's request has completed.
         on_conversation_grew: Optional[Callable[[list], None]] = None,
+        # Called during generation with the running token count for THIS attempt, so the
+        # preemptor can see n_i grow and evict before the cache fills rather than after.
+        # Batched by _TOKEN_REPORT_EVERY; must be cheap and must not raise.
+        on_tokens: Optional[Callable[[int], None]] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -28694,6 +28702,7 @@ class LlamaCppBackend:
                     # Emitted, so a pause must not replay them.
                     _respawn_truncations = []
                     raw_buf = ""
+                    _tokens_this_stream = 0
                     for raw_chunk in self._iter_text_cancellable(
                         response,
                         cancel_event,
@@ -28763,6 +28772,22 @@ class LlamaCppBackend:
                                 _fr = choices[0].get("finish_reason")
                                 if _fr:
                                     _iter_finish_reason = _fr
+
+                                # One chunk is about one token, so this is the live n_i
+                                # the preemptor needs. Reported in batches because the
+                                # sweep takes a lock and this runs per token; every 32 is
+                                # about 32 tokens of slack on a 16384 cache, well under
+                                # the buffer held back for exactly this kind of lag.
+                                _tokens_this_stream += 1
+                                if (
+                                    on_tokens is not None
+                                    and _tokens_this_stream % _TOKEN_REPORT_EVERY == 0
+                                ):
+                                    try:
+                                        on_tokens(_tokens_this_stream)
+                                    except Exception:
+                                        # Never let the watermark sweep fail a generation.
+                                        pass
 
                                 # ── Structured tool_calls ──
                                 tc_deltas = delta.get("tool_calls")

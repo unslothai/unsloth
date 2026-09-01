@@ -2257,9 +2257,6 @@ def _openai_llama_admission_enforced_max_tokens(
     raw_total = _openai_llama_admission_raw_total(llama_backend) or budget
     if window and raw_total >= window * capacity:
         return None
-    share = max(1, budget // max(1, capacity))
-    if share >= (window or budget):
-        return None
     prompt_tokens = _openai_llama_admission_prompt_tokens(
         payload,
         image_tokens = _openai_llama_admission_image_tokens(llama_backend),
@@ -2267,10 +2264,22 @@ def _openai_llama_admission_enforced_max_tokens(
     )
     if prompt_tokens is None:
         return None
-    # A prompt past its share leaves nothing, but a request must be able to say
-    # something, and llama-server would refuse a zero. Such a request is already charged
-    # more than a share, so the queue admits fewer than ``capacity`` of them.
-    return max(1, share - prompt_tokens)
+    # THE WINDOW, not a share of it. Every chat may use the whole context the server was
+    # launched with; the cache is deliberately overcommitted and preemption reclaims when
+    # the live total approaches it. This is what vLLM does: admit against the full
+    # max_model_len and preempt at a watermark, rather than dividing the cache up front.
+    #
+    # Dividing was the right STOPGAP while nothing could pause, and its cost is now
+    # measured: on `-c 16384 --parallel 4` a chat was held to about 4049 tokens an
+    # attempt and a long answer had to grind through length continuations, two of four
+    # failing to finish inside 900s while the cache sat mostly idle.
+    #
+    # The charge stays optimistic, so charge < permit again. That gap was a BUG while
+    # arithmetic was the only defence; it is the design now, and preemption is the
+    # enforcement. If eviction stops being timely this becomes the crash again, which is
+    # why the watermark sweep runs on token growth and not only between rounds.
+    ceiling = window or budget
+    return max(1, ceiling - prompt_tokens)
 
 
 def _openai_llama_admission_reserve(
@@ -20870,6 +20879,21 @@ async def produce_openai_chat_completions(
             # know this generation until admission returns. Nothing can pause before then:
             # the generator is not iterated until the reservation exists.
             _gguf_preempt_signal = PreemptSignal()
+
+            def _gguf_observe_tokens(generated: int) -> None:
+                """Live n_i, straight from the token stream.
+
+                The whole safety argument now rests on this. Admission overcommits on
+                purpose, so nothing about the arithmetic keeps the cache inside its
+                bounds; what does is being told how big each generation has become while
+                it is still growing, and evicting on the watermark.
+                """
+                try:
+                    get_preemption_controller(
+                        str(getattr(llama_backend, "base_url", "llama-server"))
+                    ).observe(completion_id, generated)
+                except Exception:
+                    pass
             _gguf_preempt_policy_hold = DeferredPreemptionPolicy()
             # Captured on the event loop, used from the stream's worker thread. The
             # resume has to await the queue's slot acquire, so the two are joined with
@@ -20975,6 +20999,7 @@ async def produce_openai_chat_completions(
                     on_conversation_grew = _gguf_recost,
                     preempt_event = _gguf_preempt_signal,
                     preempt_policy = _gguf_preempt_policy_hold,
+                    on_tokens = _gguf_observe_tokens,
                     context_overflow = _rolling_context_policy(payload),
                     context_policy = _request_context_policy(payload),
                     compaction_headroom_ratio = _request_compaction_headroom_ratio(payload),

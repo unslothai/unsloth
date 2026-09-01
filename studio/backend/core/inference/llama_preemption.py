@@ -375,6 +375,9 @@ class Participant:
     seq: int
     lease: Optional[LlamaAdmissionLease] = None
     tokens: int = 0
+    # What admission charged. Live growth is added to THIS rather than replacing it, so a
+    # report of "n tokens generated" cannot silently drop the prompt already resident.
+    base_tokens: int = 0
     state: str = ParticipantState.DECODING
     consecutive_preemptions: int = 0
     # Set when this generation must stop. The caller aborts ONLY the upstream
@@ -497,6 +500,7 @@ class PreemptionController:
                 seq = self._seq,
                 lease = lease,
                 tokens = max(0, int(tokens or 0)),
+                base_tokens = max(0, int(tokens or 0)),
                 state = state,
                 **({} if signal is None else {"preempt_event": signal}),
             )
@@ -510,11 +514,34 @@ class PreemptionController:
             if self._epoch_winner == gen_id:
                 self._epoch_winner = None
 
+    def observe(self, gen_id: str, generated: int) -> List["Participant"]:
+        """Live growth during generation, and the eviction check that follows it.
+
+        THE watermark sweep. Admission deliberately overcommits now -- every chat is
+        permitted the whole window -- so nothing about the arithmetic prevents the cache
+        filling. What prevents it is being told, often, how big each generation has
+        actually become, and evicting when the running total nears the ceiling. This is
+        the `n1..np changing over time` the design asks for, and it is why the sweep
+        cannot live only between rounds: one round can generate thousands of tokens, and
+        a check that happens after it is a check that happens too late.
+
+        Returns whoever must stop, already signalled.
+        """
+        with self._lock:
+            participant = self._participants.get(gen_id)
+            if participant is not None:
+                participant.tokens = participant.base_tokens + max(0, int(generated or 0))
+        # Outside the lock: plan_preemptions takes it, and it is not reentrant.
+        return self.plan_preemptions(needed = 0)
+
     def note_tokens(self, gen_id: str, tokens: int) -> None:
         with self._lock:
             participant = self._participants.get(gen_id)
             if participant is not None:
                 participant.tokens = max(0, int(tokens or 0))
+                # Re-baselined: a round boundary restates the whole conversation, so
+                # later growth is measured from here rather than from admission.
+                participant.base_tokens = participant.tokens
 
     def set_state(self, gen_id: str, state: str) -> None:
         """Report a safe point. Ends the epoch when the winner stops decoding.

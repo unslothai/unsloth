@@ -627,3 +627,174 @@ class TestTheCacheIsNeverHandedOutToTheLastToken:
 
         backend = self._backend(context_length = None, _kv_cache_context_total = None)
         assert inference._openai_llama_admission_budget(backend) is None
+
+
+class TestEveryChatGetsTheWholeWindow:
+    """N for everyone, then evict. The design asked for from the start.
+
+    Dividing the cache into `N / slots` was the stopgap while nothing could pause, and
+    its cost was measured on 2026-09-01: a chat held to ~4049 tokens an attempt, a long
+    answer grinding through length continuations, two of four not finishing inside 900s
+    while the cache sat mostly idle. vLLM admits against the full max_model_len and
+    preempts at a watermark; so do we now.
+    """
+
+    def _backend(self, slots = 4, total = 16384):
+        backend = _backend()
+        backend.effective_parallel_slots = slots
+        backend.context_length = total
+        backend._kv_cache_context_total = total
+        backend.speculative_type = "draft-mtp"
+        backend.spec_draft_n_max = 2
+        backend.spec_drafter_kind = None
+        backend.requested_spec_mode = None
+        return backend
+
+    def test_a_chat_is_permitted_the_window_not_a_share_of_it(self):
+        import routes.inference as inference
+
+        backend = self._backend()
+        payload = _chat_payload()
+        permitted = inference._openai_llama_admission_enforced_max_tokens(
+            payload, request = None, llama_backend = backend
+        )
+        share = inference._openai_llama_admission_budget(backend) // 4
+        assert permitted > share * 3, (
+            f"permitted {permitted} is still a share ({share}), not the window"
+        )
+
+    def test_four_chats_are_each_permitted_the_window(self):
+        """They collectively exceed the cache ON PURPOSE. Preemption reclaims."""
+        import routes.inference as inference
+
+        backend = self._backend()
+        total = 0
+        for _ in range(4):
+            total += inference._openai_llama_admission_enforced_max_tokens(
+                _chat_payload(), request = None, llama_backend = backend
+            )
+        assert total > 16384, "the cache is meant to be overcommitted now"
+
+    def test_a_stated_cap_is_still_honoured(self):
+        import routes.inference as inference
+
+        assert inference._openai_llama_admission_enforced_max_tokens(
+            _chat_payload(max_tokens = 512), request = None, llama_backend = self._backend()
+        ) is None
+
+
+class TestTheWatermarkSweep:
+    """With the arithmetic no longer preventing an overrun, this is what does."""
+
+    def _filled(self, budget = 16384, chats = 4, each = 1000):
+        controller = PreemptionController(f"sweep-{budget}-{chats}-{each}")
+        controller.configure(budget = budget, kv_unified = True)
+        signals = {}
+        for index in range(chats):
+            signals[index] = PreemptSignal()
+            controller.register(f"c{index}", tokens = each, signal = signals[index])
+        return controller, signals
+
+    def test_growth_below_the_watermark_evicts_nobody(self):
+        controller, _ = self._filled()
+        assert controller.observe("c0", 500) == []
+
+    def test_growth_past_the_watermark_evicts(self):
+        controller, signals = self._filled()
+        victims = []
+        for grown in (2000, 3000, 4000):
+            for index in range(4):
+                victims += controller.observe(f"c{index}", grown)
+        assert victims, "the cache passed its ceiling and nobody was asked to stop"
+        assert any(s.is_set() for s in signals.values())
+
+    def test_the_winner_is_never_the_victim(self):
+        controller, signals = self._filled(each = 2000)
+        controller.register("big", tokens = 9000, signal = PreemptSignal())
+        victims = {v.gen_id for v in controller.observe("big", 3000)}
+        assert "big" not in victims, "the longest chat must keep decoding"
+
+    def test_live_growth_is_added_to_the_admitted_charge(self):
+        """Reporting "n generated" must not drop the prompt already resident."""
+        controller, _ = self._filled(chats = 1, each = 4000)
+        controller.observe("c0", 1000)
+        assert controller.committed_tokens() == 5000
+
+    def test_a_round_boundary_rebaselines(self):
+        """note_tokens restates the whole conversation, so later growth counts from there."""
+        controller, _ = self._filled(chats = 1, each = 1000)
+        controller.observe("c0", 500)
+        assert controller.committed_tokens() == 1500
+        controller.note_tokens("c0", 6000)
+        controller.observe("c0", 100)
+        assert controller.committed_tokens() == 6100, (
+            "growth after a round must be measured from the round, not from admission"
+        )
+
+
+def _chat_payload(**fields):
+    class _P:
+        def __init__(self, **kw):
+            self.__dict__.update(kw)
+
+        def __getattr__(self, _name):
+            return None
+
+    base = {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 16384}
+    base.update(fields)
+    return _P(**base)
+
+
+class TestTheStreamActuallyReportsGrowth:
+    """The sweep is only as good as the thing feeding it.
+
+    Deleting the counter increment from the chunk loop left every other test green: the
+    controller's own eviction logic is fine in isolation, and nothing asserted that the
+    stream still tells it anything. That is the same shape as the two live failures
+    today, where the policy was correct and simply never reached.
+    """
+
+    def _source(self):
+        from pathlib import Path
+
+        import core.inference.llama_cpp as llama_cpp
+
+        return Path(llama_cpp.__file__).read_text()
+
+    def test_the_chunk_loop_counts_tokens(self):
+        assert "_tokens_this_stream += 1" in self._source(), (
+            "nothing increments the live token count, so the sweep sees a frozen n_i"
+        )
+
+    def test_the_count_is_reported_to_the_preemptor(self):
+        source = self._source()
+        assert "on_tokens(_tokens_this_stream)" in source, (
+            "the count is kept but never handed to the watermark sweep"
+        )
+
+    def test_the_report_is_batched_not_per_token(self):
+        """A lock per token would put the preemptor on the hot path."""
+        source = self._source()
+        assert "_tokens_this_stream % _TOKEN_REPORT_EVERY == 0" in source
+
+    def test_the_batch_is_small_enough_to_be_caught_by_the_buffer(self):
+        """Overshoot between reports must fit inside the headroom, or the sweep learns
+        about the overrun after llama-server does."""
+        from core.inference.llama_cpp import _TOKEN_REPORT_EVERY
+        from core.inference.llama_preemption import preemption_buffer_tokens
+
+        assert 0 < _TOKEN_REPORT_EVERY <= 64
+        # Worst case every slot overshoots by a full batch between reports.
+        worst = _TOKEN_REPORT_EVERY * 8
+        assert worst < preemption_buffer_tokens(16384), (
+            f"{worst} tokens of lag against a {preemption_buffer_tokens(16384)} buffer"
+        )
+
+    def test_the_route_supplies_the_callback(self):
+        from pathlib import Path
+
+        import routes.inference as inference
+
+        source = Path(inference.__file__).read_text()
+        assert "on_tokens = _gguf_observe_tokens," in source
+        assert ".observe(completion_id, generated)" in source
