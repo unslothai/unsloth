@@ -573,7 +573,12 @@ function VisionBadge() {
 /** Parameter count chip ("27B"). */
 function ParamChip({ label }: { label: string }) {
   return (
-    <span className="whitespace-nowrap rounded-md border border-border/60 px-1.5 py-px text-ui-10 font-medium text-muted-foreground tabular-nums">
+    // h-[18px], the height every other chip in the row band already pins (quant, vision, the disk
+    // mark, the Loaded tag). py-px left this one sized by its line box instead, which is the only
+    // height here that scales with --ui-font-scale: at 1.0 it stood 1px PROUDER than the quant and
+    // vision chips beside it and at 0.8125 it sat 1.8px shorter, so the row only looked level at
+    // the one scale where the two happened to cross. A shared height is level at every scale.
+    <span className="inline-flex h-[18px] shrink-0 items-center whitespace-nowrap rounded-md border border-border/60 px-1.5 text-ui-10 font-medium text-muted-foreground tabular-nums">
       {label}
     </span>
   );
@@ -630,6 +635,31 @@ function DownloadedBadge() {
       </TooltipTrigger>
       <TooltipContent side="top" className="tooltip-compact">
         On device
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+/** A cancelled or interrupted download: some bytes on disk, not enough to load. The Hub marks
+ *  these with the same warning dot, and the row it sits on selects with isDownloaded: false so
+ *  the click opens the download instead of handing incomplete weights to the runtime. Same box
+ *  as DownloadedBadge, since the two are alternatives -- a row is complete or it is not. */
+function PartialBadge() {
+  return (
+    <Tooltip delayDuration={0}>
+      <TooltipTrigger asChild={true}>
+        <span
+          aria-label="Partial download"
+          className="flex h-[18px] w-[14px] shrink-0 items-center justify-center"
+        >
+          <span
+            aria-hidden="true"
+            className="size-[5px] rounded-full bg-status-warning"
+          />
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="tooltip-compact">
+        Partial download &mdash; select to resume, or delete it
       </TooltipContent>
     </Tooltip>
   );
@@ -924,10 +954,14 @@ const META_COLUMN = {
   badgeWide: "min-w-min min-[560px]:w-[36px]",
   // The fit mark (Hub rows), one 18px glyph.
   vram: "min-w-min min-[560px]:w-[18px]",
-  // Device rows hug the chip. A column sized for "235B" spends 6.1px in front of a "30B", and that
-  // leftover IS the gap to the modality mark; -ml-0.5 against the cluster's gap-1 makes it 2px. In
-  // exchange a wider label pulls that row's name and quant chip left. Hub keeps its "2779.5B".
-  param: "min-w-min -ml-0.5",
+  // Device rows reserve the slot rather than hug the chip. This is the last variable column on the
+  // right, so hugging it let each row's meta cluster set its own width: a "1B" row, and more so a
+  // row with no param at all, gave its name group the leftover and carried its quant chip that much
+  // further right, leaving the quant column ragged down the list. 4.4em is the widest these lists
+  // draw, measured at text-ui-10 -- "235B" is 38.4px, a 5-char "0.35B" 40.9px -- so nothing routine
+  // trips min-w-min and shifts the row back out of line. The slack now sits in front of the chip,
+  // as its gap to the modality mark. Hub keeps its own width for "2779.5B".
+  param: "min-w-min min-[560px]:w-[4.4em]",
   paramWide: "min-w-min min-[560px]:w-[5.2em]",
   // formatBytes writes no space ("536MB"), so the widest this holds is 29.5px, not the ~40px a
   // spaced "536 MB" needs. The surplus sat between the parameter chip and the size.
@@ -941,6 +975,13 @@ const META_COLUMN = {
 // the gutter stays open so nothing moves as they appear.
 const ROW_ACTIONS_CLASS =
   "mr-0.5 flex w-[38px] shrink-0 items-center justify-end -space-x-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 has-[[data-state=open]]:opacity-100 [@media(hover:none)]:opacity-100";
+
+// Partial rows keep their buttons on screen. Everywhere else the gutter hides until the row is
+// hovered because the row itself is the action -- click it and the model loads, so the menu is a
+// secondary path. A partial cannot be loaded at all: the menu IS the row's only affordance, and
+// hiding the one control that reaches a stalled multi-GB download behind a hover reads as the
+// download having no controls at all.
+const ROW_ACTIONS_PINNED_CLASS = cn(ROW_ACTIONS_CLASS, "opacity-100");
 
 function ModelRow({
   label,
@@ -958,6 +999,7 @@ function ModelRow({
   capabilities,
   hideOwner,
   downloaded,
+  partial,
   showVision,
   quantChip,
   tags,
@@ -988,6 +1030,9 @@ function ModelRow({
   hideOwner?: boolean;
   /** Mark a row already on disk (shown in Recommended instead of being hidden). */
   downloaded?: boolean;
+  /** Mark a row whose snapshot is incomplete. Mutually exclusive with `downloaded`: the bytes
+   *  are there or they are not, and the caller routes the click to the download either way. */
+  partial?: boolean;
   /** Show a Vision badge on the name (On Device, read from GGUF metadata). */
   showVision?: boolean;
   /** Grey chip beside the name, for rows that load one specific quant. */
@@ -1127,17 +1172,7 @@ function ModelRow({
               dotClassName="size-[5px]"
             />
           )}
-          {alignMeta === "device" ? (
-            <span
-              className={cn(
-                // ml-0.5: the chip carries px-1 of its own, so 2px still leaves 6px of air.
-                "ml-0.5 flex shrink-0 items-center self-center text-ui-9",
-                META_COLUMN.quant,
-              )}
-            >
-              {quantChip ? <QuantChip label={quantChip} /> : null}
-            </span>
-          ) : quantChip ? (
+          {alignMeta !== "device" && quantChip ? (
             <span className="ml-2 shrink-0 rounded-md bg-black/[0.06] px-1.5 py-px font-mono text-ui-10 text-muted-foreground dark:bg-white/[0.1]">
               {quantChip}
             </span>
@@ -1156,6 +1191,24 @@ function ModelRow({
             aligned ? "gap-1" : "gap-1.5",
           )}
         >
+          {/* The quant chip sits in the meta cluster, not at the end of the name, so one
+              items-center rule lines it up with the vision mark, the parameter chip, the size and
+              the row's buttons. Inside the name group it was centred against THAT box instead --
+              a baseline box sized by the name's own line height -- so it only agreed with the rest
+              of the row for as long as the two boxes happened to share a centre. */}
+          {alignMeta === "device" ? (
+            <span
+              className={cn(
+                // justify-end: the slot is sized for the longest quant, so left-aligning ended a
+                // "Q8_0" and a "UD-Q4_K_XL" at different x even once the slot itself stopped
+                // moving. Flush right is what makes the chips read as one column.
+                "flex shrink-0 items-center justify-end text-ui-9",
+                META_COLUMN.quant,
+              )}
+            >
+              {quantChip ? <QuantChip label={quantChip} /> : null}
+            </span>
+          ) : null}
           {/* Capabilities, vision and the Hub lists' "on disk" mark share one
               column; two of them widen the slot rather than overlap. */}
           {aligned ? (
@@ -1168,7 +1221,8 @@ function ModelRow({
             >
               {showCaps && <CapabilityIcons caps={caps} />}
               {showVision && <VisionBadge />}
-              {downloaded && !loaded ? <DownloadedBadge /> : null}
+              {partial ? <PartialBadge /> : null}
+              {downloaded && !partial && !loaded ? <DownloadedBadge /> : null}
             </span>
           ) : (
             <>
@@ -1182,7 +1236,8 @@ function ModelRow({
                   dotClassName="size-[5px]"
                 />
               )}
-              {downloaded && !loaded ? <DownloadedBadge /> : null}
+              {partial ? <PartialBadge /> : null}
+              {downloaded && !partial && !loaded ? <DownloadedBadge /> : null}
             </>
           )}
           {alignMeta === "hub" ? (
@@ -1200,8 +1255,16 @@ function ModelRow({
           {aligned ? (
             <span
               className={cn(
-                "flex shrink-0 justify-end text-ui-10",
-                alignMeta === "hub" ? META_COLUMN.paramWide : META_COLUMN.param,
+                // Device leads the chip, Hub trails it. Both columns are fixed, so the choice is
+                // only where the column's slack falls: trailing it put the slack in FRONT of the
+                // chip, where it read as part of the gap to the modality mark and grew or shrank
+                // with the label -- 6.9px after a "217B", 19px after a "1B". Leading the chip
+                // leaves that gap as the cluster's own gap-1, the same 4px the quant chip keeps
+                // to the same mark, and the slack falls back toward the size instead.
+                "flex shrink-0 items-center text-ui-10",
+                alignMeta === "hub"
+                  ? cn("justify-end", META_COLUMN.paramWide)
+                  : cn("justify-start", META_COLUMN.param),
               )}
             >
               {paramLabel ? <ParamChip label={paramLabel} /> : null}
@@ -3797,8 +3860,10 @@ export function HubModelPicker({
       sortCachedRepos(
         cachedModels.filter(
           (c) =>
-            // A partially-downloaded snapshot is not on-device: listing it as loadable errors or triggers a silent multi-GB re-fetch.
-            !c.partial &&
+            // Partial snapshots are listed, not loaded. Dropping them here hid a cancelled
+            // multi-GB download from the only list that could delete it; the row instead carries
+            // a partial mark and selects with isDownloaded: false, so the click opens the
+            // download rather than erroring or triggering a silent re-fetch.
             passesTaskGate(
               c.task,
               c.repo_id,
@@ -5258,13 +5323,17 @@ export function HubModelPicker({
     const isSelected = rowState.selected;
     const expectedBytes = ggufVariantExpectedBytes(variant);
     const isPinned = pinnedSet.has(pinKey(c.repo_id, variant.quant));
+    // A repo only flags partial once no quant is clean, so a sole-quant row should never BE one.
+    // Carried anyway: if that ever stops holding, the row states what is on disk instead of
+    // handing a torn file to the loader.
+    const isPartial = c.partial === true;
     const selectMeta: ModelSelectorChangeMeta = {
       source: "hub",
       isLora: false,
       loadId: c.load_id,
       ggufVariant: variant.quant,
       ggufFilename: variant.filename,
-      isDownloaded: true,
+      isDownloaded: !isPartial,
       expectedBytes,
       isGguf: true,
       pipelineTag: c.task ?? null,
@@ -5284,6 +5353,7 @@ export function HubModelPicker({
             )}
             meta={`GGUF · ${formatBytes(variant.size_bytes)}`}
             quantChip={ggufQuantChipLabel(variant.quant)}
+            partial={isPartial}
             // Only for models the llama.cpp path actually loads. The Images and
             // Video pickers deliberately keep diffusion GGUFs listed, and those
             // run on the diffusion planner with different runtime buffers, on a
@@ -5375,6 +5445,8 @@ export function HubModelPicker({
       autoExpand: expandQuantizations && !reopenedGguf.has(c.repo_id),
       soleQuantsPending: soleQuants.pending.has(c.repo_id),
     });
+    // No quant of this repo is clean, so nothing inside the expander can carry the row's actions.
+    const isPartialRepo = c.partial === true;
     return (
       <div key={c.repo_id}>
         <div className={downloadedRowShellClassName(isSelected)}>
@@ -5385,6 +5457,7 @@ export function HubModelPicker({
               meta="GGUF"
               showVision={c.has_vision ?? visionByRepo[c.repo_id]}
               alignMeta="device"
+              partial={isPartialRepo}
               selected={isSelected}
               loaded={isRuntimeLoadedModel(
                 loadedModelId,
@@ -5403,8 +5476,49 @@ export function HubModelPicker({
               className={downloadedRowButtonClassName}
             />
           </div>
-          {/* Stands in for the other rows' buttons, so the tags line up. */}
-          <span aria-hidden="true" className={cn(ROW_ACTIONS_CLASS, "h-6")} />
+          {/* A complete repo keeps its actions on the quant rows inside the expander -- delete
+              targets one quant, not the repo -- so this row only reserves the gutter, to keep the
+              tags lined up. A partial repo has no complete quant to carry them: expanding it just
+              to reach a menu is a step with nothing at the end of it, and before this the torn
+              bytes could be seen but never removed. */}
+          {isPartialRepo ? (
+            <span className={ROW_ACTIONS_PINNED_CLASS}>
+              <ModelRowMenu
+                ariaLabel={`More options for ${c.repo_id}`}
+                cachePath={{ repoId: c.repo_id }}
+                del={{
+                  title: "Delete partial download?",
+                  impact: { repoId: c.repo_id },
+                  description: (
+                    <>
+                      This will remove the partly downloaded{" "}
+                      <span className="font-medium text-foreground">
+                        {c.repo_id}
+                      </span>{" "}
+                      from disk. It is incomplete and cannot be loaded; you can
+                      download it again later.
+                    </>
+                  ),
+                  successMessage: `Deleted ${c.repo_id}`,
+                  disabled: deleteDisabled,
+                  onConfirm: async () => {
+                    await deleteCachedModel(
+                      c.repo_id,
+                      undefined,
+                      hfToken || undefined,
+                      c.cache_path || undefined,
+                    );
+                    if (pinnedSet.has(pinKey(c.repo_id))) {
+                      togglePinned(c.repo_id);
+                    }
+                  },
+                  onDeleted: refreshCachedLists,
+                }}
+              />
+            </span>
+          ) : (
+            <span aria-hidden="true" className={cn(ROW_ACTIONS_CLASS, "h-6")} />
+          )}
         </div>
         {expanderOpen && (
           <GgufVariantExpander
@@ -5453,6 +5567,10 @@ export function HubModelPicker({
   ) => {
     const optionKey = makeModelOptionKey("downloaded-model", c.repo_id);
     const isSelected = value === c.repo_id;
+    // Some bytes on disk, not enough to load. Claiming it is downloaded skips straight to a load
+    // that fails on the missing shards, so the pick reports what is actually there and the
+    // download flow picks it up from the same place the Hub would.
+    const isPartial = c.partial === true;
     return (
       <div key={c.repo_id} className={downloadedRowShellClassName(isSelected)}>
         <div className="min-w-0 flex-1">
@@ -5464,6 +5582,7 @@ export function HubModelPicker({
             )}`}
             selected={isSelected}
             alignMeta="device"
+            partial={isPartial}
             loaded={isRuntimeLoadedModel(
               loadedModelId,
               activeGgufVariant,
@@ -5476,7 +5595,7 @@ export function HubModelPicker({
                 source: "hub",
                 isLora: false,
                 loadId: c.load_id,
-                isDownloaded: true,
+                isDownloaded: !isPartial,
                 pipelineTag: c.task ?? null,
                 audioType: c.audio_type ?? null,
               })
@@ -5485,7 +5604,9 @@ export function HubModelPicker({
             className={downloadedRowButtonClassName}
           />
         </div>
-        <span className={ROW_ACTIONS_CLASS}>
+        <span
+          className={isPartial ? ROW_ACTIONS_PINNED_CLASS : ROW_ACTIONS_CLASS}
+        >
           {onConfigure && (
             <ModelLoadSettingsAction
               ariaLabel={`Inference settings for ${c.repo_id}`}
@@ -5494,7 +5615,7 @@ export function HubModelPicker({
                   source: "hub",
                   isLora: false,
                   loadId: c.load_id,
-                  isDownloaded: true,
+                  isDownloaded: !isPartial,
                   isGguf: false,
                   pipelineTag: c.task ?? null,
                   audioType: c.audio_type ?? null,
