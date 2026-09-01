@@ -184,12 +184,9 @@ def test_the_seed_install_refuses_source_builds():
     body = _shell(_job())
     installs = [ln for ln in body.splitlines() if re.search(r"\bpip install\b", ln)]
     offenders = [
-        ln.strip() for ln in installs
-        if "--upgrade pip" not in ln and "--only-binary" not in ln
+        ln.strip() for ln in installs if "--upgrade pip" not in ln and "--only-binary" not in ln
     ]
-    assert not offenders, (
-        "these seed installs allow source builds:\n  " + "\n  ".join(offenders)
-    )
+    assert not offenders, "these seed installs allow source builds:\n  " + "\n  ".join(offenders)
 
 
 def test_the_known_unbuildable_pins_are_skipped():
@@ -198,9 +195,14 @@ def test_the_known_unbuildable_pins_are_skipped():
     skip = set(_mapping()["skip"])
     # name -> the system dependency whose absence killed its build in that run.
     system_bound = {
-        "cyipopt": "ipopt", "dbus-python": "dbus-1", "dlib": "cmake",
-        "gdal": "gdal-config", "pycairo": "cairo", "pygobject": "girepository",
-        "python-apt": "apt", "rpy2": "R_HOME",
+        "cyipopt": "ipopt",
+        "dbus-python": "dbus-1",
+        "dlib": "cmake",
+        "gdal": "gdal-config",
+        "pycairo": "cairo",
+        "pygobject": "girepository",
+        "python-apt": "apt",
+        "rpy2": "R_HOME",
     }
     missing = sorted(set(system_bound) - skip)
     assert not missing, (
