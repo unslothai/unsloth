@@ -1062,13 +1062,32 @@ def _archive_branch_chain(
         return None
     try:
         from core.rag import conversation_archive
-        chain = conversation_archive._active_chain(
-            messages,
-            branch_messages,
-            fallback = False,
-            require_unique = True,
-        )
-        return chain or None
+
+        def _chain(probe):
+            return conversation_archive._active_chain(
+                messages,
+                probe,
+                fallback = False,
+                require_unique = True,
+            )
+
+        chain = _chain(branch_messages)
+        if not chain:
+            return None
+        # The turn being answered is not stored until the reply completes, so a stored row
+        # carrying it sits on a SIBLING, and matching it there hands this request that
+        # branch's deeper boundary. Re-prove the branch from the settled turns only: the
+        # unstored tail may EXTEND the chain it selects, never switch it.
+        settled = list(branch_messages)
+        while settled and settled[-1].get("role") == "user":
+            settled.pop()
+        if settled:
+            proof = _chain(settled)
+            if not proof or not any(
+                row.get("id") == proof[-1].get("id") for row in chain
+            ):
+                return None
+        return chain
     except Exception:
         return None
 
@@ -1148,14 +1167,17 @@ def _compaction_branch_states(
                     recorded = max(0, int(raw_recorded or 0))
                 except (TypeError, ValueError):
                     pass
-        if recorded is None:
+        if recorded is None and chain is not None:
+            # Skipping a row defers to the epoch before it, which only ancestry can prove
+            # is the same branch. On the text path below the rows are indistinguishable,
+            # so dropping one lets its twin decide alone; keeping it forces `(0, False)`.
             # Deep Research runs in isolated `research:<run-id>` inference state. Its
             # server-managed parent-thread row reports the research lifecycle, not whether
             # the parent chat fit, so it cannot end that chat's checkpoint epoch.
             research_row = (
-                metadata.get("serverManaged")
-                and metadata.get("researchRunId")
-                and metadata.get("researchStatus")
+                (metadata.get("serverManaged") or custom.get("serverManaged"))
+                and (metadata.get("researchRunId") or custom.get("researchRunId"))
+                and (metadata.get("researchStatus") or custom.get("researchStatus"))
             )
             if research_row:
                 continue
@@ -1166,6 +1188,7 @@ def _compaction_branch_states(
             aborted = status in {"cancelled", "failed"} or reason in {"cancelled", "interrupted"}
             if active or (status != "completed" and aborted):
                 continue
+        if recorded is None:
             states.append(_CompactionBranchState(message, None, 0))
             continue
         states.append(_CompactionBranchState(message, truncation, recorded))

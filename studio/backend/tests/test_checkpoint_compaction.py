@@ -1782,6 +1782,126 @@ def test_a_cancelled_epoch_boundary_is_found_through_its_stored_descendant(monke
     assert inference_routes._thread_has_checkpoint("t1", branch) is True
 
 
+def test_retrying_the_newest_turn_twice_still_resolves_the_proved_branch(monkeypatch):
+    """Leaves that fork BELOW what the request proves cannot make the answer ambiguous.
+
+    Both siblings trim to the same stored row, so scoring them as a tie discarded the
+    branch the request had just proved and dropped the thread back on the text path,
+    which is the path a tool-heavy row cannot survive.
+    """
+    from core.inference import checkpoint, llama_cpp
+    from routes import inference as inference_routes
+
+    rows = [
+        {"id": "u1", "parentId": None, "role": "user", "content": "Run the diagnostic."},
+        {
+            "id": "a1",
+            "parentId": "u1",
+            "role": "assistant",
+            "content": [
+                {"type": "tool-call", "toolCallId": "c1", "toolName": "terminal",
+                 "args": {"command": "probe"}, "result": "PROBE-9915"},
+                {"type": "text", "text": "The diagnostic passed."},
+            ],
+            "metadata": _checkpoint_metadata(4),
+        },
+    ]
+    branch = [
+        {"role": "user", "content": "Run the diagnostic."},
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "c1", "function": {"name": "terminal", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "PROBE-9915"},
+        {"role": "assistant", "content": "The diagnostic passed."},
+    ]
+    _stub_studio_db(monkeypatch, rows)
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
+
+    for retry in range(3):
+        rows.append({"id": f"fu{retry}", "parentId": "a1", "role": "user",
+                     "content": f"A retried follow-up {retry}."})
+        assert llama_cpp._sticky_compaction_state("t1", branch) == (4, True)
+        assert inference_routes._thread_has_checkpoint("t1", branch) is True
+
+
+def test_the_unstored_newest_turn_cannot_move_the_request_to_a_sibling(monkeypatch):
+    """The turn being answered is stored only once the reply completes.
+
+    A sibling that already carries that text is the one place it can be matched, so
+    scoring it there handed this request the sibling's deeper boundary.
+    """
+    from core.inference import checkpoint, llama_cpp
+
+    def _reply(identifier, boundary):
+        return {"id": identifier, "parentId": "u1", "role": "assistant",
+                "content": "Done.", "metadata": _checkpoint_metadata(boundary)}
+
+    rows = [
+        {"id": "u1", "parentId": None, "role": "user", "content": "Do the work."},
+        _reply("a-live", 6),
+        _reply("a-abandoned", 18),
+        {"id": "u-abandoned", "parentId": "a-abandoned", "role": "user",
+         "content": "Continue."},
+    ]
+    branch = [
+        {"role": "user", "content": "Do the work."},
+        {"role": "assistant", "content": "Done."},
+        {"role": "user", "content": "Continue."},
+    ]
+    _stub_studio_db(monkeypatch, rows)
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
+
+    assert llama_cpp._sticky_compaction_state("t1", branch) == (6, True)
+
+
+def test_an_indistinguishable_placeholder_twin_is_not_dropped_from_the_vote(monkeypatch):
+    """Skipping a placeholder defers to the epoch before it, which needs a proved branch.
+
+    Where only text separates two Retry siblings, dropping the unreadable one leaves the
+    other deciding alone, and it is the abandoned one whose boundary then gets replayed.
+    """
+    from core.inference import checkpoint, llama_cpp
+    from routes import inference as inference_routes
+
+    for status in ("cancelled", "running"):
+        rows = [
+            {"id": "u1", "parentId": None, "role": "user", "content": "Do the work."},
+            {"id": "a-live", "parentId": "u1", "role": "assistant", "content": "Done.",
+             "metadata": {"generationStatus": status}},
+            {"id": "a-abandoned", "parentId": "u1", "role": "assistant", "content": "Done.",
+             "metadata": _checkpoint_metadata(18)},
+        ]
+        branch = [
+            {"role": "user", "content": "Do the work."},
+            {"role": "assistant", "content": "Done."},
+        ]
+        _stub_studio_db(monkeypatch, rows)
+        monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
+
+        assert llama_cpp._sticky_compaction_state("t1", branch) == (0, False)
+        assert inference_routes._thread_has_checkpoint("t1", branch) is False
+
+
+def test_a_research_row_is_recognised_under_custom_metadata(monkeypatch):
+    """The archive accepts the research keys in either place, so this must too."""
+    from core.inference import checkpoint, llama_cpp
+
+    rows = [
+        {"id": "u1", "parentId": None, "role": "user", "content": "First question."},
+        {"id": "a1", "parentId": "u1", "role": "assistant", "content": "The epoch reply.",
+         "metadata": _checkpoint_metadata(6)},
+        {"id": "u2", "parentId": "a1", "role": "user", "content": "Continue."},
+        {"id": "a2", "parentId": "u2", "role": "assistant", "content": "The research row.",
+         "metadata": {"custom": {"serverManaged": True, "researchRunId": "run-1",
+                                 "researchStatus": "completed"}}},
+        {"id": "u3", "parentId": "a2", "role": "user", "content": "Continue again."},
+    ]
+    branch = [{"role": row["role"], "content": row["content"]} for row in rows]
+    _stub_studio_db(monkeypatch, rows)
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
+
+    assert llama_cpp._sticky_compaction_state("t1", branch) == (6, True)
+
+
 def test_a_boundary_is_not_replayed_after_the_context_policy_changes(monkeypatch):
     """A policy switch has to discard the old depth, not just select another fitter.
 

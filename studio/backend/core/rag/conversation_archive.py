@@ -784,7 +784,11 @@ def _branch_seed(
             best_matched = last_matched
             best_tied = False
         elif require_unique and score == best_score and score > 0:
-            best_tied = True
+            # Tied on the SAME stored row is not ambiguity: the leaves differ only past
+            # what the request proves, and the trimmed endpoint is what gets returned.
+            # Retrying the newest turn twice forks two leaves under it and used to
+            # discard the branch the request had just proved.
+            best_tied = best_tied or last_matched != best_matched
         if best_score >= len(wanted) and not require_unique:
             # Every message the request carries is on this chain; nothing can beat it.
             break
