@@ -879,15 +879,17 @@ def _request_sync(folder_id: str, *, rebuild: bool = False) -> str:
         )
         conn.commit()
         _prune_terminal_jobs(conn)
-    # The legacy account already has a worker started by the lifespan, so only
-    # managed workspaces need the lazy start: a newly-created account must not
-    # have to wait for a server restart before its first linked-folder job runs.
+    # The legacy account has a startup worker. Managed workspaces are started
+    # lazily as well, so a newly-created account does not need a server restart
+    # before its first linked-folder job can run.
     #
-    # Restricted to managed subjects deliberately. Starting one here for the
-    # legacy account spawns a second worker that holds the process-global
-    # _worker_lock for its whole lifetime, which starves every later worker.
-    if current_workspace_subject() != LEGACY_WORKSPACE_SUBJECT:
-        start_auto_sync()
+    # Idempotent for a healthy worker: start_auto_sync returns False without
+    # spawning when this workspace's thread is alive and unstopped. Keeping it
+    # unconditional is what lets a legacy sync self-heal when the lifespan
+    # worker never started (rag unavailable at boot, post-warm stood down) or
+    # died, which are the cases where the row would otherwise sit pending
+    # until the next restart.
+    start_auto_sync()
     _wake_current_workspace()
     return job_id
 

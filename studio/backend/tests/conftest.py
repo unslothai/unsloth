@@ -119,6 +119,11 @@ def pytest_configure(config):
         "markers",
         "allow_network: let this test make non-loopback connections (see _no_outbound_network)",
     )
+    config.addinivalue_line(
+        "markers",
+        "real_auto_sync: keep the real folder_sync.start_auto_sync "
+        "(see _no_background_folder_sync_worker in test_rag_linked_folders.py)",
+    )
 
 
 def pytest_addoption(parser):

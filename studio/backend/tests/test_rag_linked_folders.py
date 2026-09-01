@@ -26,6 +26,27 @@ requires_sqlite_vec = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(autouse = True)
+def _no_background_folder_sync_worker(request, monkeypatch):
+    """Keep the lazily-started worker out of the reconciliation unit tests.
+
+    request_sync starts a worker so a job is picked up without a restart, which
+    is right in a server but races these tests: they drive reconcile_folder and
+    _worker explicitly and assert on queue state the worker would consume first.
+    A worker left behind is worse still, because _worker holds the process-global
+    _worker_lock for its whole lifetime, so the next test to call _worker
+    directly blocks on it until the timeout rather than failing.
+
+    Mark a test with ``real_auto_sync`` when start_auto_sync itself is the
+    subject under test.
+    """
+    if "real_auto_sync" not in request.keywords:
+        monkeypatch.setattr(folder_sync, "start_auto_sync", lambda *a, **k: False)
+    yield
+    folder_sync.stop_auto_sync(timeout = 5.0)
+    folder_sync._stop.clear()
+
+
 def _run(folder_id: str, *, rebuild: bool = False) -> dict:
     job_id = folder_sync.request_sync(folder_id, rebuild = rebuild)
     folder_sync.reconcile_folder(job_id)
@@ -1359,6 +1380,7 @@ def test_shutdown_requeues_a_scan_before_it_mutates_mappings(rag_home, monkeypat
         )
 
 
+@pytest.mark.real_auto_sync
 def test_start_auto_sync_queues_replacement_for_retired_live_worker(monkeypatch):
     blocker = threading.Event()
     released = threading.Event()
@@ -1400,6 +1422,7 @@ def test_start_auto_sync_queues_replacement_for_retired_live_worker(monkeypatch)
     assert released.is_set()
 
 
+@pytest.mark.real_auto_sync
 def test_start_auto_sync_skips_runtime_unavailable_rag(monkeypatch):
     monkeypatch.setattr(folder_sync.rag_db, "RAG_AVAILABLE", True)
     monkeypatch.setattr(folder_sync.rag_db, "rag_available", lambda: False)
@@ -1412,6 +1435,7 @@ def test_start_auto_sync_skips_runtime_unavailable_rag(monkeypatch):
     assert folder_sync.start_auto_sync() is False
 
 
+@pytest.mark.real_auto_sync
 def test_start_auto_sync_launches_worker_after_transient_database_error(monkeypatch):
     created = []
 
