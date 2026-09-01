@@ -326,7 +326,7 @@ def test_generate_holds_progress_active_during_persist(client, monkeypatch):
     real_save = gallery_module.save
 
     def _probe_save(image, meta):
-        seen["during"] = inf._diffusion_persist_active
+        seen["during"] = sum(inf._diffusion_persist_active.values())
         return real_save(image, meta)
 
     monkeypatch.setattr(gallery_module, "save", _probe_save)
@@ -335,7 +335,7 @@ def test_generate_holds_progress_active_during_persist(client, monkeypatch):
     assert gen.status_code == 200
     # Active while the record was being persisted, and back to idle once the route returned.
     assert seen["during"] >= 1
-    assert inf._diffusion_persist_active == 0
+    assert inf._diffusion_persist_active == {}
     assert client.get("/api/inference/images/generate-progress").json()["active"] is False
 
 

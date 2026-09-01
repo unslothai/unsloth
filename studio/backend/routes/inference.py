@@ -32734,8 +32734,27 @@ async def load_diffusion_model_gated(
         raise HTTPException(status_code = 409, detail = str(exc))
 
 
-# Count of finished generations still writing their PNG/gallery records; generate-progress reports active while above 0. Mutated only on the event loop, so no lock.
-_diffusion_persist_active = 0
+# Per workspace, count of finished generations still writing their PNG/gallery records;
+# generate-progress reports active while this account is above 0. Kept per account
+# because the progress poll is per account: a single counter made one account's slow
+# batch persist show up as an active generation in every other account's image UI,
+# defeating the subject filter the poll applies just above it. Mutated only on the
+# event loop, so no lock.
+_diffusion_persist_active: dict[str, int] = {}
+
+
+def _begin_image_persist(subject: str) -> None:
+    _diffusion_persist_active[subject] = _diffusion_persist_active.get(subject, 0) + 1
+
+
+def _end_image_persist(subject: str) -> None:
+    remaining = _diffusion_persist_active.get(subject, 0) - 1
+    if remaining > 0:
+        _diffusion_persist_active[subject] = remaining
+    else:
+        # Popped rather than left at zero, so generation_in_flight() below stays a
+        # plain emptiness check and the map cannot grow one entry per account seen.
+        _diffusion_persist_active.pop(subject, None)
 
 
 def generation_in_flight() -> bool:
@@ -32745,8 +32764,11 @@ def generation_in_flight() -> bool:
     the gallery records the response is built from. generate-progress already treats that
     window as active; liveness has to agree, or the watchdog sees an idle backend and spends
     its short budget on a request that is still running.
+
+    Deliberately ANY account: this guards the process, which one account's persist
+    keeps busy for everybody.
     """
-    return _diffusion_persist_active > 0
+    return bool(_diffusion_persist_active)
 
 
 _GENERATE_FAILURE_FALLBACK = "Image generation failed."
@@ -32914,15 +32936,15 @@ async def generate_diffusion_image(
         return records
 
     # Hold generate-progress "active" across the persist so a reload mount probe cannot refresh the gallery before these records exist.
-    global _diffusion_persist_active
-    _diffusion_persist_active += 1
+    persist_subject = current_workspace_subject()
+    _begin_image_persist(persist_subject)
     try:
         records = await asyncio.to_thread(_persist)
     except Exception as exc:
         logger.error("diffusion.persist_failed: %s", exc)
         raise HTTPException(status_code = 500, detail = "Failed to save the generated image.")
     finally:
-        _diffusion_persist_active -= 1
+        _end_image_persist(persist_subject)
 
     return DiffusionGenerateResponse(images = [GalleryImage(**r) for r in records])
 
@@ -33242,7 +33264,10 @@ async def diffusion_generate_progress(current_subject: str = Depends(get_current
     # have started.
     progress = get_active_diffusion_engine().generate_progress(current_workspace_subject())
     # A finished generation still persisting its gallery record counts as active, so a reload probe keeps polling.
-    if _diffusion_persist_active > 0 and not progress["active"]:
+    if (
+        _diffusion_persist_active.get(current_workspace_subject(), 0) > 0
+        and not progress["active"]
+    ):
         progress = {**progress, "active": True}
     return DiffusionGenerateProgressResponse(**progress)
 
@@ -33562,14 +33587,14 @@ async def _generate_openai_images(
 
     # Same counter as /images/generate: the request is still in flight until these records
     # exist, and liveness reads the counter to say so.
-    global _diffusion_persist_active
-    _diffusion_persist_active += 1
+    persist_subject = current_workspace_subject()
+    _begin_image_persist(persist_subject)
     try:
         data = await asyncio.to_thread(_persist)
     except Exception as exc:  # noqa: BLE001
         logger.error("openai_images.persist_failed: %s", exc)
         raise HTTPException(status_code = 500, detail = "Failed to save the generated image.")
     finally:
-        _diffusion_persist_active -= 1
+        _end_image_persist(persist_subject)
 
     return ImageGenerationResponse(created = created, data = data)

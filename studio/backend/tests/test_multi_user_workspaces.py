@@ -1582,6 +1582,7 @@ def test_an_image_generation_is_invisible_and_uncancellable_to_other_accounts():
     backend._gen = _GenState(total_steps = 20, step = 7, subject = "alice")
     cancel = threading.Event()
     backend._active_generate_cancel = cancel
+    backend._active_generate_cancel_subject = "alice"
 
     assert backend.generate_progress("alice")["active"] is True
     assert backend.generate_progress("bob")["active"] is False
@@ -1609,6 +1610,7 @@ def test_a_video_generation_is_invisible_and_uncancellable_to_other_accounts():
     backend._gen_subject = "alice"
     cancel = threading.Event()
     backend._active_generate_cancel = cancel
+    backend._active_generate_cancel_subject = "alice"
 
     assert backend.generate_progress("alice")["active"] is True
     assert backend.generate_progress("bob")["active"] is False
@@ -1899,6 +1901,7 @@ def test_unloading_the_image_engine_cannot_end_another_accounts_generation():
     backend._gen = _GenState(total_steps = 20, step = 7, subject = "alice")
     cancel = threading.Event()
     backend._active_generate_cancel = cancel
+    backend._active_generate_cancel_subject = "alice"
 
     # Scoping cancel_generate alone left this open: unload signals the same event,
     # so the authenticated unload route was still a way to end somebody else's run.
@@ -2451,3 +2454,79 @@ def test_cancelling_a_run_does_not_signal_a_namesake_in_another_workspace():
         for handle in handles:
             handle.__exit__(None, None, None)
         active_generations.reset_for_tests()
+
+
+def test_sandbox_workdirs_are_cached_per_workspace(tmp_path, monkeypatch):
+    from core.inference import tools
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+    tools._workdirs.clear()
+
+    # A client-chosen session id, presented by both accounts.
+    dirs = {}
+    for subject in ("alice", "bob"):
+        token = _bind(subject)
+        try:
+            dirs[subject] = tools.get_sandbox_workdir("shared-session")
+        finally:
+            reset_workspace_subject(token)
+
+    assert dirs["alice"] != dirs["bob"]
+    # Keyed by the id alone, the second call overwrote the first entry and the
+    # first account's next tool call ran in the second account's sandbox.
+    for subject, expected in dirs.items():
+        token = _bind(subject)
+        try:
+            assert tools.get_sandbox_workdir("shared-session") == expected
+        finally:
+            reset_workspace_subject(token)
+    tools._workdirs.clear()
+
+
+def test_queued_image_cancels_only_reach_the_callers_own_requests():
+    import threading as _threading
+
+    from core.inference.diffusion import DiffusionBackend
+
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    backend._generation_cancel_lock = _threading.RLock()
+    backend._gen = None
+    backend._active_generate_cancel = None
+    backend._active_generate_cancel_subject = None
+    backend._generation_owns_slot = False
+    backend._teardown_waiters = 1
+    backend._transition_owns_slot = False
+    alice_queued = _threading.Event()
+    bob_queued = _threading.Event()
+    backend._queued_generate_cancels = {alice_queued: "alice", bob_queued: "bob"}
+
+    # _gen is None while a request waits behind a transition, so the subject check
+    # on the live generation has nothing to compare and every queued event was set.
+    assert backend.cancel_generate(subject = "bob") is True
+    assert bob_queued.is_set() and not alice_queued.is_set()
+
+    # Admitted but not yet denoising: still not another account's to cancel.
+    backend._queued_generate_cancels = {}
+    admitted = _threading.Event()
+    backend._active_generate_cancel = admitted
+    backend._active_generate_cancel_subject = "alice"
+    assert backend.cancel_generate(subject = "bob") is False
+    assert not admitted.is_set()
+    assert backend.cancel_generate(subject = "alice") is True
+    assert admitted.is_set()
+
+
+def test_the_image_persist_marker_is_read_per_account():
+    from routes import inference as inference_routes
+
+    inference_routes._diffusion_persist_active.clear()
+    inference_routes._begin_image_persist("alice")
+    assert inference_routes._diffusion_persist_active.get("bob", 0) == 0
+    # Still process-wide for liveness: one account's persist keeps the box busy.
+    assert inference_routes.generation_in_flight() is True
+    inference_routes._begin_image_persist("alice")
+    inference_routes._end_image_persist("alice")
+    assert inference_routes._diffusion_persist_active.get("alice") == 1
+    inference_routes._end_image_persist("alice")
+    assert inference_routes._diffusion_persist_active == {}
+    assert inference_routes.generation_in_flight() is False

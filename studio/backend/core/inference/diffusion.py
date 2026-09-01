@@ -1206,8 +1206,14 @@ class DiffusionBackend:
         self._generation_cancel_lock = threading.Lock()
         # Cancel Event of the in-flight generation; per-generation so a cancel can't be lost or leak.
         self._active_generate_cancel: Optional[threading.Event] = None
+        # The workspace the admitted request belongs to, for the window between
+        # admission and the first denoise step, where _gen is not published yet.
+        self._active_generate_cancel_subject: Optional[str] = None
         # Queued requests; cancel_generate() decides which Stop may signal.
-        self._queued_generate_cancels: set[threading.Event] = set()
+        # Event -> the workspace that queued it. The cancel route can reach these
+        # while _gen is still None, so without the owner recorded here one account
+        # cancelled every other account's queued request.
+        self._queued_generate_cancels: dict[threading.Event, str] = {}
         # True while a generation owns the slot, including its epilogue.
         self._generation_owns_slot = False
 
@@ -1294,7 +1300,7 @@ class DiffusionBackend:
         admitted = False
         # Publish before the first acquisition so Stop can reach this request.
         with self._generation_cancel_lock:
-            self._queued_generate_cancels.add(cancel)
+            self._queued_generate_cancels[cancel] = current_workspace_subject()
         try:
             while True:
                 # Timed acquisition keeps queued requests responsive during replacement.
@@ -1309,8 +1315,9 @@ class DiffusionBackend:
                         with self._generation_cancel_lock:
                             cancelled = cancel.is_set()
                             if not cancelled:
-                                self._queued_generate_cancels.discard(cancel)
+                                owner = self._queued_generate_cancels.pop(cancel, None)
                                 self._active_generate_cancel = cancel
+                                self._active_generate_cancel_subject = owner
                                 self._generation_owns_slot = True
                                 admitted = True
                     else:
@@ -1333,12 +1340,13 @@ class DiffusionBackend:
                 with self._generation_cancel_lock:
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None
+                        self._active_generate_cancel_subject = None
                     self._generation_owns_slot = False
                     self._generate_lock.release()
         finally:
             if not admitted:
                 with self._generation_cancel_lock:
-                    self._queued_generate_cancels.discard(cancel)
+                    self._queued_generate_cancels.pop(cancel, None)
 
     # Memory requests whose offload policy is decided by the REQUEST rather than by the measured
     # footprint. `fast` and `auto` are measurements and so cannot be judged network-free.
@@ -6311,6 +6319,7 @@ class DiffusionBackend:
                         raise RuntimeError(DIFFUSION_CANCELLED_MSG)
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None
+                        self._active_generate_cancel_subject = None
                 # Count the finished generation (drives deferred speed); a batch is one generation.
                 object.__setattr__(state, "generation_count", state.generation_count + 1)
                 # Return the PIL images unencoded; the route embeds recipes and persists them. ``seeds`` records each image's own seed.
@@ -6340,6 +6349,7 @@ class DiffusionBackend:
                 with self._generation_cancel_lock:
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None
+                        self._active_generate_cancel_subject = None
                 with self._lock:
                     # Sole clear of the published progress state, on every exit, so a crashed generation never leaves the UI stuck.
                     self._gen = None
@@ -6395,6 +6405,15 @@ class DiffusionBackend:
             # Stop targets the denoising generation, not a serialized waiter.
             active = self._active_generate_cancel
             if active is not None:
+                if (
+                    subject is not None
+                    and self._active_generate_cancel_subject is not None
+                    and self._active_generate_cancel_subject != subject
+                ):
+                    # Admitted but not yet denoising, so the gen.subject check
+                    # above had nothing to compare. Same answer as a foreign
+                    # denoise: nothing was running, as far as this caller can see.
+                    return False
                 active.set()
                 return True
             if self._generation_owns_slot:
@@ -6404,7 +6423,11 @@ class DiffusionBackend:
             if not self._teardown_waiters and not self._transition_owns_slot:
                 return False
             # Recheck live state so timed waiters observe a replacement handoff.
-            cancels = set(self._queued_generate_cancels)
+            cancels = [
+                event
+                for event, owner in self._queued_generate_cancels.items()
+                if subject is None or owner == subject
+            ]
             if not cancels:
                 return False
             for cancel in cancels:

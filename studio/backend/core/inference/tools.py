@@ -7347,6 +7347,19 @@ def _session_key(session_id: "str | None") -> str:
     return f"{subject}{_SESSION_KEY_SEP}{(session_id or _ANON_KEY).casefold()}"
 
 
+def _workdir_key(session_id: "str | None") -> str:
+    """Cache key for a session's sandbox directory, private to this workspace.
+
+    Case-PRESERVING, unlike :func:`_session_key`: the directory name is derived
+    from the exact id, so ``Foo`` and ``foo`` are two entries here even where the
+    filesystem gives them one directory, and the ownership marker is what settles
+    that collision. The workspace prefix is the part that matters, because the
+    sandbox roots are per account while the id is client-chosen.
+    """
+    subject = current_workspace_subject()
+    return f"{subject}{_SESSION_KEY_SEP}{session_id or _ANON_KEY}"
+
+
 def _subject_of_session_key(key: str) -> str:
     """The workspace a lifecycle key belongs to."""
     return key.split(_SESSION_KEY_SEP, 1)[0]
@@ -8524,7 +8537,11 @@ def _owned_by_session(workdir: str, session_id: str) -> bool:
 def _get_workdir(session_id: str | None = None) -> str:
     """Return a per-session sandbox dir at mode 0o700."""
     global _workdirs
-    key = session_id or _ANON_KEY
+    # Workspace-qualified: the sandbox roots are per account while the session id
+    # is client-chosen, so keyed by the id alone two accounts opening the same id
+    # concurrently both miss, both build a path under their own root, and the
+    # second write decides what the first one gets back.
+    key = _workdir_key(session_id)
     cached = _workdirs.get(key)
     if cached is not None and not os.path.isdir(cached):
         cached = None
@@ -8604,6 +8621,10 @@ def _get_workdir(session_id: str | None = None) -> str:
             except OSError:
                 pass
         _workdirs[key] = workdir
+        # The local path, not a re-read: a concurrent resolve for the same key
+        # would otherwise hand this caller the directory the other one just
+        # stored.
+        return workdir
     return _workdirs[key]
 
 
@@ -8622,7 +8643,7 @@ def resolve_sandbox_workdir(session_id: str | None = None) -> str:
         if project:
             return project
     root = sandbox_root()
-    cached = _workdirs.get(session_id or _ANON_KEY)
+    cached = _workdirs.get(_workdir_key(session_id))
     if (
         cached
         and not os.path.islink(cached)
@@ -8955,7 +8976,7 @@ def _claimed_by_this_run(session_id: str, root: str) -> "str | None":
     routes find it too rather than leaving the files stranded until some later
     call happens to repair it.
     """
-    cached = _workdirs.get(session_id)
+    cached = _workdirs.get(_workdir_key(session_id))
     if not cached or cached not in _claimed_here:
         return None
     if os.path.islink(cached) or not os.path.isdir(cached):
@@ -9044,7 +9065,7 @@ def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
         # and `Foo` are one directory: without the marker the name is the only
         # evidence, and it names the other chat.
         return False
-    _workdirs.pop(session_id, None)
+    _workdirs.pop(_workdir_key(session_id), None)
     # Resolved BEFORE anything is removed: the record is named by the real path of the
     # spill directory, which cannot be derived once the tree is gone. Without this every
     # deleted chat that ever truncated output leaves one small file behind for good.

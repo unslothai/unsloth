@@ -259,11 +259,13 @@ def test_liveness_covers_the_image_persist_tail():
     routes_inference = importlib.import_module("routes.inference")
     assert routes_inference.generation_in_flight() is False
 
-    routes_inference._diffusion_persist_active += 1
+    # Per account now, and liveness deliberately still answers for ANY of them:
+    # one account's persist keeps the process busy for everybody.
+    routes_inference._begin_image_persist("alice")
     try:
         assert routes_inference.generation_in_flight() is True
     finally:
-        routes_inference._diffusion_persist_active -= 1
+        routes_inference._end_image_persist("alice")
     assert routes_inference.generation_in_flight() is False
 
 
@@ -275,8 +277,8 @@ def test_both_image_routes_publish_the_persist_marker():
     import importlib
 
     source = inspect.getsource(importlib.import_module("routes.inference"))
-    assert source.count("_diffusion_persist_active += 1") == 2, (
+    assert source.count("_begin_image_persist(persist_subject)") == 2, (
         "an image route persists gallery records without publishing the marker, so liveness "
         "reports idle while that request is still in flight"
     )
-    assert source.count("_diffusion_persist_active -= 1") == 2
+    assert source.count("_end_image_persist(persist_subject)") == 2
