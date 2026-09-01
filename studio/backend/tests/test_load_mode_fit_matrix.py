@@ -213,11 +213,17 @@ def test_the_launch_charges_the_pipeline_overhead_per_extra_device():
 
 
 class _DraftStub:
-    """Only the two readers _cpu_resident_draft_bytes consults."""
+    """Only the drafter-footprint readers _cpu_resident_draft_bytes consults."""
 
-    def __init__(self, weights, kv):
+    def __init__(
+        self,
+        weights,
+        kv,
+        tied_output = 0,
+    ):
         self._weights = weights
         self._kv = kv
+        self._tied_output = tied_output
 
     def _get_gguf_size_bytes(self, path):
         if self._weights is None:
@@ -226,6 +232,9 @@ class _DraftStub:
 
     def _mtp_draft_kv_bytes(self, n_ctx, **kwargs):
         return self._kv
+
+    def _tied_output_bytes(self, path):
+        return self._tied_output
 
     _cpu_resident_draft_bytes = LlamaCppBackend._cpu_resident_draft_bytes
     _MTP_DRAFT_COMPUTE_BYTES = LlamaCppBackend._MTP_DRAFT_COMPUTE_BYTES
@@ -319,7 +328,7 @@ def test_the_launch_charges_the_cpu_pinned_drafter_to_the_fit():
     )
     # ... and charged to the footprint as a HOST-ONLY term (free VRAM cannot pay for
     # an allocation the child only ever makes in RAM), abstaining when unpriceable.
-    assert "host_only_bytes=_cpu_draft_fit_bytesor0" in compact
+    assert "+_host_pinned+_draft_host_pinned" in compact
     assert "or_cpu_draft_fit_bytesisNone" in compact
 
 
@@ -337,8 +346,7 @@ def test_a_weights_only_drafter_reserve_counts_as_unsized():
 
     compact = "".join(inspect.getsource(B.load_model).split())
     assert (
-        "mtp_unsized=bool(_flat_mtp_engagesor_cpu_draft_fit_bytesisNone"
-        "or_draft_split_across_host)"
+        "mtp_unsized=bool(_flat_mtp_engagesor_cpu_draft_fit_bytesisNoneor_draft_split_across_host)"
     ) in compact
     assert "_flat_mtp_engagesandmtp_overhead_fnisNone" not in compact
 
@@ -1633,8 +1641,8 @@ def test_a_partial_draft_offload_leaves_the_drafter_unsized():
 
     compact = "".join(inspect.getsource(B.load_model).split())
     assert (
-        "_draft_split_across_host=bool(_mtp_draft_for_budgetand_draft_is_split_across_host("
-        in compact
+        "_draft_split_across_host=bool(_mtp_will_engageand_mtp_draft_for_budget"
+        "and_draft_is_split_across_host(" in compact
     )
     # The same effective views the other overrides are classified on.
     assert "_draft_is_split_across_host(_fit_extras,_fit_env," in compact
