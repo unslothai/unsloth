@@ -37,14 +37,19 @@ import os
 import threading
 import time
 
-# The download entry points transformers and unsloth actually reach. Both are
-# patched where present: `huggingface_hub.hf_hub_download` is the public name,
-# and `transformers.utils.hub` binds its own reference at import time, so
-# patching only the former leaves the transformers path unmeasured.
+# The download entry points transformers and unsloth actually reach. Every one
+# is patched where present, and the transformers aliases are NOT redundant:
+# `transformers.utils.hub` does `from huggingface_hub import ...` at import
+# time, so it holds its own reference and rebinding the public name leaves it
+# untouched. `cached_files` calls its module-level `snapshot_download` for a
+# multi-file (sharded) checkpoint, which is the dominant download in every leg
+# here, so omitting that alias moves the largest fetch into weight_load_seconds
+# while `patched` stays non-empty and the record still looks valid.
 _TARGETS = (
     ("huggingface_hub", "hf_hub_download"),
     ("huggingface_hub", "snapshot_download"),
     ("transformers.utils.hub", "hf_hub_download"),
+    ("transformers.utils.hub", "snapshot_download"),
 )
 
 
