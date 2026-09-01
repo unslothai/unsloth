@@ -308,8 +308,14 @@ def _seed_reported_thread(db):
     for message_id, role, parent, created in _REPORTED_THREAD:
         attachments = _doc() if role == "user" and parent == "cOfdER0" else None
         db.upsert_chat_message(
-            _msg(message_id, role, parent, "improved version of the document v3.1", created,
-                 attachments)
+            _msg(
+                message_id,
+                role,
+                parent,
+                "improved version of the document v3.1",
+                created,
+                attachments,
+            )
         )
 
 
@@ -324,8 +330,14 @@ def test_the_reported_duplicate_pair_survives_a_reload(db):
 def test_the_reported_duplicate_pair_survives_a_whole_thread_sync(db):
     _seed_reported_thread(db)
     records = [
-        _msg(m, r, p, "improved version of the document v3.1", c,
-             _doc() if r == "user" and p == "cOfdER0" else None)
+        _msg(
+            m,
+            r,
+            p,
+            "improved version of the document v3.1",
+            c,
+            _doc() if r == "user" and p == "cOfdER0" else None,
+        )
         for m, r, p, c in _REPORTED_THREAD
     ]
 
