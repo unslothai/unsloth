@@ -791,9 +791,7 @@ def test_manual_mode_keeps_a_pinned_layer_count(monkeypatch, capsys):
         BASE,
         KEY,
         None,
-        start_cli.LoadOptions(
-            gpu_memory_mode = "manual", supplied = frozenset({"gpu_memory_mode"})
-        ),
+        start_cli.LoadOptions(gpu_memory_mode = "manual", supplied = frozenset({"gpu_memory_mode"})),
     )
 
     assert server.loads[0]["gpu_layers"] == 20
@@ -801,17 +799,13 @@ def test_manual_mode_keeps_a_pinned_layer_count(monkeypatch, capsys):
 
 
 def test_switching_into_manual_still_asks_for_automatic_layers(monkeypatch):
-    server = FakeServer(
-        [dict(RESIDENT)], _gguf_status(gpu_memory_mode = "auto")
-    ).install(monkeypatch)
+    server = FakeServer([dict(RESIDENT)], _gguf_status(gpu_memory_mode = "auto")).install(monkeypatch)
 
     start_cli._resolve_model(
         BASE,
         KEY,
         None,
-        start_cli.LoadOptions(
-            gpu_memory_mode = "manual", supplied = frozenset({"gpu_memory_mode"})
-        ),
+        start_cli.LoadOptions(gpu_memory_mode = "manual", supplied = frozenset({"gpu_memory_mode"})),
     )
 
     assert server.loads[0]["gpu_layers"] == -1
@@ -845,9 +839,7 @@ def test_paravirtual_placement_is_not_restarted(monkeypatch):
         BASE,
         KEY,
         None,
-        start_cli.LoadOptions(
-            gpu_memory_mode = "auto", supplied = frozenset({"gpu_memory_mode"})
-        ),
+        start_cli.LoadOptions(gpu_memory_mode = "auto", supplied = frozenset({"gpu_memory_mode"})),
     )
 
     assert "force_reload" not in server.loads[0]

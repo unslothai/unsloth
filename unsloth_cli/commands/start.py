@@ -1829,9 +1829,10 @@ def _load_settings_differ(status: dict, load: LoadOptions, overrides: frozenset)
             # Casefold, not _normalized_variant, which strips separators: a mistyped Q4KM
             # would read as equal here yet still really reload on the server. The preload
             # gate below already compares this way, and the two have to agree.
-            if not resident or str(resident).strip().lower() != str(
-                load.gguf_variant
-            ).strip().lower():
+            if (
+                not resident
+                or str(resident).strip().lower() != str(load.gguf_variant).strip().lower()
+            ):
                 return True
         elif name == "max_seq_length":
             # Requested, not resolved: llama.cpp clamps n_ctx at fit time.
@@ -2052,8 +2053,7 @@ def _resolve_model(
             # manual, but on an inferred attach to a resident already in manual it would
             # throw away the layer count it was pinned to. Leave it for the round-trip.
             already_manual = (
-                attach_public_id is not None
-                and status_snapshot.get("gpu_memory_mode") == "manual"
+                attach_public_id is not None and status_snapshot.get("gpu_memory_mode") == "manual"
             )
             if load.gpu_memory_mode == "manual" and not already_manual:
                 payload["gpu_layers"] = -1
