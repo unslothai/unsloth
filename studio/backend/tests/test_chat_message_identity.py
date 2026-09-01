@@ -137,8 +137,10 @@ def test_sync_keeps_every_message_and_its_links(db):
 def _regenerate_sequence(regenerations = 3):
     """The rows a regenerate writes: one assistant sibling per attempt, no new user turn.
 
-    Storage only. reload calls startRun({ parentId }); the runtime path is guarded in
-    studio/frontend/tests/chat-user-turn-identity.test.ts.
+    Storage only, and reload is not driven here: it calls startRun({ parentId }), so there is
+    no user append on that path to replay. chat-user-turn-identity.test.ts checks the shape of
+    the append and load sites, not their behaviour; chat-adapter.ts cannot be imported by the
+    node runner, so no test in this repo executes the regenerate path end to end.
     """
     yield _msg("u-doc", "user", None, "summarise the attached spec", 1000, _doc())
     for attempt in range(regenerations + 1):

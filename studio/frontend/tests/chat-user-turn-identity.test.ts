@@ -25,10 +25,12 @@ function slice(source: string, from: string, to: string): string {
   return source.slice(start, end);
 }
 
+// The WHOLE function, not just the loop: a dedupe folded into `const history = ...`
+// would sit above the loop and escape a narrower slice.
 const outboundPrune = slice(
   adapter,
-  "const surviving: RunMessage[] = [];",
-  "return surviving;",
+  "function pruneOutboundHistory(",
+  "function extractImageBase64(",
 );
 const historyLoad = slice(
   runtimeProvider,
@@ -42,6 +44,9 @@ const historyAppend = slice(
 );
 
 test("the outbound prune keeps every turn the abandoned-turn guard did not drop", () => {
+  // The input is copied whole. Folding a filter into this line is the one way to drop a
+  // turn without touching the loop below.
+  assert.match(outboundPrune, /\n {2}const history = \[\.\.\.messages\];\n/);
   // The guard's continue runs straight into the push, leaving nowhere for a comparison.
   assert.match(
     outboundPrune,
@@ -66,10 +71,15 @@ test("appending a message does not read the whole thread", () => {
 });
 
 test("loading a thread passes on every stored message", () => {
-  // Nothing may filter the tree before it is rebuilt: a dangling parent breaks the thread.
+  // Nothing may drop a turn before the tree is rebuilt: a dangling parent breaks the thread.
+  // Both the binding and the array behind it are covered, since either can be narrowed, and
+  // in-place removal counts. Reordering does not: msgs.sort is already there and keeps the set.
   assert.deepEqual(
-    historyLoad.match(/\bmsgs\s*=\s*[^=][^;\n]*/g),
+    historyLoad.match(/\b(?:msgs|snapshot\.messages)\s*=\s*[^=][^;\n]*/g),
     ["msgs = snapshot.messages", "msgs = []"],
   );
-  assert.doesNotMatch(historyLoad, /\bmsgs\.filter\(/);
+  assert.doesNotMatch(
+    historyLoad,
+    /\b(?:msgs|snapshot\.messages)\.(?:filter|splice|shift|pop|slice)\(/,
+  );
 });
