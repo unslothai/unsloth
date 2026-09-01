@@ -210,8 +210,16 @@ def cors_origins_for_mode(*, api_only: bool, secure: bool) -> list[str]:
 
 
 def cors_origin_regex_for_mode(*, api_only: bool, secure: bool) -> str | None:
-    """Allowed CORS origin regex for local loopback web applications."""
-    if api_only and not secure:
+    """Allowed CORS origin regex.
+
+    In desktop api-only mode, regex matching is disabled by default to prevent
+    unauthorized credentialed cross-origin requests from arbitrary local ports.
+    It can be explicitly opted into via UNSLOTH_CORS_ALLOW_LOOPBACK=1 or
+    UNSLOTH_CORS_ORIGIN_REGEX.
+    """
+    if custom_regex := os.environ.get("UNSLOTH_CORS_ORIGIN_REGEX"):
+        return custom_regex
+    if os.environ.get("UNSLOTH_CORS_ALLOW_LOOPBACK") == "1":
         return _LOOPBACK_ORIGIN_REGEX
     return None
 
