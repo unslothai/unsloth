@@ -88,6 +88,7 @@ def _patch_installer_popen(
     that identity lookup shells out to `ps`, which would otherwise reach on_start
     and overwrite the installer argv a caller captured (#8170).
     """
+
     def _popen(cmd, **kw):
         if spawned is not None:
             spawned.append(list(cmd))
