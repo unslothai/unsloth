@@ -1422,3 +1422,46 @@ def test_a_preview_capability_names_the_workspace_that_minted_it():
     # Alice's token must not be reshaped into one for the owner's identical ref.
     forged = tokens["unsloth"].split(".", 1)[0] + "." + tokens["alice"].split(".", 1)[1]
     assert not verify_preview_ref("run-1/checkpoint-100", forged)
+
+
+def test_the_export_log_stream_stops_when_another_account_takes_the_buffer():
+    import routes.export as export_routes
+
+    src = inspect.getsource(export_routes)
+    loop = src.index("entries, new_cursor = backend.get_logs_since(cursor)")
+    # The re-check must sit inside the loop, not only at the route entry.
+    assert "owns_workspace(current_subject)" in src[loop - 700 : loop]
+
+
+def test_training_refuses_to_start_over_another_accounts_export():
+    import routes.training as training_routes
+
+    src = inspect.getsource(training_routes.start_training)
+    assert "export_owns(current_subject)" in src
+    assert "An export is running in another account" in src
+
+
+def test_the_diffusion_dataset_interlock_only_blocks_the_running_account():
+    from core.training.diffusion_training_service import DiffusionTrainingService
+
+    service = DiffusionTrainingService.__new__(DiffusionTrainingService)
+    service._lock = threading.RLock()
+    service._reserved = True
+    service._proc = None
+    service._dataset_mutations = 0
+    service._active_workspace_subject = "alice"
+
+    token = _bind("bob")
+    try:
+        with service.dataset_mutation():
+            pass  # Bob's own dataset tree is untouched by Alice's run.
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind("alice")
+    try:
+        with pytest.raises(Exception, match = "cannot be changed"):
+            with service.dataset_mutation():
+                pass
+    finally:
+        reset_workspace_subject(token)
