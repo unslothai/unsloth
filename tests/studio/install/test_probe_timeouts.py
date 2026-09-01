@@ -315,9 +315,7 @@ def test_aarch64_gate_probes_are_bounded(rel, resolver, wrapper):
         and wrapper not in line
         and not line.lstrip().startswith("#")
     ]
-    assert not offenders, (
-        f"{rel}: nvidia-smi executed without {wrapper}:\n" + "\n".join(offenders)
-    )
+    assert not offenders, f"{rel}: nvidia-smi executed without {wrapper}:\n" + "\n".join(offenders)
 
 
 def test_setup_sh_aarch64_gates_respect_hidden_devices():
@@ -335,7 +333,7 @@ def test_setup_sh_aarch64_gates_respect_hidden_devices():
     for marker in gates:
         start = src.index(marker)
         cond = src[src.index("\nif ", start) : src.index("; then", start)]
-        assert '_setup_nvidia_usable' in cond, f"gate {marker!r} ignores hidden NVIDIA devices"
+        assert "_setup_nvidia_usable" in cond, f"gate {marker!r} ignores hidden NVIDIA devices"
 
 
 def test_woa_reroute_does_not_run_wmi_on_x64_installs():
