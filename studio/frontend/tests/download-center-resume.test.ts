@@ -74,10 +74,10 @@ test("a failed or cancelled row offers Resume in Downloads", () => {
   assert.match(PANEL, /if \(mounted\.current\) setResumePending\(false\)/);
   assert.match(PANEL, /resolveTransportConflict\("resume"\)/);
   assert.match(PANEL, /resolveTransportConflict\("restart"\)/);
-  assert.match(PANEL, /void resolution\.finally/);
+  assert.match(PANEL, /void resolution[\s\S]*?outcome === "busy"/);
   assert.match(CONFLICT, /export async function resumeConflict/);
   assert.match(CONFLICT, /export async function restartConflict/);
-  assert.match(CONFLICT, /await runWithPendingStartGuard/);
+  assert.match(CONFLICT, /return runWithPendingStartGuard/);
   // Playwright and AppImage cancel/retry smokes wait on this exact copy.
   assert.match(PANEL, /Cancelled\. Partial files kept\./);
 });
@@ -94,6 +94,13 @@ test("the global Resume path exposes transport conflict resolution", () => {
   assert.match(PANEL, /cancelConflict\(jobKey, "downloads"\)/);
   assert.match(PANEL, /mounted\.current = false/);
   assert.match(PANEL, /outcome === "conflict" && !mounted\.current/);
+});
+
+test("the global resumable count excludes external jobs", () => {
+  assert.match(
+    PANEL,
+    /!job\.external && RESUMABLE_STATES\.has\(job\.state\)/,
+  );
 });
 
 test("a transport conflict belongs to exactly one dialog surface", () => {

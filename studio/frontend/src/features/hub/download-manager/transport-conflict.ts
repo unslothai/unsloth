@@ -267,30 +267,30 @@ export async function requestStart(
 export async function resumeConflict(
   conflictKey: string,
   owner: ConflictOwner = "caller",
-): Promise<void> {
+): Promise<DownloadStartOutcome | undefined> {
   const entry = getState().conflicts[conflictKey];
   if (!entry || entry.owner !== owner) return;
   setConflict(conflictKey, null);
-  await runWithPendingStartGuard(entry.pending, async () => {
+  return runWithPendingStartGuard(entry.pending, async () => {
     await startJob(entry.pending, {
       useXet: entry.info.previous === TRANSPORT.XET,
     });
-    return "started";
+    return isJobActiveFor(entry.pending) ? "started" : "error";
   });
 }
 
 export async function restartConflict(
   conflictKey: string,
   owner: ConflictOwner = "caller",
-): Promise<void> {
+): Promise<DownloadStartOutcome | undefined> {
   const entry = getState().conflicts[conflictKey];
   if (!entry || entry.owner !== owner) return;
   setConflict(conflictKey, null);
-  await runWithPendingStartGuard(entry.pending, async () => {
+  return runWithPendingStartGuard(entry.pending, async () => {
     await startJob(entry.pending, {
       useXet: entry.info.next === TRANSPORT.XET,
     });
-    return "started";
+    return isJobActiveFor(entry.pending) ? "started" : "error";
   });
 }
 

@@ -71,9 +71,15 @@ function selectResumableJobCount(state: {
 }): number {
   let count = 0;
   for (const job of Object.values(state.jobs)) {
-    if (RESUMABLE_STATES.has(job.state)) count += 1;
+    if (!job.external && RESUMABLE_STATES.has(job.state)) count += 1;
   }
   return count;
+}
+
+function showResumeBusyToast(): void {
+  toast.info("This repository is already downloading", {
+    description: "Wait for the active download to finish, then try Resume again.",
+  });
 }
 
 function canUseDownloadManager(pathname: string): boolean {
@@ -174,9 +180,13 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
       action === "resume"
         ? downloadManager.resumeConflict(jobKey, "downloads")
         : downloadManager.restartConflict(jobKey, "downloads");
-    void resolution.finally(() => {
-      if (mounted.current) setResumePending(false);
-    });
+    void resolution
+      .then((outcome) => {
+        if (outcome === "busy" && mounted.current) showResumeBusyToast();
+      })
+      .finally(() => {
+        if (mounted.current) setResumePending(false);
+      });
   };
   return (
     <li className="flex flex-col gap-1.5 py-2.5 pl-4 pr-3">
@@ -213,10 +223,7 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
                     .requestStart(resumeRequestFromJob(job), "downloads")
                     .then((outcome) => {
                       if (outcome === "busy" && mounted.current) {
-                        toast.info("This repository is already downloading", {
-                          description:
-                            "Wait for the active download to finish, then try Resume again.",
-                        });
+                        showResumeBusyToast();
                       }
                       if (outcome === "conflict" && !mounted.current) {
                         downloadManager.cancelConflict(jobKey, "downloads");
