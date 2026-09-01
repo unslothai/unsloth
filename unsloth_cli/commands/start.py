@@ -2064,9 +2064,11 @@ def _resolve_model(
                 # one already running asks for no change, so drop the inapplicable field
                 # and let the other overrides through.
                 resident_variant = status_snapshot.get("gguf_variant")
-                same = bool(resident_variant) and str(resident_variant).strip().lower() == str(
-                    load.gguf_variant
-                ).strip().lower()
+                same = (
+                    bool(resident_variant)
+                    and str(resident_variant).strip().lower()
+                    == str(load.gguf_variant).strip().lower()
+                )
                 if not same:
                     _fail(
                         f"'{attach_public_id}' was loaded from a single .gguf file, so "

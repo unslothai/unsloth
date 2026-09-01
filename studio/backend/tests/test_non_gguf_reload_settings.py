@@ -154,6 +154,6 @@ class TestNonGgufStatusReportsWhatTheLoadAskedFor:
             ("load_in_4bit", "load_in_4bit_requested"),
             ("requested_gpu_ids", "gpu_ids_requested"),
         ):
-            assert f"{wire} = model_info.get(\"{stamped}\")" in non_gguf, (
-                f"non-GGUF status does not publish {wire}"
-            )
+            assert (
+                f'{wire} = model_info.get("{stamped}")' in non_gguf
+            ), f"non-GGUF status does not publish {wire}"

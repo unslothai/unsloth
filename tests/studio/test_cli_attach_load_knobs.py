@@ -983,17 +983,13 @@ def test_explicit_tensor_disable_clears_an_arch_gated_fallback(monkeypatch, caps
 
 def test_switching_into_manual_is_still_a_change(monkeypatch, capsys):
     """Only manual-to-manual is the no-op; auto-to-manual really does reload."""
-    server = FakeServer(
-        [dict(RESIDENT)], _gguf_status(gpu_memory_mode = "auto")
-    ).install(monkeypatch)
+    server = FakeServer([dict(RESIDENT)], _gguf_status(gpu_memory_mode = "auto")).install(monkeypatch)
 
     start_cli._resolve_model(
         BASE,
         KEY,
         None,
-        start_cli.LoadOptions(
-            gpu_memory_mode = "manual", supplied = frozenset({"gpu_memory_mode"})
-        ),
+        start_cli.LoadOptions(gpu_memory_mode = "manual", supplied = frozenset({"gpu_memory_mode"})),
     )
 
     assert server.loads[0]["force_reload"] is True
