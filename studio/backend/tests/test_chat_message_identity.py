@@ -137,10 +137,8 @@ def test_sync_keeps_every_message_and_its_links(db):
 def _regenerate_sequence(regenerations = 3):
     """The rows a regenerate writes: one assistant sibling per attempt, no new user turn.
 
-    Storage only, and reload is not driven here: it calls startRun({ parentId }), so there is
-    no user append on that path to replay. chat-user-turn-identity.test.ts checks the shape of
-    the append and load sites, not their behaviour; chat-adapter.ts cannot be imported by the
-    node runner, so no test in this repo executes the regenerate path end to end.
+    reload calls startRun({ parentId }), so there is no user append to replay, and nothing in
+    this repo drives that path end to end: chat-adapter.ts will not import under node --test.
     """
     yield _msg("u-doc", "user", None, "summarise the attached spec", 1000, _doc())
     for attempt in range(regenerations + 1):
@@ -165,7 +163,7 @@ def test_storing_a_regenerate_sequence_keeps_one_copy_of_the_document(db):
 
 
 def test_syncing_a_regenerate_sequence_keeps_one_user_turn(db):
-    """Sync writes the whole thread each time."""
+    """The whole thread is rewritten on each sync."""
     records = list(_regenerate_sequence())
     for end in range(1, len(records) + 1):
         db.sync_chat_messages(THREAD, records[:end])
@@ -285,9 +283,8 @@ def test_an_empty_string_parent_reads_as_the_root(db):
     _assert_no_dangling_parents()
 
 
-# The thread from the #9984 report, id for id. Two user rows under cOfdER0 with identical
-# content and attachments, 26.12 hours apart, each carrying its own replies. Whatever writes
-# the second row, a fix for it must not merge them: four assistant rows hang off the pair.
+# The #9984 thread id for id: two user rows under cOfdER0, 26.12 hours apart, each with
+# replies. A fix must not merge them, since four assistant rows hang off the pair.
 _REPORTED_THREAD = [
     ("4dwSP7r", "user", None, 1787854341631),
     ("Nmi02kB", "assistant", "4dwSP7r", 1787854341640),
