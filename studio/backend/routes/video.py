@@ -1042,6 +1042,13 @@ def _remember_job(job: _VideoJob) -> None:
     for existing in pending:
         persisted = _job_from_record(video_gallery.get_job(existing.id) or {})
         if persisted is not None and persisted.terminal:
+            # Carry the account across, as _hydrate_job does. A record written
+            # before this field, or by a path that does not round-trip it, comes
+            # back with "", which _job_is_mine reads as the owner's legacy state:
+            # the managed caller could then still find and delete the clip through
+            # its own workspace-scoped record while this guard called the cleanup
+            # foreign, so the delete 500ed after the file was already gone.
+            persisted.subject = persisted.subject or existing.subject
             with _jobs_lock:
                 if _jobs.get(existing.id) is existing:
                     _jobs[existing.id] = persisted
@@ -1121,6 +1128,10 @@ def _sync_jobs() -> None:
     for job in open_jobs:
         persisted_job = _job_from_record(video_gallery.get_job(job.id) or {})
         if persisted_job is not None and persisted_job.terminal:
+            # Same as _remember_job: the replacement inherits the account of the
+            # job it replaces, so a video that finishes between polls does not
+            # become owner state.
+            persisted_job.subject = persisted_job.subject or job.subject
             with _jobs_lock:
                 if _jobs.get(job.id) is job:
                     _jobs[job.id] = persisted_job

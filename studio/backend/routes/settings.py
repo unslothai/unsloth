@@ -2693,6 +2693,13 @@ def resolve_embedding_model(
             event = "settings.resolve_embedding_model_failed",
             log = logger,
         ) from exc
+    # Same containment the PUT applies. This resolves too: it probes for
+    # checkpoints under the name it is given, so an absolute path was a recursive
+    # read of another account's workspace whose answer told a complete
+    # SentenceTransformer or GGUF model apart from anything else there.
+    from routes.inference import _reject_uncontained_local_path
+
+    _reject_uncontained_local_path(resolved, "use embedding models from")
     return _resolve_embedding_model_plan(resolved, _hub_token_for_subject(hf_token))
 
 

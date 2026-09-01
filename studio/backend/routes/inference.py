@@ -17501,6 +17501,7 @@ def _prepare_runtime_fallback_checkpoint(
     if stt_sidecar.is_model_downloaded(model):
         return
     try:
+        _note_stt_download_initiator("transformers")
         stt_sidecar.start_model_download(model, hf_token)
     except Exception as exc:  # noqa: BLE001 - preparation is best effort, never fatal
         # Another dictation model already downloading is the common case, and the caller
@@ -17657,6 +17658,9 @@ async def stt_download(
         # a Whisper checkpoint (metadata-only) before snapshot_download pulls a
         # possibly-large non-STT repo into the shared cache. Curated ids
         # short-circuit; GGUF and mtmd accept curated ids only, so they skip it.
+        # Recorded before the transfer starts, on the request's own thread, so the
+        # cancel route can tell this account's download from another's.
+        _note_stt_download_initiator(engine)
         if engine == "transformers":
             validated = await asyncio.to_thread(validate_remote_model, payload.model, hf_token)
             # Pin the download to the commit that was just validated so the
@@ -17676,6 +17680,41 @@ async def stt_download(
     return JSONResponse(content = module.download_status())
 
 
+# The dictation download is one installation-wide transfer into the shared cache,
+# so the registry that owns it has no per-account key. The account that started
+# one is recorded here instead, keyed by engine, so a cancel can be authorized.
+_STT_DOWNLOAD_INITIATORS: dict[str, str] = {}
+_STT_DOWNLOAD_INITIATORS_LOCK = threading.Lock()
+
+
+def _note_stt_download_initiator(engine: str) -> None:
+    with _STT_DOWNLOAD_INITIATORS_LOCK:
+        _STT_DOWNLOAD_INITIATORS[engine] = current_workspace_subject()
+
+
+def _require_stt_download_cancel_permission(engine: str) -> None:
+    """Only the account that started this download, or the owner, may stop it.
+
+    The route takes an optional payload that defaults to the shared Transformers
+    downloader, so without this a caller did not even need a job identifier to
+    kill somebody else's transfer. An unrecorded download stays cancellable, the
+    same rule the hub download cancel uses: refusing those strands a transfer
+    nobody can stop.
+    """
+    from auth.storage import is_installation_owner
+
+    if is_installation_owner():
+        return
+    with _STT_DOWNLOAD_INITIATORS_LOCK:
+        initiator = _STT_DOWNLOAD_INITIATORS.get(engine)
+    if initiator is None or initiator == current_workspace_subject():
+        return
+    raise HTTPException(
+        status_code = 403,
+        detail = "Another account started this dictation model download.",
+    )
+
+
 @studio_router.post("/audio/stt/download/cancel")
 async def stt_download_cancel(
     payload: Optional[SttLoadRequest] = None, current_subject: str = Depends(get_current_subject)
@@ -17688,6 +17727,7 @@ async def stt_download_cancel(
     from core.inference import stt_ggml_sidecar, stt_sidecar
 
     engine = _resolve_serving_stt_engine(payload.engine if payload else None)
+    _require_stt_download_cancel_permission(engine)
     module = _stt_download_module(engine)
     cancelled = await asyncio.to_thread(module.cancel_model_download)
     # This request's result last: download_status() carries its own historical

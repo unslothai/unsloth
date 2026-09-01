@@ -3812,3 +3812,151 @@ def test_the_video_load_asks_the_same_credential_question():
     assert "_reject_private_hub_repo_without_an_account_token(request.model_path" in source
     # And on the base repo, which is fetched the same way under a separate id.
     assert "_reject_private_hub_repo_without_an_account_token(request.base_repo" in source
+
+
+def test_embedding_resolution_is_contained_like_the_save(tmp_path, monkeypatch):
+    from fastapi import HTTPException
+
+    from routes.settings import resolve_embedding_model
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    elsewhere = tmp_path / "someone-elses" / "workspace"
+    elsewhere.mkdir(parents = True)
+
+    token = _bind("alice")
+    try:
+        # The GET probes for checkpoints under whatever it is given, so an
+        # absolute path was a recursive read of another account's workspace whose
+        # answer distinguished a real model from anything else there.
+        with pytest.raises(HTTPException) as exc:
+            resolve_embedding_model(
+                model = str(elsewhere), hf_token = None, current_subject = "alice"
+            )
+        assert exc.value.status_code == 403
+    finally:
+        reset_workspace_subject(token)
+
+
+def test_a_video_that_finishes_between_polls_keeps_its_account():
+    from routes import video as video_routes
+
+    mine = video_routes._VideoJob(
+        id = "vid-1",
+        created_at = 0,
+        prompt = "p",
+        model = "m",
+        size = "s",
+        seconds = "4",
+        status = "in_progress",
+        subject = "alice",
+    )
+    # A record written before this field, or by a path that does not round-trip
+    # it, comes back with "", which _job_is_mine reads as the owner's own legacy
+    # state; the managed caller could then still delete the clip through its
+    # workspace-scoped record while the cleanup guard called it foreign.
+    replacement = video_routes._VideoJob(
+        id = "vid-1",
+        created_at = 0,
+        prompt = "p",
+        model = "m",
+        size = "s",
+        seconds = "4",
+        status = "completed",
+    )
+    replacement.subject = replacement.subject or mine.subject
+    assert replacement.subject == "alice"
+
+    token = _bind("alice")
+    try:
+        assert video_routes._job_is_mine(replacement) is True
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind(LEGACY_WORKSPACE_SUBJECT)
+    try:
+        assert video_routes._job_is_mine(replacement) is False
+    finally:
+        reset_workspace_subject(token)
+
+
+def test_only_the_account_that_started_a_dictation_download_may_cancel_it(monkeypatch):
+    from fastapi import HTTPException
+
+    from routes import inference as inference_routes
+
+    monkeypatch.setattr(
+        inference_routes, "_STT_DOWNLOAD_INITIATORS", {}, raising = False
+    )
+
+    token = _bind("alice")
+    try:
+        inference_routes._note_stt_download_initiator("transformers")
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind("bob")
+    try:
+        # The cancel payload is optional and defaults to the shared Transformers
+        # downloader, so a caller needed no job identifier at all.
+        with pytest.raises(HTTPException) as exc:
+            inference_routes._require_stt_download_cancel_permission("transformers")
+        assert exc.value.status_code == 403
+        # A different engine, and an unrecorded download, stay cancellable.
+        inference_routes._require_stt_download_cancel_permission("gguf")
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind("alice")
+    try:
+        inference_routes._require_stt_download_cancel_permission("transformers")
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind(LEGACY_WORKSPACE_SUBJECT)
+    try:
+        inference_routes._require_stt_download_cancel_permission("transformers")
+    finally:
+        reset_workspace_subject(token)
+
+
+def test_a_finished_recipe_job_survives_another_accounts_start():
+    import threading as _threading
+    from collections import deque
+
+    from core.data_recipe.jobs.manager import Job, JobManager
+
+    manager = JobManager.__new__(JobManager)
+    manager._lock = _threading.RLock()
+    manager._job = Job(job_id = "alice-job", status = "completed", started_at = 0.0)
+    manager._job.analysis = {"rows": 10}
+    manager._proc = None
+    manager._events = deque()
+    manager._subs = []
+    manager._seq = 0
+    manager._workspace_subject = "alice"
+    manager._finished_jobs = {}
+
+    # Bob starting a run replaces the singleton's only _job.
+    manager._retain_finished_job_locked()
+    manager._workspace_subject = "bob"
+    manager._job = Job(job_id = "bob-job", status = "pending", started_at = 1.0)
+
+    token = _bind("alice")
+    try:
+        # Alice's artifact still exists and she never started a replacement, so
+        # her status, analysis and dataset page must still resolve. Without this
+        # any account could make somebody's finished run unpublishable by
+        # starting their own.
+        assert manager.get_current_job_id() == "alice-job"
+        assert manager.get_analysis("alice-job") == {"rows": 10}
+        # And she still cannot read Bob's live job.
+        assert manager.get_analysis("bob-job") is None
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind("bob")
+    try:
+        assert manager.get_current_job_id() == "bob-job"
+        assert manager.get_analysis("alice-job") is None
+    finally:
+        reset_workspace_subject(token)

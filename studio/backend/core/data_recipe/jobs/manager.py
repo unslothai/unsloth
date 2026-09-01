@@ -28,7 +28,7 @@ from .constants import (
 from .parse import apply_update, coerce_event, parse_log_message
 from .types import Job
 from loggers import get_logger
-from utils.workspace_context import current_workspace_subject
+from utils.workspace_context import LEGACY_WORKSPACE_SUBJECT, current_workspace_subject
 
 logger = get_logger(__name__)
 
@@ -163,6 +163,39 @@ class JobManager:
         self._pump_thread: threading.Thread | None = None
         self._seq: int = 0
         self._workspace_subject: str | None = None
+        # The last FINISHED job per workspace. One subprocess runs at a time and
+        # the singleton holds one _job, so the next account to start a run used to
+        # erase the previous one's completed job: its status, analysis, dataset
+        # page and publish all answered not found even though the artifact was
+        # still on disk, which made any account able to render somebody else's
+        # finished run unpublishable just by starting their own.
+        self._finished_jobs: dict[str, Job] = {}
+
+    def _retain_finished_job_locked(self) -> None:
+        """Keep the outgoing job for its own workspace before _job is replaced."""
+        outgoing = self._job
+        if outgoing is None:
+            return
+        subject = self._workspace_subject or LEGACY_WORKSPACE_SUBJECT
+        self._finished_jobs[subject] = outgoing
+
+    def _visible_job_locked(self, job_id: str | None = None) -> "Job | None":
+        """The job this workspace may read, live or finished.
+
+        The live job when it belongs to this workspace, otherwise that
+        workspace's retained finished one. Read paths only: is_active, cancel and
+        subscribe stay on the live job, since a retained job has no worker and no
+        event stream.
+        """
+        if self._workspace_owned_locked() and self._job is not None:
+            if job_id is None or self._job.job_id == job_id:
+                return self._job
+        retained = self._finished_jobs.get(current_workspace_subject())
+        if retained is None:
+            return None
+        if job_id is not None and retained.job_id != job_id:
+            return None
+        return retained
 
     def _workspace_owned_locked(self) -> bool:
         return getattr(self, "_workspace_subject", None) in {
@@ -218,6 +251,9 @@ class JobManager:
                 raise RuntimeError("job already running")
 
             job_id = uuid.uuid4().hex
+            # Before the replacement, so the previous account keeps its finished
+            # run rather than losing it to whoever starts next.
+            self._retain_finished_job_locked()
             self._workspace_subject = current_workspace_subject()
             self._job = Job(job_id = job_id, status = "pending", started_at = time.time())
             self._job.progress_columns_total = llm_column_count
@@ -305,13 +341,9 @@ class JobManager:
     def get_status(self, job_id: str) -> dict | None:
         """UI-friendly structured snapshot; an alternative to SSE."""
         with self._lock:
-            if (
-                not self._workspace_owned_locked()
-                or self._job is None
-                or self._job.job_id != job_id
-            ):
+            job = self._visible_job_locked(job_id)
+            if job is None:
                 return None
-            job = self._job
             return {
                 "job_id": job.job_id,
                 "status": job.status,
@@ -377,20 +409,14 @@ class JobManager:
     def get_current_job_id(self) -> str | None:
         """Return current job_id (or None)."""
         with self._lock:
-            if not self._workspace_owned_locked() or self._job is None:
-                return None
-            return self._job.job_id
+            job = self._visible_job_locked()
+            return job.job_id if job is not None else None
 
     def get_analysis(self, job_id: str) -> dict | None:
         """Final profiling output (only after job completes)."""
         with self._lock:
-            if (
-                not self._workspace_owned_locked()
-                or self._job is None
-                or self._job.job_id != job_id
-            ):
-                return None
-            return self._job.analysis
+            job = self._visible_job_locked(job_id)
+            return job.analysis if job is not None else None
 
     def get_dataset(
         self,
@@ -401,15 +427,12 @@ class JobManager:
     ) -> dict[str, Any] | None:
         """Load dataset page (offset + limit) and include total rows."""
         with self._lock:
-            if (
-                not self._workspace_owned_locked()
-                or self._job is None
-                or self._job.job_id != job_id
-            ):
+            job = self._visible_job_locked(job_id)
+            if job is None:
                 return None
-            in_memory_dataset = self._job.dataset
-            artifact_path = self._job.artifact_path
-            job_status = self._job.status
+            in_memory_dataset = job.dataset
+            artifact_path = job.artifact_path
+            job_status = job.status
 
         if in_memory_dataset is not None:
             total = len(in_memory_dataset)
