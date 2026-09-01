@@ -628,6 +628,9 @@ function ModelSelectorContent({
               section={effectiveHubSection}
               sectionToggle={
                 <PillTabs
+                  // Wider tabs than the shared default. The panel reserves
+                  // --picker-tab-pad a pill, so keep the two in step.
+                  className="[&_[role=tab]]:px-[calc(0.75rem_+_var(--picker-tab-pad)/2)]"
                   ariaLabel={t("picker.hubSectionAriaLabel")}
                   tabs={hubSectionTabs}
                   value={effectiveHubSection}
