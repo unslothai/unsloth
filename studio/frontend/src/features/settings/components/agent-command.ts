@@ -144,12 +144,27 @@ export function agentRunsOnActiveModel(agent: string, isGguf: boolean): boolean 
 // DEFAULT_AGENT is itself GGUF-only, so on a non-GGUF model it would just swap one
 // command unsloth_cli rejects for another; opencode runs on anything the server can
 // load, so it is the honest reset there.
-const UNIVERSAL_AGENT = "opencode";
+export const UNIVERSAL_AGENT = "opencode";
 
-export function fallbackAgent(isGguf: boolean): string {
-  return agentRunsOnActiveModel(DEFAULT_AGENT, isGguf)
-    ? DEFAULT_AGENT
-    : UNIVERSAL_AGENT;
+// `offered` is availableAgents when the caller has it. Under frontend/backend skew a
+// narrower list could otherwise leave the panel naming an agent with no chip to click,
+// so the answer is kept inside that list. null means "no offered agent runs on this
+// model" -- callers leave the current pick alone rather than swapping in something
+// equally unrunnable.
+export function fallbackAgent(
+  isGguf: boolean,
+  offered: readonly string[] = [],
+): string | null {
+  const runs = (agent: string) => agentRunsOnActiveModel(agent, isGguf);
+  if (offered.length === 0) {
+    return runs(DEFAULT_AGENT) ? DEFAULT_AGENT : UNIVERSAL_AGENT;
+  }
+  for (const preference of [DEFAULT_AGENT, UNIVERSAL_AGENT]) {
+    if (offered.includes(preference) && runs(preference)) {
+      return preference;
+    }
+  }
+  return offered.find(runs) ?? null;
 }
 
 // The agent the picker should settle on, or null to leave the current one alone.
@@ -160,6 +175,7 @@ export function pickCompatibleAgent(
   detectedAgents: readonly string[],
   currentAgent: string,
   isGguf: boolean,
+  offered: readonly string[] = [],
 ): string | null {
   const preferred = detectedAgents.find((agent) =>
     agentRunsOnActiveModel(agent, isGguf),
@@ -169,5 +185,5 @@ export function pickCompatibleAgent(
   }
   return agentRunsOnActiveModel(currentAgent, isGguf)
     ? null
-    : fallbackAgent(isGguf);
+    : fallbackAgent(isGguf, offered);
 }

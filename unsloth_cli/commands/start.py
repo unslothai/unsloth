@@ -9,6 +9,7 @@ import contextlib
 import errno
 import functools
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -2450,13 +2451,37 @@ def _attach_gguf_check(
 def _require_gguf_for_agent(agent: _GgufAgent, base: str, key: str, model_id: str) -> None:
     # Both callers stream from a llama-server-only endpoint: Codex from /v1/responses,
     # Claude Code from /v1/messages. Neither is served by the transformers/MLX backend.
+    #
+    # Only a definite "no" rejects. Every other answer is an unasked question, not a
+    # negative one, and both callers wrap this in `except BaseException:
+    # _shutdown_auto_served()` -- so guessing here kills a server that may have just
+    # finished a long GGUF load. A model that really is wrong still fails on the agent's
+    # first request, reported by the server that owns it. Same tolerance _subagent_model_id
+    # and _resolve_model already apply to this endpoint.
     try:
         status = _http_json("GET", f"{base}/api/inference/status", key)
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            return  # older server without the endpoint; don't block the launch
-        raise
-    if status.get("is_gguf"):
+    except urllib.error.HTTPError:
+        # 404: older server without the endpoint. 401/403: the key authenticated against
+        # /v1/models back in _connect, so being unscoped for /api says nothing about the
+        # model. 5xx: get_status wraps its llama.cpp and release probes in `except
+        # Exception: 500 "Failed to get status"`, so a 500 is routinely raised with a
+        # healthy GGUF resident. A refused redirect arrives here too.
+        return
+    except (OSError, ValueError, http.client.HTTPException):
+        # Connection refused, DNS failure, timeout (OSError), an HTML or truncated body
+        # (JSONDecodeError is a ValueError), or malformed HTTP from something else on the
+        # port. Named explicitly rather than `except Exception` so typer.Exit and real
+        # bugs still surface instead of reading as "server unreachable".
+        return
+    if not isinstance(status, dict):
+        return
+    is_gguf = status.get("is_gguf")
+    # A current server always sends this key: InferenceStatusResponse declares
+    # `is_gguf: bool = Field(False, ...)` and the route has a response_model, so it is
+    # present as an explicit true or false. Absent or null therefore means "not that
+    # endpoint" -- notably a Studio old enough to answer an unknown /api/* with 200
+    # {"error": "API endpoint not found"} rather than a 404. It never means "non-GGUF".
+    if is_gguf is None or is_gguf:
         return
     _fail_agent_needs_gguf(agent, model_id)
 

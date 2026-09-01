@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import http.client
 import io
 import json
 import os
@@ -8244,3 +8245,186 @@ def test_claude_post_connect_failure_spares_an_attached_server(fake_studio, monk
     assert result.exit_code == 1
     assert "Claude Code needs a GGUF model" in result.output
     assert down == []
+
+
+# ---------------------------------------------------------------------------
+# _require_gguf_for_agent tolerance. The gate is the last thing between a loaded
+# server and the agent launch, and its callers tear the server down on any
+# exception, so only a definite "is_gguf": false may reject. Everything else is a
+# question the server did not answer.
+# ---------------------------------------------------------------------------
+
+
+def _status_raises(monkeypatch, exc):
+    def http_json(*args, **kwargs):
+        raise exc
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+
+
+def _require_claude_gguf():
+    start._require_gguf_for_agent(
+        start._CLAUDE_GGUF_AGENT, BASE, "sk-test", "unsloth/gemma-3-4b-it"
+    )
+
+
+@pytest.mark.parametrize(
+    "code,reason",
+    [
+        (404, "not found"),  # older server without the endpoint
+        (401, "Unauthorized"),  # key scoped to /v1, not /api
+        (403, "Forbidden"),
+        (500, "Failed to get status"),  # get_status's own catch-all, GGUF still resident
+        (503, "Service Unavailable"),
+        (302, "refusing redirect"),  # urlopen_no_redirect raises this shape
+    ],
+)
+def test_require_gguf_never_rejects_on_an_http_error(monkeypatch, capsys, code, reason):
+    url = f"{BASE}/api/inference/status"
+    _status_raises(monkeypatch, urllib.error.HTTPError(url, code, reason, None, None))
+    assert _require_claude_gguf() is None
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        urllib.error.URLError(ConnectionRefusedError(111, "Connection refused")),
+        TimeoutError("timed out"),
+        OSError(101, "Network is unreachable"),
+        json.JSONDecodeError("Expecting value", "<html>not json</html>", 0),
+        http.client.BadStatusLine("garbage"),
+        http.client.RemoteDisconnected("closed"),
+    ],
+)
+def test_require_gguf_never_rejects_on_a_transport_failure(monkeypatch, capsys, exc):
+    # None of these may surface as a traceback either: only HTTPError was caught before.
+    _status_raises(monkeypatch, exc)
+    assert _require_claude_gguf() is None
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {},  # blank 200 body; _http_json turns "" into {}
+        {"model_identifier": "unsloth/Qwen3-1.7B-GGUF"},  # 200 without the key
+        {"error": "API endpoint not found"},  # Studio older than the /api/* 404
+        {"is_gguf": None},  # explicit null from a proxy or hand-rolled server
+        ["not", "a", "dict"],
+        None,
+    ],
+)
+def test_require_gguf_treats_an_unreadable_answer_as_unknown(monkeypatch, capsys, body):
+    monkeypatch.setattr(start, "_http_json", lambda *a, **k: body)
+    assert _require_claude_gguf() is None
+    # The old code said "needs a GGUF model" here, which is a claim about the user's
+    # model that the server never made.
+    assert "needs a GGUF model" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "agent,label",
+    [("_CODEX_GGUF_AGENT", "Codex"), ("_CLAUDE_GGUF_AGENT", "Claude Code")],
+)
+def test_require_gguf_still_rejects_a_definite_no(monkeypatch, capsys, agent, label):
+    monkeypatch.setattr(start, "_hub_gguf_files", lambda repo: None)  # no Try: suffix
+    monkeypatch.setattr(
+        start,
+        "_http_json",
+        lambda *a, **k: {"is_gguf": False, "model_identifier": "transformers-model"},
+    )
+    with pytest.raises(typer.Exit) as excinfo:
+        start._require_gguf_for_agent(
+            getattr(start, agent), BASE, "sk-test", "unsloth/gemma-3-4b-it"
+        )
+    assert excinfo.value.exit_code == 1
+    assert capsys.readouterr().err.strip() == (
+        f"{label} needs a GGUF model served by llama-server, "
+        "but unsloth/gemma-3-4b-it is not one."
+    )
+
+
+def test_require_gguf_does_not_swallow_a_real_exit(monkeypatch):
+    # Guards the exception tuple against being loosened to `except Exception`, which
+    # would turn a broken stub -- or a _fail() reached from inside -- into a pass.
+    _status_raises(monkeypatch, typer.Exit(code = 1))
+    with pytest.raises(typer.Exit):
+        _require_claude_gguf()
+
+
+def test_require_gguf_does_not_swallow_a_bug(monkeypatch):
+    _status_raises(monkeypatch, AttributeError("typo in the stub"))
+    with pytest.raises(AttributeError):
+        _require_claude_gguf()
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_an_unreadable_status_leaves_the_auto_served_server_alone(fake_studio, monkeypatch, agent):
+    # The regression this tolerance exists for: a 500 from get_status used to reject and
+    # then run _shutdown_auto_served() on a server that had just loaded a GGUF.
+    monkeypatch.setattr(start, "_hub_gguf_files", lambda repo: None)
+    monkeypatch.setattr(start, "find_studio_server", lambda: None)
+    started = {}
+    fake = SimpleNamespace(pid = 999, poll = lambda: None)
+
+    def fake_start(
+        base,
+        model,
+        load,
+        server_options = None,
+    ):
+        started.update(base = base, model = model)
+        start._auto_served_server = fake
+        return fake
+
+    monkeypatch.setattr(start, "_start_studio_server", fake_start)
+    monkeypatch.setattr(
+        start, "_shutdown_server", lambda server: started.__setitem__("down", server)
+    )
+    monkeypatch.setattr(start.shutil, "which", lambda _: f"/usr/local/bin/{agent}")
+    monkeypatch.setattr(start.subprocess, "run", lambda command, env: SimpleNamespace(returncode = 0))
+    inner = start._http_json
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if url.endswith("/api/inference/status"):
+            raise urllib.error.HTTPError(url, 500, "Failed to get status", None, None)
+        return inner(method, url, token, payload, timeout, error)
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    result = CliRunner().invoke(
+        start.start_app, [agent, "--model", "unsloth/Qwen3-1.7B-GGUF", "--launch"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "needs a GGUF model" not in result.output
+    # The whole point: the gate no longer kills a server that had just loaded fine.
+    assert started.get("down") is None
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_a_status_body_without_is_gguf_still_launches(fake_studio, monkeypatch, agent):
+    inner = start._http_json
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if url.endswith("/api/inference/status"):
+            return {"model_identifier": MODEL["id"]}
+        return inner(method, url, token, payload, timeout, error)
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    result = CliRunner().invoke(start.start_app, [agent, "--no-launch"])
+    assert result.exit_code == 0, result.output
+    assert "needs a GGUF model" not in result.output

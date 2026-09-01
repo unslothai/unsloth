@@ -37,6 +37,7 @@ import { loadOpenAIAutoSwitchSettings } from "../api/openai-auto-switch";
 import { type OpenAIModel, listOpenAIModels } from "../api/openai-models";
 import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
 import {
+  agentRunsOnActiveModel,
   buildAgentCommand,
   fallbackAgent,
   isLoopbackHost,
@@ -590,6 +591,10 @@ export function UsageExamples({
   // True once the user has picked an agent themselves; guards the detection
   // effect below from clobbering that choice if it resolves afterward.
   const agentPickedByUserRef = useRef(storedPrefs.apiExampleAgent != null);
+  // Narrower than the ref above, which is also true for a preference merely restored
+  // from storage. A pick made by hand in THIS session is never second-guessed; one
+  // restored from an older Studio, taken before Claude Code was gated on GGUF, is.
+  const agentClickedThisSessionRef = useRef(false);
   const [useTunnel, setUseTunnel] = useState<boolean>(readUseTunnelPref);
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   const base =
@@ -659,14 +664,24 @@ export function UsageExamples({
     };
   }, [localAgentDetection]);
 
-  // a restored agent this build no longer offers cannot build a command.
+  // A restored agent this build no longer offers cannot build a command -- and neither
+  // can one that cannot run the active model, which is how a preference saved before
+  // Claude Code was gated on GGUF arrives here. Both drop the stale preference and fall
+  // back; a pick made by hand in this session is left alone either way.
   useEffect(() => {
     if (!agentPickedByUserRef.current) return;
+    if (agentClickedThisSessionRef.current) return;
     if (localAgentDetection && !agentsLoaded) return;
-    if (availableAgents.includes(agent)) return;
+    if (availableAgents.includes(agent) && agentRunsOnActiveModel(agent, isGguf)) {
+      return;
+    }
+    const reset = fallbackAgent(isGguf, availableAgents);
+    // null means nothing offered runs on this model; swapping in another unrunnable
+    // agent would only move the problem, so leave the pick and let the CLI say why.
+    if (reset === null) return;
     agentPickedByUserRef.current = false;
     setStoredAgent(null);
-    setAgent(fallbackAgent(isGguf));
+    setAgent(reset);
   }, [
     agent,
     agentsLoaded,
@@ -687,13 +702,29 @@ export function UsageExamples({
   // pick is already fine, which is also what an empty detected list yields
   // unless the current pick itself cannot run the active model -- the case
   // that reaches here from the non-loopback reset above.
+  // The guard is "detection has not answered yet", not "the list is empty":
+  // empty is also a valid answer (nothing installed), and acting on a list that
+  // has not resolved flips the shown command between paints.
   useEffect(() => {
     if (agentPickedByUserRef.current) return;
-    const next = pickCompatibleAgent(detectedAgents, agent, isGguf);
+    if (localAgentDetection && !agentsLoaded) return;
+    const next = pickCompatibleAgent(
+      detectedAgents,
+      agent,
+      isGguf,
+      availableAgents,
+    );
     if (next !== null) {
       setAgent(next);
     }
-  }, [agent, detectedAgents, isGguf]);
+  }, [
+    agent,
+    agentsLoaded,
+    availableAgents,
+    detectedAgents,
+    isGguf,
+    localAgentDetection,
+  ]);
 
   const keylessBase =
     !(useTunnel && cloudflareUrl) &&
@@ -927,6 +958,7 @@ export function UsageExamples({
                   type="button"
                   onClick={() => {
                     agentPickedByUserRef.current = true;
+                    agentClickedThisSessionRef.current = true;
                     setAgent(id);
                     setStoredAgent(id);
                   }}
