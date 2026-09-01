@@ -2971,7 +2971,7 @@ class TrainingBackend:
                     "training cancelled",
                     "training stopped",
                 }
-                # Nothing left to save: drop an in-flight watchdog to its grace, not the save backstop.
+                # Save is done by now; let the stop watchdog start its grace timer.
                 self._complete_seen.set()
                 self._progress.is_training = False
                 self._progress.is_completed = not stopped

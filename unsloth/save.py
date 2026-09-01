@@ -1209,10 +1209,10 @@ def unsloth_save_model(
                 _dev_budget is not None
                 and (torch.cuda.memory_allocated(W.device) + W.nbytes) < _dev_budget
             ):
-                # Already off-GPU: keeping it costs no VRAM
+                # Fits on W's own GPU
                 state_dict[name] = W
             elif W.device.type != "cuda":
-                # Fits on W's own GPU; already off-GPU means keeping it costs no VRAM.
+                # Already off-GPU: keeping it costs no VRAM
                 state_dict[name] = W
             # Saving to RAM seems to leak memory.
             else:

@@ -2476,7 +2476,6 @@ class FastLlamaModel:
 
             linear_scaling, native_type = _extended_rope_scaling(model_config, factor)
             if linear_scaling is not None:
-                # Native llama3 scaling already handles long context; just widen the window.
                 logger.warning_once(
                     f"Unsloth: {model_name} can only handle sequence lengths of at most "
                     f"{model_max_seq_length}.\nBut with kaiokendev's RoPE scaling of "
