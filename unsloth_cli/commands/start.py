@@ -4557,8 +4557,10 @@ def claude(
         if os.name == "nt"
         else "curl -fsSL https://claude.ai/install.sh | bash"
     )
-    _require_agent_for_launch("claude", install_hint, launch)
+    # Before the install prompt: this can refuse outright, and _install_agent runs a
+    # remote installer, so asking first makes a user fetch a tool this run cannot use.
     _preflight_agent_gguf(_CLAUDE_GGUF_AGENT, model, serve = serve, launch = launch)
+    _require_agent_for_launch("claude", install_hint, launch)
     base, key, entry = _connect(
         api_key,
         model,
@@ -4685,8 +4687,10 @@ def codex(
     # Route a leading `org/name` positional to --model; forward the rest to the agent.
     model, ctx.args[:] = _consume_positional_model(model, ctx.args)
     install_hint = _npm_install_hint("@openai/codex")
-    _require_agent_for_launch("codex", install_hint, launch)
+    # Before the install prompt: this can refuse outright, and _install_agent runs a
+    # remote installer, so asking first makes a user fetch a tool this run cannot use.
     _preflight_agent_gguf(_CODEX_GGUF_AGENT, model, serve = serve, launch = launch)
+    _require_agent_for_launch("codex", install_hint, launch)
     base, key, entry = _connect(
         api_key,
         model,

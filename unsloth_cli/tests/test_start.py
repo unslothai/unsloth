@@ -8137,6 +8137,60 @@ def test_claude_command_preflights_before_starting_a_server(fake_studio, monkeyp
     assert started["called"] is False
 
 
+@pytest.mark.parametrize(
+    ("subcommand", "label"),
+    [("claude", "Claude Code"), ("codex", "Codex")],
+)
+def test_a_rejected_model_never_offers_to_install_the_agent(
+    monkeypatch, tmp_path, subcommand, label
+):
+    # No fake_studio here: that fixture stubs _require_agent_for_launch to a no-op, and
+    # that call is exactly what these two tests are about. Neither reaches a server.
+    # _install_agent prompts and then runs a remote installer. Ordering it before a gate
+    # that can refuse outright made a user fetch a third-party tool for a run that was
+    # already decided, so the refusal has to come first.
+    _fake_hub_listing(monkeypatch, {"mlx-community/Qwen3-0.6B-4bit": []})
+    monkeypatch.setattr(start, "_agents_config_root", lambda: tmp_path / "agents")
+    monkeypatch.setattr(start, "_which_with_install_dirs", lambda name: None)
+    monkeypatch.setattr(start, "_start_studio_server", lambda *a, **k: None)
+    offered = []
+    monkeypatch.setattr(
+        start,
+        "_install_agent",
+        lambda name, hint: offered.append(name),
+    )
+    result = CliRunner().invoke(
+        start.start_app,
+        [subcommand, "--model", "mlx-community/Qwen3-0.6B-4bit", "--launch"],
+    )
+    assert result.exit_code == 1
+    assert f"{label} needs a GGUF model" in result.output
+    assert offered == []
+
+
+def test_a_missing_agent_is_still_reported_for_a_model_that_passes(
+    monkeypatch, tmp_path
+):
+    # The reorder must not turn the install prompt into dead code for a runnable model.
+    _fake_hub_listing(monkeypatch, {"unsloth/Qwen3-0.6B-GGUF": ["Q4_K_M.gguf"]})
+    monkeypatch.setattr(start, "_agents_config_root", lambda: tmp_path / "agents")
+    monkeypatch.setattr(start, "_which_with_install_dirs", lambda name: None)
+    monkeypatch.setattr(start, "_start_studio_server", lambda *a, **k: None)
+    offered = []
+    monkeypatch.setattr(
+        start,
+        "_install_agent",
+        lambda name, hint: offered.append(name),
+    )
+    result = CliRunner().invoke(
+        start.start_app,
+        ["claude", "--model", "unsloth/Qwen3-0.6B-GGUF", "--launch"],
+    )
+    assert offered == ["claude"]
+    assert result.exit_code == 1
+    assert "not found on PATH" in result.output
+
+
 def test_claude_preload_gate_rejects_before_an_evicting_load(fake_studio, monkeypatch):
     inner = start._http_json
     probed = []

@@ -254,10 +254,21 @@ test("a route that never mounts the chat runtime still learns the model kind", (
   assert.equal(pickCompatibleAgent([], "claude", false, VISIBLE_AGENTS), UNIVERSAL_AGENT);
 });
 
-test("the store wins over the polled status when both have an answer", () => {
-  // Same paint as the model switch on the chat routes; the probe can be a poll behind.
-  assert.equal(resolveGgufCompatibility(true, false), true);
-  assert.equal(resolveGgufCompatibility(false, true), false);
+test("the server wins over the store when both have an answer", () => {
+  // A swap made from another tab, the CLI, or an auto-switching API request is invisible
+  // to the store: useChatModelRuntime re-reads status on mount, on model-list changes and
+  // on tab focus, never on a timer. Reading the store first left the panel gating on the
+  // model that had already gone while the snippet already named the new one.
+  assert.equal(resolveGgufCompatibility(true, false), false);
+  assert.equal(resolveGgufCompatibility(false, true), true);
+});
+
+test("a switch made in this tab is not gated on the previous model", () => {
+  // The component tags each answer with the store's model identity and discards it once
+  // that identity changes, so the server's stale reading arrives here as null, not as a
+  // verdict about a model that is no longer loaded.
+  assert.equal(resolveGgufCompatibility(true, null), true);
+  assert.equal(resolveGgufCompatibility(false, null), false);
 });
 
 test("unknown from both sources stays unknown", () => {

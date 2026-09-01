@@ -176,12 +176,15 @@ export function pickCompatibleAgent(
 }
 
 // Where the panel's "is the resident model a GGUF" answer comes from, and in which order.
-// The chat runtime store is only populated on the routes that mount useChatModelRuntime,
-// so it is the fast source, never the only one; /api/inference/status answers everywhere.
-// null from both means unknown, which is not the same as false and must not gate on it.
+// The server wins: only it sees a switch made from another tab, the CLI or an API request
+// that auto-switched, and the chat runtime store re-reads status on mount, on model-list
+// changes and on tab focus, never on a timer. The store is the fallback, for the routes
+// that never mount that hook at all and for the moment after a switch made here, before
+// the server has been re-asked about it. null from both means unknown, which is not false
+// and must not gate anything.
 export function resolveGgufCompatibility(
   fromStore: boolean | null,
   fromServer: boolean | null,
 ): boolean | null {
-  return fromStore ?? fromServer;
+  return fromServer ?? fromStore;
 }

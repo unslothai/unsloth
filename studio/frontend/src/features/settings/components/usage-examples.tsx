@@ -634,9 +634,18 @@ export function UsageExamples({
   // Ask the server the question the CLI gate asks instead: is_gguf on
   // /api/inference/status is the same field _require_gguf_for_agent reads, and it
   // describes the resident model, which is the model these snippets name.
-  const [statusIsGguf, setStatusIsGguf] = useState<boolean | null>(null);
-  // Polled on the catalog's own cadence: a model can be loaded or swapped from another
-  // tab, and off the chat routes there is no store update to notice it.
+  // What the store currently claims to describe. The answer below is tagged with it, so
+  // a switch made here invalidates the previous answer instead of outliving it.
+  const storeModelKey = `${activeCheckpoint} ${activeGgufVariant} ${activeNativePathToken}`;
+  const [statusAnswer, setStatusAnswer] = useState<{
+    key: string;
+    isGguf: boolean | null;
+  } | null>(null);
+  // Polled on the catalog's own cadence, because nothing else here would notice a swap:
+  // useChatModelRuntime re-reads status on mount, on model-list changes and on tab focus,
+  // never on a timer, so an API request or a CLI load that switches the resident model
+  // while this tab stays focused leaves the store describing the model that left, while
+  // useExampleModelName's own poll renames the snippet after the new one.
   useEffect(() => {
     let cancelled = false;
     let timeoutId: number | null = null;
@@ -647,7 +656,7 @@ export function UsageExamples({
           if (cancelled) return false;
           // Absent means "this server does not report it", never "not GGUF" -- the same
           // reading the CLI gate takes, so both refuse to guess from the same silence.
-          setStatusIsGguf(status.is_gguf ?? null);
+          setStatusAnswer({ key: storeModelKey, isGguf: status.is_gguf ?? null });
           return status.is_gguf != null;
         })
         .catch(() => {
@@ -668,13 +677,15 @@ export function UsageExamples({
       cancelled = true;
       if (timeoutId !== null) window.clearTimeout(timeoutId);
     };
-  }, []);
+  }, [storeModelKey]);
 
-  // The store first: on the chat and hub pages it updates on the same paint as the
-  // switch, while the probe above can be up to a poll behind.
+  // The server wins whenever its answer still describes what the store describes, since
+  // only the server sees a swap this tab did not make. A switch made here changes the key
+  // first, which drops the stale answer back to unknown and leaves the freshly updated
+  // store answering until the refetch lands.
   const isGguf: boolean | null = resolveGgufCompatibility(
     storeIsGguf,
-    statusIsGguf,
+    statusAnswer?.key === storeModelKey ? statusAnswer.isGguf : null,
   );
 
   useEffect(() => {
