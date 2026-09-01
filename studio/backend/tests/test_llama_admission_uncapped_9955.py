@@ -54,11 +54,13 @@ def _resolve(
     backend = None,
     injects_current_date = False,
 ):
-    return routes_inference._openai_llama_uncapped_max_tokens(
-        payload,
-        request = None,
-        llama_backend = backend if backend is not None else _backend(),
-        injects_current_date = injects_current_date,
+    return _run(
+        routes_inference._openai_llama_uncapped_max_tokens(
+            payload,
+            request = None,
+            llama_backend = backend if backend is not None else _backend(),
+            injects_current_date = injects_current_date,
+        )
     )
 
 
@@ -233,6 +235,63 @@ class TestDenseText:
         assert _cost(payload, _resolve(payload).extra_prompt_tokens) == CTX
 
 
+class TestTheTokenizerPricesThePrompt:
+    """The bound is what the cap is spent against, so pricing prose at four times its real
+    size hands a share away to a request that was never going to use it. Where the loaded
+    model can be asked, ask it; the bound stays for when it cannot."""
+
+    def _counting_backend(
+        self,
+        counted,
+        slots = SLOTS,
+    ):
+        backend = _backend(slots = slots)
+        backend.count_chat_tokens = lambda *a, **k: counted
+        backend._request_reasoning_kwargs = lambda *a, **k: None
+        return backend
+
+    def test_the_cap_is_sized_on_the_counted_prompt(self):
+        payload = _uncapped()
+        backend = self._counting_backend(700)
+        assert _cap(payload, backend) == SHARE - HEADROOM - 700
+
+    def test_a_conversation_the_bound_would_serialise_still_gets_a_share(self):
+        """A ten-turn prose chat: 19426 bytes, 4194 real tokens. The bound leaves nothing
+        inside a share and drops it to running alone; the count leaves most of one."""
+        payload = _uncapped([{"role": "user", "content": "x" * 19426}])
+        assert _cap(payload) is None
+        dense = routes_inference._openai_llama_admission_prompt_tokens(payload)
+        # Floored at the dense rate, which is what admission will charge either way.
+        assert _cap(payload, self._counting_backend(4194)) == SHARE - HEADROOM - max(4194, dense)
+
+    def test_the_reservation_still_fits_inside_a_share(self):
+        """Admission prices at the dense rate, which can sit either side of the count, so
+        the invariant to hold is the share, not an equality."""
+        for counted in (10, 700, 4194):
+            payload = _uncapped([{"role": "user", "content": "word " * 900}])
+            backend = self._counting_backend(counted)
+            resolved = _resolve(payload, backend)
+            if resolved is None or resolved.max_tokens is None:
+                continue
+            payload.max_tokens = resolved.max_tokens
+            assert _cost(payload, resolved.extra_prompt_tokens) <= SHARE
+
+    def test_a_tokenizer_that_cannot_answer_falls_back_to_the_bound(self):
+        def boom(*a, **k):
+            raise RuntimeError("llama-server is not loaded")
+
+        payload = _uncapped()
+        backend = self._counting_backend(700)
+        backend.count_chat_tokens = boom
+        assert _cap(payload, backend) == SHARE - HEADROOM - _charged(payload)
+
+    def test_a_nonsense_count_falls_back_to_the_bound(self):
+        for bad in (0, -5, None, "many"):
+            payload = _uncapped()
+            backend = self._counting_backend(bad)
+            assert _cap(payload, backend) == SHARE - HEADROOM - _charged(payload)
+
+
 class TestAPromptTooBigForAShare:
     """The request the flat allowance undercharges worst.
 
@@ -259,10 +318,13 @@ class TestAPromptTooBigForAShare:
             queue = LlamaAdmissionQueue("test")
             for _ in range(2):
                 payload = self._too_big()
+                resolved = await routes_inference._openai_llama_uncapped_max_tokens(
+                    payload, request = None, llama_backend = _backend()
+                )
                 last = queue.reserve(
                     capacity = SLOTS,
                     config = LlamaAdmissionConfig(),
-                    tokens = _cost(payload, _resolve(payload).extra_prompt_tokens),
+                    tokens = _cost(payload, resolved.extra_prompt_tokens),
                     budget = CTX,
                 )
             return last.lease_nowait()
@@ -401,7 +463,9 @@ class TestTheReservationItProduces:
             leases = []
             for _ in range(SLOTS):
                 payload = _uncapped()
-                resolved = _resolve(payload)
+                resolved = await routes_inference._openai_llama_uncapped_max_tokens(
+                    payload, request = None, llama_backend = _backend()
+                )
                 payload.max_tokens = resolved.max_tokens
                 reservation = queue.reserve(
                     capacity = SLOTS,
@@ -424,7 +488,9 @@ class TestTheReservationItProduces:
             queue = LlamaAdmissionQueue("test")
             for _ in range(SLOTS + 1):
                 payload = _uncapped()
-                resolved = _resolve(payload)
+                resolved = await routes_inference._openai_llama_uncapped_max_tokens(
+                    payload, request = None, llama_backend = _backend()
+                )
                 payload.max_tokens = resolved.max_tokens
                 last = queue.reserve(
                     capacity = SLOTS + 1,

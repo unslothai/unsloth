@@ -2082,7 +2082,60 @@ class _UncappedMaxTokens(NamedTuple):
     extra_prompt_tokens: int
 
 
-def _openai_llama_uncapped_max_tokens(
+async def _openai_llama_counted_prompt_tokens(
+    payload, *, llama_backend, image_tokens: int
+) -> Optional[int]:
+    """The prompt this request really is, counted by the loaded model's own tokenizer.
+
+    `count_chat_tokens` renders through llama-server's ``/apply-template`` and counts with
+    ``/tokenize``, so it prices the chat template as well as the text -- the two things a
+    byte bound has to guess at from opposite sides. Measured on Qwen3-0.6B: 3.6ms for one
+    turn, 13ms for ten, 36ms for thirty, and 14-17ms for ten with four generations already
+    in flight, so it does not queue behind decoding.
+
+    Worth the round trip because the bound is what the cap is spent against: on a ten-turn
+    prose conversation the bound reads 19426 where the tokenizer reads 4194, and sizing on
+    the bound would hand the request no room inside a share and drop it to running alone.
+
+    Images are counted by their own per-projector ceiling, not by the tokenizer, so they
+    are compacted out of the text first and charged separately, as everywhere else here.
+    None when the count is unavailable, which is the caller's signal to fall back to the
+    bound rather than to guess.
+    """
+    messages = getattr(payload, "messages", None)
+    if not (isinstance(messages, list) and messages):
+        return None
+    try:
+        estimate_messages, message_image_parts = _openai_llama_admission_messages_for_estimate(
+            messages
+        )
+        counted = await asyncio.to_thread(
+            llama_backend.count_chat_tokens,
+            estimate_messages,
+            None,
+            None,
+            True,
+            llama_backend._request_reasoning_kwargs(
+                getattr(payload, "enable_thinking", None),
+                getattr(payload, "reasoning_effort", None),
+                getattr(payload, "preserve_thinking", None),
+            ),
+            _continue_final_message(payload),
+        )
+        if not isinstance(counted, int) or counted <= 0:
+            return None
+        counted += _openai_llama_admission_extra_prompt_tokens(payload, strict = True)
+        counted += _openai_llama_admission_media_tokens(
+            payload,
+            message_image_parts = message_image_parts,
+            image_tokens = image_tokens,
+        )
+    except Exception:
+        return None
+    return counted
+
+
+async def _openai_llama_uncapped_max_tokens(
     payload,
     *,
     request: Optional[Request],
@@ -2106,9 +2159,10 @@ def _openai_llama_uncapped_max_tokens(
     instead of unified -- Unsloth passes ``--kv-unified`` so a STATED cap below the window
     can still use the whole of it.
 
-    Sized against a bound, not a rate (``strict``): a blob priced at the dense four
-    characters per token would be handed the room it is already sitting in, and N of
-    those now decode at once. Pessimism costs an answer, optimism costs the cache.
+    Sized against the loaded model's own tokenizer where it can be reached
+    (`_openai_llama_counted_prompt_tokens`), and against a byte bound where it cannot. Not
+    a rate either way: a blob priced at the dense four characters per token would be handed
+    the room it is already sitting in, and N of those now decode at once.
 
     ``injects_current_date`` names prompt the caller adds AFTER this, and anything unnamed
     is cache nobody accounted for. Priced here rather than by the caller so it costs a
@@ -2141,9 +2195,15 @@ def _openai_llama_uncapped_max_tokens(
         return None
     share = budget // capacity
     image_tokens = _openai_llama_admission_image_tokens(llama_backend)
-    prompt_tokens = _openai_llama_admission_prompt_tokens(
-        payload, image_tokens = image_tokens, strict = True
+    # The tokenizer first, the bound only when it cannot answer: a bound that reads four
+    # times the real prompt spends a share the request was never going to use.
+    prompt_tokens = await _openai_llama_counted_prompt_tokens(
+        payload, llama_backend = llama_backend, image_tokens = image_tokens
     )
+    if prompt_tokens is None:
+        prompt_tokens = _openai_llama_admission_prompt_tokens(
+            payload, image_tokens = image_tokens, strict = True
+        )
     # An unsizeable prompt is charged a whole share by admission, so there is no room
     # left to hand the output and nothing here can make the two agree.
     if prompt_tokens is None:
@@ -2159,6 +2219,11 @@ def _openai_llama_uncapped_max_tokens(
         return ceiling - prompt_tokens - headroom
 
     priced = _openai_llama_admission_prompt_tokens(payload, image_tokens = image_tokens)
+    # Never below what admission will charge on its own. The count can land under the dense
+    # rate (JSON overhead prices short turns above their tokens), and the reservation is
+    # dense plus whatever is named here, so sizing under it would put the reservation past
+    # a share and break the one invariant this exists to keep: capacity of them fit.
+    prompt_tokens = max(prompt_tokens, priced or 0)
     output_tokens = _room_inside(share)
     if output_tokens < _OPENAI_LLAMA_UNCAPPED_MIN_OUTPUT_TOKENS:
         # No usable answer fits inside a share. Capping it to what is left would answer a
@@ -20511,7 +20576,7 @@ async def produce_openai_chat_completions(
         # and concurrent ones overrun the cache. Written onto the payload, not kept local:
         # the branches below do not share one path to llama-server, and a cap they
         # disagreed on is the mismatch itself.
-        _shared_max_tokens = _openai_llama_uncapped_max_tokens(
+        _shared_max_tokens = await _openai_llama_uncapped_max_tokens(
             payload,
             request = request,
             llama_backend = llama_backend,
@@ -26122,7 +26187,7 @@ async def _responses_stream(
     # stream that names no cap would otherwise reserve the whole KV cache here too.
     _uncapped_extra_prompt_tokens = 0
     if _openai_llama_cap_is_unstated(chat_req, llama_backend):
-        _shared_max_tokens = _openai_llama_uncapped_max_tokens(
+        _shared_max_tokens = await _openai_llama_uncapped_max_tokens(
             chat_req,
             request = request,
             llama_backend = llama_backend,
