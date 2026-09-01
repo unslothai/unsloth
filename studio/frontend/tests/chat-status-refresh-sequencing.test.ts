@@ -84,29 +84,26 @@ test("the eviction branch is behind the same guard", () => {
   assert.ok(guardAt !== -1 && guardAt < evictionAt);
 });
 
-test("residency is deferred only while a mount wait is outstanding", () => {
+test("residency is deferred only while a settlement wait is outstanding", () => {
   assert.doesNotMatch(
     SYNC,
     /if \(statusLoading\) return;/,
-    "the send waiter and the lifecycle bus own settlement themselves; generic hydration must still publish residency",
+    "the lifecycle bus owns settlement itself; generic hydration must still publish residency",
   );
-  // Behaviour is pinned in tests/studio/test_chat_mount_cli_load_adoption.py.
-  assert.match(SYNC, /if \(statusLoading && pendingServerModelWaits > 0\) return;/);
+  // Shared with the send-path poll, so both get it. Behaviour is pinned in
+  // tests/studio/test_chat_mount_cli_load_adoption.py.
+  assert.match(SYNC, /if \(statusLoading && serverModelWaitOutstanding\(\)\) return;/);
   // Up before the sync is issued: a refresh issued later can answer first.
   const handoff = SOURCE.slice(
     SOURCE.indexOf("async function refreshAndWaitForServerModel("),
     SOURCE.indexOf("* Reconcile the UI after the SERVER unloaded"),
   );
   assert.ok(
-    handoff.indexOf("pendingServerModelWaits += 1;") <
+    handoff.indexOf("beginServerModelWait(signal)") <
       handoff.indexOf("await syncInferenceStatusToStore(options);"),
   );
   assert.match(handoff, /await waitForServerModel\(signal\);/);
-  // And down on the abort: listModels and listLoras take no signal, so a stalled one
-  // would keep the gate up past the page that owns it.
-  assert.match(handoff, /signal\?\.addEventListener\("abort", release, \{ once: true \}\)/);
-  assert.match(handoff, /\} finally \{\s*signal\?\.removeEventListener\("abort", release\);\s*release\(\);\s*\}/);
-  assert.match(SYNC, /getInferenceStatus\(signal\)/);
+  assert.match(handoff, /\} finally \{\s*release\(\);\s*\}/);
 });
 
 test("a completed UI load still publishes residency while holding its lease", () => {
@@ -141,6 +138,9 @@ test("the mount observer adopts only a settled model", () => {
     wait,
     /!useChatRuntimeStore\.getState\(\)\.params\.checkpoint &&\s*!useChatRuntimeStore\.getState\(\)\.modelLoading/,
   );
-  // Into the request, or a stalled read outlives the unmount that aborted it.
-  assert.match(wait, /await getInferenceStatus\(signal\)/);
+  // Into the request, and capped: a stalled read would otherwise outlive both the unmount
+  // that aborted it and the two caps below.
+  assert.match(wait, /const poll = statusPollSignal\(signal\);/);
+  assert.match(wait, /await getInferenceStatus\(poll\.signal\)/);
+  assert.match(wait, /\} finally \{\s*poll\.dispose\(\);\s*\}/);
 });

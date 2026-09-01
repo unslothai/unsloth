@@ -35,6 +35,11 @@ import { consumeNativePathToken } from "@/features/native-intents/api";
 import { modelDisplayName } from "@/features/hub/lib/model-identity";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import { subscribeResidentStatusRefresh } from "@/features/hub/lib/resident-status-refresh";
+import {
+  beginServerModelWait,
+  serverModelWaitOutstanding,
+  statusPollSignal,
+} from "../lib/server-model-wait";
 // eslint-disable-next-line no-restricted-imports -- The hub barrel imports chat; this lifecycle leaf does not.
 import { dismissStartToastsForModelSelection } from "@/features/hub/download-manager";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
@@ -225,10 +230,6 @@ const LORA_SUFFIX_RE = /_(\d{9,})$/;
 const CLI_LOAD_POLL_IDLE_MS = 60_000;
 const CLI_LOAD_POLL_MAX_MS = 600_000;
 
-// Module-scoped, not a per-call argument: every refresh writes the selection the observer
-// polls on, so any of them landing mid-wait would end it on the outgoing model.
-let pendingServerModelWaits = 0;
-
 async function waitForServerModel(signal?: AbortSignal): Promise<void> {
   const started = Date.now();
   let sawLoad = false;
@@ -239,11 +240,15 @@ async function waitForServerModel(signal?: AbortSignal): Promise<void> {
     !useChatRuntimeStore.getState().modelLoading
   ) {
     let status: InferenceStatusResponse | null = null;
+    // Capped, or a half-open read parks the loop past both caps below and past the
+    // unmount that aborted it, with the settlement gate still up behind it.
+    const poll = statusPollSignal(signal);
     try {
-      // Into the request, not just around it: a stalled read outlives the unmount.
-      status = await getInferenceStatus(signal);
+      status = await getInferenceStatus(poll.signal);
     } catch {
       // A later poll can recover from a transient status failure.
+    } finally {
+      poll.dispose();
     }
     if (
       signal?.aborted ||
@@ -505,7 +510,7 @@ async function syncInferenceStatusToStore(options?: {
     const statusLoading = (statusRes.loading?.length ?? 0) > 0;
     // A replacement names the outgoing model active and the incoming one loading. Adopting
     // the outgoing one sets the checkpoint the observer needs empty, so it writes this alone.
-    if (statusLoading && pendingServerModelWaits > 0) return;
+    if (statusLoading && serverModelWaitOutstanding()) return;
 
     const selectedCheckpoint = useChatRuntimeStore.getState().params.checkpoint;
     const isExternalSelectionActive = isExternalModelId(selectedCheckpoint);
@@ -619,9 +624,8 @@ async function syncInferenceStatusToStore(options?: {
 /**
  * The mount handoff: hydrate from status, then observe until the server settles.
  *
- * The gate is up before the sync is issued, since a refresh issued later can answer first and
- * adopt the outgoing model, and comes down on the abort, since listModels and listLoras take
- * no signal and an unmount cannot end a stalled one.
+ * The gate is up before the sync is issued, since a refresh issued later can answer first
+ * and adopt the outgoing model.
  */
 async function refreshAndWaitForServerModel(options?: {
   signal?: AbortSignal;
@@ -630,19 +634,11 @@ async function refreshAndWaitForServerModel(options?: {
   externalChatSlotLoad?: boolean;
 }): Promise<void> {
   const signal = options?.signal;
-  let held = true;
-  pendingServerModelWaits += 1;
-  const release = () => {
-    if (!held) return;
-    held = false;
-    pendingServerModelWaits -= 1;
-  };
-  signal?.addEventListener("abort", release, { once: true });
+  const release = beginServerModelWait(signal);
   try {
     await syncInferenceStatusToStore(options);
     await waitForServerModel(signal);
   } finally {
-    signal?.removeEventListener("abort", release);
     release();
   }
 }

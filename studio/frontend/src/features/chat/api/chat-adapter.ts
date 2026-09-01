@@ -132,6 +132,10 @@ import {
   tryAdoptServerActiveModel,
 } from "../lib/apply-inference-status-to-store";
 import { isSpeechOnlyStatus } from "../lib/speech-only-status";
+import {
+  beginServerModelWait,
+  statusPollSignal,
+} from "../lib/server-model-wait";
 import { syncModelCapabilities } from "../hooks/use-chat-model-runtime";
 import {
   clampReasoningEffortToLevels,
@@ -2947,34 +2951,47 @@ async function waitForSettledServerStatus(options?: {
   const deadline = Date.now() + CLI_LOAD_ADOPT_MAX_MS;
   let failures = 0;
   let announced = false;
+  // This loop owns settlement while it runs, so an ordinary refresh must not publish a
+  // status taken mid-replacement as the pick: stopEarly would read the outgoing model as
+  // a user selection and hand it to the send.
+  const release = beginServerModelWait(options?.abortSignal);
 
-  for (;;) {
-    options?.abortSignal?.throwIfAborted();
-    if (options?.stopEarly?.()) return { outcome: "stopped" };
-
-    let status: InferenceStatusResponse | null = null;
-    try {
-      // Into the request, not just around it: a stalled read outlives the cancellation.
-      status = await getInferenceStatus(options?.abortSignal);
-      failures = 0;
-    } catch {
-      // Cancellation, not a server that cannot answer: it must not become a toast.
+  try {
+    for (;;) {
       options?.abortSignal?.throwIfAborted();
-      // A failed read is not evidence the server is idle.
-      if (++failures >= 2) return { outcome: "status-unavailable" };
-    }
+      if (options?.stopEarly?.()) return { outcome: "stopped" };
 
-    options?.abortSignal?.throwIfAborted();
-    if (options?.stopEarly?.()) return { outcome: "stopped" };
-    if (status && (status.loading?.length ?? 0) === 0) {
-      return { outcome: "settled", status };
+      let status: InferenceStatusResponse | null = null;
+      // Capped, or a half-open read parks this poll past the deadline below, holding the
+      // send's model-loading lease and the gate above with it.
+      const poll = statusPollSignal(options?.abortSignal);
+      try {
+        status = await getInferenceStatus(poll.signal);
+        failures = 0;
+      } catch {
+        // Cancellation, not a server that cannot answer: it must not become a toast.
+        options?.abortSignal?.throwIfAborted();
+        // A failed read is not evidence the server is idle. A timed-out one is a failure
+        // like any other, so two in a row still end the wait rather than repeat it.
+        if (++failures >= 2) return { outcome: "status-unavailable" };
+      } finally {
+        poll.dispose();
+      }
+
+      options?.abortSignal?.throwIfAborted();
+      if (options?.stopEarly?.()) return { outcome: "stopped" };
+      if (status && (status.loading?.length ?? 0) === 0) {
+        return { outcome: "settled", status };
+      }
+      if (status && !announced) {
+        toast.info("Waiting for model to finish loading…");
+        announced = true;
+      }
+      if (Date.now() >= deadline) return { outcome: "still-loading" };
+      await new Promise((resolve) => setTimeout(resolve, 500));
     }
-    if (status && !announced) {
-      toast.info("Waiting for model to finish loading…");
-      announced = true;
-    }
-    if (Date.now() >= deadline) return { outcome: "still-loading" };
-    await new Promise((resolve) => setTimeout(resolve, 500));
+  } finally {
+    release();
   }
 }
 

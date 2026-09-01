@@ -32,6 +32,9 @@ def _source_path(relative_path: str) -> Path:
 
 HOOK = _source_path("studio/frontend/src/features/chat/hooks/use-chat-model-runtime.ts")
 CHAT_PAGE = _source_path("studio/frontend/src/features/chat/chat-page.tsx")
+# Inlined for real, not stubbed: the gate is shared with the send-path poll, so a stub would
+# only prove this file agrees with itself.
+WAIT_GATE = _source_path("studio/frontend/src/features/chat/lib/server-model-wait.ts")
 TEMP = WORKDIR / "temp" / "chat_mount_cli_load_adoption"
 OUTGOING = "org/outgoing-A-GGUF"
 INCOMING = "org/incoming-B-GGUF"
@@ -169,6 +172,38 @@ export const toast = {
   info: (title: string, options?: any) => EVENTS.push({ kind: "toast.info", title, options }),
   error: (title: string, options?: any) => EVENTS.push({ kind: "toast.error", title, options }),
 };
+
+// The two ponyfills server-model-wait.ts imports. Its own per-read cap is 30s, which no test
+// should wait out, so the timeout here is short and the real constant is asserted separately.
+export const TEST_POLL_TIMEOUT_MS = 1200;
+export function disposableTimeoutSignal(_ms: number) {
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(new DOMException("The operation timed out.", "TimeoutError")),
+    TEST_POLL_TIMEOUT_MS,
+  );
+  return { signal: controller.signal, dispose: () => clearTimeout(timer) };
+}
+export function pollSignal(parent: AbortSignal, _ms: number) {
+  const timeout = disposableTimeoutSignal(_ms);
+  const controller = new AbortController();
+  const onAbort = (reason: unknown) => {
+    if (!controller.signal.aborted) controller.abort(reason);
+  };
+  const a = () => onAbort(parent.reason);
+  const b = () => onAbort(timeout.signal.reason);
+  parent.addEventListener("abort", a, { once: true });
+  timeout.signal.addEventListener("abort", b, { once: true });
+  if (parent.aborted) a();
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      parent.removeEventListener("abort", a);
+      timeout.signal.removeEventListener("abort", b);
+      timeout.dispose();
+    },
+  };
+}
 """
 
 
@@ -202,6 +237,14 @@ def _between(source: str, start: str, end: str) -> str:
 def _build_harness(run_dir: Path) -> None:
     """Slice the mount path verbatim out of the hook."""
     source = HOOK.read_text(encoding = "utf-8")
+    # The real gate, with its imports dropped: the preamble supplies those two ponyfills.
+    gate = "\n".join(
+        line
+        for line in WAIT_GATE.read_text(encoding = "utf-8").splitlines()
+        if not line.startswith(("import ", "  disposableTimeoutSignal,", "  pollSignal,",
+                                "  type PollSignal,", '} from "@/features/hub'))
+    ).replace(": PollSignal", "")
+    assert "export function beginServerModelWait(" in gate
     poll = _between(source, "const CLI_LOAD_POLL_IDLE_MS", "function parseTrailingEpoch(")
     assert "async function waitForServerModel(" in poll
     sync = _between(
@@ -227,7 +270,7 @@ def _build_harness(run_dir: Path) -> None:
     # The handoff owner has to come along, or the wait is registered nowhere.
     assert "async function refreshAndWaitForServerModel(" in sync
     (run_dir / "harness.ts").write_text(
-        "// @ts-nocheck\n" + PREAMBLE + "\n" + poll + "\n" + sync + "\n" + refresh,
+        "// @ts-nocheck\n" + PREAMBLE + "\n" + gate + "\n" + poll + "\n" + sync + "\n" + refresh,
         encoding = "utf-8",
     )
 
@@ -244,6 +287,7 @@ def _run(script_body: str) -> dict:
         // @ts-nocheck
         import {
           EVENTS,
+          beginServerModelWait,
           refresh,
           setScenario,
           setStoreState,
@@ -538,6 +582,72 @@ def test_the_mount_refresh_does_not_wait_on_the_lora_inventory():
     assert re.search(r"void refresh\(\{\s*includeLoras: false,", effect), effect
     assert "waitForServerModel: !useChatRuntimeStore.getState().params.checkpoint" in effect
     assert "refreshDeferredModelInventories();" in effect
+
+
+def test_a_wait_from_the_send_path_also_stops_a_refresh_publishing_the_outgoing_model():
+    """The gate is shared, so the send-path poll gets the same protection as the mount one.
+
+    That poll's stopEarly reads params.checkpoint to decide the user picked something. A
+    refresh hydrating the outgoing model mid-replacement would look exactly like a pick and
+    hand it to the send, which then talks to the model the server is replacing.
+    """
+    out = _run(
+        """
+        setScenario({
+          models: [{ id: "%(outgoing)s" }],
+          status: () => REPLACING,
+        });
+        setStoreState(emptyStore());
+        const release = beginServerModelWait();
+        await refresh({ includeLoras: false });
+        const during = storeState().params.checkpoint;
+        release();
+        await refresh({ includeLoras: false });
+        EVENTS.push({ kind: "duringWait", checkpoint: during });
+        """
+        % {"outgoing": OUTGOING}
+    )
+    during = [e for e in out["events"] if e["kind"] == "duringWait"][0]["checkpoint"]
+    assert during == "", "a refresh published the outgoing model while a wait was outstanding"
+    # And the gate is a gate, not a mute: once the wait is over the same refresh publishes.
+    assert out["checkpoint"] == OUTGOING
+
+
+def test_a_stalled_status_read_does_not_park_the_poll_on_one_request():
+    """Each read is capped, so the loop's own deadline is real.
+
+    fetch has no timeout, so before this the advertised cap bounded nothing: one half-open
+    read parked the poll indefinitely, holding the shared gate and the send's lease with it.
+    """
+    out = _run(
+        """
+        setScenario({
+          models: [{ id: "%(incoming)s" }],
+          // Reads 2 and 3 are the observer's, and neither ever answers.
+          hangStatusReads: [2, 3],
+          status: (elapsed) => (elapsed < 4000 ? STARTING : SETTLED_ON_INCOMING),
+        });
+        """
+        % {"incoming": INCOMING}
+        + MOUNT
+        + "        await mount;\n"
+    )
+    assert out["checkpoint"] == INCOMING
+    # Two capped reads plus the ones on either side: the loop kept going instead of parking.
+    assert [event["kind"] for event in out["events"]].count("status.hang") == 2
+    assert [event["kind"] for event in out["events"]].count("status") >= 3
+
+
+def test_the_shipped_per_read_cap_is_the_one_the_harness_stands_in_for():
+    """The harness shortens the cap so no test waits it out; this pins what really ships."""
+    gate = WAIT_GATE.read_text(encoding = "utf-8")
+    assert "export const STATUS_POLL_TIMEOUT_MS = 30_000;" in gate
+    assert re.search(r"return parent\s*\?\s*pollSignal\(parent, STATUS_POLL_TIMEOUT_MS\)", gate)
+    adapter = _source_path(
+        "studio/frontend/src/features/chat/api/chat-adapter.ts"
+    ).read_text(encoding = "utf-8")
+    assert "statusPollSignal(options?.abortSignal)" in adapter
+    assert "beginServerModelWait(options?.abortSignal)" in adapter
 
 
 def test_a_refresh_that_is_not_the_mount_waiter_still_publishes_residency():
