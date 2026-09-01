@@ -2084,21 +2084,22 @@ def _openai_llama_uncapped_max_tokens(
     llama_backend,
     injects_current_date: bool = False,
 ) -> Optional[_UncappedMaxTokens]:
-    """The cap to give a request that names none, so it does not reserve the whole cache.
+    """The cap for a request that states none, so what it is charged is what it may use.
 
-    A request with no ``max_tokens`` is forwarded as ``max_tokens = backend_ctx``, so
-    `_openai_llama_admission_tokens` has to reserve the rest of the window for it -- it
-    really may generate that much. One such request commits the entire cache and every
-    other caller queues behind it, however small. That is #9955: the clients that never
-    set a cap (browser translation, most OpenAI SDK defaults) got one generation at a
-    time no matter how many slots were configured.
+    A request that states no cap (`_openai_llama_cap_is_unstated`) is sent
+    ``max_tokens = backend_ctx``, and #10070 charges it a flat allowance rather than the
+    whole cache, which is what stopped the queue serialising (#9955). That allowance is an
+    ESTIMATE of what it will generate, not a limit on what it may: a plain chat has no
+    round boundary to re-cost it, so concurrent ones generate past what they were charged
+    and llama.cpp kills them with "context size has been exceeded". Measured on a 32768
+    cache over four slots, four such chats reached 32667 tokens and three died.
 
-    Capping generation at ``share - prompt - headroom`` makes that reservation honest
-    rather than pessimistic, so ``--parallel N`` really serves N of them at once and
-    nothing is admitted the cache cannot hold: the overcommit #9392 closed stays closed.
-    The share covers the prompt too, because that is what a slot holds, and what
-    llama.cpp gives a slot when the cache is split N ways instead of unified -- Unsloth
-    passes ``--kv-unified`` so a NAMED cap can still use the whole window.
+    Capping generation at ``share - prompt - headroom`` turns the charge into a limit, so
+    ``--parallel N`` serves N of them and nothing is admitted the cache cannot hold: the
+    overcommit #9392 closed stays closed. The share covers the prompt too, because that is
+    what a slot holds, and what llama.cpp gives a slot when the cache is split N ways
+    instead of unified -- Unsloth passes ``--kv-unified`` so a STATED cap below the window
+    can still use the whole of it.
 
     Sized against a bound, not a rate (``strict``): a blob priced at the dense four
     characters per token would be handed the room it is already sitting in, and N of
@@ -2112,10 +2113,9 @@ def _openai_llama_uncapped_max_tokens(
     one decision: admission prices the unchanged payload at the dense rate, so without
     ``extra_prompt_tokens`` it would reserve less than the request occupies.
 
-    None means "leave it unset", what every request had before this: one slot (whose
+    None means "leave the cap alone", keeping #10070's flat allowance: one slot (whose
     share is the whole cache), an unreadable cache size, admission or token accounting
     off, a request carrying tools, or a prompt with no usable answer left inside a share.
-    None of those serialise anything this could unserialise.
     """
     config = llama_admission_config_from_env()
     # Slot-only admission does not charge tokens, so an uncapped request costs a slot
@@ -2153,6 +2153,34 @@ def _openai_llama_uncapped_max_tokens(
         return None
     priced = _openai_llama_admission_prompt_tokens(payload, image_tokens = image_tokens)
     return _UncappedMaxTokens(output_tokens, prompt_tokens - (priced or 0))
+
+
+def _openai_llama_cap_is_unstated(payload, llama_backend) -> bool:
+    """Whether this request names no real limit on what it may generate.
+
+    Two spellings mean the same thing, and `_openai_llama_admission_output_allowance`
+    already charges them the same: an omitted field, which `_build_passthrough_payload`
+    sends as ``max_tokens = backend_ctx``, and a cap at or above the window, which is what
+    Studio's own "Max" sends. Resolving only the first would leave the charge an estimate
+    for the traffic that produces it most, and four concurrent chats at "Max" then fill
+    the cache and llama.cpp kills them mid-generation.
+    """
+    cap = _effective_openai_max_tokens(payload)
+    if cap is None:
+        return True
+    window = _openai_llama_admission_context_window(llama_backend)
+    return bool(window) and cap >= window
+
+
+def _openai_effective_max_tokens_field(payload) -> str:
+    """The field `_effective_openai_max_tokens` reads, which is the one to overwrite.
+
+    ``max_completion_tokens`` wins over the deprecated ``max_tokens``, so writing the
+    resolved cap to the wrong one would send the caller's number and charge ours.
+    """
+    if getattr(payload, "max_completion_tokens", None) is not None:
+        return "max_completion_tokens"
+    return "max_tokens"
 
 
 def _openai_llama_uncapped_injected_date_tokens(request: Optional[Request]) -> int:
@@ -20455,14 +20483,16 @@ async def produce_openai_chat_completions(
     # carry `tool_calls` (content=None) — both of which are valid in
     # multi-turn client-side tool loops.
     effective_max_tokens = _effective_openai_max_tokens(payload)
-    _uncapped_max_tokens_resolved = False
+    # The field and value to put back if the tool loop claims this request below.
+    _uncapped_max_tokens_restore = None
     # Prompt the reservations below cannot see. Zero unless a cap is resolved here.
     _uncapped_extra_prompt_tokens = 0
-    if using_gguf and effective_max_tokens is None:
-        # An uncapped request is forwarded as `max_tokens = backend_ctx` and reserves the
-        # whole KV cache, serialising every uncapped client behind one generation (#9955).
-        # Written onto the payload, not kept local: the branches below do not share one
-        # path to llama-server, and a cap they disagreed on is the original mismatch.
+    if using_gguf and _openai_llama_cap_is_unstated(payload, llama_backend):
+        # A request that states no cap is sent `max_tokens = backend_ctx` while #10070
+        # charges it a flat allowance, so what it may generate is not what it was charged
+        # and concurrent ones overrun the cache. Written onto the payload, not kept local:
+        # the branches below do not share one path to llama-server, and a cap they
+        # disagreed on is the mismatch itself.
         _shared_max_tokens = _openai_llama_uncapped_max_tokens(
             payload,
             request = request,
@@ -20473,10 +20503,11 @@ async def produce_openai_chat_completions(
             injects_current_date = True,
         )
         if _shared_max_tokens is not None:
-            payload.max_tokens = _shared_max_tokens.max_tokens
+            _field = _openai_effective_max_tokens_field(payload)
+            _uncapped_max_tokens_restore = (_field, getattr(payload, _field))
+            setattr(payload, _field, _shared_max_tokens.max_tokens)
             _uncapped_extra_prompt_tokens = _shared_max_tokens.extra_prompt_tokens
             effective_max_tokens = _effective_openai_max_tokens(payload)
-            _uncapped_max_tokens_resolved = True
 
     _has_tool_messages = _has_openai_tool_history(payload.messages)
     _has_tool_catalog = bool(payload.tools and len(payload.tools) > 0)
@@ -20776,9 +20807,9 @@ async def produce_openai_chat_completions(
         # A tool loop's first round may spend the whole output allowance before re-costing
         # runs, so it is charged the whole window below either way: a share-sized cap would
         # only shorten it. Given back here, where `use_tools` is final.
-        if use_tools and _uncapped_max_tokens_resolved:
-            payload.max_tokens = None
-            effective_max_tokens = None
+        if use_tools and _uncapped_max_tokens_restore is not None:
+            setattr(payload, *_uncapped_max_tokens_restore)
+            effective_max_tokens = _effective_openai_max_tokens(payload)
             _uncapped_extra_prompt_tokens = 0
 
         if use_tools:
@@ -26069,14 +26100,18 @@ async def _responses_stream(
     # And the same omitted-cap resolution, for the same reason (#9955): a /v1/responses
     # stream that names no cap would otherwise reserve the whole KV cache here too.
     _uncapped_extra_prompt_tokens = 0
-    if _effective_openai_max_tokens(chat_req) is None:
+    if _openai_llama_cap_is_unstated(chat_req, llama_backend):
         _shared_max_tokens = _openai_llama_uncapped_max_tokens(
             chat_req,
             request = request,
             llama_backend = llama_backend,
         )
         if _shared_max_tokens is not None:
-            chat_req.max_tokens = _shared_max_tokens.max_tokens
+            setattr(
+                chat_req,
+                _openai_effective_max_tokens_field(chat_req),
+                _shared_max_tokens.max_tokens,
+            )
             _uncapped_extra_prompt_tokens = _shared_max_tokens.extra_prompt_tokens
     body = await _build_openai_passthrough_body_async(
         chat_req, backend_ctx = llama_backend.context_length, llama_backend = llama_backend

@@ -233,6 +233,62 @@ class TestDenseText:
         assert _cap(payload) is None
 
 
+class TestWhichRequestsStateNoCap:
+    """Two spellings of "no cap", and `_openai_llama_admission_output_allowance` already
+    charges them the same. Resolving only the omitted one would leave the charge an
+    estimate for Studio's own chat, which sends the context length as its "Max"."""
+
+    def test_an_omitted_cap(self):
+        assert routes_inference._openai_llama_cap_is_unstated(_uncapped(), _backend())
+
+    def test_a_cap_at_the_window(self):
+        """What "Max" sends."""
+        payload = _uncapped()
+        payload.max_tokens = CTX
+        assert routes_inference._openai_llama_cap_is_unstated(payload, _backend())
+
+    def test_a_cap_above_the_window(self):
+        payload = _uncapped()
+        payload.max_tokens = CTX * 2
+        assert routes_inference._openai_llama_cap_is_unstated(payload, _backend())
+
+    def test_a_cap_below_the_window_is_a_real_cap(self):
+        payload = _uncapped()
+        payload.max_tokens = CTX - 1
+        assert not routes_inference._openai_llama_cap_is_unstated(payload, _backend())
+
+    def test_an_unreadable_window_leaves_a_stated_cap_alone(self):
+        """With no window to compare against, only an omitted field reads as unstated."""
+        payload = _uncapped()
+        payload.max_tokens = CTX
+        backend = _backend(context_length = None)
+        assert not routes_inference._openai_llama_cap_is_unstated(payload, backend)
+
+    def test_the_window_is_the_slot_not_the_budget(self):
+        """Under --no-kv-unified the budget is N slots; the comparison is per-slot, which
+        is what `_openai_llama_admission_output_allowance` measures against too."""
+        backend = _backend(context_length = SHARE, total = CTX)
+        payload = _uncapped()
+        payload.max_tokens = SHARE
+        assert routes_inference._openai_llama_cap_is_unstated(payload, backend)
+
+    def test_the_resolved_cap_replaces_a_window_sized_one(self):
+        """The point of the widening: the same share cap either spelling arrives in."""
+        stated = _uncapped()
+        stated.max_tokens = CTX
+        assert _cap(stated) == _cap(_uncapped()) == SHARE - HEADROOM - _charged(_uncapped())
+
+    def test_max_completion_tokens_is_the_field_that_is_overwritten(self):
+        """It wins over max_tokens, so writing the other one would send the caller's
+        number while charging ours."""
+        payload = _uncapped()
+        payload.max_completion_tokens = CTX
+        assert routes_inference._openai_effective_max_tokens_field(payload) == (
+            "max_completion_tokens"
+        )
+        assert routes_inference._openai_effective_max_tokens_field(_uncapped()) == "max_tokens"
+
+
 class TestWhatTheShareDoesNotHold:
     """Prompt that reaches llama-server without appearing in the payload estimate."""
 
