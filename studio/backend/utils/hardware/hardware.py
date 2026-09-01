@@ -4387,7 +4387,9 @@ def rocm_gpu_ids_without_torch_kernels() -> set[int]:
         # Dropping every device would leave the caller no GPU and silently force CPU.
         # Counted in ordinals, not ids: a mask may name one id twice, and the
         # deduplicated set then reads as fewer devices than were actually rejected.
-        if readable and unsupported_ordinals >= readable:
+        # A device whose arch never read is still selectable, so it is not
+        # "every device": bailing out then hands the known-uncovered card back.
+        if readable and readable == device_count and unsupported_ordinals >= readable:
             logger.warning(
                 "The installed PyTorch build has no kernels for any GPU on this host "
                 "(built for %s); leaving device selection alone.",
@@ -4960,6 +4962,11 @@ def _rocr_relative_visibility(value: str) -> Optional[str]:
         return None
     rocr = os.environ.get("ROCR_VISIBLE_DEVICES")
     if rocr is None:
+        return None
+    # An inherited CUDA mask is a HIP-layer mask too (rocclr reads it when
+    # HIP_VISIBLE_DEVICES is empty), so the ids already went through it once and
+    # translating them again escapes the parent's restriction.
+    if _rocm_visibility_masks_are_stacked():
         return None
     try:
         agents = [int(token.strip()) for token in rocr.split(",") if token.strip()]

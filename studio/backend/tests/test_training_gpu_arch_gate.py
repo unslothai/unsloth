@@ -230,6 +230,18 @@ class TestFailsOpen:
         _install(monkeypatch, _fake_torch([_props("gfx1101"), _props("gfx1036"), third]))
         assert rocm_gpu_ids_without_torch_kernels() == {1}
 
+    @pytest.mark.parametrize(
+        "second",
+        [_props(""), RuntimeError("cannot describe device")],
+        ids = ["no_arch_attribute", "properties_raise"],
+    )
+    def test_an_unreadable_device_is_not_an_all_uncovered_host(self, monkeypatch, no_mask, second):
+        # One rejected device out of one READ device is not "every GPU": the
+        # unread one is still selectable, so nothing forces CPU and the
+        # known-uncovered GPU 0 must stay out (#8792).
+        _install(monkeypatch, _fake_torch([_props("gfx1036"), second]))
+        assert rocm_gpu_ids_without_torch_kernels() == {0}
+
     def test_no_cuda_runtime_is_inert(self, monkeypatch, no_mask):
         _install(monkeypatch, _fake_torch([_props("gfx1036")], available = False))
         assert rocm_gpu_ids_without_torch_kernels() == set()
@@ -478,6 +490,17 @@ class TestThePinLandsOnTheKeptCard:
             os.environ["HIP_VISIBLE_DEVICES"] = "1,0"
             apply_gpu_ids([1], backend = DeviceType.CUDA.value)
             assert os.environ["HIP_VISIBLE_DEVICES"] == "1"
+
+    def test_an_inherited_cuda_mask_is_already_relative(self, monkeypatch):
+        # rocclr reads CUDA_VISIBLE_DEVICES when HIP_VISIBLE_DEVICES is empty, so
+        # the parent already indexed the ROCr agents once: translating again
+        # writes "0", which is ROCr agent 0 -- physical 1, the card the parent hid.
+        with patch.dict(os.environ):
+            self._rocr(monkeypatch, "1,0")
+            os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+            apply_gpu_ids([1], backend = DeviceType.CUDA.value)
+            assert os.environ["HIP_VISIBLE_DEVICES"] == "1"
+            assert os.environ["CUDA_VISIBLE_DEVICES"] == "1"
 
     def test_a_uuid_rocr_mask_is_left_alone(self, monkeypatch):
         with patch.dict(os.environ):
