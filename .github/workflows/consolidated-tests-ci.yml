@@ -232,7 +232,7 @@ jobs:
           pip install \
             python-multipart aiofiles sqlalchemy cryptography \
             pyyaml jinja2 mammoth unpdf requests typer \
-            'numpy<3' pytest==9.0.3 pytest-asyncio pytest-xdist httpx \
+            'numpy<3' pytest==9.0.3 pytest-asyncio pytest-xdist pytest-timeout httpx \
             protobuf sentencepiece triton \
             psutil packaging tqdm safetensors datasets \
             'peft>=0.18,<0.20' 'accelerate>=0.34,<2' \
@@ -464,6 +464,18 @@ jobs:
         # the test never stubbed; this fails on every platform regardless
         # of CUDA. Tracked upstream as an unsloth_zoo bug; deselecting
         # here unblocks unsloth CI until the loader fixture is fixed.
+        #
+        # A test that hangs rather than fails used to consume the whole 35 minute
+        # job budget and report nothing usable: the job ended as "cancelled", with
+        # no test name, no traceback, and every later step marked skipped. That is
+        # how unsloth_zoo's gather_qmm guard walking a chain forever under the mlx
+        # shim presented. PYTEST_TIMEOUT is read by pytest-timeout on every pytest
+        # invocation in this step, so one setting covers the xdist run and each
+        # serial file below. 10 minutes per test is far above the slowest honest
+        # CPU test here, so it only ever fires on a genuine hang, and when it does
+        # it names the test and dumps its stack.
+        env:
+          PYTEST_TIMEOUT: 600
         working-directory: ${{ runner.temp }}/unsloth-zoo
         run: |
           # Keep tests within each file on one worker. MLX shims contaminate sys.modules,
