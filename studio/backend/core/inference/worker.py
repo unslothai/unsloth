@@ -27,6 +27,7 @@ from typing import Any, Optional
 
 logger = get_logger(__name__)
 from core.inference.audio_errors import AUDIO_UNSUPPORTED_CODE
+from core.inference.batch_errors import RowRefused
 from utils.hardware import apply_gpu_ids, is_apple_silicon
 
 # Fresh spawned interpreter: re-apply the OS-trust-store injection.
@@ -1006,6 +1007,10 @@ class _ResidentBatch:
         # number when its command asked for several replies and None when it asked
         # for one, which is the whole difference in how the two are answered.
         self._pending: dict[str, set] = {}
+        #: Requests whose stop the session could not finish, because it would not
+        #: give a row back yet. Their rows still report, so nothing more is owed
+        #: unless the batch closes with one still in it.
+        self._ending: set = set()
 
     @property
     def rows_in_flight(self) -> int:
@@ -1018,9 +1023,14 @@ class _ResidentBatch:
         probe = getattr(self.backend, "resident_unavailable_reason", None)
         if not callable(probe):
             return "this backend has no batch a reply can join"
-        return probe(cmd)
+        rows = cmd.get("rows") or []
+        for request in [{**cmd, **row} for row in rows] if rows else [cmd]:
+            reason = probe(request)
+            if reason is not None:
+                return reason
+        return None
 
-    def admit(self, cmd: dict, cancel_event) -> None:
+    def admit(self, cmd: dict, cancel_event) -> bool:
         """Take a command's replies into the batch, reporting what precedes them."""
         request_id = cmd.get("request_id", "")
         rows = cmd.get("rows") or []
@@ -1029,7 +1039,7 @@ class _ResidentBatch:
         requests = [{**shared, **row} for row in rows] if rows else [shared]
 
         if self.session is None:
-            self.session = self.backend.open_resident_text_batch(
+            self.session = self.backend.open_resident_batch(
                 width = max(1, int(cmd.get("parallel_slots") or 1), len(requests)),
                 record_stats = self._stats.__setitem__,
             )
@@ -1039,6 +1049,13 @@ class _ResidentBatch:
         try:
             for request, handle in zip(requests, handles):
                 prefixes.append((handle, self.session.admit(request, handle)))
+        except RowRefused as refusal:
+            if not self._forget(request_id, withdraw = True):
+                self._fail_all(refusal)
+                raise
+            logger.info("Request_id=%s cannot join this batch: %s", request_id, refusal)
+            self._close_if_empty()
+            return False
         except BaseException as exc:
             if self._forget(request_id, withdraw = True):
                 self._close_if_empty()
@@ -1054,6 +1071,7 @@ class _ResidentBatch:
         for handle, prefix in prefixes:
             if prefix:
                 self._send_token(handle, prefix)
+        return True
 
     def cancel(self, request_id: str) -> bool:
         """Withdraw one request's replies, leaving every other reply decoding."""
@@ -1068,6 +1086,8 @@ class _ResidentBatch:
             logger.error("Batched cancellation error: %s", exc, exc_info = True)
             self._fail_all(exc)
             return True
+        if self._pending.get(request_id):
+            self._ending.add(request_id)
         self._close_if_empty()
         return True
 
@@ -1108,6 +1128,9 @@ class _ResidentBatch:
 
     def close(self) -> None:
         session, self.session = self.session, None
+        for request_id in [r for r in self._pending if r in self._ending]:
+            self._abandon(request_id)
+        self._ending.clear()
         self._pending.clear()
         self._stats.clear()
         if session is None:
@@ -1118,10 +1141,19 @@ class _ResidentBatch:
             logger.error("Could not close the resident batch", exc_info = True)
 
     def _report(self, handle, snapshot) -> None:
+        request_id, row = handle
+        pending = self._pending.get(request_id)
+        if pending is None or handle not in pending:
+            # A reply the batch no longer records. A row taken back when its
+            # command could not join is still the stream's until the stream will
+            # give it up, so it reports after its caller has been sent elsewhere
+            # -- and being told a row finished would end a reply that has not
+            # started yet.
+            self._stats.pop(handle, None)
+            return
         if snapshot is not None:
             self._send_token(handle, snapshot)
             return
-        request_id, row = handle
         if row is not None:
             _send_response(
                 self.resp_queue,
@@ -1132,11 +1164,9 @@ class _ResidentBatch:
                     "stats": self._stats.pop(handle, None),
                 },
             )
-        pending = self._pending.get(request_id)
-        if pending is not None:
-            pending.discard(handle)
-            if not pending:
-                self._finish(request_id)
+        pending.discard(handle)
+        if not pending:
+            self._finish(request_id)
 
     def _send_token(self, handle, text) -> None:
         request_id, row = handle
@@ -1158,6 +1188,21 @@ class _ResidentBatch:
         )
         logger.info("Finished generation for request_id=%s", request_id)
 
+    def _abandon(self, request_id: str) -> None:
+        """End a turn with the batch it was in, rather than with a reply."""
+        stats = self._stats.pop((request_id, None), None)
+        self._forget(request_id, withdraw = False)
+        _send_response(
+            self.resp_queue,
+            {
+                "type": "gen_done",
+                "request_id": request_id,
+                "cancelled": True,
+                "stats": stats,
+            },
+        )
+        logger.info("Ending request_id=%s with the batch it was in", request_id)
+
     def _fail(self, request_id: str, exc: BaseException, stack: str) -> None:
         self._forget(request_id, withdraw = False)
         _send_response(
@@ -1171,8 +1216,9 @@ class _ResidentBatch:
         )
 
     def _forget(self, request_id: str, *, withdraw: bool) -> bool:
-        """Drop what the batch records for a request. False if rows it placed are
-        still the generator's, which nothing records any more."""
+        """Drop what the batch records for a request. False where taking its rows
+        back failed, which leaves them decoding with nothing recording them."""
+        self._ending.discard(request_id)
         pending = self._pending.pop(request_id, None) or set()
         taken_back = True
         if withdraw and pending and self.session is not None:
@@ -1629,8 +1675,9 @@ def run_inference_process(
                             continue
                         if _stopped_before_it_ran(cmd, resp_queue, stops):
                             continue
-                        batch.admit(cmd, None)
-                        continue
+                        if batch.admit(cmd, None):
+                            continue
+                        reason = "it does not prepare like the replies in the batch"
                     if batch.rows_in_flight:
                         logger.info(
                             "Holding request_id=%s until the batch empties: %s",

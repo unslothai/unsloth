@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from core.inference import worker
+from core.inference.batch_errors import RowRefused
 from core.inference.stop_ledger import StopLedger
 
 
@@ -36,12 +37,16 @@ class _Session:
         self.script = {}
         self.stats_at_retire = {}
         self.refuse_from = None
+        self.will_not_take = set()
+        self.holds = set()
 
     @property
     def rows_in_flight(self):
         return len(self.rows)
 
     def admit(self, request, handle):
+        if handle[0] in self.will_not_take or handle in self.will_not_take:
+            raise RowRefused("it does not prepare like the replies in the batch")
         if self.refuse_from is not None and len(self.admitted) >= self.refuse_from:
             raise RuntimeError("no room")
         self.admitted.append((handle, request))
@@ -62,9 +67,7 @@ class _Session:
             yield handle, event
 
     def withdraw(self, handles):
-        # Only rows it is actually holding, as the real session does: a rollback
-        # names every reply the request asked for, admitted or not.
-        held = [handle for handle in handles if handle in self.rows]
+        held = [handle for handle in handles if handle in self.rows and handle not in self.holds]
         self.withdrawn.append(held)
         for handle in held:
             self.rows.remove(handle)
@@ -94,7 +97,7 @@ class _Backend:
             self.on_reason()
         return self.reason
 
-    def open_resident_text_batch(
+    def open_resident_batch(
         self,
         *,
         width,
