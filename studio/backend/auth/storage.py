@@ -29,8 +29,7 @@ MIN_PASSWORD_LENGTH = 8
 # change so the credential never lingers on disk.
 _BOOTSTRAP_PW_PATH = DB_PATH.parent / ".bootstrap_password"
 
-# Transactional delivery state for an auto-generated launch password. The value
-# is the password hash committed to auth_user in the same SQLite transaction.
+# Hash of an auto-generated password awaiting delivery, committed with auth_user.
 _CREDENTIAL_UNDELIVERED_KEY = "credential_undelivered_password_hash"
 
 # In-process cache to avoid re-reading the file on every HTML serve.
@@ -281,10 +280,7 @@ def credential_undelivered(username: str) -> bool:
         current_hash = pending["current_hash"]
         if pending_hash and current_hash and hmac.compare_digest(pending_hash, current_hash):
             return True
-        # A later password change should clear this transactionally. Retain the
-        # self-healing fallback for databases written by an older/mixed process,
-        # but delete only the value observed above: a concurrent launcher may
-        # replace it after the SELECT with its own valid pending-delivery marker.
+        # Heal older databases without deleting a concurrent launcher's marker.
         conn.execute(
             "DELETE FROM app_secrets WHERE key = ? AND value = ?",
             (_CREDENTIAL_UNDELIVERED_KEY, pending_hash),
@@ -917,9 +913,7 @@ def update_password(
     salt, pwd_hash = hash_password(new_password)
     jwt_secret = secrets.token_urlsafe(64)
 
-    # Only literal fragments are interpolated below; every value stays a bound
-    # parameter, so this is not string-built SQL in the injectable sense. Order is
-    # load-bearing: the SET params, then username, then the optional hash guard.
+    # Values remain bound parameters. Parameter order is SET, username, then guard.
     guards = ""
     params = [salt, pwd_hash, jwt_secret, username]
     if require_must_change:
@@ -939,8 +933,7 @@ def update_password(
             tuple(params),
         )
         if cursor.rowcount == 0:
-            # Unknown user, or a guard rejected the write. Nothing rotated, so
-            # nothing may be revoked: roll back before any DELETE can run.
+            # The user or guard failed; roll back before revoking anything.
             conn.rollback()
             return None
         if not preserve_desktop_secret:

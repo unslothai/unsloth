@@ -507,23 +507,13 @@ def _auto_generate_colab_admin_password() -> "str | None":
     try:
         ensure_default_admin()
         if not requires_password_change(DEFAULT_ADMIN_USERNAME):
-            # A password is already set, so there is nothing to rotate. Before
-            # dropping the pre-#7392 plaintext cache, hand its credential back
-            # ONCE if it still authenticates.
-            #
-            # An upgrading runtime is the case that matters. The removed finalize
-            # flow re-displayed this cache on every cell re-run, so it was a
-            # standing recovery surface; purging it silently would delete the only
-            # copy a user who cleared their earlier cell output still had, leaving
-            # a working password nobody can discover. Showing it once and then
-            # removing it keeps the CWE-256 fix and still leaves the user a way in.
+    # Show a valid pre-#7392 cached credential once before removing it. This
+    # preserves recovery access while closing the CWE-256 plaintext cache.
             _handoff_or_purge_legacy_colab_credentials()
             return None
         _clear_colab_login_credentials()
         if not _display_channel_active():
-            # Nowhere to render the one-time card, so rotating would destroy the
-            # only recovery credential for a password nobody could read. Refuse
-            # BEFORE the write; the caller's pending check then blocks the link.
+        # Refuse before rotating when the recovery credential cannot be shown.
             logger.warning(
                 "No notebook display channel to show a one-time admin password, so the "
                 "admin password is left unchanged. Set one with `unsloth studio "
@@ -534,9 +524,7 @@ def _auto_generate_colab_admin_password() -> "str | None":
 
         generated = secrets.token_urlsafe(24)
         try:
-            # update_password returns the rotated JWT secret, or None when a guard
-            # rejected the write. Narrow to a bool here: the except branch below
-            # assigns one, and this variable must not hold a secret on one path.
+        # Keep only whether the guarded update succeeded, never the JWT secret.
             committed = (
                 update_password(
                     DEFAULT_ADMIN_USERNAME,
@@ -548,12 +536,8 @@ def _auto_generate_colab_admin_password() -> "str | None":
                 is not None
             )
         except Exception as e:
-            # update_password commits the row BEFORE its best-effort cleanup
-            # (clear_bootstrap_password, which can still raise -- e.g. printing its
-            # own warning to a closed stderr). A raise there leaves the new password
-            # live, and discarding it would publish
-            # the link -- must_change is already 0 -- under a credential nobody
-            # holds. Ask the stored hash which password actually won.
+        # Cleanup may raise after commit, so verify which password is live before
+        # deciding whether the link can be published.
             logger.warning(f"Admin password commit reported an error ({e}); checking what landed.")
             committed = _colab_credentials_still_valid(DEFAULT_ADMIN_USERNAME, generated)
             if committed is None:
@@ -561,8 +545,7 @@ def _auto_generate_colab_admin_password() -> "str | None":
                     "the generated admin credential could not be verified after commit"
                 ) from e
         if not committed:
-            # Lost the race: a password was set elsewhere, so ours was never
-            # written. Never show it -- it would not authenticate.
+        # A concurrent password won; do not show a credential that cannot authenticate.
             logger.info("An admin password was set concurrently; keeping it for the public link.")
             return None
         return generated
@@ -634,8 +617,7 @@ def _display_admin_credentials(
         )
         return True
     except Exception:
-        # HTML render failed; show a plain-text copy through the SAME display
-        # channel (still iopub, never sys.stdout, so still out of the server log).
+        # Fall back through the same iopub channel, never stdout or the server log.
         try:
             display(
                 {
@@ -751,12 +733,10 @@ def _consume_supplied_password_on_reuse(supplied: "str | None" = None) -> None:
         ):
             logger.info(f"Applied the admin password supplied in {_SUPPLIED_PASSWORD_ENV}.")
         else:
-            # Lost the compare-and-set: a password was set elsewhere between the
-            # check and the write, so keep theirs (same rule as auto-generation).
+            # A concurrent password won the compare-and-set; keep it.
             logger.info("An admin password was set concurrently; keeping it.")
     except Exception as e:
-        # Never log the value itself. Falling through leaves the bootstrap password
-        # pending, so the tunnel path still auto-generates or refuses.
+        # Never log the value; the tunnel will auto-generate or refuse.
         logger.warning(f"Could not apply the supplied admin password ({e}).")
 
 
@@ -775,9 +755,7 @@ def start_cloudflare_tunnel(port: int) -> "str | None":
     )
 
     if credential_undelivered(DEFAULT_ADMIN_USERNAME):
-        # An earlier run of this cell rotated the password and could not render
-        # the card. must_change is 0 now, so nothing below would object, and the
-        # link would go up for an account whose password was never shown.
+            # A prior rotation was never shown; keep the link closed until reset.
         logger.warning(
             "Cloudflare link not started: the admin password generated by an earlier "
             "run was committed but never shown, so the shared link would be unusable. "
@@ -791,9 +769,8 @@ def start_cloudflare_tunnel(port: int) -> "str | None":
         logger.warning(f"Cloudflare link not started: {e}.")
         return None
     if generated is None and credential_undelivered(DEFAULT_ADMIN_USERNAME):
-        # A concurrent auto-launch won the compare-and-set but has not yet proved
-        # that its one-time card rendered. An ordinary user-selected password
-        # clears the marker in the same transaction, so it safely proceeds here.
+            # A concurrent auto-launch has not proved delivery. User-selected
+            # passwords clear this marker transactionally.
         logger.warning(
             "Cloudflare link not started: another launch auto-generated the admin "
             "password but has not confirmed that it was shown. Retry after that launch "
@@ -804,12 +781,8 @@ def start_cloudflare_tunnel(port: int) -> "str | None":
         DEFAULT_ADMIN_USERNAME, generated
     )
     if generated is not None and not displayed:
-        # The password was rotated and committed, but it could not be surfaced in
-        # this notebook (no IPython display channel, or every publish raised). The
-        # shared link would then be live under a password nobody saw, locking every
-        # user out. Fail closed: do NOT publish the tunnel, and never fall back to
-        # stdout/logging (which the server tees to an on-disk log). Tell the operator
-        # to reset the credential.
+            # The committed password could not be shown. Keep the tunnel closed and
+            # never fall back to logged stdout; require a credential reset.
         logger.warning(
             "Cloudflare link not started: the auto-generated admin password could not "
             "be shown in this notebook, so the shared link would be unusable. Reset it "
@@ -817,10 +790,8 @@ def start_cloudflare_tunnel(port: int) -> "str | None":
         )
         return None
     if generated is not None:
-        # The card rendered, so marker removal is now safe. Retry transient SQLite
-        # failures locally; if all attempts fail, retain the marker and keep this
-        # tunnel closed. A process crash can therefore never turn an unproven
-        # delivery into a published credential.
+            # Clear the marker only after display. If retries fail, retain it and keep
+            # the tunnel closed.
         if not _clear_displayed_credential_marker(DEFAULT_ADMIN_USERNAME):
             logger.warning(
                 "Cloudflare link not started: the admin password was shown, but its "
@@ -829,8 +800,7 @@ def start_cloudflare_tunnel(port: int) -> "str | None":
             )
             return None
     if _bootstrap_password_pending():
-        # Auto-generation is the primary protection; only reached if it failed
-        # (e.g. the auth DB could not be read/written). Fail safe: no shared link.
+            # Auto-generation failed; fail closed without a shared link.
         logger.warning(
             "Cloudflare link not started: the admin account still has its temporary "
             "bootstrap password, which is exposed to anyone who can load the page. "
@@ -1088,15 +1058,11 @@ def start(port: int = 8888, *, cloudflare: "bool | None" = None):
     """
     import time
 
-    # Remove the plaintext before any migration, frontend, or health check can
-    # return. The captured value is applied explicitly below, so no later process
-    # spawned by this notebook kernel can inherit it from the environment.
+    # Remove plaintext before spawning anything; apply the captured value explicitly.
     supplied_password = os.environ.pop(_SUPPLIED_PASSWORD_ENV, None) or None
     logger.info("🦥 Starting Unsloth Studio...")
     use_cloudflare = _colab_wants_cloudflare(cloudflare)
-    # Cache migration is independent of tunnel selection. In particular, the
-    # documented cloudflare=False path must not retain a pre-#7392 plaintext
-    # credential indefinitely. A still-live value is shown once before removal.
+    # Migrate the pre-#7392 cache even without Cloudflare, showing a live value once.
     try:
         _handoff_or_purge_legacy_colab_credentials()
     except _ColabCredentialHandoffFailed as e:
@@ -1108,17 +1074,12 @@ def start(port: int = 8888, *, cloudflare: "bool | None" = None):
     # Fast path: already running (cell re-run); re-show link/iframe instead of rebinding the port.
     if _is_studio_healthy(port):
         logger.info(f"   Unsloth is already running on port {port} — reusing existing server.")
-        # run_server (and with it run._apply_supplied_password) is skipped here, so
-        # apply-or-strip UNSLOTH_STUDIO_PASSWORD ourselves BEFORE spawning
-        # cloudflared: otherwise the supplied password is ignored while the
-        # bootstrap one is still pending, and the plaintext stays in os.environ for
-        # every child process to inherit.
+        # run_server is skipped, so apply or strip UNSLOTH_STUDIO_PASSWORD before
+        # cloudflared can inherit it.
         _consume_supplied_password_on_reuse(supplied_password)
         # try/finally: tear the tunnel down even if interrupted mid-start/render.
         try:
-            # start_cloudflare_tunnel owns the shared-link credential: it auto-generates
-            # and shows a strong admin password (fail-closed if it cannot be surfaced) and
-            # never persists it, so we do NOT finalize/cache the bootstrap password here.
+        # The tunnel owns one-time credential generation and delivery.
             cf_url = start_cloudflare_tunnel(port) if use_cloudflare else None
             _show_and_embed(
                 port,
@@ -1188,9 +1149,7 @@ def start(port: int = 8888, *, cloudflare: "bool | None" = None):
 
     # Server healthy: secure Colab auth, open the tunnel, publish URL, tear down on interrupt.
     try:
-        # start_cloudflare_tunnel owns the shared-link credential: it auto-generates and
-        # shows a strong admin password (fail-closed if it cannot be surfaced) and never
-        # persists it, so we do NOT finalize/cache the bootstrap password here.
+        # The tunnel owns one-time credential generation and delivery.
         cf_url = start_cloudflare_tunnel(actual_port) if use_cloudflare else None
         _show_and_embed(
             actual_port,
