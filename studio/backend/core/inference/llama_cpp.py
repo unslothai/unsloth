@@ -10469,15 +10469,6 @@ class LlamaCppBackend:
         # vouch for cannot be told from a host that has no gpu at all
         if not model_bytes or (not gpus and not child_has_no_gpu):
             return None
-        # Only where the load reaches a card. llama.cpp re-creates the tied output in
-        # the buffer-type context its layer resolves to, and returns the ORIGINAL
-        # tensor when that is the one token_embd already sits in
-        # (llama-model-loader.cpp:1437-1443), so a host-only load allocates nothing
-        # extra. With a GPU the output layer is on the card, the duplicate is a real
-        # second matrix there, and the VRAM it takes is VRAM the file's own weights
-        # do not get -- which is spill, so it belongs in this figure.
-        if gpus:
-            model_bytes += self._tied_output_bytes(model_path)
         shared = set(shared_gpu_ids or ())
         free_vram_mib = sum(max(0, row[1]) for row in gpus if row[0] not in shared)
         heap_free_mib, heap_bytes = self._shared_heap_budget(gpus, shared, model_bytes, argv, _env)

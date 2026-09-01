@@ -883,18 +883,20 @@ def mib_embd_pair(tmp_path: Path) -> "tuple[Path, Path]":
     )
 
 
-def test_the_host_shortfall_prices_the_tied_duplicate(backend, mib_embd_pair):
-    """The duplicate is the one weight that cannot page back to disk.
+def test_the_host_shortfall_stays_a_floor_over_the_file(backend, mib_embd_pair):
+    """The tied duplicate is a VRAM cost, and this check does no placement modelling.
 
-    The rest of an oversized load survives because it is mmap'd, which is also
-    what the pageable-load override is protecting. The duplicate is built from
-    ``token_embd`` rather than read from the file, so it is an anonymous
-    allocation: a host within one embedding matrix of the requirement is
-    OOM-killed rather than run slowly, and must be warned.
+    llama.cpp re-creates the tied output in the buffer-type context its layer resolves
+    to and returns the ORIGINAL when that is where token_embd already sits
+    (llama-model-loader.cpp:1437-1443), so whether a second matrix exists depends on
+    where the output layer lands. Deciding that here is the placement modelling this
+    function exists without, and it already omits the KV cache and compute buffers,
+    both far larger. Charging it could only turn a quiet load into a warned one, which
+    is the guarantee the floor rests on, so a tied and an untied model of the same file
+    size price identically.
 
-    Priced at the boundary, so the assertion is the term and not a margin: 20 GiB
-    of weights against 4 GiB of VRAM spills exactly 16 GiB, and available RAM is
-    set to exactly that plus the reserved headroom.
+    The duplicate is charged where placement IS known: ``weights_size`` in the VRAM
+    budget and ``_separate_drafter_weight_vram_bytes``.
     """
     from core.inference.llama_cpp import _HOST_RAM_HEADROOM_MIB
 
@@ -904,17 +906,24 @@ def test_the_host_shortfall_prices_the_tied_duplicate(backend, mib_embd_pair):
 
     instance = object.__new__(backend)
     instance._get_gguf_size_bytes = lambda _path: 20 * 1024**3
+    argv = lambda path: ["llama-server", "-m", str(path)]
     avail_mib = 16 * 1024 + _HOST_RAM_HEADROOM_MIB
 
-    def priced(path: Path):
-        return instance._launch_host_shortfall_message(
-            ["llama-server", "-m", str(path)],
-            [(0, 4 * 1024)],
-            avail_mib = avail_mib,
+    for rows, kwargs in (([(0, 4 * 1024)], {}), ([], {"child_has_no_gpu": True})):
+        priced = [
+            instance._launch_host_shortfall_message(
+                argv(path), rows, avail_mib = avail_mib, **kwargs
+            )
+            for path in (tied, untied)
+        ]
+        assert priced[0] == priced[1], (rows, kwargs)
+    # And on the file alone the spill is exactly 16 GiB, which the headroom covers.
+    assert (
+        instance._launch_host_shortfall_message(
+            argv(tied), [(0, 4 * 1024)], avail_mib = avail_mib
         )
-
-    assert priced(tied) is not None, "the tied duplicate is missing from the host floor"
-    assert priced(untied) is None, "a model shipping its own output must not be charged twice"
+        is None
+    )
 
 
 def _spec_flags(monkeypatch, tmp_path: Path, mode: str, sidecar: str) -> "list[str]":
@@ -974,35 +983,6 @@ def test_the_emitters_do_not_agree_on_pinning_the_drafter(monkeypatch, tmp_path)
         )
         is False
     )
-
-
-def test_a_host_only_load_is_not_charged_the_tied_duplicate(backend, mib_embd_pair):
-    """The duplicate exists only where its layer lands in another buffer type.
-
-    llama.cpp re-creates the tied output in the buffer-type context its layer
-    resolves to and returns the ORIGINAL tensor when that is the one token_embd
-    already sits in (llama-model-loader.cpp:1437-1443). A load that reaches no card
-    puts both in the single CPU context, so nothing extra is allocated and charging
-    it would warn about RAM the load does not need -- and force a fitting no-mmap
-    load onto the slower pageable path.
-    """
-    from core.inference.llama_cpp import _HOST_RAM_HEADROOM_MIB
-
-    tied, _untied = mib_embd_pair
-    instance = object.__new__(backend)
-    instance._get_gguf_size_bytes = lambda _path: 20 * 1024**3
-    argv = ["llama-server", "-m", str(tied)]
-    avail_mib = 20 * 1024 + _HOST_RAM_HEADROOM_MIB
-
-    assert (
-        instance._launch_host_shortfall_message(
-            argv, [], child_has_no_gpu = True, avail_mib = avail_mib
-        )
-        is None
-    ), "a host-only load allocates no second matrix"
-    # The same weights against a card: the duplicate is real there, and the VRAM it
-    # takes is VRAM the file's own weights do not get.
-    assert instance._launch_host_shortfall_message(argv, [(0, 0)], avail_mib = avail_mib) is not None
 
 
 def test_a_cpu_pinned_drafter_is_not_charged_the_tied_duplicate(backend, mib_embd_pair):
