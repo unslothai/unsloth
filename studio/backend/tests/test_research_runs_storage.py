@@ -2569,8 +2569,8 @@ def test_create_stamps_the_request_local_date(research_home, monkeypatch):
     from routes import research_runs as research_routes
 
     request = SimpleNamespace(
-        app=SimpleNamespace(state=SimpleNamespace()),
-        headers={"x-unsloth-timezone": "Pacific/Auckland"},
+        app = SimpleNamespace(state = SimpleNamespace()),
+        headers = {"x-unsloth-timezone": "Pacific/Auckland"},
     )
     monkeypatch.setattr(
         research_routes,
@@ -2580,12 +2580,12 @@ def test_create_stamps_the_request_local_date(research_home, monkeypatch):
 
     run = research_routes.create_research_run(
         research_routes.CreateResearchRun(
-            threadId="thread-1",
-            userMessageId="user-1",
-            inferenceRequest={"model": "local-model"},
+            threadId = "thread-1",
+            userMessageId = "user-1",
+            inferenceRequest = {"model": "local-model"},
         ),
         request,
-        current_subject="alice",
+        current_subject = "alice",
     )
 
     assert run["config"]["currentDate"] == "Pacific/Auckland"

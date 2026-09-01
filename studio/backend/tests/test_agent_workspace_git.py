@@ -247,7 +247,7 @@ def test_workspace_git_root_ignores_caller_path(monkeypatch, tmp_path):
     attacker = tmp_path / "git"
     attacker.write_text(
         f"#!{sys.executable}\nfrom pathlib import Path\nPath({str(marker)!r}).write_text('yes')\n",
-        encoding="utf-8",
+        encoding = "utf-8",
     )
     attacker.chmod(0o700)
     monkeypatch.setenv("PATH", str(tmp_path))
@@ -260,7 +260,7 @@ def test_git_status_supports_an_unborn_repository(tmp_path):
     _git(tmp_path, "init", "-q")
     _git(tmp_path, "config", "user.name", "Test")
     _git(tmp_path, "config", "user.email", "test@example.invalid")
-    (tmp_path / "new.txt").write_text("uncommitted\n", encoding="utf-8")
+    (tmp_path / "new.txt").write_text("uncommitted\n", encoding = "utf-8")
     _folder_project(tmp_path)
 
     status = git_status("project")

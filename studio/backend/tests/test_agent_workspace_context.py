@@ -151,15 +151,15 @@ def test_invalid_targeted_instruction_files_consume_file_and_byte_bounds(tmp_pat
         scope.mkdir()
         (scope / "AGENTS.md").write_bytes(b"\xff" * 8)
         target = scope / "code.py"
-        target.write_text("pass\n", encoding="utf-8")
+        target.write_text("pass\n", encoding = "utf-8")
         targets.append(target.relative_to(tmp_path).as_posix())
 
     result = resolve_targeted_repository_instructions(
         tmp_path,
         targets,
-        max_files=2,
-        max_total_bytes=12,
-        max_file_bytes=6,
+        max_files = 2,
+        max_total_bytes = 12,
+        max_file_bytes = 6,
     )
 
     assert result["layers"] == []

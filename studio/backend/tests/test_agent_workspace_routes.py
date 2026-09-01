@@ -246,7 +246,7 @@ def test_workspace_capabilities_gate_secure_traversal_support(tmp_path, monkeypa
 def test_nested_repository_workspace_keeps_reads_but_disables_mutations(tmp_path, monkeypatch):
     repository = tmp_path / "repository"
     workspace = repository / "nested"
-    workspace.mkdir(parents=True)
+    workspace.mkdir(parents = True)
     _folder_project(workspace)
     monkeypatch.setattr(agent_workspace_routes, "git_root", lambda _root: repository)
 

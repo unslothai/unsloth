@@ -261,7 +261,6 @@ def git_root(root: Path) -> Path:
     # above. Repository discovery must use the same trusted executable and
     # neutralized Git environment as every other workspace Git operation.
     from .git_service import _safe_git_root
-
     return _safe_git_root(root)
 
 
