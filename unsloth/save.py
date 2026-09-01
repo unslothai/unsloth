@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Defensive imports: added in unsloth-zoo PR #526 and may not exist on older versions.
 from unsloth_zoo.utils import Version
 from importlib.metadata import version as importlib_version
 from unsloth_zoo.hf_utils import dtype_from_config, HAS_TORCH_DTYPE
@@ -25,16 +26,14 @@ from unsloth_zoo.llama_cpp import (
     _download_convert_hf_to_gguf,
 )
 
-# H4: Defensive imports -- these were added in unsloth-zoo PR #526
-# and may not exist on older versions
 try:
     from unsloth_zoo.llama_cpp import LLAMA_CPP_DEFAULT_DIR, IS_WINDOWS
 except ImportError:
     import sys
     IS_WINDOWS = sys.platform == "win32"
     LLAMA_CPP_DEFAULT_DIR = "llama.cpp"
-# Without bnb, peft stops exporting its 4bit LoRA layer too. Both names only feed
-# isinstance checks, so placeholders nothing can match are exact stand-ins.
+  # Without bnb, peft stops exporting its 4bit LoRA layer too. Both names only feed isinstance checks, so
+  # placeholders nothing can match are exact stand-ins.
 try:
     from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
     from peft.tuners.lora import Linear4bit as Peft_Linear4bit
@@ -84,7 +83,7 @@ except:
     try:
         from huggingface_hub.utils import get_token
     except:
-        # For older versions of huggingface_hub
+        # For older versions of huggingface_hub.
         from huggingface_hub.utils._token import get_token
 from pathlib import Path
 from peft import PeftModelForCausalLM, PeftModel
@@ -97,18 +96,16 @@ __all__ = [
     "create_huggingface_repo",
 ]
 
-# llama.cpp specific targets - all takes 90s. Below takes 60s
+# llama.cpp specific targets: all takes 90s, the below 60s.
 LLAMA_CPP_TARGETS = [
     "llama-quantize",
     "llama-cli",
     "llama-server",
 ]
 
-# Check environments. `is_kaggle_environment` needs a real Kaggle kernel, not
-# merely a KAGGLE_* variable: KAGGLE_USERNAME / KAGGLE_KEY / KAGGLE_CONFIG_DIR
-# are what the Kaggle CLI reads on an ordinary laptop, and every one of the
-# Kaggle branches below (rewriting save paths to /tmp, deleting the cached base
-# model) is wrong to take there.
+  # is_kaggle_environment needs a real kernel, not a KAGGLE_* variable: the Kaggle CLI reads those on an
+  # ordinary laptop, and the branches below (/tmp save paths, deleting the cached base model) are all wrong
+  # there.
 from .disk_utils import (
     KAGGLE_TMP,
     is_colab_environment,
@@ -123,7 +120,6 @@ from .disk_utils import (
 IS_COLAB_ENVIRONMENT = is_colab_environment()
 IS_KAGGLE_ENVIRONMENT = is_kaggle_environment()
 
-# Weights
 LLAMA_WEIGHTS = (
     "self_attn.q_proj",
     "self_attn.k_proj",
@@ -142,8 +138,7 @@ LLAMA_LAYERNORMS = (
     "self_attn.k_norm",
 )
 
-# https://github.com/ggerganov/llama.cpp/blob/master/examples/quantize/quantize.cpp#L19
-# From https://mlabonne.github.io/blog/posts/Quantize_Llama_2_models_using_ggml.html
+  # See llama.cpp examples/quantize/quantize.cpp#L19 and mlabonne.github.io Quantize_Llama_2_models_using_ggml.
 ALLOWED_QUANTS = {
     "not_quantized": "Recommended. Fast conversion. Slow inference, big files.",
     "fast_quantized": "Recommended. Fast conversion. OK inference, OK file size.",
@@ -171,8 +166,8 @@ ALLOWED_QUANTS = {
     "q3_k_xs": "3-bit extra small quantization",
 }
 
-# IQ (importance-matrix) quants. llama.cpp refuses these without an imatrix, so they are only
-# accepted when imatrix_file=... is supplied to save_pretrained_gguf / push_to_hub_gguf.
+  # IQ quants need an importance matrix; llama.cpp refuses them without one, so they are only accepted when
+  # imatrix_file=... is supplied.
 IMATRIX_QUANTS = {
     "iq1_s": "1.56 bpw. Smallest, lowest quality. Needs an imatrix.",
     "iq1_m": "1.75 bpw. Very small. Needs an imatrix.",
@@ -207,14 +202,10 @@ def has_curl():
 CURL_FLAG = "-DLLAMA_CURL=ON" if has_curl() else "-DLLAMA_CURL=OFF"
 
 
-# FP8/FP4 compressed export via llm-compressor (for vLLM).
-# save_method alias -> (llm-compressor scheme, needs_calibration, output dir suffix).
-# alias -> (llm-compressor scheme, needs_calibration, output-dir suffix). needs_calibration is
-# True only for schemes with static activation scales (FP8 static, NVFP4); everything else is
-# weight-only or dynamic-activation and runs data-free. Unsupported schemes in the installed
-# compressed-tensors (e.g. MXFP8 on older stacks) are gated by _scheme_is_available at runtime.
+  # llm-compressor FP8/FP4 export for vLLM: alias -> (scheme, needs_calibration, dir suffix). needs_calibration
+  # only for static activation scales (FP8 static, NVFP4); the rest run data-free. Schemes absent from the
+  # installed compressed-tensors are gated at runtime.
 COMPRESSED_EXPORT_SCHEMES = {
-    # FP8
     "fp8": ("FP8_DYNAMIC", False, "fp8"),
     "fp8_dynamic": ("FP8_DYNAMIC", False, "fp8"),
     "dynamic_fp8": ("FP8_DYNAMIC", False, "fp8"),
@@ -223,7 +214,6 @@ COMPRESSED_EXPORT_SCHEMES = {
     "static_fp8": ("FP8", True, "fp8-static"),
     "fp8_block": ("FP8_BLOCK", False, "fp8-block"),
     "block_fp8": ("FP8_BLOCK", False, "fp8-block"),
-    # INT8 / INT-weight
     "int8": ("INT8", False, "int8"),
     "w8a8": ("W8A8", False, "w8a8"),
     "w8a8_int8": ("W8A8", False, "w8a8"),
@@ -235,14 +225,12 @@ COMPRESSED_EXPORT_SCHEMES = {
     "w4a16_asym": ("W4A16_ASYM", False, "w4a16-asym"),
     "w4a8": ("W4A8", False, "w4a8"),
     "w4afp8": ("W4AFP8", False, "w4afp8"),
-    # MXFP (microscaling)
     "mxfp8": ("MXFP8", False, "mxfp8"),
     "w8a8_mxfp8": ("MXFP8", False, "mxfp8"),
     "mxfp4": ("MXFP4", False, "mxfp4"),
     "w4a4_mxfp4": ("MXFP4", False, "mxfp4"),
     "mxfp4a16": ("MXFP4A16", False, "mxfp4a16"),
     "w4a16_mxfp4": ("MXFP4A16", False, "mxfp4a16"),
-    # NVFP4
     "nvfp4": ("NVFP4", True, "nvfp4"),
     "w4a4_nvfp4": ("NVFP4", True, "nvfp4"),
     "nvfp4a16": ("NVFP4A16", False, "nvfp4a16"),
@@ -250,8 +238,8 @@ COMPRESSED_EXPORT_SCHEMES = {
 }
 
 
-# torchao "portable" quant export: device-agnostic FP8 / INT8, no NVIDIA GPU needed.
-# alias -> (kind, sibling suffix). FP8 saves to safetensors, INT8 to .bin; both load in vLLM.
+  # torchao portable export: device-agnostic FP8 / INT8, no NVIDIA GPU needed. alias -> (kind, sibling suffix);
+  # FP8 writes safetensors, INT8 .bin, both load in vLLM.
 TORCHAO_EXPORT_SCHEMES = {
     "torchao_fp8": ("fp8", "torchao-fp8"),
     "torchao_int8": ("int8", "torchao-int8"),
@@ -287,8 +275,8 @@ def _loaded_via_remote_code(obj):
         if node is None or id(node) in seen:
             continue
         seen.add(id(node))
-        # __module__ can be None/absent on some dynamically created or C-extension classes;
-        # treat anything non-string as "not remote code" rather than crashing the export.
+          # __module__ can be None on dynamically created or C-extension classes; treat a non-string as "not
+          # remote code" rather than crashing the export.
         module = getattr(type(node), "__module__", None)
         if isinstance(module, str) and module.startswith("transformers_modules"):
             return True
@@ -297,8 +285,8 @@ def _loaded_via_remote_code(obj):
                 queue.append(node.get_base_model())
             except Exception:
                 pass
-        # PEFT / trainer wrappers hold the real model in base_model / model; a built-in
-        # ProcessorMixin holds its (possibly custom-code) components as attributes.
+          # PEFT / trainer wrappers hold the real model in base_model / model; a ProcessorMixin holds its
+          # (possibly custom-code) components as attributes.
         for attr in (
             "base_model",
             "model",
@@ -321,7 +309,7 @@ def _normalize_compressed_method(save_method):
     if not isinstance(save_method, str):
         return None
     key = save_method.lower().strip().replace("-", "_").replace(" ", "_")
-    # torchao aliases route to the torchao path, so skip them before the "fp8" near-miss check.
+      # torchao aliases route to the torchao path, so skip them before the "fp8" near-miss check.
     if key in TORCHAO_EXPORT_SCHEMES:
         return None
     if key in COMPRESSED_EXPORT_SCHEMES:
@@ -344,7 +332,7 @@ def _is_cmake_only_llama_cpp(llama_cpp_dir: str = "llama.cpp") -> bool:
     """
     makefile_path = os.path.join(llama_cpp_dir, "Makefile")
     if not os.path.exists(makefile_path):
-        # No Makefile: only CMake-only if a real CMake project is present
+        # No Makefile: only CMake-only if a real CMake project is present.
         return os.path.exists(os.path.join(llama_cpp_dir, "CMakeLists.txt"))
     try:
         with open(makefile_path, "r", encoding = "utf-8", errors = "ignore") as f:
@@ -382,8 +370,8 @@ def _quantize_q2_k_l(
     print_output: bool = True,
     imatrix = None,
 ):
-    # "Q2_K_L" is an Unsloth preset, not a native llama.cpp ftype: q2_k with
-    # output/token-embedding tensors kept at q8_0 for higher precision.
+      # "Q2_K_L" is an Unsloth preset, not a native llama.cpp ftype: q2_k with output and token embeddings kept
+      # at q8_0.
     command = [
         str(quantizer_location),
         *(["--imatrix", str(imatrix)] if imatrix else []),
@@ -490,13 +478,13 @@ def _has_tokenizer_model(tokenizer, token = None):
         return False
     if os.path.isdir(source):
         return os.path.isfile(os.path.join(source, "tokenizer.model"))
-    # Refs of one repo can differ in whether they ship the asset, so memoize per ref.
+      # Refs of one repo can differ in whether they ship the asset, so memoize per ref.
     revision = _tokenizer_revision(tokenizer)
     cache_key = (source, revision)
     if cache_key in _TOKENIZER_MODEL_CACHE:
         return _TOKENIZER_MODEL_CACHE[cache_key]
 
-    # Hub repo id: probe local cache before model_info (issue #7481).
+      # Hub repo id: probe the local cache before model_info (#7481).
     cache_dir = _tokenizer_cache_dir(tokenizer) or os.environ.get("HF_HUB_CACHE")
     if not cache_dir:
         hf_home = os.environ.get("HF_HOME")
@@ -617,8 +605,7 @@ def _free_cached_model(model):
     from huggingface_hub import scan_cache_dir
     cached_repos = list(scan_cache_dir().repos)
 
-    # Go through every cached repo, and delete the one that matches the model we want to save.
-    # Can save 4GB of disk space - useful for Kaggle systems.
+      # Delete the cached repo matching the model being saved: saves 4GB of disk, useful on Kaggle.
     for cached_repo in cached_repos:
         if cached_repo.repo_id == model.config._name_or_path:
             remove_cache_commit = list(cached_repo.revisions)[0].commit_hash
@@ -637,7 +624,6 @@ def _free_cached_model(model):
 def _merge_lora(layer, name):
     bias = getattr(layer, "bias", None)
     if isinstance(layer, (Bnb_Linear4bit, Peft_Linear4bit, Peft_Linear)):
-        # Is LoRA so we need to merge!
         W, quant_state, A, B, s, bias = get_lora_parameters_bias(layer)
         if quant_state is not None:
             dtype = quant_state.dtype if type(quant_state) is not list else quant_state[2]
@@ -645,14 +631,9 @@ def _merge_lora(layer, name):
         else:
             dtype = W.dtype
         W = W.to(torch.float32).t()
-        # W = W.t()
 
         if A is not None:
-            # sAB = (A.t().to(torch.float32) @ (s * B.t().to(torch.float32)))
-            # W += sAB
             W.addmm_(A.t().to(torch.float32), B.t().to(torch.float32), alpha = s)
-            # W.addmm_(A.t().to(W.dtype), B.t().to(W.dtype), alpha = s)
-            # if not torch.isfinite(W).all():
             maximum_element = torch.max(W.min().abs(), W.max())
             if not torch.isfinite(maximum_element).item():
                 raise ValueError(f"Unsloth: Merge failed.\n{name} has some elements = infinity.")
@@ -663,14 +644,11 @@ def _merge_lora(layer, name):
 
 
 def fast_save_pickle(shard, name):
-    # Use this if # CPUs is <= 2
     print(f"Unsloth: Saving {name}...")
     torch.save(
         shard,
         name,
-        # HIGHEST_PROTOCOL seems to not work with Pytorch!
-        # pickle_module   = pickle,
-        # pickle_protocol = pickle.HIGHEST_PROTOCOL,
+          # HIGHEST_PROTOCOL seems not to work with Pytorch.
     )
     return
 
@@ -851,7 +829,6 @@ def unsloth_save_model(
     safe_serialization: bool = True,
     variant: Optional[str] = None,
     save_peft_format: bool = True,
-    # Push to hub
     use_temp_dir: Optional[bool] = None,
     commit_message: Optional[str] = "Trained with Unsloth",
     private: Optional[bool] = None,
@@ -859,7 +836,6 @@ def unsloth_save_model(
     revision: str = None,
     commit_description: str = "Upload model trained with Unsloth 2x faster",
     tags: List[str] = None,
-    # Our functions
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.9,
     datasets: Optional[List[str]] = None,
@@ -902,7 +878,6 @@ def unsloth_save_model(
     ):
         del save_pretrained_settings[deletion]
 
-    # First check for a token!
     if push_to_hub:
         from huggingface_hub import whoami
         try:
@@ -914,7 +889,6 @@ def unsloth_save_model(
 
     assert maximum_memory_usage > 0 and maximum_memory_usage <= 0.95
 
-    # Clean memory up first
     for _ in range(3):
         torch.cuda.empty_cache()
         gc.collect()
@@ -932,7 +906,6 @@ def unsloth_save_model(
         print("Unsloth: Merging 4bit and LoRA weights to 4bit...")
         print("This might take 5 minutes...")
 
-        # Counteract no LoRA adapters!
         if hasattr(model, "merge_and_unload"):
             model = model.merge_and_unload()
         print("Done.")
@@ -960,7 +933,6 @@ def unsloth_save_model(
         elif save_method == "merged_4bit":
             print("Unsloth: Saving 4bit Bitsandbytes model. Please wait...")
 
-        # Update model tag
         _ = upload_to_huggingface(
             model,
             save_directory,
@@ -987,7 +959,6 @@ def unsloth_save_model(
             tags = tags,
         )
         if tokenizer is not None:
-            # Set padding side to left for inference
             _tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
             old_padding_side = _tokenizer.padding_side
             _tokenizer.padding_side = "left"
@@ -1006,14 +977,12 @@ def unsloth_save_model(
                 tags = tags,
             )
 
-            # Revert back padding side
             _tokenizer.padding_side = old_padding_side
 
         if hasattr(model, "config"):
             print(f"Saved {save_method} model to https://huggingface.co/" + save_directory)
         return save_directory, None
 
-    # Tokenizer has different saving arguments
     tokenizer_save_settings = {
         "save_directory": save_pretrained_settings["save_directory"],
         "legacy_format": None,
@@ -1023,7 +992,6 @@ def unsloth_save_model(
         "token": save_pretrained_settings["token"],
     }
 
-    # Check if PEFT Model or not - if yes, 3 levels. If not 2 levels.
     from peft import PeftModelForCausalLM
 
     if isinstance(model, PeftModelForCausalLM):
@@ -1031,16 +999,13 @@ def unsloth_save_model(
     else:
         internal_model = model
 
-    # Cannot be converted properly!
     if (
         (save_method == "merged_4bit")
         or (save_method == "lora")
         or (not hasattr(model, "model") or not hasattr(internal_model.model, "layers"))
     ):
-        # Do general saving
-        # Edit save_pretrained_settings
-        # [TODO] _create_repo has errors due to **kwargs getting accepted
-        # commit_description does not seem to work?
+          # _create_repo has errors due to **kwargs getting accepted, and commit_description does not seem to
+          # work.
         what_to_delete = (
             (
                 "use_temp_dir",
@@ -1068,7 +1033,6 @@ def unsloth_save_model(
                 ]
             )
 
-        # Update model tag
         if push_to_hub:
             _ = upload_to_huggingface(
                 model,
@@ -1085,14 +1049,12 @@ def unsloth_save_model(
         if tokenizer is not None:
             print("Unsloth: Saving tokenizer...", end = "")
 
-            # Set padding side to left for inference
             _tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
             old_padding_side = _tokenizer.padding_side
             _tokenizer.padding_side = "left"
 
             tokenizer.save_pretrained(**tokenizer_save_settings)
 
-            # Revert back padding side
             _tokenizer.padding_side = old_padding_side
 
             print(" Done.")
@@ -1103,7 +1065,7 @@ def unsloth_save_model(
         if save_method != "lora":
             print(" This might take 10 minutes for Llama-7b...", end = "")
 
-        # [TODO] Is this correct?
+        # Correctness unverified.
         if save_method == "lora":
             save_pretrained_settings["selected_adapters"] = None
 
@@ -1115,10 +1077,9 @@ def unsloth_save_model(
         print(" Done.")
         return save_directory, None
 
-    # If push_to_hub, we must remove the .../ part of a repo
+      # With push_to_hub the ".../" part of a repo must be removed; the +1 solves absolute path issues.
     username = None
     if push_to_hub and "/" in save_directory:
-        # +1 solves absolute path issues
         new_save_directory = save_directory
         username = new_save_directory[: new_save_directory.find("/")]
         new_save_directory = new_save_directory[new_save_directory.find("/") + 1 :]
@@ -1142,7 +1103,6 @@ def unsloth_save_model(
 
     print("Unsloth: Merging 4bit and LoRA weights to 16bit...")
 
-    # Determine max RAM usage minus sharding
     max_ram = psutil.virtual_memory().available
     sharded_ram_usage = 5 * 1024 * 1024 * 1024
     if type(max_shard_size) is str:
@@ -1155,7 +1115,6 @@ def unsloth_save_model(
     elif type(max_shard_size) is int:
         sharded_ram_usage = max_shard_size
 
-    # Switch to our fast saving modules if it's a slow PC!
     n_cpus = psutil.cpu_count(logical = False)
     if n_cpus is None:
         n_cpus = psutil.cpu_count()
@@ -1177,7 +1136,6 @@ def unsloth_save_model(
         save_pretrained_settings["safe_serialization"] = safe_serialization
         save_pretrained_settings["save_function"] = save_function
 
-    # Only safe_serialization uses more RAM
     if safe_serialization:
         max_ram -= sharded_ram_usage
     else:
@@ -1190,24 +1148,20 @@ def unsloth_save_model(
         f"{round(psutil.virtual_memory().total / 1024 / 1024 / 1024, 2)} RAM for saving."
     )
 
-    # Move temporary_location to /tmp in Kaggle
     if IS_KAGGLE_ENVIRONMENT:
         temporary_location = os.path.join(KAGGLE_TMP, temporary_location)
 
-    # Max directory for disk saving
     if not os.path.exists(temporary_location):
         os.makedirs(temporary_location)
 
-    # Check if Kaggle or Colab, since only 20GB of Disk space allowed.
+      # Kaggle and Colab allow only 20GB of disk, so free up 4GB of space.
     if IS_KAGGLE_ENVIRONMENT or IS_COLAB_ENVIRONMENT:
-        # We free up 4GB of space
         logger.warning_once(
             "Unsloth: Kaggle/Colab has limited disk space. We need to delete the downloaded\n"
             "model which will save 4-16GB of disk space, allowing you to save on Kaggle/Colab."
         )
         _free_cached_model(internal_model)
 
-    # HF also uses a OrderedDict
     from collections import OrderedDict
 
     state_dict = OrderedDict()
@@ -1219,13 +1173,12 @@ def unsloth_save_model(
         elif torch_dtype == "bfloat16":
             torch_dtype = torch.bfloat16
 
-    # Check modules to save float32 dtype
     state_dict["model.embed_tokens.weight"] = internal_model.model.embed_tokens.weight.data.to(
         torch_dtype
     )
 
-    # A merged tensor lives on the GPU of its source layer, so budget against W's own
-    # device, not GPU0, else a sharded model OOMs GPU1+ while only GPU0 is checked.
+      # A merged tensor lives on the GPU of its source layer, so budget against W's own device: a GPU0-only
+      # check OOMs GPU1+ on a sharded model.
     _max_vram_by_device = {}
 
     def _device_vram_budget(dev):
@@ -1248,7 +1201,6 @@ def unsloth_save_model(
             name = f"model.layers.{j}.{item}.weight"
             W, bias = _merge_lora(proj, name)
 
-            # Bias term
             if bias is not None:
                 state_dict[f"model.layers.{j}.{item}.bias"] = bias
 
@@ -1257,19 +1209,13 @@ def unsloth_save_model(
                 _dev_budget is not None
                 and (torch.cuda.memory_allocated(W.device) + W.nbytes) < _dev_budget
             ):
-                # Fits on W's own GPU
-                state_dict[name] = W
-            elif W.device.type != "cuda":
                 # Already off-GPU: keeping it costs no VRAM
                 state_dict[name] = W
-            # [TODO] Saving to RAM seems to leak memory???
-            # elif (max_ram - W.nbytes) > 0:
-            #     # Save to CPU memory
-            #     logger.warning_once(f"We will save to RAM and not VRAM now.")
-            #     state_dict[name] = W.to("cpu", non_blocking = True, copy = True)
-            #     max_ram = max(max_ram - W.nbytes, 0)
+            elif W.device.type != "cuda":
+                # Fits on W's own GPU; already off-GPU means keeping it costs no VRAM.
+                state_dict[name] = W
+              # Saving to RAM seems to leak memory.
             else:
-                # Save to Disk
                 logger.warning_once("\nWe will save to Disk and not RAM now.")
                 filename = os.path.join(temporary_location, f"{name}.pt")
                 torch.save(
@@ -1278,39 +1224,33 @@ def unsloth_save_model(
                     pickle_module = pickle,
                     pickle_protocol = pickle.HIGHEST_PROTOCOL,
                 )
-                # weights_only = True weirdly fails?
+                  # weights_only = True weirdly fails.
                 state_dict[name] = torch.load(
                     filename, map_location = "cpu", mmap = True, weights_only = False
                 )
         for item in LLAMA_LAYERNORMS:
             try:
-                # Skip for Gemma 2
                 state_dict[f"model.layers.{j}.{item}.weight"] = eval(f"layer.{item}.weight.data")
             except:
                 continue
 
     state_dict["model.norm.weight"] = internal_model.model.norm.weight.data
-    # Check for modules_to_save float32 dtype
 
-    # Check for tied weights
     if (
         internal_model.model.embed_tokens.weight.data_ptr()
         != internal_model.lm_head.weight.data_ptr()
     ):
         state_dict["lm_head.weight"] = internal_model.lm_head.weight.data.to(torch_dtype)
 
-    # All tensors MUST be type torch.Tensor and not torch.nn.parameter.Parameter
+      # All tensors MUST be torch.Tensor and not torch.nn.parameter.Parameter.
     for key, value in state_dict.items():
         if hasattr(value, "data"):
             state_dict[key] = value = value.data
         if type(value) is not torch.Tensor:
             logger.warning_once(f"Unsloth: {key} is not a Tensor but a {type(value)}.")
 
-    # Edit save_pretrained_settings
-    # [TODO] _create_repo has errors due to **kwargs getting accepted
     save_pretrained_settings["state_dict"] = state_dict
 
-    # commit_description does not seem to work?
     what_to_delete = (
         (
             "use_temp_dir",
@@ -1338,7 +1278,6 @@ def unsloth_save_model(
             ]
         )
 
-    # Update model tag
     if push_to_hub:
         _ = upload_to_huggingface(
             model,
@@ -1352,7 +1291,6 @@ def unsloth_save_model(
             datasets = datasets,
         )
 
-    # First check if we're pushing to an organization!
     save_directory = save_pretrained_settings["save_directory"]
 
     if save_pretrained_settings["push_to_hub"]:
@@ -1364,18 +1302,14 @@ def unsloth_save_model(
         else:
             actual_username = username
 
-    # Check if pushing to an organization
     if save_pretrained_settings["push_to_hub"] and (username != actual_username):
         print(f"Unsloth: Saving to organization with address {new_save_directory}")
-        # We upload everything at the end!
         tokenizer_save_settings["push_to_hub"] = False
         tokenizer_save_settings["save_directory"] = new_save_directory
 
-    # Save tokenizer
     if tokenizer is not None:
         print("Unsloth: Saving tokenizer...", end = "")
 
-        # Set padding side to left for inference
         _tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
         old_padding_side = _tokenizer.padding_side
         _tokenizer.padding_side = "left"
@@ -1387,14 +1321,12 @@ def unsloth_save_model(
             filename_prefix = tokenizer_save_settings.get("filename_prefix"),
         )
 
-        # Revert back padding side
         _tokenizer.padding_side = old_padding_side
 
         print(" Done.")
     else:
         print()
 
-    # Since merged, edit quantization_config
     old_config = model.config
     new_config = model.config.to_dict()
     if "quantization_config" in new_config:
@@ -1406,20 +1338,15 @@ def unsloth_save_model(
         original_model.config = new_config
     model.config = new_config
 
-    # Save!
-    # [TODO] --> is this correct?
-    # save_pretrained_settings["selected_adapters"] = None
 
-    # Check if pushing to an organization
     if save_pretrained_settings["push_to_hub"] and (username != actual_username):
         print(f"Unsloth: Saving to organization with address {new_save_directory}")
-        # Pushing to organization: .save_pretrained doesn't work, so save
-        # locally first then upload manually.
+          # Pushing to an organization: .save_pretrained does not work, so save locally first and upload
+          # manually.
         save_pretrained_settings["save_directory"] = new_save_directory
         save_pretrained_settings["push_to_hub"] = False
         internal_model.save_pretrained(**save_pretrained_settings)
 
-        # Now manually go through each file and upload them manually!
         filenames = os.listdir(new_save_directory)
 
         hf_api = HfApi(token = save_pretrained_settings["token"])
@@ -1436,7 +1363,6 @@ def unsloth_save_model(
     else:
         internal_model.save_pretrained(**save_pretrained_settings)
 
-    # Revert config back
     original_model = model
     while hasattr(original_model, "model"):
         original_model = original_model.model
@@ -1461,7 +1387,6 @@ def unsloth_save_model(
     torch.cuda.empty_cache()
     gc.collect()
 
-    # Remove temporary location
 
     shutil.rmtree(temporary_location, ignore_errors = True)
 
@@ -1485,15 +1410,12 @@ def install_llama_cpp_clone_non_blocking():
 
 
 def install_llama_cpp_make_non_blocking():
-    # https://github.com/ggerganov/llama.cpp/issues/7062
-    # Weirdly GPU conversion for GGUF breaks??
-    # env = { **os.environ, "LLAMA_CUDA": "1", }
+      # GPU conversion for GGUF weirdly breaks; see ggerganov/llama.cpp#7062.
 
-    # Skip the make-clean probe on CMake-only checkouts (its error output is misleading)
+      # Skip the make-clean probe on CMake-only checkouts, whose error output is misleading.
     IS_CMAKE = _is_cmake_only_llama_cpp("llama.cpp")
 
     if not IS_CMAKE:
-        # Confirm make still works, silently
         try:
             result = subprocess.run(
                 ["make", "clean", "-C", "llama.cpp"],
@@ -1502,16 +1424,13 @@ def install_llama_cpp_make_non_blocking():
             )
             IS_CMAKE = result.returncode != 0
         except FileNotFoundError:
-            # No make executable; use CMake
             IS_CMAKE = True
 
     if not IS_CMAKE:
-        # Uses old MAKE
         n_jobs = max(int((psutil.cpu_count() or 1) * 1.5), 1)
         full_command = ["make", "all", "-j" + str(n_jobs), "-C", "llama.cpp"]
     else:
-        # Uses new CMAKE
-        n_jobs = max(int(psutil.cpu_count() or 1), 1)  # Use less CPUs since 1.5x faster
+        n_jobs = max(int(psutil.cpu_count() or 1), 1)
         check = os.system(
             f"cmake llama.cpp -B llama.cpp/build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=OFF {CURL_FLAG}"
         )
@@ -1520,7 +1439,6 @@ def install_llama_cpp_make_non_blocking():
             raise RuntimeError(
                 f"*** Unsloth: Failed compiling llama.cpp using os.system(...) with error {check}. Please report this ASAP!"
             )
-        # f"cmake --build llama.cpp/build --config Release -j{psutil.cpu_count()*2} --clean-first --target {' '.join(LLAMA_CPP_TARGETS)}",
         full_command = [
             "cmake",
             "--build",
@@ -1531,9 +1449,6 @@ def install_llama_cpp_make_non_blocking():
             "--clean-first",
             "--target",
         ] + LLAMA_CPP_TARGETS
-    # https://github.com/ggerganov/llama.cpp/issues/7062
-    # Weirdly GPU conversion for GGUF breaks??
-    # run_installer = subprocess.Popen(full_command, env = env, stdout = subprocess.DEVNULL, stderr = subprocess.STDOUT)
     run_installer = subprocess.Popen(
         full_command, stdout = subprocess.DEVNULL, stderr = subprocess.STDOUT
     )
@@ -1542,24 +1457,20 @@ def install_llama_cpp_make_non_blocking():
 
 def install_python_non_blocking(packages = []):
     full_command = ["pip", "install"] + packages
+    # GPU conversion for GGUF weirdly breaks; see ggerganov/llama.cpp#7062.
     run_installer = subprocess.Popen(
         full_command, stdout = subprocess.DEVNULL, stderr = subprocess.STDOUT
     )
     return run_installer
 
 
-# Bound the first-use auto-install so no unvetted release is pulled: not an inflated "0.999.0", nor
-# a crafted higher in-range patch like "0.12.999" from a mirror. Cap to the exact vetted patch and
-# bump deliberately. Floor 0.6.0 keeps torch>=2.4 resolvable (0.7+ need torch>=2.7; torch pinned below).
+  # Cap the first-use auto-install at the exact vetted patch, so no inflated "0.999.0" or in-range "0.12.999"
+  # from a mirror is pulled. Floor 0.6.0 keeps torch>=2.4 resolvable (0.7+ need torch>=2.7).
 _LLM_COMPRESSOR_SPEC = "llmcompressor>=0.6.0,<=0.12.0"
 
-# Highest transformers release llm-compressor 0.10.x/0.12.x can run against (its metadata pins
-# transformers<=4.57.6). Models that require a newer-transformers sidecar (e.g. Qwen3.5 needs
-# transformers 5.3.0) cannot be quantized by llm-compressor at all: it imports
-# transformers.modeling_utils.TORCH_INIT_FUNCTIONS, which was removed in transformers 5.x, so the
-# compressed-export subprocess dies with a cryptic ImportError AFTER the expensive 16bit merge.
-# Detect that up front and fail fast with an actionable message. Bump this in lockstep with a
-# llm-compressor release that supports newer transformers.
+  # Highest transformers llm-compressor 0.10.x/0.12.x runs against (it pins <=4.57.6). It imports
+  # TORCH_INIT_FUNCTIONS, removed in transformers 5.x, so a newer-transformers model dies with a cryptic
+  # ImportError AFTER the expensive merge. Bump with llm-compressor.
 _LLM_COMPRESSOR_MAX_TRANSFORMERS = "4.57.6"
 
 
@@ -1587,11 +1498,8 @@ def _transformers_exceeds_llm_compressor_ceiling(transformers_version = None):
         return False, str(transformers_version)
 
 
-# A caller (e.g. Unsloth Studio) can enable FP8/FP4 export of newer-transformers models (Qwen3.5,
-# Gemma-4, ...) by provisioning a dedicated llm-compressor-main "shadow" (transformers>=5.9 layered
-# over the existing torch) and pointing us at its sys.path entry via this env var. When set, the
-# quantization subprocess uses it instead of the workspace llm-compressor and the ceiling fail-fast
-# is bypassed.
+  # A caller (Unsloth Studio) can point this at an llm-compressor-main shadow (transformers>=5.9 over the
+  # existing torch); the subprocess then uses it and the ceiling check is bypassed.
 _COMPRESSED_QUANTIZE_PYTHONPATH_ENV = "UNSLOTH_COMPRESSED_QUANTIZE_PYTHONPATH"
 
 
@@ -1615,7 +1523,7 @@ def install_llm_compressor():
     except Exception:
         pass
 
-    # Opt-out for locked-down / air-gapped setups: forbid the auto-install, require a manual one.
+      # Opt-out for locked-down / air-gapped setups: forbid the auto-install, require a manual one.
     if os.environ.get("UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL", "0").lower() not in (
         "0",
         "",
@@ -1650,8 +1558,8 @@ def install_llm_compressor():
     except Exception:
         pass
 
-    # Prefer pip, but fall back to uv when this interpreter has no pip seeded (common in
-    # uv-created / relocatable venvs), so the export does not hard-fail with "No module named pip".
+      # Prefer pip, falling back to uv when the interpreter has no pip seeded (uv-created or relocatable venvs),
+      # so the export does not die on "No module named pip".
     import importlib.util
 
     if importlib.util.find_spec("pip") is not None:
@@ -1732,8 +1640,7 @@ def try_execute(commands, force_complete = False):
 
 
 def install_llama_cpp_old(version = -10):
-    # Download the 10th latest release since the latest might be broken!
-    # FALLBACK mechanism
+      # Download the 10th latest release since the latest might be broken; this is the fallback mechanism.
     releases = subprocess.check_output(
         ["git", "ls-remote", "--tags", "https://github.com/ggerganov/llama.cpp.git"]
     )
@@ -1745,7 +1652,6 @@ def install_llama_cpp_old(version = -10):
     latest = releases[-1]
     version = releases[version].split(" ")[0]
 
-    # Check if the llama.cpp exists
     if os.path.exists("llama.cpp"):
         print(
             "**[WARNING]** You have a llama.cpp directory which is broken.\n"
@@ -1760,19 +1666,15 @@ def install_llama_cpp_old(version = -10):
 
         shutil.rmtree("llama.cpp", ignore_errors = True)
 
-    # Clone a specific commit
-    # Also don't use the GPU!
     commands = [
         "git clone --recursive https://github.com/ggerganov/llama.cpp",
         f"cd llama.cpp && git reset --hard {version} && git clean -df",
     ]
     try_execute(commands)
 
-    # Detect CMake-only build system before trying make
     use_cmake = _is_cmake_only_llama_cpp("llama.cpp")
 
     if not use_cmake:
-        # Try using MAKE
         commands = [
             "make clean -C llama.cpp",
             f"make all -j{(psutil.cpu_count() or 1) * 2} -C llama.cpp",
@@ -1780,7 +1682,6 @@ def install_llama_cpp_old(version = -10):
         use_cmake = try_execute(commands) == "CMAKE"
 
     if use_cmake:
-        # Use CMAKE
         commands = [
             f"cmake llama.cpp -B llama.cpp/build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=OFF {CURL_FLAG}",
             f"cmake --build llama.cpp/build --config Release -j{(psutil.cpu_count() or 1) * 2} --clean-first --target {' '.join(LLAMA_CPP_TARGETS)}",
@@ -1789,7 +1690,6 @@ def install_llama_cpp_old(version = -10):
         ]
         try_execute(commands)
 
-    # Check if successful
     if not (
         os.path.exists("llama.cpp/llama-quantize.exe")
         or os.path.exists("llama.cpp/llama-quantize")
@@ -1806,9 +1706,7 @@ def install_llama_cpp_old(version = -10):
 
 
 def install_llama_cpp_blocking(use_cuda = False):
-    # https://github.com/ggerganov/llama.cpp/issues/7062
-    # Weirdly GPU conversion for GGUF breaks??
-    # use_cuda = "LLAMA_CUDA=1" if use_cuda else ""
+     # GPU conversion for GGUF weirdly breaks; see ggerganov/llama.cpp#7062.
 
     commands = [
         "git clone --recursive https://github.com/ggerganov/llama.cpp",
@@ -1818,21 +1716,16 @@ def install_llama_cpp_blocking(use_cuda = False):
         return
     try_execute(commands)
 
-    # Detect CMake-only build system before trying make
     use_cmake = _is_cmake_only_llama_cpp("llama.cpp")
 
     if not use_cmake:
         commands = [
             "make clean -C llama.cpp",
-            # https://github.com/ggerganov/llama.cpp/issues/7062
-            # Weirdly GPU conversion for GGUF breaks??
-            # f"{use_cuda} make all -j{(psutil.cpu_count() or 1)*2} -C llama.cpp",
             f"make all -j{(psutil.cpu_count() or 1) * 2} -C llama.cpp",
         ]
         use_cmake = try_execute(commands) == "CMAKE"
 
     if use_cmake:
-        # Use CMAKE
         commands = [
             f"cmake llama.cpp -B llama.cpp/build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=OFF {CURL_FLAG}",
             f"cmake --build llama.cpp/build --config Release -j{(psutil.cpu_count() or 1) * 2} --clean-first --target {' '.join(LLAMA_CPP_TARGETS)}",
@@ -1843,13 +1736,11 @@ def install_llama_cpp_blocking(use_cuda = False):
 
 
 def get_executable(executables):
-    # Get system locations (System Path).split(system separator)
     system_directories = os.environ.get("PATH").split(os.pathsep)
 
     for directory in system_directories:
         for executable in executables:
             path = os.path.join(directory, executable)
-            # Check if the executable exists and is executable
             if os.path.exists(path) and os.access(path, os.X_OK):
                 return path
     return None
@@ -2105,17 +1996,15 @@ def save_to_gguf(
     `gguf_shard_size` applies to final f32, f16 and bf16 outputs. Quantized outputs
     remain single-file. None preserves the historical 50GB converter limit.
     """
-    # print_output True only if UNSLOTH_ENABLE_LOGGING=1
+    # print_output is True only if UNSLOTH_ENABLE_LOGGING=1.
     if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") == "1":
         print_output = True
     else:
         print_output = False
 
-    # Validate model dtype
     assert model_dtype == "float16" or model_dtype == "bfloat16"
     model_dtype = "f16" if model_dtype == "float16" else "bf16"
 
-    # Convert quantization_method to list
     if isinstance(quantization_method, list):
         pass
     elif isinstance(quantization_method, str):
@@ -2127,7 +2016,6 @@ def save_to_gguf(
     else:
         raise TypeError("Unsloth: quantization_method can only be a string or a list of strings")
 
-    # Check if bfloat16 is supported
     if model_dtype == "bf16" and not torch.cuda.is_bf16_supported():
         logger.warning(
             "Unsloth: Cannot convert to bf16 GGUF since your computer doesn't support it.\n"
@@ -2137,8 +2025,8 @@ def save_to_gguf(
 
     has_imatrix = imatrix is not None and str(imatrix) != ""
     if has_imatrix:
-        # quantize_gguf gained the imatrix kwarg in a recent unsloth_zoo; fail fast (before the
-        # expensive conversion) if the installed version cannot apply it, rather than dropping it.
+          # quantize_gguf gained the imatrix kwarg in a recent unsloth_zoo; fail fast before the expensive
+          # conversion rather than silently dropping it.
         import inspect
         if "imatrix" not in inspect.signature(quantize_gguf).parameters:
             raise RuntimeError(
@@ -2146,7 +2034,6 @@ def save_to_gguf(
                 "Please upgrade it:  uv pip install --upgrade unsloth_zoo"
             )
 
-    # Map quant methods
     new_quantization_methods = []
     for quant_method in quantization_method:
         if quant_method == "not_quantized":
@@ -2158,7 +2045,7 @@ def save_to_gguf(
         elif quant_method is None:
             quant_method = "q8_0"
 
-        # IQ low-bit quants are only valid with an imatrix; other methods use the normal allow-list.
+          # IQ low-bit quants are only valid with an imatrix; other methods use the normal allow-list.
         if quant_method in IMATRIX_QUANTS:
             if not has_imatrix:
                 raise RuntimeError(
@@ -2177,11 +2064,10 @@ def save_to_gguf(
         new_quantization_methods.append(quant_method)
     quantization_method = new_quantization_methods
 
-    # Determine optimal first_conversion
     if is_gpt_oss:
         print("Unsloth: GPT-OSS model detected - using special conversion settings")
-        first_conversion = "None"  # No quantization for GPT-OSS
-        # Only keep one conversion method since GPT-OSS doesn't quantize
+        first_conversion = "None"
+          # GPT-OSS does not quantize, so keep only one conversion method.
         quantization_method = ["None"]
     elif first_conversion is None:
         first_conversion = _choose_first_conversion(
@@ -2190,7 +2076,6 @@ def save_to_gguf(
             has_imatrix = has_imatrix,
         )
 
-    # Check bfloat16 support again for first_conversion
     if first_conversion == "bf16" and not torch.cuda.is_bf16_supported():
         logger.warning("Unsloth: Switching bf16 to f16 due to hardware limitations")
         first_conversion = "f16"
@@ -2203,7 +2088,6 @@ def save_to_gguf(
         quantization_method,
         is_vlm,
     )
-    # Print conversion info
     needs_quantize_pass = any(m != first_conversion for m in quantization_method)
     if needs_quantize_pass:
         second_step = f"[2] Converting GGUF {first_conversion_dtype} to {quantization_method} might take 10 minutes each."
@@ -2220,31 +2104,28 @@ def save_to_gguf(
     )
     print(print_info)
 
-    # Step 1: Ensure llama.cpp is installed
     try:
         quantizer_location, converter_location = check_llama_cpp()
         print("Unsloth: llama.cpp found in the system. Skipping installation.")
     except:
         print("Unsloth: Installing llama.cpp. This might take 3 minutes...")
         if IS_KAGGLE_ENVIRONMENT:
-            # Kaggle: no CUDA support due to environment limitations
             quantizer_location, converter_location = install_llama_cpp(
                 gpu_support = False, print_output = print_output
             )
         else:
+            # Kaggle: no CUDA support due to environment limitations.
             quantizer_location, converter_location = install_llama_cpp(
-                gpu_support = False,  # GGUF conversion doesn't need CUDA
+                gpu_support = False,
                 print_output = print_output,
             )
 
-    # Step 2: Download and patch converter script
     print("Unsloth: Preparing converter script...")
     with use_local_gguf():
         converter_path, supported_text_archs, supported_vision_archs = (
             _download_convert_hf_to_gguf()
         )
 
-        # Step 3: Initial GGUF conversion
         print(f"Unsloth: [1] Converting model into {first_conversion_dtype} GGUF format.")
         print(f"This might take 3 minutes...")
 
@@ -2261,14 +2142,11 @@ def save_to_gguf(
             max_shard_size = converter_shard_size,
             print_output = print_output,
         )
-    # update is_vlm switch
     is_vlm = is_vlm_update
-    # Check conversion success
     for file in initial_files:
         if not os.path.exists(file):
-            # Gated like the outer handler: the disk advice is only right when
-            # the disk is actually the problem, and a converter that has no
-            # llama.cpp support fails here with plenty of space free.
+              # Gated like the outer handler: disk advice is only right when disk is the problem, and a
+              # converter with no llama.cpp support fails here with space to spare.
             if IS_KAGGLE_ENVIRONMENT and _gguf_failure_looks_like_disk(
                 RuntimeError(f"Conversion produced no output at {file}"),
                 os.path.dirname(file) or None,
@@ -2284,7 +2162,6 @@ def save_to_gguf(
                     f"Unsloth: Conversion failed for {file}\nPlease check disk space and try again."
                 )
 
-    # Move initial GGUF files into a dedicated _gguf directory
     if gguf_directory is None:
         gguf_directory = f"{model_directory}_gguf"
     else:
@@ -2310,10 +2187,8 @@ def save_to_gguf(
 
     print(f"Unsloth: Initial conversion completed! Files: {initial_files}")
 
-    # Step 4: Additional quantizations using llama-quantize
     all_saved_locations = initial_files.copy()
 
-    # Get CPU count for quantization
     n_cpus = psutil.cpu_count()
     if n_cpus is None:
         n_cpus = 1
@@ -2322,20 +2197,14 @@ def save_to_gguf(
     if not is_gpt_oss:
         base_gguf = initial_files[0]
 
-        # Deduplicate while keeping order; methods equal to the base conversion already
-        # exist on disk and need no quantize pass.
+        # Deduplicate while keeping order; a method equal to the base conversion is already on disk.
         methods_to_quantize = [
             m for m in dict.fromkeys(quantization_method) if m != first_conversion
         ]
 
-        # The merge is not read again -- llama-quantize reads the GGUF, already
-        # written and moved -- and on a disk holding merge, base GGUF and quants
-        # at once those bytes are what runs it out. Only fires when the room is
-        # not there, so an export that would have worked keeps the merge.
-        # Nemotron-3-Nano-30B-A3B on a 132GB disk: 63GB merge + 60GB BF16 GGUF +
-        # ~18GB Q4_K_M = 141GB, and llama-quantize died at tensor 88 of 401 with
-        # `basic_ios::clear: iostream error`, its own `fout.exceptions(failbit)`
-        # firing on a write with nowhere to go.
+          # The merge is not read again, and on a tight disk its bytes are what run the export out.
+          # Nemotron-3-Nano-30B-A3B on 132GB: 63GB merge + 60GB GGUF + 18GB Q4_K_M = 141GB, and llama-quantize
+          # died mid-write. Only fires when the room is not there.
         _free_merge_if_disk_is_tight(
             model_directory,
             gguf_directory,
@@ -2361,9 +2230,8 @@ def save_to_gguf(
                         imatrix = imatrix,
                     )
                 else:
-                    # Use unsloth-zoo's standard quantization for all other methods. Only pass
-                    # imatrix when set so older unsloth_zoo (no imatrix kwarg) still works for
-                    # plain quants; an imatrix that cannot be applied was rejected above.
+                      # Standard unsloth-zoo quantization for everything else. Pass imatrix only when set, so an
+                      # older zoo still handles plain quants; an inapplicable imatrix was rejected above.
                     quant_kwargs = dict(
                         input_gguf = base_gguf,
                         output_gguf = output_location,
@@ -2377,13 +2245,8 @@ def save_to_gguf(
                         quant_kwargs["n_threads"] = n_threads
                     return quantize_gguf(**quant_kwargs)
             except Exception as e:
-                # What this pass was going to write, so "no room" is judged
-                # against the output rather than a constant. Priced as a lower
-                # bound, not the reclamation estimate: that one is deliberately
-                # generous, and here a size that comes out high calls a disk full
-                # that had the room and hides the rebuild advice below. Best
-                # effort -- an unreadable base, or a type with no known width,
-                # just falls back to the fixed floor.
+                  # Judge "no room" against what this pass writes, not a constant. Priced as a lower bound, not
+                  # the generous reclamation estimate: a high guess calls a disk full that had room.
                 try:
                     _ratio = _gguf_output_size_ratio(
                         quant_method,
@@ -2404,9 +2267,8 @@ def save_to_gguf(
                     )
                 except OSError:
                     _needed = None
-                # Same gate as above: a broken quantizer with 19GB free is not
-                # a disk problem, and the outer handler cannot undo an
-                # explanation already baked into this message.
+                # Same gate as above: a broken quantizer with 19GB free is not a disk problem, and the outer
+                # handler cannot undo an explanation already baked into this message.
                 if IS_KAGGLE_ENVIRONMENT and _gguf_failure_looks_like_disk(
                     e,
                     gguf_directory,
@@ -2430,10 +2292,8 @@ def save_to_gguf(
                     needed_bytes = _needed,
                     partial_output = output_location,
                 ):
-                    # Kaggle is not the only place a disk fills. The rebuild
-                    # advice below is only correct when the quantizer is the
-                    # problem; on a full disk it is a long compile that fixes
-                    # nothing, so say what actually happened instead.
+                    # Kaggle is not the only place a disk fills, and the rebuild advice below only fits a broken
+                    # quantizer; on a full disk it is a long compile that fixes nothing.
                     try:
                         _free_gb = shutil.disk_usage(gguf_directory).free / 1024**3
                         _where = f" ({_free_gb:.1f}GB free at {gguf_directory})"
@@ -2471,24 +2331,21 @@ def save_to_gguf(
                         f"Error: {e}"
                     ) from e  # keep the cause: the OOM check walks it for the returncode
 
-        # Outputs already on disk pre-date this run; never delete them on a failure.
+          # Outputs already on disk pre-date this run; never delete them on a failure.
         preexisting_outputs = {
             m
             for m in methods_to_quantize
             if os.path.exists(os.path.join(gguf_directory, f"{model_name}.{m.upper()}.gguf"))
         }
-        # Each llama-quantize pass loads the whole base GGUF into RAM, so only run two at
-        # once when the host has headroom for two copies, else a multi-quant export that
-        # fit sequentially could OOM.
+          # Each llama-quantize pass loads the whole base GGUF into RAM, so run two at once only with headroom
+          # for two copies, else a multi-quant export that fit sequentially OOMs.
         try:
             base_bytes = sum(os.path.getsize(f) for f in initial_files if not _is_gguf_companion(f))
             mem_ok = psutil.virtual_memory().available >= int(2.5 * base_bytes)
         except Exception:
             mem_ok = False
-        # Independent llama-quantize runs on the same base GGUF can overlap. Kept at 2
-        # workers; run sequentially when streaming logs (UNSLOTH_ENABLE_LOGGING), on
-        # Kaggle/Colab, when RAM is tight, or when the kill switch (0/false/no/off/empty)
-        # is set.
+          # Independent llama-quantize runs can overlap, capped at 2 workers. Sequential when streaming logs, on
+          # Kaggle/Colab, when RAM is tight, or when the kill switch is set.
         _parallel_flag = os.environ.get("UNSLOTH_PARALLEL_GGUF_QUANTS", "1").strip().lower()
         parallel_quants = (
             len(methods_to_quantize) > 1
@@ -2515,14 +2372,13 @@ def save_to_gguf(
                     for i, method in enumerate(methods_to_quantize)
                 }
                 done, pending = wait(future_to_idx, return_when = FIRST_EXCEPTION)
-                # Do not start queued passes after a failure (avoid filling the disk).
+                  # Do not start queued passes after a failure, to avoid filling the disk.
                 for fut in pending:
                     fut.cancel()
                 first_exc = next((f.exception() for f in done if f.exception() is not None), None)
                 if first_exc is not None:
-                    # Remove only outputs this run newly created; a file that pre-dated the
-                    # run (or a canceled pass that never wrote) is left intact, so a rerun
-                    # never deletes a prior artifact. Base kept for retry.
+                      # Remove only outputs this run created: a pre-existing file, or a canceled pass that never
+                      # wrote, stays, so a rerun never deletes a prior artifact. The base is kept for retry.
                     wait(future_to_idx)
                     for method in methods_to_quantize:
                         if method in preexisting_outputs:
@@ -2554,11 +2410,11 @@ def save_to_gguf(
                         all_saved_locations.remove(f)
                     Path(f).unlink(missing_ok = True)
 
-            # flip the list to get [text_model, mmproj] order. for text models stays the same.
+            # Flip the list to get [text_model, mmproj] order; text models stay the same.
             all_saved_locations.reverse()
 
-            # When the base format is preserved, move base files (incl. shards) away from
-            # list boundaries so example commands ([0]=model, [-1]=mmproj) stay correct.
+              # When the base format is preserved, move base files (and shards) off the list boundaries so
+              # example commands ([0]=model, [-1]=mmproj) stay correct.
             if want_full_precision and len(all_saved_locations) > len(base_files) + 1:
                 for f in base_files:
                     if f in all_saved_locations:
@@ -2626,10 +2482,9 @@ def unsloth_save_pretrained_merged(
             "You can do it separately via `tokenizer.save_pretrained(...)`"
         )
 
-    # Kaggle's working directory is ~20GB while the overlay at /tmp on the same
-    # kernel is measured in terabytes. Relative paths under /kaggle/working that
-    # do not fit move there; absolute paths, hub pushes and every non-Kaggle
-    # machine are untouched.
+      # Kaggle's working directory is ~20GB while /tmp on the same kernel is terabytes, so relative paths under
+      # /kaggle/working that do not fit move there. Absolute paths, hub pushes and non-Kaggle machines are
+      # untouched.
     _forwards_state_dict, _writes_model_verbatim = _merge_writer_disposition(self, save_method)
     save_directory = _preflight_merge_disk(
         self,
@@ -2639,14 +2494,11 @@ def unsloth_save_pretrained_merged(
         state_dict = state_dict,
         forwards_state_dict = _forwards_state_dict,
         writes_model_verbatim = _writes_model_verbatim,
-        # No `writer_runs_merge_guard`: this entrypoint's writer for a plain
-        # merge is `unsloth_save_model`, which merges and writes the shards
-        # itself and never reaches `merge_and_overwrite_lora`. A compressed
-        # export from here does go through `unsloth_generic_save`, and the
-        # preflight recognises that from the method alone.
+          # No writer_runs_merge_guard: a plain merge here is written by unsloth_save_model, which never reaches
+          # merge_and_overwrite_lora. A compressed export does go through unsloth_generic_save, which the
+          # preflight recognises from the method alone.
     )
 
-    # FP8 / FP4 compressed-tensors export (llm-compressor) -> handled separately.
     _compressed = _normalize_compressed_method(save_method)
     if _compressed is not None:
         scheme, needs_calibration, suffix = _compressed
@@ -2663,7 +2515,6 @@ def unsloth_save_pretrained_merged(
             calibration_dataset = calibration_dataset,
             num_calibration_samples = num_calibration_samples,
             max_seq_length = max_seq_length,
-            # Forward standard save kwargs to the 16bit merge.
             state_dict = state_dict,
             save_function = save_function,
             max_shard_size = max_shard_size,
@@ -2679,7 +2530,6 @@ def unsloth_save_pretrained_merged(
             gc.collect()
         return
 
-    # torchao portable FP8/INT8 export (no NVIDIA GPU) -> separate path.
     _torchao = _normalize_torchao_method(save_method)
     if _torchao is not None:
         kind, suffix = _torchao
@@ -2692,7 +2542,6 @@ def unsloth_save_pretrained_merged(
             push_to_hub = push_to_hub,
             token = token,
             is_main_process = is_main_process,
-            # Forward standard save kwargs to the 16bit merge.
             state_dict = state_dict,
             save_function = save_function,
             max_shard_size = max_shard_size,
@@ -2761,7 +2610,6 @@ def unsloth_push_to_hub_merged(
             "You can do it separately via `tokenizer.push_to_hub(...)`"
         )
 
-    # FP8 / FP4 compressed-tensors export (llm-compressor) -> handled separately.
     _compressed = _normalize_compressed_method(save_method)
     if _compressed is not None:
         scheme, needs_calibration, suffix = _compressed
@@ -2782,7 +2630,6 @@ def unsloth_push_to_hub_merged(
             calibration_dataset = calibration_dataset,
             num_calibration_samples = num_calibration_samples,
             max_seq_length = max_seq_length,
-            # Forward standard save kwargs to the 16bit merge.
             use_temp_dir = use_temp_dir,
             max_shard_size = max_shard_size,
             safe_serialization = safe_serialization,
@@ -2795,7 +2642,6 @@ def unsloth_push_to_hub_merged(
             gc.collect()
         return
 
-    # torchao portable FP8/INT8 export (no NVIDIA GPU) -> separate path.
     _torchao = _normalize_torchao_method(save_method)
     if _torchao is not None:
         kind, suffix = _torchao
@@ -2813,7 +2659,6 @@ def unsloth_push_to_hub_merged(
             commit_description = commit_description,
             create_pr = create_pr,
             revision = revision,
-            # Forward standard save kwargs to the 16bit merge.
             use_temp_dir = use_temp_dir,
             max_shard_size = max_shard_size,
             safe_serialization = safe_serialization,
@@ -2906,7 +2751,6 @@ def create_huggingface_repo(
             private = private,
         )
 
-        # Create model card
         from huggingface_hub import ModelCard
 
         content = MODEL_CARD.format(
@@ -2921,7 +2765,7 @@ def create_huggingface_repo(
             card.data.datasets = datasets
         card.push_to_hub(save_directory, token = token)
     except:
-        # Repo already exists — update datasets metadata separately
+        # Repo already exists, so update datasets metadata separately.
         if datasets:
             try:
                 from huggingface_hub import metadata_update
@@ -2959,7 +2803,6 @@ def upload_to_huggingface(
             private = private,
         )
 
-        # Create model card
         from huggingface_hub import ModelCard
 
         content = MODEL_CARD.format(
@@ -2974,7 +2817,6 @@ def upload_to_huggingface(
             card.data.datasets = datasets
         card.push_to_hub(save_directory, token = token)
     except:
-        # Repo already exists — update datasets metadata separately
         if datasets:
             try:
                 from huggingface_hub import metadata_update
@@ -2985,7 +2827,6 @@ def upload_to_huggingface(
                 )
 
     if file_location is not None:
-        # Now upload file
         hf_api = HfApi(token = token)
 
         if "/" in file_location:
@@ -2993,7 +2834,6 @@ def upload_to_huggingface(
         else:
             uploaded_location = file_location
 
-        # find ftevent file from tensorboard and upload it
         import glob
 
         ftevent_files = glob.glob("*out.tfevents*", recursive = True)
@@ -3019,7 +2859,6 @@ def upload_to_huggingface(
             commit_message = "(Trained with Unsloth)",
         )
 
-        # We also upload a config.json file
         if create_config:
             import json
 
@@ -3037,7 +2876,6 @@ def upload_to_huggingface(
 
 
 def fix_tokenizer_bos_token(tokenizer):
-    # Check if BOS added already, then warn
     fix_bos_token = False
     chat_template = getattr(tokenizer, "chat_template", None)
 
@@ -3053,11 +2891,9 @@ def fix_tokenizer_bos_token(tokenizer):
                 "Unsloth: ##### Your chat template has a BOS token. We shall remove it temporarily."
             )
 
-            # Remove {{bos_token}}
             new_chat_template = re.sub(
                 r"\{[\s]{0,}\{[\s]{0,}bos\_token[\s]{0,}\}[\s]{0,}\}", "", chat_template
             )
-            # Remove {{bos_token +
             new_chat_template = re.sub(
                 r"\{[\s]{0,}\{[\s]{0,}bos\_token[\s]{0,}\+[\s]{0,}",
                 "",
@@ -3086,7 +2922,7 @@ def create_ollama_modelfile(tokenizer, base_model_name, model_location):
             f"Unsloth: No Ollama template mapping found for model '{base_model_name}'. Skipping Ollama Modelfile"
         )
         return None
-    tokenizer._ollama_modelfile = ollama_modelfile  # This comes from the unpacking above
+    tokenizer._ollama_modelfile = ollama_modelfile
     modelfile = ollama_modelfile
 
     FILE_LOCATION_REPLACER = "⚫@✅#🦥__FILE_LOCATION__⚡@🦥#⛵"
@@ -3094,8 +2930,7 @@ def create_ollama_modelfile(tokenizer, base_model_name, model_location):
     LEFT_BRACKET_REPLACER = "⚫@✅#🦥"
     RIGHT_BRACKET_REPLACER = "⚡@🦥#⛵"
 
-    # Fixes https://github.com/unslothai/unsloth/issues/1087
-    # We must convert all {'s and }'s but keep {__FILE_LOCATION__} intact
+      # Convert all {'s and }'s but keep {__FILE_LOCATION__} intact, reverted below (#1087).
     modelfile = (
         modelfile.replace("{__FILE_LOCATION__}", FILE_LOCATION_REPLACER)
         .replace("{__EOS_TOKEN__}", EOS_TOKEN_REPLACER)
@@ -3103,7 +2938,6 @@ def create_ollama_modelfile(tokenizer, base_model_name, model_location):
         .replace("}", RIGHT_BRACKET_REPLACER)
     )
 
-    # Revert {__FILE_LOCATION__} back
     modelfile = modelfile.replace(FILE_LOCATION_REPLACER, "{__FILE_LOCATION__}").replace(
         EOS_TOKEN_REPLACER, "{__EOS_TOKEN__}"
     )
@@ -3252,12 +3086,9 @@ def _hub_cache_prewarm_disabled(disable):
             os.environ[key] = previous
 
 
-# unsloth_zoo's own merge guard compares the save against `int(free * 0.95)`
-# (`saving_utils.merge_and_overwrite_lora`), and `model_16bit_bytes` counts
-# tensors only: config.json, the tokenizer files and the safetensors index are
-# written on top of them. Ask the redirect for that same effective figure, or a
-# working directory that measures "just big enough" keeps the export and the
-# merge then refuses it outright instead of using /tmp.
+  # The zoo's merge guard compares against int(free * 0.95), and model_16bit_bytes counts tensors only, with
+  # config, tokenizer and index on top. Ask the redirect for that same effective figure, else a "just big
+  # enough" directory is kept and the merge then refuses.
 _MERGE_FREE_SPACE_RESERVE = 0.95
 
 # torchao weight-only fp8 / int8: one byte per quantized weight.
@@ -3429,11 +3260,9 @@ def _full_model_checkpoint_bytes(model, state_dict = None):
     which is how the 20GB Kaggle working directory fills instead.
     """
     try:
-        # `is not None`, matching `unsloth_generic_save`, which forwards the
-        # dict on exactly that test. An explicitly empty one therefore reaches
-        # `save_pretrained` and writes no tensors at all, so sizing the resident
-        # model there would price tens of gigabytes for a save that writes none
-        # and move it off persistent Kaggle storage for nothing.
+          # `is not None`, matching unsloth_generic_save, which forwards the dict on that test. An empty dict
+          # reaches save_pretrained and writes no tensors, so sizing the resident model would price tens of
+          # gigabytes for a save that writes none.
         if state_dict is not None:
             total = 0
             for tensor in state_dict.values():
@@ -3586,10 +3415,8 @@ def _warn_if_torchao_staging_filesystem_is_short(destination, staging_bytes):
         if _same_filesystem(staging_directory, destination):
             return
         free = free_bytes(staging_directory)
-        # The staging merge is written by `merge_and_overwrite_lora`, which
-        # refuses it unless `free * 0.95` covers it. Comparing against the
-        # bare size leaves the 5% band where the merge predictably dies and
-        # this says nothing, which is the one thing it exists to prevent.
+          # The staging merge is written by merge_and_overwrite_lora, which refuses it unless free * 0.95 covers
+          # it, so the bare size leaves a 5% band where the merge dies silently.
         needed = math.ceil(staging_bytes / _MERGE_FREE_SPACE_RESERVE)
         if free is None or free >= needed:
             return
@@ -3673,12 +3500,12 @@ def _merge_writer_disposition(model, save_method):
         return True, False
     if method != "merged_16bit":
         return False, False
-    # A PeftModel in the generic fallback writes ADAPTERS and not a checkpoint,
-    # so it keeps the sizing it has rather than being priced a full model.
+      # A PeftModel in the generic fallback writes ADAPTERS, not a checkpoint, so it keeps its own sizing rather
+      # than being priced a full model.
     if isinstance(model, (PeftModel, PeftModelForCausalLM)):
         return False, False
     try:
-        # The same predicate `unsloth_save_model` dispatches on, and no other.
+        # The same predicate unsloth_save_model dispatches on, and no other.
         takes_generic_fallback = not hasattr(model, "model") or not hasattr(
             getattr(model, "model", None), "layers"
         )
@@ -3734,56 +3561,37 @@ def _preflight_merge_disk(
     """
     if push_to_hub:
         return save_directory
-    # `unsloth_save_model` normalizes spaces before it dispatches, so
-    # "merged 16bit" is the same full merge as "merged_16bit" and has to be
-    # measured as one. `_normalize_compressed_method` normalizes the same way.
+      # unsloth_save_model normalizes spaces before dispatching, so "merged 16bit" is the same full merge as
+      # "merged_16bit" and must be measured as one.
     method = str(save_method).lower().strip().replace("-", "_").replace(" ", "_")
     try:
-        # Every compressed export keeps the 16-bit merge at `save_directory`
-        # and writes a quantized sibling next to it, so all of them belong
-        # here, not just mxfp4.
+          # Every compressed export keeps the 16-bit merge at save_directory and writes a quantized sibling
+          # beside it, so all of them belong here, not just mxfp4.
         compressed = _normalize_compressed_method(method)
     except Exception:
         # An unsupported near-miss name raises later, where the message is.
         return save_directory
-    # The torchao portable exports are the same shape as the compressed ones
-    # from here: a quantized sibling at `save_directory + "-<suffix>"`.
+    # The torchao portable exports have the same shape: a quantized sibling at save_directory + "-<suffix>".
     torchao = _normalize_torchao_method(method)
-    # `lora` on a model that has no adapter writes the WHOLE model instead:
-    # both `unsloth_generic_save` and `unsloth_save_model` fall back to
-    # `save_pretrained` there, so a full fine-tune asked for "lora" fills
-    # /kaggle/working exactly like a merge. A real PeftModel writes adapters
-    # only and is still skipped.
+      # "lora" on a model with no adapter writes the WHOLE model: both save paths fall back to save_pretrained,
+      # so a full fine-tune asked for "lora" fills /kaggle/working like a merge. A real PeftModel writes
+      # adapters only and is still skipped.
     is_peft = isinstance(model, (PeftModel, PeftModelForCausalLM))
     full_model_lora = method == "lora" and not is_peft
-    # `unsloth_generic_save` only reaches for `model.state_dict()` when it was
-    # given none, and a model with no adapter is saved from whatever dictionary
-    # it ends up holding. A PeftModel goes to `merge_and_overwrite_lora`, which
-    # takes no state dict at all, so only the non-PEFT case follows it.
+    # unsloth_generic_save reaches for model.state_dict() only when given none, so a model with no adapter is
+    # saved from whatever dict it holds; a PeftModel goes to merge_and_overwrite_lora, which takes no state dict
+    # at all.
     supplied_dict = state_dict if (forwards_state_dict and not is_peft) else None
-    # Same reason the dict is only followed for a non-PEFT model: a PeftModel
-    # never reaches the fallback that would copy one verbatim.
+    # Same reason the dict is only followed for a non-PEFT model: a PeftModel never reaches the fallback that
+    # would copy one verbatim.
     verbatim = bool(writes_model_verbatim) and not is_peft
     if compressed is None and torchao is None and method != "merged_16bit" and not full_model_lora:
         return save_directory
     try:
-        # A merge writes 2 bytes per logical parameter and no GGUF at all, so
-        # this is `model_16bit_bytes` and not the GGUF export estimate: that
-        # one always prices an intermediate GGUF conversion this never does.
-        # The full-model fallback casts nothing, so it is sized from the
-        # tensors' own dtype instead.
-        #
-        # A 16-bit save of a model with no adapter writes the dictionary it was
-        # handed, cast, and not the resident parameters: an empty or partial one
-        # writes correspondingly less, and one carrying more than the model does
-        # writes more. Sizing the model there redirects a nearly empty save off
-        # persistent Kaggle storage, or leaves a larger one to fill the working
-        # filesystem.
-        #
-        # A compressed or torchao export writes that same 16-bit checkpoint
-        # through the same `unsloth_generic_save`, as its staging (torchao) or
-        # kept (compressed) merge, so the dictionary decides its size too and
-        # not only a literal `merged_16bit` request.
+          # A merge writes 2 bytes per parameter and no GGUF, so this is model_16bit_bytes, not the GGUF
+          # estimate, which always prices an intermediate conversion. The no-adapter save writes the dictionary
+          # it was handed, cast, so an empty one writes almost nothing and sizing the model would relocate it
+          # off persistent Kaggle storage.
         if full_model_lora or verbatim:
             need = _full_model_checkpoint_bytes(model, state_dict)
         elif supplied_dict is not None:
@@ -3792,45 +3600,26 @@ def _preflight_merge_disk(
             need = model_16bit_bytes(model)
         if need <= 0:
             return save_directory
-        # What the torchao staging directory costs on whatever filesystem
-        # `tempfile` resolves to. Zero for every other export, which stages
-        # nothing.
+        # What the torchao staging directory costs on whatever filesystem tempfile resolves to; zero for every
+        # other export, which stages nothing.
         staging = 0
-        # The lexical suffix the quantized sibling is written under, so the
-        # filesystem holding it can be measured separately below.
+        # The lexical suffix the quantized sibling is written under, so its filesystem can be measured
+        # separately below.
         sibling_suffix = ""
         sibling_bytes = 0
-        # What `merge_and_overwrite_lora` will be asked to write HERE, which is
-        # the only part its `free * 0.95` guard measures. Split out from `need`
-        # because the reserve belongs on this and on nothing else: charging it
-        # around the whole estimate relocates an export that fits, and on
-        # Kaggle that means moving it to a /tmp the kernel does not keep.
-        # The guard belongs to `merge_and_overwrite_lora` and to nothing else,
-        # and only `unsloth_generic_save`'s PEFT branch calls it. Every other
-        # writer that lands a 16-bit checkpoint here is a bare
-        # `save_pretrained`: the generic architecture fallback, the full-model
-        # `lora` fallback, `unsloth_save_model`'s own merge, and
-        # `unsloth_generic_save`'s no-adapter branch, which casts the dict and
-        # writes it directly. None of them reserves anything, so charging them
-        # 1/0.95 refuses a filesystem their writer would have accepted.
-        #
-        # Sizing is decided separately, above: a compressed export really is
-        # cast to two bytes by `unsloth_generic_save`, so it keeps that sizing
-        # whether or not there is an adapter to merge.
+          # What merge_and_overwrite_lora writes HERE, the only part its free * 0.95 guard measures. Split out
+          # from `need` because the reserve belongs on this alone: charging it around the whole estimate
+          # relocates an export that fits. Every other writer here is a bare save_pretrained and reserves
+          # nothing.
         guard_runs_here = is_peft and (compressed is not None or bool(writer_runs_merge_guard))
         merge_here = need if guard_runs_here else 0
         if torchao is not None:
-            # `_unsloth_save_torchao` merges into a `tempfile.mkdtemp` staging
-            # directory rather than `save_directory`, so the only thing landing
-            # here is the 8-bit sibling, and no merge guard runs against this
-            # filesystem at all.
+            # _unsloth_save_torchao merges into a tempfile.mkdtemp staging dir, so only the 8-bit sibling lands
+            # here and no merge guard runs against this filesystem.
             staging = need
             merge_here = 0
-            # No ignore list: `_unsloth_save_torchao` quantizes with a bare
-            # `Float8WeightOnlyConfig()` / `Int8WeightOnlyConfig()`. Charging it
-            # the compressed recipe's exclusions would over-count, and
-            # over-counting relocates an export that fits into a /tmp Kaggle
-            # does not keep as notebook output.
+            # No ignore list: _unsloth_save_torchao quantizes with a bare Float8/Int8WeightOnlyConfig(), and
+            # charging it the compressed recipe's exclusions would over-count and relocate an export that fits.
             need = _quantized_sibling_bytes(model, need, _TORCHAO_SIBLING_WEIGHT_BITS)
             sibling_suffix = torchao[1]
             sibling_bytes = need
@@ -3839,16 +3628,15 @@ def _preflight_merge_disk(
                 model,
                 need,
                 _compressed_scheme_weight_bits(compressed[0]),
-                # Everything the recipe refuses to quantize is copied across at
-                # 16 bits: the vision tower, linear attention, MTP, MoE gates.
+                  # Everything the recipe refuses to quantize is copied at 16 bits: vision tower, linear
+                  # attention, MTP, MoE gates.
                 _compressed_ignore_patterns(model),
             )
             sibling_suffix = compressed[2]
             need += sibling_bytes
-        # The reserve raises the ask for the merge alone, and the rest is added
-        # at face value. `max` rather than a sum of the two halves: the sibling
-        # coexists with the merge, so the peak is the whole estimate, and it
-        # must also clear the merge's own reserved figure.
+          # The reserve raises the ask for the merge alone; the rest is added at face value. max, not a sum: the
+          # sibling coexists with the merge, so the peak is the whole estimate and it must also clear the
+          # merge's reserved figure.
         need = max(need, math.ceil(merge_here / _MERGE_FREE_SPACE_RESERVE))
         new_directory, message = kaggle_tmp_redirect(
             save_directory,
@@ -4173,9 +3961,8 @@ def _gguf_source_dtype(model):
             if not torch.cuda.is_bf16_supported():
                 return "f16"
         except Exception:
-            # `save_to_gguf` calls this unguarded, so a raise here means no
-            # export happens at all and the figure never gets used. "f16" is
-            # the same width either way; only the name has to match.
+            # save_to_gguf calls this unguarded, so a raise means no export at all and the figure is never used.
+            # "f16" is the same width either way; only the name has to match.
             return "f16"
     return dtype
 
@@ -4233,27 +4020,17 @@ def _preflight_gguf_disk(
             first_conversion = _choose_first_conversion(
                 methods, model_dtype, has_imatrix = has_imatrix
             )
-        # `save_to_gguf` drops a bf16 initial conversion to f16 on hardware
-        # with no bf16, AFTER it has resolved one, so the drop has to be
-        # applied after both branches above and not only inside the resolver.
-        # `_gguf_source_dtype` covers the dtype this is TOLD; it cannot cover
-        # a `first_conversion` the caller passed, nor the single direct-convert
-        # method `_choose_first_conversion` returns unchanged.
-        #
-        # It is the requested-output rule that makes this cost a checkpoint:
-        # the estimate omits an output EQUAL to the initial conversion, so
-        # `["bf16"]` at first_conversion "bf16" is priced as one 16-bit file,
-        # while a T4 writes an f16 intermediate AND a separate bf16 output.
-        # 15.3GB unaccounted for on Qwen3-8B, the same figure and the same
-        # mechanism as the dtype case.
+          # save_to_gguf drops a bf16 initial conversion to f16 on hardware without bf16 AFTER resolving one, so
+          # the drop must be applied after both branches, not only in the resolver. The estimate omits an output
+          # equal to the initial conversion, so ["bf16"] at first_conversion "bf16" was priced as one file while
+          # a T4 writes f16 plus bf16: 15.3GB missing on Qwen3-8B.
         if first_conversion == "bf16":
             try:
                 if not torch.cuda.is_bf16_supported():
                     first_conversion = "f16"
             except Exception:
-                # `save_to_gguf` asks unguarded, so a raise here means no
-                # export runs and this figure is never used. f16 is the wider
-                # of the two readings, and never the narrower.
+                # save_to_gguf asks unguarded, so a raise means no export runs and this is never used. f16 is
+                # the wider of the two readings, never the narrower.
                 first_conversion = "f16"
         need = estimate_gguf_export_bytes(
             model = model,
@@ -4261,11 +4038,9 @@ def _preflight_gguf_disk(
             first_conversion = first_conversion,
             needs_merge = needs_merge,
         )
-        # The pre-warm only happens on the merge path, and only when it has
-        # not already been switched off. Kaggle and Colab return before it
-        # ever runs (`_prewarm_base_model_hub_cache`), so pricing a cache copy
-        # there would send an export that fits in /kaggle/working to /tmp,
-        # which is not kept as notebook output.
+          # The pre-warm runs only on the merge path and only while enabled. Kaggle and Colab return before it,
+          # so pricing a cache copy there sends an export that fits in /kaggle/working to a /tmp that is not
+          # kept as notebook output.
         prewarm_possible = (
             needs_merge
             and not IS_KAGGLE_ENVIRONMENT
@@ -4284,19 +4059,15 @@ def _preflight_gguf_disk(
             if prewarm_possible
             else need
         )
-        # The estimate prices the checkpoint at two bytes per parameter. The
-        # non-PEFT fallback writes it at the model's own dtype, so an fp32
-        # model needs the difference on top. Zero for every 16-bit model.
+          # The estimate prices the checkpoint at 2 bytes per parameter, but the non-PEFT fallback writes the
+          # model's own dtype, so an fp32 model needs the difference. Zero for a 16-bit model.
         if need > 0 and needs_merge:
             extra = _fallback_checkpoint_extra_bytes(model)
             need += extra
             need_with_cache += extra
-        # The same estimate without the checkpoint: what lands in the `_gguf`
-        # sibling directory, which is the intermediate conversion plus every
-        # quant. Only used when that sibling turns out to be on a different,
-        # smaller filesystem than `save_directory`. Its own try, so an
-        # estimator that cannot answer this leaves the main guard standing
-        # rather than turning the whole preflight off.
+          # The same estimate without the checkpoint: the `_gguf` sibling's intermediate plus every quant. Used
+          # only when that sibling sits on a smaller filesystem. Its own try, so an estimator that cannot answer
+          # leaves the main guard standing.
         try:
             need_sibling = estimate_gguf_export_bytes(
                 model = model,
@@ -4306,12 +4077,8 @@ def _preflight_gguf_disk(
             )
         except Exception:
             need_sibling = 0
-        # The first of the two phases a disposable merge really peaks at: the
-        # merge and the intermediate GGUF on disk together, before any quant
-        # is written. `quantization_methods = ()` still prices the
-        # intermediate, which is what the conversion has to write before it
-        # can be read. Its own try for the same reason as the sibling: an
-        # estimator that cannot answer leaves the aggregate standing.
+          # The first phase a disposable merge peaks at: merge plus intermediate GGUF, before any quant.
+          # quantization_methods = () still prices the intermediate, which must exist to be read.
         try:
             need_merge_phase = estimate_gguf_export_bytes(
                 model = model,
@@ -4321,12 +4088,10 @@ def _preflight_gguf_disk(
             ) + (extra if need > 0 and needs_merge else 0)
         except Exception:
             need_merge_phase = 0
-        # Reclamation only helps when a quantize pass actually follows it, and
-        # `save_to_gguf` skips a method equal to the initial conversion because
-        # that file is already on disk. Same rule, same list.
+        # Reclamation only helps when a quantize pass follows, and save_to_gguf skips a method equal to the
+        # initial conversion, whose file is already on disk.
         has_quantize_pass = bool([m for m in dict.fromkeys(methods) if m != first_conversion])
-        # The intermediate conversion on its own, for the filesystem it is
-        # written to before the move. Same shape of `try` as the two above.
+        # The intermediate conversion on its own, for the filesystem it is written to before the move.
         try:
             need_conversion = estimate_gguf_export_bytes(
                 model = model,
@@ -4337,20 +4102,29 @@ def _preflight_gguf_disk(
         except Exception:
             need_conversion = 0
     except Exception:
-        # Sizing is best effort. A failure here must not stop an export that
-        # would otherwise have worked.
+          # Sizing is best effort: a failure here must not stop an export that would otherwise have worked.
         return save_directory, True
     if need <= 0:
         return save_directory, True
 
-    # The redirect has to be asked for the same figure the refusal below reads.
-    # `need_with_cache` is the aggregate, and a disposable merge is reclaimed
-    # before the quants are written, so an export whose phased peak fits in
-    # /kaggle/working was relocated to a /tmp Kaggle does not keep as notebook
-    # output. Same predicates as the branch that lowers `need_here`, read
-    # against the directory as it stands BEFORE any move, and it can only ever
-    # lower the ask: nothing that used to stay put is relocated now.
+      # Ask the redirect for the same figure the refusal reads. need_with_cache is the aggregate, but a
+      # disposable merge is reclaimed before the quants, so a phased peak that fits in /kaggle/working was
+      # relocated. Read before any move, and it can only lower the ask.
     phased_need = 0
+    # The intermediate conversion is written to the process CWD, not into `save_directory` and not into the
+    # `_gguf` sibling, and only afterwards moved. When that CWD is on its own filesystem, nothing above has
+    # measured the disk the largest staging artefact actually lands on: on Kaggle it is the 20GB working
+    # directory the redirect just moved the export away from.
+    # The intermediate conversion is written to the working directory and only moved to the sibling afterwards,
+    # so when that working directory is on THIS filesystem the checkpoint and the conversion are on it together.
+    # Charging each of them alone lets a 60GB checkpoint and a 60GB conversion both pass on 100GB, and then it
+    # fills. Only the split branch needs this: on one filesystem the aggregate already counts them both, and a
+    # conversion sharing the sibling's disk is counted in `need_sibling`. `max` and not `+`, because the two
+    # figures are two PHASES and not two artefacts. The merge runs first and its guard wants the checkpoint over
+    # 0.95 with nothing else written yet; the conversion is written after, against the unreserved checkpoint.
+    # Summing them charges the reserve on top of a conversion that does not exist while the guard runs: a 60GB
+    # merge and a 60GB conversion on 122GB free clear both phases (63.2GB, then 120GB) and the sum asks 123.2GB
+    # and refuses.
     if (
         merge_is_disposable
         and needs_merge
@@ -4372,18 +4146,10 @@ def _preflight_gguf_disk(
         need_bytes = redirect_need,
         what = "GGUF export",
     )
-    # Asked the aggregate because THIS directory already holds weights the
-    # reclamation may not touch, and declined. The relocation writes the merge
-    # into a directory of the export's own, where it can be reclaimed, so the
-    # move is worth a second ask at the phased peak: 63GB merge, 60GB
-    # intermediate, 18GB Q4_K_M asks 141GB, a 130GB /tmp declines it, and the
-    # 123GB peak it would really have peaked at there fits.
-    #
-    # Gated on this directory already being too small for the aggregate the
-    # refusal below will read, which is what makes the lower ask safe. A lower
-    # ask can otherwise CANCEL a move: /kaggle/working with room for the peak
-    # but not the aggregate keeps an export that has no reclamation here, and
-    # then the refusal reads the aggregate anyway.
+      # Asked the aggregate and declined, because this directory already holds weights reclamation may not
+      # touch. After the move the merge is reclaimable, so re-ask at the phased peak: 141GB aggregate declines a
+      # 130GB /tmp, but the real 123GB peak fits. Gated on this directory being too small for the aggregate,
+      # else a lower ask could cancel the move for nothing.
     if message is None and 0 < phased_need < redirect_need:
         free_before_move = free_bytes(save_directory)
         if free_before_move is not None and free_before_move < need:
@@ -4398,17 +4164,9 @@ def _preflight_gguf_disk(
 
     free = free_bytes(save_directory)
 
-    # The quants and the intermediate GGUF are written to a SIBLING of
-    # `save_directory`, so they live on the parent's filesystem. That is the
-    # same disk `free` just measured unless `save_directory` is itself a mount
-    # point or a symlink onto another one. When it is, each filesystem is
-    # charged only for what is written to it: the checkpoint here, the
-    # conversion and the quants there. Charging the aggregate to either one
-    # refuses a split export whose every artefact has room.
-    #
-    # One predicate, computed once, so the two halves cannot disagree about
-    # whether the storage is split, and an unmeasurable path leaves every
-    # decision below exactly as it was.
+      # The quants and intermediate GGUF go to a SIBLING of save_directory, on the parent's filesystem, which is
+      # the disk just measured unless save_directory is a mount or symlink. When split, charge each filesystem
+      # only what it holds. One predicate, computed once, so the two halves cannot disagree.
     gguf_directory = _gguf_output_directory(save_directory)
     gguf_free = free_bytes(gguf_directory)
     separate_storage = (
@@ -4416,34 +4174,24 @@ def _preflight_gguf_disk(
         and gguf_free is not None
         and _on_separate_filesystems(save_directory, gguf_directory)
     )
-    # Resolved before the split is priced, because where the conversion lands
-    # decides which filesystem it is charged to.
+    # Resolved before the split is priced, because where the conversion lands decides which filesystem it is
+    # charged to.
     conversion_directory = _gguf_conversion_directory(
         _gguf_model_input_directory(model, save_directory)
     )
 
-    # Cleared where the base-model cache turns out to share a filesystem that
-    # has room for what the export writes there but not for a cached base as
-    # well: dropping the optional half beats failing the export. The message
-    # travels with the flag because more than one filesystem can now set it,
-    # and each has to name the one it measured.
+      # Cleared when the cache shares a filesystem with room for the export but not a cached base too: dropping
+      # the optional half beats failing. The message travels with the flag, since more than one filesystem can
+      # set it.
     sibling_prewarm_ok = True
     prewarm_drop_message = None
-    # Resolved once, above the split, because the cache is not necessarily on
-    # either of the two filesystems the split is about: the conversion's own
-    # filesystem below asks the same question of the same path. Zero whenever
-    # the pre-warm cannot run, which is what leaves every branch below inert.
+    # Resolved once, above the split, since the cache need not be on either filesystem. Zero whenever the pre-
+    # warm cannot run, which leaves every branch below inert.
     cache_extra = max(0, need_with_cache - need)
     cache_directory = _hub_cache_directory() if cache_extra > 0 else None
-    # The cache copy lands wherever the cache is, which is not necessarily the
-    # filesystem holding `save_directory` - `HF_HOME` on a data volume is the
-    # ordinary layout on a machine with more than one disk. Charging it here
-    # anyway drops the pre-warm on a disk that had room for everything written
-    # to it, and the next export downloads the whole base again, which is the
-    # exact re-download the pre-warm exists to stop. It only ever LOWERS the
-    # figure, and only the pre-warm decision reads it, so no export that fit
-    # before is refused now. Unresolvable leaves it charged here, where it was
-    # charged before. The split branch asks the same of the sibling below.
+      # The cache lands wherever HF_HOME points, not necessarily save_directory's disk. Charging it here drops
+      # the pre-warm on a disk that had room, and the next export re-downloads the base. It only LOWERS the
+      # figure and only the pre-warm reads it.
     cache_here = cache_extra
     if (
         cache_extra > 0
@@ -4454,33 +4202,15 @@ def _preflight_gguf_disk(
     need_here = need
     need_here_with_cache = need + cache_here
     if separate_storage:
-        # `need_sibling` is the same estimate without the checkpoint, so the
-        # difference is the checkpoint and nothing else. An estimator that
-        # could not size the sibling leaves it 0, and then this is `need`:
-        # the previous behaviour, not a relaxed one.
-        #
-        # Nothing else, though, includes the slack: both terms carry the
-        # estimator's flat `DISK_SLACK_BYTES` and the subtraction cancels it,
-        # leaving two bytes per parameter exactly. `merge_and_overwrite_lora`
-        # refuses that merge unless `free * 0.95` covers it, so the same
-        # reserve `_preflight_merge_disk` already applies has to be applied
-        # here too, or this passes an export the merge kills seconds later.
-        # The aggregate branch needs no such thing: it charges the quants as
-        # well, which is already more than the checkpoint plus its reserve.
+          # need_sibling is this estimate without the checkpoint, so the difference is the checkpoint alone; an
+          # unsizable sibling leaves it 0, giving the previous behaviour. Both terms carry DISK_SLACK_BYTES and
+          # it cancels, so merge_and_overwrite_lora's free * 0.95 reserve must be re-applied or this passes an
+          # export the merge kills seconds later.
         checkpoint_here = max(0, need - need_sibling)
         need_here = checkpoint_here
-        # The cache copy is not part of the merge and is not what the zoo
-        # guard measures, so it rides on top of the checkpoint rather than
-        # being reserved itself.
-        #
-        # It also does not necessarily land HERE. `save_directory` being a
-        # mount onto another disk is the whole premise of this branch, and
-        # then `~/.cache` and the lexical `_gguf` sibling both stay on the
-        # parent disk. Charging the checkpoint's filesystem for bytes written
-        # to the sibling's drops a pre-warm that had room and, worse, lets the
-        # sibling check accept `need_sibling` alone on a filesystem the base
-        # model is about to be downloaded onto. `cache_here` above has already
-        # answered the first half; the sibling is the half only this branch has.
+          # The cache copy is not part of the merge and not what the zoo guard measures, so it rides on top of
+          # the checkpoint. It need not land HERE either: with save_directory mounted elsewhere, ~/.cache and
+          # the _gguf sibling stay on the parent disk.
         cache_sibling = 0
         if (
             cache_extra > 0
@@ -4491,45 +4221,20 @@ def _preflight_gguf_disk(
         need_here_with_cache = checkpoint_here + cache_here
         writes_a_lora_merge = isinstance(model, (PeftModel, PeftModelForCausalLM))
         if writes_a_lora_merge and needs_merge and need_sibling > 0 and checkpoint_here > 0:
-            # Four conditions, each removing a way to charge for a guard that
-            # will not run. Only a PEFT model reaches `merge_and_overwrite_lora`
-            # and its `free * 0.95`: a non-PEFT model with no reusable local
-            # checkpoint still needs `needs_merge`, because the GGUF path has
-            # to write one, but it is written by a bare `self.save_pretrained`
-            # that reserves nothing, so charging the reserve there refuses a
-            # filesystem with room for the checkpoint the writer would have
-            # accepted. `needs_merge = False` writes no merge at all. A sibling
-            # the estimator could not size leaves `checkpoint_here` equal to
-            # the aggregate, which is a fallback figure and not a checkpoint
-            # to reserve against. And `min(need, ...)` keeps the promise the
-            # split made when it was introduced: it may cancel a redirect,
-            # never cause a refusal the aggregate would have allowed.
+              # Four conditions, each dropping a charge for a guard that will not run: only a PEFT model reaches
+              # merge_and_overwrite_lora's free * 0.95, a bare self.save_pretrained reserves nothing,
+              # needs_merge = False writes no merge, and an unsizable sibling leaves a fallback figure.
+              # min(need, ...) keeps the split's promise: cancel a redirect, never cause a refusal.
             reserved = min(need, math.ceil(checkpoint_here / _MERGE_FREE_SPACE_RESERVE))
             need_here = max(need_here, reserved)
-            # The cache copy is written BEFORE the merge and is still there when
-            # the guard runs, so it comes off the free space the guard measures.
-            # It rides on top of the reserved figure rather than beside it: a
-            # 16GB checkpoint with a 14GB cache on 30.5GB free passes a `max`
-            # asking 30GB, and then the merge sees 16.5GB and refuses 16GB under
-            # its own 5%. Added instead, this band drops the pre-warm, which is
-            # the optional half, rather than failing the export.
+              # The cache copy is written BEFORE the merge and is still there when the guard runs, so it comes
+              # off the free space the guard sees. Riding on top of the reserved figure rather than beside it:
+              # 16GB checkpoint + 14GB cache on 30.5GB passes a max of 30GB and then the merge refuses under its
+              # own 5%. Added instead, this drops the pre-warm, not the export.
             need_here_with_cache = max(need_here_with_cache, reserved + cache_here)
-        # The intermediate conversion is written to the working directory and
-        # only moved to the sibling afterwards, so when that working directory
-        # is on THIS filesystem the checkpoint and the conversion are on it
-        # together. Charging each of them alone lets a 60GB checkpoint and a
-        # 60GB conversion both pass on 100GB, and then it fills. Only the
-        # split branch needs this: on one filesystem the aggregate already
-        # counts them both, and a conversion sharing the sibling's disk is
-        # counted in `need_sibling`.
-        #
-        # `max` and not `+`, because the two figures are two PHASES and not two
-        # artefacts. The merge runs first and its guard wants the checkpoint
-        # over 0.95 with nothing else written yet; the conversion is written
-        # after, against the unreserved checkpoint. Summing them charges the
-        # reserve on top of a conversion that does not exist while the guard
-        # runs: a 60GB merge and a 60GB conversion on 122GB free clear both
-        # phases (63.2GB, then 120GB) and the sum asks 123.2GB and refuses.
+          # The intermediate conversion lands in the working directory before the move, so on THIS filesystem
+          # the checkpoint and conversion coexist and charging each alone lets 60GB + 60GB pass on 100GB. max,
+          # not +: they are two phases, and summing them refuses 122GB free that clears both.
         if (
             need_conversion > 0
             and conversion_directory is not None
@@ -4539,11 +4244,9 @@ def _preflight_gguf_disk(
             need_here_with_cache = max(
                 need_here_with_cache, checkpoint_here + need_conversion + cache_here
             )
-        # Not gated on the sibling being the TIGHTER of the two any more.
-        # Now that the checkpoint is charged only its own portion, a sibling
-        # with more free space than `save_directory` and still less than
-        # `need_sibling` has to be refused here, because the aggregate
-        # comparison that used to catch it no longer exists.
+        # No longer gated on the sibling being the TIGHTER of the two: now that the checkpoint is charged only
+        # its own portion, a sibling roomier than save_directory but under need_sibling must be refused here,
+        # since the aggregate comparison is gone.
         if gguf_free < need_sibling:
             raise RuntimeError(
                 f"Unsloth: Not enough disk space to convert to GGUF.\n"
@@ -4572,49 +4275,30 @@ def _preflight_gguf_disk(
         and need_sibling > 0
         and _merge_reclamation_is_possible(save_directory)
     ):
-        # `_free_merge_if_disk_is_tight` deletes this export's own merge once
-        # the intermediate GGUF exists and before the first quantize pass, so
-        # the three artefacts never coexist: the peak is the larger of "merge
-        # plus intermediate" and "intermediate plus every quant", not their
-        # sum. Nemotron-3-Nano-30B-A3B is the case in front of it - 63GB merge,
-        # 60GB BF16 intermediate, 18GB Q4_K_M - which peaks at 123GB on a 132GB
-        # disk and which the aggregate 141GB refuses.
-        #
-        # Only in the single-filesystem branch, because the reclamation itself
-        # declines when the merge and the GGUF output are on different devices:
-        # freeing bytes on one filesystem does nothing for a quantize pass
-        # writing to another.
+          # _free_merge_if_disk_is_tight deletes this export's merge once the intermediate exists, so the three
+          # artefacts never coexist and the peak is the larger of the two phases, not their sum:
+          # Nemotron-3-Nano-30B-A3B peaks at 123GB where the 141GB aggregate refuses a 132GB disk. Single
+          # filesystem only, since reclamation declines across devices.
         peak = max(need_merge_phase, need_sibling)
         if peak < need:
-            # Can only ever lower the figure, so no input that head allowed is
-            # refused here. The cache copy is not what gets reclaimed, so it
-            # rides on top of the peak exactly as it rode on top of the sum.
+            # Can only lower the figure, so nothing the head allowed is refused here. The cache copy is not
+            # reclaimed, so it rides on top of the peak as it did on the sum.
             need_here = peak
             need_here_with_cache = peak + cache_here
 
-    # The intermediate conversion is written to the process CWD, not into
-    # `save_directory` and not into the `_gguf` sibling, and only afterwards
-    # moved. When that CWD is on its own filesystem, nothing above has measured
-    # the disk the largest staging artefact actually lands on: on Kaggle it is
-    # the 20GB working directory the redirect just moved the export away from.
+      # The intermediate conversion is written to the process CWD and only then moved, so when that CWD is its
+      # own filesystem nothing above has measured the disk the largest staging artefact lands on -- on Kaggle,
+      # the 20GB working directory the redirect just left.
     if (
         need_conversion > 0
         and conversion_directory is not None
         and _on_separate_filesystems(conversion_directory, gguf_directory)
     ):
         conversion_free = free_bytes(conversion_directory)
-        # The pre-warm runs BEFORE the merge and leaves the base model in the
-        # Hugging Face cache for the rest of the export, so when the cache
-        # shares this filesystem the cached base and the intermediate are on
-        # it together. Nothing above has charged that: `cache_here` and
-        # `cache_sibling` only ever place the cache on the checkpoint's
-        # filesystem or the sibling's, and this is neither.
-        #
-        # The pre-warmer's own gate does not cover it either. It asks for two
-        # base copies free on the cache filesystem, and an `f32` conversion is
-        # two base copies on its own: 38.1GB free clears the pre-warm's 30.5GB
-        # threshold and this 30.5GB conversion check, then holds a 15.3GB
-        # cached base while writing 30.5GB, and runs out 7.6GB short.
+          # The pre-warm leaves the base model cached for the rest of the export, so on a shared filesystem the
+          # cached base and the intermediate coexist, which cache_here and cache_sibling never charge. The pre-
+          # warmer's own gate asks for two base copies, and an f32 conversion is two copies on its own: 38.1GB
+          # free clears both checks and runs out 7.6GB short.
         cache_with_conversion = (
             cache_extra
             if cache_directory is not None
@@ -4641,9 +4325,8 @@ def _preflight_gguf_disk(
             and cache_with_conversion > 0
             and conversion_free < need_conversion + cache_with_conversion
         ):
-            # Only reached once the conversion alone has cleared the raise
-            # above, so this can never turn a refusal into a pass: it drops
-            # the optional half of an export that otherwise fits.
+            # Only reached once the conversion alone cleared the raise above, so this cannot turn a refusal into
+            # a pass: it drops the optional half of an export that otherwise fits.
             sibling_prewarm_ok = False
             prewarm_drop_message = (
                 f"Unsloth: Skipping the Hugging Face cache pre-warm - the Hugging Face "
@@ -4719,7 +4402,7 @@ def _offloaded_parameter_hint(model):
             f"`device_map` pinned to a single device before saving."
         )
     except Exception:
-        # A diagnostic must never replace the real error with its own.
+          # A diagnostic must never replace the real error with its own.
         return ""
 
 
@@ -4741,7 +4424,7 @@ def _model_basename(name_or_path, default = "model") -> str:
     if not isinstance(text, str) or not text.strip():
         return default
 
-    # A real directory wins: a POSIX directory name may legally contain a backslash.
+      # A real directory wins: a POSIX directory name may legally contain a backslash.
     try:
         if os.path.isdir(text):
             base = os.path.basename(os.path.normpath(text))
@@ -4751,7 +4434,7 @@ def _model_basename(name_or_path, default = "model") -> str:
         pass
 
     base = text.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
-    # A bare drive ("D:") or "." would give a drive-relative or hidden output file.
+      # A bare drive ("D:") or "." would give a drive-relative or hidden output file.
     if not base or base in (".", "..") or (len(base) == 2 and base[1] == ":"):
         return default
     return base
@@ -4833,7 +4516,7 @@ def unsloth_save_pretrained_gguf(
     save_directory = os.path.normpath(os.fspath(save_directory))
     gguf_shard_size = _resolve_gguf_shard_size(gguf_shard_size)
 
-    # save_method="lora" exports the adapter itself as a GGUF LoRA (not a merged model).
+      # save_method="lora" exports the adapter itself as a GGUF LoRA, not a merged model.
     if save_method is not None and str(save_method).lower() == "lora":
         if not is_main_process:
             return None
@@ -4857,8 +4540,8 @@ def unsloth_save_pretrained_gguf(
             _outtype = "f16"
         return _unsloth_save_lora_gguf(self, tokenizer, save_directory, outtype = _outtype)
 
-    # base_model_name keeps the full id for create_ollama_modelfile's mapper lookup;
-    # only the filename stem is trimmed.
+      # base_model_name keeps the full id for create_ollama_modelfile's mapper lookup; only the filename stem is
+      # trimmed.
     base_model_name = getattr(getattr(self, "config", None), "_name_or_path", None)
     try:
         base_model_name = get_model_name(base_model_name, load_in_4bit = False)
@@ -4866,23 +4549,20 @@ def unsloth_save_pretrained_gguf(
         pass
     model_name = _model_basename(base_model_name)
 
-    # Check if push_to_hub is requested
     if push_to_hub:
         raise ValueError(
             "Unsloth: Please use .push_to_hub_gguf() instead of .save_pretrained_gguf() with push_to_hub=True"
         )
 
-    # Step 1: Check if this is a VLM (Vision-Language Model) and check if gpt-oss
     is_vlm = _is_vlm(self)
 
     is_processor = is_vlm and isinstance(tokenizer, ProcessorMixin)
 
     is_gpt_oss = _is_gpt_oss(self)
 
-    # Step 1b: Will this fit? Ask before the merge, not after. Runs here rather
-    # than lower down because `arguments` below snapshots locals(), so a
-    # redirected `save_directory` has to be in place first. gpt-oss takes the
-    # mxfp4 route instead of the merge/convert/quantize one this sizes.
+      # Will this fit? Ask before the merge. Runs here because `arguments` below snapshots locals(), so a
+      # redirected save_directory must be in place first. gpt-oss takes the mxfp4 route, not the
+      # merge/convert/quantize one this sizes.
     _gguf_prewarm_ok = True
     if not is_gpt_oss:
         save_directory, _gguf_prewarm_ok = _preflight_gguf_disk(
@@ -4890,24 +4570,20 @@ def unsloth_save_pretrained_gguf(
             save_directory = save_directory,
             quantization_method = quantization_method,
             first_conversion = first_conversion,
-            # Resolved here rather than left at the default, because the
-            # default says "f16" and the export asks the config.
+            # Resolved rather than left at the default, which says "f16" while the export asks the config.
             model_dtype = _gguf_source_dtype(self),
             has_imatrix = _imatrix_is_enabled(imatrix_file),
             needs_merge = _gguf_writes_16bit_checkpoint(self),
-            # The same flag `save_to_gguf` reclaims on. Where a non-PEFT model
-            # reuses its own checkpoint the flag is cleared below, and there
-            # `_gguf_writes_16bit_checkpoint` is already False on the same
-            # condition, so the two cannot disagree.
+              # The same flag save_to_gguf reclaims on. Where a non-PEFT model reuses its own checkpoint the
+              # flag is cleared below on the same condition, so the two cannot disagree.
             merge_is_disposable = merge_is_disposable,
         )
 
-    # Step 2: Prepare arguments for model saving
     arguments = dict(locals())
     arguments["model"] = self
     arguments["tokenizer"] = tokenizer
     arguments["push_to_hub"] = False  # We handle upload ourselves
-    # GPT-OSS needs mxfp4 save method
+    # GPT-OSS needs the mxfp4 save method.
     if is_gpt_oss:
         if quantization_method is not None:
             _qm = (
@@ -4939,30 +4615,22 @@ def unsloth_save_pretrained_gguf(
     del arguments["merge_is_disposable"]  # decides reclamation, not how the merge is written
     del arguments["gguf_shard_size"]  # only used by the gguf converter
 
-    # Preserve the requested output before reusing a non-PEFT checkpoint as input.
-    # Same definition the preflight sized, so the disk it measured is the one
-    # these files land on.
+      # Preserve the requested output before reusing a non-PEFT checkpoint as input. Same definition the
+      # preflight sized, so it measured the disk these files land on.
     gguf_directory = _gguf_output_directory(save_directory)
 
-    # Step 3: Fix tokenizer BOS token if needed
     if is_processor:
         fix_bos_token, old_chat_template = fix_tokenizer_bos_token(tokenizer.tokenizer)
     else:
         fix_bos_token, old_chat_template = fix_tokenizer_bos_token(tokenizer)
 
-    # Resolve the importance matrix (download upstream / validate path / rename *.gguf_file) up
-    # front, so a bad path or an unavailable upstream imatrix fails before the expensive 16-bit
-    # merge, and a failed auto-resolution never reaches the IQ-quant gate.
+      # Resolve the imatrix (download, validate, rename *.gguf_file) up front, so a bad path or an unavailable
+      # upstream fails before the expensive merge and never reaches the IQ-quant gate.
     imatrix_path = _resolve_imatrix_file(self, imatrix_file, token, save_directory)
 
-    # Who owns what, settled before a byte is written. Reclamation may only take
-    # files this export produced, and that is not a question the directory can
-    # answer afterwards: a caller reusing an output directory can already hold a
-    # finished sharded save, index and every shard it names, self-consistent and
-    # entirely present. transformers removes neither (its stale sweep does not
-    # match `model.safetensors.index`, and it only prunes shards under the stem it
-    # is writing), so after the merge that set is indistinguishable from one this
-    # run wrote. Recorded here instead, where the difference still exists.
+      # Settle ownership before a byte is written: reclamation may only take files this export made, and
+      # afterwards the directory cannot say, since a reused output directory can already hold a finished sharded
+      # save transformers neither removes nor distinguishes from ours.
     try:
         preexisting_weights = frozenset(os.listdir(save_directory))
     except FileNotFoundError:
@@ -4972,16 +4640,13 @@ def unsloth_save_pretrained_gguf(
         # Provenance unreadable. Proving nothing, the reclamation takes nothing.
         preexisting_weights = None
 
-    # Step 4: Save/merge model to 16-bit format
     is_peft_model = isinstance(self, PeftModelForCausalLM) or isinstance(self, PeftModel)
 
-    # The flag holds for both branches that write the weights themselves; the middle
-    # branch reuses the user's own checkpoint instead and clears it, whatever the
-    # caller asked for.
+      # The flag holds for both branches that write the weights; the middle branch reuses the user's own
+      # checkpoint and clears it, whatever the caller asked for.
     if is_peft_model:
         print(f"Unsloth: Merging model weights to {'mxfp4' if is_gpt_oss else '16-bit'} format...")
         try:
-            # Call unsloth_generic_save directly (it's in the same file)
             with _hub_cache_prewarm_disabled(not _gguf_prewarm_ok):
                 unsloth_generic_save(**arguments)
 
@@ -4991,26 +4656,28 @@ def unsloth_save_pretrained_gguf(
                 f"{_offloaded_parameter_hint(self)}"
             ) from e
     else:
-        # Non-PEFT model: checkpoint files already exist; point save_to_gguf
-        # at the original path instead of re-saving to a temp subdir.
+          # Non-PEFT model: the checkpoint already exists, so point save_to_gguf at the original path instead of
+          # re-saving into a temp subdir.
         original_path = getattr(self.config, "_name_or_path", None)
         if original_path and os.path.isdir(original_path):
             print(
                 f"Unsloth: Model is not a PEFT model. Using existing checkpoint at {original_path}"
             )
             save_directory = original_path
-            # The user's own checkpoint, not an intermediate: without this an
-            # ordinary save_pretrained_gguf on a tight disk would delete the
-            # model it was handed.
+              # The user's own checkpoint, not an intermediate: without this a save_pretrained_gguf on a tight
+              # disk would delete the model it was handed.
             merge_is_disposable = False
-            # Persist tokenizer fixes (e.g. BOS token stripping) to disk
-            # so the GGUF converter picks up the corrected chat template.
+              # Persist tokenizer fixes (BOS stripping) so the GGUF converter reads the corrected template.
+            # Persist tokenizer fixes (e.g. BOS token stripping) to disk so the GGUF converter picks up the
+            # corrected chat template.
             if tokenizer is not None:
                 tokenizer.save_pretrained(save_directory)
         else:
-            # Fallback: save the in-memory model to save_directory
             print("Unsloth: Model is not a PEFT model. Saving directly without LoRA merge...")
             os.makedirs(save_directory, exist_ok = True)
+            # `gguf_directory` can point anywhere, and freeing bytes on one filesystem does nothing for a
+            # quantize pass writing to another: without this the merge could be deleted for a destination it
+            # cannot help, data gone and the export still out of space.
             try:
                 self.save_pretrained(save_directory)
                 if tokenizer is not None:
@@ -5024,18 +4691,15 @@ def unsloth_save_pretrained_gguf(
     if is_processor:
         tokenizer = tokenizer.tokenizer
 
-    # Use old chat template if the bos is removed
     if fix_bos_token:
         tokenizer.chat_template = old_chat_template
 
-    # Step 6: Clean up memory
     for _ in range(3):
         import gc
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    # Step 7: Get model dtype and type
     try:
         model_dtype = dtype_from_config(self.config)
         model_type = self.config.model_type
@@ -5048,18 +4712,13 @@ def unsloth_save_pretrained_gguf(
         else:
             raise TypeError("Unsloth: Model dtype can only be float16 or bfloat16")
     except Exception as e:
-        # Fallback if dtype_from_config fails
         print(f"Unsloth: Could not determine dtype ({e}), defaulting to float16")
         model_dtype = "float16"
 
-    # Step 8: Convert to GGUF format
     print("Unsloth: Converting to GGUF format...")
 
-    # Convert quantization_method to list if string
-    # Use old style quantization_method
     quantization_methods = []
     if quantization_method is not None:
-        # Convert quantization_method to list
         if isinstance(quantization_method, list):
             pass
         elif isinstance(quantization_method, str):
@@ -5129,7 +4788,6 @@ def unsloth_save_pretrained_gguf(
         else:
             raise RuntimeError(f"Unsloth: GGUF conversion failed: {_describe_exception(e)}") from e
 
-    # Step 9: Create Ollama modelfile
     modelfile_location = None
     ollama_success = False
     if all_file_locations:
@@ -5150,7 +4808,6 @@ def unsloth_save_pretrained_gguf(
         except Exception as e:
             print(f"Warning: Could not create Ollama modelfile: {e}")
 
-    # Step 10: Show BOS token warning if applicable
     if fix_bos_token:
         logger.warning(
             "Unsloth: ##### The current model auto adds a BOS token.\n"
@@ -5181,7 +4838,6 @@ def unsloth_save_pretrained_gguf(
             f"Unsloth: convert model to ollama format by running - ollama create model_name -f {modelfile_location}"
         )
 
-    # Return a dict with all needed info for push_to_hub
     return {
         "save_directory": save_directory,
         "gguf_directory": gguf_directory,
@@ -5203,13 +4859,12 @@ _DISK_FULL_PATTERNS = (
     "write failed: no space",
 )
 
-# Kaggle allows 20GB. Below this headroom a failed conversion is plausibly
-# about space; above it, blaming disk sends the user nowhere useful.
+  # Kaggle allows 20GB. Below this headroom a failed conversion is plausibly about space; above it, blaming disk
+  # sends the user nowhere useful.
 _DISK_HEADROOM_BYTES = 2 * 1024**3
 
-# A SIGKILLed child is 128 + 9 to a shell, so llama-quantize (run through
-# `shell = True`) surfaces as "returned non-zero exit status 137" with no
-# signal named anywhere in the text.
+  # A SIGKILLed child is 128 + 9 to a shell, so llama-quantize under shell = True surfaces as "returned non-zero
+  # exit status 137" with no signal named.
 _OOM_KILL_PATTERNS = (
     "sigkill",
     "exit status 137",
@@ -5300,10 +4955,9 @@ def _gguf_failure_looks_like_disk(
         return True
     if getattr(exc, "errno", None) == 28:
         return True
-    # The output directory holds the file, so the first path that answers decides
-    # and the working directory is only a fallback. A roomy output disk called
-    # full because some unrelated filesystem is short would blame the disk for a
-    # quantizer failure and hide the advice that would have fixed it.
+      # The output directory holds the file, so it decides and the working directory is only a fallback: calling
+      # a roomy output disk full because an unrelated filesystem is short hides the advice that would have fixed
+      # the quantizer failure.
     threshold = needed_bytes if needed_bytes and needed_bytes > 0 else _DISK_HEADROOM_BYTES
     written, written_device = 0, None
     if partial_output:
@@ -5319,11 +4973,11 @@ def _gguf_failure_looks_like_disk(
         try:
             free = shutil.disk_usage(path).free
         except OSError:
-            # Never let the diagnostic be the thing that raises.
+              # Never let the diagnostic be the thing that raises.
             continue
         if written:
-            # Only on the filesystem that actually holds the partial file --
-            # bytes on one device are not room on another.
+              # Only on the filesystem that actually holds the partial file: bytes on one device are not room on
+              # another.
             try:
                 if os.stat(path).st_dev == written_device:
                     free += written
@@ -5333,14 +4987,13 @@ def _gguf_failure_looks_like_disk(
     return False
 
 
-# The full-precision output types. Everything else llama-quantize writes is
-# quantized and carries its nominal width as the leading digit of the name
-# (`q4_k_m`, `iq3_xxs`).
+# The full-precision output types; everything else llama-quantize writes is quantized and carries its nominal
+# width as the leading digit of the name.
 _GGUF_BITS_PER_WEIGHT = {"f32": 32.0, "f16": 16.0, "bf16": 16.0}
 
-# k- and i-quants store block scales and mins beside the weights, so a type is
-# wider than its name. llama.cpp's published 7B sizes keep that overhead under a
-# bit a weight (Q4_K_M near 4.5, Q6_K near 6.6), so 1.5 bounds every type here.
+  # k- and i-quants store block scales and mins beside the weights, so a type is wider than its
+  # name; llama.cpp's 7B sizes keep that under a bit per weight (Q4_K_M near 4.5, Q6_K near 6.6),
+  # so 1.5 bounds every type.
 _QUANT_OVERHEAD_BITS = 1.5
 
 _QUANT_NOMINAL_BITS = re.compile(r"^i?q(\d+)")
@@ -5385,38 +5038,25 @@ def _gguf_output_size_ratio(
     base = _gguf_type_bits(first_conversion) or 16.0
     target = _gguf_type_bits(quant_method)
     if target is None:
-        # Unrecognised: charge a whole copy of the base, as every method used to
-        # get -- or, for a diagnosis, admit the size is unknown.
+          # Unrecognised: charge a whole copy of the base, as every method used to, or for a diagnosis admit the
+          # size is unknown.
         return 1.0 if upper_bound else None
     if upper_bound and str(quant_method).lower() not in _GGUF_BITS_PER_WEIGHT:
         target += _QUANT_OVERHEAD_BITS
     return target / base
 
 
-# The names a disposable merge is written under, and only those. Both writers of
-# one produce safetensors: the PEFT branch goes through unsloth_zoo's
-# `merge_and_overwrite_lora`, which rewrites the base safetensors shards (and the
-# `consolidated.safetensors` some repos ship), and the non-PEFT fallback calls
-# `save_pretrained` with no arguments, so transformers' `SAFE_WEIGHTS_NAME`.
-#
-# Neither the stem nor the extension is decoration. transformers clears stale
-# shards only when both hold (`modeling_utils`:
-# `filename.startswith(weights_no_suffix)` and `r"(.*?)-\d{5}-of-\d{5}"`), so a
-# shard set under another stem, and a `pytorch_model.bin` from an earlier save in
-# the other serialization, are files `save_pretrained` neither writes nor removes.
-# This helper deletes permanently, so it leaves both alone. A merge under a name
-# this misses is still reclaimed whenever it wrote an index, because the index
-# names its own shards.
+  # The names a disposable merge is written under, and only those: both writers emit safetensors. Neither stem
+  # nor extension is decoration, since transformers clears stale shards only when both match, so another stem or
+  # an older .bin is a file save_pretrained never writes or removes -- and this helper deletes permanently.
 _MERGE_WEIGHT_NAME = re.compile(r"^(model|consolidated)(-\d{5}-of-\d{5})?\.safetensors$")
-# The index `save_pretrained` writes for a sharded save. Safetensors only, for
-# the same reason the matcher is: a `pytorch_model.bin.index.json` belongs to an
-# earlier save in the other serialization, which transformers leaves in place,
-# and reading it would hand its shards to the deletion.
+  # The index save_pretrained writes for a sharded save. Safetensors only, like the matcher: a
+  # pytorch_model.bin.index.json belongs to an earlier save transformers leaves in place, and reading it would
+  # hand its shards to the deletion.
 _WEIGHT_INDEX_NAMES = ("model.safetensors.index.json",)
-# One shard of a sharded save, under any stem. Only ever applied to names an
-# index already listed -- on its own this is far too wide, and dropping it from
-# the matcher above is exactly what stopped a user's `backup-00001-of-00002`
-# being read as the merge.
+  # One shard of a sharded save, under any stem. Applied only to names an index already listed: alone it is far
+  # too wide, and dropping it from the matcher is what stopped a user's backup-00001-of-00002 being read as the
+  # merge.
 _INDEX_SHARD_NAME = re.compile(r"^(?P<stem>.+)-(?P<part>\d{5})-of-(?P<total>\d{5})\.safetensors$")
 
 
@@ -5444,14 +5084,9 @@ def _merge_weight_files(model_directory, names):
             continue
         if _is_one_whole_shard_set(listed, names):
             indexed.update(listed)
-            # The index goes with the shards it named. `names` is already
-            # filtered to what this export wrote, so reaching here means this
-            # export wrote this index too, and leaving it behind is not neutral:
-            # it points at files that are about to be deleted, and on the next
-            # export into the same directory the provenance snapshot calls that
-            # leftover preexisting and filters it out, taking with it the only
-            # way a shard set under a stem `_MERGE_WEIGHT_NAME` misses is ever
-            # found again.
+              # The index goes with the shards it named, and `names` is already filtered to this export's files.
+              # Leaving it behind points at deleted files, and the next export's snapshot calls it preexisting,
+              # losing the only way a shard set under a missed stem is found again.
             spent_indexes.add(index_name)
     return sorted(
         n for n in names if n in indexed or n in spent_indexes or _MERGE_WEIGHT_NAME.match(n)
@@ -5487,8 +5122,7 @@ def _is_one_whole_shard_set(listed, names):
         totals.add(shard.group("total"))
     if len(stems) != 1 or len(totals) != 1:
         return False
-    # `of-000NN` states the count outright, so a listing missing shards -- or
-    # naming extra ones -- is not the set it claims to be.
+      # "of-000NN" states the count, so a listing missing or adding shards is not the set it claims.
     if len(listed) != int(totals.pop()):
         return False
     return listed <= set(names)
@@ -5519,10 +5153,8 @@ def _free_merge_if_disk_is_tight(
     """
     if not merge_is_disposable:
         return 0
-    # The other half of the safety story. `merge_is_disposable` says the export
-    # wrote this directory; this says which files in it the export wrote. A
-    # caller that cannot say gets no reclamation rather than a guess, because
-    # the guess is permanent.
+      # merge_is_disposable says the export wrote this directory; this says which files it wrote. A caller that
+      # cannot say gets no reclamation rather than a guess, since the guess is permanent.
     if preexisting_weights is None:
         return 0
     if not model_directory or not os.path.isdir(model_directory):
@@ -5531,8 +5163,8 @@ def _free_merge_if_disk_is_tight(
     if not quant_methods:
         return 0
     try:
-        # llama-quantize copies companions rather than quantizing them, so they
-        # are excluded from the output and memory estimates.
+          # llama-quantize copies companions rather than quantizing them, so they are excluded from the output
+          # and memory estimates.
         base_bytes = sum(
             os.path.getsize(f)
             for f in initial_files
@@ -5544,18 +5176,16 @@ def _free_merge_if_disk_is_tight(
         return 0
 
     target_directory = gguf_directory or model_directory
-    # `gguf_directory` can point anywhere, and freeing bytes on one filesystem
-    # does nothing for a quantize pass writing to another: without this the merge
-    # could be deleted for a destination it cannot help, data gone and the export
-    # still out of space.
+      # gguf_directory can point anywhere, and freeing bytes on one filesystem does nothing for a pass writing
+      # to another: the merge would be deleted for a destination it cannot help.
     try:
         if os.stat(model_directory).st_dev != os.stat(target_directory).st_dev:
             return 0
     except OSError:
         return 0
 
-    # Every output stays on disk, so the passes add up. Overestimating costs a
-    # deletion that was not strictly required; underestimating costs the export.
+      # Every output stays on disk, so the passes add up. Overestimating costs an unnecessary deletion;
+      # underestimating costs the export.
     needed = (
         base_bytes * sum(_gguf_output_size_ratio(m, first_conversion) for m in quant_methods)
         + _DISK_HEADROOM_BYTES
@@ -5573,12 +5203,9 @@ def _free_merge_if_disk_is_tight(
     except OSError:
         # Unreadable is no reason to fail an export that no longer needs it.
         return 0
-    # Anything that was already here is the caller's, whatever it is named. This
-    # is what stops a reused output directory losing a finished sharded save, or
-    # a `consolidated.safetensors` the merge never wrote: both are answers the
-    # names alone cannot give, since they are exactly the names a merge uses.
-    # It also drops a stale index out of the reading below, so the shards it
-    # names are never inherited.
+      # Anything already here is the caller's, whatever it is named: that is what stops a reused directory
+      # losing a finished sharded save or a consolidated.safetensors. It also drops a stale index from the
+      # reading below, so its shards are never inherited.
     names = [name for name in names if name not in preexisting_weights]
     for name in _merge_weight_files(model_directory, names):
         path = os.path.join(model_directory, name)
@@ -5661,7 +5288,7 @@ def unsloth_push_to_hub_gguf(
     if not is_main_process:
         return None
 
-    # save_method="lora" exports the adapter itself as a GGUF LoRA (not a merged model).
+    # save_method="lora" exports the adapter itself as a GGUF LoRA, not a merged model.
     if save_method is not None and str(save_method).lower() == "lora":
         _qm = quantization_method
         if isinstance(_qm, (list, tuple)) and len(_qm) == 1:
@@ -5690,7 +5317,6 @@ def unsloth_push_to_hub_gguf(
             revision = revision,
         )
 
-    # Step 1: Determine save directory
     model_name = repo_id.split("/")[-1] if "/" in repo_id else repo_id
 
     if use_temp_dir or use_temp_dir is None:
@@ -5700,14 +5326,12 @@ def unsloth_push_to_hub_gguf(
         save_directory = temp_dir
         cleanup_temp = True
     else:
-        save_directory = model_name  # Use model name, not repo_id
+        save_directory = model_name
         cleanup_temp = False
 
-    # Step 2: Call save_pretrained_gguf to do the conversion
     print(f"Unsloth: Converting model to GGUF format...")
 
     try:
-        # Call save_pretrained_gguf - it returns all the info we need
         result = unsloth_save_pretrained_gguf(
             self = self,
             save_directory = save_directory,
@@ -5725,7 +5349,6 @@ def unsloth_push_to_hub_gguf(
             gguf_shard_size = gguf_shard_size,
         )
 
-        # Extract results
         all_file_locations = result["gguf_files"]
         modelfile_location = result["modelfile_location"]
         want_full_precision = result["want_full_precision"]
@@ -5742,7 +5365,6 @@ def unsloth_push_to_hub_gguf(
                     pass
         raise RuntimeError(f"Failed to convert model to GGUF: {_describe_exception(e)}") from e
 
-    # Step 3: Upload to HuggingFace Hub
     print("Unsloth: Uploading GGUF to Huggingface Hub...")
 
     try:
@@ -5750,14 +5372,12 @@ def unsloth_push_to_hub_gguf(
 
         api = HfApi(token = token)
 
-        # Get full repo id
         if "/" not in repo_id:
             username = api.whoami()["name"]
             full_repo_id = f"{username}/{repo_id}"
         else:
             full_repo_id = repo_id
 
-        # Create repo
         api.create_repo(
             repo_id = full_repo_id,
             repo_type = "model",
@@ -5765,12 +5385,9 @@ def unsloth_push_to_hub_gguf(
             exist_ok = True,
         )
 
-        # Upload GGUF files
         for file_location in all_file_locations:
             original_name = os.path.basename(file_location)
-            # Replace temp directory name with proper model name
             if cleanup_temp and "unsloth_gguf_" in original_name:
-                # Extract the quantization part (e.g., ".Q8_0.gguf" or ".Q8_0-mmproj.gguf")
                 quant_suffix = (
                     original_name.split(".", 1)[1] if "." in original_name else original_name
                 )
@@ -5791,7 +5408,6 @@ def unsloth_push_to_hub_gguf(
                 revision = revision,
             )
 
-        # Upload config.json if exists
         config_path = os.path.join(actual_save_directory, "config.json")
         if os.path.exists(config_path):
             print("Uploading config.json...")
@@ -5805,7 +5421,6 @@ def unsloth_push_to_hub_gguf(
                 revision = revision,
             )
 
-        # Upload Modelfile if exists
         if modelfile_location and os.path.exists(modelfile_location):
             print("Uploading Ollama Modelfile...")
             api.upload_file(
@@ -5818,7 +5433,6 @@ def unsloth_push_to_hub_gguf(
                 revision = revision,
             )
 
-        # Create and upload README
         readme_content = f"""---
 tags:
 - gguf
@@ -5838,7 +5452,6 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
 ## Available Model files:
 """
         for file in all_file_locations:
-            # Fix filename in README too
             original_name = os.path.basename(file)
             if cleanup_temp and "unsloth_gguf_" in original_name:
                 quant_suffix = (
@@ -5849,7 +5462,6 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
                 proper_name = original_name.replace(os.path.basename(save_directory), model_name)
             readme_content += f"- `{proper_name}`\n"
 
-        # Special note for VLM with Modelfile
         if is_vlm and modelfile_location:
             readme_content += "\n## ⚠️ Ollama Note for Vision Models\n"
             readme_content += "**Important:** Ollama currently does not support separate mmproj files for vision models.\n\n"
@@ -5889,7 +5501,6 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
 
         print(f"Unsloth: Successfully uploaded GGUF to https://huggingface.co/{full_repo_id}")
 
-        # Add tags
         if tags is None:
             tags = []
         tags.extend(["gguf", "llama-cpp", "unsloth"])
@@ -5918,7 +5529,6 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
         raise RuntimeError(f"Failed to upload to Hugging Face Hub: {_describe_exception(e)}") from e
 
     finally:
-        # Clean up temporary directory
         if cleanup_temp:
             print("Unsloth: Cleaning up temporary files...")
             for d in [save_directory, f"{save_directory}_gguf"]:
@@ -5931,12 +5541,9 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
     return full_repo_id
 
 
-# Corrected function to save LoRA to a custom directory
 def save_lora_to_custom_dir(model, tokenizer, save_directory):
-    # Create the custom directory if it doesn't exist
     os.makedirs(save_directory, exist_ok = True)
 
-    # Call the unsloth_save_model function with the custom directory
     unsloth_save_model(
         model,
         tokenizer,
@@ -5973,8 +5580,8 @@ def _lora_base_model_id(model):
     return os.fspath(base) if base else ""
 
 
-# Upstream Unsloth GGUF repos ship a calibration imatrix under one of these names; the GGUF-format
-# one is suffixed .gguf_file so the Hub does not list it as a model GGUF (renamed to .gguf locally).
+  # Upstream Unsloth GGUF repos ship a calibration imatrix under one of these names; the GGUF one is suffixed
+  # .gguf_file so the Hub does not list it as a model, and renamed locally.
 _IMATRIX_UPSTREAM_NAMES = ("imatrix_unsloth.dat", "imatrix_unsloth.gguf_file")
 
 
@@ -5997,8 +5604,8 @@ def _gguf_repo_candidates(model):
             pass
         if not name:
             continue
-        # The upstream imatrix lives in unsloth/<base>-GGUF, so map any org (e.g. meta-llama/...)
-        # onto the unsloth org; keep an already-formed -GGUF id as-is.
+          # The upstream imatrix lives in unsloth/<base>-GGUF, so map any org onto unsloth; an already-formed
+          # -GGUF id is kept as-is.
         repo = name if name.endswith("-GGUF") else f"unsloth/{name.split('/')[-1]}-GGUF"
         if repo not in candidates:
             candidates.append(repo)
@@ -6037,8 +5644,8 @@ def _resolve_imatrix_file(model, imatrix_file, token, dest_dir):
             f"(got {type(imatrix_file).__name__})."
         )
 
-    # imatrix_file=True: auto-resolve from the upstream Unsloth GGUF repo. HfApi is the module-level
-    # import (save.py top); hf_hub_download is imported here as it is not needed elsewhere.
+      # imatrix_file=True auto-resolves from the upstream Unsloth GGUF repo; hf_hub_download is imported here
+      # since nothing else needs it.
     from huggingface_hub import hf_hub_download
 
     if token is None:
@@ -6092,11 +5699,11 @@ def _unsloth_save_lora_gguf(
         raise ValueError(
             f"Unsloth: LoRA GGUF outtype must be one of {_LORA_GGUF_OUTTYPES} (got '{outtype}')."
         )
-    # Resolve a token even for local saves: the converter may fetch a gated/private base config.
+      # Resolve a token even for local saves: the converter may fetch a gated/private base config.
     if token is None:
         token = get_token()
 
-    # Resolve the dequantized base id (the adapter usually references a 4bit repo).
+      # Resolve the dequantized base id, since the adapter usually references a 4bit repo.
     base_model_id = _lora_base_model_id(model)
     if not base_model_id:
         raise RuntimeError(
@@ -6109,6 +5716,8 @@ def _unsloth_save_lora_gguf(
         pass
     model_name = _model_basename(base_model_id)
 
+    # Save the adapter: an isolated temp dir for a hub push, else save_directory itself, wrapped so it is always
+    # cleaned up.
     # Save the adapter; for a hub push use an isolated temp dir, else save_directory itself.
     if push_to_hub:
         lora_dir = tempfile.mkdtemp(prefix = "unsloth-lora-gguf-")
@@ -6120,12 +5729,13 @@ def _unsloth_save_lora_gguf(
     try:
         save_lora_to_custom_dir(model, tokenizer, lora_dir)
 
-        # Ensure a full llama.cpp checkout (ships convert_lora_to_gguf.py) and locate the converter.
+          # Ensure a full llama.cpp checkout, which ships convert_lora_to_gguf.py: a prebuilt install or a
+          # reused CWD copy carries binaries but not the script.
         install_llama_cpp(just_clone_repo = True)
         converter = os.path.join(LLAMA_CPP_DEFAULT_DIR, "convert_lora_to_gguf.py")
         if not os.path.exists(converter):
-            # A prebuilt llama.cpp install (or a reused CWD copy) carries binaries but not the
-            # converter script, so force a dedicated source checkout that ships it.
+            # A prebuilt llama.cpp install (or a reused CWD copy) carries binaries but not the converter script,
+            # so force a dedicated source checkout that ships it.
             source_dir = os.path.join(
                 os.path.dirname(os.path.normpath(LLAMA_CPP_DEFAULT_DIR)), "llama.cpp-source"
             )
@@ -6144,8 +5754,8 @@ def _unsloth_save_lora_gguf(
             cmd += ["--base", base_model_id]
         else:
             cmd += ["--base-model-id", base_model_id]
-        # Only pass --trust-remote-code when the loaded model actually came from custom code (the
-        # approved load decision), not merely because its config carries an auto_map entry.
+          # Pass --trust-remote-code only when the model really came from custom code (the approved load
+          # decision), not merely because its config carries an auto_map entry.
         if _loaded_via_remote_code(model):
             cmd.append("--trust-remote-code")
 
@@ -6156,6 +5766,8 @@ def _unsloth_save_lora_gguf(
             env["HUGGING_FACE_HUB_TOKEN"] = token
 
         print(f"Unsloth: Converting LoRA adapter at '{lora_dir}' to GGUF -> '{out_gguf}'")
+        # Resolve the cache from the live env like the merge, not huggingface_hub's frozen constants: a runtime
+        # cache redirect (read-only default, Unsloth) would else miss (#6890).
         try:
             with subprocess.Popen(
                 cmd,
@@ -6257,9 +5869,8 @@ from .models.loader_utils import (
     _tokenizer_wants_local_only,
 )
 
-# Imported lazily at the two call sites below: a zoo older than the one that made
-# its own bitsandbytes import optional would otherwise break `import unsloth` on a
-# host without bnb, which is the whole point of the guards above.
+  # Imported lazily at the two call sites: an older zoo, before its bitsandbytes import became optional, would
+  # otherwise break `import unsloth` on a host without bnb.
 from unsloth_zoo.llama_cpp import (
     install_llama_cpp,
     convert_to_gguf as _convert_to_gguf,
@@ -6291,7 +5902,7 @@ def _prewarm_base_model_hub_cache(
         or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _true
     ):
         return
-    # Only the 16bit / mxfp4 merges download the base model; merged_4bit and lora do not.
+      # Only the 16bit / mxfp4 merges download the base model; merged_4bit and lora do not.
     if save_method not in ("merged_16bit", "mxfp4"):
         return
     if not isinstance(model, PeftModel):
@@ -6320,8 +5931,8 @@ def _prewarm_base_model_hub_cache(
         )
         if not model_name or is_local_path:
             return
-        # Mirror the merge: an FP8 base with a 16bit sibling merges onto the sibling, so
-        # pre-warm the sibling (what the merge downloads), not the FP8 repo (#6890).
+          # Mirror the merge: an FP8 base with a 16bit sibling merges onto the sibling, so pre-warm the sibling
+          # rather than the FP8 repo (#6890).
         if base_is_quantized and quant_type == "fp8" and save_method == "merged_16bit":
             try:
                 from unsloth_zoo.saving_utils import _resolve_fp8_16bit_sibling
@@ -6339,8 +5950,8 @@ def _prewarm_base_model_hub_cache(
 
         from huggingface_hub import HfFileSystem, hf_hub_download, snapshot_download
 
-        # Resolve the cache from the live env like the merge, not huggingface_hub's frozen
-        # constants: a runtime cache redirect (read-only default, Unsloth) would else miss (#6890).
+          # Resolve the cache from the live env like the merge, not huggingface_hub's frozen constants, or a
+          # runtime cache redirect misses (#6890).
         try:
             from unsloth_zoo.hf_cache import _active_caches
             _hub_cache = _active_caches()[1]
@@ -6348,8 +5959,8 @@ def _prewarm_base_model_hub_cache(
         except Exception:
             hub_cache_dir = None
 
-        # Mirror the zoo's shard listing (drop consolidated.safetensors when proper
-        # shards coexist) so the cached set is a superset of what the merge looks up.
+          # Mirror the zoo's shard listing (drop consolidated.safetensors when real shards coexist) so the
+          # cached set is a superset of what the merge looks up.
         shard_names = []
         total_size_in_bytes = 0
         for x in HfFileSystem(token = token).ls(model_name, detail = True):
@@ -6373,9 +5984,8 @@ def _prewarm_base_model_hub_cache(
         except Exception:
             pass
 
-        # Mirror the merge's index filter (download path only): some repos ship leftover shards
-        # the index omits; keep only indexed ones, else the disk gate over-counts and we fetch
-        # unused shards.
+          # Mirror the merge's index filter on the download path: some repos ship shards the index omits, so
+          # keep only indexed ones or the disk gate over-counts.
         if len(shard_names) > 1:
             try:
                 import json as _json
@@ -6398,10 +6008,10 @@ def _prewarm_base_model_hub_cache(
                 pass
         total_size_in_bytes = sum(size for _, size in shard_names)
 
-        # The cache copy is extra disk on top of the merge working copy; need room for both.
+        # The cache copy is extra disk on top of the merge working copy; there must be room for both.
         from huggingface_hub import constants as _hf_constants
 
-        # abspath so a relative HF_HUB_CACHE walks up to an existing root, not "".
+          # abspath so a relative HF_HUB_CACHE walks up to an existing root, not "".
         cache_probe = os.path.abspath(
             os.path.expanduser(str(hub_cache_dir or _hf_constants.HF_HUB_CACHE))
         )
@@ -6460,10 +6070,8 @@ def save_to_gguf_generic(
     if not os.path.exists(os.path.join("llama.cpp", "unsloth_convert_hf_to_gguf.py")):
         install_llama_cpp(just_clone_repo = True)
 
-    # Use old style quantization_method
     new_quantization_methods = []
     if quantization_method is not None:
-        # Convert quantization_method to list
         if isinstance(quantization_method, list):
             pass
         elif isinstance(quantization_method, str):
@@ -6490,7 +6098,6 @@ def save_to_gguf_generic(
             new_quantization_methods.append(quant_method.lower())
     else:
         new_quantization_methods.append(quantization_type.lower())
-    # Check if wrong method
     for quant_method in new_quantization_methods:
         if quant_method not in ALLOWED_QUANTS.keys():
             error = f"Unsloth: Quant method = [{quant_method}] not supported. Choose from below:\n"
@@ -6498,8 +6105,6 @@ def save_to_gguf_generic(
                 error += f"[{key}] => {value}\n"
             raise RuntimeError(error)
 
-    # Go through all types and save individually - somewhat inefficient
-    # since we save F16 / BF16 multiple times
     for quantization_type in new_quantization_methods:
         metadata = _convert_to_gguf(
             save_directory,
@@ -6546,7 +6151,6 @@ def unsloth_generic_save(
     safe_serialization: bool = True,
     variant: Optional[str] = None,
     save_peft_format: bool = True,
-    # Push to hub
     use_temp_dir: Optional[bool] = None,
     commit_message: Optional[str] = "Trained with Unsloth",
     private: Optional[bool] = None,
@@ -6554,7 +6158,6 @@ def unsloth_generic_save(
     revision: str = None,
     commit_description: str = "Upload model trained with Unsloth 2x faster",
     tags: List[str] = None,
-    # Our functions
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.9,
     datasets: Optional[List[str]] = None,
@@ -6575,8 +6178,8 @@ def unsloth_generic_save(
     elif save_method == "merged_4bit_forced":
         save_method = "merged_4bit"
 
-    # Full-finetuned models (no LoRA) have no adapters to merge, so fall back
-    # to save_pretrained, mirroring the torchao and GGUF save paths.
+      # Full-finetuned models have no adapters to merge, so fall back to save_pretrained, mirroring the torchao
+      # and GGUF save paths.
     _is_peft = isinstance(model, PeftModel)
     if not _is_peft:
         if not is_main_process:
@@ -6709,25 +6312,23 @@ def unsloth_generic_save_pretrained_merged(
             "You can do it separately via `tokenizer.save_pretrained(...)`"
         )
 
-    # Kaggle's working directory is ~20GB while the overlay at /tmp on the same
-    # kernel is measured in terabytes. Relative paths under /kaggle/working that
-    # do not fit move there; absolute paths, hub pushes and every non-Kaggle
-    # machine are untouched.
+    # Kaggle's working directory is ~20GB while /tmp on the same kernel is terabytes, so relative paths under
+    # /kaggle/working that do not fit move there. Absolute paths, hub pushes and non-Kaggle machines are
+    # untouched.
     save_directory = _preflight_merge_disk(
         self,
         save_directory,
         save_method,
         push_to_hub = push_to_hub,
         state_dict = state_dict,
-        # `unsloth_generic_save` writes a supplied dictionary rather than the
-        # resident model when there is no adapter to merge.
+          # unsloth_generic_save writes a supplied dictionary rather than the resident model when there is no
+          # adapter, and it alone runs merge_and_overwrite_lora when there is one.
         forwards_state_dict = True,
-        # And it is the writer that runs `merge_and_overwrite_lora` when there
-        # IS one, which no other entrypoint here does.
+        # And it is the writer that runs `merge_and_overwrite_lora` when there IS one, which no other entrypoint
+        # here does.
         writer_runs_merge_guard = True,
     )
 
-    # FP8 / FP4 compressed-tensors export (llm-compressor) -> handled separately.
     _compressed = _normalize_compressed_method(save_method)
     if _compressed is not None:
         scheme, needs_calibration, suffix = _compressed
@@ -6744,7 +6345,6 @@ def unsloth_generic_save_pretrained_merged(
             calibration_dataset = calibration_dataset,
             num_calibration_samples = num_calibration_samples,
             max_seq_length = max_seq_length,
-            # Forward standard save kwargs to the 16bit merge.
             state_dict = state_dict,
             save_function = save_function,
             max_shard_size = max_shard_size,
@@ -6760,7 +6360,6 @@ def unsloth_generic_save_pretrained_merged(
             gc.collect()
         return
 
-    # torchao portable FP8/INT8 export (no NVIDIA GPU) -> separate path.
     _torchao = _normalize_torchao_method(save_method)
     if _torchao is not None:
         kind, suffix = _torchao
@@ -6773,7 +6372,6 @@ def unsloth_generic_save_pretrained_merged(
             push_to_hub = push_to_hub,
             token = token,
             is_main_process = is_main_process,
-            # Forward standard save kwargs to the 16bit merge.
             state_dict = state_dict,
             save_function = save_function,
             max_shard_size = max_shard_size,
@@ -6840,7 +6438,6 @@ def unsloth_generic_push_to_hub_merged(
             "You can do it separately via `tokenizer.push_to_hub(...)`"
         )
 
-    # FP8 / FP4 compressed-tensors export (llm-compressor) -> handled separately.
     _compressed = _normalize_compressed_method(save_method)
     if _compressed is not None:
         scheme, needs_calibration, suffix = _compressed
@@ -6861,7 +6458,6 @@ def unsloth_generic_push_to_hub_merged(
             calibration_dataset = calibration_dataset,
             num_calibration_samples = num_calibration_samples,
             max_seq_length = max_seq_length,
-            # Forward standard save kwargs to the 16bit merge.
             use_temp_dir = use_temp_dir,
             max_shard_size = max_shard_size,
             safe_serialization = safe_serialization,
@@ -6874,7 +6470,6 @@ def unsloth_generic_push_to_hub_merged(
             gc.collect()
         return
 
-    # torchao portable FP8/INT8 export (no NVIDIA GPU) -> separate path.
     _torchao = _normalize_torchao_method(save_method)
     if _torchao is not None:
         kind, suffix = _torchao
@@ -6892,7 +6487,6 @@ def unsloth_generic_push_to_hub_merged(
             commit_description = commit_description,
             create_pr = create_pr,
             revision = revision,
-            # Forward standard save kwargs to the 16bit merge.
             use_temp_dir = use_temp_dir,
             max_shard_size = max_shard_size,
             safe_serialization = safe_serialization,
@@ -6929,9 +6523,7 @@ def _unsloth_save_torchao_with_attached_config(
     token: Optional[Union[str, bool]] = None,
 ):
     """Save a QAT-trained model by converting fake-quantized weights to real quantized weights."""
-    # Convert QAT fake-quantized weights to real quantized weights
     _convert_torchao_model(model)
-    # PEFT models also might come here, so parse it
     if isinstance(model, PeftModelForCausalLM):
         _unsloth_save_torchao_with_given_config(
             model = model,
@@ -6943,7 +6535,7 @@ def _unsloth_save_torchao_with_attached_config(
         )
         return
 
-    # TorchAO does not support safe_serialization reliably
+    # TorchAO does not support safe_serialization reliably.
     safe_serialization = False
 
     if push_to_hub:
@@ -6977,7 +6569,6 @@ def _unsloth_save_torchao_with_given_config(
         torchao_config is not None
     ), "Unsloth: Please specify a torchao_config for post-training quantization!"
 
-    # first merge the lora weights
     arguments = dict(locals())
     arguments["push_to_hub"] = False  # We save ourselves
     arguments["save_method"] = "merged_16bit"  # Must be 16bit
@@ -7006,7 +6597,6 @@ def _unsloth_save_torchao_with_given_config(
     else:
         quantization_config = TorchAoConfig(quant_type = torchao_config)
 
-    # Determine if this is a VLM
     is_vlm = _is_vlm(model)
     auto_model = AutoModelForImageTextToText if is_vlm else AutoModelForCausalLM
     auto_processor = AutoProcessor if is_vlm else AutoTokenizer
@@ -7015,14 +6605,13 @@ def _unsloth_save_torchao_with_given_config(
     if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
         tokenizer = patch_saving_functions(tokenizer)
 
-    # TorchAO must only use bfloat16 for loading (float16 fails)
+      # TorchAO must only use bfloat16 for loading; float16 fails.
     if HAS_TORCH_DTYPE:
         kwargs = {"torch_dtype": torch.bfloat16}
     else:
         kwargs = {"dtype": torch.bfloat16}
 
-    # Else the original stays resident on every GPU while device_map="auto" below
-    # loads a second copy.
+      # Else the original stays resident on every GPU while device_map="auto" below loads a second copy.
     model_restore = _offload_model_for_quantize_subprocess(model)
     for _ in range(3):
         gc.collect()
@@ -7031,10 +6620,11 @@ def _unsloth_save_torchao_with_given_config(
         if hasattr(torch, "xpu") and torch.xpu.is_available():
             torch.xpu.empty_cache()
 
-    # The original stays offloaded until the quantized copy is saved AND released,
-    # else both are resident at once and the restore OOMs.
+      # The original stays offloaded until the quantized copy is saved AND released, else both are resident and
+      # the restore OOMs.
+    # The original stays offloaded until the quantized copy is saved AND released, else both are resident at
+    # once and the restore OOMs.
     try:
-        # Reload with quantization applied
         quantized_model = auto_model.from_pretrained(
             save_directory,
             device_map = "auto",
@@ -7044,7 +6634,7 @@ def _unsloth_save_torchao_with_given_config(
 
         torchao_save_directory = save_directory + "-torchao"
 
-        # TorchAO does not support safe_serialization right now 0.14.0 seems broken!
+          # TorchAO does not support safe_serialization right now; 0.14.0 seems broken.
         safe_serialization = Version(importlib_version("torchao")) > Version("0.14.0")
         safe_serialization = False
 
@@ -7060,12 +6650,12 @@ def _unsloth_save_torchao_with_given_config(
             tokenizer.save_pretrained(torchao_save_directory, token = token)
 
     finally:
-        # del here, not at the end of the try: if save_pretrained raises, the copy
-        # would otherwise still be resident while the original is restored.
+          # del here, not at the end of the try: if save_pretrained raises, the copy would still be resident
+          # while the original is restored.
         quantized_model = None
         del quantized_model
-        # A failed save leaves a live traceback whose frames still hold the copy, so
-        # dropping the local alone does not free its VRAM.
+          # A failed save leaves a live traceback whose frames hold the copy, so dropping the local alone does
+          # not free its VRAM.
         _exc = sys.exc_info()[1]
         if _exc is not None:
             traceback.clear_frames(_exc.__traceback__)
@@ -7077,7 +6667,6 @@ def _unsloth_save_torchao_with_given_config(
                 torch.xpu.empty_cache()
         _restore_model_after_quantize_subprocess(model, model_restore)
 
-    # Clean up the intermediate unquantized model
     if os.path.exists(save_directory):
         try:
             shutil.rmtree(save_directory)
@@ -7167,18 +6756,16 @@ def _snapshot_dispatch_state(root):
         for name, mod in root.named_modules()
         if "_hf_hook" in mod.__dict__
     ]
-    # remove_duplicate=False: the default hides one half of every tied pair, exactly
-    # the half that needs re-tying below.
+      # remove_duplicate=False: the default hides one half of every tied pair, exactly the half that needs re-
+      # tying below.
     named = list(root.named_parameters(remove_duplicate = False)) + list(
         root.named_buffers(remove_duplicate = False)
     )
     places = {name: tensor.device for name, tensor in named}
-    # Tied weights share one storage, but the CPU round trip repoints every tensor and
-    # tied_params_map is keyed on the old pointer, so replaying the hooks alone gives
-    # independent copies: double VRAM, and updates to one no longer reach the other.
-    # Skip meta tensors: offloaded parameters all sit on meta with pointer 0, which
-    # would collapse into one fake "tied" group of differently shaped tensors, and
-    # each side of a tie is already its own meta placeholder so nothing is lost.
+      # Tied weights share one storage, but the CPU round trip repoints every tensor while tied_params_map is
+      # keyed on the old pointer, so replaying hooks alone yields independent copies: double VRAM and divergent
+      # updates. Skip meta tensors, since offloaded parameters all have pointer 0 and would collapse into one
+      # fake tied group.
     groups = {}
     for name, tensor in named:
         if tensor.device.type == "meta":
@@ -7187,18 +6774,17 @@ def _snapshot_dispatch_state(root):
         if ptr:
             groups.setdefault(ptr, []).append(name)
     ties = [names for names in groups.values() if len(names) > 1]
-    # Removing a hook restores `forward = _old_forward`, captured before unsloth patched
-    # the module, so a remove/re-add permanently drops every fused kernel installed after
-    # the dispatch (measured: apply_lora_mlp_swiglu on all 28 MLPs). It also deletes the
-    # `to`/`cuda`/... move guards, so record those too.
+      # Removing a hook restores forward = _old_forward, captured before unsloth patched the module, so a
+      # remove/re-add permanently drops every fused kernel installed after the dispatch (measured on all 28
+      # MLPs) and the to/cuda move guards. Record those too.
     attrs = ("forward", "_old_forward") + tuple(_ACCELERATE_MOVE_GUARDS)
     saved_attrs = {
         name: {a: mod.__dict__[a] for a in attrs if a in mod.__dict__}
         for name, mod in root.named_modules()
         if any(a in mod.__dict__ for a in attrs)
     }
-    # Re-adding a hook runs init_hook -> set_module_tensor_to_device, which builds a fresh
-    # Parameter and so drops .grad. Snapshot the gradients and reattach them on restore.
+      # Re-adding a hook runs init_hook -> set_module_tensor_to_device, building a fresh Parameter and dropping
+      # .grad, so snapshot the gradients and reattach on restore.
     grads = {
         name: getattr(tensor, "grad", None)
         for name, tensor in root.named_parameters(remove_duplicate = False)
@@ -7271,16 +6857,16 @@ def _restore_dispatch_state(root, snapshot) -> None:
     for name, hook in hooks:
         add_hook_to_module(root.get_submodule(name) if name else root, hook)
 
-    # Re-adding a hook rewraps whatever `_old_forward` now holds, so put the exact
-    # callables back, `_old_forward` first.
+      # Re-adding a hook rewraps whatever _old_forward now holds, so put the exact callables back, _old_forward
+      # first.
     for name, values in saved_attrs.items():
         mod = root.get_submodule(name) if name else root
         for attr in ("_old_forward", "forward", *_ACCELERATE_MOVE_GUARDS):
             if attr in values:
                 mod.__dict__[attr] = values[attr]
 
-    # init_hook only re-places tensors the hooked module owns, so anything added after
-    # the dispatch (the LoRA adapters) is still on CPU.
+      # init_hook only re-places tensors the hooked module owns, so anything added after the dispatch (the LoRA
+      # adapters) is still on CPU.
     for mod_name, mod in root.named_modules():
         for attr in ("_parameters", "_buffers"):
             store = getattr(mod, attr, None)
@@ -7294,7 +6880,7 @@ def _restore_dispatch_state(root, snapshot) -> None:
                 if want is None or tensor.device == want:
                     continue
                 if getattr(tensor, "quant_state", None) is not None:
-                    # Only bitsandbytes' own .to() moves absmax/code/state2 with the data.
+                      # Only bitsandbytes' own .to() moves absmax/code/state2 with the data.
                     mod.to(want)
                 else:
                     tensor.data = tensor.data.to(want)
@@ -7312,8 +6898,8 @@ def _restore_dispatch_state(root, snapshot) -> None:
             continue
         for follower in names[1:]:
             _share_tensor(root, follower, leader)
-    # init_hook refilled tied_params_map with the pre-retie tensors, now unreferenced
-    # by the model but still pinned by the map.
+      # init_hook refilled tied_params_map with the pre-retie tensors, now unreferenced by the model but still
+      # pinned by the map.
     if ties:
         _drop_accelerator_tied_param_cache(snapshot)
 
@@ -7344,20 +6930,21 @@ def _offload_model_for_quantize_subprocess(model):
         device_map = getattr(model, "hf_device_map", None)
         if device_map:
             targets = {str(v).lower() for v in device_map.values()}
-            # A cpu spill is fine to move, it is already in host RAM. disk/meta is not:
-            # those parameters are off the model, so .to("cpu") would materialize the
-            # whole checkpoint into RAM.
+              # A cpu spill is safe to move, being in host RAM; disk/meta is not, since those parameters are off
+              # the model and .to("cpu") would materialize the whole checkpoint.
             if not all(t.isdigit() or t.startswith(("cuda", "xpu")) or t == "cpu" for t in targets):
                 return None
             if not any(t.isdigit() or t.startswith(("cuda", "xpu")) for t in targets):
                 return None  # nothing on an accelerator: no GPU memory to reclaim
             from accelerate.hooks import remove_hook_from_submodules
 
-            # A PEFT wrapper only proxies the hooks; they live on the inner root.
+              # A PEFT wrapper only proxies the hooks; they live on the inner root.
             root = _accelerate_dispatch_root(model)
             try:
                 setattr(root, _DISPATCH_SNAPSHOT_ATTR, _snapshot_dispatch_state(root))
             except Exception as snap_exc:
+                # A silent `return None` is indistinguishable from "nothing to move", which hides a real bug
+                # behind a merely slower export.
                 # Restore will fall back to re-deriving from the device_map.
                 logger.warning_once(
                     f"Unsloth: could not snapshot the accelerate dispatch "
@@ -7367,8 +6954,8 @@ def _offload_model_for_quantize_subprocess(model):
             try:
                 model.to("cpu")
             except Exception:
-                # The move failed after the hooks came off; re-dispatch so the model is
-                # left usable rather than hookless and half-moved across CPU/GPUs.
+                  # The move failed after the hooks came off, so re-dispatch and leave the model usable rather
+                  # than hookless and half-moved across CPU/GPUs.
                 _restore_model_after_quantize_subprocess(model, ("dispatch", dict(device_map)))
                 return None
             snapshot = getattr(root, _DISPATCH_SNAPSHOT_ATTR, None)
@@ -7385,8 +6972,8 @@ def _offload_model_for_quantize_subprocess(model):
                 return None
             return ("device", device)
     except Exception as exc:
-        # A silent `return None` is indistinguishable from "nothing to move", which
-        # hides a real bug behind a merely slower export.
+        # A silent `return None` is indistinguishable from "nothing to move", hiding a real bug behind a merely
+        # slower export.
         logger.warning_once(
             f"Unsloth: could not free the model's accelerator memory before the quantized "
             f"export ({type(exc).__name__}: {exc}); continuing with the model resident."
@@ -7409,15 +6996,15 @@ def _restore_model_after_quantize_subprocess(model, restore_token) -> None:
             else:
                 from accelerate import dispatch_model
 
-                # skip_keys matters: without it accelerate moves every forward kwarg
-                # to the executing device, wrong for device-invariant cache tensors.
+                  # skip_keys matters: without it accelerate moves every forward kwarg to the executing device,
+                  # wrong for device-invariant cache tensors.
                 dispatch_model(
                     root,
                     device_map = value,
                     skip_keys = getattr(root, "_skip_keys_device_placement", None),
                 )
         else:
-            model.to(value)  # restore the model to its original device
+            model.to(value)
     except Exception:
         logger.warning_once(
             "Unsloth: could not restore the model to its original device(s) after the "
@@ -7456,21 +7043,19 @@ def _unsloth_save_compressed_tensors(
     if token is None:
         token = get_token()
 
-    # Only the main process installs deps, merges, quantizes, and uploads (mirrors the non-PEFT
-    # save path); other ranks return at once so they neither race on dirs nor run pip installs.
+      # Only the main process installs deps, merges, quantizes and uploads, mirroring the non-PEFT save path;
+      # other ranks return at once rather than race on dirs or run pip installs.
     if not is_main_process:
         return None
 
-    # 1) Prepare the quantization runtime BEFORE merging, so an unusable config fails fast instead of
-    #    writing a full 16bit checkpoint first. With the llm-compressor-main shadow the subprocess
-    #    validates everything itself, so skip the workspace install / ceiling / scheme checks; without
-    #    it, install the workspace llm-compressor and fail fast past its transformers ceiling.
+      # Prepare the quantization runtime BEFORE merging, so an unusable config fails fast instead of writing a
+      # full 16bit checkpoint first. Under the llm-compressor-main shadow the subprocess validates itself, so
+      # the workspace install / ceiling / scheme checks are skipped.
     _shadow_pythonpath = _compressed_quantize_pythonpath()
     if _shadow_pythonpath is None:
         install_llm_compressor()
-        # llm-compressor cannot run under a newer transformers than its ceiling: the quantization
-        # subprocess would die with a cryptic ImportError (TORCH_INIT_FUNCTIONS) only AFTER the costly
-        # 16bit merge. Detect and fail fast with an actionable message instead.
+        # llm-compressor cannot run under a newer transformers than its ceiling: the subprocess dies on a
+        # cryptic TORCH_INIT_FUNCTIONS ImportError only AFTER the costly merge.
         _exceeds, _tf_ver = _transformers_exceeds_llm_compressor_ceiling()
         if _exceeds:
             raise RuntimeError(
@@ -7492,24 +7077,26 @@ def _unsloth_save_compressed_tensors(
                 "Use save_method in {fp8, mxfp4, nvfp4}, or upgrade transformers + llm-compressor."
             )
 
-    # 2) Pick the local working dir. For a hub push, save_directory is a repo id, so merge and
-    #    quantize inside an isolated temp dir instead of writing ./<repo_id> into the cwd.
+      # Pick the local working dir: on a hub push save_directory is a repo id, so merge and quantize inside a
+      # temp dir rather than writing ./<repo_id> into the cwd.
     repo_id, work_tmp, calib_tmp, model_restore = None, None, None, None
     if push_to_hub:
         repo_id = os.fspath(save_directory)
         work_tmp = tempfile.mkdtemp(prefix = "unsloth-compressed-")
         local_dir = os.path.join(work_tmp, os.path.basename(repo_id.rstrip("/")) or "model")
     else:
-        # Drop trailing separators so the sibling "<dir>-<fmt>" output is not nested inside <dir>.
+          # Drop trailing separators so the sibling "<dir>-<fmt>" output is not nested inside <dir>.
         local_dir = os.fspath(save_directory)
         local_dir = local_dir.rstrip("/\\") or local_dir
 
-    # Wrap the body so the isolated temp dirs are always cleaned up, even when the merge,
-    # quantization, validation, or hub upload raises.
+    # Wrap the body so the isolated temp dirs are always cleaned up, even when the merge, quantization,
+    # validation, or hub upload raises.
     api = None
     try:
-        # Validate Hub access up front (a bad token / denied repo should fail before the expensive
-        # merge and quantization, matching the normal push path). create_repo is idempotent.
+          # Validate Hub access up front, so a bad token or denied repo fails before the expensive merge and
+          # quantization; create_repo is idempotent.
+        # Validate Hub access up front (a bad token / denied repo should fail before the expensive merge and
+        # quantization, matching the normal push path). create_repo is idempotent.
         if push_to_hub:
             from huggingface_hub import HfApi
             api = HfApi(token = token)
@@ -7520,12 +7107,10 @@ def _unsloth_save_compressed_tensors(
                 exist_ok = True,
             )
 
-        # 3) Merge to 16bit at local_dir (kept for local saves) via unsloth_generic_save, so LoRA
-        #    adapters are merged and full-finetuned models written in 16bit consistently. Extra
-        #    save kwargs (state_dict, max_shard_size, ...) flow through merge_kwargs.
-        # The intermediate 16bit checkpoint is internal staging that the converter subprocess
-        # reloads with default weight filenames, so never write variant-named shards here; the
-        # user's variant (if any) is applied to the final compressed checkpoint in the subprocess.
+          # Merge to 16bit at local_dir via unsloth_generic_save, so adapters are merged and full-finetuned
+          # models written in 16bit alike. The subprocess reloads this staging checkpoint with default weight
+          # filenames, so never write variant-named shards here; the user's variant goes on the final compressed
+          # checkpoint.
         variant = merge_kwargs.pop("variant", None)
         print(f"Unsloth: Merging to 16bit before {scheme} quantization...")
         merge_args = dict(merge_kwargs)
@@ -7542,10 +7127,9 @@ def _unsloth_save_compressed_tensors(
         )
         unsloth_generic_save(**merge_args)
 
-        # 4) Detect VLM from the in-memory model config. A vision/multimodal model exposes a
-        #    vision_config or an explicitly vision-named architecture; a bare
-        #    *ForConditionalGeneration also matches text seq2seq models (T5/BART/Whisper), so it
-        #    is not treated as a VLM on its own.
+          # Detect a VLM from the in-memory config: a vision_config or a vision-named architecture. A bare
+          # *ForConditionalGeneration also matches text seq2seq (T5/BART/Whisper), so it does not count on its
+          # own.
         is_vlm = False
         if hasattr(model, "config"):
             archs = getattr(model.config, "architectures", None) or []
@@ -7557,26 +7141,26 @@ def _unsloth_save_compressed_tensors(
                 "Unsloth: FP8/FP4 compressed export for vision / multimodal models is "
                 "experimental; vision-tower layers may be affected."
             )
-        # trust_remote_code must reflect the approved load decision (whether the model / tokenizer
-        # was actually loaded from custom code), not the config's static auto_map, so a
-        # built-in-loadable model carrying auto_map cannot run unvetted code in the subprocess.
-        # Model and tokenizer trust stay separate, like the torchao path: an approved custom
-        # tokenizer must not enable an unapproved model's code in the subprocess (or vice versa).
+          # trust_remote_code must reflect the approved load decision, not the config's static auto_map, so a
+          # built-in-loadable model carrying auto_map cannot run unvetted code in the subprocess. Model and
+          # tokenizer trust stay separate, as on the torchao path.
         model_trust = _loaded_via_remote_code(model)
         tok_trust = _loaded_via_remote_code(tokenizer)
 
-        # 5) Marshal the calibration dataset for the subprocess: None -> ultrachat default; a
-        #    str/PathLike is a local save_to_disk dir if it exists else a Hub id; Dataset -> temp.
+          # Marshal the calibration dataset for the subprocess: None means the ultrachat default, a str/PathLike
+          # is a local save_to_disk dir if it exists else a Hub id, a Dataset goes to temp.
         calib_kind, calib_value = "none", ""
         if needs_calibration and calibration_dataset is not None:
             if isinstance(calibration_dataset, (str, os.PathLike)):
                 calib_value = os.fspath(calibration_dataset)
                 calib_kind = "disk" if os.path.isdir(calib_value) else "hfid"
             elif hasattr(calibration_dataset, "save_to_disk"):
-                # Only persist the samples we need, so multi-GB training sets are not fully copied.
+                # Only persist the samples needed, so multi-GB training sets are not fully copied.
                 ds_to_save = calibration_dataset
-                # A DatasetDict's len() is the split count, not rows; pick one split first so the
-                # row subsample below applies and we do not save every split to the temp dir.
+                  # A DatasetDict's len() is the split count, not rows, so pick one split first or every split
+                  # is saved to the temp dir.
+                # A DatasetDict's len() is the split count, not rows; pick one split first so the row subsample
+                # below applies and we do not save every split to the temp dir.
                 try:
                     from datasets import DatasetDict
                     if isinstance(ds_to_save, DatasetDict):
@@ -7611,9 +7195,9 @@ def _unsloth_save_compressed_tensors(
                 f"Unsloth: scheme '{scheme}' is data-free; ignoring calibration_dataset."
             )
 
-        # 6) Quantize in a separate process: importing Unsloth patches transformers attention,
-        #    which breaks the forward llm-compressor runs for calibration. Run the converter by
-        #    file path (not `-m`) so the subprocess stays unpatched, like GGUF -> llama.cpp.
+          # Quantize in a separate process: importing Unsloth patches transformers attention, which breaks the
+          # forward llm-compressor runs for calibration. Invoke the converter by file path, not `-m`, so the
+          # subprocess stays unpatched.
         out_dir = local_dir + "-" + suffix
         runner = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_compressed_quantize.py")
         cmd = [
@@ -7645,8 +7229,8 @@ def _unsloth_save_compressed_tensors(
         if variant:
             cmd += ["--variant", variant]
 
-        # Free the in-memory model's CUDA memory before the subprocess loads its own copy from
-        # disk, so the GPUs need not hold both at once. Best-effort, restored in finally.
+          # Free the in-memory model's CUDA memory before the subprocess loads its own copy, so the GPUs need
+          # not hold both. Best-effort, restored in finally.
         model_restore = _offload_model_for_quantize_subprocess(model)
         for _ in range(3):
             gc.collect()
@@ -7659,9 +7243,9 @@ def _unsloth_save_compressed_tensors(
             env["HF_TOKEN"] = token
             env["HUGGING_FACE_HUB_TOKEN"] = token
 
-        # Clean PYTHONPATH = shadow only. torch still comes from the interpreter's site-packages;
-        # transformers 5.x + llm-compressor main come from the shadow. Dropping the inherited
-        # PYTHONPATH removes any parent transformers sidecar so the shadow's is authoritative.
+          # Clean PYTHONPATH means shadow only: torch still comes from site-packages while transformers 5.x and
+          # llm-compressor main come from the shadow, and dropping the inherited PYTHONPATH removes any parent
+          # transformers sidecar.
         if _shadow_pythonpath is not None:
             env["PYTHONPATH"] = _shadow_pythonpath
 
@@ -7678,7 +7262,6 @@ def _unsloth_save_compressed_tensors(
                 f"{e.returncode}). See the output above for details."
             )
 
-        # 7) Validate the artifact.
         cfg_path = os.path.join(out_dir, "config.json")
         cfg = {}
         if os.path.exists(cfg_path):
@@ -7689,8 +7272,10 @@ def _unsloth_save_compressed_tensors(
                 f"Unsloth: {scheme} export failed - no quantization_config written to {cfg_path}"
             )
 
-        # 8) Optional hub upload of the compressed artifact (not the intermediate 16bit one).
-        #    The repo was already created/validated up front, so just upload here.
+        # Optional hub upload of the compressed artifact, not the intermediate 16bit one; the repo was created
+        # and validated up front.
+        # 8) Optional hub upload of the compressed artifact (not the intermediate 16bit one). The repo was
+        # already created/validated up front, so just upload here.
         if push_to_hub:
             print(f"Unsloth: Uploading {scheme} checkpoint to '{repo_id}' ...")
             api.upload_folder(
@@ -7713,7 +7298,6 @@ def _unsloth_save_compressed_tensors(
                         f"Unsloth: could not update datasets metadata for {repo_id}: {meta_err}"
                     )
 
-        # 9) Inference hardware note.
         result = repo_id if push_to_hub else out_dir
         _print_compressed_hw_note(scheme, result)
         return result
@@ -7753,7 +7337,7 @@ def _unsloth_save_torchao(
     if token is None:
         token = get_token()
 
-    # Only the main process merges, quantizes, and uploads; other ranks return at once.
+    # Only the main process merges, quantizes and uploads; other ranks return at once.
     if not is_main_process:
         return None
 
@@ -7774,9 +7358,9 @@ def _unsloth_save_torchao(
     else:
         raise RuntimeError(f"Unsloth: unknown torchao export kind '{kind}' (expected fp8/int8).")
 
-    # Always merge into an isolated temp staging dir (never save_directory itself), so a co-selected
-    # 16-bit export written to save_directory is not overwritten or deleted; the torchao output is
-    # the sibling "<save_directory>-<suffix>" (or the repo id on a hub push).
+      # Always merge into an isolated temp staging dir, never save_directory, so a co-selected 16-bit export
+      # there is not overwritten. The torchao output is the sibling "<save_directory>-<suffix>", or the repo id
+      # on a hub push.
     repo_id, work_tmp, model_restore = None, None, None
     work_tmp = tempfile.mkdtemp(prefix = "unsloth-torchao-")
     if push_to_hub:
@@ -7800,8 +7384,8 @@ def _unsloth_save_torchao(
                 exist_ok = True,
             )
 
-        # 1) Merge to 16bit at a staging dir (LoRA and base alike). The reload reads default
-        #    weight filenames, so never write variant-named shards here.
+          # Merge to 16bit at a staging dir, LoRA and base alike. The reload reads default weight filenames, so
+          # never write variant-named shards here.
         merge_kwargs.pop("variant", None)
         print(f"Unsloth: Merging to 16bit before torchao {kind} quantization...")
         merge_args = dict(merge_kwargs)
@@ -7818,23 +7402,21 @@ def _unsloth_save_torchao(
         )
         unsloth_generic_save(**merge_args)
 
-        # 2) Detect VLM + reload class. A bare *ForConditionalGeneration also matches text seq2seq
-        #    (T5/BART/Whisper), so key off vision_config / a vision-named architecture only.
+        # Detect VLM and reload class: a bare *ForConditionalGeneration also matches text seq2seq, so key off
+        # vision_config or a vision-named architecture only.
         is_vlm = False
         if hasattr(model, "config"):
             archs = getattr(model.config, "architectures", None) or []
             is_vlm = hasattr(model.config, "vision_config") or any(
                 x.endswith("ForVisionText2Text") for x in archs
             )
-        # trust_remote_code must reflect the approved load decision - whether the in-memory model /
-        # tokenizer was itself loaded from custom code - not the staged config's auto_map, which an
-        # attacker can set on a built-in-loadable model to run unvetted code past the consent gate.
+          # trust_remote_code must reflect the approved load decision, not the staged config's auto_map, which
+          # an attacker can set on a built-in-loadable model to run unvetted code past the gate.
         model_trust = _loaded_via_remote_code(model)
         tok_trust = _loaded_via_remote_code(tokenizer)
-        # Reload with the class that matches the checkpoint: an image-text VLM class (with a
-        # fallback for older Transformers that lack AutoModelForImageTextToText); the model's own
-        # architecture class for encoder-decoder seq2seq (T5/BART/Whisper are not causal LMs, and
-        # AutoModelForCausalLM would fail to load them); otherwise causal-LM.
+          # Reload with the class matching the checkpoint: an image-text VLM class (with a fallback for
+          # Transformers lacking AutoModelForImageTextToText), the model's own class for encoder-decoder
+          # seq2seq, otherwise causal-LM.
         if is_vlm:
             try:
                 from transformers import AutoModelForImageTextToText as _reload_model
@@ -7855,10 +7437,9 @@ def _unsloth_save_torchao(
             auto_model = AutoModelForCausalLM
         auto_processor = AutoProcessor if is_vlm else AutoTokenizer
 
-        # 3) Free the in-memory model's accelerator memory before reloading a fresh copy from
-        #    disk, else it sits resident alongside the copy and OOMs a device that fit the
-        #    model once. Covers CUDA and XPU (torchao runs on Intel GPUs too) plus multi-GPU
-        #    dispatched shards, which a plain .to("cpu") cannot move.
+          # Free the in-memory model's accelerator memory before reloading from disk, else it sits beside the
+          # copy and OOMs a device that fit the model once. Covers CUDA, XPU and multi-GPU dispatched shards,
+          # which a plain .to("cpu") cannot move.
         _has_xpu = hasattr(torch, "xpu") and torch.xpu.is_available()
         model_restore = _offload_model_for_quantize_subprocess(model)
         for _ in range(3):
@@ -7868,8 +7449,8 @@ def _unsloth_save_torchao(
             if _has_xpu:
                 torch.xpu.empty_cache()
 
-        # 4) Reload the staged 16bit checkpoint with torchao applied. bfloat16 is required;
-        #    device_map="auto" falls back to CPU, so this works on any hardware.
+          # Reload the staged 16bit checkpoint with torchao applied: bfloat16 is required, and device_map="auto"
+          # falls back to CPU, so this works on any hardware.
         print(f"Unsloth: Quantizing the merged model to torchao {kind}...")
         dtype_kw = {"torch_dtype": torch.bfloat16} if HAS_TORCH_DTYPE else {"dtype": torch.bfloat16}
         quantized_model = auto_model.from_pretrained(
@@ -7889,7 +7470,6 @@ def _unsloth_save_torchao(
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-        # 5) Validate the artifact.
         cfg_path = os.path.join(out_dir, "config.json")
         cfg = {}
         if os.path.exists(cfg_path):
@@ -7901,7 +7481,7 @@ def _unsloth_save_torchao(
                 f"{cfg_path}"
             )
 
-        # 6) Optional hub upload of the quantized artifact (the temp staging is cleaned in finally).
+        # Optional hub upload of the quantized artifact; the temp staging is cleaned in finally.
         if push_to_hub:
             print(f"Unsloth: Uploading torchao {kind} checkpoint to '{repo_id}' ...")
             api.upload_folder(
@@ -7931,8 +7511,7 @@ def _unsloth_save_torchao(
         )
         return result
     finally:
-        # A raise pins the copy in the local and the live traceback, so free both or the
-        # restore below OOMs.
+          # A raise pins the copy in the local and the live traceback, so free both or the restore below OOMs.
         quantized_model = None
         del quantized_model
         _exc = sys.exc_info()[1]
@@ -7991,7 +7570,7 @@ def unsloth_save_pretrained_torchao(
     has_qat_config = hasattr(self, "_torchao_config") and self._torchao_config is not None
 
     if torchao_config is not None:
-        # PTQ path: user provided a config, model must NOT have QAT config unless PEFT
+          # PTQ path: the user provided a config, so the model must NOT have a QAT config unless PEFT.
         assert not has_qat_config, (
             "Unsloth: You passed `torchao_config` but this model was trained with `qat_scheme`. "
             "For QAT models, do not pass `torchao_config` - the quantization config is already "
@@ -8006,7 +7585,7 @@ def unsloth_save_pretrained_torchao(
             token = token,
         )
     else:
-        # QAT path: no config provided, model must have QAT config
+          # QAT path: no config provided, so the model must have a QAT config.
         assert has_qat_config, (
             "Unsloth: No `torchao_config` provided and model was not trained with `qat_scheme`. "
             "Either train with `qat_scheme` parameter, or provide a `torchao_config` for "
@@ -8033,7 +7612,6 @@ def patch_saving_functions(model, vision = False):
     import types
     from typing import Callable, Optional, Union, List
 
-    # And now re add our saving methods!
     if model.push_to_hub.__name__ == "unsloth_push_to_hub":
         original_push_to_hub = model.original_push_to_hub
     else:
@@ -8142,7 +7720,6 @@ def patch_saving_functions(model, vision = False):
 
     original_model = model
     while True:
-        # Check if push_to_hub exists before accessing its __name__
         if (
             hasattr(original_model, "push_to_hub")
             and original_model.push_to_hub.__name__ != "unsloth_push_to_hub"
@@ -8161,10 +7738,8 @@ def patch_saving_functions(model, vision = False):
         else:
             break
 
-    # Add saving methods to top level model
     if not vision:
         if hasattr(model, "config"):
-            # Counteract tokenizers
             model.push_to_hub_merged = types.MethodType(unsloth_generic_push_to_hub_merged, model)
             model.save_pretrained_merged = types.MethodType(
                 unsloth_generic_save_pretrained_merged, model
@@ -8179,7 +7754,6 @@ def patch_saving_functions(model, vision = False):
                 unsloth_convert_lora_to_ggml_and_save_locally, model
             )
     else:
-        # Vision only 1 option
         model.push_to_hub_merged = types.MethodType(unsloth_generic_push_to_hub_merged, model)
         model.save_pretrained_merged = types.MethodType(
             unsloth_generic_save_pretrained_merged, model

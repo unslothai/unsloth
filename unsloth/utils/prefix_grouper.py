@@ -57,14 +57,11 @@ import torch
 from .prefix_grouper_kernel import build_seg_info_multigroup, PrefixSegInfo
 
 
-# ---------------------------------------------------------------------------
-# Env helpers
-# ---------------------------------------------------------------------------
 def env_on(name: str, default: str = "0") -> bool:
     return os.environ.get(name, default).lower() not in ("0", "false", "no", "off")
 
 
-# One-time env reads; the helpers stay callable since unsloth_zoo imports and calls them.
+# One-time env reads; the helpers stay callable, since unsloth_zoo imports and calls them.
 _ENABLED = env_on("UNSLOTH_GRPO_SEQ_PACKING", "1") and env_on("UNSLOTH_GRPO_PREFIX_GROUPER", "1")
 _VERIFY_ON = env_on("UNSLOTH_GRPO_PREFIX_GROUPER_VERIFY", "1")
 _TOKR_THRESHOLD = float(os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_TOKR", "1.3"))
@@ -88,8 +85,8 @@ def tol_ok() -> float:
     return _TOL_OK
 
 
-# diff >= TOL_KILL = broken mask/isolation -> structure permanently unsafe; between
-# tol_ok and TOL_KILL -> fall back for this shape but keep trying others.
+# A diff at or above TOL_KILL means a broken mask/isolation, so the structure is permanently unsafe;
+# between tol_ok and TOL_KILL, fall back for this shape but keep trying others.
 TOL_KILL = 1.5
 
 
@@ -100,7 +97,7 @@ class GroupLayout:
     flat_ids: torch.Tensor  # [1, T]  (T == seg.T)
     position_ids: torch.Tensor  # [1, T]
     prefix_seg_info: PrefixSegInfo
-    # per completion target token, aligned 1:1:
+    # Per completion target token, aligned 1:1.
     tgt_rows: torch.Tensor  # [N] original row index
     tgt_cols: torch.Tensor  # [N] original padded column in that row
     tgt_pred: torch.Tensor  # [N] flat predicting index (into the T stream)
@@ -124,8 +121,8 @@ class GroupLayout:
     ) -> torch.Tensor:
         """hidden: [1, T, Hdim] (pre-lm_head hidden states, UNSLOTH_RETURN_HIDDEN_STATES=1).
         Returns [total_rows, W] float32, byte-compatible with the packed path result."""
-        # In a sharded model hidden may live on the lm-head device; move the small index
-        # maps to hidden.device before indexing.
+        # In a sharded model hidden may live on the lm-head device, so move the small index maps to
+        # hidden.device before indexing.
         device = hidden.device
         pred_h = hidden[0, self.tgt_pred.to(device), :].unsqueeze(0)  # [1, N, Hdim]
         tgt_ids = self.flat_ids[0, self.tgt_flat].to(device).unsqueeze(0)  # [1, N]
@@ -179,7 +176,7 @@ def _build_groups(ids_cpu, real_cols_cpu, cstart_cpu, num_generations, total_row
             comp_cols_per_row.append(c_cols)
         if any(len(p) == 0 for p in prompt_toks_per_row):
             return None
-        # require BYTE-IDENTICAL prompts across the group (shared-prefix precondition).
+        # Require BYTE-IDENTICAL prompts across the group, the shared-prefix precondition.
         P = len(prompt_toks_per_row[0])
         if any(len(prompt_toks_per_row[k]) != P for k in range(1, G)):
             return None
@@ -236,12 +233,12 @@ def build_group_layout(
     device = input_ids.device
     total_rows, L = input_ids.shape
     keep = input_ids != pad_id
-    # completion start column per row (matches create_completion_attention_mask / _pk_cstart).
+    # Completion start column per row, matching create_completion_attention_mask / _pk_cstart.
     cstart = ((L - logits_to_keep) - left_pad_tokens_per_prompt).to(torch.long)
     cstart_cpu = cstart.tolist()
     ids_cpu = input_ids.tolist()
-    # per-row real (non-pad) columns. GRPO rows are one contiguous real run, so derive
-    # [first, first+n) on GPU; the O(B*L) scan is only a non-contiguous fallback.
+    # Per-row real (non-pad) columns: GRPO rows are one contiguous real run, so derive [first, first+n)
+    # on GPU; the O(B*L) scan is only a non-contiguous fallback.
     n_real = keep.sum(dim = 1)
     first = torch.argmax(keep.to(torch.int8), dim = 1)
     ar = torch.arange(L, device = device)
@@ -258,7 +255,7 @@ def build_group_layout(
     if groups is None:
         return None
 
-    # sliding-window guard: a group's PG span is P + max(R); fall back if it exceeds the window.
+    # Sliding-window guard: a group's PG span is P + max(R), so fall back if it exceeds the window.
     if max_segment_cap is not None:
         for gm in groups:
             if gm["P"] + max(gm["R_list"]) > max_segment_cap:
@@ -286,12 +283,12 @@ def build_group_layout(
         r0 = gm["prefix_row"]
         prefix_cols = gm["prefix_cols"]  # ORIGINAL real prompt columns (len P) of row0
         plast = meta["prefix_last_index"]  # base + P - 1
-        # gather the shared prefix once, from row0.
+        # Gather the shared prefix once, from row0.
         flat_src_rows.extend([r0] * P)
         flat_src_cols.extend(prefix_cols)
         pos_list.extend(range(P))
-        # suffixes: every suffix token is a completion-region target (scattered like the
-        # packed path; completion_mask hides prompt-tail positions).
+        # Suffixes: every suffix token is a completion-region target, scattered like the packed path, with
+        # completion_mask hiding prompt-tail positions.
         for i, r in enumerate(rows):
             cols = gm["suf_cols"][i]
             r_i = len(cols)
@@ -300,7 +297,7 @@ def build_group_layout(
             flat_src_cols.extend(cols)
             pos_list.extend(range(P, P + r_i))
             for j in range(r_i):
-                # pos 0 is predicted from the prefix's last token; j>=1 from the previous suffix token.
+                # Position 0 is predicted from the prefix's last token; j >= 1 from the previous suffix token.
                 pred = plast if j == 0 else (s + j - 1)
                 tgt_rows.append(r)
                 tgt_cols.append(cols[j])  # ORIGINAL padded column in row r
@@ -317,9 +314,8 @@ def build_group_layout(
     max_left_pad = int(left_pad_tokens_per_prompt.max().item()) if total_rows else 0
     W = logits_to_keep + max_left_pad
 
-    # self-verify cache key: the mask/index-map/scatter logic is structural, so key on
-    # (num_groups, group_sizes), not exact lengths -- GRPO lengths change every step and
-    # keying on T would re-verify forever ("verify once, then trust", like the packed path).
+    # Self-verify cache key: the mask/index-map/scatter logic is structural, so key on (num_groups,
+    # group_sizes), not exact lengths.
     grp_sizes = tuple(sorted(len(gm["R_list"]) for gm in groups))
     sig = (len(groups), grp_sizes)
 

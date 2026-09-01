@@ -89,7 +89,7 @@ TOLERANCE = {
 }
 
 
-# from https://github.com/triton-lang/triton/blob/main/bench/triton_bench/testing.py
+# From triton-lang/triton bench/triton_bench/testing.py
 def assert_equal(ref, tri):
     if isinstance(ref, torch.Tensor):
         assert torch.all(ref == tri), f"tensors not equal {ref} != {tri}"
@@ -265,15 +265,14 @@ def remove_feature_flags(
     return pruned_configs
 
 
-# Test Configs
 
 TOPK = [1, 4]
 NUM_EXPERTS = [4, 16]
 
 TEST_MODEL_SIZES = [
-    (32, 32),  # Debug
-    (128, 128),  # Small
-    (512, 512),  # Medium
+    (32, 32),
+    (128, 128),
+    (512, 512),
 ]
 
 SMALL_MODEL_CONFIGS = [

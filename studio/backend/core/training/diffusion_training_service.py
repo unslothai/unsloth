@@ -52,8 +52,8 @@ def _finite_or_none(value: Any) -> Optional[float]:
 
 
 def _run_diffusion_child(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
-    # Fresh spawned interpreter: re-apply the OS-trust-store injection, inside
-    # the secret scrub and before the trainer imports diffusers.
+    # Fresh spawned interpreter: re-apply the OS-trust-store injection, inside the secret scrub and
+    # before the trainer imports diffusers.
     from utils.native_tls import activate_native_tls
 
     activate_native_tls()
@@ -61,9 +61,8 @@ def _run_diffusion_child(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # Imported lazily so this module (and the route layer) stays torch-free at import.
     from .diffusion_lora_trainer import run_diffusion_training_process
 
-    # This child never runs LogConfig.setup_logging, so it installs the Hub default
-    # here; the diffusers half is done inside the two trainer entrypoints, which are
-    # the first points where diffusers is actually imported.
+    # This child never runs LogConfig.setup_logging, so it installs the Hub default here; the diffusers
+    # half is done inside the trainer entrypoints.
     try:
         from loggers.config import quiet_third_party_progress_bars
         quiet_third_party_progress_bars()
@@ -74,14 +73,16 @@ def _run_diffusion_child(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
 
 def _default_target(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
-    # First thing in the child (before torch): self-bind to parent death and scrub the native path secret, like the other workers.
+    # First thing in the child (before torch): self-bind to parent death and scrub the native path
+    # secret, like the other workers.
     from utils.native_path_leases import run_without_native_path_secret
     run_without_native_path_secret(
         _run_diffusion_child, event_queue = event_queue, stop_queue = stop_queue, config = config
     )
 
 
-# Cap on retained metric points; over it, arrays are decimated so a long run stays bounded while the chart keeps its shape.
+# Cap on retained metric points; over it, arrays are decimated so a long run stays bounded while the
+# chart keeps its shape.
 _METRIC_CAP = 4000
 
 
@@ -103,8 +104,7 @@ def _llm_training_active() -> bool:
         return False
 
 
-# ── persisted run history ──────────────────────────────────────────────────────
-# Every terminal run is recorded as one JSON file (summary + scrubbed config + metric logs) for the Train tab's history. JSON, not the LLM sqlite, so diffusion runs stay off the LLM Runs page.
+# One JSON file per terminal run, not the LLM sqlite, so diffusion runs stay off the LLM Runs page.
 def _runs_dir() -> Path:
     from utils.paths.storage_roots import studio_root
 
@@ -159,9 +159,8 @@ def _resume_fields(
     return {
         "can_resume": can_resume,
         "checkpoint_step": state.get("checkpoint_step"),
-        # The EXACT bundle this run would continue, so the client resumes the one it was shown
-        # rather than "whatever is newest in that folder" (which, in a folder two runs share,
-        # can be a different run's).
+        # The EXACT bundle this run would continue, so the client resumes the one it was shown rather than
+        # whatever is newest in a folder two runs share.
         "checkpoint_path": state.get("checkpoint_path") if can_resume else None,
         "resume_blocked_reason": state.get("resume_blocked_reason"),
     }
@@ -185,21 +184,18 @@ def _refresh_resume_state(rec: dict) -> dict:
             status = rec.get("status"),
             started_at = rec.get("started_at"),
             ended_at = rec.get("ended_at"),
-            # Same rule as the write side, and via the same helper: a run that died during
-            # model loading never got a "resumed" event to seed total_steps, and zero here
-            # sends the calculation back to the checkpoint manifest's OLDER target. In EPOCH
-            # mode train_steps is the request model's unused default, so recomputing from it
-            # here undid the persisted answer on every read -- a 600-step checkpoint of a run
-            # resolved to 1000 read as 600/500 and Resume was disabled.
+            # A run that died during model loading never got a "resumed" event to seed total_steps, and zero
+            # here sends the calculation back to the manifest's OLDER target, so a 600-step checkpoint read as
+            # 600/500 and Resume was disabled.
             total_steps = _resolved_total_steps(rec, config if isinstance(config, dict) else {}),
             write_error = rec.get("checkpoint_write_error"),
-            # What this run itself resumed from, so a resumed run that died before its first
-            # save can still offer the bundle it was validated against.
+            # What this run itself resumed from, so a resumed run that died before its first save can still
+            # offer the bundle it was validated against.
             source_checkpoint = (
                 config.get("resume_from_checkpoint") if isinstance(config, dict) else None
             ),
-            # And WHICH bundle that was, so a slot another run has since rewritten is not
-            # offered back as this run's own lineage.
+            # And WHICH bundle that was, so a slot another run has since rewritten is not offered back as this
+            # run's own lineage.
             source_created_at = rec.get("resumed_source_created_at"),
         )
     )
@@ -222,15 +218,14 @@ def list_diffusion_runs(limit: int = 20) -> list[dict]:
             rec = json.loads(p.read_text(encoding = "utf-8"))
         except Exception:  # noqa: BLE001 -- a corrupt record never breaks the listing
             continue
-        # Skip a wrong-shape record so one bad file cannot blow up the route's DiffusionTrainingRunSummary(**r) or the whole panel.
+        # Skip a wrong-shape record so one bad file cannot blow up the route's
+        # DiffusionTrainingRunSummary(**r) or the whole panel.
         if not isinstance(rec, dict):
             continue
         if not (isinstance(rec.get("job_id"), str) and isinstance(rec.get("status"), str)):
             continue
-        # Resume state comes from the checkpoints on disk NOW, before the config is dropped.
-        # Per record, because the refresh reads counters straight out of the file: one
-        # hand-edited or older record with a nonnumeric total_steps took the whole endpoint
-        # down, where every other kind of corruption here is skipped.
+        # Resume state comes from the checkpoints on disk NOW, before the config is dropped. Per record,
+        # because one hand-edited nonnumeric total_steps otherwise took the whole endpoint down.
         try:
             _refresh_resume_state(rec)
             _restate_live_job(rec)
@@ -282,10 +277,8 @@ def _restate_live_job(rec: dict) -> dict:
     if rec.get("job_id") == live.get("job_id") and live.get("status") == "running":
         rec["status"] = "running"
         rec["message"] = live.get("message") or ""
-        # And nothing resumable, which is what the interim record's error status made
-        # _refresh_resume_state derive a moment ago. _UNRESUMABLE_STATUS rejects a running job
-        # for a reason: its output directory is being written right now, so the only thing a
-        # Resume action there can do is race the live run and 409.
+        # _UNRESUMABLE_STATUS rejects a running job because its output directory is being written right now,
+        # so a Resume there can only race the live run and 409.
         rec["can_resume"] = False
         rec["checkpoint_path"] = None
     return rec
@@ -317,16 +310,14 @@ def _idle_state() -> dict[str, Any]:
         "base_model": None,
         "samples_per_second": None,
         "peak_memory_gb": None,
-        # Resume state for this job: where its newest checkpoint-<N> bundle is, the step it holds,
-        # why one could not be written (surfaced as the Resume action's disabled tooltip), and the
-        # step a resumed run picked up from.
+        # Where the newest checkpoint-<N> bundle is, the step it holds, why one could not be written (the
+        # Resume action's disabled tooltip), and the step a resumed run picked up from.
         "checkpoint_path": None,
         "checkpoint_step": None,
         "resume_blocked_reason": None,
         "resumed_from_step": None,
-        # The manifest timestamp of the bundle this run resumed FROM. A pathname is not an
-        # identity: another run can write over the same checkpoint-<N> slot, and the fallback
-        # would then offer that replacement back under this run's lineage.
+        # A pathname is not an identity: another run can write over the same checkpoint-<N> slot, and the
+        # fallback would offer that replacement back under this run's lineage.
         "resumed_source_created_at": None,
         "started_at": None,
         "updated_at": None,
@@ -335,16 +326,16 @@ def _idle_state() -> dict[str, Any]:
         "metric_loss": [],
         "metric_lr": [],
         "metric_grad_norm": [],
-        # The two halves of MiniMax-H3's joint objective. Null on every other family, and null
-        # on H3 steps that reported only the combined loss, so the series stay index-aligned.
+        # Null on every other family, and on H3 steps that reported only the combined loss, so the series
+        # stay index-aligned.
         "metric_video_loss": [],
         "metric_audio_loss": [],
     }
 
 
-# The value series, in append order, paired index-for-index with ``metric_steps``. One list so a
-# new series cannot be added to the appends and forgotten in the decimation below, which would
-# leave the curves silently misaligned rather than failing.
+# The value series, in append order, paired index-for-index with metric_steps. One list so a new
+# series cannot be added to the appends and forgotten in the decimation below, which would
+# silently misalign the curves.
 _METRIC_SERIES: tuple[str, ...] = (
     "metric_loss",
     "metric_lr",
@@ -380,8 +371,7 @@ def _append_metric(
     floss = _finite_or_none(loss)
     if floss is None:  # non-numeric or non-finite: skip, keep the curve JSON-safe
         return
-    # Every series but loss may be None or non-finite; non-finite is nulled (not dropped) to
-    # stay index-aligned.
+    # Non-finite is nulled rather than dropped, to stay index-aligned.
     values = {
         "metric_loss": floss,
         "metric_lr": _finite_or_none(lr),
@@ -397,8 +387,8 @@ def _append_metric(
         steps = state["metric_steps"]
     steps.append(istep)
     for key in _METRIC_SERIES:
-        # setdefault, not [key]: a run resumed from a record written before a series existed
-        # carries a state dict without it, and losing the whole point is worse than a short tail.
+        # setdefault, not [key]: a run resumed from a record written before a series existed carries a state
+        # dict without it.
         state.setdefault(key, []).append(values[key])
 
 
@@ -431,29 +421,28 @@ class DiffusionTrainingService:
         self._ctx = ctx if ctx is not None else _CTX
         self._target = target if target is not None else _default_target
         self._lock = threading.Lock()
-        # Set by reserve() while a start is in flight (before the route frees GPU models) so the load guards refuse a concurrent load. Cleared by unreserve().
+        # Set by reserve() while a start is in flight (before the route frees GPU models) so the load guards
+        # refuse a concurrent load. Cleared by unreserve().
         self._reserved = False
-        # Dataset mutations in flight. A start refuses while any is open and a mutation refuses once a start is reserved, both under _lock, so neither slips through the other's check-then-act window.
+        # Dataset mutations in flight. A start refuses while any is open and a mutation refuses once a
+        # start is reserved, both under _lock, so neither slips through the other's window.
         self._dataset_mutations = 0
-        # "Stop without saving" for the CURRENT job, remembered in the parent. The trainer
-        # reports it on its completion event, but a child that is killed or OOMs after the
-        # request never emits one -- and the unexpected-exit path then recorded a resumable
-        # error run, re-offering Resume from the very checkpoint the user asked to discard.
+        # The trainer reports a no-save stop on its completion event, but a child killed or OOMed after
+        # the request never emits one, and the unexpected-exit path then re-offered Resume from the
+        # discarded checkpoint.
         self._discard_requested = False
-        # Bundle paths THIS job reported writing, so a discard the child could not carry out
-        # itself removes exactly those and nothing that predated the run.
+        # Bundle paths THIS job reported writing, so a discard the child could not carry out removes exactly
+        # those and nothing that predated the run.
         self._own_checkpoints: list[str] = []
-        # Set when the child reported a discarded completion, which it emits only AFTER running
-        # its own clear_own_checkpoints. That helper hands a displaced slot back, so the path
-        # this run wrote to can now hold ANOTHER run's restored bundle -- and the parent-side
-        # cleanup, which knows only pathnames, would delete it.
+        # The child emits a discarded completion only after its own clear_own_checkpoints, which hands a
+        # displaced slot back, so the parent's pathname-only cleanup would delete another run's bundle.
         self._child_cleared_own = False
         # Set by a checkpoint_saved event, cleared once the pump has written the record.
         self._persist_interim = False
-        # Whether this job has already had a stop signalled. Only the first one reaches the
-        # child, so only the first one may set the parent's disposition.
+        # Only the first stop reaches the child, so only the first may set the parent's disposition.
         self._stop_signalled = False
-        # GPU load admissions in flight (a load between its training guard and its arbiter registration). Same two-sided rule as the dataset mutations.
+        # GPU load admissions in flight (a load between its training guard and its arbiter registration).
+        # Same two-sided rule as the dataset mutations.
         self._gpu_admissions = 0
         self._proc: Any = None
         self._stop_queue: Any = None
@@ -462,7 +451,6 @@ class DiffusionTrainingService:
         # The active job's start config, scrubbed of secrets, kept for the run record.
         self._config: dict[str, Any] = {}
 
-    # ── lifecycle ────────────────────────────────────────────────────────────
     def is_active(self) -> bool:
         with self._lock:
             if self._reserved:
@@ -490,14 +478,15 @@ class DiffusionTrainingService:
                     "then start the run."
                 )
             if self._gpu_admissions:
-                # A load already passed its training guard and is about to take the GPU. Reserving now would free residents it has not
-                # registered yet. Refusing is safe: the admission is held only across the registration, not the load itself.
+                # A load past its training guard is about to take the GPU, and reserving now would free residents
+                # it has not registered yet; refusing is safe, since admission is held only across registration.
                 raise RuntimeError(
                     "A model is being loaded onto the GPU right now. Wait for that to finish, "
                     "then start the run."
                 )
-            # The LLM trainer under the SAME lock, not just at the route's earlier check: several network-bound preflights separate the
-            # two, so an LLM start could spawn in between. The LLM route holds gpu_load_admission() across its own spawn, so one of the two always raises.
+            # Under the SAME lock as the LLM trainer, not just at the route's earlier check: several
+            # network-bound preflights separate the two, and the LLM route holds gpu_load_admission() across
+            # its spawn, so one of the two always raises.
             if _llm_training_active():
                 raise RuntimeError(
                     "An LLM training job is already running. "
@@ -569,15 +558,15 @@ class DiffusionTrainingService:
 
         Raises ValueError for an unusable config (before any spawn) and RuntimeError if a
         job is already running. Returns the new job id."""
-        # Validate cheaply BEFORE spawning so a bad request fails fast with a clear error. The
-        # normalised config is kept: it carries the resolved family the recipe overrides below
-        # are keyed on, which the raw request dict does not have to name.
+        # Validate before spawning, and keep the normalised config: it carries the resolved family the
+        # recipe overrides are keyed on, which the raw request dict need not name.
         from .diffusion_lora_trainer import _config_from_dict
         from .diffusion_train_common import train_recipe_overrides
 
         normalized_cfg = _config_from_dict(config).normalized()
 
-        # Join a finished job's pump OUTSIDE the lock: its final state writes take this lock, so joining under it would stall the start and let the stale pump overwrite the new state.
+        # Join a finished job's pump OUTSIDE the lock: its final state writes take this lock, so joining
+        # under it would stall the start and let the stale pump overwrite the new state.
         with self._lock:
             if self._proc is not None and self._proc.is_alive():
                 raise RuntimeError("A diffusion training job is already running.")
@@ -613,7 +602,7 @@ class DiffusionTrainingService:
                 self._proc.start()
             try:
                 from utils.process_lifetime import adopt_pid
-                adopt_pid(self._proc.pid)  # bind to parent lifetime (no zombie on exit)
+                adopt_pid(self._proc.pid)
             except Exception:  # noqa: BLE001 -- lifetime binding is best-effort
                 pass
 
@@ -628,18 +617,12 @@ class DiffusionTrainingService:
                 started_at = now,
                 updated_at = now,
             )
-            # AFTER the reset above, which replaces the whole state dict. The route has already
-            # validated and PINNED a source bundle, so its identity is known before the child
-            # runs: recording it here means a resume that dies during the model load -- before
-            # the trainer can emit "resumed" -- still has the timestamp its fallback is checked
-            # against, instead of trusting the pathname and offering back whatever later
-            # occupies that slot.
+            # AFTER the reset above: the route has already pinned a source bundle, so recording its identity
+            # here means a resume that dies during the model load still has its timestamp to check against.
             self._seed_source_identity(config)
-            # Keep the config (minus secrets) for the persisted run record, with the fields this
-            # family's loop REPLACES rather than honours set to what it will actually run. The
-            # trainer applies the same table in the child, which the record is not written from,
-            # so without this Previous runs described a recipe (cropping, flipping, min-SNR
-            # weighting) that no step of the run ever used.
+            # Record the config with the fields this family's loop REPLACES set to what it will actually run:
+            # the trainer applies the same table in the child, so without this Previous runs described a
+            # recipe no step ever used.
             self._config = {k: v for k, v in dict(config).items() if k != "hf_token"}
             self._config.update(train_recipe_overrides(normalized_cfg))
             self._pump = threading.Thread(
@@ -657,12 +640,9 @@ class DiffusionTrainingService:
             if self._proc is None or not self._proc.is_alive() or self._stop_queue is None:
                 return False
             if self._stop_signalled:
-                # The child consumes the FIRST signal and acts on it. A second one cannot
-                # un-save an adapter it has already exported, so honouring a later
-                # stop-without-saving set a parent discard the child never carried out: the
-                # run was marked discarded and its checkpoints deleted while the adapter and
-                # the catalog entry it published stayed on disk. The disposition is whichever
-                # one the child actually got.
+                # The child consumes the FIRST signal, so honouring a later stop-without-saving set a parent
+                # discard the child never carried out: the run was marked discarded and its checkpoints deleted
+                # while the adapter and catalog entry stayed on disk.
                 return True
             try:
                 # Bare True = older wire format; the dict form carries the no-save cancel flag.
@@ -671,8 +651,8 @@ class DiffusionTrainingService:
                 return False
             self._stop_signalled = True
             if not save:
-                # Remembered here so a child that dies before its discarded completion still
-                # blocks the resume the user threw away.
+                # Remembered here so a child that dies before its discarded completion still blocks the resume the
+                # user threw away.
                 self._discard_requested = True
             self._state["message"] = (
                 "Stop requested; finishing the current step and saving a partial adapter..."
@@ -689,7 +669,6 @@ class DiffusionTrainingService:
             snap["active"] = self._proc is not None and self._proc.is_alive()
             return snap
 
-    # ── event pump ───────────────────────────────────────────────────────────
     def _pump_loop(self, event_queue: Any, proc: Any) -> None:
         while True:
             try:
@@ -726,9 +705,8 @@ class DiffusionTrainingService:
                 self._persist_interim = False
                 self._persist_run_record(interim = True)
             if ev.get("type") in _TERMINAL:
-                # An exception raised on the current step is a terminal `error`, and the pump
-                # returns here rather than through the dead-process branch -- so the discard the
-                # user asked for has to be applied on this path too.
+                # An exception raised on the current step is a terminal error and returns here rather than through
+                # the dead-process branch, so the discard has to be applied on this path too.
                 with self._lock:
                     discarding = self._discard_requested and self._proc is proc
                     child_cleared = self._child_cleared_own
@@ -826,10 +804,8 @@ class DiffusionTrainingService:
                 "ema_path": s.get("ema_path"),
                 "catalog_path": s.get("catalog_path"),
                 "saved": bool(s.get("lora_path")),
-                # Resume lineage + state. output_dir is what a Resume replays, so it is recorded on
-                # the run rather than only inside the config. can_resume / checkpoint_step are a
-                # snapshot taken now and RE-DERIVED from disk on read, so deleting the checkpoints
-                # later takes the action away instead of leaving a button that 400s.
+                # output_dir is what a Resume replays, so it is recorded on the run; can_resume / checkpoint_step
+                # are re-derived from disk, so deleting the checkpoints takes the action away.
                 "output_dir": str(adapter) if adapter else None,
                 "resumed_from_job_id": cfg.get("resumed_from_job_id") or None,
                 "resumed_from_step": s.get("resumed_from_step"),
@@ -839,18 +815,11 @@ class DiffusionTrainingService:
                     str(adapter) if adapter else None,
                     status = s.get("status"),
                     started_at = s.get("started_at"),
-                    # The REQUESTED target, falling back to the config the start preflight
-                    # accepted: total_steps is seeded by the "resumed" event, and a run that
-                    # dies during model loading never gets one. Zero there sent the resume
-                    # calculation back to the checkpoint manifest's older target, which then
-                    # reported "nothing left to train" for a run whose whole point was a
-                    # raised target.
-                    #
-                    # NOT in epoch mode, though: num_epochs overrides train_steps, which then
-                    # still carries the Pydantic default of 500. A run resolved to 1000 that
-                    # died before its "resumed" event would report a 600-step checkpoint as
-                    # 600/500 and refuse the resume. Zero there is honest, and the manifest's
-                    # own target (written with the resolved count) is the right answer.
+                    # total_steps is seeded by the "resumed" event and a run that dies during model loading never gets
+                    # one; zero there sent the resume calculation back to the manifest's older target, reporting
+                    # "nothing left to train" for a run whose point was a raised target.
+                    # NOT in epoch mode: num_epochs overrides train_steps, which keeps its Pydantic default of 500, so a
+                    # run resolved to 1000 reported a 600-step checkpoint as 600/500 and refused the resume.
                     total_steps = _resolved_total_steps(s, cfg),
                     write_error = s.get("resume_blocked_reason"),
                     source_checkpoint = cfg.get("resume_from_checkpoint"),
@@ -893,7 +862,8 @@ class DiffusionTrainingService:
             elif etype == "model_load_completed":
                 s.update(in_model_load = False, message = "Training...")
             elif etype == "preparing":
-                # A long precompute phase (e.g. the VAE latent cache) before the first step; surfaced so the UI shows progress instead of a silent stall.
+                # A long precompute phase (e.g. the VAE latent cache) before the first step; surfaced so the UI
+                # shows progress instead of a silent stall.
                 done, total = ev.get("done"), ev.get("total")
                 stage = str(ev.get("stage", "prepare")).replace("_", " ")
                 s.update(
@@ -909,27 +879,21 @@ class DiffusionTrainingService:
                 # Non-fatal trainer notes; keep training state, surface the text.
                 s["message"] = str(ev.get("message", "warning"))
             elif etype == "resumed":
-                # The trainer restored a checkpoint and is continuing from it. Recorded so the run
-                # history shows lineage instead of an unexplained run that starts mid-way. This is
-                # the step resumed FROM, not a checkpoint this run wrote, so it does not touch
-                # checkpoint_step (which tracks this run's own newest bundle).
+                # This is the step resumed FROM, not a checkpoint this run wrote, so it does not touch checkpoint_step.
                 s.update(
                     resumed_from_step = ev.get("step"),
                     resumed_source_created_at = ev.get("source_created_at"),
                     message = f"Resuming from step {ev.get('step')}...",
                 )
-                # Seed the LIVE counters from the same event. They are what the UI renders and
-                # what an errored run persists, and until the first post-resume progress event
-                # they still read 0/0 -- so a resume of step 400 of 500 shows "0/0", and an OOM
-                # on the first step records a failed run at step 0 with a target of 0.
-                # checkpoint_step stays untouched: this bundle is not one this run wrote.
+                # Seed the LIVE counters from the same event: until the first post-resume progress they read 0/0, so
+                # a resume of step 400 of 500 showed "0/0" and an OOM recorded a failed run at step 0 of 0.
                 if ev.get("step") is not None:
                     s["step"] = int(ev["step"])
                 if ev.get("total_steps") is not None:
                     s["total_steps"] = int(ev["total_steps"])
             elif etype == "checkpoint_saved":
-                # Folded as each bundle lands, not only at the end, so a run that later crashes is
-                # still reported as resumable. A good write also clears an earlier write's failure.
+                # Folded as each bundle lands, not only at the end, so a run that later crashes is still reported as
+                # resumable; a good write also clears an earlier failure.
                 s.update(
                     checkpoint_path = ev.get("checkpoint_path"),
                     checkpoint_step = ev.get("step"),
@@ -938,23 +902,15 @@ class DiffusionTrainingService:
                 written = ev.get("checkpoint_path")
                 if written and written not in self._own_checkpoints:
                     self._own_checkpoints.append(str(written))
-                # The bundle is on disk; the run JSON is not, and only a terminal event writes
-                # one. Unsloth being killed or shut down after a periodic save therefore left a
-                # resumable checkpoint that Previous runs -- which reads those JSONs and
-                # nothing else -- had no entry for, so the Resume action did not exist. Written
-                # as an interrupted run because that is what it IS until the run ends: the
-                # terminal persist overwrites the same file, and the live job is reported as
-                # running by the reader below.
+                # Only a terminal event writes the run JSON, so being killed after a periodic save left a resumable
+                # checkpoint Previous runs had no entry for.
                 self._persist_interim = True
             elif etype == "checkpoint_failed":
-                # Sticky: whatever older bundle is on disk predates the work this run did, so
-                # resuming from it would silently lose steps. Mirrors the MLX resume_blocked flag.
+                # Sticky: an older bundle on disk predates the work this run did, so resuming from it would
+                # silently lose steps. Mirrors the MLX resume_blocked flag.
                 s["resume_blocked_reason"] = str(ev.get("message", "checkpoint write failed"))
-                # Persisted for the same reason a successful write is. In memory only, an Unsloth
-                # exit after this left the last record advertising the OLDER checkpoint as
-                # resumable -- the one this service has just decided is stale -- and resuming it
-                # rolls the run back past everything after it. A later checkpoint_saved clears
-                # the reason and replaces the record.
+                # Persisted because, in memory only, an exit after this left the last record advertising the stale
+                # older checkpoint as resumable.
                 self._persist_interim = True
             elif etype == "progress":
                 # Null any non-finite float so the JSON stays strict-parseable; a missing key keeps the last value.
@@ -968,9 +924,8 @@ class DiffusionTrainingService:
                 grad_norm = (
                     _finite_or_none(ev["grad_norm"]) if "grad_norm" in ev else s["grad_norm"]
                 )
-                # The two halves of a joint objective, when the trainer reports them. Folded
-                # like the rest rather than dropped: on MiniMax-H3 the combined loss can hold
-                # steady while one modality degrades, and these are the only signal that says so.
+                # Folded like the rest rather than dropped: on MiniMax-H3 the combined loss can hold steady while
+                # one modality degrades, and these are the only signal that says so.
                 video_loss = (
                     _finite_or_none(ev["video_loss"]) if "video_loss" in ev else s["video_loss"]
                 )
@@ -1005,7 +960,8 @@ class DiffusionTrainingService:
                     ev.get("audio_loss"),
                 )
             elif etype == "complete":
-                # Reset in_model_load: a stop during model load emits complete with no preceding model_load_completed, leaving a stale indicator.
+                # Reset in_model_load: a stop during model load emits complete with no preceding
+                # model_load_completed, leaving a stale indicator.
                 s.update(
                     active = False,
                     in_model_load = False,
@@ -1027,17 +983,13 @@ class DiffusionTrainingService:
                     s["family"] = ev.get("family")
                 if ev.get("base_model") is not None:
                     s["base_model"] = ev.get("base_model")
-                # Checkpoint state is folded from the per-save events above; only the lineage is
-                # (re)confirmed here, for a pump that missed the earlier ``resumed`` event.
+                # Only the lineage is re-confirmed here, for a pump that missed the earlier "resumed" event.
                 if ev.get("resumed_from_step") is not None:
                     s["resumed_from_step"] = ev.get("resumed_from_step")
                 if ev.get("discarded"):
-                    # Cancelled with "stop without saving": the user threw this run away, so its
-                    # own periodic checkpoints must not keep offering to continue it.
-                    #
-                    # The child ran its own cleanup before emitting this, so the parent must not
-                    # repeat it by pathname: a slot this run overwrote has been handed back to
-                    # the bundle it displaced, and that one belongs to another run.
+                    # A discarded run's own periodic checkpoints must not keep offering to continue it.
+                    # The child ran its own cleanup before emitting this, so the parent must not repeat it by pathname:
+                    # a slot this run overwrote has been handed back to another run's bundle.
                     self._child_cleared_own = True
                     s["resume_blocked_reason"] = (
                         "This run was stopped without saving, so it was discarded."

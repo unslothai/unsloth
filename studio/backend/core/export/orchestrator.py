@@ -58,20 +58,16 @@ class ExportOrchestrator:
         self._log_lock = threading.Lock()
         # Monotonic seq, never reset, so SSE clients have a stable cursor across clear_logs().
         self._log_seq: int = 0
-        # _log_seq snapshot at the current run's start; SSE defaults its cursor here so a
-        # late-connecting client still sees the full run. Current run has seq > this.
+        # SSE defaults its cursor here so a late-connecting client still sees the full run.
         self._run_start_seq: int = 0
         # True while an export op runs; SSE ends the stream 1s after this flips False.
         self._export_active: bool = False
-        # Set by cancel_export(); reset when a new load/export run starts. Lets the
-        # caller distinguish a user cancel from a genuine subprocess crash.
+        # Set by cancel_export(); reset when a new load/export run starts. Lets the caller distinguish a
+        # user cancel from a genuine subprocess crash.
         self._cancel_requested: bool = False
 
-        # Last finished operation, so a client whose blocking POST was cut off by a
-        # Cloudflare tunnel timeout (524 at ~100s, while the op runs for minutes) can
-        # poll /api/export/status and still learn the real outcome. Guarded by
-        # _op_lock. `_op_seq` is a monotonic counter the client uses as a baseline to
-        # tell "my op finished" (seq grew) from a stale previous result.
+        # Kept so a client whose blocking POST was cut by a tunnel 524 can poll /api/export/status; _op_seq
+        # is the monotonic baseline for "my op finished".
         self._op_lock = threading.Lock()
         self._op_seq: int = 0
         self._active_op_kind: Optional[str] = None
@@ -80,9 +76,6 @@ class ExportOrchestrator:
         atexit.register(self._cleanup)
         logger.info("ExportOrchestrator initialized (subprocess mode)")
 
-    # ------------------------------------------------------------------
-    # Live log capture helpers
-    # ------------------------------------------------------------------
 
     def _append_log(self, entry: Dict[str, Any]) -> None:
         """Append a worker log line to the buffer, stamped with a monotonic seq."""
@@ -203,23 +196,18 @@ class ExportOrchestrator:
                 pass
         return True
 
-    # ------------------------------------------------------------------
-    # Subprocess lifecycle
-    # ------------------------------------------------------------------
 
     def _spawn_subprocess(self, config: dict) -> None:
         """Spawn a new export subprocess."""
-        # Last-resort recheck for spawns outside an active op. Inside an op, _export_active is set and
-        # load_checkpoint already rechecked, so a reservation here is an install about to observe
-        # is_export_active() and abort; raising would kill this export for an install that never proceeds.
+        # Inside an op a reservation is an install about to abort on is_export_active(), so raising here
+        # would kill the export for an install that never proceeds.
         from utils.transformers_version import sidecar_swap_in_progress
 
         from utils.transformers_version import sidecar_swap_kind
 
         _swap_kind = sidecar_swap_kind()
-        # Inside an active op an INSTALL reservation is about to abort on the
-        # is_export_active check, but a lazy REPAIR has no such check and can be
-        # rebuilding the sidecar right now, so it must always refuse the spawn.
+        # An INSTALL reservation aborts on the is_export_active check, but a lazy REPAIR has none and may
+        # be rebuilding the sidecar right now, so always refuse the spawn.
         if _swap_kind == "repair" or (_swap_kind is not None and not self._export_active):
             from utils.transformers_version import SidecarSwapInProgress
             raise SidecarSwapInProgress(
@@ -254,7 +242,7 @@ class ExportOrchestrator:
             self._proc.start()
         from utils.process_lifetime import adopt_pid
 
-        adopt_pid(self._proc.pid)  # bind to parent lifetime (Windows job / sweep)
+        adopt_pid(self._proc.pid)
         logger.info("Export subprocess started (pid=%s)", self._proc.pid)
 
     def _shutdown_subprocess(self, timeout: float = 10.0) -> bool:
@@ -298,8 +286,7 @@ class ExportOrchestrator:
                     pass
 
         if self._proc is not None and self._proc.is_alive():
-            # Survived SIGKILL (uninterruptible syscall): keep the handle so callers
-            # and the pre-swap guard see a live worker rather than a nulled one.
+            # Survived SIGKILL: keep the handle so callers and the pre-swap guard see a live worker.
             logger.error(
                 "Export subprocess still alive after terminate/kill; "
                 "preserving its handle for the pre-swap liveness check"
@@ -320,9 +307,6 @@ class ExportOrchestrator:
         """Check if subprocess is alive."""
         return self._proc is not None and self._proc.is_alive()
 
-    # ------------------------------------------------------------------
-    # Queue helpers
-    # ------------------------------------------------------------------
 
     def _send_cmd(self, cmd: dict) -> None:
         """Send a command to the subprocess."""
@@ -381,8 +365,8 @@ class ExportOrchestrator:
 
             if rtype == "status":
                 message = resp.get("message", "")
-                # One structured export_progress line per phase (consolidated in the
-                # server log, like training/download progress); also shown live.
+                # One structured export_progress line per phase (consolidated in the server log, like
+                # training/download progress); also shown live.
                 if message:
                     logger.info("export_progress", phase = message)
                     self._append_log(
@@ -416,9 +400,6 @@ class ExportOrchestrator:
             except (EOFError, OSError, ValueError):
                 return events
 
-    # ------------------------------------------------------------------
-    # Public API — same interface as ExportBackend
-    # ------------------------------------------------------------------
 
     def load_checkpoint(
         self,
@@ -452,9 +433,8 @@ class ExportOrchestrator:
             self._export_active = True
             op_success, op_message = False, ""
             try:
-                # Handshake with the sidecar install route: _export_active is set above, so either this
-                # recheck refuses BEFORE tearing down the old worker (keeping the loaded checkpoint), or
-                # the install sees is_export_active() and 409s. The spawn-time recheck stays as a last resort.
+                # Handshake with the sidecar install route (see load_checkpoint): either this recheck refuses
+                # before tearing down the old worker, or the install sees is_export_active() and 409s.
                 from utils.transformers_version import sidecar_swap_in_progress
 
                 if sidecar_swap_in_progress():
@@ -467,10 +447,9 @@ class ExportOrchestrator:
                 # Always kill any existing subprocess and spawn fresh.
                 if self._ensure_subprocess_alive():
                     if self._shutdown_subprocess() is False:
-                        # Survivor still holds GPU memory (a wedged CUDA syscall outliving
-                        # SIGKILL); its handle is kept so is_worker_alive() and the pre-swap
-                        # guard still see it. Do not spawn a second worker over it -- fail so
-                        # the load can retry once it exits.
+                        # A survivor still holds GPU memory (a wedged CUDA syscall outliving SIGKILL) and its handle is
+                        # kept so is_worker_alive() still sees it, so do not spawn a second worker over it; fail so the
+                        # load can retry once it exits.
                         op_message = (
                             "The current export worker did not exit and still holds GPU "
                             "memory; not starting a new checkpoint load over it. Retry shortly."
@@ -483,9 +462,8 @@ class ExportOrchestrator:
                 try:
                     self._spawn_subprocess(sub_config)
                 except Exception:
-                    # The old worker is already gone; a stale current_checkpoint
-                    # would make the Export page claim a loaded checkpoint that
-                    # the next op then fails on with "no subprocess running".
+                    # A stale current_checkpoint would make the Export page claim a loaded checkpoint the next op then
+                    # fails on.
                     self.current_checkpoint = None
                     self.is_vision = False
                     self.is_peft = False
@@ -637,9 +615,7 @@ class ExportOrchestrator:
             self._export_active = True
             op_success, op_message, op_output_path = False, "", None
             try:
-                # Handshake with the sidecar install route (see load_checkpoint): _export_active is set
-                # above, so this recheck refuses before the command is sent, or the install sees the active
-                # op and 409s. Without it, an install would block in cleanup_memory behind a long export op.
+                # Recheck before sending, else an install blocks in cleanup_memory behind a long export op.
                 from utils.transformers_version import sidecar_swap_in_progress
 
                 if sidecar_swap_in_progress():
@@ -652,8 +628,8 @@ class ExportOrchestrator:
                 cmd = {"type": "export", "export_type": export_type, **params}
                 try:
                     self._send_cmd(cmd)
-                    # GGUF for 30B+ models can take 30+ min per quant; a multi-quant list runs them
-                    # all in one op off a single merge, so scale the timeout by the quant count.
+                    # GGUF for a 30B+ model can take 30+ min per quant, and a multi-quant list runs every quant in one
+                    # op off a single merge, so scale the timeout by quant count.
                     _qm = params.get("quantization_method")
                     _n = len(_qm) if isinstance(_qm, (list, tuple)) and _qm else 1
                     resp = self._wait_response(
@@ -710,7 +686,6 @@ class ExportOrchestrator:
         return scan_checkpoints(outputs_dir = outputs_dir)
 
 
-# ========== GLOBAL INSTANCE ==========
 _export_backend = None
 
 

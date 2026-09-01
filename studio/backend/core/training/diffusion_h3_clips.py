@@ -24,35 +24,27 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 from utils.paths.path_utils import drop_appledouble_metadata
 
-# ── the model's grid ─────────────────────────────────────────────────────────
-#
-# Every constant here is a checkpoint contract, mirrored from
-# ``diffusers.modular_pipelines.minimax_h3`` (which the trainer cannot import without pulling
-# in the whole modular stack, and which a CPU-only test host may not carry at all). The
-# trainer asserts them against the live components at load, so a diffusers release that moves
-# one is caught rather than silently trained through.
+# Checkpoint contracts mirrored from diffusers.modular_pipelines.minimax_h3, which the trainer
+# cannot import; asserted against the live components at load, so a move is caught.
 H3_FPS = 24
-# The video VAE's ``clip_length`` and ``tokens_chunk_size``: 17 pixel frames per chunk, 5 latent
-# frames kept per chunk, plus a 2-frame head.
+# The video VAE's clip_length and tokens_chunk_size: 17 pixel frames per chunk, 5 latent frames
+# kept per chunk, plus a 2-frame head.
 H3_FRAMES_PER_CHUNK = 17
 H3_LATENTS_PER_CHUNK = 5
 H3_SPATIAL_COMPRESSION = 16
 # The transformer's (t, h, w) patch. Only the spatial half is > 1.
 H3_PATCH_T, H3_PATCH_H, H3_PATCH_W = 1, 2, 2
-# Both axes have to survive the VAE's 16x spatial compression AND still be a whole number of
-# 2x2 patch rows wide, so the canvas multiple is their product.
+# Both axes have to survive the VAE's 16x spatial compression AND still be a whole number of 2x2
+# patch rows, so the canvas multiple is their product.
 H3_CANVAS_MULTIPLE = H3_SPATIAL_COMPRESSION * H3_PATCH_W
 H3_AUDIO_SAMPLING_RATE = 32000
 H3_AUDIO_LATENTS_PER_SECOND = 40
 H3_AUDIO_CHANNELS = 2
-# How much of a clip's audio window may be zero-padded before the clip is refused. 1% of a 5.17s
-# window is ~52ms, which covers the few-millisecond tail a container routinely ends short by
-# while still refusing a stream that is mostly silence.
+# 1% of a 5.17s window is ~52ms, covering the tail a container routinely ends short by while still
+# refusing a mostly-silent stream.
 _MAX_AUDIO_PAD_FRACTION = 0.01
-# Peak amplitude at or below which a decoded window counts as silent, on PyAV's "flt" scale where
-# full scale is 1.0. About -80 dBFS: below the noise floor of any real recording, and above the
-# rounding dust an encode/decode round trip can leave on a track that was authored as digital
-# silence, so a genuinely muted soundtrack is caught whether or not it decodes to exact zeros.
+# About -80 dBFS on PyAV's "flt" scale: below the noise floor of any real recording, above the
+# rounding dust an encode/decode round trip leaves on authored digital silence.
 _SILENT_AUDIO_PEAK = 1e-4
 H3_AUDIO_LATENT_CHANNELS = 32
 H3_VIDEO_LATENT_CHANNELS = 24
@@ -67,18 +59,10 @@ H3_MAX_ASPECT_RATIO = 4
 H3_PIXEL_MEAN = (0.485, 0.456, 0.406)
 H3_PIXEL_STD = (0.229, 0.224, 0.225)
 
-# Pixel frames one training clip covers. ONE VAE chunk, i.e. the shortest clip the video VAE
-# can encode at all, which is 0.917 s at 24 fps.
-#
-# This is deliberately far below the 5 s floor MiniMax-H3 *generates* at, and the trade is
-# explicit: the packed sequence is quadratic in its own length through the full self-attention,
-# so at the released 768-short-edge canvas a 5 s clip is ~38k rows and a 22-frame clip is ~7k.
-# Training at the native canvas on short clips keeps the SPATIAL statistics -- which is what a
-# style LoRA learns -- exactly on distribution, and only shortens the temporal extent; training
-# a 5 s clip at a canvas small enough to fit would put every spatial statistic off distribution
-# instead. The temporal rotary grid of a 22-frame clip is a strict PREFIX of the grid of a
-# generated one (``_temporal_position_grid`` starts at the same origin with the same spacing),
-# so no row sits at a coordinate the model never visits.
+# ONE VAE chunk, the shortest clip the video VAE can encode at all, which is 0.917 s at 24 fps.
+# Deliberately far below the 5 s floor MiniMax-H3 generates at: the packed sequence is quadratic
+# in its own length, and training short clips at the native canvas keeps the SPATIAL statistics on
+# distribution. A 22-frame clip's temporal rotary grid is a strict PREFIX of a generated one's.
 H3_TRAIN_NUM_FRAMES = H3_FRAMES_PER_CHUNK + H3_LATENTS_PER_CHUNK
 
 _VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi"}
@@ -300,8 +284,7 @@ def decode_clip(
             )
         stream = container.streams.video[0]
         source_fps = float(stream.average_rate or stream.guessed_rate or H3_FPS) or float(H3_FPS)
-        # Container duration, in seconds, for the over-long note below. Best effort: an unknown
-        # duration simply means no note, never a failed decode.
+        # Best effort: an unknown duration means no note, never a failed decode.
         source_duration_s = 0.0
         try:
             if stream.duration is not None and stream.time_base is not None:
@@ -319,8 +302,8 @@ def decode_clip(
             if int(next_target * source_fps / H3_FPS) > source_index:
                 continue
             image = frame.to_image().convert("RGB")
-            # Before the crop, not after: the canvas is in display orientation, so cropping the
-            # coded frame would trim the wrong pair of edges as well as train it sideways.
+            # Before the crop: the canvas is in display orientation, so cropping the coded frame would trim the
+            # wrong edges as well as train it sideways.
             image = apply_display_rotation(image, display_rotation_degrees(frame, stream), Image)
             image = _cover_resize(image, width, height, Image)
             while (
@@ -390,8 +373,7 @@ def display_rotation_degrees(frame: Any, stream: Any) -> int:
     except Exception:  # noqa: BLE001 -- a degenerate matrix means "no rotation", not a failure
         return 0
     theta = int(-round(degrees)) % 360
-    # Only the four square turns; anything else cannot be applied without resampling, and no
-    # camera writes one.
+    # Only the four square turns; anything else cannot be applied without resampling, and no camera writes one.
     return theta if theta in (90, 180, 270) else 0
 
 
@@ -437,11 +419,8 @@ def _decode_clip_audio(path: Any, target_samples: int, av: Any, np: Any) -> Any:
     chunks = []
     have = 0
     with av.open(str(path)) as container:
-        # Stops at the training window, exactly as the video loop above does. An over-long source
-        # is accepted input here -- only the first num_frames are trained and the caller is merely
-        # warned -- so decoding the rest of the soundtrack would spend a whole recording's time
-        # and memory to build a sub-second sample, and would fail on damage in a region that is
-        # never used.
+        # Stops at the training window: only the first num_frames are trained, so decoding the rest of the
+        # soundtrack would spend a whole recording's time and fail on damage in an unused region.
         for frame in container.decode(audio = 0):
             for resampled in resampler.resample(frame):
                 block = resampled.to_ndarray().reshape(-1, H3_AUDIO_CHANNELS)
@@ -450,9 +429,8 @@ def _decode_clip_audio(path: Any, target_samples: int, av: Any, np: Any) -> Any:
             if have >= target_samples:
                 break
         if have < target_samples:
-            # Only when the stream ran out: the resampler holds a partial block back, and that
-            # tail is what the pad allowance below is measured against. After an early break
-            # there is nothing to flush for -- the window is already full.
+            # Only when the stream ran out: the resampler holds a partial block back and that tail is what the
+            # pad allowance measures; after an early break the window is already full.
             for resampled in resampler.resample(None):
                 chunks.append(resampled.to_ndarray().reshape(-1, H3_AUDIO_CHANNELS))
     if not chunks:
@@ -470,11 +448,7 @@ def _decode_clip_audio(path: Any, target_samples: int, av: Any, np: Any) -> Any:
                 f"soundtrack runs its full length."
             )
         samples = np.pad(samples, ((0, missing), (0, 0)))
-    # A muted track runs the clip's full length, so every check above passes and the window comes
-    # back all zeros -- the same target the short-audio refusal exists to keep out, arriving by a
-    # route that refusal cannot see. Measured as peak amplitude rather than mean energy so a clip
-    # that is merely quiet, or silent for most of its length with one real sound in it, is kept:
-    # only a track with nothing above the floor anywhere is turned away.
+    # A muted track passes every check above and comes back all zeros.
     if float(np.max(np.abs(samples))) <= _SILENT_AUDIO_PEAK:
         raise ValueError(
             f"{Path(path).name} has a soundtrack that is silent all the way through. "

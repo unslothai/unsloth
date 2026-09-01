@@ -147,7 +147,7 @@ def materialize_unstructured_seed_dataset(
 
 def materialize_multi_file_unstructured_seed(
     *,
-    file_entries: list[tuple[Path, str]],  # (extracted_txt_path, original_filename)
+    file_entries: list[tuple[Path, str]],
     chunk_size: int,
     chunk_overlap: int,
 ) -> tuple[Path, list[dict[str, str]]]:
