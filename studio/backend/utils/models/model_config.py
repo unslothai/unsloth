@@ -16,6 +16,12 @@ from utils.paths import (
     resolve_output_dir,
     resolve_export_dir,
 )
+from hub.utils.hf_tokens import (
+    ANONYMOUS_CACHE_IDENTITY,
+    HfTokenArg,
+    apply_token_to_child_env,
+    is_anonymous,
+)
 from utils.utils import without_hf_auth
 from utils.training_runs import (
     base_model_from_run_dir_name as _base_model_from_dir_name,
@@ -546,6 +552,12 @@ def load_model_config(
 
     revision_kwargs = {"revision": revision} if revision is not None else {}
 
+    if is_anonymous(token):
+        # Forced anonymous. `False` is falsy, so without this it would fall past both
+        # explicit branches to the "default auth" call below and pick the backend's
+        # ambient token back up -- the exact credential this caller is denied.
+        use_auth = False
+
     if token:
         return AutoConfig.from_pretrained(
             model_name,
@@ -874,6 +886,15 @@ def __getattr__(name: str) -> Any:
     return _lazy_module_attr(name)
 
 
+def _vision_check_child_env(hf_token: HfTokenArg) -> Dict[str, str]:
+    """Child environment for the vision-check probe, carrying the caller's credential."""
+    env = utf8_child_env(
+        get_hf_cache_paths().child_env(child_env_without_native_path_secret())
+    )
+    apply_token_to_child_env(env, hf_token)
+    return env
+
+
 def _is_vision_model_subprocess(
     model_name: str,
     hf_token: Optional[str] = None,
@@ -886,7 +907,10 @@ def _is_vision_model_subprocess(
     or None for transient failures (timeouts, subprocess errors), which are not
     cached so they can be retried.
     """
-    token_arg = hf_token or ""
+    # `False` collapses to "" here, which the child reads back as "no token" and would
+    # then satisfy from the inherited ambient env. The env below is what actually
+    # enforces the boundary; this argv slot only carries an explicit token.
+    token_arg = hf_token if isinstance(hf_token, str) else ""
 
     # Latest-only architectures need the latest sidecar for AutoConfig; other tiers keep 5.5.
     sidecar_dir = _VENV_T5_DIR
@@ -916,9 +940,7 @@ def _is_vision_model_subprocess(
             encoding = "utf-8",
             errors = "replace",
             timeout = 60,
-            env = utf8_child_env(
-                get_hf_cache_paths().child_env(child_env_without_native_path_secret())
-            ),
+            env = _vision_check_child_env(hf_token),
             **_windows_hidden_subprocess_kwargs(),
         )
 
@@ -959,9 +981,16 @@ def _is_vision_model_subprocess(
         return None
 
 
-def _token_fingerprint(token: Optional[str]) -> Optional[str]:
+def _token_fingerprint(token: HfTokenArg) -> Optional[str]:
     """SHA256 digest of the token for use as a cache key (avoids storing the
-    raw bearer token in process memory)."""
+    raw bearer token in process memory).
+
+    The forced-anonymous sentinel takes an identity of its own. It is not ``None``:
+    sharing that slot would serve a caller denied the ambient token a result fetched
+    with it. It is also not a digest, since ``False`` has no bytes to hash.
+    """
+    if is_anonymous(token):
+        return ANONYMOUS_CACHE_IDENTITY
     if token is None:
         return None
     return hashlib.sha256(token.encode("utf-8")).hexdigest()

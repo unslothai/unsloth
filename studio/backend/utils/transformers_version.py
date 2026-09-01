@@ -45,6 +45,12 @@ import threading
 import time
 from pathlib import Path
 
+from hub.utils.hf_tokens import (
+    ANONYMOUS_CACHE_IDENTITY,
+    HfTokenArg,
+    apply_token_to_child_env,
+    is_anonymous,
+)
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.native_tls import inline_gate_source, vendor_dir
 from utils.child_stdio import utf8_child_env
@@ -665,11 +671,17 @@ def _resolve_base_model(model_name: str) -> str:
     return model_name
 
 
-def _token_cache_key(model_name: str, hf_token: str | None) -> tuple[str, str | None]:
+def _token_cache_key(model_name: str, hf_token: HfTokenArg) -> tuple[str, str | None]:
     """Cache key that keeps authenticated and unauthenticated reads separate, so an
-    unauthenticated miss on a gated/private repo never poisons a later authed lookup."""
+    unauthenticated miss on a gated/private repo never poisons a later authed lookup.
+
+    A caller forced anonymous is its own credential, distinct from one that may still
+    fall back to the backend's ambient token, so it takes its own slot too.
+    """
     import hashlib
 
+    if is_anonymous(hf_token):
+        return (model_name, ANONYMOUS_CACHE_IDENTITY)
     tok = hashlib.sha256(hf_token.encode()).hexdigest()[:16] if hf_token else None
     return (model_name, tok)
 
@@ -890,10 +902,7 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
     authenticated read. The HF hub cache is consulted only offline or after a failed
     network fetch, so an online read never serves stale metadata.
     """
-    import hashlib
-
-    tok = hashlib.sha256(hf_token.encode()).hexdigest()[:16] if hf_token else None
-    cache_key = (model_name, tok)
+    cache_key = _token_cache_key(model_name, hf_token)
     if cache_key in _config_json_cache:
         return _config_json_cache[cache_key]
 
@@ -1504,11 +1513,9 @@ def _probe_autoconfig(target_dir: str, model_name: str, hf_token: str | None) ->
     (auth/network/offline/spawn) so the caller fails safe and does not cache.
     """
     env = get_hf_cache_paths().child_env(child_env_without_native_path_secret())
-    if hf_token:
-        env["HF_TOKEN"] = hf_token
-        # The probe relies on the implicit HF_TOKEN env; clear any inherited
-        # HF_HUB_DISABLE_IMPLICIT_TOKEN=1 so a gated repo authenticates instead of 401ing.
-        env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "0"
+    # The probe relies on the implicit HF_TOKEN env, so the credential is granted or
+    # scrubbed here rather than passed as an argument.
+    apply_token_to_child_env(env, hf_token)
     if _env_offline():
         env["HF_HUB_OFFLINE"] = "1"
         env["TRANSFORMERS_OFFLINE"] = "1"
