@@ -4601,7 +4601,9 @@ class DiffusionBackend:
                             "family_override": (
                                 family_override,
                                 fam.name,
-                                "detected from the model" if family_override is None else "requested",
+                                "detected from the model"
+                                if family_override is None
+                                else "requested",
                             ),
                             "speed_mode": (
                                 speed_mode,
