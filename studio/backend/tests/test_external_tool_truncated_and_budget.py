@@ -444,9 +444,8 @@ def test_budget_exhausted_mcp_card_carries_server_display_name(tmp_path, monkeyp
 
 
 def test_an_unrun_card_shows_the_id_the_call_named():
-    """This loop builds its own tool_start rather than going through the controller, so the
-    exact argument text has to be carried here too: the browser rounds 9007199254740993 to
-    ...992 while parsing, and the card would name a record the call never mentioned."""
+    """This loop builds its own tool_start instead of going through the controller, so the
+    exact-text guarantee has to be covered here too."""
     import json as _json
 
     from core.inference.studio_tool_loop import _unrun_call_card

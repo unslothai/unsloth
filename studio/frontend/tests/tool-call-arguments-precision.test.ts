@@ -12,7 +12,6 @@ import {
   toolCallReplayArguments,
 } from "../src/features/chat/tool-call-arguments.ts";
 
-// As it reaches the adapter: JSON.parse has already rounded the id in `arguments`.
 const WIRE =
   '{"arguments":{"id":9007199254740993},"arguments_text":"{\\"id\\":9007199254740993}"}';
 
