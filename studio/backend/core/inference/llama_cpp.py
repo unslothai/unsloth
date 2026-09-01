@@ -3376,13 +3376,14 @@ def _auto_mode_drops_mtp(
     return req_mode == "auto" and size_b is not None and size_b < _MTP_MIN_SIZE_B
 
 
-# MLA architectures whose embedded MTP path is measured FASTER than no speculation,
-# so Auto keeps it despite the gate below. Named individually rather than widening
-# the gate: a new MLA arch still defaults to the safe side until someone benches it.
+# MLA architectures whose MTP context runs the NextN block against a cache of just
+# that block's layers instead of duplicating the trunk's KV. Named individually, so
+# a new MLA arch keeps the conservative default until someone reads its filter.
 #
-# glm5next (GLM-5.3-Flash) runs its NextN block as an ordinary DSA layer against its
-# own one-layer KV cache, so it does not pay the duplicated target-KV and per-draft
-# indexer recompute the gate describes.
+# One fact, two consequences: not paying for the duplicate is why Auto keeps MTP
+# here (the gate below) and why the fit must not reserve for it (_estimate_mtp_
+# overhead_bytes). glm5next (GLM-5.3-Flash) at n_ctx 4096 allocates 4+3 MiB over one
+# layer where the trunk holds 48+36 MiB over twelve.
 # unslothai/llama.cpp b10715-mix-86bd2d3, UD-IQ1_S on one B200, --spec-draft-n-max 3:
 # 61.1 -> 80.2 tok/s (1.31x), draft acceptance 0.634.
 #
@@ -3395,6 +3396,11 @@ _MLA_MTP_FAST_ARCHS = frozenset({"glm5next"})
 def _arch_has_fast_mla_mtp(architecture: Optional[str]) -> bool:
     """Whether this MLA architecture's embedded MTP head is worth promoting in Auto."""
     return bool(architecture) and str(architecture).strip().lower() in _MLA_MTP_FAST_ARCHS
+
+
+def _arch_mtp_skips_target_kv_copy(architecture: Optional[str]) -> bool:
+    """Whether this MLA architecture's MTP context skips the duplicated target KV."""
+    return _arch_has_fast_mla_mtp(architecture)
 
 
 def _mla_mtp_auto_enabled() -> bool:
@@ -11863,8 +11869,15 @@ class LlamaCppBackend:
         # separate-drafter spec modes (draft-simple/draft-eagle3) load a small
         # distinct drafter with its own KV -- already counted in draft_kv/weights --
         # rather than duplicating the target, so they must not be charged for it.
+        # Third gate: an MLA arch whose MTP context covers only the NextN layers
+        # never allocates that copy, so charging it shrinks the fitted context or
+        # trips drafter_no_vram, which drops the MTP the fit was reserving for.
         target_ctx_copy = 0
-        if mtp_keeps_target_ctx and self._kv_lora_rank is not None:
+        if (
+            mtp_keeps_target_ctx
+            and self._kv_lora_rank is not None
+            and not _arch_mtp_skips_target_kv_copy(getattr(self, "_architecture", None))
+        ):
             target_ctx_copy = self._estimate_kv_cache_bytes(
                 n_ctx,
                 "f16",
