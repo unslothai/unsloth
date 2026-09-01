@@ -3081,6 +3081,25 @@ def messages_with_attached_image(
     invent a question keeps refusing it.
     """
     conversation = list(messages or [])
+    if structured_system_content:
+        # Wrap the instruction turns ALREADY in the conversation too, not just the one
+        # inserted below. The client-tools route folds its system text into messages[0] and
+        # clears system_prompt, so on that path nothing is inserted here and a processor
+        # whose template expects content parts raised on the bare string, after which the
+        # no-system retry served the turn with the caller's instructions gone. The old
+        # collapse always wrapped what it built, so leaving these as strings regressed it
+        # (#10092).
+        conversation = [
+            {**m, "content": [{"type": "text", "text": m["content"]}]}
+            if (
+                isinstance(m, dict)
+                and m.get("role") in ("system", "developer")
+                and isinstance(m.get("content"), str)
+                and m["content"]
+            )
+            else m
+            for m in conversation
+        ]
     if system_prompt:
         conversation.insert(
             0,

@@ -516,3 +516,24 @@ def test_a_processor_body_is_not_rescued_by_the_native_tokenizer_template(monkey
         template_is_processor = True,
     )
     assert catalog == []
+
+
+def test_a_folded_system_turn_is_wrapped_as_content_parts():
+    """The client-tools route folds its instruction into messages[0] and clears
+    system_prompt, so nothing is inserted and the turn arrives as a bare string. A
+    processor whose template expects content parts raised on it, and the no-system retry
+    then served the turn with the instruction gone. The old collapse always wrapped what
+    it built (#10092)."""
+    from core.inference.chat_template_helpers import messages_with_attached_image
+
+    out = messages_with_attached_image(
+        [
+            {"role": "system", "content": "SENTINEL_RULE"},
+            {"role": "user", "content": "what is this"},
+        ],
+        system_prompt = "",
+        structured_system_content = True,
+    )
+    assert out[0]["content"] == [{"type": "text", "text": "SENTINEL_RULE"}]
+    # The caller's dict is not mutated.
+    assert out[0] is not None
