@@ -904,12 +904,50 @@ def test_close_mcp_sessions_drops_http_session(fake_clients):
     assert len(fake_clients) == 2
 
 
-def test_dead_http_session_recovers(fake_clients):
+def test_dead_http_session_recovers(monkeypatch, fake_clients):
+    """An HTTP server that dropped the session while it sat idle is replaced
+    before the next tool call, not after it fails.
+
+    Deliberately not driven through FakeClient.dead: _is_session_dead is a
+    StdioTransport internal, and no real HTTP transport has ever exposed it (see
+    _transport_dead), so faking it here would test a mechanism that cannot fire
+    in production. The idle recheck is what actually catches this."""
+    monkeypatch.setattr(mcp_client, "_HTTP_IDLE_RECHECK", 0.0)
     assert call_tool_sync(HTTP_URL, None, "t", {}, scope = "chat") == "call-1"
-    fake_clients[0].dead = True
+    # The server forgot the session: the liveness probe is what notices.
+    fake_clients[0].probe_error = True
     assert call_tool_sync(HTTP_URL, None, "t", {}, scope = "chat") == "call-1"
     assert len(fake_clients) == 2
     assert fake_clients[0].exited == 1
+
+
+def test_live_idle_http_session_survives_the_recheck(monkeypatch, fake_clients):
+    """The recheck costs one tools/list; a server that answers keeps its session
+    and its state, otherwise the idle probe would defeat the whole PR."""
+    monkeypatch.setattr(mcp_client, "_HTTP_IDLE_RECHECK", 0.0)
+    assert call_tool_sync(HTTP_URL, None, "t", {}, scope = "chat") == "call-1"
+    assert call_tool_sync(HTTP_URL, None, "t", {}, scope = "chat") == "call-2"
+    assert len(fake_clients) == 1
+    # Probed on the second call only: the first went through a fresh connect,
+    # which needs no proving.
+    assert fake_clients[0].probes == 1
+
+
+def test_recently_used_http_session_is_not_reprobed(fake_clients):
+    """Back-to-back calls must not pay a probe each; only an idle gap triggers it."""
+    call_tool_sync(HTTP_URL, None, "t", {}, scope = "chat")
+    call_tool_sync(HTTP_URL, None, "t", {}, scope = "chat")
+    assert fake_clients[0].probes == 0
+
+
+def test_idle_stdio_session_is_not_reprobed(monkeypatch, fake_clients):
+    """stdio is exempt: _transport_dead answers there, and a live subprocess does
+    not expire on its own the way a server-side HTTP session does."""
+    monkeypatch.setattr(mcp_client, "_HTTP_IDLE_RECHECK", 0.0)
+    call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
+    call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
+    assert fake_clients[0].probes == 0
+    assert len(fake_clients) == 1
 
 
 def test_http_tool_error_keeps_session(fake_clients):
