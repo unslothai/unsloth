@@ -265,10 +265,14 @@ export function useFindInPage(query: string): FindResults {
         // `inert` on one panel and off the other. A filter, not `attributes: true`, because `class`
         // changes on every hover.
         attributes: true,
+        // `open` for the same reason: toggling a `<details>` changes that attribute and nothing
+        // else, while the body inside it goes from visible to not. A Hub README's collapsibles are
+        // the case, and without this one opened after indexing stays unfindable.
         attributeFilter: [
           "inert",
           "hidden",
           "aria-hidden",
+          "open",
           FIND_SKIP_ATTRIBUTE,
         ],
       });

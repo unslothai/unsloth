@@ -151,18 +151,36 @@ export const EMPTY_TEXT_INDEX: FindTextIndex = {
  * Case-fold a run without changing its length.
  *
  * One character of `text` has to stand for one character of a text node, and Turkish dotted I
- * (U+0130) folds to two code units. The fast path is the whole run at once; when that grows, fold
- * per code point and keep only the folds that fit, so one such character no longer makes the rest
- * of its run case-sensitive.
+ * (U+0130) folds to two code units. The fast path is the whole run at once; when that grows, the
+ * whole-run fold is still the RIGHT one and only its length is wrong, so it is kept everywhere it
+ * fits and the original code point is put back only where its own fold would have grown.
+ *
+ * Folding per code point instead loses the context. Greek final sigma is the case: the fold of a
+ * sigma depends on what follows it, so "ΟΣ" is "ος" in the run and "οσ" on its own. One expanding
+ * character anywhere in a node used to turn every sigma in it into the wrong letter, and a query
+ * for text plainly on screen found nothing.
  */
 export function foldChunk(raw: string): string {
   const spaced = raw.replace(HARD_SPACE_PATTERN, " ");
   const folded = spaced.toLowerCase();
   if (folded.length === spaced.length) return folded;
   let out = "";
+  let at = 0;
   for (const point of spaced) {
     const lower = point.toLowerCase();
-    out += lower.length === point.length ? lower : point;
+    const taken = folded.slice(at, at + lower.length);
+    at += lower.length;
+    out += lower.length === point.length ? taken : point;
+  }
+  // The two walks disagreed about how much room the folds take, so the alignment above is not
+  // trustworthy. Nothing known does this; fall back to the fold that cannot drift.
+  if (at !== folded.length) {
+    let plain = "";
+    for (const point of spaced) {
+      const lower = point.toLowerCase();
+      plain += lower.length === point.length ? lower : point;
+    }
+    return plain;
   }
   return out;
 }

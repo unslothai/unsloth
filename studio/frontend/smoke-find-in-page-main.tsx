@@ -93,6 +93,25 @@ function Conversation({ extra, older }: { extra: string[]; older: string[] }) {
       >
         <p>unsloth inside a skipped subtree</p>
       </div>
+      {/* A collapsible, as a Hub README renders one. Opening it changes the `open` attribute and
+          nothing else, while its body goes from skipped to searchable. */}
+      <details data-collapsible="">
+        <summary>Release notes</summary>
+        <p>unsloth inside a collapsible</p>
+      </details>
+      {/* Transparent until the row is hovered, which is a hover affordance rather than an entrance
+          animation: a match in here would be walked to under a highlight nobody can see. */}
+      <div className="group/row">
+        <span
+          data-find-skip=""
+          className="opacity-0 transition-opacity group-hover/row:opacity-100"
+        >
+          unsloth hover only badge
+        </span>
+      </div>
+      {/* Greek, where the fold of a sigma depends on what follows it, next to a character whose
+          own fold is two units long. */}
+      <p data-greek="">{"\u039f\u0394\u039f\u03a3 \u0130 \u039f\u03a3"}</p>
       {/* A code fence, where whitespace is what it says it is rather than what HTML collapses it
           to. A query typed with one space must not land on three. */}
       <pre className="whitespace-pre rounded-lg bg-muted p-3 text-xs">

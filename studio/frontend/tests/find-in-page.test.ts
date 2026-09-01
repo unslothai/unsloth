@@ -178,6 +178,33 @@ test("a case fold that would change a run's length is not applied", () => {
   assert.equal(start?.offset, 0);
 });
 
+test("an expanding fold does not change the letters around it", () => {
+  // Greek final sigma is decided by what follows it, so the fold of a run is not the folds of its
+  // code points strung together. One expanding character in a node used to force the per-code-point
+  // path for the whole run, turning every sigma in it into the wrong letter: text plainly on screen
+  // then matched nothing.
+  const dottedI = String.fromCharCode(0x0130); // Turkish dotted I, whose fold is two units
+  const greek = `\u039f\u0394\u039f\u03a3 ${dottedI} \u039f\u03a3`; // "ΟΔΟΣ İ ΟΣ"
+  const index = buildTextIndex(el("DIV", [el("P", [text(greek)])]));
+  // The length has to hold, or every offset after it maps to the wrong character.
+  assert.equal(index.text.length, greek.length);
+  assert.equal(index.segments[0].length, greek.length);
+  // Both sigmas are word-final here, so both fold to the final form the query folds to.
+  assert.equal(findMatches(index, "\u039f\u03a3").length, 2);
+  assert.equal(findMatches(index, "\u039f\u0394\u039f\u03a3").length, 1);
+  // And the character that could not fit is still itself, not half of its own fold.
+  assert.equal(index.text.includes(dottedI), true);
+});
+
+test("a sigma that is not word-final keeps its own form", () => {
+  const dottedI = String.fromCharCode(0x0130);
+  const run = `\u03a3\u03a3\u03a3 ${dottedI}`; // "ΣΣΣ İ"
+  const index = buildTextIndex(el("DIV", [el("P", [text(run)])]));
+  assert.equal(index.text.length, run.length);
+  // Two medial sigmas then a final one, which is what the whole-run fold says.
+  assert.equal(index.text.startsWith("\u03c3\u03c3\u03c2"), true);
+});
+
 test("a non-breaking space answers to the space key", () => {
   // Spelled with a char code rather than pasted: a literal U+00A0 in a source file looks like a
   // space to every reader and every diff, which is the confusion this guards against.
@@ -714,8 +741,14 @@ test("the observer watches the attributes a workspace switch flips", async () =>
     "utf8",
   );
   assert.match(engine, /attributeFilter: \[[^\]]*"inert"/);
+  // `open` too: toggling a `<details>` changes that and nothing else, while the body inside it
+  // goes from visible to not, so a collapsible opened after indexing would stay unfindable.
+  assert.match(engine, /attributeFilter: \[[^\]]*"open"/);
   // And not the whole attribute stream: `class` changes on every hover.
-  assert.equal(/attributes: true,\s*\n\s*attributeFilter/.test(engine), true);
+  assert.equal(
+    /attributes: true,(?:\s*\n\s*\/\/[^\n]*)*\s*\n\s*attributeFilter/.test(engine),
+    true,
+  );
   assert.equal(engine.includes('attributeFilter: ["class"'), false);
 });
 
@@ -1035,6 +1068,34 @@ test("the selection fallback only clears what it put there", () => {
   } finally {
     view.window = saved;
   }
+});
+
+test("a hover-only badge is out of the index", async () => {
+  // The response model label is mounted transparent and unclickable until the message is hovered.
+  // That is an affordance, not an entrance animation, so a match in it would be counted and walked
+  // to under a highlight nobody can see. Marked at the call site rather than by turning the opacity
+  // check on, which would drop a message still fading in.
+  const sheet = await readFile(
+    new URL(
+      "../src/components/assistant-ui/message-response-details-sheet.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const badge = sheet.slice(sheet.indexOf("aui-response-model-badge") - 400);
+  assert.match(
+    badge.slice(0, badge.indexOf("aui-response-model-badge")),
+    /\{\.\.\.\{ \[FIND_SKIP_ATTRIBUTE\]: "" \}\}/,
+  );
+  // The general rule stays off, so a fade-in is still findable.
+  const index = await readFile(
+    new URL(
+      "../src/features/find-in-page/lib/find-text-index.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(index, /opacityProperty: false/);
 });
 
 test("nothing of the engine is mounted while the bar is closed", async () => {
