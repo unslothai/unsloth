@@ -35,6 +35,8 @@ import { consumeNativePathToken } from "@/features/native-intents/api";
 import { modelDisplayName } from "@/features/hub/lib/model-identity";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import { subscribeResidentStatusRefresh } from "@/features/hub/lib/resident-status-refresh";
+// eslint-disable-next-line no-restricted-imports -- The hub barrel imports chat; this lifecycle leaf does not.
+import { dismissStartToastsForModelSelection } from "@/features/hub/download-manager";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { ModelLoadDescription } from "../components/model-load-status";
 import {
@@ -783,6 +785,8 @@ export function useChatModelRuntime() {
         restorePreviousConfig();
         return;
       }
+      dismissStartToastsForModelSelection();
+
       // A load is already in flight. If it's this exact pick (id + variant + token),
       // ignore the duplicate click. If it's a DIFFERENT model (including a different
       // GGUF variant of the same repo, which the old id+token guard wrongly treated
