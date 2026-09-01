@@ -320,6 +320,27 @@ def _api():
     return api
 
 
+def username_of(api) -> str | None:
+    """The account this client authenticated as, as Kaggle itself reports it.
+
+    `_authenticate_with_access_token` introspects the token and records the name
+    that comes back, so this is not a guess. It matters because a kernel id is
+    `<owner>/<slug>`: pushing under a name the token does not own fails, and
+    DELETING under the wrong name silently reaps nothing while the real kernel
+    keeps billing. With more than one account in play the owner cannot be a
+    constant, so it is read from whichever token this process was handed.
+
+    Takes the client the caller already authenticated rather than building one:
+    a second `authenticate()` is a second network round trip on a path that is
+    already bounded, and it could answer for a different token than the one the
+    rest of the run uses.
+    """
+    try:
+        return api.config_values.get(api.CONFIG_NAME_USER) or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 # A kernel this process pushed but has not yet deleted is recorded here, so a
 # LATER launch can reclaim it. This is the only cover for `kill -9`, where no
 # handler of ours ever runs. Deliberately keyed on pid: an entry whose owner
@@ -349,9 +370,22 @@ def _inflight_write(entries: list[dict]) -> None:
         pass  # bookkeeping only; never fail a run over it
 
 
-def _inflight_add(slug: str) -> None:
+def _inflight_add(slug: str, owner: str | None = None) -> None:
+    """File a slug, WITH the account that owns it.
+
+    The owner is recorded because the sweep below runs with whatever token the
+    NEXT job was handed, and CI now hands out more than one. A slug is
+    `<owner>/<name>`, so an entry filed by one account cannot be deleted by the
+    other; without the owner on the record the sweep cannot tell that it is
+    about to try, and a failed delete reads exactly like a kernel that was
+    already gone.
+    """
     entries = [e for e in _inflight_read() if e.get("slug") != slug]
-    entries.append({"slug": slug, "pid": os.getpid(), "at": time.time()})
+    entry = {"slug": slug, "pid": os.getpid(), "at": time.time()}
+    owner = owner or (slug.split("/", 1)[0] if "/" in slug else None)
+    if owner:
+        entry["owner"] = owner
+    entries.append(entry)
     _inflight_write(entries)
 
 
@@ -386,11 +420,18 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def sweep_orphans() -> list[str]:
+def sweep_orphans(owner: str | None = None) -> list[str]:
     """Delete kernels left behind by a launcher that was killed outright.
 
     Only entries whose owning process is gone are eligible, so a concurrent
     run is never disturbed. Returns the slugs reclaimed.
+
+    ``owner``, when given, is the account this process authenticated as, and an
+    entry belonging to a DIFFERENT account is left alone rather than attempted.
+    This token cannot delete that kernel, so trying would turn a real leak into
+    a log line indistinguishable from a kernel that was already gone -- and
+    would drop the record, which is the only thing that still knows the kernel
+    exists. Left filed, it is reclaimed by the next run that holds its account.
     """
     entries = _inflight_read()
     if not entries:
@@ -404,6 +445,14 @@ def sweep_orphans() -> list[str]:
         if entry.get("keep"):
             # --keep-kernel asked for this one to stay up.
             keep.append(entry)
+            continue
+        entry_owner = entry.get("owner") or (slug.split("/", 1)[0] if "/" in slug else None)
+        if owner and entry_owner and entry_owner != owner:
+            keep.append(entry)
+            _log(
+                f"leaving orphan {slug} filed: it belongs to {entry_owner} and this "
+                f"job holds {owner}, so this token cannot delete it"
+            )
             continue
         if isinstance(pid, int) and _pid_alive(pid) and pid != os.getpid():
             keep.append(entry)
@@ -1070,7 +1119,19 @@ def main() -> int:
         help = "kernel notebook to push. Repeatable: all of them "
         "are pushed before any of them is waited on",
     )
-    ap.add_argument("--user", required = True)
+    # NOT required, and not a constant. The owner is a property of the TOKEN
+    # this process was handed, and CI now hands it one of several. Passing the
+    # name is still allowed -- the caller that selected the account knows it --
+    # but it is CHECKED against the token rather than trusted, because the one
+    # failure worth catching here is a name and a credential that disagree: the
+    # push fails, or worse, the cleanup deletes under a name that owns nothing
+    # and the real kernel bills on unwatched.
+    ap.add_argument(
+        "--user",
+        default = "",
+        help = "Kaggle account to push under. Defaults to the account the token "
+        "authenticates as; when given, it must MATCH that account",
+    )
     ap.add_argument("--outdir", required = True)
     ap.add_argument(
         "--expect", type = int, default = 2, help = "payload reports this kernel should produce"
@@ -1239,11 +1300,36 @@ def main() -> int:
         result["reason"] = f"kaggle auth failed: {type(exc).__name__}"
         return finish()
 
+    # WHO this token is, settled before anything is pushed and read off the
+    # client just authenticated. CI holds more than one account now, and both
+    # ways to get this wrong are silent: a name the token does not own makes
+    # every push fail for a reason that reads like a bad notebook, and a name
+    # belonging to the OTHER account makes the cleanup delete nothing while the
+    # kernel it filed bills on unwatched.
+    #
+    # Answered through finish() rather than a bare return, so this stand-down
+    # still writes launch_result.json -- the report step reads that file, and a
+    # launcher that exits without one is indistinguishable from a runner that
+    # died, which is the wrong story for a configuration error.
+    owner = username_of(api)
+    if not owner:
+        result["reason"] = "could not determine which Kaggle account this token belongs to"
+        return finish()
+    if args.user and args.user != owner:
+        result["reason"] = (
+            f"the account selected upstream ({args.user}) is not the account this token "
+            f"authenticates as ({owner}); refusing to push, because a kernel pushed "
+            "under one name cannot be deleted under the other"
+        )
+        return finish()
+    args.user = owner
+    _log(f"authenticated as {owner}")
+
     # Reclaim anything a previous launcher was killed outright before it
     # could delete. Done BEFORE pushing, so the freed session slots are
     # available to this run -- Kaggle allows only two GPU sessions at once,
     # and an orphan holds one until its ceiling.
-    for _slug in sweep_orphans():
+    for _slug in sweep_orphans(owner):
         _log(f"reclaimed orphaned kernel {_slug} from a killed launcher")
     # AGAIN, now that authentication is paid for and the next thing is a push.
     # The check above is not enough on its own: authenticate() reaches the

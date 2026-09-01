@@ -39,6 +39,26 @@ import launch  # noqa: E402
 from legs import KERNELS, LEGS  # noqa: E402
 
 
+class _StubKaggleApi:
+    """A client that can say WHICH account it is, because the real one can.
+
+    `launch.py` reads the owner off the authenticated client and refuses to push
+    when it cannot: a kernel id is `<owner>/<slug>`, CI holds more than one
+    account, and a kernel pushed under the wrong name cannot be deleted under
+    the other. A bare `object()` models a client that never authenticated, which
+    is a different test from the ones below.
+    """
+
+    CONFIG_NAME_USER = "username"
+
+    def __init__(self, username = "someuser"):
+        self.config_values = {self.CONFIG_NAME_USER: username}
+
+
+def _stub_api(*_args, **_kwargs):
+    return _StubKaggleApi()
+
+
 # ------------------------------------------------------------------ driver
 
 
@@ -1137,9 +1157,9 @@ def _drive_main(
     monkeypatch.setattr(launch.time, "time", lambda: clock["t"])
     monkeypatch.setattr(launch.time, "sleep", lambda _s: None)
 
-    def fake_api():
+    def fake_api(*_args, **_kwargs):
         clock["t"] += api_seconds
-        return object()
+        return _StubKaggleApi()
 
     monkeypatch.setattr(launch, "_api", fake_api)
 
@@ -1477,7 +1497,7 @@ def test_a_push_that_times_out_does_not_abandon_the_kernel_already_accepted(monk
 
     monkeypatch.setattr(launch.subprocess, "run", fake_run)
     monkeypatch.setattr(launch.time, "sleep", lambda _s: None)
-    monkeypatch.setattr(launch, "_api", lambda: object())
+    monkeypatch.setattr(launch, "_api", _stub_api)
     monkeypatch.setattr(launch, "wait", lambda api, slug, poll_every, max_wait: "COMPLETE")
     monkeypatch.setattr(
         launch, "fetch_evidence", lambda slug, outdir, **kw: {"notebooks": [], "log": None}
@@ -1563,7 +1583,7 @@ def test_a_push_that_raises_outside_the_timeout_still_gives_up_its_slug(
 
     monkeypatch.setattr(launch.subprocess, "run", fake_run)
     monkeypatch.setattr(launch.time, "sleep", lambda _s: None)
-    monkeypatch.setattr(launch, "_api", lambda: object())
+    monkeypatch.setattr(launch, "_api", _stub_api)
     monkeypatch.setattr(launch, "wait", lambda api, slug, poll_every, max_wait: "COMPLETE")
     monkeypatch.delenv("GITHUB_OUTPUT", raising = False)
     (tmp_path / "k0.ipynb").write_text("{}", encoding = "utf-8")
@@ -1642,7 +1662,7 @@ def test_an_abort_anywhere_in_the_launcher_still_deletes_what_it_pushed(monkeypa
             deleted.append(cmd[3])
         return types.SimpleNamespace(returncode = 0, stdout = "", stderr = "")
 
-    monkeypatch.setattr(launch, "_api", lambda: object())
+    monkeypatch.setattr(launch, "_api", _stub_api)
     monkeypatch.setattr(launch, "push", _accepting_push("someuser/unsloth-t4-ci-abcd"))
     monkeypatch.setattr(launch, "wait", lambda api, slug, poll_every, max_wait: "COMPLETE")
     monkeypatch.setattr(
@@ -1683,7 +1703,7 @@ def _drive_one_kernel(monkeypatch, tmp_path, fake_run):
     Everything but the delete calls is stubbed, so what comes back reads the
     release path and nothing else.
     """
-    monkeypatch.setattr(launch, "_api", lambda: object())
+    monkeypatch.setattr(launch, "_api", _stub_api)
     monkeypatch.setattr(launch, "push", _accepting_push("someuser/unsloth-t4-ci-abcd"))
     monkeypatch.setattr(launch, "wait", lambda api, slug, poll_every, max_wait: "COMPLETE")
     monkeypatch.setattr(
@@ -2322,7 +2342,7 @@ def test_main_bounds_the_whole_evidence_phase_it_is_budgeted_for(monkeypatch, tm
         "extract_reports",
         lambda outdir: [{"label": "control", "model": "m", "passed": True}],
     )
-    monkeypatch.setattr(launch, "_api", lambda: object())
+    monkeypatch.setattr(launch, "_api", _stub_api)
     monkeypatch.setattr(launch, "delete_kernel", lambda slug: True)
     monkeypatch.delenv("GITHUB_OUTPUT", raising = False)
     monkeypatch.setattr(

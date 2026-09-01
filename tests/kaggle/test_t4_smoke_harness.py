@@ -545,7 +545,9 @@ def test_a_gate_error_is_a_skip_not_a_failure(monkeypatch, tmp_path):
     import gate
 
     monkeypatch.setenv("KAGGLE_API_TOKEN", "not-a-real-token")
-    monkeypatch.setattr(gate, "kaggle_client", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(
+        gate, "kaggle_client", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
     code, outputs = _run_gate(monkeypatch, tmp_path, "--force", "true")
     assert code == 0
     assert outputs["should_run"] == "false"
@@ -568,7 +570,7 @@ def test_the_gate_bounds_its_network_calls_before_it_makes_one(monkeypatch, tmp_
 
     seen = {}
 
-    def _client():
+    def _client(*_args, **_kwargs):
         seen["timeout"] = socket.getdefaulttimeout()
         raise RuntimeError("boom")
 
@@ -663,7 +665,11 @@ def _run_gate_against(
 
     answer = _idle_account() if survey is None else survey
     monkeypatch.setenv("KAGGLE_API_TOKEN", "not-a-real-token")
-    monkeypatch.setattr(gate, "kaggle_client", lambda: object())
+    monkeypatch.setattr(gate, "kaggle_client", lambda *a, **k: object())
+    # The account a token belongs to. Stubbed rather than left out: the gate
+    # REFUSES an account it cannot name, because the launcher must push under
+    # that name, so a nameless client is a stand-down rather than a default.
+    monkeypatch.setattr(gate, "client_username", lambda api: "danielhanchen")
     monkeypatch.setattr(gate, "remaining_gpu_hours", lambda api: dict(quota))
     monkeypatch.setattr(
         gate, "survey_kernels", answer if callable(answer) else (lambda api: answer)
@@ -776,7 +782,9 @@ def test_soft_failure_is_asked_for_rather_than_assumed(monkeypatch, tmp_path):
     # And --no-soft-fail still means what it always did: an error in the gate
     # itself becomes a failure rather than a skip.
     monkeypatch.setenv("KAGGLE_API_TOKEN", "not-a-real-token")
-    monkeypatch.setattr(gate, "kaggle_client", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(
+        gate, "kaggle_client", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
     hard, _ = _run_gate(monkeypatch, tmp_path / "hard", "--force", "true", "--no-soft-fail")
     assert hard == 1
     soft, outputs = _run_gate(monkeypatch, tmp_path / "soft", "--force", "true", "--soft-fail")
@@ -1620,6 +1628,7 @@ def test_built_kernel_is_valid_notebook_json_with_gpu_requested(tmp_path):
     blob = json.dumps(nb)
     for forbidden in (
         "KAGGLE_API_TOKEN",
+        "KAGGLE_API_TOKEN_2",
         "KAGGLE_KEY",
         "KAGGLE_USERNAME",
         "KAGGLE_ACCESS_TOKEN_GH",

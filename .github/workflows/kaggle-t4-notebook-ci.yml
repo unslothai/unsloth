@@ -90,9 +90,15 @@
 # ---------------------------------------------------------------------
 # BUDGET. Read this before changing any trigger.
 # ---------------------------------------------------------------------
-# The Kaggle account behind KAGGLE_ACCESS_TOKEN_GH has a WEEKLY accelerator
-# budget (60h at time of writing; Kaggle's documented baseline is 30h and the
-# surplus is a discretionary "floating" allowance that can be withdrawn). This
+# CI holds TWO Kaggle accounts, and each has its own WEEKLY accelerator budget
+# (60h and 30h at time of writing; Kaggle's documented baseline is 30h and any
+# surplus is a discretionary "floating" allowance that can be withdrawn). A run
+# lands on one of them, drawn in proportion to those weekly totals, so the
+# bigger account takes twice the traffic. The totals are read from Kaggle's own
+# quota API each run rather than written down here, so the split follows a plan
+# that changes without this comment going stale. The arithmetic below is per
+# ACCOUNT: two accounts is roughly 1.5x the hours and, because Kaggle's
+# 2-session cap is also per account, twice the concurrency. This
 # 50 of those 60 go to CI and the last 10 are held for human use. That 50 is
 # SHARED with kaggle-t4-studio-gpu-ci.yml, which is the expensive leg: ~0.75
 # GPU-h per launch against this one's ~0.25, on a larger eligible event stream.
@@ -231,11 +237,16 @@
 # ---------------------------------------------------------------------
 # CREDENTIALS
 # ---------------------------------------------------------------------
-# KAGGLE_ACCESS_TOKEN_GH is passed as KAGGLE_API_TOKEN to the gate and the
-# launcher only. It is never echoed, never written to an output or artifact, and
-# never travels to the Kaggle kernel, which receives the notebook and nothing
-# else. Fork pull requests do not receive the secret, and the gate skips cleanly
-# when it is absent.
+# KAGGLE_API_TOKEN and KAGGLE_API_TOKEN_2 hold one Kaggle account each. The
+# GATE is the only place both are visible: it weighs them, picks one, and
+# publishes the account's NUMBER, USERNAME and SECRET NAME -- never a token,
+# which would put a credential in a job output. Every later step receives
+# exactly the chosen one, as KAGGLE_API_TOKEN, selected by indexing the secrets
+# context with that name.
+#
+# Neither is ever echoed, written to an output or artifact, or travels to the
+# Kaggle kernel, which receives the notebook and nothing else. Fork pull
+# requests receive no secret, and the gate skips cleanly when none is present.
 #
 # WHERE THE TRUST BOUNDARY ACTUALLY IS, since it is easy to draw it in the wrong
 # place: a SAME-REPOSITORY pull request does receive the secret, and on
@@ -356,8 +367,8 @@ concurrency:
 jobs:
   gate:
     name: gate
-    # Fork pull requests never receive KAGGLE_ACCESS_TOKEN_GH, so this job could
-    # only reach "the token is not available to this context", a runner spent to
+    # Fork pull requests never receive the Kaggle secrets, so this job could
+    # only reach "no credential is available to this context", a runner spent to
     # learn nothing. The gate handles the absent token cleanly anyway (it skips
     # and exits 0); this simply does not start.
     if: github.event.pull_request.head.repo.fork != true
@@ -366,6 +377,13 @@ jobs:
     outputs:
       should_run: ${{ steps.decide.outputs.should_run }}
       reason: ${{ steps.decide.outputs.reason }}
+      # WHICH account won the weighted draw. This is the only job that sees
+      # both tokens; everything downstream is handed exactly one, chosen by
+      # these outputs. No token is ever an output -- `matrix` carries the SECRET
+      # NAME, and the GPU job indexes the secrets context with it.
+      account: ${{ steps.decide.outputs.account }}
+      account_user: ${{ steps.decide.outputs.account_user }}
+      matrix: ${{ steps.decide.outputs.matrix }}
     steps:
       - name: Harden runner (audit)
         uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
@@ -449,7 +467,12 @@ jobs:
       - name: Decide
         id: decide
         env:
-          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_ACCESS_TOKEN_GH }}
+          # BOTH accounts, and this is the only step anywhere that gets both.
+          # The gate reads each one's weekly total to weight the draw and each
+          # one's remaining hours to decide whether it can take the run; every
+          # step after this is handed exactly the one it chose.
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+          KAGGLE_API_TOKEN_2: ${{ secrets.KAGGLE_API_TOKEN_2 }}
           PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
           EVENT_ACTION: ${{ github.event.action }}
           EVENT_LABEL: ${{ github.event.label.name }}
@@ -470,6 +493,22 @@ jobs:
     needs: gate
     if: needs.gate.outputs.should_run == 'true'
     runs-on: ubuntu-latest
+    # A ONE-ELEMENT matrix, whose only job is to carry the account the gate
+    # chose into a context that `secrets[...]` can be indexed with.
+    #
+    # It cannot hold the token, and must not: `secrets` is unavailable while the
+    # strategy is expanded, and a token in a job output would be a token in a
+    # place GitHub redacts by pattern rather than by promise. It holds the
+    # SECRET NAME instead.
+    #
+    # The obvious alternative, `${{ cond && secrets.A || secrets.B }}`, is the
+    # trap this shape exists to avoid: a missing or empty first secret makes the
+    # `&&` falsy and the `||` hands over the OTHER account's token, while every
+    # output beside it still names the first account. That run spends one
+    # account's quota, reports the other's, and files kernels the cleanup looks
+    # for in the wrong place. Indexing makes the mismatch unrepresentable.
+    strategy:
+      matrix: ${{ fromJSON(needs.gate.outputs.matrix) }}
     # THIS DEADLINE MUST EXCEED THE LAUNCHER'S WORST CASE with headroom, which
     # is stronger than "long enough for a normal run". Nothing else stops a
     # pushed kernel: killing the runner here takes launch.py's finish() ->
@@ -541,10 +580,13 @@ jobs:
     # 32607617804 sat queued about 40 minutes behind notebook run 32607621452.
     #
     # This only stays safe while each workflow pushes ONE kernel. Two workflows
-    # x one kernel is exactly Kaggle's 2-session cap, with no headroom, so the
-    # capacity handling on the push path is load bearing rather than defensive.
+    # x one kernel is exactly Kaggle's 2-session cap PER ACCOUNT, with no
+    # headroom, so the capacity handling on the push path is load bearing rather
+    # than defensive.
+    #
     concurrency:
-      # SLOTTED, because one group cannot express "at most two".
+      # SLOTTED AS WELL AS PER-ACCOUNT, because the two answer different
+      # halves of the same cap and neither is redundant.
       #
       # A Kaggle account allows 2 concurrent GPU sessions and this job takes
       # one, so the cap has to be 2 and GitHub concurrency only offers 1 per
@@ -552,14 +594,20 @@ jobs:
       # serialised: only ONE run may be PENDING in a group, so a second queued
       # run CANCELS the first rather than queueing behind it. That is what
       # killed run 32674255736, and it makes an A/B impossible to run at all.
+      # Two slots, chosen explicitly by the dispatcher, is that mechanism. It is
+      # bounded by construction (the input offers 1 or 2 and nothing else), so
+      # one account can never be asked for a third session, and two dispatches
+      # naming different slots genuinely run side by side. Everything that is
+      # not a dispatch has an empty input and lands in slot 1.
       #
-      # Two slots, chosen explicitly by the dispatcher, is the whole mechanism.
-      # It is bounded by construction (the input offers 1 or 2 and nothing
-      # else), so the account can never be asked for a third session, and two
-      # dispatches that name different slots genuinely run side by side.
-      # Everything that is not a dispatch has an empty input and lands in slot
-      # 1, which is exactly the old behaviour for pushes and pull requests.
-      group: kaggle-t4-account-notebook-${{ inputs.slot || '1' }}
+      # The ACCOUNT half is what makes a second account worth having. Without it
+      # every run queues behind every other run whichever account it would
+      # spend, and the extra hours sit unused. With both, the account gets its
+      # own pair of slots: 2 accounts x 2 slots, still Kaggle's 2 per account.
+      #
+      # `needs` is available here and `secrets` is not, which is the other
+      # reason the gate publishes an account NUMBER rather than a credential.
+      group: kaggle-t4-account-${{ needs.gate.outputs.account }}-notebook-${{ inputs.slot || '1' }}
       cancel-in-progress: false
     steps:
       # FIRST, ahead of even the audit hardening, and it is an `echo` so there
@@ -965,11 +1013,16 @@ jobs:
         id: recheck
         if: steps.ref.outputs.stand_down != 'true' && steps.pins.outputs.stand_down != 'true' && steps.stepcount.outputs.stand_down != 'true'
         env:
-          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_ACCESS_TOKEN_GH }}
+          # ONE account: the one the gate chose. `--account-env` narrows the
+          # recheck to it, so this step cannot quietly clear a DIFFERENT account
+          # from the one whose slot this job is holding and whose kernels it is
+          # about to push.
+          KAGGLE_API_TOKEN: ${{ secrets[matrix.secret_name] }}
         run: |
           python .github/scripts/kaggle_t4_ci/gate.py \
             --force true \
             --soft-fail \
+            --account-env KAGGLE_API_TOKEN \
             --kernels 1 \
             --budget-hours 4 \
             --reserve-hours 20
@@ -1003,12 +1056,12 @@ jobs:
         id: launch
         if: steps.recheck.outputs.should_run == 'true'
         env:
-          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_ACCESS_TOKEN_GH }}
+          KAGGLE_API_TOKEN: ${{ secrets[matrix.secret_name] }}
           JOB_TIMEOUT_MINUTES: 260
         run: |
           python .github/scripts/kaggle_t4_ci/launch.py \
             ${{ steps.build.outputs.notebooks }} \
-            --user danielhanchen \
+            --user '${{ matrix.kaggle_user }}' \
             --outdir kaggle_evidence \
             --expect '${{ steps.build.outputs.payloads }}' \
             --kernel-timeout-sec 3600 \
