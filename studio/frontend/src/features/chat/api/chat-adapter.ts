@@ -52,6 +52,10 @@ import {
 } from "../search-images/search-images";
 import { parseParamCountB } from "@/lib/model-size";
 import { createLoadingToastIcon, toast } from "@/lib/toast";
+import {
+  type AdmissionStatus,
+  admissionStatusLabel,
+} from "../utils/admission-status";
 import { notifyPromptQueueRunFailed } from "../utils/prompt-queue-boundary";
 import {
   adoptPreStreamRunReservation,
@@ -6513,6 +6517,28 @@ export function createOpenAIStreamAdapter(
               const chunkModel = (chunk as { model?: unknown }).model;
               if (typeof chunkModel === "string" && chunkModel.length > 0) {
                 responseModelId = chunkModel;
+              }
+
+              // Queued for a slot, or paused so another chat can finish. Neither is an
+              // error and neither produces a token, so without a line on screen both look
+              // exactly like the wedged backend we are here to stop shipping.
+              //
+              // Routed through setToolStatus rather than a slice of its own because that
+              // setter already solves the part that is easy to get wrong: two runs sharing
+              // the unresolved "__default" thread key, where a naive clear wipes the
+              // sibling's status. Admission precedes generation, so the queue line cannot
+              // overwrite a live tool status on the way in; a mid-loop re-admission does
+              // replace it, which is truthful, and clears back on the paired signal.
+              const admissionStatus = (
+                chunk as unknown as { _admissionStatus?: AdmissionStatus }
+              )._admissionStatus;
+              if (admissionStatus !== undefined) {
+                runtime.setToolStatus(
+                  liveThreadKey(serverCancel),
+                  admissionStatusLabel(admissionStatus),
+                  serverCancel,
+                );
+                continue;
               }
 
               // Handle tool status events

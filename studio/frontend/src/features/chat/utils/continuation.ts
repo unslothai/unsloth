@@ -11,7 +11,11 @@
  */
 
 /** Why a turn ended before the model was done. */
-export type IncompleteReason = "length" | "cancelled" | "interrupted";
+export type IncompleteReason =
+  | "length"
+  | "cancelled"
+  | "interrupted"
+  | "paused";
 
 /** Metadata stamped on an assistant message that stopped early. */
 export type IncompleteInfo = {
@@ -22,6 +26,7 @@ const INCOMPLETE_REASONS: readonly IncompleteReason[] = [
   "length",
   "cancelled",
   "interrupted",
+  "paused",
 ];
 
 /** Below this a shared boundary is likely coincidence, and trimming would eat output. */
@@ -54,6 +59,11 @@ export function readIncompleteInfo(metadata: unknown): IncompleteInfo | null {
  * a turn that already offers the Continue bar below it, on every reloaded max-tokens
  * answer including ones written before this feature existed. `interrupted` keeps `error`
  * on purpose -- a cut stream is the thing the user has to be told about.
+ *
+ * `paused` is a turn the backend put on hold so another chat could finish, and it is the
+ * one reason here that is not a stop at all. assistant-ui's vocabulary is only these three
+ * values and has none for it, so it takes `cancelled`: the sole option that is neither an
+ * error box over a healthy turn nor a false claim that Max Tokens was reached.
  */
 const STATUS_REASON: Record<
   IncompleteReason,
@@ -62,6 +72,7 @@ const STATUS_REASON: Record<
   cancelled: "cancelled",
   length: "length",
   interrupted: "error",
+  paused: "cancelled",
 };
 
 /** Restore assistant-ui's status without losing the product-specific stop reason. */
@@ -79,6 +90,10 @@ const INCOMPLETE_LABELS: Record<IncompleteReason, string> = {
   length: "Response hit the Max Tokens limit",
   cancelled: "Response stopped",
   interrupted: "Response interrupted",
+  // No failure vocabulary: nothing went wrong, the model was shared out. Says where the
+  // text went (nowhere) and why it stopped, because a half-written answer with a neutral
+  // label reads as a bug.
+  paused: "Response paused so another chat could finish. The text so far is kept",
 };
 
 /** The user-facing explanation of why a turn stopped. */
@@ -361,6 +376,13 @@ export function readContinuationRequest(
  * it. Every other reason is left alone: `cancelled` is the user pressing Stop, so
  * resuming would restart the thing they just stopped, and `interrupted` means the
  * connection dropped, where a silent retry can hide a broken link.
+ *
+ * `paused` is refused for a reason of its own, and a test pins it so that widening the
+ * guard below cannot start doing this by accident. A pause is the backend rationing one
+ * KV cache between chats; it resumes the response in place, on its own. Racing that with a
+ * client-side continuation asks for a SECOND slot on behalf of a turn that is already
+ * queued for one, which is precisely the oversubscription the pause exists to relieve --
+ * so the automatic remedy for every other cut is, here, a way of making it worse.
  *
  * Bounded, because a model that will not stop would otherwise loop forever, and each
  * round grows the transcript and drives compaction harder. After the budget is spent the
