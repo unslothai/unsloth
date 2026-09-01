@@ -2732,11 +2732,7 @@ class SdCppDiffusionBackend:
                         "Another account is generating an image right now."
                     )
                 loading = self._loading
-                if (
-                    loading is not None
-                    and loading.error is None
-                    and loading.subject != subject
-                ):
+                if loading is not None and loading.error is None and loading.subject != subject:
                     raise ForeignWorkspaceActiveError(
                         "Another account is loading an image model right now."
                     )

@@ -6375,11 +6375,7 @@ class VideoBackend:
                         "Another account is generating a video right now."
                     )
                 loading = self._loading
-                if (
-                    loading is not None
-                    and loading.error is None
-                    and loading.subject != subject
-                ):
+                if loading is not None and loading.error is None and loading.subject != subject:
                     raise ForeignWorkspaceActiveError(
                         "Another account is loading a video model right now."
                     )
