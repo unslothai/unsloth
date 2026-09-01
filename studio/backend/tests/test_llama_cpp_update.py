@@ -24,6 +24,7 @@ if str(_BACKEND) not in sys.path:
 
 import utils.llama_cpp_freshness as freshness  # noqa: E402
 import utils.llama_cpp_update as upd  # noqa: E402
+import utils.process_lifetime as process_lifetime  # noqa: E402
 
 MARKER = "UNSLOTH_PREBUILT_INFO.json"
 
@@ -58,6 +59,18 @@ class _FakeInstallerPopen:
     def kill(self):
         pass
 
+    # subprocess.run() uses `with Popen(...)`, and without these it raises into
+    # _pid_identity's bare except, silently disabling the identity check.
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _installer_command(cmd) -> bool:
+    return any("install_llama_prebuilt" in str(part) for part in cmd)
+
 
 def _patch_installer_popen(
     monkeypatch,
@@ -66,19 +79,29 @@ def _patch_installer_popen(
     lines = None,
     on_start = None,
     captured_kwargs = None,
+    spawned = None,
 ):
-    monkeypatch.setattr(
-        upd.subprocess,
-        "Popen",
-        lambda cmd, **kw: _FakeInstallerPopen(
+    """Replace Popen for the installer only.
+
+    subprocess is shared, so this patch catches every spawn in the process, and
+    _run_llama_phase adopts the installer pid right after starting it: on macOS
+    that identity lookup shells out to `ps`, which would otherwise reach on_start
+    and overwrite the installer argv a caller captured (#8170).
+    """
+    def _popen(cmd, **kw):
+        if spawned is not None:
+            spawned.append(list(cmd))
+        is_installer = _installer_command(cmd)
+        return _FakeInstallerPopen(
             cmd,
-            returncode = returncode,
-            lines = lines,
-            on_start = on_start,
-            captured_kwargs = captured_kwargs,
+            returncode = returncode if is_installer else 0,
+            lines = lines if is_installer else None,
+            on_start = on_start if is_installer else None,
+            captured_kwargs = captured_kwargs if is_installer else None,
             **kw,
-        ),
-    )
+        )
+
+    monkeypatch.setattr(upd.subprocess, "Popen", _popen)
 
 
 def _write_install(
@@ -470,6 +493,40 @@ def test_start_update_happy_path(monkeypatch, tmp_path):
     assert "unslothai/llama.cpp" in captured["cmd"]
     assert job["progress"] == 1.0
     assert popen_kwargs["env"]["UNSLOTH_PROGRESS_PERCENT_STEP"] == "5"
+
+
+def test_a_second_spawn_during_the_update_does_not_overwrite_the_installer_argv(
+    monkeypatch, tmp_path
+):
+    """The installer is not the only thing the phase spawns.
+
+    _run_llama_phase adopts the installer pid, and on a host with no /proc that
+    identity lookup runs `ps`. Forced here because CI runs this file on Linux
+    only, so the macOS ordering is otherwise never exercised.
+    """
+    install_dir = tmp_path / "llama.cpp"
+    binary = _write_install(install_dir, "b9493")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
+    monkeypatch.setattr(process_lifetime.sys, "platform", "darwin", raising = False)
+
+    captured: dict = {}
+    spawned: list = []
+
+    def _on_start(cmd):
+        captured["cmd"] = cmd
+        _write_install(install_dir, "b9518")
+
+    _patch_installer_popen(monkeypatch, on_start = _on_start, spawned = spawned)
+
+    job = _run_start_update_to_completion()
+    assert job["state"] == "success", job
+    # Without the ps spawn the ordering this guards cannot happen, so a green
+    # run that never reached it would prove nothing.
+    assert any(cmd and cmd[0] == "ps" for cmd in spawned), spawned
+    assert "--install-dir" in captured["cmd"], captured["cmd"]
+    assert str(install_dir) in captured["cmd"], captured["cmd"]
 
 
 @pytest.mark.parametrize(
