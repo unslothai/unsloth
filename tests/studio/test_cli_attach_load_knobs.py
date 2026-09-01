@@ -843,3 +843,138 @@ def test_paravirtual_placement_is_not_restarted(monkeypatch):
     )
 
     assert "force_reload" not in server.loads[0]
+
+
+def test_a_no_op_attach_to_a_custom_code_resident_is_allowed(monkeypatch):
+    """The refusal exists to protect a reload; a no-op has no reload to protect."""
+    server = FakeServer(
+        [dict(RESIDENT)],
+        {
+            "is_gguf": False,
+            "active_model": RESIDENT["id"],
+            "model_identifier": RESIDENT["id"],
+            "requested_context_length": 4096,
+            "load_in_4bit": True,
+            "requires_trust_remote_code": True,
+        },
+    ).install(monkeypatch)
+
+    entry = start_cli._resolve_model(
+        BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 4096)
+    )
+
+    assert "force_reload" not in server.loads[0]
+    assert entry["id"] == RESIDENT["id"]
+
+
+def test_cpu_fallback_placement_is_not_restarted(monkeypatch):
+    """_preserve_cpu_fallback_intent keeps this runtime across the reload anyway."""
+    server = FakeServer(
+        [dict(RESIDENT)],
+        _gguf_status(
+            gpu_memory_mode = "manual",
+            gpu_layers = 0,
+            cpu_fallback_reason = "vulkan_startup_crash",
+        ),
+    ).install(monkeypatch)
+
+    start_cli._resolve_model(
+        BASE,
+        KEY,
+        None,
+        start_cli.LoadOptions(
+            gpu_memory_mode = "auto", supplied = frozenset({"gpu_memory_mode"})
+        ),
+    )
+
+    assert "force_reload" not in server.loads[0]
+
+
+def test_the_requested_mlx_kv_width_survives_a_reload(monkeypatch):
+    """The applied value is null when the runtime refused it; that must not round-trip."""
+    server = FakeServer(
+        [dict(RESIDENT)],
+        {
+            "is_gguf": False,
+            "active_model": RESIDENT["id"],
+            "model_identifier": RESIDENT["id"],
+            "requested_context_length": 4096,
+            "load_in_4bit": True,
+            "mlx_kv_bits": None,
+            "mlx_kv_bits_requested": 4,
+        },
+    ).install(monkeypatch)
+
+    start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768))
+
+    assert server.loads[0]["mlx_kv_bits"] == 4
+
+
+def test_a_proven_no_op_skips_the_preload_gate(monkeypatch):
+    """Nothing is evicted, so the gate protects nothing and would reject a live attach."""
+    server = FakeServer([dict(RESIDENT)], _gguf_status()).install(monkeypatch)
+    checked = []
+
+    start_cli._resolve_model(
+        BASE,
+        KEY,
+        None,
+        start_cli.LoadOptions(max_seq_length = 8192),
+        preload_check = lambda *a: checked.append(a),
+    )
+
+    assert checked == []
+
+
+def test_a_real_change_still_runs_the_preload_gate(monkeypatch):
+    server = FakeServer([dict(RESIDENT)], _gguf_status()).install(monkeypatch)
+
+    def gate(base, key, model, variant = None):
+        raise typer.Exit(code = 1)
+
+    with pytest.raises(typer.Exit):
+        start_cli._resolve_model(
+            BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768), preload_check = gate
+        )
+
+    assert server.loads == []
+
+
+def test_a_quant_override_on_a_direct_file_is_refused(monkeypatch):
+    """from_identifier consults a variant only for a directory, so this cannot apply."""
+    path = "/srv/models/Foo-Q4_K_M.gguf"
+    server = FakeServer(
+        [{"id": "Foo-Q4_K_M", "loaded": True}],
+        {
+            "is_gguf": True,
+            "active_model": "Foo-Q4_K_M",
+            "model_identifier": path,
+            "gguf_variant": "Q4_K_M",
+            "requested_context_length": 4096,
+        },
+    ).install(monkeypatch)
+
+    with pytest.raises(typer.Exit):
+        start_cli._resolve_model(
+            BASE, KEY, None, start_cli.LoadOptions(gguf_variant = "UD-Q8_K_XL")
+        )
+
+    assert server.loads == []
+
+
+def test_explicit_tensor_disable_clears_an_arch_gated_fallback(monkeypatch, capsys):
+    """The backend keeps the tensor intent behind the fallback; only a reload clears it."""
+    server = FakeServer(
+        [dict(RESIDENT)],
+        _gguf_status(tensor_parallel = False, tensor_parallel_dropped_by_arch_gate = True),
+    ).install(monkeypatch)
+
+    start_cli._resolve_model(
+        BASE,
+        KEY,
+        None,
+        start_cli.LoadOptions(tensor_parallel = False, supplied = frozenset({"tensor_parallel"})),
+    )
+
+    assert server.loads[0]["force_reload"] is True
+    assert "unloads the current model" in capsys.readouterr().out

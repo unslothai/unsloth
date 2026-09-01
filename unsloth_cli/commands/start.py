@@ -1779,7 +1779,9 @@ _RESIDENT_RUNTIME_FIELDS = {
     "tensor_parallel": "tensor_parallel",
     "speculative_type": "speculative_type",
     "spec_draft_n_max": "spec_draft_n_max",
-    "mlx_kv_bits": "mlx_kv_bits",
+    # Requested, not applied: the applied value is null when the runtime refused the
+    # request, and round-tripping that null would erase what the user asked for.
+    "mlx_kv_bits_requested": "mlx_kv_bits",
     # LoadRequest defaults this to True, so omitting it would reload a full-precision
     # model in 4-bit. Null on GGUF, which has no such setting, and nulls are dropped.
     "load_in_4bit": "load_in_4bit",
@@ -1854,19 +1856,25 @@ def _load_settings_differ(status: dict, load: LoadOptions, overrides: frozenset)
             if not status.get("is_gguf"):
                 continue
             # The architecture gate can normalize a tensor request to layer mode and say
-            # so. Reporting false there is the request already applied, not a difference,
-            # and the backend dedupes exactly this state.
-            if load.tensor_parallel and status.get("tensor_parallel_dropped_by_arch_gate"):
-                continue
+            # so. Asking for it AGAIN is the request already applied, not a difference,
+            # and the backend dedupes exactly this state. Asking to turn it OFF is the
+            # opposite: the backend keeps the tensor intent behind that fallback and does
+            # not read a bare false as an explicit drop (the UI sends false routinely), so
+            # only a real reload can clear it.
+            if status.get("tensor_parallel_dropped_by_arch_gate"):
+                if load.tensor_parallel:
+                    continue
+                return True
             if bool(status.get("tensor_parallel")) != bool(load.tensor_parallel):
                 return True
         elif name == "gpu_memory_mode":
             if not status.get("is_gguf"):
                 continue
-            # A paravirtual host pins every placement request to the same runtime, so the
-            # raw mode it reports cannot tell two requests apart. The frontend resident
-            # comparator skips placement on this flag for the same reason.
-            if status.get("gpu_placement_paravirtual"):
+            # A paravirtual host pins every placement request to the same runtime, and a
+            # CPU fallback is preserved across reloads by _preserve_cpu_fallback_intent, so
+            # in both cases the raw mode cannot tell two requests apart. resident-config-
+            # match.ts skips placement on exactly these two for the same reason.
+            if status.get("gpu_placement_paravirtual") or status.get("cpu_fallback_reason"):
                 continue
             if status.get("gpu_memory_mode") != load.gpu_memory_mode:
                 return True
@@ -1903,9 +1911,14 @@ def _resolve_model(
     # (possibly a server path), so this is the id to show and to match on.
     attach_public_id = None
     status_snapshot = None
+    # Whether the inferred settings can restart the resident. Computed once: the preload
+    # gate, the warning, the consent refusal and force_reload must all agree, and asking
+    # twice against a snapshot taken at different times is how they drift apart.
+    inferred_differs = False
     if requested is None and load_has_overrides and infer_resident:
         status_snapshot = _inference_status(base, key)
         requested, attach_public_id = _resident_load_target(models, status_snapshot, allow_casefold)
+        inferred_differs = _load_settings_differ(status_snapshot, load, overrides)
         # preload_check deliberately survives: it is the only gate before the load evicts
         # the shared model (_require_gguf_for_codex runs after _connect returns).
     # /v1/models also lists cached-but-unloaded catalog entries (loaded == False);
@@ -1962,6 +1975,11 @@ def _resolve_model(
                 )
                 for m in models
             )
+            # A proven no-op evicts nothing, so the gate has nothing to protect, and
+            # running it would reject an attach the disk-free already-loaded path can
+            # still serve (a direct .gguf the server has mapped but that has since moved).
+            if attach_public_id is not None and not inferred_differs:
+                resident_serves_request = True
             # /v1/models shows only the basename, so confirm a path request against the
             # identifier the server loaded -- else /new/foo.gguf reads as resident because
             # /old/foo.gguf is.
@@ -2000,7 +2018,7 @@ def _resolve_model(
         if attach_public_id is not None:
             # An inferred attach never switches model, so the comparison below would
             # misreport a switch and print the server's path.
-            if _load_settings_differ(status_snapshot, load, overrides):
+            if inferred_differs:
                 typer.echo(f"Applying new load settings to {attach_public_id}.")
                 typer.echo("This unloads the current model for every attached session.")
                 announced_switch = True
@@ -2032,6 +2050,15 @@ def _resolve_model(
         # truthiness: a reset like --context-length 0 equals the default yet must be sent.
         payload = {"model_path": requested}
         if "gguf_variant" in overrides and load.gguf_variant:
+            if attach_public_id is not None and str(requested).lower().endswith(".gguf"):
+                # from_identifier consults a variant only for a DIRECTORY, so posting one
+                # here would reload the very same file and then label it with a quant that
+                # does not describe its weights, disrupting every session for nothing.
+                _fail(
+                    f"'{attach_public_id}' was loaded from a single .gguf file, so "
+                    f"--gguf-variant {load.gguf_variant} cannot select a different quant. "
+                    "Re-run with --model naming the repository to switch quants."
+                )
             payload["gguf_variant"] = load.gguf_variant
         elif attach_public_id is not None and status_snapshot.get("is_gguf"):
             # Re-send the running quant: a repo id carries none, so from_identifier would
@@ -2057,7 +2084,11 @@ def _resolve_model(
             )
             if load.gpu_memory_mode == "manual" and not already_manual:
                 payload["gpu_layers"] = -1
-        if attach_public_id is not None and status_snapshot.get("requires_trust_remote_code"):
+        if (
+            attach_public_id is not None
+            and inferred_differs
+            and status_snapshot.get("requires_trust_remote_code")
+        ):
             # The reload cannot reproduce the consent: the payload has no
             # trust_remote_code and no approval fingerprint, and the standard backend
             # tears the worker down BEFORE the replacement is accepted, so a rejected
@@ -2079,7 +2110,7 @@ def _resolve_model(
             # already_loaded. Say outright that this one is a reload, but only when status
             # PROVED a difference: on an older server _load_settings_differ cannot tell,
             # and forcing there would evict on every attach.
-            if status_snapshot and _load_settings_differ(status_snapshot, load, overrides):
+            if status_snapshot and inferred_differs:
                 payload["force_reload"] = True
         try:
             loaded = _load_model_with_progress(base, key, requested, load, payload)
