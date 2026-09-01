@@ -8,7 +8,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { installLocalStorageFake } from "./helpers/kit.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
+
+// The module registers its logout listener at import time, so the window has to exist
+// before loadWithStubs runs and has to keep the registration for the test to fire it.
+const { fireWindowEvent } = installLocalStorageFake();
 
 type ValidationStatus = "valid" | "invalid" | "unavailable" | "missing";
 
@@ -19,7 +24,32 @@ type ConfirmToken = {
   forgetHfTokenValidation: (token?: string) => void;
 };
 
-function load(status: ValidationStatus, calls: { n: number }): ConfirmToken {
+const SESSION_CLEARED = "unsloth:auth-session-cleared";
+
+// The store the module subscribes to, so a test can drive a Settings token change.
+function tokenStoreStub() {
+  let listener: ((state: { token: string }) => void) | null = null;
+  return {
+    store: {
+      getState: () => ({ token: null, clearToken: () => {} }),
+      subscribe: (fn: (state: { token: string }) => void) => {
+        listener = fn;
+        return () => {
+          listener = null;
+        };
+      },
+    },
+    change(token: string) {
+      listener?.({ token });
+    },
+  };
+}
+
+function load(
+  status: ValidationStatus,
+  calls: { n: number },
+  tokenStore = tokenStoreStub(),
+): ConfirmToken {
   const noopStore = {
     getState: () => ({
       token: null,
@@ -31,7 +61,12 @@ function load(status: ValidationStatus, calls: { n: number }): ConfirmToken {
   return loadWithStubs<ConfirmToken>(
     new URL("../src/features/hf-auth/confirm-token.ts", import.meta.url),
     {
-      "@/features/hub/stores/hf-token-store": { useHfTokenStore: noopStore },
+      "@/features/auth/session-events": {
+        AUTH_SESSION_CLEARED_EVENT: SESSION_CLEARED,
+      },
+      "@/features/hub/stores/hf-token-store": {
+        useHfTokenStore: tokenStore.store,
+      },
       "@/features/settings/stores/settings-dialog-store": {
         useSettingsDialogStore: noopStore,
       },
@@ -109,4 +144,36 @@ test("forgetting a token drops an unexpired window", async () => {
   await mod.prepareHfTokenForUse("hf_valid");
 
   assert.equal(calls.n, 2, "a replaced credential rode the previous window");
+});
+
+
+test("a logout drops the cached bearer token", async () => {
+  // The cache holds the raw credential, so it must not outlive the session that made it.
+  const calls = { n: 0 };
+  const mod = load("valid", calls);
+
+  await mod.prepareHfTokenForUse("hf_valid");
+  assert.equal(calls.n, 1);
+
+  const delivered = fireWindowEvent(SESSION_CLEARED, {});
+  assert.ok(delivered > 0, "the module registered no logout listener");
+
+  await mod.prepareHfTokenForUse("hf_valid");
+  assert.equal(calls.n, 2, "a previous session's credential survived the logout");
+});
+
+test("replacing the stored credential drops the superseded key", async () => {
+  const calls = { n: 0 };
+  const tokenStore = tokenStoreStub();
+  const mod = load("valid", calls, tokenStore);
+
+  // The subscription is installed on first use, so prepare before staging the change.
+  await mod.prepareHfTokenForUse("hf_old");
+  assert.equal(calls.n, 1);
+  tokenStore.change("hf_old");
+
+  tokenStore.change("hf_new");
+
+  await mod.prepareHfTokenForUse("hf_old");
+  assert.equal(calls.n, 2, "the replaced credential kept its window");
 });
