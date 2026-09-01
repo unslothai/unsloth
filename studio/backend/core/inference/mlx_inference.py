@@ -1017,11 +1017,6 @@ def _flatten_kv_entries(cache):
             yield from _flatten_kv_entries(nested)
 
 
-def _kv_entry_not_trimmable():
-    """Default for an entry that does not implement ``is_trimmable``."""
-    return False
-
-
 def _kv_prefix_coverage(cache):
     """Tokens the whole cache holds, or None when no entry can attest to it.
 
@@ -1037,11 +1032,9 @@ def _kv_prefix_coverage(cache):
     for entry in _flatten_kv_entries(cache):
         offset = getattr(entry, "offset", None)
         if offset is None:
-            # Upstream shortens a stored cache to a prefix as soon as every
-            # entry reports it can be trimmed. An opaque state cannot honour
-            # that, so one claiming it can is not something a sibling's offset
-            # is in any position to vouch for.
-            if getattr(entry, "is_trimmable", _kv_entry_not_trimmable)():
+            # Upstream trims a stored cache to a prefix once every entry says it
+            # can be. A sibling's offset only attests for state that cannot be.
+            if getattr(entry, "is_trimmable", lambda: False)():
                 return None
             continue
         if getattr(entry, "start_position", 0):

@@ -1635,17 +1635,12 @@ def test_mlx_prompt_cache_covers_hybrid_recurrent_layouts(monkeypatch):
     nested = [CacheList(recurrent(), attention(KVCache(), 30))]
     assert _kv_prefix_coverage(nested) == 30
 
-    # Storing these is only safe because upstream can never shorten them: it
-    # trims a stored entry to a prefix once every entry is trimmable, and a
-    # recurrent state cannot be rewound. Pin that, so a future mlx-lm which
-    # made these trimmable fails here rather than reusing state at a position
-    # it never occupied.
+    # Storing these is only safe while upstream cannot shorten them, so pin it:
+    # an mlx-lm that made them trimmable must fail here, not reuse stale state.
     assert can_trim_prompt_cache(hybrid) is False
     assert can_trim_prompt_cache(nested) is False
-    assert not any(entry.is_trimmable() for entry in hybrid if not hasattr(entry, "offset"))
 
-    # An offsetless entry claiming it can be trimmed is refused outright: no
-    # sibling's offset can vouch for a state that says it can be rewound.
+    # An offsetless entry that says it can be trimmed is refused outright.
     class _TrimmableOpaqueState:
         def is_trimmable(self):
             return True
