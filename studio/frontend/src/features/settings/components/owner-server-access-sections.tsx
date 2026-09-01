@@ -11,11 +11,6 @@ import { KeylessApiAccessSection } from "./keyless-api-access-section";
 import { LanAccessSection } from "./lan-access-section";
 import { RemoteAccessSection } from "./remote-access-section";
 
-// The role cannot change without a new sign-in, and both the API Keys and the
-// Remote & LAN tab mount this. Remembering it keeps a tab switch from refetching,
-// and keeps the panel's first paint synchronous after the first answer.
-let rememberedIsAdmin: boolean | null = null;
-
 export function OwnerServerAccessSections({
   onSettingsChange,
 }: {
@@ -25,21 +20,24 @@ export function OwnerServerAccessSections({
     exposure: KeylessApiAccessExposure | null;
   }) => void;
 }) {
-  const [isAdmin, setIsAdmin] = useState<boolean | null>(rememberedIsAdmin);
+  const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
 
+  // Refetched per mount rather than memoised at module scope. Signing out is an
+  // SPA navigation, not a reload, so a cached role outlives the account it was
+  // read for and the next account sees the wrong panel until a hard refresh.
+  // One /api/auth/me per tab switch is the cheaper side of that trade.
   useEffect(() => {
-    if (rememberedIsAdmin !== null) return;
     let cancelled = false;
     fetchCurrentAccount()
       .then((account) => {
-        rememberedIsAdmin = account.is_admin;
         if (!cancelled) setIsAdmin(account.is_admin);
       })
-      .catch(() => {
-        // Deliberately not surfaced. A role lookup that fails must not take the
-        // whole panel down with it: this component only decides what to draw,
-        // and every route behind these controls is independently gated by
+      .catch((cause: unknown) => {
+        // Not surfaced: a role lookup that fails must not take the whole panel
+        // down with it. This component only decides what to draw, and every
+        // route behind these controls is independently gated by
         // _require_install_admin, so drawing them is not an escalation.
+        console.warn("Could not read the account role for server access", cause);
       });
     return () => {
       cancelled = true;
