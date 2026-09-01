@@ -392,3 +392,47 @@ def test_the_no_tools_probe_does_not_strip_the_system_turn_from_the_real_render(
     # The render that is actually served is the last one, and it must still carry the turn.
     assert calls[-1]["has_system"] is True
     assert "SENTINEL_RULE" in json.dumps(seen.get("messages"), ensure_ascii = False)
+
+
+_PROCESSOR_TEMPLATE_NO_TOOLS = (
+    "{% for m in messages %}<|im_start|>{{ m['role'] }}\n{{ m['content'] }}"
+    "<|im_end|>\n{% endfor %}"
+)
+
+
+def test_the_processor_template_is_mirrored_for_the_route_to_profile():
+    """An image turn renders through the processor, but the orchestrator keeps no live
+    processor, so the route can only profile what the worker mirrors. Without the body
+    here, healing is authorized from the tokenizer template the image render never
+    selects, and a text-form call is promoted for a schema the model never saw (#10092)."""
+    backend, _seen = _vision_probe()
+    info = backend.models["vision-tools"]
+    info["processor"].chat_template = _PROCESSOR_TEMPLATE_NO_TOOLS
+    info["tokenizer"] = info["processor"]
+    backend._load_chat_template_info("vision-tools")
+
+    mirrored = backend.models["vision-tools"]["chat_template_info"]
+    assert mirrored["processor_template"] == _PROCESSOR_TEMPLATE_NO_TOOLS
+
+
+def test_a_processor_body_that_cannot_advertise_empties_the_healing_catalog():
+    """The route profiles the mirrored processor body for image turns, so a body with no
+    tool handling at all must leave nothing authorized to heal."""
+    from core.inference.chat_template_helpers import renderable_tool_catalog_for_targets
+
+    catalog = renderable_tool_catalog_for_targets(
+        [_LOOKUP],
+        (None,),
+        {"chat_template_info": {"template": _CHATML_WITH_TOOLS}},
+        template = _PROCESSOR_TEMPLATE_NO_TOOLS,
+    )
+    assert catalog == []
+
+    # The same call without the image override keeps authorizing from the tokenizer body,
+    # which is what a text turn on the same model must still do.
+    text_catalog = renderable_tool_catalog_for_targets(
+        [_LOOKUP],
+        (None,),
+        {"chat_template_info": {"template": _CHATML_WITH_TOOLS}},
+    )
+    assert text_catalog

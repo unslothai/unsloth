@@ -1427,10 +1427,11 @@ class InferenceBackend:
                     # The turn is still served. There is no native-template fallback behind a
                     # processor, since the native template of a text model cannot place the
                     # image, and refusing would turn an answerable image question into an
-                    # error. Nothing is promoted on the strength of a catalog the prompt never
-                    # carried either: the route profiles this same processor through
-                    # renderable_tool_catalog, which reports an empty advertised catalog and so
-                    # switches healing off (#7066).
+                    # error. The route authorizes healing from this processor's own template
+                    # body, mirrored into chat_template_info at load time, so a body that
+                    # cannot advertise leaves an empty catalog and healing off. What that
+                    # static read cannot see is a body that names ``tools`` and still renders
+                    # identically, which is what this warning is for (#7066).
                     logger.warning(
                         "Vision chat template for '%s' rendered the same prompt with and "
                         "without the requested tools; serving the turn without the catalog.",
@@ -2967,7 +2968,18 @@ class InferenceBackend:
             "format_type": "generic",
             "special_tokens": {},
             "template_name": None,
+            # An image turn renders through the PROCESSOR, whose template is a different
+            # file from the tokenizer's for most VLMs, and the route only ever sees this
+            # mirrored dict: the orchestrator keeps no live processor. Without the
+            # processor body here the route authorizes tool-call healing from a template
+            # the image render never selects, and promotes calls for a schema the model
+            # was never shown (#10092, #7066).
+            "processor_template": None,
         }
+        processor = self.models[model_name].get("processor")
+        processor_template = getattr(processor, "chat_template", None)
+        if isinstance(processor_template, (str, dict)) and processor_template:
+            chat_template_info["processor_template"] = processor_template
 
         try:
             from utils.datasets import MODEL_TO_TEMPLATE_MAPPER
