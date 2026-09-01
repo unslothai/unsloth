@@ -254,14 +254,162 @@ class TestDrafterDiscoveryMatchesTheLoader:
         got, _ = models_routes._resolve_mtp_drafter(str(main), search_root = str(root))
         assert got != str(main)
 
-    def test_nested_mtp_subdir_copies_are_skipped(self, tmp_path):
-        """MTP/ copies are explicit-selection; the loader does not auto-fetch them."""
+    def test_nested_mtp_subdir_copy_is_used_when_no_root_mirror(self, tmp_path):
+        """A repo publishing heads only under MTP/, as Qwen3.8-Flash-Next and
+        Qwen3.8-27B do, still gets a drafter. _cached_repo_mtp_drafter already
+        reuses such a copy offline, so skipping it here gave a cached user
+        speculation and a fresh one none."""
         snap = self._snapshot(tmp_path)
-        main = _write_gguf(snap / "model-Q4_K_M.gguf", _MLA_NO_HEAD)
+        main = _write_gguf(snap / "model-Q4_K_M.gguf", _MLA_NO_HEAD, arch = "qwen4exp")
+        nested = _write_gguf(snap / "MTP" / "mtp-model-Q8_0.gguf", _MLA_NO_HEAD)
+
+        got, _ = models_routes._resolve_mtp_drafter(str(main))
+        assert got == str(nested)
+
+    def test_nested_fallback_prefers_q8_over_bf16(self, tmp_path):
+        """bf16 sorts first by name and is the worst head: larger and slower,
+        because a draft step is dominated by the LM head."""
+        snap = self._snapshot(tmp_path)
+        main = _write_gguf(snap / "model-Q4_K_M.gguf", _MLA_NO_HEAD, arch = "qwen4exp")
+        _write_gguf(snap / "MTP" / "mtp-model-BF16.gguf", _MLA_NO_HEAD)
+        q8 = _write_gguf(snap / "MTP" / "mtp-model-Q8_0.gguf", _MLA_NO_HEAD)
+
+        got, _ = models_routes._resolve_mtp_drafter(str(main))
+        assert got == str(q8)
+
+    def test_nested_fallback_prefers_the_shared_head(self, tmp_path):
+        """A -shared- head borrows the target's token_embd/output instead of
+        carrying its own: 1.35 GB smaller at Q8_0 and no worse, accepting
+        identically to the full head (159 of 284) on the shipped prebuilt. Only
+        qwen4exp reaches this path, and its MTP graph and the borrow ship in the
+        same fork, so a build that can draft one carries the other."""
+        snap = self._snapshot(tmp_path)
+        main = _write_gguf(snap / "model-Q4_K_M.gguf", _MLA_NO_HEAD, arch = "qwen4exp")
+        _write_gguf(snap / "MTP" / "mtp-model-Q8_0.gguf", _MLA_NO_HEAD)
+        shared = _write_gguf(snap / "MTP" / "mtp-model-shared-Q8_0.gguf", _MLA_NO_HEAD)
+
+        got, _ = models_routes._resolve_mtp_drafter(str(main))
+        assert got == str(shared)
+
+    def test_precision_outranks_the_shared_preference(self, tmp_path):
+        """Q8_0 first is the stronger rule: a shared bf16 head is both larger than
+        a full Q8_0 one and slower, since a draft step is dominated by the LM head
+        and that head is cheaper to execute at 8 bits."""
+        snap = self._snapshot(tmp_path)
+        main = _write_gguf(snap / "model-Q4_K_M.gguf", _MLA_NO_HEAD, arch = "qwen4exp")
+        q8 = _write_gguf(snap / "MTP" / "mtp-model-Q8_0.gguf", _MLA_NO_HEAD)
+        _write_gguf(snap / "MTP" / "mtp-model-shared-BF16.gguf", _MLA_NO_HEAD)
+
+        got, _ = models_routes._resolve_mtp_drafter(str(main))
+        assert got == str(q8)
+
+    def test_nested_fallback_is_skipped_for_other_architectures(self, tmp_path):
+        """The fallback is qwen4exp only. Qwen3.8-27B bakes the head into 20 of
+        its 24 quants, and llama.cpp prefers a -md drafter over an embedded one, so
+        pricing the sidecar would reserve for a file the load will not open."""
+        snap = self._snapshot(tmp_path)
+        main = _write_gguf(snap / "model-Q4_K_M.gguf", _MLA_NO_HEAD, arch = "qwen35")
+        _write_gguf(snap / "MTP" / "mtp-model-Q8_0.gguf", _MLA_NO_HEAD)
+
+        got, size = models_routes._resolve_mtp_drafter(str(main))
+        assert got is None, f"billed a sidecar the load will not fetch: {got} ({size} bytes)"
+
+    def test_nested_fallback_is_skipped_for_a_qwen4exp_with_its_own_head(self, tmp_path):
+        """Architecture is not the whole gate: a qwen4exp GGUF converted with the
+        block kept needs no sidecar either. Nothing published does this, so this
+        pins the intent."""
+        snap = self._snapshot(tmp_path)
+        main = _write_gguf(
+            snap / "model-Q4_K_M.gguf",
+            {**_MLA_NO_HEAD, "nextn_predict_layers": 1},
+            arch = "qwen4exp",
+        )
         _write_gguf(snap / "MTP" / "mtp-model-Q8_0.gguf", _MLA_NO_HEAD)
 
         got, _ = models_routes._resolve_mtp_drafter(str(main))
         assert got is None
+
+    def test_a_zero_head_count_still_takes_the_nested_fallback(self, tmp_path):
+        """Qwen3.8-27B writes the key on every quant and sets it to 0 on the four
+        with no head, so presence of the key must not read as a head."""
+        snap = self._snapshot(tmp_path)
+        main = _write_gguf(
+            snap / "model-UD-IQ1_S.gguf",
+            {**_MLA_NO_HEAD, "nextn_predict_layers": 0},
+            arch = "qwen4exp",
+        )
+        nested = _write_gguf(snap / "MTP" / "mtp-model-Q8_0.gguf", _MLA_NO_HEAD)
+
+        got, _ = models_routes._resolve_mtp_drafter(str(main))
+        assert got == str(nested)
+
+    def test_a_root_mirror_is_taken_by_every_architecture(self, tmp_path):
+        """Only the nested fallback is gated. A root mtp- companion beside the
+        weights says it is the one to use, which is how Gemma 4 ships."""
+        snap = self._snapshot(tmp_path)
+        main = _write_gguf(snap / "model-Q4_K_M.gguf", {**_MLA_NO_HEAD, "nextn_predict_layers": 1})
+        companion = _write_gguf(snap / "mtp-model.gguf", _MLA_NO_HEAD)
+
+        got, _ = models_routes._resolve_mtp_drafter(str(main))
+        assert got == str(companion)
+
+    def test_a_non_drafter_parked_under_mtp_is_not_launched(self, tmp_path):
+        """Everything under MTP/ classifies as a drafter, which keeps companions
+        out of variant menus and is too broad for choosing what to launch: an
+        mmproj or an imatrix would be handed to --model-draft."""
+        snap = self._snapshot(tmp_path)
+        main = _write_gguf(snap / "model-Q4_K_M.gguf", _MLA_NO_HEAD, arch = "qwen4exp")
+        _write_gguf(snap / "MTP" / "mmproj-BF16.gguf", _MLA_NO_HEAD)
+        _write_gguf(snap / "MTP" / "imatrix_unsloth.gguf", _MLA_NO_HEAD)
+        _write_gguf(snap / "MTP" / "Qwen3.8-Flash-Next-Q8_0.gguf", _MLA_NO_HEAD)
+
+        got, size = models_routes._resolve_mtp_drafter(str(main))
+        assert got is None, f"would launch a non-drafter as the draft model: {got} ({size} bytes)"
+
+    def test_the_older_mtp_suffix_naming_still_resolves(self, tmp_path):
+        """Gemma 4 published <model>-MTP.gguf before the mtp- prefix, and the
+        local scan still accepts it, so the hub path must too."""
+        snap = self._snapshot(tmp_path)
+        main = _write_gguf(snap / "model-Q4_K_M.gguf", _MLA_NO_HEAD, arch = "qwen4exp")
+        old = _write_gguf(snap / "MTP" / "model-Q8_0-MTP.gguf", _MLA_NO_HEAD)
+
+        got, _ = models_routes._resolve_mtp_drafter(str(main))
+        assert got == str(old)
+
+    def test_an_incomplete_nested_split_does_not_shadow_a_complete_head(self, tmp_path):
+        """llama.cpp resolves sibling shards from the first one's directory, so
+        half a set is unusable and _download_companion_gguf answers None to it.
+        Ranked first and rejected after, it would disable speculation with a usable
+        lower-ranked head present."""
+        snap = self._snapshot(tmp_path)
+        main = _write_gguf(snap / "model-Q4_K_M.gguf", _MLA_NO_HEAD, arch = "qwen4exp")
+        _write_gguf(snap / "MTP" / "mtp-model-Q8_0-00001-of-00002.gguf", _MLA_NO_HEAD)
+        complete = _write_gguf(snap / "MTP" / "mtp-model-Q4_K_M.gguf", _MLA_NO_HEAD)
+
+        got, _ = models_routes._resolve_mtp_drafter(str(main))
+        assert got == str(complete)
+
+    def test_a_complete_nested_split_is_still_chosen(self, tmp_path):
+        """The filter drops incomplete sets, not split sets."""
+        snap = self._snapshot(tmp_path)
+        main = _write_gguf(snap / "model-Q4_K_M.gguf", _MLA_NO_HEAD, arch = "qwen4exp")
+        first = _write_gguf(snap / "MTP" / "mtp-model-Q8_0-00001-of-00002.gguf", _MLA_NO_HEAD)
+        _write_gguf(snap / "MTP" / "mtp-model-Q8_0-00002-of-00002.gguf", _MLA_NO_HEAD)
+        _write_gguf(snap / "MTP" / "mtp-model-Q4_K_M.gguf", _MLA_NO_HEAD)
+
+        got, _ = models_routes._resolve_mtp_drafter(str(main))
+        assert got == str(first)
+
+    def test_an_incomplete_root_split_falls_through_to_the_nested_tier(self, tmp_path):
+        """The root tier returns early, so an incomplete root set used to hide a
+        usable nested head and leave the load with no drafter at all."""
+        snap = self._snapshot(tmp_path)
+        main = _write_gguf(snap / "model-Q4_K_M.gguf", _MLA_NO_HEAD, arch = "qwen4exp")
+        _write_gguf(snap / "mtp-model-Q8_0-00001-of-00002.gguf", _MLA_NO_HEAD)
+        nested = _write_gguf(snap / "MTP" / "mtp-model-Q8_0.gguf", _MLA_NO_HEAD)
+
+        got, _ = models_routes._resolve_mtp_drafter(str(main))
+        assert got == str(nested)
 
     def test_root_companion_wins_over_a_nested_copy(self, tmp_path):
         snap = self._snapshot(tmp_path)
