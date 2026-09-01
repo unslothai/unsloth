@@ -17,8 +17,10 @@ logger = logging.getLogger(__name__)
 def _headers_complete(dirs) -> bool:
     """`stdlib.h` alone is a standalone SDK: its ucrt pulls in `vcruntime.h` from the VC toolset,
     so the compile still dies there (measured with the toolset dir removed). Both, or not whole."""
+
     def found(name: str) -> bool:
         return any(d and os.path.isfile(os.path.join(d, name)) for d in dirs)
+
     return found("stdlib.h") and found("vcruntime.h")
 
 
@@ -111,7 +113,8 @@ def _toolchain_summary() -> str:
         inc_dirs = []
     logger.debug("Triton include dirs: %s", list(inc_dirs))
     missing = [
-        h for h in ("stdlib.h", "vcruntime.h")
+        h
+        for h in ("stdlib.h", "vcruntime.h")
         if not any(d and os.path.isfile(os.path.join(d, h)) for d in inc_dirs)
     ]
     return (
