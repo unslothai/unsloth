@@ -105,6 +105,7 @@ def _pad_len(T: int) -> int:
 
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class PrefixSegInfo:
     """Per-flat-token segment metadata driving the shared-prefix block mask.
@@ -371,6 +372,7 @@ def _run_flex(q, k, v, block_mask, enable_gqa, scale, compiled, T, T_pad):
 
 
 # ---------------------------------------------------------------------------
+
 
 def flex_shared_prefix_attention(
     Q: torch.Tensor,

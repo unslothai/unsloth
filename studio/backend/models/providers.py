@@ -12,6 +12,7 @@ MAX_JSON_SAFE_INTEGER = 9_007_199_254_740_991
 
 # ── Registry (static provider info) ───────────────────────────────
 
+
 class ProviderRegistryEntry(BaseModel):
     """A supported provider type with its default configuration."""
 
@@ -51,6 +52,7 @@ class ProviderRegistryEntry(BaseModel):
 
 
 # ── Provider config CRUD ──────────────────────────────────────────
+
 
 class ProviderCreate(BaseModel):
     """Request to create a saved provider configuration."""
@@ -153,6 +155,7 @@ class ProviderResponse(BaseModel):
 
 # ── Model listing ─────────────────────────────────────────────────
 
+
 class ProviderModelInfo(BaseModel):
     """A model available from an external provider."""
 
@@ -180,6 +183,7 @@ class ProviderModelsRequest(BaseModel):
 
 
 # ── Connection testing ────────────────────────────────────────────
+
 
 class ProviderTestRequest(BaseModel):
     """Request to test connectivity to an external provider."""
