@@ -338,6 +338,59 @@ assert_eq "spoofed gfx1030 host keeps rocm" \
     "https://download.pytorch.org/whl/rocm7.2" \
     "$(export HSA_OVERRIDE_GFX_VERSION=10.3.0; _index_for_rocminfo_host gfx1030)"
 
+echo "=== A mask that leaves only the APU visible must not be read as a healthy host ==="
+# The physical inventory is not the question when choosing wheels: on a mixed host a
+# ROCR_VISIBLE_DEVICES exposing only the Van Gogh APU means the runtime can reach
+# nothing but gfx1033, so counting the hidden dGPU as "good" handed ROCm wheels to a
+# host that can only compute wrong answers with them.
+_make_mixed_host() {  # -> a dir whose rocminfo honours ROCR_VISIBLE_DEVICES
+    _mx_apu=$(_make_rocminfo_host gfx1033)
+    _mx_dgpu=$(_make_rocminfo_host gfx1100)
+    _mx_dir=$(mktemp -d)
+    cp "$_mx_apu/hipconfig" "$_mx_dir/hipconfig"
+    cat > "$_mx_dir/rocminfo" <<MIXED
+#!/bin/sh
+# ROCR_VISIBLE_DEVICES=0 selects the APU only; unset shows both agents.
+if [ "\${ROCR_VISIBLE_DEVICES:-unset}" = "0" ]; then
+    exec "$_mx_apu/rocminfo"
+fi
+"$_mx_apu/rocminfo"
+"$_mx_dgpu/rocminfo"
+MIXED
+    chmod +x "$_mx_dir/rocminfo"
+    printf '%s' "$_mx_dir"
+}
+
+_index_for_mixed_host() {  # \$1 = ROCR_VISIBLE_DEVICES ("" to leave it unset)
+    _imh_dir=$(_make_mixed_host)
+    PATH="$_imh_dir:$_TOOLS_DIR" "$_SH" -c "
+        unset CUDA_VISIBLE_DEVICES UNSLOTH_ROCM_GFX_ARCH UNSLOTH_TORCH_INDEX_URL
+        unset UNSLOTH_TORCH_INDEX_FAMILY HSA_OVERRIDE_GFX_VERSION HIP_VISIBLE_DEVICES
+        if [ -n '$1' ]; then ROCR_VISIBLE_DEVICES='$1'; export ROCR_VISIBLE_DEVICES
+        else unset ROCR_VISIBLE_DEVICES; fi
+        _ARCH=x86_64
+        . '$_E2E_FUNCS'
+        get_torch_index_url
+    " 2>/dev/null | tail -1
+    rm -rf "$_imh_dir"
+}
+
+# The mock really does hide the dGPU under the mask, else the assertions below are vacuous.
+_mixed_masked=$( _mx_check=$(_make_mixed_host)
+    PATH="$_mx_check:$_TOOLS_DIR" "$_SH" -c "
+        unset UNSLOTH_ROCM_GFX_ARCH HSA_OVERRIDE_GFX_VERSION
+        ROCR_VISIBLE_DEVICES=0; export ROCR_VISIBLE_DEVICES
+        . '$_E2E_FUNCS'; _probe_amd_gfx_arch visible | sort -u | tr '\n' ' '" 2>/dev/null
+    rm -rf "$_mx_check" )
+assert_eq "the mask really hides the dGPU" "gfx1033 " "$_mixed_masked"
+
+# Unmasked, both are visible and the healthy dGPU keeps the host on ROCm.
+assert_eq "mixed host unmasked keeps rocm" \
+    "https://download.pytorch.org/whl/rocm7.2" "$(_index_for_mixed_host '')"
+# Masked to the APU alone, the only reachable GPU is the bad one -> cpu.
+assert_eq "mixed host masked to the APU -> cpu" \
+    "https://download.pytorch.org/whl/cpu" "$(_index_for_mixed_host 0)"
+
 echo "=== Structural: the gate precedes the version-keyed index selection ==="
 _gate_line=$(grep -n 'Archs measured to compute INCORRECTLY under ROCm' "$INSTALL_SH" | head -1 | cut -d: -f1)
 _idx_line=$(grep -n 'rocm7.2|rocm7.2.\*) echo "\$_base/rocm7.2"' "$INSTALL_SH" | head -1 | cut -d: -f1)

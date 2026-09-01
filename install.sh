@@ -3673,20 +3673,30 @@ _hsa_spoofed_physical_gfx() {
 # as the last command would trip set -e in callers' assignments). Shared by
 # get_torch_index_url's gfx gate and the runtime-less reroute gate so the two
 # can never disagree on what "readable" means.
-#   $1 = "physical" to also strip HSA_OVERRIDE_GFX_VERSION. ROCr applies it in userland
-#   while building agent names, so rocminfo reports the SPOOFED ISA while it is set
-#   (unslothai#7331); dropping it is the one way to read the silicon. Opt-in, because the
-#   spoofed reading is the RUNTIME target and most callers want that -- only a caller
-#   asking what hardware is present wants this. Mirrors _detect_amd_gfx_codes(
-#   ignore_hsa_override = True) in studio/install_python_stack.py. amd-smi reads the
-#   driver, so stripping it there is a no-op, kept for one code path.
+#   $1 selects what the probe should be able to see:
+#     (unset)    strip the visible-device masks, keep HSA_OVERRIDE_GFX_VERSION. The
+#                historical behaviour, and what the AMD-presence callers want: a
+#                container mask must not blind the env-independent detection (#7314).
+#     physical   also strip HSA_OVERRIDE_GFX_VERSION. ROCr applies it in userland while
+#                building agent names, so rocminfo reports the SPOOFED ISA while it is
+#                set (unslothai#7331); dropping it is the one way to read the silicon.
+#                Mirrors _detect_amd_gfx_codes(ignore_hsa_override = True) in
+#                studio/install_python_stack.py.
+#     visible    strip ONLY HSA_OVERRIDE_GFX_VERSION, so the masks stay in force and the
+#                answer is what ROCm will actually expose to torch. For a caller deciding
+#                which wheels this run should get, that is the question -- the physical
+#                inventory can contain a healthy GPU the mask has hidden from the runtime.
+#   amd-smi reads the driver, so stripping either variable there is a no-op.
 #
 # shellcheck disable=SC2086  # $_pg_strip is a LIST of variable names for unset; POSIX sh
 # has no arrays, and quoting it would unset one variable whose name contains spaces.
 _probe_amd_gfx_arch() {
     _ensure_rocm_probe_env
-    _pg_strip="ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES"
-    [ "${1:-}" = "physical" ] && _pg_strip="$_pg_strip HSA_OVERRIDE_GFX_VERSION"
+    case "${1:-}" in
+        physical) _pg_strip="ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES HSA_OVERRIDE_GFX_VERSION" ;;
+        visible)  _pg_strip="HSA_OVERRIDE_GFX_VERSION" ;;
+        *)        _pg_strip="ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES" ;;
+    esac
     _pg=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]')
     if [ -z "$_pg" ] && command -v rocminfo >/dev/null 2>&1; then
         _pg=$( (unset $_pg_strip; rocminfo 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
@@ -4049,11 +4059,30 @@ get_torch_index_url() {
         # dGPU, whereas this is a direct unspoofed probe and only gfx1033 silicon can
         # answer gfx1033 to it. Kept in its own variable so the runtime reading the rest
         # of the function uses is untouched.
-        _amd_gfx_gate_probe="$_amd_gfx_probe"
-        if [ -n "${HSA_OVERRIDE_GFX_VERSION:-}" ]; then
-            _amd_gfx_unspoofed=$(_probe_amd_gfx_arch physical 2>/dev/null || true)
-            [ -n "$_amd_gfx_unspoofed" ] && _amd_gfx_gate_probe="$_amd_gfx_unspoofed"
+        # Judge the VISIBLE targets, not the physical inventory. _probe_amd_gfx_arch
+        # unsets the masks by default, so on a host pairing a Van Gogh APU with a healthy
+        # dGPU a ROCR_VISIBLE_DEVICES that exposes only the APU still counted the hidden
+        # dGPU as "good" and kept ROCm -- while the runtime could reach nothing but
+        # gfx1033, which is the arch this whole gate exists to keep off ROCm. Choosing
+        # wheels is a question about what this run can actually use, so it has to respect
+        # the mask; the mask-free read stays the AMD-PRESENCE probe it always was.
+        #
+        # Note the deliberate asymmetry with _rocm_miscomputing_host() in
+        # install_python_stack.py, which keeps reading the physical inventory. That one
+        # force-reinstalls CPU torch OVER an existing ROCm install, and a transient env
+        # var must not destroy a working multi-GPU setup. Giving CPU wheels to a fresh
+        # install is cheap and reversible; taking ROCm away from an installed one is not.
+        # Neither can protect a device chosen after the install, which is a runtime
+        # concern, not an installer one.
+        #
+        # Falls back to the physical read when nothing is visible (a mask that hides
+        # every device), so an all-hidden host keeps the behaviour it has today rather
+        # than reading as "no AMD at all".
+        _amd_gfx_gate_probe=$(_probe_amd_gfx_arch visible 2>/dev/null || true)
+        if [ -z "$_amd_gfx_gate_probe" ]; then
+            _amd_gfx_gate_probe=$(_probe_amd_gfx_arch physical 2>/dev/null || true)
         fi
+        [ -n "$_amd_gfx_gate_probe" ] || _amd_gfx_gate_probe="$_amd_gfx_probe"
         _amd_gfx_tokens=" $(printf '%s\n' "$_amd_gfx_gate_probe" | sed 's/:.*$//' \
             | tr '[:upper:]' '[:lower:]' | tr '\n' ' ')"
         _amd_gfx_bad=false
