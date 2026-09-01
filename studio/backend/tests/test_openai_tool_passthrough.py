@@ -205,6 +205,57 @@ class TestFriendlyUpstreamError:
             # None keeps the upstream status: a 400 would blame the caller's request.
             assert _classify_llama_generation_error(Exception(raw)) is None
 
+    def test_in_band_sse_recovers_counts_from_the_chunk_the_message_came_from(self):
+        """`_monitor_openai_error_message` returns only the message string. When that
+        string carries no numbers but the chunk around it does, the totals -- and the
+        window `oversize_advice` needs -- have to come from the payload."""
+        import json as _json
+
+        from core.inference import context_refusal
+        from routes.inference import (
+            _anthropic_upstream_stream_error_event,
+            _json_dumps_safe,
+            _monitor_openai_error_message,
+        )
+
+        chunk = {
+            "error": {
+                "code": 400,
+                "message": "the request exceeds the available context size",
+                "type": "exceed_context_size_error",
+                "n_prompt_tokens": 70494,
+                "n_ctx": 67584,
+            }
+        }
+        message = _monitor_openai_error_message(chunk)
+        source = _json_dumps_safe(chunk.get("error", chunk))
+
+        def body(text, counts_source):
+            event = _anthropic_upstream_stream_error_event(text, counts_source = counts_source)
+            return _json.loads(event.split("data: ", 1)[1].strip().splitlines()[0])["error"]
+
+        assert "70494" not in body(message, None)["message"]
+        assert (
+            "Prompt is too long: 70494 tokens > 67584 maximum" in body(message, source)["message"]
+        )
+
+        try:
+            context_refusal.record_fit(
+                {
+                    "fits": False,
+                    "context_length": 67584,
+                    "irreducible_tokens": 70000,
+                    "latest_turn_tokens": 500,
+                }
+            )
+            # The recovered window is what lets the fit be consulted at all.
+            assert "shortening the conversation will not help" in body(message, source)["message"]
+        finally:
+            context_refusal.clear()
+
+        # An unrelated error must not have the payload spliced into its text.
+        assert body("disk full", source)["message"] == "llama-server error: disk full"
+
     def test_counts_come_from_the_structured_fields_when_the_message_has_none(self):
         """An exceed_context_size_error body carries n_prompt_tokens/n_ctx even when its
         message spells out no numbers. These paths are handed the whole body, so the

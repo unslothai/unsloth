@@ -335,13 +335,17 @@ def _oversize_counts(text: str):
     return _parse_overflow_counts(text)
 
 
-def _anthropic_upstream_error(text: str) -> str:
+def _anthropic_upstream_error(text: str, counts_source: Optional[str] = None) -> str:
+    """`text` is what the client is told; `counts_source` is the fuller body it came
+    from, used only to recover token counts the message itself does not spell out."""
     # Starvation is a shared-cache capacity failure, not an oversized prompt: the right
     # response is to retry, so it must not be reworded into "shorten the conversation".
     if is_kv_starvation(text):
         return KV_STARVATION_MESSAGE
     if _classify_llama_generation_error(Exception(text)):
         counts = _oversize_counts(text)
+        if counts is None and counts_source:
+            counts = _oversize_counts(counts_source)
         if counts:
             # Anthropic's own head wording, which its clients key on to compact, paired
             # with the fit's remedy rather than a flat "shorten the conversation": when
@@ -1057,7 +1061,15 @@ def _anthropic_stream_error_event(exc, *, force: bool = False):
     )
 
 
-def _anthropic_upstream_stream_error_event(text: str):
+def _json_dumps_safe(value) -> Optional[str]:
+    """`json.dumps` for count recovery only; never raises on an odd payload."""
+    try:
+        return json.dumps(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _anthropic_upstream_stream_error_event(text: str, counts_source: Optional[str] = None):
     """In-band Anthropic error event for a 200 stream that later reports an upstream failure.
 
     Same wording and status rule as the non-200 branch. Routing the raw body through
@@ -1072,7 +1084,7 @@ def _anthropic_upstream_stream_error_event(text: str):
     return build_anthropic_sse_event(
         "error",
         anthropic_error_body(
-            _anthropic_upstream_error(text),
+            _anthropic_upstream_error(text, counts_source = counts_source),
             status = 400 if over else 500,
         ),
     )
@@ -29548,7 +29560,13 @@ async def _anthropic_passthrough_stream(
                         from core.inference.llama_keepwarm import mark_response_failed
 
                         mark_response_failed(getattr(request, "scope", None))
-                        yield _anthropic_upstream_stream_error_event(error_message)
+                        # The message alone can be count-less while the chunk still
+                        # carries n_prompt_tokens/n_ctx; keep the clean message and let
+                        # the formatter recover the totals from the payload.
+                        yield _anthropic_upstream_stream_error_event(
+                            error_message,
+                            counts_source = _json_dumps_safe(chunk.get("error", chunk)),
+                        )
                         return
                 if disable_parallel_tool_use:
                     _drop_parallel_tool_call_deltas(chunk)
