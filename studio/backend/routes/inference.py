@@ -12834,8 +12834,8 @@ def _non_gguf_runtime_settings_match(backend, request) -> bool:
         if resident is not None and int(resident) != int(request.max_seq_length):
             return False
     if "load_in_4bit" in fields_set:
-        # As REQUESTED, not as resolved: _effective_load_in_4bit rewrites it for LoRA
-        # and the latest-transformers tier, so raw-vs-resolved would never match.
+        # As REQUESTED, not as resolved: _effective_load_in_4bit rewrites it for LoRA and
+        # the latest-transformers tier, so raw-vs-resolved would never match.
         resident = entry.get("load_in_4bit_requested")
         if resident is not None and bool(resident) != bool(request.load_in_4bit):
             return False
@@ -13993,10 +13993,9 @@ async def _load_model_impl(
                 ),
             )
 
-        # Record the REQUESTED values: the already-loaded check compares the next
-        # request's raw fields, and load_in_4bit is normalized on the resolved side.
-        # Here, not in backend.load_model: that entry is built in the load subprocess
-        # and only a fixed model_info mirror crosses back, so it would never be read.
+        # Stamped here, not in backend.load_model: that entry is built in the load
+        # subprocess and only a fixed model_info mirror crosses back, so it would
+        # never be read.
         _resident_entry = backend.models.get(backend.active_model_name)
         if isinstance(_resident_entry, dict):
             _resident_entry["max_seq_length_requested"] = int(request.max_seq_length or 0)
@@ -16185,8 +16184,6 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             preserve_thinking_default = _sf_flags.get("preserve_thinking_default", False),
             supports_tools = _sf_flags["supports_tools"],
             context_length = _positive_int_or_none(model_info.get("context_length")),
-            # Requested, not resolved: context_length is clamped, so it cannot tell a
-            # client whether re-sending the same request is a no-op or a reload.
             requested_context_length = model_info.get("max_seq_length_requested"),
             load_in_4bit = model_info.get("load_in_4bit_requested"),
             requested_gpu_ids = model_info.get("gpu_ids_requested"),

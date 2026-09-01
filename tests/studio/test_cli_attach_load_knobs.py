@@ -16,9 +16,7 @@ RESIDENT = {"id": "unsloth/Qwen3-8B", "loaded": True}
 
 
 class FakeServer:
-    """/v1/models advertises the sanitized public id; only the status identifier is
-    what the load endpoint dedupes against."""
-
+    """Serves /v1/models and /api/inference/status; records every load payload."""
     def __init__(self, models, status):
         self.models = models
         self.status = status
@@ -69,11 +67,7 @@ def loads(monkeypatch):
 
 
 def sent(server, index = 0):
-    """The load payload without force_reload.
-
-    Every inferred attach whose settings status PROVED to differ carries it, so the
-    tests that care assert it on its own rather than repeating it in each payload.
-    """
+    """The load payload without force_reload, which the tests that care assert alone."""
     return {k: v for k, v in server.loads[index].items() if k != "force_reload"}
 
 
@@ -111,7 +105,7 @@ def test_bare_attach_does_not_load(loads):
 
 
 def test_bare_attach_does_not_query_status(monkeypatch):
-    """A bare attach stays a pure read of /v1/models."""
+    """A bare attach must not even ask for status."""
     server = FakeServer(
         [dict(RESIDENT)],
         {"is_gguf": False, "active_model": RESIDENT["id"], "model_identifier": RESIDENT["id"]},
@@ -125,8 +119,7 @@ def test_bare_attach_does_not_query_status(monkeypatch):
 
 
 def test_path_loaded_resident_is_reloaded_by_its_real_path(monkeypatch):
-    """_same_loaded_identifier compares resident paths exactly, so the load must carry
-    the identifier from status; a basename would resolve as a brand new model."""
+    """The load carries the identifier from status, not the advertised basename."""
     path = "/srv/models/Foo-Q4_K_M.gguf"
     server = FakeServer(
         [{"id": "Foo-Q4_K_M", "loaded": True}],
@@ -146,8 +139,7 @@ def test_path_loaded_resident_is_reloaded_by_its_real_path(monkeypatch):
 
 
 def test_inferred_target_still_runs_the_preload_check(monkeypatch):
-    """preload_check is the only gate before the load; _require_gguf_for_codex runs
-    after _connect returns, i.e. after the shared model is already evicted."""
+    """preload_check still runs on an inferred target."""
     server = FakeServer(
         [dict(RESIDENT)],
         {"is_gguf": False, "active_model": RESIDENT["id"], "model_identifier": RESIDENT["id"]},
@@ -174,7 +166,7 @@ def test_inferred_target_still_runs_the_preload_check(monkeypatch):
 
 
 def test_inferred_reload_warns_that_it_unloads_for_every_session(monkeypatch, capsys):
-    """A changed context restarts llama-server for every attached session."""
+    """A settings change is announced as an unload."""
     server = FakeServer(
         [dict(RESIDENT)],
         {
@@ -193,7 +185,7 @@ def test_inferred_reload_warns_that_it_unloads_for_every_session(monkeypatch, ca
 
 
 def test_active_model_decides_the_resident_not_list_order(monkeypatch):
-    """Cached, speech and chat entries coexist; order does not name the resident."""
+    """active_model, not catalog order, names the resident."""
     server = FakeServer(
         [
             {"id": "unsloth/whisper-large", "loaded": True},
@@ -208,7 +200,7 @@ def test_active_model_decides_the_resident_not_list_order(monkeypatch):
 
 
 def test_unreloadable_resident_fails_before_loading(monkeypatch):
-    """A native lease redacts model_identifier; guessing the basename is wrong."""
+    """A redacted model_identifier is refused, not guessed from the basename."""
     server = FakeServer(
         [{"id": "Foo-Q4_K_M", "loaded": True}],
         {"is_gguf": True, "active_model": "Foo-Q4_K_M", "model_identifier": None},
@@ -221,7 +213,7 @@ def test_unreloadable_resident_fails_before_loading(monkeypatch):
 
 
 def test_explicit_flags_matching_defaults_still_reload(monkeypatch):
-    """--context-length 0 and --no-tensor-parallel are resets, not omissions."""
+    """A flag typed at its default value is still sent."""
     server = FakeServer(
         [dict(RESIDENT)],
         {
@@ -252,12 +244,7 @@ def test_explicit_flags_matching_defaults_still_reload(monkeypatch):
 
 
 def test_inferred_attach_pins_the_resident_quant(monkeypatch):
-    """A repo-id GGUF must be re-sent with the quant it is running.
-
-    The load endpoint re-resolves a repo id, and ModelConfig.from_identifier auto-picks
-    the preferred variant when none is sent, so posting model_path alone would evict a
-    UI-chosen Q8_0 and download UD-Q4_K_XL instead of only changing the context.
-    """
+    """A repo-id GGUF is re-sent with the quant it is running."""
     server = FakeServer(
         [{"id": "unsloth/Qwen3-30B-A3B-GGUF", "loaded": True}],
         {
@@ -284,10 +271,7 @@ def test_inferred_attach_pins_the_resident_quant(monkeypatch):
 
 
 def test_inferred_attach_at_the_default_context_does_not_reresolve_the_quant(monkeypatch):
-    """`--context-length 0` is a reset, so it now posts a load where it once posted none.
-
-    That load must still name the running quant, or the reset silently swaps the weights.
-    """
+    """The --context-length 0 reset still names the running quant."""
     server = FakeServer(
         [{"id": "unsloth/Qwen3-30B-A3B-GGUF", "loaded": True}],
         {
@@ -314,7 +298,7 @@ def test_inferred_attach_at_the_default_context_does_not_reresolve_the_quant(mon
 
 
 def test_inferred_attach_does_not_pin_a_variant_onto_a_direct_gguf_file(monkeypatch):
-    """A direct .gguf path is loaded as itself; the server never redirects it by variant."""
+    """A direct .gguf path is sent with no variant."""
     path = "/srv/models/Foo-Q4_K_M.gguf"
     server = FakeServer(
         [{"id": "Foo-Q4_K_M", "loaded": True}],
@@ -333,7 +317,7 @@ def test_inferred_attach_does_not_pin_a_variant_onto_a_direct_gguf_file(monkeypa
 
 
 def test_inferred_attach_to_a_non_gguf_resident_sends_no_variant(monkeypatch):
-    """status.gguf_variant is absent for safetensors/MLX; nothing may be invented."""
+    """A non-GGUF resident is sent no variant."""
     server = FakeServer(
         [dict(RESIDENT)],
         {
@@ -350,7 +334,7 @@ def test_inferred_attach_to_a_non_gguf_resident_sends_no_variant(monkeypatch):
 
 
 def test_hf_cache_resident_matches_the_advertised_repo_id(monkeypatch):
-    """The server maps a cache path to its repo id; our basename helper does not."""
+    """A cache-path resident resolves to the repo id the server advertises."""
     cache_path = (
         "/home/u/.cache/huggingface/hub/models--unsloth--Qwen3-8B-GGUF"
         "/snapshots/abc123/qwen3-8b-Q4_K_M.gguf"
@@ -372,7 +356,7 @@ def test_hf_cache_resident_matches_the_advertised_repo_id(monkeypatch):
 
 
 def test_status_names_the_resident_even_when_the_catalog_lags(monkeypatch):
-    """A status id absent from /v1/models must not fall back to list order."""
+    """A status id absent from /v1/models still names the resident."""
     server = FakeServer(
         [{"id": "unsloth/whisper-large", "loaded": True}],
         {
@@ -389,7 +373,7 @@ def test_status_names_the_resident_even_when_the_catalog_lags(monkeypatch):
 
 
 def test_a_freshly_started_server_is_not_reloaded(monkeypatch):
-    """_connect passes requested=None after auto-starting a server FROM these knobs."""
+    """An auto-started server passes infer_resident False."""
     server = FakeServer(
         [dict(RESIDENT)],
         {"is_gguf": False, "active_model": RESIDENT["id"], "model_identifier": RESIDENT["id"]},
@@ -408,7 +392,7 @@ def test_a_freshly_started_server_is_not_reloaded(monkeypatch):
 
 
 def test_omitted_default_flags_are_not_forwarded(monkeypatch):
-    """A bare --model load still sends only model_path."""
+    """A bare --model load sends only model_path."""
     server = FakeServer(
         [dict(RESIDENT)],
         {"is_gguf": False, "active_model": RESIDENT["id"], "model_identifier": RESIDENT["id"]},
@@ -420,10 +404,7 @@ def test_omitted_default_flags_are_not_forwarded(monkeypatch):
 
 
 class TestExplicitFlagsThroughTheRealCli:
-    """Typer vendors its own click (so a ParameterSource identity test matches nothing)
-    and invokes callbacks with no active click context (so reading it globally fails
-    too). Both regressions silently look like a bare attach."""
-
+    """`supplied` tracking through the real Typer and Click stack."""
     @staticmethod
     def _load_for(argv):
         from typer.testing import CliRunner
@@ -454,7 +435,6 @@ class TestExplicitFlagsThroughTheRealCli:
     def test_flags_equal_to_their_default_are_recorded(self, flag, expected):
         load = self._load_for(["codex", "--no-launch", *flag])
         assert load is not None, "the command never reached _connect"
-        # Value equals the declared default, so only `supplied` carries the intent.
         assert expected in load.supplied
         assert expected in load.overrides()
 
@@ -472,7 +452,7 @@ class TestExplicitFlagsThroughTheRealCli:
 
 
 def test_inferred_reload_carries_the_resident_runtime_settings(monkeypatch):
-    """A reload is not a PATCH: unnamed knobs are reset unless we resend them."""
+    """Knobs the user did not name are carried over from the resident."""
     server = FakeServer(
         [dict(RESIDENT)],
         {
@@ -486,7 +466,6 @@ def test_inferred_reload_carries_the_resident_runtime_settings(monkeypatch):
             "requested_n_batch": 1024,
             "requested_llama_extra_args": ["--foo"],
             "tensor_split": [0.5, 0.5],
-            # Never set, so it must be omitted rather than sent as null.
             "requested_load_mode": None,
         },
     ).install(monkeypatch)
@@ -525,7 +504,7 @@ def test_user_supplied_knobs_beat_the_resident_values(monkeypatch):
 
 
 def test_explicit_zero_context_forces_the_reload(monkeypatch):
-    """The server reads a bare 0 as "no preference", so say outright this is a reload."""
+    """An explicit 0 is force_reloaded."""
     server = FakeServer(
         [dict(RESIDENT)],
         {
@@ -564,7 +543,7 @@ def test_a_provable_no_op_is_not_forced(monkeypatch):
 
 
 def test_an_older_server_is_never_force_reloaded(monkeypatch):
-    """_load_settings_differ cannot prove anything without status; forcing would evict."""
+    """No status means no proof, so no force_reload."""
     server = FakeServer([dict(RESIDENT)], {}).install(monkeypatch)
 
     start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768))
@@ -573,7 +552,7 @@ def test_an_older_server_is_never_force_reloaded(monkeypatch):
 
 
 def test_four_bit_flag_does_not_warn_about_a_gguf_resident(monkeypatch, capsys):
-    """GGUF reports load_in_4bit as null because it has none; that is not a difference."""
+    """A null load_in_4bit on GGUF is not a difference."""
     server = FakeServer(
         [dict(RESIDENT)],
         {
@@ -597,7 +576,7 @@ def test_four_bit_flag_does_not_warn_about_a_gguf_resident(monkeypatch, capsys):
 
 
 def test_status_reporting_no_chat_resident_does_not_pick_a_speech_sidecar(monkeypatch):
-    """active_model null is a definitive "nothing is resident", not a missing endpoint."""
+    """A null active_model is refused, not resolved from the catalog."""
     server = FakeServer(
         [{"id": "unsloth/whisper-large-v3", "loaded": True}],
         {"is_gguf": False, "active_model": None, "model_identifier": None},
@@ -610,7 +589,7 @@ def test_status_reporting_no_chat_resident_does_not_pick_a_speech_sidecar(monkey
 
 
 def test_failed_inferred_load_names_the_inferred_resident(monkeypatch, capsys):
-    """Catalog order can name a speech sidecar; the survivor probe must use the target."""
+    """The survivor probe uses the inferred target."""
     server = FakeServer(
         [
             {"id": "unsloth/whisper-large-v3", "loaded": True},
@@ -634,16 +613,11 @@ def test_failed_inferred_load_names_the_inferred_resident(monkeypatch, capsys):
     with pytest.raises(RuntimeError):
         start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768))
 
-    # The chat model did NOT survive, so no reassuring message may be printed.
     assert "Nothing was unloaded" not in capsys.readouterr().err
 
 
 def test_inferred_reload_keeps_a_full_precision_resident(monkeypatch):
-    """LoadRequest defaults load_in_4bit to True, so omitting it quantizes the model.
-
-    A non-GGUF resident loaded with load_in_4bit False, attached to with only a context
-    change, must come back at the same precision.
-    """
+    """A full-precision resident comes back at the same precision."""
     server = FakeServer(
         [dict(RESIDENT)],
         {
@@ -683,7 +657,7 @@ def test_an_explicit_precision_flag_beats_the_resident(monkeypatch):
 
 
 def test_a_gguf_resident_is_sent_no_precision_flag(monkeypatch):
-    """GGUF reports load_in_4bit null because it has none, and nulls are dropped."""
+    """A GGUF resident is sent no load_in_4bit."""
     server = FakeServer(
         [dict(RESIDENT)],
         {
@@ -714,7 +688,7 @@ def _gguf_status(**extra):
 
 
 def test_changing_one_knob_keeps_the_custom_context(monkeypatch):
-    """max_seq_length defaults to 0, which the intent copies into n_ctx."""
+    """A custom context survives a change to another knob."""
     server = FakeServer([dict(RESIDENT)], _gguf_status()).install(monkeypatch)
 
     start_cli._resolve_model(
@@ -728,7 +702,7 @@ def test_changing_one_knob_keeps_the_custom_context(monkeypatch):
 
 
 def test_remote_code_resident_is_refused_before_the_load(monkeypatch):
-    """The payload cannot carry the consent, and the worker dies before the retry."""
+    """A trust_remote_code resident is refused before anything is evicted."""
     server = FakeServer(
         [dict(RESIDENT)],
         {
@@ -747,7 +721,7 @@ def test_remote_code_resident_is_refused_before_the_load(monkeypatch):
 
 
 def test_tensor_parallel_does_not_restart_a_non_gguf_resident(monkeypatch, capsys):
-    """The standard load never forwards it, so a restart would apply nothing."""
+    """tensor_parallel is GGUF-only."""
     server = FakeServer(
         [dict(RESIDENT)],
         {
@@ -771,7 +745,7 @@ def test_tensor_parallel_does_not_restart_a_non_gguf_resident(monkeypatch, capsy
 
 
 def test_a_differently_spelled_quant_still_counts_as_a_change(monkeypatch, capsys):
-    """Q4KM really reloads on the server, so stripping separators under-warns."""
+    """Q4KM and Q4_K_M are compared as typed."""
     server = FakeServer([dict(RESIDENT)], _gguf_status()).install(monkeypatch)
 
     start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(gguf_variant = "Q4KM"))
@@ -781,7 +755,7 @@ def test_a_differently_spelled_quant_still_counts_as_a_change(monkeypatch, capsy
 
 
 def test_manual_mode_keeps_a_pinned_layer_count(monkeypatch, capsys):
-    """gpu_layers = -1 means "pick them", which would discard the pinned placement."""
+    """A resident already in manual keeps its pinned layer count."""
     server = FakeServer(
         [dict(RESIDENT)],
         _gguf_status(gpu_memory_mode = "manual", gpu_layers = 20),
@@ -795,7 +769,6 @@ def test_manual_mode_keeps_a_pinned_layer_count(monkeypatch, capsys):
     )
 
     assert server.loads[0]["gpu_layers"] == 20
-    # Preserving the count makes this a real no-op, so it must NOT restart the server.
     assert "force_reload" not in server.loads[0]
     assert "unloads the current model" not in capsys.readouterr().out
 
@@ -814,7 +787,7 @@ def test_switching_into_manual_still_asks_for_automatic_layers(monkeypatch):
 
 
 def test_arch_gated_tensor_request_is_not_restarted(monkeypatch):
-    """status says false because the gate normalized it, not because it was not asked."""
+    """Re-asking for an arch-gated tensor request is a no-op."""
     server = FakeServer(
         [dict(RESIDENT)],
         _gguf_status(tensor_parallel = False, tensor_parallel_dropped_by_arch_gate = True),
@@ -831,7 +804,7 @@ def test_arch_gated_tensor_request_is_not_restarted(monkeypatch):
 
 
 def test_paravirtual_placement_is_not_restarted(monkeypatch):
-    """Every placement request normalizes to the same runtime on such a host."""
+    """Placement cannot differ on a paravirtual host."""
     server = FakeServer(
         [dict(RESIDENT)],
         _gguf_status(gpu_memory_mode = "manual", gpu_placement_paravirtual = True),
@@ -868,7 +841,7 @@ def test_a_no_op_attach_to_a_custom_code_resident_is_allowed(monkeypatch):
 
 
 def test_cpu_fallback_placement_is_not_restarted(monkeypatch):
-    """_preserve_cpu_fallback_intent keeps this runtime across the reload anyway."""
+    """Placement cannot differ under a CPU fallback."""
     server = FakeServer(
         [dict(RESIDENT)],
         _gguf_status(
@@ -889,7 +862,7 @@ def test_cpu_fallback_placement_is_not_restarted(monkeypatch):
 
 
 def test_the_requested_mlx_kv_width_survives_a_reload(monkeypatch):
-    """The applied value is null when the runtime refused it; that must not round-trip."""
+    """The requested MLX KV width round-trips, not the refused applied one."""
     server = FakeServer(
         [dict(RESIDENT)],
         {
@@ -909,7 +882,7 @@ def test_the_requested_mlx_kv_width_survives_a_reload(monkeypatch):
 
 
 def test_a_proven_no_op_skips_the_preload_gate(monkeypatch):
-    """Nothing is evicted, so the gate protects nothing and would reject a live attach."""
+    """A proven no-op skips the gate."""
     server = FakeServer([dict(RESIDENT)], _gguf_status()).install(monkeypatch)
     checked = []
 
@@ -944,7 +917,7 @@ def test_a_real_change_still_runs_the_preload_gate(monkeypatch):
 
 
 def test_a_quant_override_on_a_direct_file_is_refused(monkeypatch):
-    """from_identifier consults a variant only for a directory, so this cannot apply."""
+    """A different quant on a direct .gguf file is refused."""
     path = "/srv/models/Foo-Q4_K_M.gguf"
     server = FakeServer(
         [{"id": "Foo-Q4_K_M", "loaded": True}],
@@ -964,7 +937,7 @@ def test_a_quant_override_on_a_direct_file_is_refused(monkeypatch):
 
 
 def test_explicit_tensor_disable_clears_an_arch_gated_fallback(monkeypatch, capsys):
-    """The backend keeps the tensor intent behind the fallback; only a reload clears it."""
+    """Turning tensor_parallel off clears an arch-gated fallback."""
     server = FakeServer(
         [dict(RESIDENT)],
         _gguf_status(tensor_parallel = False, tensor_parallel_dropped_by_arch_gate = True),
@@ -982,7 +955,7 @@ def test_explicit_tensor_disable_clears_an_arch_gated_fallback(monkeypatch, caps
 
 
 def test_switching_into_manual_is_still_a_change(monkeypatch, capsys):
-    """Only manual-to-manual is the no-op; auto-to-manual really does reload."""
+    """auto to manual is a real change."""
     server = FakeServer([dict(RESIDENT)], _gguf_status(gpu_memory_mode = "auto")).install(monkeypatch)
 
     start_cli._resolve_model(
@@ -997,7 +970,7 @@ def test_switching_into_manual_is_still_a_change(monkeypatch, capsys):
 
 
 def test_no_status_and_one_loaded_model_still_works(monkeypatch):
-    """An older server with an unambiguous catalog is answerable."""
+    """One loaded model is unambiguous without status."""
     server = FakeServer([dict(RESIDENT)], {}).install(monkeypatch)
 
     start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768))
@@ -1006,7 +979,7 @@ def test_no_status_and_one_loaded_model_still_works(monkeypatch):
 
 
 def test_no_status_and_several_loaded_models_refuses_to_guess(monkeypatch):
-    """/v1/models lists loaded speech sidecars, so order is not evidence."""
+    """Several loaded models without status is refused."""
     server = FakeServer(
         [
             {"id": "unsloth/whisper-large-v3", "loaded": True},
@@ -1022,7 +995,7 @@ def test_no_status_and_several_loaded_models_refuses_to_guess(monkeypatch):
 
 
 def test_non_gguf_gpu_selection_survives_a_reload(monkeypatch):
-    """Without this the replacement load falls back to automatic GPU selection."""
+    """GPU placement is carried over."""
     server = FakeServer(
         [dict(RESIDENT)],
         {
@@ -1054,7 +1027,7 @@ def _direct_gguf_server(monkeypatch, path = "/srv/models/Foo-Q4_K_M.gguf"):
 
 
 def test_restating_the_running_quant_applies_the_other_overrides(monkeypatch):
-    """A matching variant asks for no change, so it must not block the context change."""
+    """Restating the running quant does not block the other overrides."""
     path = "/srv/models/Foo-Q4_K_M.gguf"
     server = _direct_gguf_server(monkeypatch, path)
 
@@ -1068,7 +1041,6 @@ def test_restating_the_running_quant_applies_the_other_overrides(monkeypatch):
     sent_payload = server.loads[0]
     assert sent_payload["model_path"] == path
     assert sent_payload["max_seq_length"] == 32768
-    # The field is inapplicable to a direct file, so it is dropped rather than posted.
     assert "gguf_variant" not in sent_payload
 
 

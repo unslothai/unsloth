@@ -1787,11 +1787,10 @@ _RESIDENT_RUNTIME_FIELDS = {
     "tensor_parallel": "tensor_parallel",
     "speculative_type": "speculative_type",
     "spec_draft_n_max": "spec_draft_n_max",
-    # Requested, not applied: the applied value is null when the runtime refused the
-    # request, and round-tripping that null would erase what the user asked for.
+    # The applied value is null when the runtime refused the request.
     "mlx_kv_bits_requested": "mlx_kv_bits",
     # LoadRequest defaults this to True, so omitting it would reload a full-precision
-    # model in 4-bit. Null on GGUF, which has no such setting, and nulls are dropped.
+    # model in 4-bit. Null on GGUF, which has no such setting.
     "load_in_4bit": "load_in_4bit",
     # Same trap: max_seq_length defaults to 0, which _gguf_request_intent copies into
     # n_ctx, so changing another knob would reset a custom context to automatic.
@@ -1859,8 +1858,7 @@ def _load_settings_differ(status: dict, load: LoadOptions, overrides: frozenset)
                 return True
         elif name == "tensor_parallel":
             # llama.cpp only. The standard load never forwards it, so a restart would
-            # apply nothing; the backend comparator treats it as GGUF-only for the
-            # same reason.
+            # apply nothing.
             if not status.get("is_gguf"):
                 continue
             # The architecture gate can normalize a tensor request to layer mode and say

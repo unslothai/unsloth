@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The non-GGUF already-loaded check used to gate on the identifier alone, so a new
-max_seq_length answered "already_loaded" and left the old context serving."""
+"""Reload gating and status reporting for a resident non-GGUF model."""
 
 from __future__ import annotations
 
@@ -41,8 +40,7 @@ class _Backend:
 
 
 class _Request:
-    """Stand-in for LoadRequest; model_fields_set is what pydantic records."""
-
+    """model_fields_set is what pydantic records."""
     def __init__(self, **fields):
         self.model_fields_set = set(fields)
         self.force_reload = fields.pop("force_reload", False)
@@ -53,8 +51,6 @@ class _Request:
 
 
 def _loaded(max_seq_length = 4096, load_in_4bit = True):
-    # REQUESTED values, not resolved: _effective_load_in_4bit rewrites load_in_4bit for
-    # LoRA and the latest-transformers tier, so only raw-to-raw can ever match.
     return _Backend(
         {
             "max_seq_length_requested": max_seq_length,
@@ -82,22 +78,20 @@ def test_changed_precision_forces_a_reload():
 
 
 def test_omitted_settings_keep_the_legacy_reuse():
-    """A caller that sends only model_path keeps the old reuse behaviour."""
+    """A caller that sends only model_path still reuses."""
     backend = _loaded(max_seq_length = 4096, load_in_4bit = True)
     assert inference_route._non_gguf_runtime_settings_match(backend, _Request())
 
 
 def test_zero_context_expresses_no_preference():
-    """max_seq_length 0 means "model default", so it never forces a reload; the cost is
-    that an explicit --context-length 0 reset is honoured on GGUF but not here."""
+    """max_seq_length 0 never forces a reload."""
     assert inference_route._non_gguf_runtime_settings_match(
         _loaded(max_seq_length = 2048), _Request(max_seq_length = 0)
     )
 
 
 def test_unrecorded_resident_settings_are_reused_not_reloaded():
-    """An unknown value is not a mismatch: every UI call site ships max_seq_length and
-    load_in_4bit on every load, so it would reload the model on every pick."""
+    """An unrecorded resident value is not a mismatch."""
     backend = _Backend({})
     assert inference_route._non_gguf_runtime_settings_match(
         backend, _Request(max_seq_length = 32768, load_in_4bit = False)
@@ -105,7 +99,7 @@ def test_unrecorded_resident_settings_are_reused_not_reloaded():
 
 
 def test_force_reload_is_honored():
-    """force_reload had no non-GGUF counterpart."""
+    """force_reload defeats the match."""
     backend = _loaded(max_seq_length = 4096)
     request = _Request(force_reload = True, max_seq_length = 4096)
     assert not inference_route._non_gguf_runtime_settings_match(backend, request)
@@ -122,11 +116,8 @@ def test_gguf_only_knobs_never_block_reuse(field, value):
 
 
 class TestNonGgufStatusReportsWhatTheLoadAskedFor:
-    """A CLI attach reproduces the runtime from status, so status has to carry the
-    REQUESTED values. The resolved ones are rewritten (load_in_4bit for LoRA, n_ctx by
-    the fit clamp) and placement is not kept on the parent-side orchestrator entry at
-    all, so anything the route does not stamp is simply unavailable to a client.
-    """
+    """Placement is not kept on the parent-side orchestrator entry at all, so anything
+    the route does not stamp is simply unavailable to a client."""
 
     STAMPED = ("max_seq_length_requested", "load_in_4bit_requested", "gpu_ids_requested")
 
