@@ -23,7 +23,9 @@ const src = await readFile(
 
 // The interval, verbatim, from the marker it opens with to the cleanup it returns.
 const START = "let pollingSince = 0;";
-const END = "return () => window.clearInterval(id);";
+// A single-line marker that appears once: the follow-up cancel is written twice, in
+// the finally and in stopPolling, so it cannot delimit the block.
+const END = "return () => stopPolling();";
 const from = src.indexOf(START);
 const to = src.indexOf(END, from);
 assert.ok(from > 0 && to > from, "the recovery poll's interval moved out of app-sidebar.tsx");
@@ -40,6 +42,7 @@ function constant(name: string): number {
 }
 const STALL_MS = constant("VERDICT_POLL_STALL_MS");
 const POLL_MS = constant("VERDICT_UNKNOWN_POLL_MS");
+const FOLLOW_UP_MS = constant("INVENTORY_FOLLOW_UP_MS");
 
 const startPoll = new Function(
   "window",
@@ -49,15 +52,30 @@ const startPoll = new Function(
   "VERDICT_POLL_STALL_MS",
   "VERDICT_UNKNOWN_POLL_MS",
   "SELF_HEAL_POLL_MS",
+  // The follow-up read the settled-inventory branch schedules. This scenario is the
+  // unknown verdict, which does not take that branch, so the timer is never armed here;
+  // the bindings exist so the lifted block still evaluates. The timer itself goes
+  // through the injected window, like the interval.
+  "selfHealSettled",
+  "INVENTORY_FOLLOW_UP_MS",
   body,
 ) as (
-  window: { setInterval: (fn: () => void, ms: number) => number; clearInterval: (id: number) => void },
+  window: {
+    setInterval: (fn: () => void, ms: number) => number;
+    clearInterval: (id: number) => void;
+    // The follow-up read's timer. This scenario never arms it, but the lifted block
+    // reaches for it through the injected window and the type has to allow that.
+    setTimeout: (fn: () => void, ms: number) => number;
+    clearTimeout: (id: number) => void;
+  },
   date: { now: () => number },
   fetchDeviceType: () => Promise<void>,
   capabilitiesUnknown: boolean,
   stallMs: number,
   unknownPollMs: number,
   selfHealPollMs: number,
+  selfHealSettled: boolean,
+  followUpMs: number,
 ) => () => void;
 
 /** The interval, wired to a clock and a queue of reads the test settles when it chooses. */
@@ -78,6 +96,8 @@ function harness() {
       clearInterval: () => {
         cleared += 1;
       },
+      setTimeout: () => 0,
+      clearTimeout: () => undefined,
     },
     { now: () => clock },
     () =>
@@ -89,6 +109,8 @@ function harness() {
     POLL_MS,
     // The self-heal cadence is the other branch; this scenario is the unknown verdict.
     15000,
+    false,
+    FOLLOW_UP_MS,
   );
 
   assert.ok(tick, "the poll never scheduled an interval");

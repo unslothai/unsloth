@@ -1573,11 +1573,15 @@ def _hardware_snapshot() -> Optional[tuple[bool, Optional[str], Optional[str]]]:
         generation = _hw_module.DETECTION_GENERATION
         device = _hw_module.DEVICE
         chat_only = bool(_hw_module.CHAT_ONLY)
-        reason = getattr(_hw_module, "CHAT_ONLY_REASON", None)
-        # Inside the guarded read, with the reason it belongs to. Read after it, a forced
-        # re-detect starting in between would pair this reply's reason with a detail from
-        # a different pass, or with none at all.
-        detail = getattr(_hw_module, "CHAT_ONLY_DETAIL", None)
+        # Refreshed, not the frozen global: the three inventory-sensitive verdicts can change
+        # after startup (an eGPU attached, a driver that finished restarting). Reason and detail
+        # come back together, or a forced re-detect starting in between would pair this reply's
+        # reason with a detail from a different pass.
+        try:
+            reason, detail = _hw_module.current_chat_only_verdict()
+        except Exception:
+            reason = getattr(_hw_module, "CHAT_ONLY_REASON", None)
+            detail = getattr(_hw_module, "CHAT_ONLY_DETAIL", None)
         if (
             device is not None
             and _hw_module.DETECTION_COMPLETE.is_set()
@@ -2069,8 +2073,9 @@ def _get_cached_system_gpu_info(logger) -> tuple[dict[str, Any], dict[str, Any]]
             logger.debug(f"Could not resolve gpu_ids support: {e}")
             llama_uses_vulkan = False
             gpu_ids_supported = True
-        # Preserve backend/index metadata from the visibility probe: a CPU training host can expose
-        # a Vulkan inference GPU, and the UI must label it Vulkan, not the top-level CPU backend.
+        # The spread also carries `physical_devices` and `mismatch`: GPUs the OS sees that this PyTorch
+        # cannot open (#8473). They stay their own fields, because `devices` below is the runtime-usable
+        # list that model fit budgets against and the training device picker pins from.
         gpu_info = {
             **visibility_info,
             "available": visibility_info.get("available", False),

@@ -36,6 +36,26 @@ sys.path.insert(0, str(CI_DIR))
 import launch  # noqa: E402
 
 
+class _StubKaggleApi:
+    """A client that can say WHICH account it is, because the real one can.
+
+    `launch.py` reads the owner off the authenticated client and refuses to push
+    when it cannot: a kernel id is `<owner>/<slug>`, CI holds more than one
+    account, and a kernel pushed under the wrong name cannot be deleted under
+    the other. A bare `object()` models a client that never authenticated, which
+    is a different test from the ones below.
+    """
+
+    CONFIG_NAME_USER = "username"
+
+    def __init__(self, username = "me"):
+        self.config_values = {self.CONFIG_NAME_USER: username}
+
+
+def _stub_api(*_args, **_kwargs):
+    return _StubKaggleApi()
+
+
 def _fake_kaggle(bin_dir: Path, record: Path) -> None:
     """A `kaggle` on PATH that only records what it was asked to delete."""
     bin_dir.mkdir(parents = True, exist_ok = True)
@@ -248,7 +268,7 @@ def _run_main(
     # The retry backoffs, not the retries: every attempt still runs.
     monkeypatch.setattr(launch, "PUSH_BACKOFF_SEC", 0)
     monkeypatch.setattr(launch, "DELETE_BACKOFF_SEC", 0)
-    monkeypatch.setattr(launch, "_api", lambda: object())
+    monkeypatch.setattr(launch, "_api", _stub_api)
     monkeypatch.setattr(launch, "wait", lambda *a, **kw: "COMPLETE")
     monkeypatch.setattr(
         launch,
@@ -463,8 +483,11 @@ def _waiting_launcher(outdir: Path) -> str:
     return "\n".join(
         [
             "",
-            "        launch._api = lambda: object()",
-            "        launch.sweep_orphans = lambda: []",
+            "        class _Api:",
+            "            CONFIG_NAME_USER = 'username'",
+            "            config_values = {'username': 'me'}",
+            "        launch._api = lambda *a, **k: _Api()",
+            "        launch.sweep_orphans = lambda *a, **k: []",
             "        def _push(notebook, user, kernel_timeout_sec,",
             "                  accelerator='NvidiaTeslaT4', attempted=None):",
             "            attempted = [] if attempted is None else attempted",
@@ -1042,8 +1065,11 @@ def test_a_kernel_pushed_before_the_signal_is_still_deleted(tmp_path):
     body = "\n".join(
         [
             "",
-            "        launch._api = lambda: object()",
-            "        launch.sweep_orphans = lambda: []",
+            "        class _Api:",
+            "            CONFIG_NAME_USER = 'username'",
+            "            config_values = {'username': 'me'}",
+            "        launch._api = lambda *a, **k: _Api()",
+            "        launch.sweep_orphans = lambda *a, **k: []",
             "        calls = []",
             "        def _push(notebook, user, kernel_timeout_sec,",
             "                  accelerator='NvidiaTeslaT4', attempted=None):",

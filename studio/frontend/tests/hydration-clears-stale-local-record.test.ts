@@ -167,3 +167,24 @@ test("hydration propagates what its own write evicted", () => {
     /for \(const dropped of hydrationEvicted\) \{ syncModelOverride\(dropped\.modelId, dropped\.ggufVariant, null, \{ keepLaunchFlags: true, \}\); \}/,
   );
 });
+
+test("hydration keeps a moved context pin in one field", () => {
+  // The picker reads customContextLength first and the auto-switch load max_seq_length
+  // first, so a record holding both loads the same model at two lengths.
+  const legacy = { maxSeqLength: 8192, customContextLength: null };
+  const moved = fromApiOverride({ custom_context_length: 32768 }, legacy as any);
+  assert.equal(moved.customContextLength, 32768);
+  assert.equal(moved.maxSeqLength, null, "the stale legacy field must not survive");
+
+  // The other direction: a row pinning in the pre-move field owns both too.
+  const back = fromApiOverride(
+    { max_seq_length: 8192 },
+    { customContextLength: 32768, maxSeqLength: null } as any,
+  );
+  assert.equal(back.customContextLength, null);
+  assert.equal(back.maxSeqLength, 8192);
+
+  // A row stating no pin falls back to this browser's, or opening the panel deletes it.
+  const kept = fromApiOverride({}, legacy as any);
+  assert.equal(kept.maxSeqLength, 8192);
+});

@@ -200,9 +200,29 @@ class TestClassificationIsAFaithfulTranslation:
         assert new == _old_cuda_fields(ver, hip, cuda)
 
     def test_cpu_gpu_predicate(self, ver, hip, cuda):
-        env = {"re": re, "_version": ver, "_hip": hip, "_cuda": cuda}
+        # _TORCH_RUNTIME_XPU is a fourth input the merge-base predicate did not have, so
+        # the equivalence is claimed with it EMPTY: over everything the old one could
+        # see, the two still agree. Its own effect is pinned separately below, because a
+        # reference that cannot model it cannot be asked about it.
+        env = {"re": re, "_version": ver, "_hip": hip, "_cuda": cuda, "_TORCH_RUNTIME_XPU": ""}
         _run_assignments("_ensure_cpu_torch", {"_ver", "_is_gpu_build"}, env)
         assert env["_is_gpu_build"] == _old_cpu_is_gpu(ver, hip, cuda)
+
+    def test_the_xpu_runtime_marker_is_the_one_deliberate_divergence(self, ver, hip, cuda):
+        """An untagged source, conda or private-index XPU wheel carries its runtime only
+        in torch.version.xpu. The old predicate read it as CPU and declined to reinstall,
+        which is the whole reason the marker was added."""
+        env = {
+            "re": re,
+            "_version": ver,
+            "_hip": hip,
+            "_cuda": cuda,
+            "_TORCH_RUNTIME_XPU": "20250101",
+        }
+        _run_assignments("_ensure_cpu_torch", {"_ver", "_is_gpu_build"}, env)
+        assert (
+            env["_is_gpu_build"] is True
+        ), "with the marker set every state is a GPU build, however the version is tagged"
 
     def test_xpu_supported_range(self, ver, hip, cuda):
         env = {"re": re, "_version": ver, "_hip": hip, "_cuda": cuda}

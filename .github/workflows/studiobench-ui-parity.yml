@@ -341,7 +341,7 @@ jobs:
         continue-on-error: true
         with:
           path: ~/.cache/ms-playwright
-          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-sbench-v1
+          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-c-v2
 
       # Chromium alone, bounded and retried through the shared helper, with the
       # CDN download kept separate from the apt transaction because they are two

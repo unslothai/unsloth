@@ -15,7 +15,7 @@ test("a prompt setting change clears local usage even during a run", async () =>
   const state = {
     activeThreadId: "thread-1",
     contextUsage: { totalTokens: 42 },
-    ggufContextLength: 4096,
+    loadedContextLength: 4096,
     modelLoading: false,
     models: [],
     params: { checkpoint: "local-model" },
@@ -50,7 +50,7 @@ test("a prompt setting change leaves external usage intact", async () => {
   const state = {
     activeThreadId: "thread-1",
     contextUsage: { totalTokens: 42 },
-    ggufContextLength: 4096,
+    loadedContextLength: 4096,
     modelLoading: false,
     models: [],
     params: { checkpoint: "external:model" },

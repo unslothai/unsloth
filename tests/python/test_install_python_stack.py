@@ -2584,6 +2584,45 @@ class TestExpectedTorchFlavorResolution:
             with mock.patch.object(ips, "_RECORDED_TORCH_TAG", "cu128"):
                 assert ips._expected_torch_flavor_tag() == "cu128"
 
+    def test_a_resolved_cuda_backend_outranks_a_stale_cpu_record(self):
+        """A CPU pin that was REMOVED must not outlive the install that replaced it.
+
+        install.sh resolves the backend to cuda and installs a CUDA wheel; reading the old
+        manifest here recorded the healthy venv as deliberately CPU-only, and
+        _expected_cpu_flavor_was_chosen() would then read a later CPU wheel as the install
+        working as asked and suppress the mismatch and its repair. The wheel's own tag is
+        what says which cu index this venv came from.
+        """
+        with self._env():
+            with (
+                mock.patch.object(ips, "_TORCH_BACKEND", "cuda"),
+                mock.patch.object(ips, "_RECORDED_TORCH_TAG", "cpu"),
+                mock.patch.object(
+                    ips, "_installed_torch_version_label", return_value = "2.9.1+cu128"
+                ),
+            ):
+                assert ips._expected_torch_flavor_tag() == "cu128"
+                # And the stale provenance goes with it: pinned answers per family, so the
+                # cpu record cannot speak for a cuda tag. install.sh marks the backend it
+                # derived, which is why the derived cuda does not count as pinned either.
+                with (
+                    mock.patch.dict(os.environ, {"UNSLOTH_TORCH_BACKEND_SOURCE": "resolved"}),
+                    mock.patch.object(ips, "_RECORDED_TORCH_TAG_PINNED", True),
+                ):
+                    assert ips._expected_torch_flavor_was_pinned("cu128") is False
+
+    def test_a_resolved_cuda_backend_over_a_cpu_wheel_still_reads_the_manifest(self):
+        # Only when the family agrees with the wheel actually installed, the same rule the
+        # cpu/rocm/xpu arm applies: a resolved cuda beside a CPU wheel is the mismatch this
+        # whole path exists to repair, not a reason to call the venv CUDA.
+        with self._env():
+            with (
+                mock.patch.object(ips, "_TORCH_BACKEND", "cuda"),
+                mock.patch.object(ips, "_RECORDED_TORCH_TAG", "cu124"),
+                mock.patch.object(ips, "_installed_torch_version_label", return_value = "2.11.0+cpu"),
+            ):
+                assert ips._expected_torch_flavor_tag() == "cu124"
+
     def test_a_gpuless_host_with_nothing_recorded_says_nothing(self):
         # Inventing a CUDA expectation from an absent GPU would reinstall CUDA torch
         # onto a CPU box on every update.
@@ -2634,5 +2673,9 @@ class TestExpectedTorchFlavorResolution:
     def test_no_index_url_is_ever_persisted_by_the_manifest_write(self):
         # The manifest lives in the venv, so a token in a pinned URL must not reach it.
         source = inspect.getsource(ips.install_python_stack)
-        assert "expected_torch_tag = torch_flavor_tag or _RECORDED_TORCH_TAG," in source
+        assert "expected_torch_tag = _recordable_torch_flavor_tag(torch_flavor_tag)," in source
         assert "torch_index_url" not in source
+        # And the helper that answers it records a FLAVOR, never a URL, for the same
+        # reason: it is reached with the pin still in the environment.
+        helper = inspect.getsource(ips._recordable_torch_flavor_tag)
+        assert "return" in helper and "_explicit_torch_index_url()" not in helper

@@ -68,6 +68,9 @@ export type Scenario = {
   /** How the Hub download manager answers the default-model request:
    *  "complete" (default), "cancelled", "failed", "busy", or "conflict". */
   download: (request: any) => string;
+  // Which backend the host serves with, and what the record holds: both decide the ask.
+  platform?: { deviceType: string; chatOnlyReason: string | null };
+  config?: Record<string, unknown>;
 };
 
 // The stored-arguments hydration the auto-load runs before it calls /load. Neutral
@@ -187,6 +190,48 @@ function resolveInferenceCheckpointId(status: any) {
 function snapshotQueuedChatRunSettings(state: any) {
   return { ...state, params: { ...state.params } };
 }
+// Mirrored rather than stubbed to constants, so a scenario that pins is not auto-answered.
+function loadedContextFields(resp: any) {
+  if (!resp) {
+    return {
+      loadedContextLength: null, maxContextLength: null,
+      nativeContextLength: null, loadedIsGguf: null,
+      loadedContextEnforced: null,
+    };
+  }
+  const isGguf = resp.is_gguf ?? false;
+  const loaded = resp.context_length ?? null;
+  // !is_mlx as well: MLX sizes its own window, so it reports one without a native.
+  if (!isGguf && !resp.is_mlx && resp.native_context_length == null) {
+    return {
+      loadedContextLength: null, maxContextLength: null,
+      nativeContextLength: null, loadedIsGguf: false,
+      loadedContextEnforced: null,
+    };
+  }
+  return {
+    loadedContextLength: loaded,
+    maxContextLength: resp.max_context_length ?? loaded,
+    nativeContextLength: resp.native_context_length ?? null,
+    loadedIsGguf: isGguf,
+    loadedContextEnforced: isGguf ? true : (resp.context_length_enforced ?? null),
+  };
+}
+const NO_MLX_REASONS = new Set(["mlx_unavailable", "intel_mac", "detection_failed"]);
+function isServedByMlx(isGguf: boolean, deviceType: string, reason: unknown) {
+  return !isGguf && deviceType === "mac" && !NO_MLX_REASONS.has((reason ?? "") as string);
+}
+function retainedContextPin(args: any) {
+  if (args.isGguf) {
+    return args.gpuMemoryMode === "manual" && args.gpuLayers < 0
+      ? ((args.requestedContextLength ?? 0) > 0 ? args.requestedContextLength : null)
+      : null;
+  }
+  if (args.isMlx) {
+    return (args.requestedContextLength ?? 0) > 0 ? args.requestedContextLength : null;
+  }
+  return null;
+}
 
 function makeStore(): any {
   const state: any = {
@@ -304,7 +349,10 @@ function syncModelCapabilities(modelId: string, resp: any) {
 }
 const useChatRuntimeStore = {
   getState: () => STORE,
-  setState: (_p: any) => {},
+  // Recorded, not discarded: a scenario asserting on them has nowhere else to read them.
+  setState: (p: any) => {
+    Object.assign(STORE, typeof p === "function" ? p(STORE) : p);
+  },
 };
 
 function createLoadingToastIcon() { return null; }
@@ -341,22 +389,51 @@ function readLastLocalModelLoad() { return SCENARIO.lastLoaded; }
 function recordLastLocalModelLoad(x: any) {
   EVENTS.push({ kind: "recordLastLocal", id: x.id, modelKind: x.kind });
 }
+function normalizeMaxSeqLength(value: any) {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+}
 function resolveInitialConfig(_id: string, _variant: any) {
   return { config: {
     customContextLength: null, maxSeqLength: null, gpuMemoryMode: null,
     gpuLayers: null, nCpuMoe: null, selectedGpuIds: undefined,
     speculativeType: null, specDraftNMax: null, chatTemplateOverride: null,
     kvCacheDtype: null, tensorParallel: false,
+    ...(SCENARIO.config ?? {}),
   } };
 }
-function resolveLoadMaxSeqLength(args: any) { return args.maxSeqLength ?? 0; }
-function resolveFitMaxSeqLength(..._a: any[]) { return 0; }
 // Mirrors the real predicate rather than returning a constant: the sliced region
 // stores its result as the load's context pin, so a stub that always answered null
 // would make every autoload scenario here agree with a bug in it. It takes the
 // user's own Context Length (config.customContextLength above), never the n_ctx
 // that went on the wire, which is Auto-resolved on a same-model reload.
 function resolveExplicitCtxPin(n: any) { return n && n > 0 ? n : null; }
+// Mirrors the real resolution: the pin, else the sentinel for a self-sizing backend and
+// the app default for one that does not, which is what these off-Mac scenarios send.
+function resolveLoadMaxSeqLength(args: any) {
+  return (
+    args.customContextLength ??
+    args.pinnedMaxSeqLength ??
+    (args.isGguf || args.isMlx ? 0 : args.defaultMaxSeqLength)
+  );
+}
+// The window reported, never the request: the sentinel is below the control's minimum.
+function loadedContextForParams(reported: any, requested: number, previous: number) {
+  return reported ?? (requested > 0 ? requested : previous);
+}
+function resolveFitMaxSeqLength(
+  isGguf: any, gpuMemoryMode: string, gpuLayers: number, pin: number | null, fallback: number,
+) {
+  if (!isGguf || gpuMemoryMode !== "manual" || gpuLayers >= 0) return fallback;
+  return pin && pin > 0 ? pin : 0;
+}
+function localMaxTokensCeiling(loadedContextLength: number | null, fallback: number) {
+  return Math.max(64, loadedContextLength ?? fallback);
+}
+function replayMaxTokensCap(loadedContextLength: number | null | undefined) {
+  return loadedContextLength == null ? undefined : Math.max(64, loadedContextLength);
+}
+function unreportedWindowMaxTokens(g: boolean, held: number) { return g ? held : 4096; }
+function resolveManualAutoCtxPin(..._a: any[]) { return null; }
 async function ensureGpuDeviceCache() {}
 function reconcilePersistedGpuIds(ids: any) { return ids; }
 function saveSpeculativeType(_x: any) {}
@@ -389,7 +466,8 @@ function isHiddenModelId(..._a: any[]) { return false; }
 // picker hides every other local format there, so a background pick must too.
 const usePlatformStore = {
   getState: () => ({
-    deviceType: SCENARIO.deviceType ?? "linux",
+    deviceType: SCENARIO.platform?.deviceType ?? SCENARIO.deviceType ?? "linux",
+    chatOnlyReason: SCENARIO.platform?.chatOnlyReason ?? null,
     // Server-reported unless a scenario says the probe has not landed.
     fetched: SCENARIO.platformFetched !== false,
     isChatOnly: () => SCENARIO.chatOnly === true,
@@ -523,8 +601,8 @@ async function loadModel(payload: any) {
     kind: "loadModel",
     model_path: payload.model_path,
     gguf_variant: payload.gguf_variant ?? null,
-    // GGUF sources send 0; a Transformers source sends the safetensors length.
-    max_seq_length: payload.max_seq_length,
+    // GGUF and self-sizing sources send 0; a Transformers one the safetensors length.
+    max_seq_length: payload.max_seq_length ?? null,
     rejected: result instanceof Error,
   });
   if (result instanceof Error) throw result;
@@ -585,6 +663,22 @@ SCENARIO_HELPERS = """
       size_bytes: 1_100_000_000,
       capabilities: { can_chat: true, requires_variant: false },
     };
+    // A safetensors repo, which MLX serves on a Mac and transformers everywhere else.
+    const QWEN = {
+      repo_id: "unsloth/Qwen3.5-4B",
+      load_id: "unsloth/Qwen3.5-4B",
+      cache_path: "/home/john-doe/.cache/huggingface/hub/models--unsloth--Qwen3.5-4B",
+      size_bytes: 8000000000,
+    };
+    const MAC = { deviceType: "mac", chatOnlyReason: null };
+    // What a self-sizing backend answers: the window it resolved, not the request.
+    const SERVED = (n) => (payload) => ({
+      model: payload.model_path,
+      is_gguf: false,
+      context_length: n,
+      native_context_length: 262144,
+      max_context_length: 262144,
+    });
     const scenario = (over) => ({
       ggufRepos: [],
       modelRepos: [],
@@ -696,7 +790,11 @@ def _build_harness(run_dir: Path):
         "wrong-model assertions rather than saying what is actually missing."
     )
     (run_dir / "harness.ts").write_text(
-        "// @ts-nocheck\n" + PREAMBLE + "\n" + body + "\nexport { autoLoadSmallestModel };\n",
+        "// @ts-nocheck\n"
+        + PREAMBLE
+        + "\n"
+        + body
+        + "\nexport { autoLoadSmallestModel };\nexport function storeState() { return STORE; }\n",
         encoding = "utf-8",
     )
 
@@ -711,7 +809,7 @@ def _run(scenario_expr: str) -> dict:
         textwrap.dedent(
             """
         // @ts-nocheck
-        import { autoLoadSmallestModel, setScenario, EVENTS } from "./harness.ts";
+        import { autoLoadSmallestModel, setScenario, EVENTS, storeState } from "./harness.ts";
         """
         )
         + SCENARIO_HELPERS
@@ -723,7 +821,18 @@ def _run(scenario_expr: str) -> dict:
         const result = await autoLoadSmallestModel({{
           abortSignal: new AbortController().signal,
         }});
-        console.log(JSON.stringify({{ result, events: EVENTS }}));
+        const s = storeState();
+        console.log(JSON.stringify({{
+          result,
+          events: EVENTS,
+          store: {{
+            maxSeqLength: s.params?.maxSeqLength ?? null,
+            maxTokens: s.params?.maxTokens ?? null,
+            customContextLength: s.customContextLength ?? null,
+            loadedCustomContextLength: s.loadedCustomContextLength ?? null,
+            loadedContextLength: s.loadedContextLength ?? null,
+          }},
+        }}));
         """
         )
     )
@@ -1572,3 +1681,41 @@ def test_an_unclassified_local_row_is_never_auto_loaded(fmt):
 
     assert "/models/x" not in _loaded_paths(out)
     assert _loaded_paths(out) == [DEFAULT_MODEL]
+
+
+def test_an_unpinned_mlx_candidate_is_loaded_at_the_window_the_backend_resolved():
+    """The auto-load runs unwatched, so its request is what an MLX model is left serving;
+    the app default there loaded every model at 4096."""
+    out = _run("scenario({ modelRepos: [QWEN], platform: MAC, load: SERVED(262144) })")
+    [load] = [e for e in out["events"] if e["kind"] == "loadModel"]
+    assert load["model_path"] == "unsloth/Qwen3.5-4B"
+    # The sentinel that hands sizing to the backend, not a length chosen here.
+    assert load["max_seq_length"] == 0
+    # And what comes back describes the model rather than the request.
+    assert out["store"]["maxSeqLength"] == 262144
+    assert out["store"]["maxTokens"] == 262144
+    # Nothing was pinned, so nothing is remembered as pinned.
+    assert out["store"]["customContextLength"] is None
+    assert out["store"]["loadedCustomContextLength"] is None
+
+
+def test_a_pinned_mlx_candidate_is_loaded_at_its_pin_and_keeps_it():
+    """The rules are proved apart; this is the only proof the auto-load threads them: the
+    record's pin into the request, and the retained pin back. Dropping either leaves a
+    pinned model asking for 0, or forgetting its pin on reload."""
+    out = _run(
+        "scenario({ modelRepos: [QWEN], platform: MAC,"
+        " config: { customContextLength: 8192 }, load: SERVED(8192) })"
+    )
+    [load] = [e for e in out["events"] if e["kind"] == "loadModel"]
+    assert load["max_seq_length"] == 8192
+    assert out["store"]["customContextLength"] == 8192
+    assert out["store"]["loadedCustomContextLength"] == 8192
+    assert out["store"]["maxSeqLength"] == 8192
+    # A pre-move record holds the pin in the other field; the write-back moves it.
+    legacy = _run(
+        "scenario({ modelRepos: [QWEN], platform: MAC,"
+        " config: { maxSeqLength: 8192 }, load: SERVED(8192) })"
+    )
+    assert [e for e in legacy["events"] if e["kind"] == "loadModel"][0]["max_seq_length"] == 8192
+    assert legacy["store"]["customContextLength"] == 8192

@@ -34,11 +34,12 @@ const LLAMA = "unsloth/Llama-4-8B";
 const EXTERNAL = "external::anthropic::claude-opus-5";
 const TUNED = { temperature: 0.2, maxTokens: 4096, systemPrompt: "Be terse." };
 
+const STATUS_CONTEXT_LENGTH = 131072;
 /** A status response for a resident GGUF, recommending its own sampling. */
 const STATUS = {
   inference: { temperature: 0.9, top_p: 0.5 },
   is_gguf: true,
-  context_length: 131072,
+  context_length: STATUS_CONTEXT_LENGTH,
 } as never;
 
 /** applyActiveModelStatusToStore's update, which the last test pins. */
@@ -50,6 +51,7 @@ function applyStatus(modelId: string) {
       response: STATUS,
       modelId,
       presetSource: store.activePresetSource,
+      loadedContextLength: STATUS_CONTEXT_LENGTH,
     }),
     { fromModelDefaults: true },
   );
@@ -408,7 +410,7 @@ test("the replay at hydration fits the context already published", async () => {
     },
     paramsByModel: {},
     // What the status published for the reduced context it loaded with.
-    ggufContextLength: 8192,
+    loadedContextLength: 8192,
     settingsHydrated: false,
   });
   const hydrating = useChatRuntimeStore.getState().hydratePersistedSettings();
@@ -487,14 +489,16 @@ test("a remembered budget is clamped to the context just loaded", () => {
 // values without changing the checkpoint, so each has to ask for the replay;
 // they pull in the chat UI, so this reads them rather than importing them.
 test("every site that re-applies model defaults asks for the replay", () => {
+  // Wide enough for the window each call now records alongside the merge, and
+  // still far short of the next fromModelDefaults site in either file.
   const sites: [string, RegExp][] = [
     [
       "../src/features/chat/lib/apply-inference-status-to-store.ts",
-      /mergeBackendRecommendedInference\([\s\S]{0,500}?fromModelDefaults: true/,
+      /mergeBackendRecommendedInference\([\s\S]{0,1200}?fromModelDefaults: true/,
     ],
     [
       "../src/features/chat/hooks/use-chat-model-runtime.ts",
-      /mergeBackendRecommendedInference\([\s\S]{0,500}?fromModelDefaults: true/,
+      /mergeBackendRecommendedInference\([\s\S]{0,1200}?fromModelDefaults: true/,
     ],
     [
       // The Qwen3 thinking-mode params applied after a load.
@@ -561,9 +565,12 @@ test("a remembered budget is capped by a non-GGUF load", () => {
     "utf8",
   );
   // One cap for both sites: the load response and the Qwen3 thinking defaults.
+  // The reported window leads, and the request stands in only for a backend that
+  // sizes nothing -- a self-sizing one is sent the auto-size sentinel. Through the
+  // floor, so a window below the control's own minimum cannot become the cap.
   assert.match(
     runtime,
-    /const loadedContextCap = loadResponse\.is_gguf\s*\?\s*\(loadResponse\.context_length \?\? undefined\)\s*:\s*effectiveMaxSeqLength;/,
+    /const loadedContextCap = replayMaxTokensCap\(\s*loadedFields\.loadedContextLength \?\?\s*\(!loadResponse\.is_gguf && effectiveMaxSeqLength > 0\s*\? effectiveMaxSeqLength\s*: null\),\s*\);/,
   );
   assert.equal(
     runtime.match(/maxTokensCap: loadedContextCap/g)?.length,
@@ -577,7 +584,18 @@ test("a remembered budget is capped by a non-GGUF load", () => {
   );
   assert.match(
     adapter,
-    /\? \(loadResp\.context_length \?\? undefined\)\s*: effectiveMaxSeqLength,/,
+    /maxTokensCap: replayMaxTokensCap\(\s*candidate\.kind === "gguf"\s*\? loadedContextFields\(loadResp\)\.loadedContextLength\s*: loadedWindow,\s*\),/,
+  );
+
+  // Compare loads the same way: a pane with no context pin sends the sentinel, and
+  // capping its budget at 0 would leave the pane asking for no output at all.
+  const composer = readFileSync(
+    new URL("../src/features/chat/shared-composer.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    composer,
+    /maxTokensCap: replayMaxTokensCap\(\s*loadedContextFields\(resp\)\.loadedContextLength \?\?\s*\(!resp\.is_gguf && effectiveMaxSeqLength > 0/,
   );
 
   const status = readFileSync(
@@ -587,8 +605,10 @@ test("a remembered budget is capped by a non-GGUF load", () => {
     ),
     "utf8",
   );
-  // Reported for a safetensors load too, so the cap is not narrowed to GGUF.
-  assert.match(status, /maxTokensCap: status\.context_length \?\? undefined,/);
+  // Reported for a safetensors load too, so the cap is not narrowed to GGUF, and
+  // through the same floor the load paths use: hydration must not clamp Max Tokens
+  // below its own slider either.
+  assert.match(status, /maxTokensCap: replayMaxTokensCap\(status\.context_length\),/);
 });
 
 // The clamp itself, through the store: the memory holds a budget from a larger
@@ -645,12 +665,12 @@ test("turning the memory off is persisted and hydrated back", async () => {
 });
 
 // A safetensors load publishes its context through the cap, not through
-// ggufContextLength, which is null for everything that is not a GGUF.
+// loadedContextLength, which a backend that sizes no window leaves null.
 test("a safetensors context also caps the hydration replay", async () => {
   useChatRuntimeStore.setState({
     settingsHydrated: false,
     rememberParamsPerModel: true,
-    ggufContextLength: null,
+    loadedContextLength: null,
     paramsByModel: {},
     params: { ...useChatRuntimeStore.getState().params, checkpoint: LLAMA },
   });
@@ -684,7 +704,7 @@ test("a kept context does not follow the next model", async () => {
   useChatRuntimeStore.setState({
     settingsHydrated: false,
     rememberParamsPerModel: true,
-    ggufContextLength: null,
+    loadedContextLength: null,
     paramsByModel: {},
     params: { ...useChatRuntimeStore.getState().params, checkpoint: LLAMA },
   });
@@ -758,7 +778,7 @@ test("the loaded context caps a global budget with no entry to replay", async ()
   useChatRuntimeStore.setState({
     settingsHydrated: false,
     rememberParamsPerModel: true,
-    ggufContextLength: null,
+    loadedContextLength: null,
     paramsByModel: {},
     params: { ...useChatRuntimeStore.getState().params, checkpoint: LLAMA },
   });
@@ -925,13 +945,13 @@ test("two edits to one model inside a debounce window both survive", async () =>
   );
 });
 
-// Picking an external model leaves the local one resident, so ggufContextLength
+// Picking an external model leaves the local one resident, so loadedContextLength
 // goes on describing a model that has nothing to do with the pick.
 test("a resident GGUF context does not cap an external model", async () => {
   useChatRuntimeStore.setState({
     settingsHydrated: false,
     rememberParamsPerModel: true,
-    ggufContextLength: 8192,
+    loadedContextLength: 8192,
     paramsByModel: {},
     params: {
       ...useChatRuntimeStore.getState().params,
@@ -945,7 +965,7 @@ test("a resident GGUF context does not cap an external model", async () => {
   // A local checkpoint with the same resident context is still capped.
   useChatRuntimeStore.setState({
     settingsHydrated: false,
-    ggufContextLength: 8192,
+    loadedContextLength: 8192,
     paramsByModel: {},
     params: { ...useChatRuntimeStore.getState().params, checkpoint: QWEN },
   });

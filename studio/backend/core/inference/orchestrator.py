@@ -220,6 +220,29 @@ def _summed_tool_loop_stats(total, turn):
     return summed
 
 
+def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
+    """The parent's view of a model the worker holds.
+
+    Measured or classified in the subprocess and unrecoverable once the model lives
+    there, so a field the worker sends and this does not copy is one the API can never
+    report.
+    """
+    return {
+        "is_vision": model_info.get("is_vision", False),
+        "is_lora": model_info.get("is_lora", False),
+        "is_mlx": model_info.get("is_mlx", False),
+        "display_name": model_info.get("display_name", model_name),
+        "is_audio": model_info.get("is_audio", False),
+        "audio_type": model_info.get("audio_type"),
+        "has_audio_input": model_info.get("has_audio_input", False),
+        "context_length": model_info.get("context_length"),
+        "native_context_length": model_info.get("native_context_length"),
+        "max_context_length": model_info.get("max_context_length"),
+        "requested_context_length": model_info.get("requested_context_length"),
+        "context_length_enforced": model_info.get("context_length_enforced"),
+    }
+
+
 class InferenceOrchestrator:
     """
     Inference backend orchestrator — subprocess-based.
@@ -1773,16 +1796,9 @@ class InferenceOrchestrator:
                     # self.models" guard, and the worker's absent-name fallback would unload
                     # its *active* model, not the already-gone one.
                     self.models = {}
-                    self.models[self.active_model_name] = {
-                        "is_vision": model_info.get("is_vision", False),
-                        "is_lora": model_info.get("is_lora", False),
-                        "is_mlx": model_info.get("is_mlx", False),
-                        "display_name": model_info.get("display_name", model_name),
-                        "is_audio": model_info.get("is_audio", False),
-                        "audio_type": model_info.get("audio_type"),
-                        "has_audio_input": model_info.get("has_audio_input", False),
-                        "context_length": model_info.get("context_length"),
-                    }
+                    self.models[self.active_model_name] = _mirrored_model_entry(
+                        model_info, model_name
+                    )
                     self.models[self.active_model_name].update(
                         _mlx_runtime_mirror_fields(model_info)
                     )
@@ -2020,6 +2036,67 @@ class InferenceOrchestrator:
             self._unload_pending = False
             if self._drain_event is not None:
                 self._drain_event.clear()
+
+    def count_chat_tokens(
+        self,
+        messages: list,
+        system_prompt: str = "",
+        *,
+        tools: Optional[list] = None,
+        enable_thinking: Optional[bool] = None,
+        reasoning_effort: Optional[str] = None,
+        preserve_thinking: Optional[bool] = None,
+        timeout: float = 30.0,
+    ) -> tuple[int, Optional[str]]:
+        """Prompt tokens the loaded model would receive, and whose tokenizer counted them.
+
+        Reads through an addressed mailbox, as generations do: compare mode bypasses the
+        generation lock and leaves a dispatcher owning the response queue, which would
+        route this reply nowhere.
+        """
+        if not self._gen_lock.acquire(blocking = False):
+            raise RuntimeError("Cannot count tokens while a generation is in progress")
+        request_id = str(uuid.uuid4())
+        read_one, _drain, release_mailbox = self._direct_reader(request_id)
+        try:
+            self._send_cmd(
+                {
+                    "type": "count_tokens",
+                    "request_id": request_id,
+                    "messages": messages,
+                    "system_prompt": system_prompt,
+                    "tools": tools,
+                    "enable_thinking": enable_thinking,
+                    "reasoning_effort": reasoning_effort,
+                    "preserve_thinking": preserve_thinking,
+                }
+            )
+            deadline = time.monotonic() + timeout
+            resp = None
+            while time.monotonic() < deadline:
+                candidate = read_one(timeout = min(1.0, deadline - time.monotonic()))
+                if candidate is None:
+                    if not self._ensure_subprocess_alive():
+                        raise RuntimeError(self._subprocess_crash_message("count"))
+                    continue
+                # A reply whose own mailbox is gone -- an earlier count that timed out
+                # while the worker still held its command -- is handed back to whoever is
+                # reading, and the type alone cannot tell it from this one's.
+                if (
+                    candidate.get("type") == "count_tokens_response"
+                    and candidate.get("request_id") == request_id
+                ):
+                    resp = candidate
+                    break
+            if resp is None:
+                raise RuntimeError("Timed out counting tokens")
+        finally:
+            release_mailbox()
+            self._gen_lock.release()
+        error = resp.get("error")
+        if error:
+            raise RuntimeError(error)
+        return int(resp["input_tokens"]), resp.get("model")
 
     def generate_chat_response(
         self,
