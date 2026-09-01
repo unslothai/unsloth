@@ -172,7 +172,9 @@ def _start(tmp_path: Path, host: str):
     proc = subprocess.Popen(
         [sys.executable, str(script), str(port), host],
         env = dict(os.environ, PYTHONUNBUFFERED = "1"),
-        stdout = subprocess.PIPE, stderr = subprocess.STDOUT, text = True,
+        stdout = subprocess.PIPE,
+        stderr = subprocess.STDOUT,
+        text = True,
     )
     family = socket.AF_INET6 if ":" in host else socket.AF_INET
     deadline = time.monotonic() + 90
@@ -213,10 +215,23 @@ def clean_cache():
     close_mcp_sessions()
 
 
-def _call(url, name, args = None, *, scope = None, headers = None, use_oauth = False):
+def _call(
+    url,
+    name,
+    args = None,
+    *,
+    scope = None,
+    headers = None,
+    use_oauth = False,
+):
     return call_tool_sync(
-        url, headers, name, args or {},
-        timeout = 60.0, use_oauth = use_oauth, scope = scope,
+        url,
+        headers,
+        name,
+        args or {},
+        timeout = 60.0,
+        use_oauth = use_oauth,
+        scope = scope,
     )
 
 

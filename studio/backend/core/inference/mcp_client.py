@@ -619,7 +619,12 @@ def _abort_future(future) -> None:
 
 
 class _McpSession:
-    def __init__(self, url: str, headers: Optional[dict], use_oauth: bool = False):
+    def __init__(
+        self,
+        url: str,
+        headers: Optional[dict],
+        use_oauth: bool = False,
+    ):
         # A cached session is built by _client(url, headers) with no auth, so an
         # OAuth server must never reach here. call_tool_sync already routes it to
         # the one-shot path; this makes a future routing slip fail loudly rather
