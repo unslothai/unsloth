@@ -1971,17 +1971,20 @@ function useStudioRuntimeAdapters(
           | undefined;
         const store = useChatRuntimeStore.getState();
         // Window check applies only when a local GGUF window is known; external
-        // providers have ggufContextLength === null.
+        // providers have loadedContextLength === null. llama.cpp stops at the window, so
+        // a saved count past it is stale; MLX runs past it by design, and a thread whose
+        // recount is unsupported -- a VLM, or one carrying tool history -- would never
+        // get another count to replace the one rejected here.
+        const localLimit = store.loadedIsGguf ? store.loadedContextLength : null;
         const withinLocalLimit =
-          !store.ggufContextLength ||
-          (savedUsage?.totalTokens ?? 0) <= store.ggufContextLength;
+          !localLimit || (savedUsage?.totalTokens ?? 0) <= localLimit;
         // Legacy unscoped usage (no modelId) is trusted only when a known local
         // window bounds the totals, so an old local turn can't be misattributed
         // to a newly-selected external provider.
         const modelMatches = savedUsage?.modelId
           ? savedUsage.modelId === store.params.checkpoint
-          : typeof store.ggufContextLength === "number" &&
-            store.ggufContextLength > 0;
+          : typeof store.loadedContextLength === "number" &&
+            store.loadedContextLength > 0;
         // The value, not a boolean: the writes below need the narrowing.
         const restoredUsage =
           savedUsage && withinLocalLimit && modelMatches ? savedUsage : null;
@@ -2426,7 +2429,7 @@ function ThreadNewChatSwitch({
   const isLoading = useAuiState(({ threads }) => threads.isLoading);
   const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
-  const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
+  const loadedContextLength = useChatRuntimeStore((s) => s.loadedContextLength);
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
   // Read only by the recount below: New Chat itself must not care whether a run is still going.
   const runActive = useChatRuntimeStore((s) =>
@@ -2639,7 +2642,7 @@ function ThreadNewChatSwitch({
       modelLoading ||
       runActive ||
       !checkpoint ||
-      ggufContextLength == null
+      loadedContextLength == null
     ) {
       return;
     }
@@ -2652,7 +2655,7 @@ function ThreadNewChatSwitch({
     // cannot cover for it -- an unpersisted New Chat has no activeThreadId.
   }, [
     checkpoint,
-    ggufContextLength,
+    loadedContextLength,
     isLoading,
     modelLoading,
     nonce,
@@ -2977,7 +2980,7 @@ function ThreadContextUsageRecount({
 }: { enabled: boolean }): ReactElement | null {
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
-  const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
+  const loadedContextLength = useChatRuntimeStore((s) => s.loadedContextLength);
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
   // A DEPENDENCY, not just a guard: nothing else here changes when a run ends, so a count skipped
   // for being busy would never be retried. Every run, not just local ones, since that is what the
@@ -2993,7 +2996,7 @@ function ThreadContextUsageRecount({
       modelLoading ||
       runActive ||
       !checkpoint ||
-      ggufContextLength == null
+      loadedContextLength == null
     ) {
       return;
     }
@@ -3004,7 +3007,7 @@ function ThreadContextUsageRecount({
     activeThreadId,
     checkpoint,
     enabled,
-    ggufContextLength,
+    loadedContextLength,
     runActive,
     modelLoading,
   ]);

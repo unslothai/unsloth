@@ -11157,6 +11157,45 @@ def build_conversation_recall(
     return built
 
 
+def rag_autoinject_reaches_retrieval(
+    conversation: list[dict], rag_scope: dict | None
+) -> tuple[bool, bool]:
+    """Everything checked before pre-retrieval searches: switched on, something to search
+    for, somewhere to search, and a store to search it in. Whether a hit then clears the
+    score floor is the one part not knowable without running the search.
+
+    Shared with token counting, which cannot run it and so must not decline a turn that
+    stops short of the search here.
+    """
+    if not rag_scope:
+        return False, False
+    enabled = rag_scope.get("autoinject")
+    if enabled is None:
+        enabled = _autoinject_enabled()
+    thread_id = rag_scope.get("thread_id")
+    whole_doc_requested = (
+        bool(thread_id) and not rag_scope.get("kb_id") and _thread_whole_doc_enabled(rag_scope)
+    )
+    if not enabled and not whole_doc_requested:
+        return False, False
+    # What _resolve_scope resolves to nothing: an unpersisted New Chat carries a scope with
+    # none of the three ids, and the search stops there.
+    if not (rag_scope.get("kb_id") or rag_scope.get("project_id") or thread_id):
+        return False, False
+    if not _last_user_text(conversation):
+        return False, False
+    try:
+        from storage import rag_db
+
+        # rag_available(), not the import flag: the vec0 native library is a separate file a
+        # venv can be missing, and nothing finds out until a connection tries.
+        if not rag_db.rag_available():
+            return False, False
+    except Exception:  # noqa: BLE001
+        return False, False
+    return bool(enabled), whole_doc_requested
+
+
 def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> dict | None:
     """Pre-retrieve the latest user turn; if a hit clears the cosine floor return
     ``{"events": [...], "messages": [...]}`` to splice into the loop, else ``None``.
@@ -11166,24 +11205,12 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     Also the small-model fallback: models below ~4B often answer from memory
     instead of calling ``search_knowledge_base``, so forcing retrieval here keeps
     attachments consulted regardless of model size."""
-    if not rag_scope:
-        return None
-    enabled = rag_scope.get("autoinject")
-    if enabled is None:
-        enabled = _autoinject_enabled()
-    thread_id = rag_scope.get("thread_id")
-    whole_doc_requested = (
-        bool(thread_id) and not rag_scope.get("kb_id") and _thread_whole_doc_enabled(rag_scope)
-    )
+    enabled, whole_doc_requested = rag_autoinject_reaches_retrieval(conversation, rag_scope)
     if not enabled and not whole_doc_requested:
         return None
+    thread_id = rag_scope.get("thread_id")
     query = _last_user_text(conversation)
-    if not query:
-        return None
     try:
-        from storage import rag_db
-        if not rag_db.RAG_AVAILABLE:
-            return None
         from core.rag.tool import render_sources, search_for_autoinject, whole_document_context
     except Exception as exc:  # noqa: BLE001
         logger.warning("RAG auto-inject unavailable: %s", exc)
