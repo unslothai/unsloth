@@ -2165,8 +2165,11 @@ def test_the_unstructured_chunk_cache_follows_the_calling_account(
     # is not installed here, and this module has no relative imports of its own.
     source = (
         Path(__file__).resolve().parents[1]
-        / "plugins" / "data-designer-unstructured-seed" / "src"
-        / "data_designer_unstructured_seed" / "chunking.py"
+        / "plugins"
+        / "data-designer-unstructured-seed"
+        / "src"
+        / "data_designer_unstructured_seed"
+        / "chunking.py"
     )
     spec = importlib.util.spec_from_file_location("_unstructured_chunking", source)
     chunking = importlib.util.module_from_spec(spec)

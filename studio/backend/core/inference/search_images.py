@@ -87,6 +87,8 @@ def _images() -> _WorkspaceImages:
     fetch, and a single lock keeps the atomicity the fence reasoning depends on.
     """
     return _workspace_images.setdefault(current_workspace_subject(), _WorkspaceImages())
+
+
 # Ids whose files a clear could not unlink -- on Windows another process holding the
 # JPEG open is enough. The cache-first read and the sidecar read both go around the
 # registry, so without this they would go on serving a picture the user had cleared.

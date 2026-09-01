@@ -14,6 +14,8 @@ DEFAULT_CHUNK_SIZE = 1200
 DEFAULT_CHUNK_OVERLAP = 200
 MAX_CHUNK_SIZE = 20000
 _MIN_BREAK_RATIO = 0.6
+
+
 def _cache_dir():
     """Where this account's document-derived parquet chunks live.
 
@@ -24,6 +26,7 @@ def _cache_dir():
     neither isolated nor retired with their own workspace.
     """
     return unstructured_seed_cache_root()
+
 
 _PANDAS = None
 
