@@ -4755,8 +4755,13 @@ fi
 # Radeon/Strix repos by GPU probing.
 _amd_gpu_radeon=false
 if [ "$_torch_index_pinned" = false ]; then
-case "$TORCH_INDEX_URL" in
-    */rocm*)
+# On the LEAF, like every other index classifier here: the AMD per-arch mirror is
+# https://repo.amd.com/ROCM/whl/gfx120X-all/, so a whole-URL */rocm* glob brands every
+# per-arch reroute as Radeon and the summary then reports repo.radeon.com wheels that
+# were never fetched. The two older per-arch reroutes each clear the flag by hand
+# afterwards; matching the leaf is what stops the next one from having to.
+case "$_torch_index_leaf" in
+    rocm*)
         if _has_amd_rocm_gpu && command -v rocminfo >/dev/null 2>&1 && \
            rocminfo 2>/dev/null | grep -q 'Marketing Name:.*Radeon'; then
             _amd_gpu_radeon=true

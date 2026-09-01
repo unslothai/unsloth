@@ -282,6 +282,7 @@ TORCHAUDIO_CONSTRAINT=""
 . "$_BLOCK"
 printf 'INDEX=%s\n' "\$TORCH_INDEX_URL"
 printf 'GFX=%s\n' "\${UNSLOTH_ROCM_GFX_ARCH:-}"
+printf 'RADEON=%s\n' "\${_amd_gpu_radeon:-}"
 EOF
     PATH="$_MOCK:$_TOOLS" "$_RUN_SHELL" "$_ROOT/run.sh" 2>"$_ROOT/stderr.txt" || \
         printf 'INDEX=<installer exited %s>\n' "$?"
@@ -289,6 +290,7 @@ EOF
 
 run_index() { run_installer "${1:-x86_64}" | sed -n 's/^INDEX=//p'; }
 run_gfx()   { run_installer "${1:-x86_64}" | sed -n 's/^GFX=//p'; }
+run_radeon() { run_installer "${1:-x86_64}" | sed -n 's/^RADEON=//p'; }
 
 _BASE="https://download.pytorch.org/whl"
 _AMD="https://repo.amd.com/rocm/whl"
@@ -358,6 +360,16 @@ assert_eq "a same-family pair routes to the shared family" \
 fedora_no_version_host gfx1200 gfx1201
 mock_lspci "Navi 48 [Radeon RX 9070 XT]"
 assert_eq "a same-family pair names no single card" "" "$(run_gfx)"
+
+# rocminfo calls every consumer card "Radeon", and the AMD per-arch mirror is
+# repo.amd.com/ROCM/whl/gfx120X-all/, so branding the host off the whole URL sends the
+# rerouted install down the repo.radeon.com branch: the summary reports wheels it never
+# fetched and the Radeon path then warns it cannot read the ROCm version it does not need.
+fedora_no_version_host gfx1201
+mock_lspci "Navi 48 [Radeon RX 9070 XT]"
+assert_eq "a per-arch reroute is not branded a Radeon repo install" "false" "$(run_radeon)"
+fedora_no_version_host gfx1200 gfx1201
+assert_eq "nor is the same-family reroute" "false" "$(run_radeon)"
 
 # Real ROCm 7.x rocminfo for one gfx1201: the agent Name, an ISA triple carrying feature
 # flags, and a SECOND ISA "gfx12-generic" (ROCm/ROCm#6110). One card must not read as two,
