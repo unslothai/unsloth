@@ -1132,8 +1132,7 @@ def _ambient_credentials_suppressed_for(subject: "Optional[str]") -> dict:
     if is_installation_owner(subject):
         return {}
     suppressed = {
-        key: ""
-        for key in _HF_TOKEN_ENV_KEYS + _WANDB_TOKEN_ENV_KEYS + _GITHUB_TOKEN_ENV_KEYS
+        key: "" for key in _HF_TOKEN_ENV_KEYS + _WANDB_TOKEN_ENV_KEYS + _GITHUB_TOKEN_ENV_KEYS
     }
     suppressed["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
     return suppressed
@@ -1853,9 +1852,7 @@ class TrainingBackend:
             from utils.hf_cache_settings import child_environment_for_spawn, get_hf_cache_paths
 
             cache_env = get_hf_cache_paths().child_env({})
-            cache_env.update(
-                _ambient_credentials_suppressed_for(self._active_workspace_subject)
-            )
+            cache_env.update(_ambient_credentials_suppressed_for(self._active_workspace_subject))
 
             try:
                 with (

@@ -172,9 +172,7 @@ def cancel_all(subject: Optional[str] = None) -> int:
     """
     with _LOCK:
         events = [
-            e["event"]
-            for e in _ACTIVE.values()
-            if subject is None or e.get("subject") == subject
+            e["event"] for e in _ACTIVE.values() if subject is None or e.get("subject") == subject
         ]
     for ev in events:
         try:

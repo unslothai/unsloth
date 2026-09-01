@@ -12923,7 +12923,10 @@ async def _cancel_and_drain_for_sidecar_swap(timeout_s: Optional[float] = None) 
 
 
 async def _drain_and_recancel_before_teardown(
-    *, force: bool, action: str, caller_scoped: bool = True
+    *,
+    force: bool,
+    action: str,
+    caller_scoped: bool = True,
 ) -> None:
     """Wait out inference the registry cannot see, then stop anything new.
 
@@ -12944,9 +12947,7 @@ async def _drain_and_recancel_before_teardown(
     if force:
         # Same scope as the cancel this is re-running, so the second sweep cannot
         # reach further than the first one was allowed to.
-        _raise_or_cancel_active_generations(
-            force = True, action = action, caller_scoped = caller_scoped
-        )
+        _raise_or_cancel_active_generations(force = True, action = action, caller_scoped = caller_scoped)
 
 
 _UNRESOLVED_BACKEND_STATE = object()
@@ -33537,9 +33538,7 @@ async def diffusion_status(current_subject: str = Depends(get_current_subject)):
     # Refusing the generation is not enough on its own: this payload names the
     # model and spells out its absolute path, which is the part worth hiding from
     # a caller who is not allowed to use it.
-    return DiffusionStatusResponse(
-        **_redact_foreign_private_resident_model(active_status())
-    )
+    return DiffusionStatusResponse(**_redact_foreign_private_resident_model(active_status()))
 
 
 @studio_router.get("/images/info", response_model = DiffusionInferenceInfoResponse)

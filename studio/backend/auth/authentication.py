@@ -410,9 +410,7 @@ async def authenticated_without_credential(
     return admitted_without_credential(credentials)
 
 
-def require_ui_session_for_local_commands(
-    via_api_key: bool, subject: str | None = None
-) -> None:
+def require_ui_session_for_local_commands(via_api_key: bool, subject: str | None = None) -> None:
     """Refuse anyone but the owner's UI session a local (stdio) MCP command.
 
     stdio MCP runs a command on this host as the backend user, outside the

@@ -187,21 +187,15 @@ _AMBIENT_CASES = [
 
 
 @pytest.mark.parametrize("via_api_key, subject, expected", _AMBIENT_CASES)
-def test_only_the_owners_ui_session_may_borrow_the_backend_token(
-    via_api_key, subject, expected
-):
+def test_only_the_owners_ui_session_may_borrow_the_backend_token(via_api_key, subject, expected):
     assert (
-        asyncio.run(
-            allow_ambient_hf_token(via_api_key = via_api_key, current_subject = subject)
-        )
+        asyncio.run(allow_ambient_hf_token(via_api_key = via_api_key, current_subject = subject))
         is expected
     )
 
 
 @pytest.mark.parametrize("via_api_key, subject, expected", _AMBIENT_CASES)
-def test_model_download_route_gates_the_ambient_token(
-    monkeypatch, via_api_key, subject, expected
-):
+def test_model_download_route_gates_the_ambient_token(monkeypatch, via_api_key, subject, expected):
     seen = {}
 
     async def _fake(

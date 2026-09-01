@@ -2586,9 +2586,7 @@ def test_a_retirement_during_schema_creation_is_not_undone_by_the_add():
     assert cache == set()
 
 
-def test_a_privately_loaded_media_model_is_not_generated_with_by_others(
-    tmp_path, monkeypatch
-):
+def test_a_privately_loaded_media_model_is_not_generated_with_by_others(tmp_path, monkeypatch):
     from fastapi import HTTPException
 
     from routes import inference as inference_routes
@@ -2999,9 +2997,7 @@ def test_image_generation_is_pinned_to_the_status_it_authorised(monkeypatch):
     # generate so the slot can refuse a load that committed in between rather than
     # letting this request, which named no model, adopt it.
     status = backend.status()
-    pinned = load_identity(
-        status.get("repo_id"), status.get("base_repo"), status.get("family")
-    )
+    pinned = load_identity(status.get("repo_id"), status.get("base_repo"), status.get("family"))
     try:
         backend.generate(expected_load = pinned)
     except RuntimeError:
@@ -3094,9 +3090,7 @@ def test_one_accounts_dataset_mutation_does_not_block_another_from_training():
             token_alice = _bind("alice")
             try:
                 assert service._dataset_mutations == {"bob": 1}
-                assert (
-                    service._dataset_mutations.get(current_workspace_subject()) is None
-                )
+                assert service._dataset_mutations.get(current_workspace_subject()) is None
             finally:
                 reset_workspace_subject(token_alice)
 
@@ -3175,13 +3169,9 @@ def test_a_managed_export_worker_cannot_borrow_the_owners_hub_token(monkeypatch)
         Process = _FakeProcess
 
     monkeypatch.setattr(export_orchestrator, "_CTX", _FakeContext)
-    monkeypatch.setattr(
-        "utils.process_lifetime.adopt_pid", lambda *_a, **_k: None, raising = False
-    )
+    monkeypatch.setattr("utils.process_lifetime.adopt_pid", lambda *_a, **_k: None, raising = False)
 
-    backend = export_orchestrator.ExportOrchestrator.__new__(
-        export_orchestrator.ExportOrchestrator
-    )
+    backend = export_orchestrator.ExportOrchestrator.__new__(export_orchestrator.ExportOrchestrator)
     backend._export_active = False
     backend._workspace_subject = None
     backend._proc = None
@@ -3206,9 +3196,7 @@ def test_a_managed_export_worker_cannot_borrow_the_owners_hub_token(monkeypatch)
 def test_a_managed_embedding_choice_resolves_without_the_owners_hub_token(monkeypatch):
     from routes import settings as settings_routes
 
-    monkeypatch.setattr(
-        settings_routes, "_ambient_hf_token", lambda: "owner-token", raising = False
-    )
+    monkeypatch.setattr(settings_routes, "_ambient_hf_token", lambda: "owner-token", raising = False)
 
     # A token the caller supplied is theirs, whoever they are.
     assert settings_routes._hub_token_for_subject("mine") == "mine"
@@ -3381,9 +3369,7 @@ def test_training_refuses_rather_than_cancelling_a_foreign_render(monkeypatch):
 
     class _Busy:
         def _refuse_foreign_teardown(self, subject):
-            raise ForeignWorkspaceActiveError(
-                "Another account is generating an image right now."
-            )
+            raise ForeignWorkspaceActiveError("Another account is generating an image right now.")
 
     class _Idle:
         def _refuse_foreign_teardown(self, subject):
@@ -3403,8 +3389,7 @@ def test_training_refuses_rather_than_cancelling_a_foreign_render(monkeypatch):
     # own path and tears down whatever is running, so the refusal belongs here.
     _engines(_Busy(), _Idle())
     assert (
-        _foreign_media_render_active("bob")
-        == "Another account is generating an image right now."
+        _foreign_media_render_active("bob") == "Another account is generating an image right now."
     )
 
     _engines(_Idle(), _Idle())

@@ -1339,9 +1339,7 @@ async def start_training(
         # valid training start cancelled another account's in-flight render. Ask
         # the engines' own refusal first and decline rather than kill; the owner's
         # own render is still torn down as before.
-        foreign_render = await asyncio.to_thread(
-            _foreign_media_render_active, current_subject
-        )
+        foreign_render = await asyncio.to_thread(_foreign_media_render_active, current_subject)
         if foreign_render:
             return TrainingJobResponse(
                 job_id = "",

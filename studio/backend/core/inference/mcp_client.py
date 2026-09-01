@@ -457,9 +457,7 @@ def _revalidate_http_destination(url: str) -> None:
     try:
         _reject_non_public(hostname, parsed.port, (parsed.scheme or "https").lower())
     except ValueError as exc:
-        raise PermissionError(
-            f"This account cannot reach that MCP address: {exc}"
-        ) from exc
+        raise PermissionError(f"This account cannot reach that MCP address: {exc}") from exc
 
 
 def _client(
@@ -480,9 +478,7 @@ def _client(
         from auth.storage import is_installation_owner
 
         if not is_installation_owner():
-            raise PermissionError(
-                "Only the installation owner can run local (stdio) MCP servers"
-            )
+            raise PermissionError("Only the installation owner can run local (stdio) MCP servers")
         from fastmcp.client.transports import StdioTransport
 
         parts = parse_stdio_command(url)

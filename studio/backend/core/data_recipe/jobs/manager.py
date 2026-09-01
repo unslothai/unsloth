@@ -257,9 +257,7 @@ class JobManager:
             # managed account naming an arbitrary variable to read.
             from core.training.training import _ambient_credentials_suppressed_for
 
-            cache_env.update(
-                _ambient_credentials_suppressed_for(self._workspace_subject)
-            )
+            cache_env.update(_ambient_credentials_suppressed_for(self._workspace_subject))
 
             with (
                 child_environment_for_spawn(cache_env),

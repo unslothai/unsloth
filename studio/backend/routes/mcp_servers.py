@@ -128,10 +128,7 @@ def _reject_private_target_for_managed_accounts(parsed) -> None:
     except ValueError as exc:
         raise HTTPException(
             status_code = 403,
-            detail = (
-                "This account can only add MCP servers on public addresses. "
-                f"({exc})"
-            ),
+            detail = (f"This account can only add MCP servers on public addresses. ({exc})"),
         ) from exc
 
 
