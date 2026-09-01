@@ -35,6 +35,23 @@ SCOPE = "s=sess1:t=threadA"
 SCOPE_B = "s=sess1:t=threadB"
 
 
+def _protocol_error(code: int, message: str) -> Exception:
+    """Build a JSON-RPC error exception for whichever mcp is installed.
+
+    single-env/constraints.txt allows mcp>=1.24,<2, where the class is McpError
+    and takes an ErrorData; mcp 2 renamed it MCPError and takes the fields
+    directly. Production code reads whichever of the two names exists, so the
+    tests have to be able to raise it under both."""
+    import mcp.shared.exceptions as mcp_exceptions
+    from mcp.types import ErrorData
+
+    cls = getattr(mcp_exceptions, "MCPError", None) or mcp_exceptions.McpError
+    try:
+        return cls(code = code, message = message)
+    except TypeError:
+        return cls(ErrorData(code = code, message = message))
+
+
 def _settled(client, expected: int = 1, timeout: float = 10.0) -> int:
     """Wait out an asynchronous close.
 
@@ -682,8 +699,6 @@ def test_a_json_rpc_error_keeps_the_chats_session(monkeypatch, clients):
     servers do. Receiving that reply proves the connection works, so discarding
     the session would throw away the chat's server-side state over a tool name
     the model got wrong."""
-    from mcp.shared.exceptions import MCPError
-
     class ProtocolError(RecordingClient):
         async def call_tool(
             self,
@@ -692,7 +707,7 @@ def test_a_json_rpc_error_keeps_the_chats_session(monkeypatch, clients):
             raise_on_error: bool = True,
         ):
             if name == "nope":
-                raise MCPError(code = -32602, message = "Unknown tool: nope")
+                raise _protocol_error(-32602, "Unknown tool: nope")
             return await super().call_tool(name, args, raise_on_error)
 
     monkeypatch.setattr(

@@ -47,7 +47,6 @@ import uvicorn
 from fastmcp import FastMCP
 from fastmcp.server.dependencies import get_http_headers
 from fastmcp.server.middleware import Middleware
-from mcp.shared.exceptions import MCPError
 
 mcp = FastMCP("notes")
 _peer = contextvars.ContextVar("peer", default="unknown")
@@ -91,6 +90,19 @@ class Observe:
         await self.app(scope, receive, send)
 
 
+def _protocol_error(code, message):
+    """mcp<2 names the class McpError and takes an ErrorData; mcp 2 renamed it
+    MCPError and takes the fields. constraints.txt allows both."""
+    import mcp.shared.exceptions as mcp_exceptions
+    from mcp.types import ErrorData
+
+    cls = getattr(mcp_exceptions, "MCPError", None) or mcp_exceptions.McpError
+    try:
+        return cls(code=code, message=message)
+    except TypeError:
+        return cls(ErrorData(code=code, message=message))
+
+
 class ProtocolErrors(Middleware):
     """Answer one tool with a JSON-RPC error instead of a result, the way the
     spec lets a server report an unknown tool. FastMCP itself returns a result
@@ -99,7 +111,7 @@ class ProtocolErrors(Middleware):
 
     async def on_call_tool(self, context, call_next):
         if context.message.name == "protocol_error":
-            raise MCPError(code = -32602, message = "Unknown tool: protocol_error")
+            raise _protocol_error(-32602, "Unknown tool: protocol_error")
         return await call_next(context)
 
 
