@@ -251,6 +251,20 @@ class ExportOrchestrator:
         from utils.hf_cache_settings import child_environment_for_spawn, get_hf_cache_paths
 
         cache_env = get_hf_cache_paths().child_env({})
+        # The export child is spawned, so it copies the live parent environment.
+        # A managed account may name a remote checkpoint without a token of its
+        # own; the containment guard passes it because it is not a local path, and
+        # the worker would then open an owner-private repo with the server's
+        # HF_TOKEN or cached login and write the converted weights into the
+        # caller's workspace. Same suppression the training and recipe workers
+        # apply, so the three agree on whose credential a child may spend.
+        from core.training.training import _ambient_credentials_suppressed_for
+
+        cache_env.update(
+            _ambient_credentials_suppressed_for(
+                config.get("subject") or getattr(self, "_workspace_subject", None)
+            )
+        )
 
         with (
             child_environment_for_spawn(cache_env),

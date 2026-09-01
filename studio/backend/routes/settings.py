@@ -1931,12 +1931,41 @@ def _any_embedder_is_loaded() -> bool:
 
 def _ambient_hf_token() -> Optional[str]:
     """The HF token the loader would use (HF_TOKEN env or the cached login), so a gated
-    repo is scanned rather than failing open. None if unavailable."""
+    repo is scanned rather than failing open. None if unavailable.
+
+    Owner-only: that credential belongs to the installation, and lending it to a
+    managed account is what ``_hub_token_for_subject`` exists to prevent. Callers
+    should go through that helper rather than this one."""
+    from auth.storage import is_installation_owner
+
+    if not is_installation_owner():
+        return None
     try:
         from huggingface_hub import get_token
         return get_token()
     except Exception:
         return None
+
+
+def _hub_token_for_subject(supplied: Optional[str]):
+    """The token this request's Hub calls may use.
+
+    A supplied token is the caller's own and always wins. Without one, only the
+    installation owner falls back to the ambient credential; a managed account
+    resolves anonymously. The anonymous answer is ``False``, not ``None``:
+    huggingface_hub treats ``None`` as "look for an implicit login", so passing
+    it would still spend the owner's cached token on a repo the caller named.
+    Without this, naming an owner-private repo here enumerated its files and
+    pulled its config into the shared cache under the owner's identity.
+    """
+    from auth.storage import is_installation_owner
+
+    token = (supplied or "").strip() or None
+    if token:
+        return token
+    if not is_installation_owner():
+        return False
+    return _ambient_hf_token() or False
 
 
 def _model_names_gguf_repo(model: str) -> bool:
@@ -2661,8 +2690,7 @@ def resolve_embedding_model(
             event = "settings.resolve_embedding_model_failed",
             log = logger,
         ) from exc
-    token = (hf_token or "").strip() or None
-    return _resolve_embedding_model_plan(resolved, token)
+    return _resolve_embedding_model_plan(resolved, _hub_token_for_subject(hf_token))
 
 
 @router.put("/embedding-model", response_model = EmbeddingModelResponse)
@@ -2702,7 +2730,11 @@ def update_embedding_model(
     local_only_load = hf_env_offline()
     # Resolve again server-side. The client fields are only an optimistic echo
     # of GET /resolve; neither a repository nor a backend is trusted on its word.
-    plan = _resolve_embedding_model_plan(model, hf_token)
+    # Whose credential this resolution may spend, decided once and reused by the
+    # scan below so the repo we verify and the repo we resolved are looked up as
+    # the same identity.
+    resolve_token = _hub_token_for_subject(hf_token)
+    plan = _resolve_embedding_model_plan(model, resolve_token)
     requested_repo = (payload.gguf_repo or "").strip() or None
     if payload.backend is not None and payload.backend != plan.backend:
         raise HTTPException(
@@ -2745,7 +2777,10 @@ def update_embedding_model(
 
         # Fall back to the loader's own token so a gated/private repo is actually scanned
         # (a token-less scan fails open for exactly the repo that would still load).
-        scan_token = hf_token or _ambient_hf_token()
+        # Owner-only, and explicitly anonymous otherwise: the fallback is the
+        # installation's credential, and a managed account naming an owner-private
+        # repo would have spent it to enumerate and cache that repo's files.
+        scan_token = resolve_token
         # Offline: subdir probes would hit the network and hang; the offline gate walks the
         # whole cached snapshot, so no load-subdir hints are needed.
         if local_only_load:
@@ -2789,7 +2824,7 @@ def update_embedding_model(
         # GGUF is available (below) rather than the ST embedding-metadata gate,
         # which would wrongly 409 a valid online GGUF embedder.
         gguf_named = destination_is_llama and rag_config._names_gguf(model)
-        if not gguf_named and not is_embedding_model(verify_target, hf_token = hf_token):
+        if not gguf_named and not is_embedding_model(verify_target, hf_token = resolve_token):
             # Offline, is_embedding_model can only confirm the ST layout (modules.json); a
             # transformers-native embedder (e.g. gte-modernbert) is unverifiable without Hub
             # metadata. If already cached and loadable, accept it rather than raising a 409 that

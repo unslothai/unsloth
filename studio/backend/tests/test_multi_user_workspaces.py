@@ -3147,3 +3147,123 @@ def test_only_the_account_that_started_a_download_may_cancel_it(monkeypatch):
         download_lifecycle.require_download_cancel_permission("alice-job")
     finally:
         reset_workspace_subject(token)
+
+
+def test_a_managed_export_worker_cannot_borrow_the_owners_hub_token(monkeypatch):
+    from core.export import orchestrator as export_orchestrator
+
+    captured: dict = {}
+
+    class _FakeQueue:
+        def put(self, *_a, **_k):
+            pass
+
+    class _FakeProcess:
+        pid = 4242
+
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def start(self):
+            pass
+
+        def is_alive(self):
+            return False
+
+    class _FakeContext:
+        Queue = _FakeQueue
+        Process = _FakeProcess
+
+    monkeypatch.setattr(export_orchestrator, "_CTX", _FakeContext)
+    monkeypatch.setattr(
+        "utils.process_lifetime.adopt_pid", lambda *_a, **_k: None, raising = False
+    )
+
+    backend = export_orchestrator.ExportOrchestrator.__new__(
+        export_orchestrator.ExportOrchestrator
+    )
+    backend._export_active = False
+    backend._workspace_subject = None
+    backend._proc = None
+
+    # A remote checkpoint passes the containment guard because it is not a local
+    # path, so the only thing standing between a managed account and an
+    # owner-private repo is what the child is allowed to authenticate as.
+    backend._spawn_subprocess({"subject": "alice", "checkpoint_path": "owner/private"})
+    child_env = captured["args"][2]
+    assert child_env["HF_TOKEN"] == ""
+    assert child_env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == "1"
+
+    captured.clear()
+    backend._spawn_subprocess(
+        {"subject": LEGACY_WORKSPACE_SUBJECT, "checkpoint_path": "owner/private"}
+    )
+    owner_env = captured["args"][2]
+    assert "HF_HUB_DISABLE_IMPLICIT_TOKEN" not in owner_env
+    assert owner_env.get("HF_TOKEN", None) != ""
+
+
+def test_a_managed_embedding_choice_resolves_without_the_owners_hub_token(monkeypatch):
+    from routes import settings as settings_routes
+
+    monkeypatch.setattr(
+        settings_routes, "_ambient_hf_token", lambda: "owner-token", raising = False
+    )
+
+    # A token the caller supplied is theirs, whoever they are.
+    assert settings_routes._hub_token_for_subject("mine") == "mine"
+
+    token = _bind("alice")
+    try:
+        # Not None: huggingface_hub reads None as "find an implicit login", which is
+        # exactly the owner's cached credential this must not spend on an
+        # owner-private repo the caller merely named.
+        assert settings_routes._hub_token_for_subject(None) is False
+        assert settings_routes._hub_token_for_subject("   ") is False
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind(LEGACY_WORKSPACE_SUBJECT)
+    try:
+        assert settings_routes._hub_token_for_subject(None) == "owner-token"
+    finally:
+        reset_workspace_subject(token)
+
+
+def test_the_ambient_hub_token_is_owner_only():
+    from routes import settings as settings_routes
+    token = _bind("alice")
+    try:
+        assert settings_routes._ambient_hf_token() is None
+    finally:
+        reset_workspace_subject(token)
+
+
+def test_a_resident_controlnet_is_not_reused_across_workspaces():
+    from core.inference.diffusion import DiffusionBackend
+
+    class _Resolved:
+        def __init__(self, id, path, is_local):
+            self.id = id
+            self.path = path
+            self.is_local = is_local
+
+    # controlnets_dir() is per account, so the same catalog id names different
+    # weights for different accounts; keying the resident model by id alone handed
+    # the second caller the first one's private ControlNet.
+    alice = DiffusionBackend._controlnet_cache_key(
+        _Resolved("my-cn", "/home/u/workspaces/alice/controlnets/diffusion/my-cn", True)
+    )
+    bob = DiffusionBackend._controlnet_cache_key(
+        _Resolved("my-cn", "/home/u/workspaces/bob/controlnets/diffusion/my-cn", True)
+    )
+    assert alice != bob
+
+    # A hub model is install-wide by design and must still be shared.
+    hub_one = DiffusionBackend._controlnet_cache_key(
+        _Resolved("flux-union-pro", "Shakker-Labs/FLUX.1-dev-ControlNet-Union-Pro", False)
+    )
+    hub_two = DiffusionBackend._controlnet_cache_key(
+        _Resolved("flux-union-pro", "Shakker-Labs/FLUX.1-dev-ControlNet-Union-Pro", False)
+    )
+    assert hub_one == hub_two

@@ -1234,8 +1234,9 @@ class DiffusionBackend:
         # img2img/inpaint pipes built via from_pipe (shared modules, no extra VRAM); cleared on unload.
         self._aux_pipes: dict[str, Any] = {}
         # Loaded ControlNets and their from_pipe pipelines, reusing resident modules; cleared on unload.
-        self._cn_models: dict[str, Any] = {}
-        self._cn_pipes: dict[tuple[str, str], Any] = {}
+        # Keyed by _controlnet_cache_key (id + resolved path), not by id alone: see there.
+        self._cn_models: dict[tuple[str, str], Any] = {}
+        self._cn_pipes: dict[tuple[str, tuple[str, str]], Any] = {}
 
     @property
     def is_loaded(self) -> bool:
@@ -5418,6 +5419,22 @@ class DiffusionBackend:
                 self._aux_pipes[class_name] = pipe
         return pipe
 
+    @staticmethod
+    def _controlnet_cache_key(resolved_cn: Any) -> tuple[str, str]:
+        """Cache identity of a resolved ControlNet: its id plus what it resolved to.
+
+        A local ControlNet lives under the caller's own controlnets_dir(), so the
+        canonical path is what distinguishes two accounts' same-named models. The
+        path is canonicalised so a symlink or a relative spelling of one directory
+        does not load the same weights twice."""
+        path = str(getattr(resolved_cn, "path", "") or "")
+        if getattr(resolved_cn, "is_local", False):
+            try:
+                path = str(Path(path).resolve())
+            except OSError:
+                pass
+        return (str(getattr(resolved_cn, "id", "") or ""), path)
+
     def _controlnet_pipe(self, state: _LoadState, resolved_cn: Any, cancel: threading.Event) -> Any:
         """Build (once, cached) the family's diffusers ControlNet pipeline around the requested
         ControlNet model. The ControlNet model is a small extra module loaded via from_pretrained
@@ -5431,7 +5448,13 @@ class DiffusionBackend:
             raise ValueError(f"ControlNet is not supported for the '{fam.name}' model family.")
         import diffusers
 
-        cn_model = self._cn_models.get(resolved_cn.id)
+        # Keyed by what was loaded, not by what it was called. controlnets_dir() is
+        # per account, so two accounts can hold different weights under the same
+        # catalog id, and an id-only key handed the second caller the first one's
+        # resident private ControlNet. The resolved path carries the workspace for a
+        # local model and is the repo id for a hub one, so remote models still share.
+        cn_key = self._controlnet_cache_key(resolved_cn)
+        cn_model = self._cn_models.get(cn_key)
         if cn_model is None:
             if cancel.is_set():
                 raise RuntimeError(DIFFUSION_CANCELLED_MSG)
@@ -5477,8 +5500,8 @@ class DiffusionBackend:
                 # An unload raced the download and cleared the caches; caching now would pin it.
                 del cn_model
                 raise RuntimeError(DIFFUSION_CANCELLED_MSG)
-            self._cn_models[resolved_cn.id] = cn_model
-        key = (pipe_cls_name, resolved_cn.id)
+            self._cn_models[cn_key] = cn_model
+        key = (pipe_cls_name, cn_key)
         pipe = self._cn_pipes.get(key)
         if pipe is None:
             pipe = self._from_pipe_no_recast(
