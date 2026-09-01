@@ -86,6 +86,7 @@ import {
   trackSttDownload,
 } from "@/features/settings/lib/stt-download-mirror";
 import { sttModelSize } from "@/features/settings/stores/stt-model-catalog";
+import { usePersistedChoice } from "@/hooks/use-persisted-choice";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { fetchSystemInfo } from "@/hooks/use-system";
@@ -120,6 +121,7 @@ import {
   canTransitionAudioMode,
   exactGgufLoadSelector,
   expectedGgufDownloadBytes,
+  isGgufTtsTarget,
   isTtsAudioType,
   macTtsPickAction,
   mergeGalleryPage,
@@ -525,6 +527,12 @@ export function AudioPage({
   } = useScrollFades();
   const [advancedOpen, setAdvancedOpen] = usePersistedToggle(
     "unsloth_audio_advanced_open",
+  );
+  // Read at load time. The handler below ejects the resident model so a
+  // change actually takes effect.
+  const [audioDevice, setAudioDeviceState] = usePersistedChoice(
+    "unsloth_audio_device",
+    "auto",
   );
 
   const refreshStatus = useCallback(async () => {
@@ -993,6 +1001,8 @@ export function AudioPage({
             );
           if (controller.signal.aborted || !isCurrent()) return;
         }
+        const wantsCpu = audioDevice === "cpu";
+        const isGgufLoad = isGgufTtsTarget({ repoId, ggufFilename, loadId });
         const res = await loadModel(
           {
             model_path: loadId || repoId,
@@ -1005,6 +1015,20 @@ export function AudioPage({
             gguf_variant: ggufFilename ?? null,
             trust_remote_code: trustRemoteCode,
             approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
+            audio_device: wantsCpu ? "cpu" : "auto",
+            // GGUF ignores audio_device: llama.cpp offloads unless it is told
+            // not to, so the same choice has to become zero layers there.
+            // speculative_type must be an explicit "off": an absent one resolves
+            // to "auto", which may still attach a GPU drafter, and the backend
+            // then reads the load as GPU-bearing and evicts image/video for it.
+            ...(wantsCpu && isGgufLoad
+              ? // biome-ignore lint/style/useNamingConvention: API schema
+                {
+                  gpu_memory_mode: "manual" as const,
+                  gpu_layers: 0,
+                  speculative_type: "off" as const,
+                }
+              : {}),
           },
           {
             signal: controller.signal,
@@ -1026,6 +1050,18 @@ export function AudioPage({
           toast.success(`Model loaded (${res.audio_type ?? "audio"})`, {
             id: toastId,
           });
+          // Only the native runtime and GGUF can be held in RAM. Say so rather
+          // than leave the control claiming a placement that did not happen.
+          if (
+            wantsCpu &&
+            !isGgufLoad &&
+            !usesNativeAudioRuntime(repoId, res.audio_type)
+          ) {
+            toast.info(
+              "This model does not support CPU RAM yet, so it loaded on the GPU.",
+              { duration: 6000 },
+            );
+          }
         } else {
           toast.error(`${repoId} loaded but is not a supported TTS model.`, {
             id: toastId,
@@ -1056,7 +1092,7 @@ export function AudioPage({
         if (activeRef.current) replayQueuedTtsPick();
       }
     },
-    [refreshStatus],
+    [refreshStatus, audioDevice],
   );
 
   // Stage uncached Hub GGUFs through the shared manager so Audio gets the same
@@ -1576,10 +1612,7 @@ export function AudioPage({
       if (ttsPickGeneration.current !== selectionGeneration) return;
       const exactGguf = exactGgufLoadSelector(meta);
       const isGguf = Boolean(
-        meta.isGguf ||
-          exactGguf ||
-          /(?:^|[-/])gguf(?:$|[-/])/i.test(id) ||
-          id.toLowerCase().endsWith(".gguf"),
+        meta.isGguf || isGgufTtsTarget({ repoId: id, ggufFilename: exactGguf }),
       );
       const ggufSibling = isGguf ? null : ggufSiblingFor(id);
       const nativeRuntime =
@@ -2629,6 +2662,42 @@ export function AudioPage({
                     />
                   </Field>
                 ) : null}
+                {/* Field inlined: its label needs a form control to point
+                    at, and PillTabs is a tablist with its own name. */}
+                <div className="grid gap-1.5">
+                  <span className="text-ui-13 font-medium text-foreground">
+                    Load model into
+                  </span>
+                  <PillTabs
+                    ariaLabel="Load model into"
+                    value={audioDevice === "cpu" ? "cpu" : "auto"}
+                    // Disabled while a task runs: the eject below is the only
+                    // thing that applies the change, and it cannot interrupt a
+                    // load or a generation. Enabled again once the work settles.
+                    disabled={busy !== null || isRecording}
+                    onValueChange={(value) => {
+                      const next = value === "cpu" ? "cpu" : "auto";
+                      if (next === audioDevice) return;
+                      setAudioDeviceState(next);
+                      // Otherwise the choice does nothing until the next swap.
+                      if (ttsLoaded) handleEject();
+                    }}
+                    fit={true}
+                    className="h-[30px] self-start [&>button]:h-[30px] [&>button]:px-6"
+                    tabs={[
+                      { value: "auto", label: "GPU when available" },
+                      { value: "cpu", label: "CPU RAM" },
+                    ]}
+                  />
+                  {/* Phrased as what the next load will do, not as the resident
+                      model's state: a model loaded by another tab or client can
+                      be on the other device, and status does not report it. */}
+                  <p className="text-ui-11p5 leading-snug text-muted-foreground">
+                    {audioDevice === "cpu"
+                      ? "New loads go into system RAM instead of the GPU. Slower to generate, and no GPU memory is used."
+                      : "New loads use the GPU when there is one, and the CPU otherwise."}
+                  </p>
+                </div>
                 <AdvancedDisclosure
                   open={advancedOpen}
                   onOpenChange={setAdvancedOpen}

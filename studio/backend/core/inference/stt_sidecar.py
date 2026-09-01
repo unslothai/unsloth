@@ -967,15 +967,24 @@ def _reported_device(device: Optional[str]) -> Optional[str]:
     return device
 
 
-def _pick_device():
+def _pick_device(preference: Optional[str] = None):
     """Return (device, torch_dtype) for the Whisper model.
 
     CUDA uses float16. MPS and CPU use float32: Whisper's decoder is unstable in
     float16 on MPS and degenerates into repeated tokens.
+
+    ``preference`` is the user's choice from ``core.inference.audio_device``.
+    ``cpu`` short-circuits detection entirely -- that is the whole point of the
+    option, so it must hold even on a machine with a working accelerator. ``gpu``
+    and ``auto`` both detect: preferring the GPU is what detection already does,
+    and the caller's CPU retry still covers a card that cannot take the model.
     """
+    from core.inference.audio_device import audio_device_forces_cpu
     try:
         import torch
 
+        if audio_device_forces_cpu(preference):
+            return "cpu", torch.float32
         # new loads use CPU during training; a resident GPU model may stay put when the admission check confirms
         # headroom
         training_active = _training_active()
@@ -1144,6 +1153,9 @@ class WhisperSttSidecar:
         self._engine = None
         self._model_id: Optional[str] = None
         self._device: Optional[str] = None
+        # Preference the resident engine was loaded under. A different one
+        # reloads rather than reusing the old placement. None until loaded.
+        self._device_preference: Optional[str] = None
         self._lock = threading.RLock()
         self._load_state_lock = threading.Lock()
         self._loading = False
@@ -1285,6 +1297,7 @@ class WhisperSttSidecar:
             self._engine = None
             self._model_id = None
             self._device = None
+            self._device_preference = None
             self._survivor = False
         else:
             self._survivor = True
@@ -1393,11 +1406,21 @@ class WhisperSttSidecar:
             raise
         return worker
 
-    def _ensure_model_downloaded(self, model_id: str) -> _CachedSttSnapshot:
+    def _ensure_model_downloaded(
+        self,
+        model_id: str,
+        use_resident: bool = True,
+    ) -> _CachedSttSnapshot:
         """Validate the local snapshot before decode or model replacement.
 
         Returns the checkpoint's multilingual flag when local metadata provides
         it. Curated defaults are known multilingual.
+
+        ``use_resident = False`` skips the resident-model shortcut and resolves the
+        path on disk. The shortcut answers from the loaded model and returns no
+        path, which is right when that model is about to be reused and wrong when
+        the caller is replacing it with one on another device: the same model id is
+        resident, but the load still needs somewhere to read the weights from.
 
         A survivor is held for its memory alone, so it does not answer for the
         model the way a resident one does: the snapshot is looked up on disk, or
@@ -1406,7 +1429,7 @@ class WhisperSttSidecar:
         """
         model_id = resolve_model_id(model_id)
         with self._lock:
-            reusable = self._engine is not None and self._model_id == model_id
+            reusable = use_resident and self._engine is not None and self._model_id == model_id
             if reusable and not self._is_survivor_locked():
                 resident_model = (
                     self._engine[0] if isinstance(self._engine, (tuple, list)) else self._engine
@@ -1443,20 +1466,40 @@ class WhisperSttSidecar:
         self,
         model: Optional[str] = None,
         request_cancel_event: Optional[threading.Event] = None,
+        device: Optional[str] = None,
     ):
         """Load (or switch to) a model, reusing it if already resident.
 
+        ``device`` is the user's device preference (``auto``/``cpu``/``gpu``, see
+        ``core.inference.audio_device``). An explicit one that differs from the
+        resident model's reloads it, or the setting would be silently ignored.
+        ``None`` means no opinion: it takes the server default for a fresh load
+        and reuses whatever is resident, so a caller that never sends one cannot
+        move a model another surface placed.
+
         Returns a ``(model, processor)`` pair.
         """
+        from core.inference.audio_device import audio_device_default, normalize_audio_device
+
         if request_cancel_event is not None and request_cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
         model_id = resolve_model_id(model)
+        # None is "no opinion", not "auto". A caller that never sends one (the
+        # OpenAI-compatible route) must not drag a model off the device another
+        # surface asked for, or the two thrash a reload apiece.
+        requested = None if device is None else normalize_audio_device(device)
+        preference = audio_device_default() if requested is None else requested
         with self._lock:
             if request_cancel_event is not None and request_cancel_event.is_set():
                 raise SttTranscriptionCancelledError("Transcription cancelled.")
             ensure_stt_available()
             self._release_dead_engine_locked()
-            reusable = self._engine is not None and self._model_id == model_id
+            placement_matches = (
+                requested is None
+                or self._device_preference is None
+                or self._device_preference == requested
+            )
+            reusable = self._engine is not None and self._model_id == model_id and placement_matches
             if reusable and not self._is_survivor_locked():
                 self._schedule_idle_unload_locked()
                 return self._engine
@@ -1469,7 +1512,9 @@ class WhisperSttSidecar:
             self._start_survivor = None
             try:
                 self._raise_if_load_cancelled(cancel_event)
-                cached = self._ensure_model_downloaded(model_id)
+                # The resident shortcut returns no path, and this load
+                # replaces that model anyway.
+                cached = self._ensure_model_downloaded(model_id, use_resident = placement_matches)
                 snapshot_path = cached.path
                 if snapshot_path is None:
                     raise SttModelNotDownloadedError(
@@ -1477,7 +1522,7 @@ class WhisperSttSidecar:
                         "Download it in Settings, then Voice, before loading it."
                     )
                 self._raise_if_load_cancelled(cancel_event)
-                device, dtype = _pick_device()
+                device, dtype = _pick_device(preference)
                 if not self._release_engine_locked():
                     # starting a second child over one that never exited doubles the memory this release was meant to
                     # give back
@@ -1545,6 +1590,7 @@ class WhisperSttSidecar:
                     self._engine = candidate
                     self._model_id = model_id
                     self._device = device
+                    self._device_preference = preference
                     self._survivor = False
                     self._load_cancel_event = None
                     self._load_owner_cancel_event = None

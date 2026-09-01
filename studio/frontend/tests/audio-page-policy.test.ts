@@ -14,6 +14,7 @@ import {
   canTransitionAudioMode,
   exactGgufLoadSelector,
   expectedGgufDownloadBytes,
+  isGgufTtsTarget,
   isTtsAudioType,
   macTtsPickAction,
   mergeGalleryPage,
@@ -733,5 +734,41 @@ test("a capped restore refresh invalidates a page fetched from the older cursor"
   assert.match(
     audioPageSource,
     /const cursor = galleryCache\.nextCursor;\s*try\s*{\s*const page = await listAudioGallery\(\s*0,\s*PAGE_SIZE,\s*cursor,?\s*\);\s*if \(\s*refreshGeneration !== galleryRefreshGeneration\.current \|\|\s*cursor !== galleryCache\.nextCursor\s*\)\s*return;/,
+  );
+});
+
+test("a direct .gguf pick is a GGUF target even without a variant filename", () => {
+  // The reported gap: local direct rows supply neither ggufFilename nor
+  // ggufVariant, so a check on the selector alone left them on GPU offload.
+  assert.equal(
+    isGgufTtsTarget({ repoId: "/models/orpheus-3b-Q4_K_M.gguf" }),
+    true,
+  );
+  assert.equal(
+    isGgufTtsTarget({ repoId: "Orpheus TTS", loadId: "/m/x.GGUF" }),
+    true,
+  );
+  assert.equal(isGgufTtsTarget({ repoId: "unsloth/orpheus-3b-0.1-ft-GGUF" }), true);
+  assert.equal(
+    isGgufTtsTarget({ repoId: "unsloth/orpheus", ggufFilename: "x-Q4.gguf" }),
+    true,
+  );
+});
+
+test("a safetensors pick is not a GGUF target", () => {
+  assert.equal(isGgufTtsTarget({ repoId: "unsloth/orpheus-3b-0.1-ft" }), false);
+  assert.equal(isGgufTtsTarget({ repoId: "bosonai/higgs-tts-2-3b-base" }), false);
+  // "gguf" only as a bare path segment, so a name merely containing it does not match.
+  assert.equal(isGgufTtsTarget({ repoId: "acme/ggufology" }), false);
+});
+
+test("a CPU GGUF audio load declares speculation off", () => {
+  // An absent speculative_type resolves to "auto" server-side, which can still
+  // attach a GPU drafter. zero_vram_chat_load then reads the load as
+  // GPU-bearing, takes the arbiter, and cancels a running image or video job
+  // for a load that was meant to stay in CPU RAM.
+  assert.match(
+    audioPageSource,
+    /gpu_memory_mode: "manual" as const,\s*gpu_layers: 0,\s*speculative_type: "off" as const,/,
   );
 });

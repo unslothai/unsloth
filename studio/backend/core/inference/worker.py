@@ -1114,6 +1114,19 @@ def run_inference_process(
 
     _native_audio_worker = is_native_audio_model(model_name)
 
+    # Before detect_hardware() below, which probes with get_device_properties and
+    # leaves this process holding a CUDA context. A CPU-placed audio load is meant
+    # to reserve no VRAM at all, and the route skips the arbiter on that basis.
+    if _native_audio_worker:
+        from core.inference.audio_device import (
+            audio_device_forces_cpu,
+            mask_accelerators_for_cpu_audio,
+        )
+
+        if audio_device_forces_cpu(config.get("audio_device")):
+            mask_accelerators_for_cpu_audio(os.environ)
+            logger.info("Audio model '%s' pinned to CPU RAM; accelerators hidden", model_name)
+
     # ── 0. MLX fast-path — skip torch/transformers ──
     _ensure_backend_on_path()
 
@@ -1424,7 +1437,13 @@ def run_inference_process(
 
     # ── 3. Create inference backend and load initial model ──
     try:
-        backend = InferenceBackend()
+        # Native audio picks its device in __init__, so the preference has to
+        # arrive there. The Unsloth backend places weights via device_map.
+        backend = (
+            InferenceBackend(device_preference = config.get("audio_device"))
+            if _native_audio_worker
+            else InferenceBackend()
+        )
 
         _send_response(
             resp_queue,

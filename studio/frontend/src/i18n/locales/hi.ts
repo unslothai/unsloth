@@ -484,6 +484,13 @@ export const hi = {
           "/v1/audio/transcriptions को भेजा जाने वाला मॉडल नाम।",
         sttModelLabel: "स्पीच रिकग्निशन मॉडल",
         sttModelDescription: "लोकली चलाने के लिए STT मॉडल चुनें या खोजें।",
+        sttDeviceLabel: "इसमें लोड करें",
+        sttDeviceAuto: "उपलब्ध होने पर GPU",
+        sttDeviceCpu: "CPU RAM",
+        sttDeviceAutoDescription:
+          "GPU उपलब्ध हो तो उसका उपयोग करें, अन्यथा CPU का।",
+        sttDeviceCpuDescription:
+          "मॉडल को सिस्टम RAM में रखें। ट्रांसक्रिप्शन धीमा होगा, पर GPU मेमोरी नहीं लगेगी।",
         sttModelSearchPlaceholder: "मॉडल खोजें",
         sttModelSearching: "Hugging Face पर खोजा जा रहा है…",
         sttModelValidating: "Whisper संगतता जाँची जा रही है…",

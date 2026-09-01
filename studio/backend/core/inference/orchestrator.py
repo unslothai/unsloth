@@ -27,6 +27,8 @@ import uuid
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Generator, Optional, Sequence, Tuple, Union
+from core.inference.audio_device import audio_device_forces_cpu
+from core.inference.native_audio import NATIVE_AUDIO_TYPES
 from core.inference.audio_errors import (
     AUDIO_UNSUPPORTED_CODE,
     AudioBackendUnsupportedError,
@@ -1495,6 +1497,7 @@ class InferenceOrchestrator:
         chat_template_override: Optional[str] = None,
         load_cancel_event: Optional[threading.Event] = None,
         post_handoff_expected_free_gb: Optional[dict[int, float]] = None,
+        audio_device: Optional[str] = None,
     ) -> bool:
         """Load a model for inference.
 
@@ -1532,6 +1535,10 @@ class InferenceOrchestrator:
                 else None,
                 "mlx_kv_bits": mlx_kv_bits,
                 "chat_template_override": chat_template_override,
+                # Read in the worker: it hides the accelerators before hardware
+                # detection, then the native audio backend's constructor places
+                # the weights.
+                "audio_device": audio_device,
             }
             resolved_gpu_ids, gpu_selection = prepare_gpu_selection(
                 gpu_ids,
@@ -1708,6 +1715,17 @@ class InferenceOrchestrator:
                     self.models[self.active_model_name] = _mirrored_model_entry(
                         model_info, model_name
                     )
+                    # Placement this model was loaded under, so the route's
+                    # already-loaded shortcut can tell a CPU request from the GPU
+                    # model it would otherwise report as satisfied. Set here, not
+                    # in _mirrored_model_entry: this is the parent's own request,
+                    # not something the worker reports back. Only native audio
+                    # reads the preference; marking anything else would tell
+                    # training a GPU-resident model holds no VRAM.
+                    self.models[self.active_model_name]["audio_cpu"] = (
+                        model_info.get("audio_type") in NATIVE_AUDIO_TYPES
+                        and audio_device_forces_cpu(audio_device)
+                    )
                     self.models[self.active_model_name].update(
                         _mlx_runtime_mirror_fields(model_info)
                     )
@@ -1796,22 +1814,29 @@ class InferenceOrchestrator:
         model: Optional[str],
         engine: str,
         request_cancel_event: Optional[threading.Event] = None,
+        device: Optional[str] = None,
     ) -> None:
-        """Make a dictation model resident on its sidecar."""
+        """Make a dictation model resident on its sidecar.
+
+        ``device`` is the user's audio device preference (``auto``/``cpu``/``gpu``).
+        """
         from core.inference import stt_registry
-        stt_registry.load(model, engine, request_cancel_event)
+        stt_registry.load(model, engine, request_cancel_event, device = device)
 
     def unload_stt_model(
         self,
         engines: Optional[Sequence[str]] = None,
         expected_model: Optional[str] = None,
+        wait: bool = True,
     ) -> list:
         """Release dictation models (all engines by default); returns refusals.
 
         ``expected_model`` scopes the release to a sidecar still holding that model.
+        ``wait=False`` leaves a sidecar that is mid-request alone, for a caller
+        freeing memory opportunistically rather than to reclaim it now.
         """
         from core.inference import stt_registry
-        return stt_registry.unload(engines, expected_model = expected_model)
+        return stt_registry.unload(engines, wait = wait, expected_model = expected_model)
 
     def resident_stt_model(self) -> dict:
         """What dictation holds, alongside active_model_name for chat."""

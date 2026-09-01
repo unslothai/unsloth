@@ -267,6 +267,31 @@ export function exactGgufLoadSelector(
   return meta.ggufFilename ?? meta.ggufVariant ?? null;
 }
 
+/** Whether a TTS pick loads through llama.cpp.
+ *
+ * A direct .gguf file and a GGUF repo id carry no variant filename, so a check
+ * that only looks at the selector misses both. The picker's own `meta.isGguf`
+ * is authoritative where a caller has it; this covers the callers that do not.
+ */
+export function isGgufTtsTarget({
+  repoId,
+  ggufFilename,
+  loadId,
+}: {
+  repoId: string;
+  ggufFilename?: string | null;
+  loadId?: string | null;
+}): boolean {
+  const endsWithGguf = (value: string | null | undefined): boolean =>
+    Boolean(value?.toLowerCase().endsWith(".gguf"));
+  return Boolean(
+    ggufFilename ||
+      /(?:^|[-/])gguf(?:$|[-/])/i.test(repoId) ||
+      endsWithGguf(repoId) ||
+      endsWithGguf(loadId),
+  );
+}
+
 export type MacTtsPickAction = "allow" | "use-gguf-sibling" | "reject";
 
 /** MLX has no codec TTS decoder. Curated native PyTorch audio models bypass MLX;

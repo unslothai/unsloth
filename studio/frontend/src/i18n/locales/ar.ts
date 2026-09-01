@@ -480,6 +480,13 @@ export const ar = {
         customModelDescription: "اسم النموذج المرسل إلى /v1/audio/transcriptions.",
         sttModelLabel: "نموذج التعرّف على الكلام",
         sttModelDescription: "اختر نموذج STT أو ابحث عنه لتشغيله محليًا.",
+        sttDeviceLabel: "التحميل إلى",
+        sttDeviceAuto: "وحدة معالجة الرسومات عند توفرها",
+        sttDeviceCpu: "ذاكرة المعالج",
+        sttDeviceAutoDescription:
+          "استخدم وحدة معالجة الرسومات إن وُجدت، وإلا فالمعالج.",
+        sttDeviceCpuDescription:
+          "احتفظ بالنموذج في ذاكرة النظام. النسخ أبطأ، لكن دون استخدام ذاكرة الرسومات.",
         sttModelSearchPlaceholder: "ابحث عن نموذج",
         sttModelSearching: "جارٍ البحث في Hugging Face…",
         sttModelValidating: "جارٍ التحقق من التوافق مع Whisper…",

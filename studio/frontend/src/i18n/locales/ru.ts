@@ -484,6 +484,13 @@ export const ru = {
         sttModelLabel: "Модель распознавания речи",
         sttModelDescription:
           "Выберите или найдите модель STT для локального запуска.",
+        sttDeviceLabel: "Загружать в",
+        sttDeviceAuto: "GPU, если доступен",
+        sttDeviceCpu: "ОЗУ процессора",
+        sttDeviceAutoDescription:
+          "Использовать GPU, когда он есть, иначе CPU.",
+        sttDeviceCpuDescription:
+          "Держать модель в системной памяти. Расшифровка медленнее, но память GPU не занимается.",
         sttModelSearchPlaceholder: "Поиск модели",
         sttModelSearching: "Поиск на Hugging Face…",
         sttModelValidating: "Проверка совместимости с Whisper…",

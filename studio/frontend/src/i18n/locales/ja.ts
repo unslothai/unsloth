@@ -484,6 +484,13 @@ export const ja = {
         sttModelLabel: "音声認識モデル",
         sttModelDescription:
           "ローカルで実行する STT モデルを選択または検索します。",
+        sttDeviceLabel: "読み込み先",
+        sttDeviceAuto: "GPU（利用できる場合）",
+        sttDeviceCpu: "CPU メモリ",
+        sttDeviceAutoDescription:
+          "GPU があれば GPU を、なければ CPU を使用します。",
+        sttDeviceCpuDescription:
+          "モデルをシステムメモリに保持します。文字起こしは遅くなりますが、GPU メモリを使いません。",
         sttModelSearchPlaceholder: "モデルを検索",
         sttModelSearching: "Hugging Face を検索中…",
         sttModelValidating: "Whisper との互換性を確認中…",

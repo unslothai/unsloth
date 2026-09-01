@@ -671,10 +671,16 @@ def _as_wav_bytes(audio, sample_rate: int) -> bytes:
 class NativeAudioBackend:
     """One-model backend for the five curated native audio architectures."""
 
-    def __init__(self) -> None:
+    def __init__(self, device_preference: Optional[str] = None) -> None:
         import torch
 
-        if torch.cuda.is_available():
+        from core.inference.audio_device import audio_device_forces_cpu
+
+        # "cpu" wins over a working accelerator: slower, but leaves VRAM free.
+        self.device_preference = device_preference
+        if audio_device_forces_cpu(device_preference):
+            self.device = "cpu"
+        elif torch.cuda.is_available():
             self.device = "cuda"
         elif hasattr(torch, "xpu") and torch.xpu.is_available():
             self.device = "xpu"
@@ -798,6 +804,15 @@ class NativeAudioBackend:
                 "multi-GPU sharding is not supported yet."
             )
         if audio_type == "minimax_music3" and self.device != "cuda":
+            # CPU was chosen, not missing. The generic message would send a
+            # user with a working card looking for one.
+            from core.inference.audio_device import audio_device_forces_cpu
+            if audio_device_forces_cpu(self.device_preference):
+                raise RuntimeError(
+                    "MiniMax Music 3 cannot be loaded into CPU RAM: its official local "
+                    "runtime requires an NVIDIA CUDA GPU. Set the audio device back to "
+                    "Auto (or GPU) to load this model."
+                )
             raise RuntimeError(
                 "MiniMax Music 3 currently requires an NVIDIA CUDA GPU in its official "
                 "local runtime. It is not available on CPU, Apple Silicon, AMD, or Intel XPU."

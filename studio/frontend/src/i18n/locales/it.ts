@@ -451,6 +451,13 @@ export const it = {
         sttModelLabel: "Modello di riconoscimento vocale",
         sttModelDescription:
           "Scegli o cerca un modello STT da eseguire in locale.",
+        sttDeviceLabel: "Carica in",
+        sttDeviceAuto: "GPU quando disponibile",
+        sttDeviceCpu: "RAM della CPU",
+        sttDeviceAutoDescription:
+          "Usa la GPU quando c'è, altrimenti la CPU.",
+        sttDeviceCpuDescription:
+          "Tieni il modello nella RAM di sistema. La trascrizione è più lenta, ma non usa memoria GPU.",
         sttModelSearchPlaceholder: "Cerca un modello",
         sttModelSearching: "Ricerca su Hugging Face…",
         sttModelValidating: "Verifica della compatibilità con Whisper…",

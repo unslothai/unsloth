@@ -481,6 +481,13 @@ export const ko = {
           "/v1/audio/transcriptions에 전송할 모델 이름입니다.",
         sttModelLabel: "음성 인식 모델",
         sttModelDescription: "로컬에서 실행할 STT 모델을 선택하거나 검색하세요.",
+        sttDeviceLabel: "로드 위치",
+        sttDeviceAuto: "GPU(사용 가능할 때)",
+        sttDeviceCpu: "CPU RAM",
+        sttDeviceAutoDescription:
+          "GPU가 있으면 GPU를, 없으면 CPU를 사용합니다.",
+        sttDeviceCpuDescription:
+          "모델을 시스템 RAM에 유지합니다. 변환은 느리지만 GPU 메모리를 쓰지 않습니다.",
         sttModelSearchPlaceholder: "모델 검색",
         sttModelSearching: "Hugging Face에서 검색 중…",
         sttModelValidating: "Whisper 호환성 확인 중…",
