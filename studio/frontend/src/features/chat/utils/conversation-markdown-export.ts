@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { scrubOpenAICitationMarkers } from "../../../components/assistant-ui/openai-citation-scrub.ts";
-import { stripSearchImageTokens } from "../search-images/search-images.ts";
 import {
   CONVERSATION_MARKDOWN_EXTENSION,
   CONVERSATION_MARKDOWN_MIME_TYPE,
   type ConversationMarkdownMessage,
   buildConversationMarkdown,
 } from "./conversation-markdown.ts";
+import { stripSearchImageTokens } from "../search-images/search-images.ts";
 
 type StoredConversationMessage = {
   readonly role: unknown;
@@ -52,9 +51,7 @@ export function createConversationMarkdownBuilder<
         // Renderer markup, never prose: an exported answer must not carry raw
         // tokens. Here rather than in the exporter, so the copy chord strips
         // them too.
-        content: scrubOpenAICitationMarkers(
-          stripSearchImageTokens(renderMessage(message)),
-        ),
+        content: stripSearchImageTokens(renderMessage(message)),
       }),
     );
     return buildConversationMarkdown(normalizedMessages);

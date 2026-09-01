@@ -781,10 +781,8 @@ function parseSourcesFromResult(raw: string): {
     metadata?: { description: string };
   }[] = [];
   for (const block of blocks) {
-    // Line anchored, like the card's parser: these carry page-controlled text,
-    // and an unanchored `URL:` would match one embedded mid-line.
-    const titleMatch = block.match(/^Title:\s*(.+)$/m);
-    const urlMatch = block.match(/^URL:\s*(.+)$/m);
+    const titleMatch = block.match(/Title:\s*(.+)/);
+    const urlMatch = block.match(/URL:\s*(.+)/);
     const snippetMatch = block.match(/Snippet:\s*(.+)/);
     if (titleMatch && urlMatch) {
       // Drop blocks whose ``URL:`` is not safe http(s); provider/tool
@@ -5618,11 +5616,6 @@ export function createOpenAIStreamAdapter(
       // key is unique; every tool_start/output/args/end resolves the same id via
       // this map, dropped at tool_end.
       const toolPartIdByBackendId = new Map<string, string>();
-      // The mapping above is dropped at tool_end so a LATER tool_start opens a
-      // fresh card. A second tool_end for the SAME call still has to reach the
-      // card the first one ended -- the citation backfill sends one for the last
-      // web_search card -- so keep what that call last resolved to.
-      const endedToolPartIdByBackendId = new Map<string, string>();
       const resolveToolPartId = (backendToolCallId: string): string =>
         resolveToolCallPartId(
           toolPartIdByBackendId,
@@ -6900,18 +6893,8 @@ export function createOpenAIStreamAdapter(
                 } else if (toolEvent.type === "tool_end") {
                   const backendToolCallId =
                     (toolEvent.tool_call_id as string) || "";
-                  // Without the live mapping, resolveToolPartId mints a new part
-                  // id, which matches no card and silently drops the result.
-                  const alreadyEndedId = backendToolCallId
-                    ? endedToolPartIdByBackendId.get(backendToolCallId)
-                    : undefined;
-                  const id =
-                    alreadyEndedId &&
-                    !toolPartIdByBackendId.has(backendToolCallId)
-                      ? alreadyEndedId
-                      : resolveToolPartId(backendToolCallId);
+                  const id = resolveToolPartId(backendToolCallId);
                   if (backendToolCallId) {
-                    endedToolPartIdByBackendId.set(backendToolCallId, id);
                     toolConfirmationIdsByBackendId.delete(backendToolCallId);
                     toolPartIdByBackendId.delete(backendToolCallId);
                   }
@@ -7942,33 +7925,6 @@ export function createOpenAIStreamAdapter(
           // An image-bearing result is an object; citations live on `.text`.
           return parseSourcesFromResult(searchResultText(tc.result));
         });
-        // Every card carries its own sources, so a URL found by two searches
-        // arrives twice and `id` is the url, which is a duplicate React key.
-        // Merge rather than take the first: a source recovered from
-        // `action.sources` alone titles itself with its own URL and has no
-        // description, and dropping the later entry would keep that stub over
-        // the citation that actually names the page.
-        const sourcesByUrl = new Map<string, (typeof sourceParts)[number]>();
-        for (const part of sourceParts) {
-          const seen = sourcesByUrl.get(part.url);
-          if (!seen) {
-            sourcesByUrl.set(part.url, part);
-            continue;
-          }
-          const title =
-            seen.title === seen.url && part.title !== part.url
-              ? part.title
-              : seen.title;
-          const metadata = seen.metadata?.description
-            ? seen.metadata
-            : part.metadata;
-          sourcesByUrl.set(part.url, {
-            ...seen,
-            title,
-            ...(metadata ? { metadata } : {}),
-          });
-        }
-        const dedupedSourceParts = [...sourcesByUrl.values()];
 
         const meta = serverMetadata;
         const finalTokenCount =
@@ -8152,7 +8108,7 @@ export function createOpenAIStreamAdapter(
         yield {
           content: [
             ...buildAssistantContent(mergeContinuation(cumulativeText, { final: true })),
-            ...dedupedSourceParts,
+            ...sourceParts,
             ...documentCitationParts,
           ],
           metadata: {

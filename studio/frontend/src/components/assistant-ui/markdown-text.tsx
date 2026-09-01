@@ -67,7 +67,6 @@ import {
 } from "./code-fence-defer";
 import { createCodePlugin } from "./code-plugin";
 import { withMathBlockMarker } from "./math-block-marker";
-import { scrubOpenAICitationMarkers } from "./openai-citation-scrub";
 import {
   MarkdownBlockBoundary,
   MarkdownBlockFallbackView,
@@ -633,6 +632,7 @@ const StreamdownBlock = memo((props: BlockProps) => (
 ));
 StreamdownBlock.displayName = "StreamdownBlock";
 const AUDIO_PLAYER_RE = /<audio-player\s+src="([^"]+)"\s*\/>/;
+
 // Coalesce only token events that arrive before the browser's next paint, as
 // textgen does. There is no time or length throttle. Incremental block parsing
 // bounds the work performed per paint, and completion returns immediately.
@@ -745,10 +745,6 @@ const MarkdownTextImpl = () => {
   );
   const isStreaming = status.type === "running";
   const displayText = useCoalescedStreamingText(text, isStreaming, messageId);
-  const scrubbedDisplayText = useMemo(
-    () => scrubOpenAICitationMarkers(displayText),
-    [displayText],
-  );
   const processedText = useMemo(
     () =>
       stabilizeStreamingMarkdown(
@@ -758,7 +754,7 @@ const MarkdownTextImpl = () => {
               placeSubjectImages(
                 // no images means nothing to hold back, including a trailing bracket.
                 holdBackPartialSearchImageToken(
-                  scrubbedDisplayText,
+                  displayText,
                   isStreaming && searchImages.size > 0,
                 ),
                 searchImages,
@@ -772,13 +768,7 @@ const MarkdownTextImpl = () => {
         ),
         isStreaming,
       ),
-    [
-      isStreaming,
-      messageTexts,
-      precedingText,
-      scrubbedDisplayText,
-      searchImages,
-    ],
+    [displayText, isStreaming, messageTexts, precedingText, searchImages],
   );
   const incrementalCacheRef = useRef({
     messageId,

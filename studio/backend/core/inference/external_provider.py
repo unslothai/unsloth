@@ -399,13 +399,20 @@ def _split_pending_citation_tail(text: str) -> tuple[str, str]:
 
 
 def _extract_web_search_action(item: dict[str, Any]) -> dict[str, Any]:
-    """Normalize the action variants emitted by OpenAI web search calls."""
+    """Normalize an OpenAI web_search_call action into card arguments.
+
+    gpt-5.x agentic search emits three action types: `search` carries a query,
+    `open_page` a url, `find_in_page` a url and a pattern. Reading only
+    `action.query` renders the last two as an empty `Searching ""` card.
+    https://developers.openai.com/api/docs/guides/tools-web-search
+    """
     if not isinstance(item, dict):
         return {}
     action = item.get("action") if isinstance(item.get("action"), dict) else {}
     action_type = action.get("type") if isinstance(action.get("type"), str) else ""
     query = action.get("query") if isinstance(action.get("query"), str) else ""
     if not query:
+        # Older shapes put the query in a list, or on the item itself.
         for source in (action.get("queries"), item.get("queries")):
             if isinstance(source, list) and source and isinstance(source[0], str) and source[0]:
                 query = source[0]
@@ -424,175 +431,6 @@ def _extract_web_search_action(item: dict[str, Any]) -> dict[str, Any]:
     if action_type:
         arguments["action_type"] = action_type
     return arguments
-
-
-# Not "": an empty result reads as "Command completed with no output." on the card.
-# Both flushes below run only when no shell_call_output ever arrived, so neither can
-# claim the command reported; they differ in why the stream stopped asking.
-_SHELL_TRUNCATED_NOTE = "(response truncated before the command reported)"
-_SHELL_NO_REPORT_NOTE = "(no output reported for this command)"
-
-
-def _shell_flush_result(
-    state: dict[str, Any], formatter: Any, note: str, *, bundled_is_final: bool
-) -> str:
-    """Finalise an orphan shell card. `output` stays None until an output field
-    is seen, so an empty list means the command reported nothing.
-
-    Whether that empty list is the last word depends on why we are flushing. Once
-    the response completes, nothing more is coming and it is a silent success. On
-    a truncated stream the real shell_call_output may simply never have arrived --
-    which is exactly why an empty bundled list does not finalize the call -- so
-    there it still counts as unreported.
-    """
-    text = formatter(state.get("output") or [])
-    if text:
-        return text
-    if bundled_is_final and state.get("output") is not None:
-        return ""
-    return note
-
-
-# An entry carrying any of these reported something, even if every value is empty.
-# Only a shape with none of them is unknown enough to dump verbatim.
-_SHELL_OUTPUT_KEYS = frozenset({"stdout", "stderr", "text", "content", "outcome"})
-
-
-def _one_line(value: Any) -> str:
-    """Collapse to a single line. These fields come from the pages that were
-    searched, and the block format below is newline delimited, so a value
-    carrying `\\n---\\nTitle: ...\\nURL: ...` would forge a source entry. Same
-    normalization tools._web_search applies to its own results."""
-    return " ".join(str(value).split())
-
-
-def _clean_source_url(value: Any) -> str:
-    """A URL fit for the block format: whitespace cannot survive it, and the
-    frontend rejects such a URL anyway, so drop the entry instead."""
-    if not isinstance(value, str) or not value or any(c.isspace() for c in value):
-        return ""
-    return value
-
-
-def _search_result_records(results: Any) -> list[dict[str, str]]:
-    """The ranked search results as {url,title,snippet}."""
-    records: list[dict[str, str]] = []
-    if not isinstance(results, list):
-        return records
-    for result in results:
-        if not isinstance(result, dict):
-            continue
-        url = _clean_source_url(result.get("url"))
-        if not url:
-            continue
-        records.append(
-            {
-                # Blank means missing: `Title:\s*(.+)` eats the newline and
-                # would take the URL line as the title.
-                "title": _one_line(result.get("title") or "") or url,
-                "url": url,
-                "snippet": _one_line(result.get("snippet") or result.get("text") or ""),
-            }
-        )
-    return records
-
-
-def _action_source_records(sources: Any) -> list[dict[str, str]]:
-    """The pages the action consulted. These carry a URL and nothing else, so
-    each titles itself with its own URL and `_merge_source_records` reads that
-    as "no title yet"."""
-    records: list[dict[str, str]] = []
-    if not isinstance(sources, list):
-        return records
-    for source in sources:
-        raw = source if isinstance(source, str) else None
-        if isinstance(source, dict):
-            raw = source.get("url")
-        url = _clean_source_url(raw)
-        if url:
-            records.append({"title": url, "url": url, "snippet": ""})
-    return records
-
-
-def _web_search_source_records(results: Any, sources: Any) -> list[dict[str, str]]:
-    """One call's sources. Both fields are requested together and they do not
-    agree: `action.sources` lists pages the search consulted, which the ranked
-    `results` need not include, so taking only one drops the rest."""
-    return _merge_source_records(
-        _search_result_records(results),
-        _action_source_records(sources),
-    )
-
-
-def _merge_source_records(*groups: list[dict[str, str]]) -> list[dict[str, str]]:
-    """Union by URL in first-seen order, keeping the richest fields.
-
-    The aggregate citation list and a call's own results describe the same pages
-    from different angles: one may carry a real title, the other a snippet.
-    Taking whichever arrived first would throw the other half away.
-    """
-    merged: dict[str, dict[str, str]] = {}
-    for group in groups:
-        for record in group:
-            url = record.get("url") or ""
-            if not url:
-                continue
-            current = merged.get(url)
-            if current is None:
-                merged[url] = dict(record)
-                continue
-            if current["title"] == url and record["title"] != url:
-                current["title"] = record["title"]
-            if not current.get("snippet") and record.get("snippet"):
-                current["snippet"] = record["snippet"]
-    return list(merged.values())
-
-
-def _format_source_blocks(records: list[dict[str, str]]) -> str:
-    """Render records as the `Title:/URL:/Snippet:` blocks the frontend parses."""
-    blocks: list[str] = []
-    for record in records:
-        entry = f"Title: {record['title']}\nURL: {record['url']}"
-        if record.get("snippet"):
-            entry += f"\nSnippet: {record['snippet']}"
-        blocks.append(entry)
-    return "\n---\n".join(blocks)
-
-
-def _citation_source_records(citations: list[dict[str, Any]]) -> list[dict[str, str]]:
-    """The run's aggregated url_citations as source records."""
-    records: list[dict[str, str]] = []
-    for citation in citations:
-        url = _clean_source_url(citation.get("url"))
-        if not url:
-            continue
-        records.append(
-            {
-                "title": _one_line(citation.get("title") or "") or url,
-                "url": url,
-                "snippet": _one_line(citation.get("snippet") or ""),
-            }
-        )
-    return records
-
-
-def _web_search_card_text(arguments: dict[str, Any]) -> str:
-    """Return the fallback summary shown inside one web search card."""
-    if not arguments:
-        return ""
-    query = arguments.get("query") or ""
-    url = arguments.get("url") or ""
-    pattern = arguments.get("pattern") or ""
-    action_type = arguments.get("action_type") or ""
-    if action_type == "open_page" and url:
-        return f"Read: {url}"
-    if action_type == "find_in_page" and url:
-        return f"Find {pattern!r} in {url}" if pattern else f"Find in {url}"
-    if query:
-        return f"Searching: {query}"
-    if url:
-        return f"Read: {url}"
-    return ""
 
 
 class _AnthropicThinkingSpec(NamedTuple):
@@ -2891,7 +2729,7 @@ class ExternalProviderClient:
                             parts.append(f"--- stderr ---\n{stderr}")
                         if isinstance(return_code, int) and return_code != 0:
                             parts.append(f"return_code: {return_code}")
-                        return "\n".join(parts) if parts else ""
+                        return "\n".join(parts) if parts else "(no output)"
                     if inner_type == "text_editor_code_execution_result":
                         # view: file content; create: is_file_update flag;
                         # str_replace: diff `lines` list. The matching
@@ -5508,19 +5346,14 @@ class ExternalProviderClient:
         _responses_hosted_builtins_allowed = (
             not _responses_tool_choice_none and not _responses_tool_choice_forced_function
         )
-        web_search_enabled_openai = bool(
-            _responses_hosted_builtins_allowed and enabled_tools and "web_search" in enabled_tools
-        )
-        # `include` is an enum: a strict server that has `web_search` still 400s on these.
-        web_search_include_openai = web_search_enabled_openai and is_openai_cloud
-        _web_search_include = [
-            "web_search_call.action.sources",
-            "web_search_call.results",
-        ]
 
         if (enabled_tools or responses_user_function_tools) and not _responses_tool_choice_none:
             tools_array: list[dict[str, Any]] = list(responses_user_function_tools)
-            if web_search_enabled_openai:
+            if (
+                _responses_hosted_builtins_allowed
+                and enabled_tools
+                and "web_search" in enabled_tools
+            ):
                 tools_array.append({"type": "web_search"})
             if _responses_hosted_builtins_allowed and code_execution_enabled_openai:
                 # Reuse the thread's container so filesystem state persists;
@@ -5539,8 +5372,6 @@ class ExternalProviderClient:
                 tools_array.append(_openai_image_generation_tool())
             if tools_array:
                 body["tools"] = tools_array
-            if web_search_include_openai:
-                body["include"] = list(_web_search_include)
         if responses_tool_choice is not None:
             body["tool_choice"] = responses_tool_choice
 
@@ -5557,7 +5388,11 @@ class ExternalProviderClient:
             attempt_body = dict(body)
             if (enabled_tools or responses_user_function_tools) and not _responses_tool_choice_none:
                 tools_array_attempt: list[dict[str, Any]] = list(responses_user_function_tools)
-                if web_search_enabled_openai:
+                if (
+                    _responses_hosted_builtins_allowed
+                    and enabled_tools
+                    and "web_search" in enabled_tools
+                ):
                     tools_array_attempt.append({"type": "web_search"})
                 if _responses_hosted_builtins_allowed and code_execution_enabled_openai:
                     if container_id_for_this_attempt:
@@ -5574,10 +5409,6 @@ class ExternalProviderClient:
                     attempt_body["tools"] = tools_array_attempt
                 else:
                     attempt_body.pop("tools", None)
-                if web_search_include_openai:
-                    attempt_body["include"] = list(_web_search_include)
-                else:
-                    attempt_body.pop("include", None)
             if responses_tool_choice is not None:
                 attempt_body["tool_choice"] = responses_tool_choice
             return attempt_body
@@ -5654,9 +5485,6 @@ class ExternalProviderClient:
                     # the LAST web_search tool_end (parseSourcesFromResult
                     # flatmaps every call, one non-empty is enough).
                     web_search_calls: dict[str, dict[str, Any]] = {}
-                    # Each call's own results, so the terminal citation backfill can
-                    # merge with the last card instead of replacing what it found.
-                    web_search_sources: dict[str, list[dict[str, str]]] = {}
                     all_url_citations: list[dict[str, Any]] = []
                     # shell_calls (code execution): {call_id -> {commands, output}}.
                     # shell_call <-> shell_call_output match by call_id; emit
@@ -5758,44 +5586,34 @@ class ExternalProviderClient:
                         return f"data: {_json.dumps(chunk)}"
 
                     def _format_shell_output(output: Any) -> str:
-                        """Render OpenAI shell output without hiding unknown shapes."""
+                        """Render `shell_call_output.output` (stdout/stderr/outcome
+                        per entry) as the preformatted text CodeExecutionToolUI
+                        shows; append return_code/(timeout) only when informative."""
                         if not isinstance(output, list):
                             return ""
                         parts: list[str] = []
                         for entry in output:
                             if not isinstance(entry, dict):
-                                if isinstance(entry, str) and entry:
-                                    parts.append(entry)
                                 continue
-                            stdout = (
-                                entry.get("stdout")
-                                or entry.get("text")
-                                or entry.get("content")
-                                or ""
-                            )
+                            stdout = entry.get("stdout") or ""
                             stderr = entry.get("stderr") or ""
                             outcome = entry.get("outcome") or {}
                             chunk_parts: list[str] = []
-                            if isinstance(stdout, str) and stdout:
+                            if stdout:
                                 chunk_parts.append(stdout)
-                            if isinstance(stderr, str) and stderr:
+                            if stderr:
                                 chunk_parts.append(f"--- stderr ---\n{stderr}")
                             if isinstance(outcome, dict):
                                 outcome_type = outcome.get("type")
                                 if outcome_type == "exit":
                                     exit_code = outcome.get("exit_code")
-                                    if isinstance(exit_code, int):
-                                        chunk_parts.append(f"exit_code: {exit_code}")
+                                    if isinstance(exit_code, int) and exit_code != 0:
+                                        chunk_parts.append(f"return_code: {exit_code}")
                                 elif outcome_type == "timeout":
                                     chunk_parts.append("(timeout)")
-                            if not chunk_parts and not _SHELL_OUTPUT_KEYS & entry.keys():
-                                try:
-                                    chunk_parts.append(_json.dumps(entry, indent = 2))
-                                except (TypeError, ValueError):
-                                    pass
                             if chunk_parts:
                                 parts.append("\n".join(chunk_parts))
-                        return "\n--- next command ---\n".join(parts)
+                        return "\n--- next command ---\n".join(parts) if parts else "(no output)"
 
                     def _record_url_citation(payload: dict[str, Any]) -> None:
                         """Append a url_citation, deduped by URL: collect every
@@ -6123,9 +5941,13 @@ class ExternalProviderClient:
                                         yield _chunk_with_text(summary_text)
                                         reasoning_emitted = True
                                 elif item.get("type") == "web_search_call":
+                                    # done carries the action; emit tool_start +
+                                    # tool_end here. Citations are aggregated and
+                                    # the last call's result is overwritten at
+                                    # response.completed.
                                     item_id = item.get("id", "") or (f"ws_{len(web_search_calls)}")
-                                    # Overlay: a partial done event would drop the
-                                    # url/pattern/type the added event carried.
+                                    # Overlay, don't replace: a partial done event
+                                    # would drop what the added event carried.
                                     arguments = {
                                         **web_search_calls.get(item_id, {}),
                                         **_extract_web_search_action(item),
@@ -6139,23 +5961,17 @@ class ExternalProviderClient:
                                             "arguments": arguments,
                                         }
                                     )
-                                    action = (
-                                        item.get("action")
-                                        if isinstance(item.get("action"), dict)
-                                        else {}
-                                    )
-                                    source_records = _web_search_source_records(
-                                        item.get("results"),
-                                        action.get("sources"),
-                                    )
-                                    web_search_sources[item_id] = source_records
-                                    per_call_sources = _format_source_blocks(source_records)
+                                    # Per-card text; last call gets overwritten
+                                    # with citations at response.completed. The
+                                    # url variants have no query to echo, and the
+                                    # card names the page from `url` instead.
+                                    query = arguments.get("query") or ""
+                                    per_call_result = f"Searching: {query}" if query else ""
                                     yield _emit_tool_event(
                                         {
                                             "type": "tool_end",
                                             "tool_call_id": item_id,
-                                            "result": per_call_sources
-                                            or _web_search_card_text(arguments),
+                                            "result": per_call_result,
                                         }
                                     )
                                 elif item.get("type") == "shell_call":
@@ -6196,14 +6012,10 @@ class ExternalProviderClient:
                                         }
                                     )
                                     # Fallback: output may be bundled on the
-                                    # shell_call done event itself. An empty list is
-                                    # still a report, so record it -- but do not
-                                    # finalize on one, or a shell_call_output that
-                                    # follows would be dropped.
+                                    # shell_call done event itself.
                                     embedded_output = item.get("output")
-                                    if isinstance(embedded_output, list):
+                                    if isinstance(embedded_output, list) and embedded_output:
                                         shell_calls[item_id]["output"] = embedded_output
-                                    if embedded_output and isinstance(embedded_output, list):
                                         shell_calls[item_id]["tool_end_emitted"] = True
                                         yield _emit_tool_event(
                                             {
@@ -6386,26 +6198,25 @@ class ExternalProviderClient:
                                         }
                                     )
                                     container_id_emitted = True
-                                # Merge the citation list into the last web_search
-                                # card: it already carries that call's own results,
-                                # and the citations are only the cited subset.
+                                # Overwrite the last web_search card with the
+                                # citation list (the extractor flatMaps cards).
                                 if web_search_calls and all_url_citations:
                                     last_id = list(web_search_calls.keys())[-1]
+                                    blocks: list[str] = []
+                                    for cit in all_url_citations:
+                                        line = f"Title: {cit['title']}\nURL: {cit['url']}"
+                                        if cit.get("snippet"):
+                                            line += f"\nSnippet: {cit['snippet']}"
+                                        blocks.append(line)
                                     yield _emit_tool_event(
                                         {
                                             "type": "tool_end",
                                             "tool_call_id": last_id,
-                                            "result": _format_source_blocks(
-                                                _merge_source_records(
-                                                    web_search_sources.get(last_id, []),
-                                                    _citation_source_records(all_url_citations),
-                                                )
-                                            ),
+                                            "result": "\n---\n".join(blocks),
                                         }
                                     )
                                 # Final flush: finalise any orphan shell_call
-                                # so the card stops spinning. Reaching here means no
-                                # shell_call_output ever arrived for it.
+                                # so the card stops spinning.
                                 for sc_id, sc_state in shell_calls.items():
                                     if sc_state.get("tool_end_emitted"):
                                         continue
@@ -6413,11 +6224,8 @@ class ExternalProviderClient:
                                         {
                                             "type": "tool_end",
                                             "tool_call_id": sc_id,
-                                            "result": _shell_flush_result(
-                                                sc_state,
-                                                _format_shell_output,
-                                                _SHELL_NO_REPORT_NOTE,
-                                                bundled_is_final = True,
+                                            "result": _format_shell_output(
+                                                sc_state.get("output") or []
                                             ),
                                         }
                                     )
@@ -6493,22 +6301,22 @@ class ExternalProviderClient:
                                 # Same citation backfill as response.completed.
                                 if web_search_calls and all_url_citations:
                                     last_id = list(web_search_calls.keys())[-1]
+                                    blocks = []
+                                    for cit in all_url_citations:
+                                        line = f"Title: {cit['title']}\nURL: {cit['url']}"
+                                        if cit.get("snippet"):
+                                            line += f"\nSnippet: {cit['snippet']}"
+                                        blocks.append(line)
                                     yield _emit_tool_event(
                                         {
                                             "type": "tool_end",
                                             "tool_call_id": last_id,
-                                            "result": _format_source_blocks(
-                                                _merge_source_records(
-                                                    web_search_sources.get(last_id, []),
-                                                    _citation_source_records(all_url_citations),
-                                                )
-                                            ),
+                                            "result": "\n---\n".join(blocks),
                                         }
                                     )
                                 # Mirror the response.completed flush so
                                 # truncated streams also finalise orphan
-                                # shell_calls. Empty output here means the command
-                                # never reported, not that it printed nothing.
+                                # shell_calls.
                                 for sc_id, sc_state in shell_calls.items():
                                     if sc_state.get("tool_end_emitted"):
                                         continue
@@ -6516,11 +6324,8 @@ class ExternalProviderClient:
                                         {
                                             "type": "tool_end",
                                             "tool_call_id": sc_id,
-                                            "result": _shell_flush_result(
-                                                sc_state,
-                                                _format_shell_output,
-                                                _SHELL_TRUNCATED_NOTE,
-                                                bundled_is_final = False,
+                                            "result": _format_shell_output(
+                                                sc_state.get("output") or []
                                             ),
                                         }
                                     )

@@ -874,7 +874,7 @@ test("every export path strips the tokens, not just the clipboard", () => {
   assert.ok(exporter.length > 0, "exportMessageMarkdown moved");
   assert.match(
     exporter,
-    /downloadFile\(\s*(\/\/[^\n]*\n\s*)*(scrubOpenAICitationMarkers\()?stripSearchImageTokens\(content\)/,
+    /downloadFile\(\s*(\/\/[^\n]*\n\s*)*stripSearchImageTokens\(content\)/,
     "the per-message markdown export must strip the tokens",
   );
   assert.match(

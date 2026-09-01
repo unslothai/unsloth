@@ -182,12 +182,6 @@ const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
   // lives inside the content while Allow/Deny render outside it.
   const awaitingApproval = useToolAwaitingApproval(toolCallId);
   const [open, setOpen] = useToolActivityOpen(isRunning, hasText);
-  const resultText = useMemo(
-    () => (result == null ? "" : stringifyToolResult(result)),
-    [result],
-  );
-  const showFullCommand =
-    !isRunning && kind === "bash" && !!command && command !== commandLabel;
 
   return (
     <ToolFallbackRoot
@@ -207,40 +201,7 @@ const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
             <span>{runningLabel}</span>
           </div>
         ) : (
-          <div className="flex flex-col gap-2">
-            {showFullCommand ? (
-              <div>
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs font-medium text-muted-foreground">
-                    Command
-                  </span>
-                  <CopyBtn text={command} />
-                </div>
-                <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
-                  {command}
-                </pre>
-              </div>
-            ) : null}
-            {resultText ? (
-              <div>
-                <span className="text-xs font-medium text-muted-foreground">
-                  Output
-                </span>
-                <CodeExecutionResultOutput result={result} />
-              </div>
-            ) : status?.type === "complete" ? (
-              <p className="text-xs italic text-muted-foreground">
-                Command completed with no output.
-              </p>
-            ) : (
-              // Cancelled, or the stream dropped before a result: the trigger
-              // already says incomplete, and claiming completion here would
-              // contradict it.
-              <p className="text-xs italic text-muted-foreground">
-                No output was reported.
-              </p>
-            )}
-          </div>
+          <CodeExecutionResultOutput result={result} />
         )}
       </ToolFallbackContent>
     </ToolFallbackRoot>

@@ -32,11 +32,8 @@ interface ParsedSource {
 }
 
 const RE_BLOCK_SEP = /\n---\n/;
-// Line anchored: these fields carry page-controlled text, and an unanchored
-// `URL:` would match one embedded mid-line and point the pill somewhere the
-// search never returned. Every producer emits them at a line start.
-const RE_TITLE = /^Title:\s*(.+)$/m;
-const RE_URL = /^URL:\s*(.+)$/m;
+const RE_TITLE = /Title:\s*(.+)/;
+const RE_URL = /URL:\s*(.+)/;
 const RE_SNIPPET = /Snippet:\s*(.+)/s;
 // Mirrors _normalize_url_scheme: a dotted host, optionally followed by a port
 // that may be empty ("example.com:" fetches on the default port) but otherwise
@@ -100,6 +97,9 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
   // object here, and .trim() on one crashes the card that was meant to show the call.
   const query = toolArgText((args as { query?: unknown })?.query);
   const url = toolArgText((args as { url?: unknown })?.url).trim();
+  // gpt-5.x agentic search: `open_page` carries a url, `find_in_page` a url and
+  // a pattern. Older streams send neither, so a url with a pattern is the same
+  // call by shape.
   const pattern = toolArgText((args as { pattern?: unknown })?.pattern);
   const actionType = toolArgText(
     (args as { action_type?: unknown })?.action_type,
@@ -116,25 +116,20 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
     : [];
   const imageLabel = imageQueries.join(", ");
   const isImageOnly =
-    !isUrlFetch &&
-    !isFindInPage &&
-    !query.trim() &&
-    imageQueries.length > 0;
+    !isUrlFetch && !isFindInPage && !query.trim() && imageQueries.length > 0;
   // The header speaks for the result: a call that found nothing must not claim it did.
   const foundImages = isSearchImagesToolResult(result);
+  // new URL() throws on the bare hosts the backend fetches, so mirror that
+  // grammar or the card names no host for exactly the URLs it does fetch.
   const bareUrl = url.startsWith("//") ? url.slice(2) : url;
   const candidateUrl = isBareHostFetchedAsHttps(bareUrl)
     ? `https://${bareUrl}`
     : url;
   const safeUrl = isSafeHttpUrl(candidateUrl) ? candidateUrl : "";
-  // Only OpenAI's hosted open_page / find_in_page set action_type, and their result is
-  // the "Read: <url>" label; the local url mode puts the fetched page text there.
-  const resultIsCardLabel = !!safeUrl && !!actionType;
   const displayDomain = (() => {
     if (!safeUrl) return "";
     try {
-      const parsed = new URL(safeUrl);
-      return parsed.hostname.replace(/^www\./, "");
+      return new URL(safeUrl).hostname.replace(/^www\./, "");
     } catch {
       return "";
     }
@@ -173,26 +168,26 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
       <ToolFallbackTrigger
         toolName={
           isFindInPage
-            ? pattern
-              ? // Neutral: the action carries no match status, so a finished
-                // call is not evidence the pattern was there.
-                `Searched for "${pattern}" in ${displayDomain || "page"}`
+            ? // Neutral: the action carries no match status, so a finished call
+              // is not evidence the pattern was there.
+              pattern
+              ? `Searched for "${pattern}" in ${displayDomain || "page"}`
               : `Searched ${displayDomain || "page"}`
             : isUrlFetch
               ? displayDomain
                 ? `Read ${displayDomain}`
                 : "Read page"
-            : isImageOnly
-              ? isRunning
-                ? `Finding images for “${imageLabel}”`
-                : foundImages
-                  ? `Found images for “${imageLabel}”`
-                  : `No images for “${imageLabel}”`
-              : query
-                ? imageLabel && foundImages
-                  ? `Searched "${query}" · images for ${imageLabel}`
-                  : `Searched "${query}"`
-                : "Web Search"
+              : isImageOnly
+                ? isRunning
+                  ? `Finding images for “${imageLabel}”`
+                  : foundImages
+                    ? `Found images for “${imageLabel}”`
+                    : `No images for “${imageLabel}”`
+                : query
+                  ? imageLabel && foundImages
+                    ? `Searched "${query}" · images for ${imageLabel}`
+                    : `Searched "${query}"`
+                  : "Web Search"
         }
         status={status}
         icon={GlobeIcon}
@@ -266,6 +261,8 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
           </div>
         ) : safeUrl || resultText ? (
           <div className="flex flex-col gap-2">
+            {/* open_page and find_in_page report no text of their own, so the
+            page they read is all the card has to show. */}
             {safeUrl ? (
               <a
                 href={safeUrl}
@@ -276,7 +273,7 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
                 {url}
               </a>
             ) : null}
-            {resultText && !resultIsCardLabel ? (
+            {resultText ? (
               <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
                 {resultText}
               </pre>
