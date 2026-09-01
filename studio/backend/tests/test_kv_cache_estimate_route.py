@@ -254,14 +254,39 @@ class TestDrafterDiscoveryMatchesTheLoader:
         got, _ = models_routes._resolve_mtp_drafter(str(main), search_root = str(root))
         assert got != str(main)
 
-    def test_nested_mtp_subdir_copies_are_skipped(self, tmp_path):
-        """MTP/ copies are explicit-selection; the loader does not auto-fetch them."""
+    def test_nested_mtp_subdir_copy_is_used_when_no_root_mirror(self, tmp_path):
+        """A repo publishing heads only under MTP/, as Qwen3.8-Flash-Next and
+        Qwen3.8-27B do, still gets a drafter. _cached_repo_mtp_drafter already
+        reuses such a copy offline, so skipping it here gave a cached user
+        speculation and a fresh one none."""
         snap = self._snapshot(tmp_path)
         main = _write_gguf(snap / "model-Q4_K_M.gguf", _MLA_NO_HEAD)
-        _write_gguf(snap / "MTP" / "mtp-model-Q8_0.gguf", _MLA_NO_HEAD)
+        nested = _write_gguf(snap / "MTP" / "mtp-model-Q8_0.gguf", _MLA_NO_HEAD)
 
         got, _ = models_routes._resolve_mtp_drafter(str(main))
-        assert got is None
+        assert got == str(nested)
+
+    def test_nested_fallback_prefers_q8_over_bf16(self, tmp_path):
+        """bf16 sorts first by name and is the worst head: larger and slower,
+        because a draft step is dominated by the LM head."""
+        snap = self._snapshot(tmp_path)
+        main = _write_gguf(snap / "model-Q4_K_M.gguf", _MLA_NO_HEAD)
+        _write_gguf(snap / "MTP" / "mtp-model-BF16.gguf", _MLA_NO_HEAD)
+        q8 = _write_gguf(snap / "MTP" / "mtp-model-Q8_0.gguf", _MLA_NO_HEAD)
+
+        got, _ = models_routes._resolve_mtp_drafter(str(main))
+        assert got == str(q8)
+
+    def test_nested_fallback_prefers_a_self_contained_head(self, tmp_path):
+        """A -shared- head omits token_embd/output and only loads on a build
+        carrying the borrow, so it is not the safe automatic pick."""
+        snap = self._snapshot(tmp_path)
+        main = _write_gguf(snap / "model-Q4_K_M.gguf", _MLA_NO_HEAD)
+        full = _write_gguf(snap / "MTP" / "mtp-model-Q8_0.gguf", _MLA_NO_HEAD)
+        _write_gguf(snap / "MTP" / "mtp-model-shared-Q8_0.gguf", _MLA_NO_HEAD)
+
+        got, _ = models_routes._resolve_mtp_drafter(str(main))
+        assert got == str(full)
 
     def test_root_companion_wins_over_a_nested_copy(self, tmp_path):
         snap = self._snapshot(tmp_path)

@@ -2762,16 +2762,35 @@ def _pick_mtp(candidates: list[str]) -> Optional[str]:
     """The MTP drafter a listing offers, or None. Module level for the same reason
     ``_pick_dspark`` is: both are handed a live repo listing as well as a snapshot,
     and ``/kv-cache-estimate`` has to price the drafter the launch will open."""
-    # Root-level only: MTP/ subdir copies now share the mtp- prefix but
-    # are explicit-selection, not auto-fetch (they'd sort ahead of root).
-    # The mtp- prefix also excludes AppleDouble shadows ("._mtp-x.gguf"), which
-    # is why this picker needs no drop_shadowed_appledouble_names of its own.
+    from hub.utils.gguf import drop_shadowed_appledouble_names
+    from utils.models.drafters.preference import mtp_preference_key
+
+    # Root first, so a repo mirroring one head at the root (Gemma 4) still resolves to it
+    # rather than to a subdir copy, which would sort ahead. The mtp- prefix also excludes
+    # AppleDouble shadows ("._mtp-x.gguf"), so this bucket needs no filtering of its own.
     mtp_files = sorted(
         f
         for f in candidates
         if f.lower().endswith(".gguf") and "/" not in f and Path(f).name.lower().startswith("mtp-")
     )
-    return mtp_files[0] if mtp_files else None
+    if mtp_files:
+        return mtp_files[0]
+
+    # No root mirror: fall back to the MTP/ folder, which is the only place
+    # Qwen3.8-Flash-Next and Qwen3.8-27B publish their heads. This is the policy
+    # _cached_repo_mtp_drafter already applies to the offline cache, so without it a
+    # user holding a cached copy gets speculation and a fresh install does not.
+    # Matched by drafter kind rather than by prefix, since the copies are not named
+    # alike across repos, which means AppleDouble shadows have to be dropped here.
+    nested = sorted(
+        (
+            name
+            for name in drop_shadowed_appledouble_names(list(candidates))
+            if name.lower().endswith(".gguf") and "/" in name and _is_mtp_only_drafter_path(name)
+        ),
+        key = mtp_preference_key,
+    )
+    return nested[0] if nested else None
 
 
 def _pick_mmproj(candidates: list[str]) -> Optional[str]:
@@ -13930,12 +13949,12 @@ class LlamaCppBackend:
     ) -> Optional[str]:
         """Download the separate MTP drafter (speculative head) from a GGUF repo.
 
-        Targets the repo-root ``mtp-*.gguf`` companion -- the Q8_0 drafter
+        Prefers the repo-root ``mtp-*.gguf`` companion -- the Q8_0 drafter
         unsloth mirrors there for llama.cpp ``-hf`` auto-discovery (smallest,
-        recommended for speculation). Repos that bake the MTP head into the
-        main GGUF (e.g. Qwen) ship no such sibling and this returns None. The
-        higher-precision copies under ``MTP/`` are for explicit selection and
-        are intentionally skipped. Returns the local path, or None.
+        recommended for speculation) -- and falls back to the ``MTP/`` folder for
+        a repo that publishes no root mirror, as Qwen3.8-Flash-Next and
+        Qwen3.8-27B do. Repos that bake the MTP head into the main GGUF ship
+        neither and this returns None. Returns the local path, or None.
         """
 
         cancel_event = cancel_event if cancel_event is not None else self._cancel_event

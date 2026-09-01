@@ -37,6 +37,38 @@ def dspark_preference_key(name: str) -> tuple[int, str]:
     return dspark_precision_rank(name), Path(name).name.lower()
 
 
+def mtp_precision_rank(name: str) -> int:
+    """MTP head precision preference: Q8_0 first. Correctness does not enter into
+    it, since the target verifies every drafted token, so this is purely which
+    head drafts fastest. Q8_0 measured both quicker and more accepted than bf16 on
+    Qwen3.8-Flash-Next: a draft step is dominated by the LM head, and that head is
+    cheaper to execute at 8 bits, so bf16 is larger and slower for no gain."""
+    base = Path(name).name.lower()
+    if "-q8_0" in base:
+        return 0
+    if "-q6_k" in base:
+        return 1
+    if "-q5_k" in base:
+        return 2
+    if "-q4_k" in base or "-q4_0" in base:
+        return 3
+    if "-bf16" in base or "-f16" in base:
+        return 4
+    return 5
+
+
+def mtp_preference_key(name: str) -> tuple[int, int, str]:
+    """Sort key picking the preferred MTP head by name alone.
+
+    A head that omits its own token_embd/output and borrows the target's is
+    demoted below an otherwise equal self-contained one: it is smaller, but it
+    only loads on a build carrying the borrow, so it is not the safe automatic
+    pick. Explicit selection still reaches it.
+    """
+    borrows = 1 if "shared" in Path(name).name.lower() else 0
+    return mtp_precision_rank(name), borrows, Path(name).name.lower()
+
+
 # DFlash publishes the same precision vocabulary (and the published sidecar
 # carries no precision token at all, which lands in the catch-all rank), so the
 # ordering is shared rather than duplicated.
