@@ -43,7 +43,7 @@ from fastapi.testclient import TestClient
 import core.inference.diffusion as diffusion_module
 import core.inference.gpu_arbiter as gpu_arbiter
 import core.inference.image_gallery as gallery
-from auth.authentication import get_current_subject
+from auth.authentication import authenticated_via_api_key, get_current_subject
 from core.inference.diffusion import DiffusionBackend
 from routes.inference import router as openai_router, studio_router
 
@@ -455,6 +455,9 @@ def engaged_client(monkeypatch, tmp_path):
     # production. Both persistence paths reach the same gallery, so both are exercised here.
     app.include_router(openai_router, prefix = "/v1")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    # These routes resolve their Hub token through the API-key boundary, whose
+    # dependency reads the bearer this fixture does not send.
+    app.dependency_overrides[authenticated_via_api_key] = lambda: True
     return TestClient(app), backend, saved
 
 

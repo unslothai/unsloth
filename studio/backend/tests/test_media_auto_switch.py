@@ -30,7 +30,7 @@ import core.inference.media_switch_backends as backends
 import core.inference.media_switch_errors as errors
 import routes.models as models_route
 import utils.openai_auto_switch_settings as settings
-from auth.authentication import get_current_subject
+from auth.authentication import authenticated_via_api_key, get_current_subject
 from core.inference.openai_auto_download import preferred_quant
 from utils.api_errors import install_api_error_handlers
 
@@ -419,6 +419,9 @@ def _client(router, prefix):
     install_api_error_handlers(app)
     app.include_router(router, prefix = prefix)
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    # These routes resolve their Hub token through the API-key boundary, whose
+    # dependency reads the bearer this fixture does not send.
+    app.dependency_overrides[authenticated_via_api_key] = lambda: True
     return TestClient(app)
 
 
