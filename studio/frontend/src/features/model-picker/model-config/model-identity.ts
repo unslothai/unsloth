@@ -150,3 +150,7 @@ export function splitQuantSuffix(value: string): [string, string] | null {
     ? [head, tail]
     : null;
 }
+
+export function splitModelOverrideKey(value: string): [string, string | null] {
+  return splitQuantSuffix(value) ?? [value, null];
+}

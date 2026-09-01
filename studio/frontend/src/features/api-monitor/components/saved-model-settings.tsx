@@ -1,16 +1,26 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// What a remote load will apply, otherwise unanswerable from outside the process. Read
-// only: the model's settings page is the only place that owns this and the local store.
+// What a remote load will apply, otherwise unanswerable from outside the process.
 
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Spinner } from "@/components/ui/spinner";
 import {
   type ApiModelOverride,
   type ApiModelOverrides,
   fetchModelOverrides,
+  putModelOverride,
 } from "@/features/model-picker/api/model-overrides";
+import { deletePerModelConfig } from "@/features/model-picker/model-config/per-model-config";
+import { Trash2 } from "lucide-react";
 import { type ReactElement, useCallback, useEffect, useState } from "react";
+import { toast } from "sonner";
+import { forgetModelOverride } from "../forget-model-override";
+
+function plural(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
 
 /** Summary of the fields the loader will apply, in load order. */
 function describeOverride(override: ApiModelOverride): string[] {
@@ -32,7 +42,7 @@ function describeOverride(override: ApiModelOverride): string[] {
     );
   }
   if (override.n_parallel) {
-    parts.push(`${override.n_parallel} parallel slots`);
+    parts.push(plural(override.n_parallel, "parallel slot"));
   }
   if (override.n_batch) {
     parts.push(`batch ${override.n_batch}`);
@@ -50,7 +60,7 @@ function describeOverride(override: ApiModelOverride): string[] {
   // user can pick for either (no checkpoints, no host cache) and would otherwise
   // be listed as unset.
   if (override.ctx_checkpoints !== undefined) {
-    parts.push(`${override.ctx_checkpoints} checkpoints`);
+    parts.push(plural(override.ctx_checkpoints, "checkpoint"));
   }
   if (override.cache_ram !== undefined) {
     parts.push(`cache RAM ${override.cache_ram} MiB`);
@@ -65,10 +75,10 @@ function describeOverride(override: ApiModelOverride): string[] {
     parts.push("manual GPU memory");
   }
   if (override.gpu_layers != null) {
-    parts.push(`${override.gpu_layers} GPU layers`);
+    parts.push(plural(override.gpu_layers, "GPU layer"));
   }
   if (override.n_cpu_moe) {
-    parts.push(`${override.n_cpu_moe} MoE layers on CPU`);
+    parts.push(`${plural(override.n_cpu_moe, "MoE layer")} on CPU`);
   }
   if (override.gpu_ids?.length) {
     parts.push(`GPU ${override.gpu_ids.join(", ")}`);
@@ -85,6 +95,9 @@ function describeOverride(override: ApiModelOverride): string[] {
 export function SavedModelSettingsPanel(): ReactElement {
   const [overrides, setOverrides] = useState<ApiModelOverrides | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [forgetting, setForgetting] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
 
   const load = useCallback(async () => {
     try {
@@ -103,6 +116,32 @@ export function SavedModelSettingsPanel(): ReactElement {
     void load();
   }, [load]);
 
+  const forget = useCallback(
+    async (overrideKey: string) => {
+      setForgetting((prev) => new Set(prev).add(overrideKey));
+      try {
+        await forgetModelOverride(overrideKey, {
+          removeRemote: (modelId, ggufVariant) =>
+            putModelOverride(modelId, ggufVariant, null),
+          removeLocal: (modelId, ggufVariant) => {
+            deletePerModelConfig(modelId, ggufVariant);
+          },
+          reload: load,
+          onError: (message) => {
+            toast.error(message);
+          },
+        });
+      } finally {
+        setForgetting((prev) => {
+          const next = new Set(prev);
+          next.delete(overrideKey);
+          return next;
+        });
+      }
+    },
+    [load],
+  );
+
   const entries = Object.entries(overrides ?? {});
 
   return (
@@ -114,9 +153,9 @@ export function SavedModelSettingsPanel(): ReactElement {
         <p className="text-sm text-muted-foreground">
           When a request names one of these models, Unsloth loads it with these
           settings, the same ones you saved in the model&apos;s settings page.
-          Models without an entry load with app defaults. Edit or forget an
-          entry from that model&apos;s settings, which keeps this list and the
-          picker in step.
+          Models without an entry load with app defaults. Edit an entry from
+          that model&apos;s settings, or forget it here, which clears it from
+          the picker too.
         </p>
       </div>
 
@@ -153,6 +192,21 @@ export function SavedModelSettingsPanel(): ReactElement {
                     {summary.length > 0 ? summary.join(" · ") : "App defaults"}
                   </span>
                 </div>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className="shrink-0 text-muted-foreground hover:text-destructive"
+                  aria-label={`Forget settings for ${modelId}`}
+                  title="Forget these settings"
+                  disabled={forgetting.has(modelId)}
+                  onClick={() => void forget(modelId)}
+                >
+                  {forgetting.has(modelId) ? (
+                    <Spinner label="Forgetting" />
+                  ) : (
+                    <Trash2 />
+                  )}
+                </Button>
               </li>
             );
           })}
