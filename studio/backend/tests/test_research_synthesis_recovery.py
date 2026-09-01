@@ -169,37 +169,6 @@ def test_a_complete_recovery_beats_a_longer_truncated_first_draft(research_home,
     assert "Incomplete report." not in finished["report"]
 
 
-def test_the_notice_survives_a_fence_the_truncation_left_open(research_home, monkeypatch):
-    """Running out of budget mid-code-block leaves an unterminated fence, and in CommonMark
-    that fence runs to the end of the document -- so an appended notice renders as code."""
-    cut_off_in_a_fence = "## Findings\n\n```python\nctx = 32768,\nrope_scaling ="
-
-    finished = _run_synthesis(
-        monkeypatch,
-        synthesis = (cut_off_in_a_fence, "", "length", {"completion_tokens": 16384}),
-        recovery = ("", "", "stop", None),
-    )
-
-    report = finished["report"]
-    assert "Incomplete report." in report
-    assert report.count("```") % 2 == 0
-    _, _, after_the_last_fence = report.rpartition("```")
-    assert "> **Incomplete report.**" in after_the_last_fence
-
-
-def test_a_report_that_closed_its_own_fence_gains_no_stray_one(research_home, monkeypatch):
-    whole_fence = "## Findings\n\n```python\nctx = 32768\n```\n\nAnd it was cut off here"
-
-    finished = _run_synthesis(
-        monkeypatch,
-        synthesis = (whole_fence, "", "length", {"completion_tokens": 16384}),
-        recovery = ("", "", "stop", None),
-    )
-
-    assert finished["report"].count("```") == 2
-    assert "Incomplete report." in finished["report"]
-
-
 def test_a_filtered_recovery_does_not_outrank_a_longer_draft(research_home, monkeypatch):
     """`content_filter` is external_provider's mapping for a refusal and for Gemini's
     SAFETY/RECITATION stops, so that text is a fragment, not a finished report."""
@@ -235,38 +204,50 @@ def test_a_recovery_padded_with_a_source_list_does_not_win_on_length(
     assert FIRST_DRAFT in finished["report"]
 
 
-def test_a_fence_whose_info_string_holds_backticks_is_not_treated_as_open(
+@pytest.mark.parametrize(
+    "tail",
+    [
+        "```python\nctx = 32768,\nrope_scaling =",          # unterminated top-level fence
+        "  ```python\n  ctx = 32768,",                       # indented, still top level
+        "> ```python\n> ctx = 32768,",                       # fence inside a quote
+        "- step one\n\n  ```python\n  ctx = 32768,",         # fence inside a list
+        "```python `example`\n\nand then",                   # backticks in the info string
+        "| model | ctx |\n|---|---|\n| gemma |",             # cut off mid-table
+        "Demand outran supply because the",                  # cut off mid-sentence
+    ],
+    ids = ["fence", "indented-fence", "quoted-fence", "listed-fence", "info-backticks",
+           "table", "prose"],
+)
+def test_the_notice_leads_the_report_whatever_the_truncation_left_open(
+    research_home, monkeypatch, tail
+):
+    """A report that ran out of budget stops wherever it happened to be, so anything put
+    UNDER it can land inside an unterminated container. The first line is inside nothing."""
+    finished = _run_synthesis(
+        monkeypatch,
+        synthesis = (f"## Findings\n\n{tail}", "", "length", {"completion_tokens": 16384}),
+        recovery = ("", "", "stop", None),
+    )
+
+    report = finished["report"]
+    assert report.startswith("> **Incomplete report.**")
+    assert tail.strip().splitlines()[-1] in report
+
+
+def test_a_recovery_padded_with_invented_citations_does_not_win_on_length(
     research_home, monkeypatch
 ):
-    """A backtick fence's info string may not contain backticks, so this line opens
-    nothing; appending a closer would itself open a fence and swallow the notice."""
-    not_a_fence = "## Findings\n\n```python `example`\n\nDemand outran supply and"
+    """The validators strip citations the catalogs do not back, so counting them would
+    trade a substantive draft for one that shrinks the moment it is validated."""
+    invented = "\n\n".join(f"See [ref {n}](https://invented-{n}.test/page)" for n in range(90))
 
     finished = _run_synthesis(
         monkeypatch,
-        synthesis = (not_a_fence, "", "length", {"completion_tokens": 16384}),
-        recovery = ("", "", "stop", None),
+        synthesis = (FIRST_DRAFT, "", "length", {"completion_tokens": 16384}),
+        recovery = (SHORTER_DRAFT + "\n\n" + invented, "", "length", {"completion_tokens": 16384}),
     )
 
-    report = finished["report"]
-    assert "Incomplete report." in report
-    assert report.count("```") == 1
-    assert "> **Incomplete report.**" in report.rpartition("`example`")[2]
-
-
-def test_a_fence_inside_a_list_gets_no_bare_closer(research_home, monkeypatch):
-    """A fence opened inside a container is already closed by that container ending, so a
-    bare top-level closer would OPEN a fence and swallow the notice."""
-    fence_in_a_list = "## Findings\n\n- The setting:\n\n  ```python\n  ctx = 32768,"
-
-    finished = _run_synthesis(
-        monkeypatch,
-        synthesis = (fence_in_a_list, "", "length", {"completion_tokens": 16384}),
-        recovery = ("", "", "stop", None),
-    )
-
-    report = finished["report"]
-    assert "Incomplete report." in report
-    # Untouched: the list already ended the fence, so nothing needed appending.
-    assert report.count("```") == 1
-    assert "> **Incomplete report.**" in report.rpartition("ctx = 32768,")[2]
+    # The padded recovery would win a raw-length tiebreak, which is the point.
+    assert len(SHORTER_DRAFT + "\n\n" + invented) > len(FIRST_DRAFT)
+    assert finished["status"] == "completed"
+    assert FIRST_DRAFT in finished["report"]

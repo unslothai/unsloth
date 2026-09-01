@@ -37,7 +37,6 @@ from core.research.parsing import (
     _recover_report_from_reasoning,
     _report_after_boundary,
     _streamed_titles,
-    unclosed_code_fence,
 )
 from core.research.citations import (
     _allowed_document_citations,
@@ -45,7 +44,6 @@ from core.research.citations import (
     _document_source_citation,
     _validate_report_document_sources,
     _validate_report_sources,
-    strip_model_source_list,
 )
 from core.research.redaction import _sanitize_public_query, _shield_untrusted
 from core.research.prompts import (
@@ -2573,6 +2571,17 @@ class ResearchSupervisor:
         await self._check_active(run["id"])
         report = _select_synthesis_report(report, synthesis_reasoning)
         truncation_notice = ""
+
+        def _delivered(draft: str) -> str:
+            """What the reader would actually get from this draft.
+
+            The validators below drop a model-authored source list and every citation the
+            catalogs do not back, and a model that ran out of budget is exactly the one
+            liable to pad with both, so raw length is not what the drafts should be judged
+            on. Used only to compare them; whichever wins is stored as the model wrote it."""
+            validated = _validate_report_sources(draft, sources)
+            return _validate_report_document_sources(validated, document_sources)
+
         if _synthesis_needs_recovery(report, synthesis_finish_reason):
             recovery_reason = (
                 "exhausted its output budget"
@@ -2614,11 +2623,12 @@ class ResearchSupervisor:
             # A second attempt at the SAME report under the same budget, not a correction of
             # the first. Reaching here means the first draft is empty or unfinished, so a
             # recovery that ran to a natural stop wins outright, and only between two drafts
-            # of equal standing does the longer one win. Both tests read the drafts through
-            # strip_model_source_list because _validate_report_sources deletes that section
-            # below: a draft must not win on padding that is about to be removed.
-            comparable_recovered = strip_model_source_list(recovered)
-            comparable_report = strip_model_source_list(report)
+            # of equal standing does the longer one win. Both tests measure the drafts
+            # through the same validators that run below, because those delete a
+            # model-authored source list and any invented citation: a draft must not win on
+            # padding that is about to be removed.
+            comparable_recovered = _delivered(recovered)
+            comparable_report = _delivered(report)
             recovered_whole = (
                 bool(comparable_recovered)
                 and recovery_finish_reason not in _UNFINISHED_FINISH_REASONS
@@ -2650,15 +2660,13 @@ class ResearchSupervisor:
             )
         report = _validate_report_sources(report, sources)
         report = _validate_report_document_sources(report, document_sources)
-        # After the validators, so they only ever see what the model wrote.
+        # Above the report, and after the validators so they only ever see what the model
+        # wrote. Above, because a report that ran out of budget stops wherever it happened to
+        # be -- inside a code fence, a list, a quote -- and anything appended under an
+        # unterminated container is swallowed by it, whereas the first line of a document is
+        # inside nothing. The reader also learns the report is cut short before reading it.
         if truncation_notice:
-            # Running out of budget mid-code-block is one of the ways a report gets cut off,
-            # and an unterminated fence would swallow the notice as more code.
-            report = report.rstrip()
-            fence = unclosed_code_fence(report)
-            if fence:
-                report = f"{report}\n{fence}"
-            report = f"{report}\n\n> **Incomplete report.** {truncation_notice}."
+            report = f"> **Incomplete report.** {truncation_notice}.\n\n{report.lstrip()}"
         reasoning = await asyncio.to_thread(db.get_reasoning_text, run["id"])
         if synthesis_reasoning and synthesis_reasoning not in reasoning:
             reasoning += synthesis_reasoning
