@@ -25,6 +25,8 @@
     "dbus-python",
     "dlib",
     "gdal",
+    "libcugraph-cu12",
+    "libcuvs-cu12",
     "nvidia-cublas-cu12",
     "nvidia-cuda-cupti-cu12",
     "nvidia-cuda-nvrtc-cu12",
@@ -38,10 +40,32 @@
     "nvidia-nccl-cu12",
     "nvidia-nvjitlink-cu12",
     "nvidia-nvtx-cu12",
+    "psycopg2",
     "pycairo",
     "pygobject",
+    "pylibcugraph-cu12",
     "python-apt",
     "rpy2",
     "triton"
-  ]
+  ],
+  "no_binary": [
+    "antlr4-python3-runtime",
+    "community",
+    "cufflinks",
+    "editdistance",
+    "glob2",
+    "gym",
+    "imutils",
+    "jieba",
+    "lazr.restfulclient",
+    "lazr.uri",
+    "matplotlib-venn",
+    "moviepy",
+    "promise",
+    "pydotplus",
+    "pyspark",
+    "python-louvain",
+    "wadllib"
+  ],
+  "_no_binary_comment": "Passed to pip as --no-binary, which overrides --only-binary=:all: per package. Without it the bulk resolve fails on the first of these and every run falls into the per-pin path, which is the failure this whole job kept hitting. Derived by asking PyPI, for every pin in the freeze, whether it publishes a wheel COMPATIBLE with the pinned interpreter and manylinux x86_64, not merely whether a wheel exists: editdistance ships wheels but none for cp313, and checking only for existence missed it. 18 pins have no usable wheel; psycopg2 is in skip because it needs pg_config and cannot build here, the other 17 are pure Python or build in seconds. Re-derive after any Colab rotation."
 }
