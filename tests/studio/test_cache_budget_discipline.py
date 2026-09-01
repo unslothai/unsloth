@@ -708,20 +708,42 @@ PW_ENGINES = ("chromium", "firefox", "webkit")
 
 
 def _matrix_rows(job) -> list[dict]:
-    """One substitution map per concrete matrix row, or a single empty map if unmatrixed.
+    """One substitution map per job the matrix can actually produce.
 
-    Only `include:` is expanded. Every Playwright consumer here either has no matrix or
-    declares its engines in an include list, and inventing combinations from a bare
-    `matrix.<key>: [...]` product would compare rows that never run together.
+    The base lists are expanded, not just `include`. `ui-smoke` declares its shards in a
+    base `shard: [chat, extra, banner, picker]` and uses `include` only to attach
+    `engines`/`engine_key` to each, so reading `include` alone happens to give the right
+    four rows today -- and would silently skip a shard added to the base list without a
+    matching include entry, which GitHub still runs, with those fields empty. The empty
+    engine set then trips the assertion in the caller, which is the point.
+
+    An include row that matches no base combination adds a row of its own, per GitHub's
+    rule; one that matches contributes its extra fields to that combination.
     """
-    include = ((job.get("strategy") or {}).get("matrix") or {}).get("include")
-    if isinstance(include, list) and include:
-        return [
-            {f"matrix.{k}": str(v) for k, v in row.items()}
-            for row in include
-            if isinstance(row, dict)
-        ]
-    return [{}]
+    matrix = (job.get("strategy") or {}).get("matrix") or {}
+    if not isinstance(matrix, dict):
+        return [{}]
+    include = [r for r in (matrix.get("include") or []) if isinstance(r, dict)]
+    base_keys = [k for k, v in matrix.items() if k not in ("include", "exclude")
+                 and isinstance(v, list)]
+
+    combos = [{}]
+    for k in base_keys:
+        combos = [{**c, k: v} for c in combos for v in matrix[k]]
+
+    rows, matched = [], set()
+    for combo in combos:
+        row = dict(combo)
+        for i, inc in enumerate(include):
+            shared = set(inc) & set(combo)
+            if shared and all(str(inc[k]) == str(combo[k]) for k in shared):
+                row.update(inc)
+                matched.add(i)
+        rows.append(row)
+    rows += [inc for i, inc in enumerate(include) if i not in matched]
+    if not rows:
+        return [{}]
+    return [{f"matrix.{k}": str(v) for k, v in row.items()} for row in rows]
 
 
 def _resolve(text: str, row: dict) -> str:
@@ -781,7 +803,12 @@ def _playwright_jobs():
             for step in cache_steps:
                 key = _resolve(str((step.get("with") or {}).get("key", "")), row)
                 key = _forwarded_key(key, steps, row)
-                (restore if "/restore@" in str(step["uses"]) else save).append(key)
+                # Carry the path: actions/cache folds it into the entry's version, so
+                # two steps sharing a key but not a path address DIFFERENT caches, and
+                # comparing keys alone would call that pair aligned while every run
+                # missed and re-downloaded the browsers.
+                ident = (key, _resolve(str((step.get("with") or {}).get("path", "")), row))
+                (restore if "/restore@" in str(step["uses"]) else save).append(ident)
             shard = row.get("matrix.shard") or row.get("matrix.engine_key")
             label = f"{name}:{jid}" + (f"[{shard}]" if shard else "")
             yield label, frozenset(engines), restore, save
@@ -805,7 +832,7 @@ def test_playwright_caches_key_the_same_engines_the_same_way():
             by_key.setdefault(key, {}).setdefault(engines, []).append(label)
 
     split = {
-        " ".join(sorted(engines)): {k: sorted(set(v)) for k, v in keys.items()}
+        " ".join(sorted(engines)): {f"{k} @ {pth}": sorted(set(v)) for (k, pth), v in keys.items()}
         for engines, keys in by_engines.items()
         if len(keys) > 1
     }
@@ -815,8 +842,8 @@ def test_playwright_caches_key_the_same_engines_the_same_way():
     )
 
     shared = {
-        key: {" ".join(sorted(e)): sorted(set(v)) for e, v in engines.items()}
-        for key, engines in by_key.items()
+        f"{key} @ {pth}": {" ".join(sorted(e)): sorted(set(v)) for e, v in engines.items()}
+        for (key, pth), engines in by_key.items()
         if len(engines) > 1
     }
     assert not shared, (
@@ -831,7 +858,7 @@ def test_every_playwright_cache_saves_under_the_key_it_restored():
         f"{label}: restores {sorted(set(restore))}, saves {sorted(set(save))}"
         for label, _engines, restore, save in _playwright_jobs()
         if save and sorted(set(restore)) != sorted(set(save))
-    ]
+    ]  # identities are (key, path); a save matching on only one of the two is drift
     assert not offenders, (
         "these jobs save the Playwright engines under a key they did not restore:\n  "
         + "\n  ".join(offenders)
