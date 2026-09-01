@@ -83,6 +83,7 @@ STANDARD = Scene(
     name = "standard",
     slots = _slots(
         [
+            # ── during generation ────────────────────────────────────────
             ("scroll_during_generation", 3_000, 8_000),
             ("keystroke", 12_000, 6_000),
             # 12s: the tail is a JITTERED clip capped at 6,000 characters, so its drain varies from about
@@ -90,6 +91,7 @@ STANDARD = Scene(
             # 15s, this slot ran against a finished reply at the top rung.
             ("scroll_during_generation", 12_000, 8_000),
             ("stop_generation", 28_000, 8_000),
+            # ── after the reply is complete ──────────────────────────────
             ("scroll_after", 38_000, 8_000),
             ("reasoning_toggle", 47_000, 12_000),
             ("send_turn", 60_000, 12_000),
@@ -107,6 +109,7 @@ STANDARD = Scene(
             ("settings", 171_000, 12_000),
             ("image_upload", 184_000, 12_000),
             # 22,382 ms at 1M, so 30s stands.
+            # ── destructive, last ────────────────────────────────────────
             ("thread_reopen", 197_000, 30_000),
             ("delete_message", 228_000, 15_000),
         ]

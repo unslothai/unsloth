@@ -61,6 +61,7 @@ def engines_installed(probe_text: str) -> list:
     return out
 
 
+# ── doctor ──────────────────────────────────────────────────────────
 def doctor(args) -> int:
     """What is here, what is missing, and what each missing thing costs. Never raises."""
     ok = True
@@ -197,6 +198,7 @@ def doctor(args) -> int:
     return 0 if ok else 1
 
 
+# ── the run ─────────────────────────────────────────────────────────
 def _windowed_arms(spec: str, labels: list) -> set:
     """The arms `--windowed-arm` names, checked against the arms this run will actually have.
 
@@ -757,6 +759,8 @@ def _run_holding_out_dir(args, ab_ref, specs, arm_labels, windowed, paths, out_l
 
         # THE GATE, before anything else is measured. Both sides: an A/B where one side is a development
         # build puts the whole 3.2x inflation on one arm and reads as a colossal regression or win.
+        # ── THE GATE. Before anything else is measured. Both sides, because an A/B where one side
+        # and reads as a colossal regression or win. ────────────────────
         verdict = None
         for side in sides:
             side_verdict = check_bundle(side["base_url"])

@@ -66,6 +66,7 @@ class _Page:
         self._send = types.SimpleNamespace(click = lambda: None)
 
     # playwright surface
+    # -- playwright surface -------------------------------------------------
     def goto(self, *a, **k) -> None:
         pass
 
@@ -304,6 +305,7 @@ def _rows(state):
     return [json.loads(line) for line in text.splitlines() if line]
 
 
+# ── what the real drain returns ──────────────────────────────────────────────────────────────
 def test_the_drain_reports_rather_than_raises_when_the_reply_never_ends(cell_runner):
     """The premise, taken from the shipped `_drain_stream` rather than asserted about it."""
 
@@ -316,6 +318,7 @@ def test_the_drain_reports_rather_than_raises_when_the_reply_never_ends(cell_run
     assert "three times past its own cadence" in drained["reason"]
 
 
+# ── what the cell does with it ───────────────────────────────────────────────────────────────
 def test_a_cell_whose_reply_never_finished_does_not_complete(cell_runner):
     cell_runner["stops_running_after_ms"] = None
     runner = cell_runner["build"]()
@@ -348,6 +351,7 @@ def test_the_rung_scores_incomplete_and_the_run_cannot_exit_zero(cell_runner):
     assert completion_exit_code([row]) == 1
 
 
+# ── the controls ─────────────────────────────────────────────────────────────────────────────
 def test_a_cell_whose_reply_finished_still_completes(cell_runner):
     """The control that matters: the ordinary cell is untouched, and its readings are scored."""
 

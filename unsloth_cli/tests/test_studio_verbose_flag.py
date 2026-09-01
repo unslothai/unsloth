@@ -27,6 +27,7 @@ def _studio():
     return _studio_mod
 
 
+# ── option registration ──────────────────────────────────────────────
 def test_run_exposes_verbose_option_default_off():
     import inspect
 
@@ -45,6 +46,7 @@ def test_studio_default_exposes_verbose_option_default_off():
     assert getattr(opt, "default", None) is False
 
 
+# ── re-exec capture plumbing (mirrors test_studio_secure_flag.py) ─────
 class _ExecCaptured(SystemExit):
     def __init__(self, argv):
         super().__init__(0)
@@ -88,6 +90,7 @@ def _invoke_run(monkeypatch, args):
     return captured
 
 
+# ── re-exec forwarding + env override ─────────────────────────────────
 def test_run_verbose_sets_env_and_forwards_on_reexec(monkeypatch):
     monkeypatch.delenv(_DEDUP, raising = False)
     monkeypatch.delenv(_POLL, raising = False)
@@ -130,6 +133,7 @@ def test_run_verbose_does_not_duplicate_existing_llama_verbose(monkeypatch):
     assert captured[0].count("--log-verbose") == 1, captured[0]
 
 
+# ── --verbose before a subcommand is rejected ─────────────────────────
 def test_studio_default_rejects_verbose_with_subcommand():
     import typer as _typer
 

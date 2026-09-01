@@ -132,6 +132,7 @@ def sigs(*trees: dict) -> list[str]:
     return run_js({"trees": list(trees)})["signatures"]
 
 
+# ── the normaliser: things that MUST be erased ──────────────────────
 def test_rendered_durations_collapse():
     # unslothai/unsloth#9054: a 295 vs 310 ms difference in the action bar, which is wall clock.
     got = norm_text("copied in 295ms", "copied in 310ms", "took 1.2 s", "ran for 3 min")
@@ -182,6 +183,7 @@ def test_urls_lose_their_origin_but_keep_their_path():
 # a normaliser that erased them would pass a null control perfectly and detect nothing.
 
 
+# ── the normaliser: things that MUST SURVIVE ────────────────────────
 def test_a_bare_number_is_not_a_duration():
     a, b = norm_text("3 files changed", "4 files changed")
     assert a != b, (a, b)
@@ -205,6 +207,7 @@ def test_text_content_moves_the_signature():
     assert one != two
 
 
+# ── the signature: every KEPT property, tested as kept ──────────────
 @pytest.mark.parametrize(
     "attr,before,after",
     [
@@ -341,6 +344,7 @@ def test_content_below_the_depth_cap_is_not_compared():
     assert one == two, "if this now fails the cap moved and the docstring must be updated"
 
 
+# ── the comparison layer, in pure Python ────────────────────────────
 def capture(
     digest = "aaaa",
     *,
@@ -480,6 +484,7 @@ def test_a_capped_style_probe_is_not_comparable_rather_than_equal():
     assert got["style_verdict"] == P.NOT_COMPARABLE
 
 
+# ── mutation detection and the derived unstable set ─────────────────
 def test_mutation_detected_reports_a_real_change():
     got = P.mutation_detected(capture(), capture("zzzz"))
     assert got["detected"] is True

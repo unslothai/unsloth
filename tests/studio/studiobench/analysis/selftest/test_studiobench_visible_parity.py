@@ -47,6 +47,7 @@ def _cap(visible: dict[int, str], ever: list[int] | None = None) -> dict:
     }
 
 
+# ── the exemption, which is the entire point ────────────────────────
 def test_a_difference_that_is_only_off_screen_passes():
     """THE POLICY, IN ONE ASSERTION. The treatment renders ordinals 1-3 differently -- they are
     genuinely not the same DOM -- but the viewport never showed them during this action, so the
@@ -77,6 +78,7 @@ def test_showing_different_messages_is_itself_a_visible_difference():
     assert "DIFFERENT MESSAGES on screen" in got["reason"]
 
 
+# ── the windowed arm is comparable at all ───────────────────────────
 def test_a_windowed_arm_and_a_full_arm_are_compared_by_thread_position():
     """The reason this mode works where the digest does not. The base has the whole thread mounted
     and the treatment has a window of it, so mounted INDEX 0 is a different message on the two
@@ -86,6 +88,7 @@ def test_a_windowed_arm_and_a_full_arm_are_compared_by_thread_position():
     assert P.compare_visible(base, treat)["verdict"] == P.MATCH
 
 
+# ── the positive control ────────────────────────────────────────────
 def test_a_visibility_scan_that_saw_nothing_is_not_a_pass():
     """Two empty scans have equal ordinal sets and no differing digests, so without this the
     strongest verdict available is returned on the strength of never having observed a single
@@ -111,6 +114,7 @@ def test_a_missing_capture_is_refused_rather_than_assumed_empty():
     )
 
 
+# ── the honest residue ──────────────────────────────────────────────
 def test_a_message_seen_mid_action_but_unmounted_by_capture_is_not_counted_as_agreement():
     """THIS TEST USED TO ASSERT MATCH, and it contradicted its own name.
 

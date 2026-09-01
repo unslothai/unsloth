@@ -151,6 +151,7 @@ def test_an_unterminated_frame_is_reported_as_still_buffered(page):
     assert got["pending_chars"] > 0, got
 
 
+# ── the consumer, which is where the defect actually lived ──────────
 def _instrument(page):
     from studiobench.instruments.streamcost import StreamCostInstrument
 
@@ -211,6 +212,7 @@ def test_a_clean_window_stays_scoreable(page):
 # cost-per-character at exactly the moment the instrument exists to measure.
 
 
+# ── a frame split INSIDE the "data:" prefix ─────────────────────────
 def _halves(text: str, at: int) -> tuple:
     return text[:at], text[at:]
 
@@ -314,6 +316,7 @@ def test_a_failure_before_the_window_does_not_taint_it(page):
     assert out["reply_chars_scoreable"] is True, out
 
 
+# ── the OTHER end of a split, which is the window that opens on it ──
 def test_a_window_that_opens_on_a_half_delivered_frame_is_not_scoreable(page):
     """THE DEFECT, one window to the right of the one already covered above.
 
@@ -398,6 +401,7 @@ def test_a_marker_fragment_held_at_the_open_does_not_cost_the_window_its_reading
     assert out["reply_chars_scoreable"] is True, out
 
 
+# ── an aborted response must not poison the next one ──────────────────────────
 def test_an_aborted_frame_does_not_follow_the_stream_that_replaces_it(page):
     """REGRESSION. `stop_generation` cuts a socket mid-frame, which is what it is for.
 
@@ -586,6 +590,7 @@ def test_a_frame_that_really_did_straddle_the_open_still_refuses_its_window(page
 # fragmentation, which is the regime the instrument exists to measure.
 
 
+# ── the tail of a split frame is stream traffic on the numerator too ─────────
 def test_the_tail_of_a_split_frame_is_counted_as_stream_traffic(page):
     """THE DEFECT, at the quantity the numerator is built from.
 

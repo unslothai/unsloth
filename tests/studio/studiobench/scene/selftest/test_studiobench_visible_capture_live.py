@@ -128,6 +128,7 @@ def _capture(page) -> dict:
     return page.evaluate("async () => await window.__sb.parityVisible.capture()")
 
 
+# ── what the viewport actually showed ───────────────────────────────
 def test_it_reports_only_what_the_viewport_showed(page):
     _watch(page)
     got = _capture(page)
@@ -185,6 +186,7 @@ def test_an_unmounted_message_is_still_reported_as_having_been_visible(page):
     assert got["unmounted_at_capture"] == got["ever_visible_count"]
 
 
+# ── the trap ────────────────────────────────────────────────────────
 def test_the_capture_never_reads_geometry(page):
     """THE CONTENT-VISIBILITY TRAP, held closed by construction rather than by review.
 
@@ -215,6 +217,7 @@ def test_the_capture_never_reads_geometry(page):
     )
 
 
+# ── refusals ────────────────────────────────────────────────────────
 def test_capturing_without_watching_is_refused_not_reported_empty(page):
     got = page.evaluate("async () => await window.__sb.parityVisible.capture()")
     assert got["visible_attempted"] is False
@@ -228,6 +231,7 @@ def test_a_page_with_no_thread_viewport_is_refused(page):
     assert "viewport" in got["reason"]
 
 
+# ── the instrument must not charge its own cost to the action ───────
 def test_the_top_up_is_proportional_to_the_mutation_not_to_the_document(page):
     """WORKSPACE TASK #102, WHICH THIS NEARLY REPEATED.
 
@@ -304,6 +308,7 @@ def test_a_row_mounted_during_the_action_is_still_picked_up_cheaply(page):
 # wall of identical non-findings buries anything real.
 
 
+# ── where the virtualizer publishes its ordinals is not a UI change ──
 def _arm_html(ordinals: str, suffix: str = "") -> str:
     """One thread of twenty messages, with the virtualization ordinals published `on_the_message`,
     `on_the_row` wrapper, or `nowhere` -- which is what the shipped build does."""
@@ -417,6 +422,7 @@ def test_a_real_rendering_difference_is_still_caught(browser):
 
 #: The shipped shape: every message mounted, and NOTHING publishing a virtualization ordinal.
 #: `__rebuild()` is the thread_reopen rebuild, in one commit, in the same document.
+# ── a rebuilt row is at its own position, not at the end of a lifetime count ──
 REBUILD_FIXTURE = """
 <!doctype html><meta charset="utf-8">
 <style>
@@ -591,6 +597,7 @@ def test_the_structural_digest_still_sees_the_ordinals(browser):
 #: MutationObserver batch runs after both operations, so the node is in `addedNodes` and no
 #: longer among the document's messages and has no position the instrument can honestly claim.
 #: `__remount` hands THE SAME NODE back, as a virtualizer that recycles rows does.
+# ── a recycled node, and the ordinal it used to be denied ──────────────────
 RECYCLE_FIXTURE = """
 <!doctype html><meta charset="utf-8">
 <style>

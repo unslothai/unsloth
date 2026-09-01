@@ -92,6 +92,7 @@ SHIPPED_CHARS_BUDGET = 460_000
 # Deliberately mundane vocabulary. The point of the corpus is span density and uniqueness, not
 # realism of meaning, and a vocabulary a reader can skim is one a reader can spot a bug in.
 
+# ── the vocabulary ──────────────────────────────────────────────────
 _NOUNS = (
     "buffer",
     "scheduler",
@@ -199,6 +200,7 @@ _SHORT = (
 # an exact NULL in the browser, because the fixture gave it nothing to do. Both delimiter
 # families are here on purpose: `$...$` is what remark-math consumes directly, while `\(...\)`
 # is what `preprocessLaTeX` exists to REWRITE.
+# ── math ────────────────────────────────────────────────────────────
 _MATH_OPS = ("+", "-", "\\cdot", "\\times", "\\oplus")
 _MATH_RELS = ("=", "\\le", "\\ge", "\\approx", "\\equiv")
 _MATH_FUNCS = ("\\log", "\\exp", "\\sin", "\\cos", "\\tanh")
@@ -323,6 +325,7 @@ class Unit:
         )
 
 
+# ── generation ──────────────────────────────────────────────────────
 def _expression(rng: random.Random, salt: str, terms: int) -> str:
     """One LaTeX expression body, unique to `salt`.
 
@@ -635,6 +638,7 @@ def units_for_chars(total_chars: int, seed: int = CORPUS_SEED) -> list[Unit]:
     return out
 
 
+# ── freezing and loading ────────────────────────────────────────────
 def freeze(
     max_chars: int = SHIPPED_CHARS_BUDGET,
     seed: int = CORPUS_SEED,
@@ -790,6 +794,7 @@ class Corpus:
             yield self.unit(entry["index"])
 
 
+# ── rungs ───────────────────────────────────────────────────────────
 RUNGS: dict[str, int] = {
     "1K": 1_000,
     "10K": 10_000,

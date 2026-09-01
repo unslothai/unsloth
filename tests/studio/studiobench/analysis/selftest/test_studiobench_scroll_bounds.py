@@ -64,6 +64,7 @@ def _row(action: str, capture: dict, **expect) -> dict:
 # the scroll gesture is bounded at both ends, at the extent's own allowance
 
 
+# ── the scroll gesture is bounded at both ends, at the extent's own allowance ─────
 def _scroll_row(
     mounted,
     *,

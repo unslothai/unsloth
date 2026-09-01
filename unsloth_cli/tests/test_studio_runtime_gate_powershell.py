@@ -54,6 +54,7 @@ def test_returns_the_bare_name_as_a_last_resort(monkeypatch, tmp_path):
 # gate and then hand off to PowerShell again, so every spawn on that path has to use the resolver
 # or the install dies at the next one with the same WinError 2.
 
+# ── the callers ────────────────────────────────────────────────────────────────────
 _RESOLVED = ntpath.join(r"C:\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
 
 

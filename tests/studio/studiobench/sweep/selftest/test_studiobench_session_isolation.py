@@ -200,6 +200,7 @@ def test_sessions_in_lists_only_completed_cells():
 # the write-time guard
 
 
+# ── the write-time guard ────────────────────────────────────────────────────
 def test_a_second_live_session_is_refused(tmp_path):
     first = Recorder(tmp_path / "payload.jsonl", new_session_id())
     try:
@@ -246,6 +247,7 @@ def _pid_alive(pid: int) -> bool:
 # the rows these guards emit must actually be emittable
 
 
+# ── the rows these guards emit must actually be emittable ──────────────────
 def test_the_new_row_types_are_registered_in_the_schema(tmp_path):
     """A guard that cannot write its own row is a guard that crashes the run it protects.
 

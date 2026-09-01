@@ -185,6 +185,7 @@ class Trace:
 
     # threads
 
+    # ---------------------------------------------------------------- threads
     def thread_name(self, pid: int, tid: int) -> str:
         return self._thread_names.get((pid, tid), "")
 
@@ -223,6 +224,7 @@ class Trace:
 
     # joins
 
+    # ------------------------------------------------------------------ joins
     def run_tasks(self, thread: Thread | None = None) -> list[Task]:
         """Top-level `RunTask` events on a thread, outermost only."""
         th = thread if thread is not None else self.renderer_main()

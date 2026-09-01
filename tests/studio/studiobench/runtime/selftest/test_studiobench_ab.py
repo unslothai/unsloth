@@ -91,6 +91,7 @@ def test_origin_gate_names_the_exact_origin_and_strips_the_slash():
 # read out of chromium by navigating a real document to the spelling on the left.
 
 
+# ── the gate compares against an ORIGIN, so it has to be given one ──────────────────────────
 @pytest.mark.parametrize(
     ("spelled", "origin"),
     [

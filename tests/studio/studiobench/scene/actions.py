@@ -89,6 +89,7 @@ def _failed(raw: Any) -> str | None:
 # Two rAFs resolve no sooner than two vsync intervals, so any double-rAF timing has a ~33ms floor
 # on a 60Hz display; measured per cell and recorded so a reader can subtract it.
 
+# ── the paint floor ─────────────────────────────────────────────────
 PAINT_FLOOR_JS = """
 async (samples) => {
   const values = [];
@@ -113,6 +114,7 @@ def paint_floor_ms(page, samples: int = 9) -> float | None:
 
 #: The bound that stops a wedged renderer from eating the slot; the wait itself ENDS when nothing
 #: is in flight, and reaching this bound means a lost sample the coverage check fails on.
+# ── 1. keystroke to paint ───────────────────────────────────────────
 KEYSTROKE_SETTLE_TIMEOUT_MS = 3000
 KEYSTROKE_SETTLE_POLL_MS = 25
 
@@ -226,6 +228,7 @@ def keystroke(ctx: ActionContext) -> ActionResult:
     )
 
 
+# ── 2, 3. scrolling ─────────────────────────────────────────────────
 SCROLL_JS = """
 async ([steps, stepPx, settleMs]) => {
   const D = window.__sb.dom;
@@ -341,6 +344,7 @@ def scroll_after(ctx: ActionContext) -> ActionResult:
 # `pre span` on the attribute frame gave a 41% phantom reduction across arms where a quiet-DOM
 # read gave the same number on both. A null control cannot see a bias it shares, so both the
 # timing and the census terminate on `quietFrames` unchanged frames.
+# ── 4. reasoning expand / collapse ──────────────────────────────────
 SETTLE_QUIET_FRAMES = 4
 
 REASONING_JS = """
@@ -663,6 +667,7 @@ def reasoning_toggle_one(ctx: ActionContext) -> ActionResult:
 #: drain wait, or the overrun lands in `scroll_after`'s window as a bogus `slot_missed`. Split,
 #: because the 80 ms is spent before the turn is sent.
 # `scroll_after` has a 1,200 ms window on the fast film.
+# ── 5. stop generation ──────────────────────────────────────────────
 OWN_TURN_FIXED_AFTER_SEND_MS = 600 + 400 + 200
 OWN_TURN_FIXED_MS = 80 + OWN_TURN_FIXED_AFTER_SEND_MS
 
@@ -977,6 +982,7 @@ def stop_generation(ctx: ActionContext) -> ActionResult:
     )
 
 
+# ── 6. settings ─────────────────────────────────────────────────────
 @register_action(name = "settings", default_budget_ms = 12000)
 def settings(ctx: ActionContext) -> ActionResult:
     """Open the Settings dialog, scroll its body, close it.
@@ -1058,6 +1064,7 @@ def settings(ctx: ActionContext) -> ActionResult:
     )
 
 
+# ── 7. model change ─────────────────────────────────────────────────
 @register_action(name = "model_change", default_budget_ms = 10000)
 def model_change(ctx: ActionContext) -> ActionResult:
     """Open the model picker and select a row.
@@ -1121,6 +1128,7 @@ def model_change(ctx: ActionContext) -> ActionResult:
     )
 
 
+# ── 8. composer lengths, then send ──────────────────────────────────
 @register_action(name = "composer_fill", default_budget_ms = 10000)
 def composer_fill(ctx: ActionContext) -> ActionResult:
     """Short, medium and very long text into the composer, timing each paint.
@@ -1183,6 +1191,7 @@ def composer_fill(ctx: ActionContext) -> ActionResult:
     )
 
 
+# ── 9. copy markdown ────────────────────────────────────────────────
 @register_action(name = "copy_markdown", default_budget_ms = 6000)
 def copy_markdown(ctx: ActionContext) -> ActionResult:
     """The message action bar's Copy, which copies `getCopyText()` for the whole message.
@@ -1248,6 +1257,7 @@ def copy_markdown(ctx: ActionContext) -> ActionResult:
     )
 
 
+# ── 10, 11. selection ───────────────────────────────────────────────
 @register_action(name = "select_text", default_budget_ms = 6000)
 def select_text(ctx: ActionContext) -> ActionResult:
     """Select a range inside the last assistant message. Selection over a large thread forces the
@@ -1455,6 +1465,7 @@ def select_all_copy(ctx: ActionContext) -> ActionResult:
     )
 
 
+# ── 12. image upload ────────────────────────────────────────────────
 @register_action(name = "send_turn", default_budget_ms = 10000)
 def send_turn(ctx: ActionContext) -> ActionResult:
     """Send another prompt mid-film and let the next reply stream in.
@@ -1660,6 +1671,7 @@ def image_upload(ctx: ActionContext) -> ActionResult:
 #: seeder's `last_marker`: `send_turn` appends turns mid-film, so the seeded marker sits several
 #: messages from the end while `end_present` requires it within two rows. `trim()` then a prefix,
 #: never a whitespace-collapsing normalisation, since readiness.PROBE_JS matches RAW text.
+# ── 13. thread reopen ───────────────────────────────────────────────
 _LAST_USER_TEXT_JS = """
 () => {
   const rows = Array.from(document.querySelectorAll('[data-role="user"]'));
@@ -2055,6 +2067,7 @@ def _click_or_navigate(
         )
 
 
+# ── 14. message menu ────────────────────────────────────────────────
 MENU_JS = """
 async (opts) => {
   const D = window.__sb.dom;
@@ -2205,6 +2218,7 @@ def message_menu(ctx: ActionContext) -> ActionResult:
     )
 
 
+# ── 15. delete ──────────────────────────────────────────────────────
 DELETE_JS = """
 async (opts) => {
   const D = window.__sb.dom;

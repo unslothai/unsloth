@@ -129,6 +129,7 @@ def _ctx(page, log = None) -> ActionContext:
     )
 
 
+# ── the condition, reproduced ───────────────────────────────────────
 def test_the_control_really_is_unreachable_until_it_is_hovered(page):
     """WITHOUT THIS THE REST PROVES NOTHING. If the fixture's button were hit-testable at rest,
     every assertion below would pass with or without the fix."""
@@ -145,6 +146,7 @@ def test_the_control_really_is_unreachable_until_it_is_hovered(page):
     ), "the un-hovered control hit-tests to itself, so this fixture does not reproduce the failure"
 
 
+# ── the fix ─────────────────────────────────────────────────────────
 def test_hovering_reveals_the_control_and_returns_a_point_on_it(page):
     point = A._reveal_by_hover(_ctx(page), SELECTOR)
     assert point is not None, "hovering did not make the control hit-testable"
@@ -177,6 +179,7 @@ def test_the_hover_is_reported_so_the_gesture_is_not_silent(page):
     assert any("hover-revealed" in m for m in said), said
 
 
+# ── and what it must NOT do ─────────────────────────────────────────
 def test_an_ordinary_control_is_not_hovered_first(page):
     """The reveal is a FALLBACK. A control that hit-tests at rest is clicked without any mouse
     movement being introduced into a measured window, which is checked here by its absence from

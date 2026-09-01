@@ -260,6 +260,7 @@ def test_blank_lines_are_skipped(tmp_path, blank):
     assert main(["--assert-liveness", str(path)]) == 0
 
 
+# ── a cell that was re-run is judged on the run that finished it ─────
 NOW = "s-now"
 OLD = "s-before"
 
@@ -322,6 +323,7 @@ def test_the_superseded_attempt_does_not_count_as_a_second_cell(tmp_path):
     assert any("1 cell(s)" in line and "0 scene problem(s)" in line for line in logged), logged
 
 
+# ── the controls: what must still fail ──────────────────────────────
 def test_a_cell_that_was_never_re_run_still_fails(tmp_path):
     """A crash with no retry behind it is still a crash."""
 

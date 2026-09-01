@@ -53,6 +53,7 @@ def _trace() -> Trace:
 # traceparse
 
 
+# --------------------------------------------------------------- traceparse
 def test_loads_object_form_trace() -> None:
     tr = _trace()
     assert len(tr.events) > 1000
@@ -119,6 +120,7 @@ def test_unmatched_begin_invents_no_duration() -> None:
 # cpuprofile
 
 
+# --------------------------------------------------------------- cpuprofile
 def test_profile_parses_and_deltas_match_wall_clock() -> None:
     prof = C.main_thread_profile(_trace())
     report = prof.assert_deltas_match_wall()
@@ -196,6 +198,7 @@ def test_underpowered_windows_are_declared_not_hidden() -> None:
 # classify
 
 
+# ------------------------------------------------------------------ classify
 def test_every_task_gets_an_origin() -> None:
     cls = K.classify_thread(_trace())
     assert cls.total_us > 0
@@ -262,6 +265,7 @@ def test_task_duration_cross_check_fails_on_disagreement() -> None:
 # fit
 
 
+# ---------------------------------------------------------------------- fit
 def _pts(session: str, pairs) -> list[F.Point]:
     return [F.Point(length = x, value = y, session = session, rung = str(x)) for x, y in pairs]
 
@@ -317,6 +321,7 @@ def test_ranking_reports_what_it_could_not_fit() -> None:
 # oracles
 
 
+# ------------------------------------------------------------------ oracles
 def test_exact_match_is_a_naming() -> None:
     q = O.blocks_times_renders(685, 6, source = "DOM census")
     v = O.check("cloneChildFibers", 4110, [q])
@@ -362,6 +367,7 @@ def test_check_all_reports_every_bucket() -> None:
 # symbols
 
 
+# ------------------------------------------------------------------ symbols
 class _Fn:
     def __init__(self, url, name, start, end, count):
         self.url, self.function_name = url, name
@@ -572,6 +578,7 @@ def test_bridge_round_trips_through_disk(tmpdir: str = "") -> None:
 # the no-bare-zero convention
 
 
+# ------------------------------------------------ the no-bare-zero convention
 def test_zero_is_distinguishable_from_did_not_run() -> None:
     ran = measured("task_ms", 0.0)
     didnt = unmeasured("task_ms", "tracing never started")
@@ -612,6 +619,7 @@ def test_merge_refuses_conflicting_keys() -> None:
 # M2/M3 oracles
 
 
+# ------------------------------------------------------------- M2/M3 oracles
 def test_cumulative_reparse_reads_as_quadratic() -> None:
     out = O.reparse_regime(4_020_000, 40_000, 200)
     assert out["regime"] == O.REGIME_QUADRATIC

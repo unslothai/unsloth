@@ -656,6 +656,7 @@ def compare(base: Optional[dict], treat: Optional[dict]) -> dict:
     # has both arms generating and the bias cancels. WITHHELD RATHER THAN IGNORED: if a message or
     # overlay also moved this never runs. AND THE RUN STATE HAS TO SAY SO INDEPENDENTLY, or the
     # suppression argues in a circle.
+    # ── THE COMPOSER IS NOT A RENDERING DIFFERENCE ──────────────────────────────────────────────
     if (
         generation_disagrees(base, treat)
         and _run_state_disagrees(base, treat)
@@ -1001,6 +1002,7 @@ def summarise(results: Iterable[dict[str, Any]]) -> dict[str, int]:
 #: digests the thread root plus overlay selectors, never the sidebar, geometry or custom
 #: properties. Printing the stronger claim is how a sidebar-drag campaign came to be scored 0 of
 #: 34 differing pairs under a banner saying the DOM was identical.
+# ── visible-region parity ───────────────────────────────────────────
 CLAIM_STRUCTURAL = (
     "thread-structure parity: the thread root and the declared overlay selectors serialise "
     "identically on both arms, on screen and off. It does NOT cover the sidebar, computed layout "

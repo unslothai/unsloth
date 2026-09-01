@@ -93,6 +93,7 @@ def _keystroke(cell_id, p95):
     }
 
 
+# ── the decision ─────────────────────────────────────────────────────────────────────────────
 def test_a_pair_interrupted_between_its_two_arms_is_re_run_whole():
     work = _work()
     done = {"r10K.base.rep0"}  # the run died after the base arm and before the treatment arm
@@ -152,6 +153,7 @@ def test_a_run_without_ab_skips_exactly_what_it_recorded():
     assert skippable_cells(work, done) == done
 
 
+# ── the consequence, through the table a resumed run actually writes ─────────────────────────
 def _resumed_table(tmp_path, *, pair_granular: bool) -> str:
     """Drive a resumed A/B end to end: what the payload holds, what the resume decides to run,
     what it records in the new session, and what `_render_ab` then writes to `ab.md`."""

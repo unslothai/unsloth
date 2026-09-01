@@ -133,6 +133,7 @@ class CpuProfile:
 
     # stacks
 
+    # ------------------------------------------------------------------ stacks
     def stack(self, node_id: int) -> list[CallFrame]:
         """Leaf-first ancestry of a sample node.
 
@@ -170,6 +171,7 @@ class CpuProfile:
 
     # aggregation
 
+    # ------------------------------------------------------------- aggregation
     def self_time_us(
         self,
         t0: int | None = None,
@@ -204,6 +206,7 @@ class CpuProfile:
 
     # gates
 
+    # ------------------------------------------------------------------- gates
     def assert_deltas_match_wall(self, tolerance: float = DELTA_WALL_TOLERANCE) -> dict[str, Any]:
         """Sum of deltas must equal the profiled wall span within `tolerance`.
 

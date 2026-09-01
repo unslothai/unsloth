@@ -101,6 +101,7 @@ def test_the_click_is_filed_as_setup_and_not_as_an_action():
 # the probe's own output has to survive the payload schema
 
 
+# ── the probe's own output has to survive the payload schema ─────────────────────────────────
 class _ProbePage(_Page):
     """Every in-page reading comes back 0, which is the case that matters: an unseeded rung has no
     code blocks, and `performance.now()` is coarsened to 100 us in a page that is not

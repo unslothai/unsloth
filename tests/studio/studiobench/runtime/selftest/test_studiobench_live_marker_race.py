@@ -199,6 +199,7 @@ def test_a_crashed_run_does_not_lock_the_directory_forever(tmp_path):
 # purpose: they stand in the window rather than racing for it.
 
 
+# ── a retained record is not a holder ────────────────────────────────
 def _stalled_holder(
     marker: Path,
     write_after_s: float,

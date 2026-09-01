@@ -139,6 +139,7 @@ def _finished_ab(
     return paths
 
 
+# ── a resume must be a resume OF THIS RUN ───────────────────────────────────────────────────
 def test_resuming_after_changing_the_treatment_ref_is_refused(tmp_path):
     paths = _finished_ab(tmp_path)
     args = parse_args(["--tier", "standard", "--branch", "main", "--ab", "other", "--resume"])
@@ -237,6 +238,7 @@ def test_the_refusal_happens_before_anything_is_installed_or_recorded(tmp_path):
     assert sorted(p.name for p in paths.out.glob("payload*.jsonl")) == ["payload.jsonl"]
 
 
+# ── the controls: a legitimate resume still resumes ──────────────────────────────────────────
 def test_the_same_configuration_still_resumes(tmp_path):
     paths = _finished_ab(tmp_path)
     args = parse_args(["--tier", "standard", "--branch", "main", "--ab", "fix", "--resume"])
@@ -456,6 +458,7 @@ def test_a_session_that_died_before_its_first_cell_declares_no_mode(tmp_path):
 # different film and the payload silently becomes one ladder built from two.
 
 
+# ── the two fixture axes ────────────────────────────────────────────────────────────────────
 def _fixture_payload(tmp_path, name, session, **fixture):
     paths = Paths.under(tmp_path / name)
     _record(
@@ -564,6 +567,7 @@ def test_a_payload_that_already_holds_two_fixtures_is_refused_either_way(tmp_pat
         assert "stream_tail_chars" in str(excinfo.value)
 
 
+# ── the controls: neither axis may swallow a resume that is legitimate ───────────────────────
 def test_an_unchanged_fixture_resumes_and_returns_its_completed_cells(tmp_path):
     paths = _fixture_payload(
         tmp_path, "same", "sess-1", stream_tail_chars = 24_000, corpus_dollars = True
@@ -579,6 +583,7 @@ def test_an_unchanged_fixture_resumes_and_returns_its_completed_cells(tmp_path):
     assert _resume_set(paths) == {"r10K.A0.rep0"}
 
 
+# ── the browser engine that rendered every number ────────────────────────
 def test_resuming_under_a_different_browser_engine_is_refused(tmp_path):
     """The engine RENDERED every number in the payload, and the cell id does not name it.
 
@@ -708,6 +713,7 @@ def test_a_payload_from_before_the_fixture_axes_is_refused_under_a_non_default_f
 # and a `click_attribution` block a cell without the flag lacks. None of that moves the cell id.
 
 
+# ── the measurement-mode axis ───────────────────────────────────────────────────────────────
 def test_resuming_after_toggling_the_click_probe_is_refused(tmp_path):
     """REGRESSION. Both directions, because either one produces the same mixed ladder.
 
@@ -853,6 +859,7 @@ def test_a_dead_cell_is_still_re_run_and_a_missing_payload_is_still_empty(tmp_pa
     assert _resume_set(Paths.under(tmp_path / "nothing-here")) == set()
 
 
+# ── the engine controls ───────────────────────────────────────────────────
 def test_a_payload_that_never_recorded_an_engine_still_resumes(tmp_path):
     """The legacy control for this axis, and the one for a session that never got a browser up.
 
@@ -921,6 +928,7 @@ def test_the_report_a_mode_change_would_have_produced(tmp_path):
     assert "died at 10K" in (changed_mode.rungs[0].incomplete_reason or "")
 
 
+# ── a fresh run does not append to the run before it ─────────────────────────────────────────
 def test_a_fresh_run_moves_the_previous_payload_aside(tmp_path):
     paths = _finished_ab(tmp_path)
     before = paths.payload_jsonl.read_text(encoding = "utf-8")
@@ -991,6 +999,7 @@ def test_the_readme_sequence_no_longer_scores_two_runs_as_one_ladder(tmp_path):
 # could tell.
 
 
+# ── the injection axis ──────────────────────────────────────────────────────────────────────
 def _injected_payload(tmp_path, name, session, **fixture):
     paths = Paths.under(tmp_path / name)
     _record(
@@ -1115,6 +1124,7 @@ def test_an_unchanged_injection_resumes(tmp_path):
 # line every time, while a variable that is still set is indistinguishable from one that was
 # never set until the run is over.
 
+# ── the external probe axis ─────────────────────────────────────────────────────────────────
 PROBE = "probes/paint_counter.js"
 
 

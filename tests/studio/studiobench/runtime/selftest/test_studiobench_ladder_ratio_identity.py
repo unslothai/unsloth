@@ -210,6 +210,7 @@ def test_an_unmeasurable_ratio_is_not_a_refusal(tmp_path, measured):
 # A REFUSAL LEAVES THE PAYLOAD IT REFUSED EXACTLY AS IT FOUND IT
 
 
+# ── A REFUSAL LEAVES THE PAYLOAD IT REFUSED EXACTLY AS IT FOUND IT ──────────────
 def test_a_refused_resume_rolls_back_every_row_it_wrote(tmp_path):
     """The refusal arrives after the `Recorder` has opened the file, so it has to undo itself.
 

@@ -58,6 +58,8 @@ ZERO_OK_KEYS = frozenset(
         # the `wire` subtree. 'No frame failed to parse' and 'no unterminated frame was left buffered'
         # are what make the character count trustworthy. `wireChars` is NOT listed: a zero there means
         # nothing was counted and must stay loud.
+        # ── the visible-region capture, whose zeros are all true statements ──
+        # ── the SSE wire's integrity counters, whose zeros are the good outcome ──
         "wire_parse_failures",
         "wire_pending_chars",
         "wire_parse_failures_in_window",
@@ -222,6 +224,7 @@ class Measure:
             and abs(float(self.value)) < float(self.floor)
         )
 
+    # -- rendering ----------------------------------------------------------------------
     def display(self) -> str:
         if not self.attempted:
             return f"not attempted ({self.note})"
@@ -362,6 +365,7 @@ def check_exclusion_reasons(cells: Iterable[ExcludedCell]) -> None:
 # payload validation
 
 
+# ---------------------------------------------------------------------------------------
 def _is_measure(node: Any) -> bool:
     return isinstance(node, Mapping) and node.get("kind") == MEASURE_KIND
 

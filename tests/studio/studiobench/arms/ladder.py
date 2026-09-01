@@ -497,6 +497,7 @@ def interaction_terms(
 
 # the two declared routes
 
+# ---------------------------------------------------------------------------------------
 _SHIPPING: frozenset[str] = frozenset()
 
 #: Route 1 walks down the rendering pipeline first: stop painting, then stop laying out off-screen,

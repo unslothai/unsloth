@@ -316,6 +316,7 @@ def test_the_state_reached_mark_shares_the_timing_origin():
 # The grid arm is `UnmeasuredCollapsibleContent`.
 
 
+# ── the close direction ─────────────────────────────────────────────────────────────────────────
 def test_a_collapse_is_not_settled_while_its_panes_are_still_mounted():
     """THE REGRESSION. `close_ms` must not name the state flip plus four frames.
 

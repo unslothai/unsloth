@@ -146,6 +146,7 @@ class SelfCheckReport:
 # pure evaluators
 
 
+# ---------------------------------------------------------------------------------------
 def evaluate_stall_gate(
     observed_ms: float | None,
     *,
@@ -448,6 +449,7 @@ def evaluate_tri_clock(
 
 #: Burns a known amount of main-thread time once, on the next frame. A busy wait, not a sleep: a
 #: sleep is recovered through a different scheduler path than a blocked main thread.
+# ---------------------------------------------------------------------------------------
 STALL_INJECT_JS = """
 (stallMs) => {
   return new Promise((resolve) => {

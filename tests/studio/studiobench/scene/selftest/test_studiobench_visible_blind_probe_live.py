@@ -259,6 +259,7 @@ def test_a_lost_conversation_is_still_a_finding_while_a_reply_runs(browser):
 # code, so the run went green on them.
 
 
+# ── what the refusal may NOT take out with it ────────────────────────
 def test_a_changed_user_row_survives_the_blind_refusal(browser):
     base = _capture(browser, **_SETTLED)
     treat = _capture(browser, **dict(_BLIND, user_body = "the user message, rewritten"))
@@ -311,6 +312,7 @@ def test_the_same_row_with_the_same_role_is_still_residue(browser):
     assert got["not_digested"] == [4], got
 
 
+# ── a row that is not there is not an instrument that stopped working ─
 def test_a_windowed_arm_that_unmounted_the_live_row_is_not_read_as_blind(browser):
     """THE FALSE POSITIVE THE CONTROL USED TO HAVE, and the one this mode exists for.
 

@@ -263,6 +263,7 @@ def test_both_admission_lists_agree_on_every_shape(tmp_path) -> None:
 # consumer test would still pass.
 
 
+# ---------------------------------------------------------------------------------------
 def _sampled(
     pinned,
     coverage,

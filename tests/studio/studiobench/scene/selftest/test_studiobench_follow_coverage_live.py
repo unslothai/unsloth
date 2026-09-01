@@ -241,6 +241,7 @@ def test_the_coverage_travels_with_the_verdict(page):
 # back at the bottom by accident: a verdict about the thread's height, not the app.
 
 
+# ── the run the user started is a fresh intent to be at the end ─────
 def _end_run(page) -> None:
     """The reply finishes: the stop control goes, so `isRunning()` is false."""
     page.evaluate(

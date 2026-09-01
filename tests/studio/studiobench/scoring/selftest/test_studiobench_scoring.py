@@ -48,6 +48,7 @@ from studiobench.scoring.anchors import ONSET_SCORE_THRESHOLD  # noqa: E402
 # Measure: the ban on bare zeros
 
 
+# ---------------------------------------------------------------------------------------
 def test_not_attempted_cannot_carry_a_value():
     with pytest.raises(PayloadSchemaError):
         Measure(value = 1.0, attempted = False, unit = "ms", note = "nope")
@@ -215,6 +216,7 @@ def test_validate_payload_requires_excluded_cells():
 # frames: both directions of jank
 
 
+# ---------------------------------------------------------------------------------------
 def test_uniform_mediocrity_is_caught_by_time_in_jank_and_missed_by_max():
     """Every frame 120 ms. `max` says 120, which sounds survivable. It is not."""
 
@@ -259,6 +261,7 @@ def test_histogram_is_always_present_and_totals_the_frames():
 # per-metric and per-rung scoring
 
 
+# ---------------------------------------------------------------------------------------
 def test_log_anchors_put_the_geometric_midpoint_at_fifty():
     anchor = METRIC_BY_KEY["keystroke_p95_ms"]
     midpoint = math.sqrt(anchor.good * anchor.bad)
@@ -329,6 +332,7 @@ def test_missing_most_metrics_makes_the_rung_incomplete_rather_than_easy():
 # aggregation, and the three ways naive AUC lies
 
 
+# ---------------------------------------------------------------------------------------
 def test_log_rung_weights_do_not_let_the_top_rung_be_the_whole_score():
     weights = log_rung_weights([1_000, 10_000, 100_000, 500_000, 1_000_000])
     assert sum(weights) == pytest.approx(1.0)
@@ -404,6 +408,7 @@ def test_non_monotone_usability_is_flagged_rather_than_maximised():
 # A/B
 
 
+# ---------------------------------------------------------------------------------------
 def _identity(session: str = "s1", **overrides) -> RunIdentity:
     fields = {
         "bench_version": "studiobench/1",
@@ -535,6 +540,7 @@ def test_bootstrap_ci_brackets_the_geometric_mean():
 # and never consulted.
 
 
+# ---------------------------------------------------------------------------------------
 def _split_pairs(metric: str, ratios: list[float]) -> list[Pair]:
     """One metric, one ratio per rung, so the pairs can be made to disagree on the sign."""
     out = []
@@ -631,6 +637,7 @@ def test_the_table_does_not_print_a_direction_it_could_not_resolve():
 # admitting a reading that was never taken, the distinction `frames.py` protects when it refuses
 # to score an unscheduled rAF loop as zero jank.
 
+# ---------------------------------------------------------------------------------------
 JANK_FLOOR = 0.1
 SMOOTH = Measure.read(0.0, "%", floor = JANK_FLOOR)
 JANKY = Measure.read(5.0, "%", floor = JANK_FLOOR)

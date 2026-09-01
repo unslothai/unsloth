@@ -150,6 +150,7 @@ def _rows(state):
     return [json.loads(line) for line in path.read_text(encoding = "utf-8").splitlines() if line]
 
 
+# ── what a run records ───────────────────────────────────────────────────────────────────────
 def test_a_run_records_the_commit_its_ref_resolved_to(studio):
     assert sb.run(_args(studio, "--branch", "main")) == 0
 
@@ -167,6 +168,7 @@ def test_an_attached_studio_records_no_commit(studio):
     assert meta["studio_commit"] == ""
 
 
+# ── the refusal ──────────────────────────────────────────────────────────────────────────────
 def test_a_resume_after_the_branch_moved_is_refused(studio):
     assert sb.run(_args(studio, "--branch", "main")) == 0
 
@@ -206,6 +208,7 @@ def test_a_resume_after_the_treatment_moved_is_refused(studio):
     assert "c-fix-1" in message and "c-fix-2" in message
 
 
+# ── the controls ─────────────────────────────────────────────────────────────────────────────
 def test_the_same_commit_still_resumes(studio):
     """The control that matters: a resume of the build the payload was recorded on is the whole
     point of `--resume` and must still skip its cells and exit 0."""

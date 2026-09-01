@@ -360,6 +360,7 @@ def build_bridge(
     )
 
     # anchor validation, on our own app code, both sides named
+    # ---- anchor validation, on our own app code, both sides named ----------
     dev_all = vectors_from_snapshots(dev_snapshots, "dev", url_filter = anchor_url_filter)
     prod_all = vectors_from_snapshots(prod_snapshots, "prod", url_filter = anchor_url_filter)
     dev_by_name: dict[str, list[FunctionVector]] = {}
@@ -406,6 +407,7 @@ def build_bridge(
     # an anchor genuinely does map to itself, and the bridge reports `ok` with a mapping of `Zk` to
     # `Zk`. The anchor check cannot catch it: anchors test invariance and same-build is perfectly
     # invariant.
+    # ---- the two arms must actually be two different builds -----------------
     dev_all_keys = {v.key for v in dev_all if v.informative}
     prod_all_keys = {v.key for v in prod_all if v.informative}
     if dev_all_keys and dev_all_keys == prod_all_keys:
@@ -419,6 +421,7 @@ def build_bridge(
         return bridge
 
     # the actual matching, restricted to react-dom
+    # ---- the actual matching, restricted to react-dom ----------------------
     dev_react = vectors_from_snapshots(dev_snapshots, "dev", url_filter = react_url_filter)
     prod_react = vectors_from_snapshots(prod_snapshots, "prod", url_filter = react_url_filter)
     dev_index, dev_ambiguous = _index_unique(dev_react)

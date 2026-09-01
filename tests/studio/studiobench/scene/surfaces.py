@@ -109,6 +109,7 @@ class Surface:
 
 #: Back to the known state the hard way. The restore for anything that navigated, and the
 #: recovery path when a surface's own restore left the app dirty.
+# ── shared fragments ────────────────────────────────────────────────
 HOME: tuple[Step, ...] = (("goto", KNOWN_STATE_PATH), ("wait", 400))
 
 #: Escape twice, not once: a settings tab that opened a sub-view (Data -> Archived chats, Voice
@@ -208,6 +209,7 @@ def _settings_tab(tab_id: str, title: str) -> Surface:
     )
 
 
+# ── the registry ────────────────────────────────────────────────────
 _SURFACES: list[Surface] = [
     _route(
         "route:chat",
@@ -271,6 +273,7 @@ _SURFACES: list[Surface] = [
         "/studiobench-no-such-route",
         {"js": 'location.pathname === "/studiobench-no-such-route"'},
     ),
+    # ── the settings dialog ─────────────────────────────────────────
     _settings_tab("general", "Settings: General"),
     _settings_tab("profile", "Settings: Profile"),
     _settings_tab("appearance", "Settings: Appearance"),
@@ -826,6 +829,7 @@ KNOWN_UNCOVERED: tuple[dict, ...] = (
 )
 
 
+# ── accessors ───────────────────────────────────────────────────────
 def surfaces() -> list[Surface]:
     return list(_SURFACES)
 

@@ -31,6 +31,7 @@ from studiobench.scene import surface_sweep, surfaces  # noqa: E402
 from studiobench.scoring.schema import validate_payload  # noqa: E402
 
 
+# ── the registry is well formed ─────────────────────────────────────
 def test_the_shipped_registry_validates():
     surfaces.validate_registry()
 
@@ -165,6 +166,7 @@ def test_the_registry_covers_every_routed_path():
     assert routed - reached == set()
 
 
+# ── validate_registry rejects what it must ──────────────────────────
 def _one(**overrides):
     base = dict(
         id = "x:one",
@@ -199,6 +201,7 @@ def test_validate_rejects_a_surface_with_no_digest_root():
         surfaces.validate_registry([_one(root = ())])
 
 
+# ── the row type is registered, not smuggled ────────────────────────
 def test_the_surface_row_type_is_registered():
     assert "surface" in ROW_TYPES
     assert ROW_TYPE_SECTIONS["surface"] == "surfaces"
@@ -262,6 +265,7 @@ def test_a_payload_carrying_surface_rows_has_no_bare_zeros():
     validate_payload({"excluded_cells": [], "surfaces": rows})
 
 
+# ── the manifest ────────────────────────────────────────────────────
 def _rows_for(entries, reached_ids):
     out = []
     for surface in entries:
@@ -395,6 +399,7 @@ def test_an_unscoped_sweep_says_so_in_the_rendered_manifest():
     assert "ignored the moved root" in text
 
 
+# ── the sweep's own bookkeeping ─────────────────────────────────────
 class _FakePage:
     """A scripted stand-in for a Playwright page.
 
@@ -547,6 +552,7 @@ def test_the_sweep_returns_to_the_known_state_before_every_surface():
     assert surfaces.KNOWN_STATE_PATH == "/chat"
 
 
+# ── the digest is the film's digest, not a second one ───────────────
 def test_the_sweep_takes_its_digest_through_parity_capture():
     # If surfaces.js grew its own DOM walk, surface digests and action digests would stop being
     # comparable and nothing downstream would notice, because both would still be hex strings of

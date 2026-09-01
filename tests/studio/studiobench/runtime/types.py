@@ -121,6 +121,7 @@ def make_cell_id(rung: str, arm: str, rep: int) -> str:
 #: `setup` is pre-film harness work (the composer click is the costly one) and is NOT `action`:
 #: dominated by the driver rather than the app, so scoring keeps it out of the frame pool. See
 #: `scoring/from_payload.UNSCORED_WINDOW_KINDS`.
+# ── the window ──────────────────────────────────────────────────────
 WINDOW_KINDS = frozenset({"action", "stream", "gap", "idle", "setup", "settle", "teardown"})
 
 
@@ -246,6 +247,7 @@ class ActionContext:
     log: Callable[[str], None]
 
 
+# ── instruments ─────────────────────────────────────────────────────
 class Instrument:
     """Base class. Subclassing is optional; duck typing on `name`/`level` is enough."""
 
@@ -305,6 +307,7 @@ class BenchContext:
     browser_procs: list = field(default_factory = list)
 
 
+# ── the output directory lock ───────────────────────────────────────
 class OutDirLock:
     """One output directory, held by one run, FROM BEFORE THE FIRST THING THAT MOVES OR STARTS.
 
@@ -574,6 +577,7 @@ class OutDirLock:
             other.unlink(missing_ok = True)
 
 
+# ── the recorder ────────────────────────────────────────────────────
 class Recorder:
     """Append-only JSONL. Every line is flushed and fsynced, so a renderer crash at rung 4 still
     ships rungs 1 to 3 plus the crash record."""

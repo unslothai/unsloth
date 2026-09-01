@@ -52,6 +52,7 @@ class CellFailure(RuntimeError):
 # layers emit goes through one of the two helpers below, so the distinction is structural.
 
 
+# ── the no-bare-zero convention (INTERFACES.md, "Rules that apply to every dict") ──
 def measured(key: str, value: Any) -> dict:
     """A value that WAS measured, even if it came out zero."""
     return {key: value, f"{key}_attempted": True}

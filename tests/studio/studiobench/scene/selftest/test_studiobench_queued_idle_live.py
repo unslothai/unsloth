@@ -214,6 +214,7 @@ def _reading(cap: dict) -> dict:
     return {k: cap.get(k) for k in ("streaming", "in_flight", "in_flight_unplaced", "queued_idle")}
 
 
+# ── the two states the instrument has to tell apart ──────────────────
 def test_a_waiting_queue_is_not_read_as_a_blind_probe(page):
     """THE REGRESSION. Same button, same empty in-flight list, opposite meanings."""
     idle = _capture(page, QUEUED_IDLE)
@@ -270,6 +271,7 @@ def test_what_reading_the_queue_surface_gives_up(page):
     assert cap["queued_idle"] is True, cap
 
 
+# ── the fixtures are the app's markup, not the test's ────────────────
 def test_the_shipped_composer_still_renders_the_two_queue_buttons():
     """The fixtures above are hand-written, so they can drift into asserting themselves.
 
@@ -295,6 +297,7 @@ def test_the_shipped_composer_still_renders_the_two_queue_buttons():
 #: An overlay is walked from `document`, OUTSIDE `.aui-thread-root`, so its digest carries neither
 #: the streamed message nor the composer, which makes it readable on a pair whose stream could not
 #: be placed.
+# ── what the blind-probe refusal may NOT take out with it ────────────
 _MENU = '<div role="menu"><div class="item">Rename</div></div>'
 _MENU_CHANGED = '<div role="menu"><div class="item">Rename thread</div></div>'
 #:The composer of a thread that is NOT generating. `_STOP_BUTTON` is the same composer generating.
@@ -393,6 +396,7 @@ def test_the_scaffold_is_not_an_independent_surface_and_here_is_why(page):
 # not, because the dock is inside `.aui-thread-root` and the scaffold therefore carries Stop on
 # one arm and Send on the other.
 
+# ── the composer is not a rendering difference ───────────────────────
 _SETTLED_STATUSES = ["complete", "complete", "complete", "complete"]
 _STREAMING_STATUSES = ["complete", "complete", "complete", "running"]
 
@@ -611,6 +615,7 @@ def test_the_queued_idle_arm_against_a_settled_one_is_still_refused(page):
 # refusals exist to withhold arrived at the advisory line instead.
 
 
+# ── the style probe walks the run-state control too ──────────────────
 def _capture_html_raw(page, html: str) -> dict:
     """`_capture_html`, keeping `styles.sig` so a test can say WHY the digest moved."""
     page.set_content(html)

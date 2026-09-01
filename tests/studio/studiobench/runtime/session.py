@@ -237,6 +237,7 @@ class Session:
     _open: Optional[Window] = None
     cell: Optional[Cell] = None
 
+    # ── windows ─────────────────────────────────────────────────────
     @contextlib.contextmanager
     def window(
         self,
@@ -426,6 +427,7 @@ class CellRunner:
                 )
         return row
 
+    # ── the cell ────────────────────────────────────────────────────
     def _run_inner(self, cell: Cell, plan: RungPlan, row: dict) -> None:
         s = self.session
         page = s.ctx.page
@@ -474,6 +476,7 @@ class CellRunner:
             # still settling from the traversal.
             self._wait_for_thread(page, seeded)
 
+        # ── the enforced idle window ────────────────────────────────
         frames = next((i for i in s.instruments if i.name == "frames"), None)
         with s.window("idle:calibrate", kind = "idle") as w:
             clamp = (
@@ -755,6 +758,7 @@ class CellRunner:
 
         row["fidelity"] = "streamed_and_seeded" if plan.seeded_units else "streamed_only"
 
+        # ── the seeded-vs-streamed equivalence check ────────────────
         if cell.rung == EQUIVALENCE_RUNG and plan.streamed_unit is not None:
             eq = self._check_equivalence(plan, row)
             row["equivalence"] = eq

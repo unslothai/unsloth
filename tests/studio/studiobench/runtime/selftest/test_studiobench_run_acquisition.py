@@ -166,6 +166,7 @@ def _rows(state):
     return [json.loads(line) for line in path.read_text(encoding = "utf-8").splitlines() if line]
 
 
+# ── the sides a failed setup leaves behind ──────────────────────────────────────────────────
 def test_the_base_studio_is_stopped_when_the_treatment_install_fails(studio):
     """The reported leak: the base is up and serving while the treatment's clone and build run."""
 
@@ -241,6 +242,7 @@ def test_a_run_that_reaches_its_cells_stops_the_studios_once_at_the_end(studio):
     assert [i.branch for i in studio["stopped"]] == ["main", "pr-9296"]
 
 
+# ── which server the treatment was ──────────────────────────────────────────────────────────
 def test_an_attached_ab_records_the_treatment_url_it_measured(studio):
     args = _args(
         studio,
@@ -348,6 +350,7 @@ def test_the_same_treatment_studio_still_resumes(studio):
     )
 
 
+# ── whether the probe ran before the film ───────────────────────────────────────────────────
 def test_a_run_records_whether_the_click_probe_ran(studio):
     """REGRESSION, and the recording half of the identity axis.
 
@@ -431,6 +434,7 @@ def test_a_plain_run_and_a_plain_resume_are_unaffected(studio):
 # permanently. So `run_meta` has to carry the probe and `--resume` has to compare it.
 
 
+# ── the external probe on the record ────────────────────────────────────────────────────────
 class _ProbedBundle(_Bundle):
     """A probe run attaches console and `pageerror` listeners, which a `None` page cannot take."""
 

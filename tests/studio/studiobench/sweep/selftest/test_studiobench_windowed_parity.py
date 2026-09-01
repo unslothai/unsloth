@@ -57,6 +57,7 @@ def _row(action: str, capture: dict, **expect) -> dict:
     }
 
 
+# ── the digest must refuse, not fail ────────────────────────────────
 def test_a_windowed_capture_is_detected_from_its_own_numbers():
     assert P.windowed_mount(_capture(6, 18)) is True
     assert P.windowed_mount(_capture(18, 18)) is False
@@ -116,6 +117,7 @@ def test_a_refused_pair_is_not_evidence_of_stability_either():
     assert derived["select_text"]["not_comparable"] == 4
 
 
+# ── the behavioural scoring that replaces it ────────────────────────
 def test_the_scroll_extent_invariant_passes_a_virtualizer_that_sizes_its_spacers():
     base = _row("select_text", _capture(18, 18), selected_chars = 100, visible_chars = 100)
     treat = _row("select_text", _capture(6, 18), selected_chars = 100, visible_chars = 100)
@@ -245,6 +247,7 @@ def test_a_reopen_measured_through_a_page_navigation_is_broken():
     assert "reopen_used_the_control:treatment" in got["reason"]
 
 
+# ── a rebuild that never finished is not a held invariant ───────────
 def _reopen_row(
     mounted,
     *,
@@ -427,6 +430,7 @@ def test_every_named_first_to_break_action_has_an_invariant():
 # declined to look.
 
 
+# ── the four false greens the first review round found ──────────────
 def test_two_full_mounts_of_different_lengths_is_a_difference_not_an_excuse():
     """THE MOST SERIOUS ONE. Neither arm is windowing, so neither is holding anything back on
     purpose, and the treatment renders fewer messages than the base -- a user-visible loss of
@@ -574,6 +578,7 @@ def test_the_observation_cost_is_not_charged_to_the_action_budget():
     )
 
 
+# ── a scan of nothing is not agreement ──────────────────────────────
 def _styled(elements: int, digest: str = "s") -> dict:
     cap = _capture(mounted = 18, total = 18)
     cap["styles"] = {"elements": elements, "digest": digest, "capped": False}
@@ -619,6 +624,7 @@ def test_the_passing_digest_verdict_states_what_it_did_not_look_at():
     assert "sidebar-blind" in src and "layout-blind" in src
 
 
+# ── the clipboard is scored against the thread, in both directions ──
 def test_a_truncated_clipboard_still_fails():
     """The defect the invariant was written for. The windowed arm copies only what it mounted, so
     the clipboard is the visible fraction of the conversation and the rest is gone."""
@@ -674,6 +680,7 @@ def test_without_a_fully_mounted_arm_there_is_no_reference_and_no_verdict():
     assert got["verdict"] == P.NOT_COMPARABLE, got
 
 
+# ── visible-region parity needs a measured floor like everything else ──
 def _visible_shard(
     tmp_path,
     name,
@@ -869,6 +876,7 @@ def test_the_noise_floor_cannot_silence_an_arm_that_lost_the_thread(tmp_path, ca
     assert "one arm lost the thread" in capsys.readouterr().out
 
 
+# ── the residue of a windowed capture is printed, not swallowed ─────
 def _write(tmp_path, name, rows):
     import json
 
@@ -997,6 +1005,7 @@ def test_a_run_where_nothing_could_be_digested_carries_no_visible_verdict(tmp_pa
     assert "NOTHING WAS COMPARED" in out, out
 
 
+# ── an unmeasured windowed run cannot come out green ────────────────
 def _failed_parity(why = "the parity probe timed out"):
     return {"parity_attempted": False, "reason": why}
 
@@ -1095,6 +1104,7 @@ def test_a_payload_whose_captures_all_failed_is_not_a_structural_pass(tmp_path, 
     assert "No stable action rendered a different THREAD STRUCTURE" not in out, out
 
 
+# ── the mode is decided per action pair, not per payload ────────────
 def _copy_expect(*, clipboard, selected, mounted):
     """The `select_all_copy` observations its behavioural invariant is scored on."""
     return {
@@ -1230,6 +1240,7 @@ def test_an_arm_declared_windowed_is_still_digested_where_it_mounted_everything(
     assert U.any_windowed([shard]) is None
 
 
+# ── the declared arm that never produced a row at all ───────────────
 def _one_sided_shard(
     tmp_path,
     name,
@@ -1380,6 +1391,7 @@ def test_a_capture_that_saw_no_thread_at_all_falls_back_on_the_declaration(tmp_p
 # recorded the loss.
 
 
+# ── a cell that failed its own completeness gate carries no UI verdict ──
 def _completeness_gate(
     cell_id,
     passed,
@@ -1541,6 +1553,7 @@ def test_only_the_cell_that_failed_is_refused(tmp_path, capsys):
     assert "NOT COMPARABLE:             1" in out, out
 
 
+# ── one glob pools separate runs, and a declaration belongs to the run that made it ──
 def _legacy_capture(digest):
     """A capture from a checkout that predates `mounted_messages` / `thread_total`.
 
@@ -1648,6 +1661,7 @@ def test_the_declaration_still_decides_the_run_that_made_it(tmp_path):
     assert modes[("unrelated", "settings")] == U.STRUCTURAL, modes
 
 
+# ── a visible floor measured on another film tier is not this payload's floor ──
 def _tiered_visible_shard(
     tmp_path,
     name,
@@ -1782,6 +1796,7 @@ def test_a_visible_floor_from_the_SAME_corpus_still_applies(tmp_path, capsys):
     assert code == 0, out
 
 
+# ── a resumed cell is judged on the attempt that survived, gates included ──
 def _resumed_completeness_shard(tmp_path, name, *, retry_passes):
     """A payload where attempt 1 of a cell FAILED `thread_complete` and `--resume` re-ran it.
 
@@ -1855,6 +1870,7 @@ def test_a_resume_that_failed_again_is_still_refused(tmp_path):
     assert "still short" in bad["r100K.base.rep0"], bad
 
 
+# ── the coverage floor applies to every mode, not only the structural one ─────
 def _windowed_only_shard(
     tmp_path,
     name,
@@ -2086,6 +2102,7 @@ def test_a_floor_each_film_clears_on_its_own_still_passes(tmp_path, capsys):
     assert code == 0, out
 
 
+# ── a build difference the capture comparison cannot see ─────
 def test_an_assertion_that_failed_on_one_arm_fails_the_windowed_verdict(tmp_path, capsys):
     """`stop_generation` returns `ran = True, expect_ok = stopped_ms is not None`, so a head on
     which Stop no longer ends the stream records a perfectly ordinary row with two viewports that
