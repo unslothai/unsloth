@@ -169,23 +169,32 @@ def test_a_complete_recovery_beats_a_longer_truncated_first_draft(research_home,
     assert "Incomplete report." not in finished["report"]
 
 
-def test_a_longer_truncated_draft_still_wins_when_neither_finished(research_home, monkeypatch):
+def test_the_notice_survives_a_fence_the_truncation_left_open(research_home, monkeypatch):
+    """Running out of budget mid-code-block leaves an unterminated fence, and in CommonMark
+    that fence runs to the end of the document -- so an appended notice renders as code."""
+    cut_off_in_a_fence = "## Findings\n\n```python\nctx = 32768,\nrope_scaling ="
+
     finished = _run_synthesis(
         monkeypatch,
-        synthesis = (FIRST_DRAFT, "", "length", {"completion_tokens": 16384}),
-        recovery = (SHORTER_DRAFT, "", "length", {"completion_tokens": 16384}),
-    )
-
-    assert FIRST_DRAFT in finished["report"]
-    assert "Incomplete report." in finished["report"]
-
-
-def test_an_empty_recovery_never_counts_as_the_finished_one(research_home, monkeypatch):
-    """Empty plus `stop` is not a complete report; the truncated draft must survive it."""
-    finished = _run_synthesis(
-        monkeypatch,
-        synthesis = (FIRST_DRAFT, "", "length", {"completion_tokens": 16384}),
+        synthesis = (cut_off_in_a_fence, "", "length", {"completion_tokens": 16384}),
         recovery = ("", "", "stop", None),
     )
 
-    assert FIRST_DRAFT in finished["report"]
+    report = finished["report"]
+    assert "Incomplete report." in report
+    assert report.count("```") % 2 == 0
+    _, _, after_the_last_fence = report.rpartition("```")
+    assert "> **Incomplete report.**" in after_the_last_fence
+
+
+def test_a_report_that_closed_its_own_fence_gains_no_stray_one(research_home, monkeypatch):
+    whole_fence = "## Findings\n\n```python\nctx = 32768\n```\n\nAnd it was cut off here"
+
+    finished = _run_synthesis(
+        monkeypatch,
+        synthesis = (whole_fence, "", "length", {"completion_tokens": 16384}),
+        recovery = ("", "", "stop", None),
+    )
+
+    assert finished["report"].count("```") == 2
+    assert "Incomplete report." in finished["report"]

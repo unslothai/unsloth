@@ -162,6 +162,27 @@ def _synthesis_needs_recovery(report: str, finish_reason: str | None) -> bool:
     return finish_reason == "length" or not report
 
 
+_CODE_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+
+
+def _close_open_code_fence(report: str) -> str:
+    """Close a fence a truncated report left open.
+
+    An unterminated fence runs to the end of the document in CommonMark, so anything
+    appended below it renders as code instead of as itself."""
+    fence: str | None = None
+    for line in report.splitlines():
+        marker = _CODE_FENCE_RE.match(line)
+        if marker is None:
+            continue
+        ticks, info = marker.group(1), marker.group(2)
+        if fence is None:
+            fence = ticks
+        elif ticks[0] == fence[0] and len(ticks) >= len(fence) and not info.strip():
+            fence = None
+    return f"{report}\n{fence}" if fence else report
+
+
 def _auto_scrape_default() -> int:
     """Server default for ``budgets["maxAutoScrape"]``: 0 (off) unless
     ``UNSLOTH_RESEARCH_AUTO_SCRAPE`` enables it (``1``/``true`` -> ``_AUTO_SCRAPE_TOP_K``, or an
@@ -2604,16 +2625,12 @@ class ResearchSupervisor:
             synthesis_reasoning += recovery_reasoning
             recovered = _select_synthesis_report(recovered_report, recovery_reasoning)
             # A second attempt at the SAME report under the same budget, not a correction of
-            # the first. A draft that ran to a natural stop beats one cut off mid-sentence
-            # whatever their lengths -- `length` is the one finish reason that means the
-            # text is unfinished -- and only between two drafts of equal standing does the
-            # longer one win.
-            first_whole = bool(report) and synthesis_finish_reason != "length"
+            # the first. Reaching here means the first draft is empty or cut off, so a
+            # recovery that ran to a natural stop wins outright -- `length` is the one finish
+            # reason that means the text is unfinished -- and only between two drafts of equal
+            # standing does the longer one win.
             recovered_whole = bool(recovered) and recovery_finish_reason != "length"
-            if recovered_whole != first_whole:
-                take_recovery = recovered_whole
-            else:
-                take_recovery = len(recovered) >= len(report)
+            take_recovery = recovered_whole or len(recovered) >= len(report)
             requested_max_tokens = recovery_max_tokens
             if take_recovery:
                 report = recovered
@@ -2640,7 +2657,10 @@ class ResearchSupervisor:
         report = _validate_report_document_sources(report, document_sources)
         # After the validators, so they only ever see what the model wrote.
         if truncation_notice:
-            report = f"{report.rstrip()}\n\n> **Incomplete report.** {truncation_notice}."
+            # Running out of budget mid-code-block is one of the ways a report gets cut off,
+            # and an unterminated fence would swallow the notice as more code.
+            report = _close_open_code_fence(report.rstrip())
+            report = f"{report}\n\n> **Incomplete report.** {truncation_notice}."
         reasoning = await asyncio.to_thread(db.get_reasoning_text, run["id"])
         if synthesis_reasoning and synthesis_reasoning not in reasoning:
             reasoning += synthesis_reasoning
