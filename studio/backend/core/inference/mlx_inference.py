@@ -5,10 +5,12 @@ Drop-in replacement for InferenceBackend — same interface, uses mlx-lm/mlx-vlm
 instead of torch/transformers for model loading and generation.
 """
 
+import copy
 import os
 import re
 import sys
 import threading
+from collections import OrderedDict
 from contextlib import contextmanager
 from typing import Optional, Generator
 from core.inference.message_content import content_to_text
@@ -35,6 +37,324 @@ from utils.models.model_config import is_audio_input_type
 from loggers import get_logger
 
 logger = get_logger(__name__)
+
+
+# Prefix reuse for mlx-vlm generation, owned by Studio.
+#
+# A multi-turn chat re-sends its whole history every turn. mlx-vlm prefills all
+# but the last prompt token in chunks of ``prefill_step_size``, and a forward
+# pass is not shape-invariant: KV rows for the same tokens differ in the last
+# bits between a 256-token chunk and a 140-token one. So a reused turn only
+# answers as an unreused one when both run the same chunk sequence over the
+# same rows. Every request here prefills on one fixed grid, and a snapshot of
+# the whole cache is taken exactly where a chunk of that grid ends. Resuming
+# from it leaves the remaining chunks identical to a cold request's.
+#
+# The snapshot is captured by counting the language model's forward passes:
+# Studio knows the resume offset, the boundary and the step, so it knows which
+# forward ends on the boundary, and copies every cache entry once that forward
+# returns. Nothing depends on how an entry is written, so attention caches,
+# rotating windows and recurrent state all work the same way.
+#
+# Everything talks to mlx-vlm through public generation kwargs:
+# ``prompt_cache`` (the entries a cold request fills), ``prompt_cache_state``
+# (``.cache``, ``.find_prefix_length``, ``.update``) and ``prefill_step_size``.
+
+# Small enough that a short chat turn still has a reusable boundary; each
+# halving costs roughly a third of cold prefill throughput.
+VLM_PROMPT_CACHE_PREFILL_STEP = 256
+VLM_PROMPT_CACHE_ENTRIES = 6
+
+
+def shape_stable_prefix(token_count):
+    """Rows of a prompt this long that whole chunks of the grid produced.
+
+    mlx-vlm holds the final prompt token back for the first decode step, so
+    the rows past this boundary came from a short chunk or from that token.
+    """
+    step = VLM_PROMPT_CACHE_PREFILL_STEP
+    return max(0, token_count - 1) // step * step
+
+
+def _is_cache(value):
+    """Every mlx-vlm cache class carries ``state``; checked on the type so no property runs."""
+    return hasattr(value, "__dict__") and hasattr(type(value), "state")
+
+
+def _copy_value(value, mx):
+    if isinstance(value, mx.array):
+        return value + 0
+    if isinstance(value, list):
+        return [_copy_value(item, mx) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_copy_value(item, mx) for item in value)
+    if _is_cache(value):
+        duplicate = copy.copy(value)
+        for name, item in list(vars(duplicate).items()):
+            setattr(duplicate, name, _copy_value(item, mx))
+        return duplicate
+    return value
+
+
+def _arrays(value, mx):
+    if isinstance(value, mx.array):
+        yield value
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _arrays(item, mx)
+    elif _is_cache(value):
+        for item in vars(value).values():
+            yield from _arrays(item, mx)
+
+
+def copy_cache_entries(entries):
+    """Independent copies of cache entries, evaluated so they own their data.
+
+    Shallow at the object level and deep at the array level: ints such as an
+    offset or a ring index travel with the object, and every array is
+    duplicated wherever it sits, including inside the caches a composite entry
+    such as ``CacheList`` nests, or the tuple of caches some layouts use as an
+    entry.
+    """
+    import mlx.core as mx
+
+    for entry in entries:
+        if not (_is_cache(entry) or isinstance(entry, (list, tuple))):
+            raise TypeError(f"{type(entry).__name__} cannot be copied")
+    copies = [_copy_value(entry, mx) for entry in entries]
+    mx.eval(list(_arrays(copies, mx)))
+    return copies
+
+
+def cache_entries_nbytes(entries):
+    import mlx.core as mx
+    return sum(array.nbytes for array in _arrays(entries, mx))
+
+
+def cache_entries_offset(entries):
+    """Tokens the entries hold, from the first one that counts them, else None.
+
+    Only ``offset`` counts prompt rows; an encoder-decoder layout counts
+    something else and so is never stored.
+    """
+    for entry in entries:
+        offset = getattr(entry, "offset", None)
+        if isinstance(offset, int):
+            return offset
+        nested = vars(entry).values() if _is_cache(entry) else entry
+        if isinstance(nested, (list, tuple)) or _is_cache(entry):
+            found = cache_entries_offset(
+                [item for item in nested if _is_cache(item) or isinstance(item, (list, tuple))]
+            )
+            if found is not None:
+                return found
+    return None
+
+
+def withholds_per_layer_inputs(language_model):
+    """Whether generation must not hand this model precomputed per-layer inputs.
+
+    gemma4 E2B/E4B and gemma3n feed each layer an embedding of the token ids.
+    mlx-vlm computes those once for the uncached suffix, and the language model
+    then slices them at its absolute cache offset, so a resumed request reads
+    them shifted. Given none, it computes them per chunk from the chunk's own
+    ids, which is bitwise identical and aligned by construction.
+    """
+    for candidate in (language_model, getattr(language_model, "model", None)):
+        if candidate is not None and getattr(candidate, "hidden_size_per_layer_input", 0):
+            return True
+    return False
+
+
+class _ForwardRecord:
+    __slots__ = ("forwards", "capture_at", "snapshot", "withhold_per_layer_inputs")
+
+    def __init__(self, withhold_per_layer_inputs):
+        self.forwards = 0
+        self.capture_at = 0
+        self.snapshot = None
+        self.withhold_per_layer_inputs = withhold_per_layer_inputs
+
+
+_RECORDING_CLASSES = {}
+
+
+def _recording_class(base):
+    """``base`` with a forward that counts itself and copies the cache on cue."""
+    cls = _RECORDING_CLASSES.get(base)
+    if cls is not None:
+        return cls
+
+    def __call__(self, *args, **kwargs):
+        # A plain attribute: nn.Module stores dicts and lists in its module
+        # tree, so the record must not be one.
+        record = self.__dict__.get("_studio_forward_record")
+        if record is not None and record.withhold_per_layer_inputs:
+            kwargs.pop("per_layer_inputs", None)
+        output = base.__call__(self, *args, **kwargs)
+        if record is not None:
+            record.forwards += 1
+            cache = kwargs.get("cache")
+            if record.forwards == record.capture_at and cache is not None:
+                # A layout that cannot be copied costs this request its
+                # snapshot, never its answer.
+                try:
+                    record.snapshot = copy_cache_entries(cache)
+                except Exception as exc:
+                    logger.info("MLX VLM prompt cache: cache layout not copied (%s)", exc)
+        return output
+
+    cls = type(f"Recording{base.__name__}", (base,), {"__call__": __call__, "_studio_base": base})
+    _RECORDING_CLASSES[base] = cls
+    return cls
+
+
+class RecordingForward:
+    """Installs the counting forward on a language model for one generation."""
+
+    def __init__(self, language_model):
+        self._language_model = language_model
+        self.record = _ForwardRecord(withholds_per_layer_inputs(language_model))
+        self._base = None
+
+    def __enter__(self):
+        model = self._language_model
+        base = getattr(type(model), "_studio_base", type(model))
+        self._base = base
+        model.__class__ = _recording_class(base)
+        model.__dict__["_studio_forward_record"] = self.record
+        return self
+
+    def __exit__(self, *_exc):
+        model = self._language_model
+        model.__dict__.pop("_studio_forward_record", None)
+        model.__class__ = self._base
+        return False
+
+
+class VLMPromptSnapshotStore:
+    """Boundary snapshots, most recently used last, under a byte budget."""
+
+    def __init__(
+        self,
+        max_bytes,
+        max_entries = VLM_PROMPT_CACHE_ENTRIES,
+    ):
+        self._max_bytes = max_bytes
+        self._max_entries = max_entries
+        self._entries = OrderedDict()
+        self.nbytes = 0
+
+    def __len__(self):
+        return len(self._entries)
+
+    def lookup(self, key, token_ids, limit):
+        """Longest stored prefix of ``token_ids`` under ``key`` ending by ``limit``."""
+        best = None
+        for (stored_key, prefix), (entries, _nbytes) in self._entries.items():
+            n = len(prefix)
+            if stored_key != key or n == 0 or n > limit:
+                continue
+            if best is not None and n <= len(best[0]):
+                continue
+            if tuple(token_ids[:n]) == prefix:
+                best = (prefix, entries)
+        if best is None:
+            return None, 0
+        self._entries.move_to_end((key, best[0]))
+        return best[1], len(best[0])
+
+    def store(self, key, prefix_ids, entries):
+        nbytes = cache_entries_nbytes(entries)
+        if nbytes > self._max_bytes:
+            logger.debug(
+                "MLX VLM prompt cache: skipping %.2f GB snapshot over the %.2f GB budget",
+                nbytes / 1e9,
+                self._max_bytes / 1e9,
+            )
+            return False
+        item = (key, tuple(prefix_ids))
+        self.discard(item)
+        while self._entries and (
+            self.nbytes + nbytes > self._max_bytes or len(self._entries) >= self._max_entries
+        ):
+            self.discard(next(iter(self._entries)))
+        self._entries[item] = (entries, nbytes)
+        self.nbytes += nbytes
+        return True
+
+    def discard(self, item):
+        dropped = self._entries.pop(item, None)
+        if dropped is not None:
+            self.nbytes -= dropped[1]
+
+    def clear(self):
+        self._entries.clear()
+        self.nbytes = 0
+
+
+class VLMPromptCacheSession:
+    """The ``prompt_cache_state`` one generation hands to mlx-vlm.
+
+    ``cache`` starts as the fresh entries the request should also pass as
+    ``prompt_cache``. mlx-vlm calls ``find_prefix_length`` with the prompt's
+    ids before generating; that is where the snapshot to resume from is chosen,
+    ``cache`` is swapped to a copy of it, and the capture forward is set. After
+    the generation, ``finish`` stores what was captured.
+    """
+
+    def __init__(self, store, key, language_model, make_cache):
+        self._store = store
+        self._key = key
+        self._forward = RecordingForward(language_model)
+        self.cache = make_cache()
+        self.reused_tokens = 0
+        self._token_ids = None
+
+    def __enter__(self):
+        self._forward.__enter__()
+        return self
+
+    def __exit__(self, *exc):
+        self._forward.__exit__(*exc)
+        return False
+
+    def find_prefix_length(self, token_ids):
+        token_ids = list(token_ids)
+        self._token_ids = token_ids
+        boundary = shape_stable_prefix(len(token_ids))
+        entries, prefix_len = self._store.lookup(self._key, token_ids, boundary)
+        if entries is not None:
+            # A copy that cannot be made costs this request its reuse, never
+            # its answer.
+            try:
+                self.cache = copy_cache_entries(entries)
+            except Exception as exc:
+                logger.info("MLX VLM prompt cache: snapshot not served (%s)", exc)
+                prefix_len = 0
+        record = self._forward.record
+        record.capture_at = (boundary - prefix_len) // VLM_PROMPT_CACHE_PREFILL_STEP
+        self.reused_tokens = prefix_len
+        return prefix_len
+
+    def update(self, _token_ids, _cache):
+        """mlx-vlm's after-generation hook; storing happens in ``finish`` instead,
+        which also runs when the consumer stops reading early."""
+
+    def finish(self):
+        """Store the captured snapshot under the prompt rows it holds."""
+        snapshot = self._forward.record.snapshot
+        if snapshot is None or self._token_ids is None:
+            return False
+        # Read off the snapshot rather than assumed: mlx-vlm may decline the
+        # reuse it was offered and prefill from zero, in which case the capture
+        # landed on an earlier boundary and holds that shorter prefix.
+        held = cache_entries_offset(snapshot)
+        step = VLM_PROMPT_CACHE_PREFILL_STEP
+        if not held or held % step or held > shape_stable_prefix(len(self._token_ids)):
+            logger.debug("MLX VLM prompt cache: snapshot holds %r rows, not stored", held)
+            return False
+        return self._store.store(self._key, self._token_ids[:held], snapshot)
 
 
 def _mlx_adapter_modules(model):
