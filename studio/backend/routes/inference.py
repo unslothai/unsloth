@@ -629,15 +629,12 @@ def _choice_seed(
     """A seed of its own per choice, so a seeded request samples n times rather
     than repeating one run. Shared by both drains so they cannot disagree.
 
-    llama-server reads the seed as a uint32 and draws at random for exactly one
-    value, LLAMA_DEFAULT_SEED (0xFFFFFFFF). Every seed congruent to it is that
-    sentinel, not just ``-1``: the schemas above also accept ``4294967295`` and
-    ``2**64-1``. Tested in that domain to match ``_apply_seeded_llama_request``,
-    since a literal ``-1`` left choice 0 random and cached while choice 1 was
-    offset into a fixed, uncached seed. Every other negative is an ordinary fixed
-    seed and must be offset, or all n choices repeat one run; offsetting in the
-    same domain cannot land on the sentinel. MLX maps every seed onto its key
-    domain, so nothing is exempt there.
+    llama-server reads the seed as a uint32 and draws at random for exactly one value,
+    LLAMA_DEFAULT_SEED (0xFFFFFFFF), so every congruent seed is that sentinel, not just
+    ``-1`` (the schemas above also accept ``4294967295``); testing a literal ``-1`` left
+    choice 0 random and cached while choice 1 was offset into a fixed, uncached seed. Every
+    other negative is an ordinary fixed seed and must be offset, and offsetting in the same
+    domain cannot land on the sentinel. MLX maps every seed onto its key domain.
     """
     if seed is None or not choice_index:
         return seed
