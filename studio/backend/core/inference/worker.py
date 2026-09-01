@@ -444,12 +444,31 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
         # loads; a no-progress Xet download is reported as a stall so the parent
         # can respawn over HTTP. Watch model + base repos (base is the LoRA
         # download bottleneck).
+        from core.inference.mlx_bnb import mlx_bnb_substitutions
         from utils.hf_xet_fallback import start_watchdog
 
         watch_repos = [mc.identifier]
         base = getattr(mc, "base_model", None)
         if base and str(base) != mc.identifier:
             watch_repos.append(str(base))
+
+        # The MLX loader downloads these bases rather than the bnb repos it was handed,
+        # so they are what the stall watchdog must measure and what the log must name.
+        if getattr(backend, "device", None) == "mlx":
+            substitutions = mlx_bnb_substitutions(watch_repos)
+            replacements = dict(substitutions)
+            watch_repos = list(dict.fromkeys(replacements.get(repo, repo) for repo in watch_repos))
+            for requested, mlx_base in substitutions:
+                _send_response(
+                    resp_queue,
+                    {
+                        "type": "status",
+                        "message": (
+                            f"MLX cannot read bitsandbytes 4-bit weights; "
+                            f"downloading {mlx_base} instead of {requested}"
+                        ),
+                    },
+                )
 
         heartbeat_stop = start_watchdog(
             repo_ids = watch_repos,

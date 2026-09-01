@@ -714,6 +714,12 @@ class ValidateModelResponse(BaseModel):
         description = "Details for the transformers-upgrade dialog; set only when "
         "requires_transformers_upgrade is true.",
     )
+    mlx_loads_base_model: Optional[str] = Field(
+        None,
+        description = "On an MLX host, the full-precision repo that will be downloaded and "
+        "loaded in place of the requested unsloth bnb-4bit repo (or of a LoRA's bnb base), "
+        "because MLX cannot read bitsandbytes weights. None when the pick loads as asked.",
+    )
 
 
 class EstimateMemoryRequest(BaseModel):

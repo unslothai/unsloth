@@ -3,7 +3,10 @@
 
 """Default model lists for inference, split by platform."""
 
+from typing import Iterable
+
 import utils.hardware.hardware as hw
+from core.inference.mlx_bnb import mlx_bnb_base_repo
 
 DEFAULT_MODELS_GGUF = [
     "unsloth/Qwen3.6-27B-MTP-GGUF",
@@ -50,8 +53,33 @@ DEFAULT_MODELS_STANDARD = [
 ]
 
 
+def suggestions_for_host(models: Iterable[str], device) -> list[str]:
+    """*models* named as *device* really loads them; order kept, duplicates dropped.
+
+    On MLX a bnb repo is a download the loader discards for the base, so suggesting one
+    costs a wasted fetch. Takes the device rather than reading it so the caller decides
+    whether it is cheap to ask (``hw.DEVICE`` off the event loop, ``get_device()`` when
+    detection may still be owed).
+
+    Diffusion is the exception, and it is the same one ``mlx_host_bnb_base_repo`` makes:
+    those bnb repos run on the diffusers/MPS path, which reads bitsandbytes weights, so
+    they are loaded exactly as named. Mapping one would advertise the full-precision repo
+    in place of the smaller one the loader actually uses -- this fix inverted.
+    """
+    if device != hw.DeviceType.MLX:
+        return list(models)
+    from core.inference.diffusion_families import detect_family
+
+    def _named(model: str) -> str:
+        if detect_family(model) is not None:
+            return model
+        return mlx_bnb_base_repo(model) or model
+
+    return list(dict.fromkeys(_named(model) for model in models))
+
+
 def get_default_models() -> list[str]:
-    hw.get_device()  # ensures detect_hardware() has run
+    device = hw.get_device()  # ensures detect_hardware() has run
     if hw.CHAT_ONLY:
         return list(DEFAULT_MODELS_GGUF)
-    return list(DEFAULT_MODELS_STANDARD)
+    return suggestions_for_host(DEFAULT_MODELS_STANDARD, device)

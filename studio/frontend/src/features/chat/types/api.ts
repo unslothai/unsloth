@@ -169,6 +169,9 @@ export interface ValidateModelResponse {
   requires_transformers_upgrade?: boolean;
   /** Set only when requires_transformers_upgrade. */
   transformers_upgrade?: TransformersUpgradeInfo | null;
+  /** MLX cannot read bitsandbytes weights, so this full-precision repo is downloaded
+   *  and loaded instead of the bnb-4bit pick; null when the pick loads as asked. */
+  mlx_loads_base_model?: string | null;
 }
 
 export interface GgufVariantDetail {
