@@ -499,7 +499,7 @@ test("an unset context length is resolved the way the load resolves it", () => {
   assert.equal(
     matches({ ...DEFAULTS, requested_context_length: 32768 }, BLANK, {
       ...STANDING,
-      // The re-pick branch: ggufContextLength, not 0.
+      // The re-pick branch: loadedContextLength, not 0.
       resolveContextLength: (pin) => pin ?? 32768,
     }),
     true,

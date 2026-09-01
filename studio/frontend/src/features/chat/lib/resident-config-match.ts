@@ -292,8 +292,8 @@ const SETTING_CHECKS: SettingCheck[] = [
     // cross-model GGUF pick and as the resident context when re-picking the same one.
     // Reading null as "no opinion" against a status echoing either number was a reload.
     pinned: () => true,
-    // A GGUF invocation field: a safetensors or MLX status never sets it, and the general
-    // non-GGUF rule below is what keeps this from reading that absence as 0.
+    // A safetensors or MLX status reports this too, so the general non-GGUF rule below
+    // is what keeps this check off those models.
     agrees: (c, s, standing) =>
       standing.resolveContextLength(c.customContextLength ?? null) ===
       (s.requested_context_length ?? 0),
@@ -355,11 +355,11 @@ const SETTING_CHECKS: SettingCheck[] = [
   },
   {
     chatOnly: true,
-    // Always pinned, unlike spec_draft_n_max: the status echoes what the load
-    // REQUESTED, so a resident server that asked for nothing reports null and a
-    // blank control agrees with it. Reading blank as "no opinion" instead would
-    // mean clearing the dtype back to the f16 default never relaunched, leaving
-    // the server on the quantized draft cache the panel no longer shows.
+    // Always pinned: the status echoes what the load requested, so a resident server
+    // that asked for nothing reports null and a blank control agrees with it. Reading
+    // blank as "no opinion" instead would mean clearing the dtype back to the f16
+    // default never relaunched, leaving the server on the quantized draft cache the
+    // panel no longer shows.
     pinned: () => true,
     agrees: (c, s) =>
       (c.specDraftCacheDtype ?? null) ===
