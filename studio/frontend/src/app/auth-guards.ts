@@ -50,8 +50,15 @@ async function fetchAuthStatus(): Promise<AuthStatus> {
       authStatusCheckedAt = Date.now();
       // /status describes the seeded installation owner, while the local flag
       // can describe any authenticated managed account. A false owner status
-      // must not clear another account's forced-change route.
-      if (status.requires_password_change && !mustChangePassword()) {
+      // must not clear another account's forced-change route, and a true one
+      // must not impose the owner's recovery on every signed-in managed session:
+      // that traps them on /change-password until the owner finishes, and the
+      // next refresh re-sets the flag even after they change their own password.
+      if (
+        status.requires_password_change &&
+        !mustChangePassword() &&
+        !hasAuthToken()
+      ) {
         setMustChangePassword(true);
       }
       return status;

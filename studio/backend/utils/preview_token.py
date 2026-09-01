@@ -18,25 +18,52 @@ import hmac
 from typing import Optional
 
 from auth.storage import get_or_create_preview_link_secret
+from utils.workspace_context import LEGACY_WORKSPACE_SUBJECT, current_workspace_subject
 
 # Versioned so the token format can evolve without silently honoring old shapes.
 _PREVIEW_TOKEN_VERSION = "v1"
 
 
-def _canonical_payload(ref: str) -> bytes:
-    # Sign the canonical ref only (never host/path) so links stay portable across
-    # localhost / LAN IP / tunnel host changes.
-    return f"preview:{_PREVIEW_TOKEN_VERSION}:{ref}".encode("utf-8")
+def _encode_subject(subject: str) -> str:
+    return base64.urlsafe_b64encode(subject.encode("utf-8")).decode("ascii").rstrip("=")
 
 
-def sign_preview_ref(ref: str) -> str:
-    """Return the URL-safe HMAC capability token for a canonical preview ref."""
-    mac = hmac.new(
+def _canonical_payload(ref: str, subject: str) -> bytes:
+    # Sign the canonical ref and the workspace it belongs to (never host/path) so
+    # links stay portable across localhost / LAN IP / tunnel host changes.
+    return f"preview:{_PREVIEW_TOKEN_VERSION}:{subject}:{ref}".encode("utf-8")
+
+
+def _mac(ref: str, subject: str) -> str:
+    digest = hmac.new(
         get_or_create_preview_link_secret(),
-        _canonical_payload(ref),
+        _canonical_payload(ref, subject),
         hashlib.sha256,
     ).digest()
-    return base64.urlsafe_b64encode(mac).rstrip(b"=").decode("ascii")
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
+
+def sign_preview_ref(ref: str, subject: Optional[str] = None) -> str:
+    """The URL-safe capability token for a canonical preview ref.
+
+    Carries the workspace: the outputs root is per account now, so a token that
+    named the ref alone resolved against the owner's tree, which 404s every
+    managed link and would serve the owner's checkpoint on a ref collision.
+    """
+    who = subject or current_workspace_subject()
+    return f"{_encode_subject(who)}.{_mac(ref, who)}"
+
+
+def preview_token_subject(token: Optional[str]) -> str:
+    """The workspace a token names. Tokens minted before this read as the owner."""
+    if not token or "." not in token:
+        return LEGACY_WORKSPACE_SUBJECT
+    encoded = token.split(".", 1)[0]
+    padded = encoded + "=" * (-len(encoded) % 4)
+    try:
+        return base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+    except Exception:
+        return LEGACY_WORKSPACE_SUBJECT
 
 
 def verify_preview_ref(ref: str, token: Optional[str]) -> bool:
@@ -49,4 +76,17 @@ def verify_preview_ref(ref: str, token: Optional[str]) -> bool:
         provided = token.encode("ascii")
     except UnicodeEncodeError:
         return False
-    return hmac.compare_digest(sign_preview_ref(ref).encode("ascii"), provided)
+    if "." in token:
+        subject = preview_token_subject(token)
+        expected = f"{_encode_subject(subject)}.{_mac(ref, subject)}"
+    else:
+        # A link minted before the workspace was signed in. Only the owner could
+        # have made one, so it verifies against the old ref-only payload.
+        expected = base64.urlsafe_b64encode(
+            hmac.new(
+                get_or_create_preview_link_secret(),
+                f"preview:{_PREVIEW_TOKEN_VERSION}:{ref}".encode("utf-8"),
+                hashlib.sha256,
+            ).digest()
+        ).rstrip(b"=").decode("ascii")
+    return hmac.compare_digest(expected.encode("ascii"), provided)
