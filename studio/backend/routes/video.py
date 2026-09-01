@@ -772,6 +772,7 @@ async def clear_gallery_videos(current_subject: str = Depends(get_current_subjec
 
 
 # ── OpenAI-compatible videos API (/v1/videos) ──
+
 _VIDEO_SIZE_RE = _re.compile(r"^(\d{1,5})\s*x\s*(\d{1,5})$")
 _VIDEO_SECONDS_MAX = 120.0
 _VIDEO_JOB_ID_PREFIX = "video_"

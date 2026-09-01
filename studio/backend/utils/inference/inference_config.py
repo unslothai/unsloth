@@ -19,6 +19,7 @@ logger = get_logger(__name__)
 
 
 # ── Family-based inference defaults (loaded once, cached) ──────────────
+
 _FAMILY_DEFAULTS: Optional[Dict[str, Any]] = None
 _FAMILY_PATTERNS: Optional[list] = None
 

@@ -656,7 +656,6 @@ def xet_attempts() -> int:
     return min(value, 8)
 
 
-# Degraded stubs, used only when unsloth_zoo is unavailable.
 # --- degraded stubs (used only when unsloth_zoo is unavailable) -------------------------------
 class _DegradedDownloadStallError(RuntimeError):
     """Stub mirror so callers' ``except`` clauses resolve; never raised in degraded mode."""

@@ -26,6 +26,7 @@ from datasets import Dataset
 # Conversation column probing (shared by detection + scanning)
 # Candidate column names for conversational datasets, checked in priority order.
 # ---------------------------------------------------------------------------
+
 CONVERSATION_COLUMNS = ("messages", "conversations", "texts")
 
 # Minimum turn key sets identifying a column as conversational (not e.g. messages=[{"id":1}]).
@@ -128,6 +129,7 @@ def _probe_conversation(dataset: Dataset, candidates = None):
 
 # None-detection helpers
 # ---------------------------------------------------------------------------
+
 def is_none_or_empty(value) -> bool:
     """True if value is None, empty string, whitespace-only, or an empty/whitespace-only VLM content block list."""
     if value is None:
@@ -184,6 +186,7 @@ def _classify_empty(value) -> str:
 
 # Alpaca detection
 # ---------------------------------------------------------------------------
+
 def find_none_alpaca(dataset: Dataset) -> dict:
     """
     Scan alpaca dataset for None/empty instruction or output fields.
@@ -220,6 +223,7 @@ def find_none_alpaca(dataset: Dataset) -> dict:
 
 # ChatML / conversational detection
 # ---------------------------------------------------------------------------
+
 def find_none_chatml(dataset: Dataset, col: str = None) -> dict:
     """
     Scan chatml/sharegpt/gptoss dataset for turns with None/empty content.
@@ -364,6 +368,7 @@ def find_none_chatml(dataset: Dataset, col: str = None) -> dict:
 
 # Convenience wrappers per format (all delegate to the same scan logic)
 # ---------------------------------------------------------------------------
+
 def find_none_sharegpt(dataset: Dataset, col: str = None) -> dict:
     """ShareGPT uses 'from'/'value' keys - same scan logic handles both."""
     if col is None:
@@ -401,6 +406,7 @@ def find_none_gptoss(dataset: Dataset, col: str = None) -> dict:
 # Each entry is name, match(dataset, conv_info) -> bool, scan (find_none_* function); to add one write
 # find_none_<name>() or reuse find_none_chatml, and detect_format(), --format and scan_dataset() pick it up.
 # ---------------------------------------------------------------------------
+
 FORMAT_REGISTRY = [
     {
         "name": "alpaca",
@@ -551,6 +557,7 @@ def scan_dataset(dataset: Dataset, fmt: str = "auto") -> dict:
 
 # Report printing
 # ---------------------------------------------------------------------------
+
 def _print_summary_header(stats: dict, fmt: str) -> bool:
     """Print the top-level stats block (shared by all report modes). Returns True if findings exist."""
     total = stats["total_rows"]
@@ -747,6 +754,7 @@ def show_row(
 
 # CLI entry point
 # ---------------------------------------------------------------------------
+
 if __name__ == "__main__":
     import argparse
     import os

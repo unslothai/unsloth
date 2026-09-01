@@ -130,6 +130,7 @@ def _is_windows() -> bool:
 
 
 # ── Parent setup ──
+
 def initialize_parent_lifetime() -> None:
     """Install the parent-death reaper once, as early as possible at startup.
 
@@ -264,6 +265,7 @@ def _install_windows_job() -> None:
 
 
 # ── Child binding ──
+
 def _pdeathsig_preexec(owner_pid: Optional[int] = None) -> None:
     # Runs in the forked child before exec (PR_SET_PDEATHSIG does not survive the fork); the getppid check closes the
     # race where the parent died first, against owner_pid, the spawner's pid read pre-fork. A bare `getppid() == 1` also
