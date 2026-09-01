@@ -277,10 +277,10 @@ def test_inferred_attach_pins_the_resident_quant(monkeypatch):
     )
 
     assert sent(server) == {
-            "model_path": "unsloth/Qwen3-30B-A3B-GGUF",
-            "gguf_variant": "Q8_0",
-            "max_seq_length": 8192,
-        }
+        "model_path": "unsloth/Qwen3-30B-A3B-GGUF",
+        "gguf_variant": "Q8_0",
+        "max_seq_length": 8192,
+    }
 
 
 def test_inferred_attach_at_the_default_context_does_not_reresolve_the_quant(monkeypatch):
@@ -307,10 +307,10 @@ def test_inferred_attach_at_the_default_context_does_not_reresolve_the_quant(mon
     )
 
     assert sent(server) == {
-            "model_path": "unsloth/Qwen3-30B-A3B-GGUF",
-            "gguf_variant": "Q8_0",
-            "max_seq_length": 0,
-        }
+        "model_path": "unsloth/Qwen3-30B-A3B-GGUF",
+        "gguf_variant": "Q8_0",
+        "max_seq_length": 0,
+    }
 
 
 def test_inferred_attach_does_not_pin_a_variant_onto_a_direct_gguf_file(monkeypatch):
@@ -518,9 +518,7 @@ def test_user_supplied_knobs_beat_the_resident_values(monkeypatch):
         BASE,
         KEY,
         None,
-        start_cli.LoadOptions(
-            tensor_parallel = False, supplied = frozenset({"tensor_parallel"})
-        ),
+        start_cli.LoadOptions(tensor_parallel = False, supplied = frozenset({"tensor_parallel"})),
     )
 
     assert server.loads[0]["tensor_parallel"] is False
