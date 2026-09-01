@@ -483,6 +483,65 @@ def test_an_expired_idle_http_session_is_replaced_before_dispatch(monkeypatch, c
     assert clients[0].exited == 1
 
 
+def test_a_concurrent_checkout_cannot_cancel_another_borrowers_recheck(monkeypatch, clients):
+    """Two HTTP borrowers now run at once, so the idle gap has to belong to the
+    borrower. Held on the session, the second checkout would overwrite the first
+    one's long gap with a near-zero one and talk it out of proving a session that
+    really had gone stale."""
+    monkeypatch.setattr(mcp_client, "_HTTP_IDLE_RECHECK", 0.0)
+
+    def _client(url, headers, use_oauth = False):
+        c = RecordingClient(url, headers, use_oauth)
+        c.call_delay = 0.3
+        return c
+
+    monkeypatch.setattr(mcp_client, "_client", _client)
+    _call(HTTP_URL, scope = SCOPE)  # connect and publish
+    out, _ = _parallel(HTTP_URL, [SCOPE, SCOPE])
+    assert len(out) == 2
+    # Both were reused after an idle gap, so both must have proved the session.
+    assert clients[0].probes == 2, f"a borrower skipped its recheck: {clients[0].probes}"
+
+
+def test_closing_many_sessions_does_not_run_serially(monkeypatch, clients):
+    """A popular HTTP server holds a session per chat, and close runs on the
+    request thread during an edit or delete."""
+    closes = []
+
+    class SlowExit(RecordingClient):
+        async def __aexit__(self, *exc):
+            closes.append(time.monotonic())
+            await asyncio.sleep(0.4)
+            return await super().__aexit__(*exc)
+
+    monkeypatch.setattr(
+        mcp_client, "_client",
+        lambda url, headers, use_oauth = False: SlowExit(url, headers, use_oauth),
+    )
+    for i in range(6):
+        _call(HTTP_URL, scope = f"chat-{i}")
+    started = time.monotonic()
+    close_mcp_sessions()
+    elapsed = time.monotonic() - started
+    assert len(closes) == 6
+    assert elapsed < 6 * 0.4 * 0.75, f"closes ran serially: {elapsed:.2f}s"
+
+
+def test_a_fork_resets_the_inherited_cache(clients):
+    """Only the forking thread survives, so every inherited session's loop thread
+    is gone while its client still reports connected. A child that checked one
+    out would wait on a loop that never runs."""
+    if not hasattr(mcp_client.os, "register_at_fork"):
+        pytest.skip("no register_at_fork on this platform")
+    _call(HTTP_URL, scope = SCOPE)
+    assert len(mcp_client._mcp_sessions) == 1
+    mcp_client._reset_after_fork()
+    assert mcp_client._mcp_sessions == {}
+    assert mcp_client._mcp_key_locks == {}
+    assert mcp_client._mcp_connects_in_flight == 0
+    assert mcp_client._mcp_reaper_started is False
+
+
 def test_transport_dead_is_unknown_for_http():
     """Documents why the idle recheck exists at all: _is_session_dead and
     _connect_task are StdioTransport internals, absent from both HTTP transports

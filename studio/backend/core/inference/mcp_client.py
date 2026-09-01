@@ -558,7 +558,7 @@ def _transport_dead(session) -> bool:
     return False
 
 
-def _needs_idle_recheck(session) -> bool:
+def _needs_idle_recheck(session, idle_for: float) -> bool:
     """Whether an idle HTTP session must prove itself before the next dispatch.
 
     A server MAY drop an HTTP session whenever it likes, and the client only
@@ -567,7 +567,9 @@ def _needs_idle_recheck(session) -> bool:
     a live subprocess does not expire on its own."""
     if is_stdio(session.url):
         return False
-    return session.idle_for >= _HTTP_IDLE_RECHECK
+    # Negative means this borrower connected the session itself, so the handshake
+    # it just completed is proof enough.
+    return idle_for >= 0.0 and idle_for >= _HTTP_IDLE_RECHECK
 
 
 def _session_responsive(
@@ -639,10 +641,6 @@ class _McpSession:
         # one-shot path had.
         self.serialize_calls = is_stdio(url)
         self.last_used = time.monotonic()
-        # Gap before the current checkout; see _checkout_session. Negative until
-        # the session is reused at all: a just-completed handshake is proof
-        # enough, so a fresh session never pays for the idle recheck.
-        self.idle_for = -1.0
         self.in_flight = 0  # guarded by _mcp_sessions_lock
         # On Windows a bare new_event_loop() can be a SelectorEventLoop (if any
         # component set that policy), which cannot spawn subprocesses natively;
@@ -830,17 +828,22 @@ def _session_key(url: str, headers: Optional[dict], scope: Optional[str]) -> tup
     return (url, _headers_key(headers), scope or "")
 
 
-def _checkout_session(key: tuple) -> Optional[_McpSession]:
+def _checkout_session(key: tuple) -> tuple[Optional[_McpSession], float]:
+    """Returns the session and how long it had been unused, measured before
+    last_used is refreshed.
+
+    The idle gap is returned rather than stored on the session because HTTP
+    borrowers run concurrently: a second checkout would otherwise overwrite the
+    first one's gap with a near-zero value and talk it out of proving a session
+    that really had gone stale."""
     session = _mcp_sessions.get(key)
     if session is not None and session.is_connected():
         now = time.monotonic()
-        # How long it sat unused, recorded before last_used is refreshed: the
-        # caller decides from this whether the session still needs proving.
-        session.idle_for = now - session.last_used
+        idle_for = now - session.last_used
         session.last_used = now
         session.in_flight += 1
-        return session
-    return None
+        return session, idle_for
+    return None, -1.0
 
 
 def _borrow_key_lock(key: tuple) -> _McpKeyLock:
@@ -883,16 +886,19 @@ def _get_session(
     cancel_event,
     config_check,
     use_oauth: bool = False,
-) -> _McpSession:
+) -> tuple[_McpSession, float]:
     """``deadline`` is the caller's absolute monotonic budget (None = no limit):
     the key-lock wait and the connect share it, so a slow startup can't stack
-    full timeout windows (see _call_session_tool)."""
+    full timeout windows (see _call_session_tool).
+
+    Returns the session and this borrower's idle gap (negative when we connected
+    it ourselves), which only the borrower may act on -- see _checkout_session."""
     global _mcp_reaper_started
     key = _session_key(url, headers, scope)
     with _mcp_sessions_lock:
-        session = _checkout_session(key)
+        session, idle_for = _checkout_session(key)
         if session is not None:
-            return session
+            return session, idle_for
         key_lock = _borrow_key_lock(key)
     try:
         # Poll the acquire with connect()'s deadline/cancel semantics: a second
@@ -912,9 +918,9 @@ def _get_session(
         try:
             stale = None
             with _mcp_sessions_lock:
-                session = _checkout_session(key)
+                session, idle_for = _checkout_session(key)
                 if session is not None:
-                    return session
+                    return session, idle_for
                 if key in _mcp_sessions:
                     stale = _mcp_sessions.pop(key)
             if stale is not None:
@@ -956,7 +962,7 @@ def _get_session(
                 if closed_while_connecting:
                     session.close()
                     raise RuntimeError("MCP server was updated or removed while connecting")
-                return session
+                return session, -1.0
         finally:
             key_lock.lock.release()
     finally:
@@ -1045,13 +1051,58 @@ def close_mcp_sessions(url: Optional[str] = None, headers = _ANY_HEADERS) -> Non
             else:
                 cfg = _cfg_close_key(url, headers)
                 _mcp_cfg_close_gen[cfg] = _mcp_cfg_close_gen.get(cfg, 0) + 1
-    for session in sessions:
-        session.close()
+    _close_all(sessions)
+
+
+def _close_all(sessions: list) -> None:
+    """Close sessions in parallel.
+
+    Serially, each unresponsive transport can burn _SESSION_CLOSE_TIMEOUT plus
+    the thread join before the next one starts. This runs on the request thread
+    when a server is edited or deleted, and a popular HTTP server now holds a
+    session per chat rather than one overall, so a serial close could stall that
+    route for minutes."""
+    if not sessions:
+        return
+    if len(sessions) == 1:
+        sessions[0].close()
+        return
+    workers = min(len(sessions), 8)
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers = workers, thread_name_prefix = "mcp-close"
+    ) as pool:
+        for future in [pool.submit(s.close) for s in sessions]:
+            try:
+                future.result()
+            except Exception:  # noqa: BLE001
+                logger.exception("Closing an MCP session failed")
 
 
 # The cache stopped being stdio-only, but an in-place upgrade can leave a caller
 # holding the old name; it costs two lines to keep it working.
 close_stdio_sessions = close_mcp_sessions
+
+
+def _reset_after_fork() -> None:
+    """Drop everything the child inherited from the parent's cache.
+
+    Only the forking thread survives a fork, so every session's loop thread is
+    gone while its client still reports connected. A child that checked one out
+    would wait on a loop that will never run, and _transport_dead cannot see it
+    for HTTP. Nothing here is closed: those objects belong to the parent, which
+    is still using them."""
+    global _mcp_reaper_started, _mcp_connects_in_flight, _mcp_sessions_lock
+    # Replaced, not just cleared: a lock the fork caught held belongs to a thread
+    # that no longer exists here, so the child would block on it forever.
+    _mcp_sessions_lock = threading.Lock()
+    _mcp_sessions.clear()
+    _mcp_key_locks.clear()
+    _mcp_connects_in_flight = 0
+    _mcp_reaper_started = False
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child = _reset_after_fork)
 
 
 def _reap_idle_sessions(now: Optional[float] = None) -> None:
@@ -1404,7 +1455,7 @@ def _call_session_tool(
     # attempt 0 may find the cached session stale/dead *before* dispatch and
     # reconnect once (safe); attempt 1 is a freshly connected session.
     for attempt in (0, 1):
-        session = _get_session(
+        session, idle_for = _get_session(
             url, headers, scope, deadline, cancel_event, config_check, use_oauth
         )
         locked = False
@@ -1455,7 +1506,7 @@ def _call_session_tool(
                     retry = True
                 else:
                     raise RuntimeError("MCP server connection is not available")
-            elif (session.dirty or _needs_idle_recheck(session)) and not _session_responsive(
+            elif (session.dirty or _needs_idle_recheck(session, idle_for)) and not _session_responsive(
                 session, _remaining(), cancel_event
             ):
                 # Dirty: still stuck on the abandoned call. Idle HTTP: the server
