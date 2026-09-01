@@ -3435,7 +3435,11 @@ def test_a_deleted_username_is_held_while_a_media_load_is_in_flight(monkeypatch)
     from auth import storage as auth_storage
 
     class _Backend:
-        def __init__(self, loading_subject = None, generating = False):
+        def __init__(
+            self,
+            loading_subject = None,
+            generating = False,
+        ):
             self.loading_subject = loading_subject
             self.generating = generating
             self.unloaded_for = []
