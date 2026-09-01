@@ -407,7 +407,7 @@ def flux2_pick_mismatch(
     )
 
 
-# GGUF ``general.architecture`` values nothing in Studio can decode. Beside the FLUX.2 check
+# GGUF ``general.architecture`` values nothing in Unsloth can decode. Beside the FLUX.2 check
 # because both ask whether the pick is loadable, off the same prefix. The set itself lives in a
 # leaf module, shared with the chat gate and the listing classifier so they cannot drift.
 from utils.gguf_archs import (  # noqa: E402 -- beside the cache it keys

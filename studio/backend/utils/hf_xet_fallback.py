@@ -164,7 +164,7 @@ def _reset_optional_module_cache() -> None:
 def _load_optional(module_name: str) -> Any:
     """Import an optional shared Xet helper module (health / tuning), or return ``None``.
 
-    Separate from ``_load_shared``: these modules exist only in newer unsloth_zoo, and a Studio
+    Separate from ``_load_shared``: these modules exist only in newer unsloth_zoo, and an Unsloth
     pinned to an older one must keep downloading without the preflight verdict or buffer caps.
     The GPU-init retry matters most here: ``unsloth_zoo.__init__`` runs torch accelerator detection
     and raises ``NotImplementedError`` on a CPU-only host, which is precisely the small machine
@@ -234,9 +234,15 @@ def cached_xet_health(**kwargs: Any) -> Any:
 
     Capability reads use this path so opening Hub cannot initialize Unsloth Zoo. A real
     download calls :func:`xet_health`, which loads the optional module and populates this cache.
+
+    Read without ``_load_lock`` on purpose. Taking it made this "already loaded?" question wait
+    on whatever import another thread was holding it for -- a torch-loading `import unsloth_zoo`
+    that runs for seconds -- so the one path guaranteed never to load Zoo was the one blocked by
+    loading it. A dict lookup keyed by a plain string is atomic under the GIL, and the only
+    writers publish a fully-built module (or ``None``) in a single assignment, so the worst
+    outcome is reading the pre-import value and correctly answering "not loaded yet".
     """
-    with _load_lock:
-        module = _optional_modules.get("unsloth_zoo.hf_xet_health", _UNTRIED)
+    module = _optional_modules.get("unsloth_zoo.hf_xet_health", _UNTRIED)
     return None if module is _UNTRIED else _xet_health_from(module, **kwargs)
 
 
@@ -962,7 +968,7 @@ def hf_hub_download_with_xet_fallback(
     outcome this parameter exists to prevent, so it must not depend on the installed zoo.
 
     ``reuse_other_cache_root`` (opt-in) resolves a file cached ONLY under huggingface_hub's
-    import-time root through that root. Studio's cache folder is a setting, so after it changes every
+    import-time root through that root. Unsloth's cache folder is a setting, so after it changes every
     cached asset is invisible to a call pinned to the new root: GBs re-download, and a gated base with
     no valid token 401s even though the bytes are there and the preflight (which checks both roots)
     already cleared it. Routed THROUGH the other root rather than returned raw, so the ref still

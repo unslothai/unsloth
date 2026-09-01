@@ -158,7 +158,7 @@ def _drop_hf_stdout_callbacks(trainer) -> None:
 
     `disable_tqdm=True` only swaps ProgressCallback for PrinterCallback, which prints a
     raw dict per step instead (`{'loss': '0.5684', 'grad_norm': ..., 'epoch': ...}`).
-    Both write to the same stdout, so both have to go; Studio's own progress callback,
+    Both write to the same stdout, so both have to go; Unsloth's own progress callback,
     the SSE stream and `training_progress` are unaffected. Best effort: a transformers
     build without these classes just keeps its current behaviour.
     """
@@ -577,7 +577,7 @@ class UnslothTrainer:
                 if not logs:
                     return
                 # Trainer's end-of-run and end-of-eval summaries carry numbers that
-                # appear nowhere else in Studio (train_samples_per_second,
+                # appear nowhere else in Unsloth (train_samples_per_second,
                 # train_steps_per_second, total_flos, memory, eval runtime). They used
                 # to reach the log only through PrinterCallback's raw stdout dict, so
                 # with that callback gone they are re-published here, structured, once.
@@ -1778,7 +1778,7 @@ class UnslothTrainer:
 
         result_dataset = Dataset.from_list(processed_examples)
         logger.info(
-            f"CSM preprocessing complete: {len(result_dataset)} examples " f"({skipped} skipped)\n"
+            f"CSM preprocessing complete: {len(result_dataset)} examples ({skipped} skipped)\n"
         )
         return result_dataset
 
@@ -2029,7 +2029,7 @@ class UnslothTrainer:
 
         result_dataset = Dataset.from_list(processed_examples)
         logger.info(
-            f"SNAC preprocessing complete: {len(result_dataset)} examples " f"({skipped} skipped)\n"
+            f"SNAC preprocessing complete: {len(result_dataset)} examples ({skipped} skipped)\n"
         )
         return result_dataset
 
@@ -2220,8 +2220,7 @@ class UnslothTrainer:
 
         result_dataset = Dataset.from_list(processed_examples)
         logger.info(
-            f"BiCodec preprocessing complete: {len(result_dataset)} examples "
-            f"({skipped} skipped)\n"
+            f"BiCodec preprocessing complete: {len(result_dataset)} examples ({skipped} skipped)\n"
         )
         sample = result_dataset[0]["text"]
         logger.info(f"Sample text (first 200 chars): {sample[:200]}...\n")
@@ -2413,7 +2412,7 @@ class UnslothTrainer:
 
         result_dataset = HFDataset.from_list(processed_examples)
         logger.info(
-            f"DAC preprocessing complete: {len(result_dataset)} examples " f"({skipped} skipped)\n"
+            f"DAC preprocessing complete: {len(result_dataset)} examples ({skipped} skipped)\n"
         )
         sample = result_dataset[0]["text"]
         logger.info(f"Sample text (first 200 chars): {sample[:200]}...\n")
@@ -2787,8 +2786,7 @@ class UnslothTrainer:
                                 self.dataset_snapshot_path
                             )
                             logger.info(
-                                f"Loaded cached dataset for {dataset_source}: "
-                                f"{len(dataset)} rows\n"
+                                f"Loaded cached dataset for {dataset_source}: {len(dataset)} rows\n"
                             )
                         except Exception as error:
                             from hub.utils.dataset_cache import (
@@ -2803,8 +2801,7 @@ class UnslothTrainer:
                                 raise
                             self._update_progress(
                                 status_message = (
-                                    f"Cached dataset unavailable; "
-                                    f"downloading {dataset_source}..."
+                                    f"Cached dataset unavailable; downloading {dataset_source}..."
                                 )
                             )
                             dataset = None
@@ -3461,7 +3458,7 @@ class UnslothTrainer:
         self._online_eval_dataset = eval_dataset
         train_dataset = dataset["dataset"] if isinstance(dataset, dict) else dataset
 
-        # A step-capped run says nothing about passes, but Studio knows the rows
+        # A step-capped run says nothing about passes, but Unsloth knows the rows
         # and microbatch size, so resolve it here. World size scales rows consumed
         # per step; omitting it would understate the passes.
         resolved_epochs = None
@@ -3479,9 +3476,9 @@ class UnslothTrainer:
                 # kills the feature. Env-only, deliberately NOT worker.py's
                 # _data_parallel_world_size, which also counts visible CUDA devices:
                 # that bounds a row subset where over-counting is free, this feeds a
-                # veto where both directions are wrong. Studio's multi-GPU load is
-                # device_map="balanced", model-parallel to transformers with _n_gpu = 1,
-                # so a balanced 4-GPU run draws one GPU's rows per step and counting
+                # veto where both directions are wrong. Unsloth's multi-GPU load is a
+                # sharding device_map, model-parallel to transformers with _n_gpu = 1,
+                # so a sharded 4-GPU run draws one GPU's rows per step and counting
                 # devices would report 4x the passes, vetoing a qualifying run.
                 world_size = world_size_from_env()
                 if world_size > 1:
@@ -3753,7 +3750,7 @@ class UnslothTrainer:
                     args = TrainingArguments(**config),
                 )
                 self.trainer.add_callback(self._create_progress_callback())
-                # Studio publishes progress itself, so HF's stdout callbacks are pure
+                # Unsloth publishes progress itself, so HF's stdout callbacks are pure
                 # duplication in a log that has no terminal. --verbose keeps them.
                 _drop_hf_stdout_callbacks(self.trainer)
 
@@ -3794,7 +3791,7 @@ class UnslothTrainer:
                     ),
                 )
                 self.trainer.add_callback(self._create_progress_callback())
-                # Studio publishes progress itself, so HF's stdout callbacks are pure
+                # Unsloth publishes progress itself, so HF's stdout callbacks are pure
                 # duplication in a log that has no terminal. --verbose keeps them.
                 _drop_hf_stdout_callbacks(self.trainer)
 
@@ -3841,7 +3838,7 @@ class UnslothTrainer:
 
                 self.trainer = Seq2SeqTrainer(**trainer_kwargs)
                 self.trainer.add_callback(self._create_progress_callback())
-                # Studio publishes progress itself, so HF's stdout callbacks are pure
+                # Unsloth publishes progress itself, so HF's stdout callbacks are pure
                 # duplication in a log that has no terminal. --verbose keeps them.
                 _drop_hf_stdout_callbacks(self.trainer)
 
@@ -4364,7 +4361,7 @@ class UnslothTrainer:
 
             # ========== PROGRESS TRACKING ==========
             self.trainer.add_callback(self._create_progress_callback())
-            # Studio publishes progress itself, so HF's stdout callbacks are pure
+            # Unsloth publishes progress itself, so HF's stdout callbacks are pure
             # duplication in a log that has no terminal. --verbose keeps them.
             _drop_hf_stdout_callbacks(self.trainer)
 

@@ -12,7 +12,7 @@ as every entry in the instrument-defect list this file is a response to: MEASURI
 WHOSE MEANING IS NOT STABLE ACROSS THE THINGS BEING COMPARED.
 
 WHY YOU CANNOT RECOGNISE IT BY ITS SIZE, which is the part that has misled people. Mid-stream,
-Studio does not show a prefix of the finished reply. `parseIncompleteMarkdown` runs remend over the
+Unsloth does not show a prefix of the finished reply. `parseIncompleteMarkdown` runs remend over the
 tail and closes whatever construct is half-arrived, KaTeX renders the repaired formula and, while
 it will not parse, writes the parse error and its character offset into a `title`, Shiki
 re-tokenises the repaired fence, and the trailing code block carries `data-incomplete`. None of
@@ -84,7 +84,7 @@ def message(
     extra: list | None = None,
     attrs: dict | None = None,
 ) -> dict:
-    """One thread message, in the shape Studio renders.
+    """One thread message, in the shape Unsloth renders.
 
     `streaming` puts `data-status="running"` on the text part, which is assistant-ui's own
     published state and what `scene/dom.js::streamingMessages` reads. A settled part reads
@@ -607,7 +607,7 @@ def test_a_message_that_vanished_is_never_excused_by_being_in_flight():
 def test_a_running_reply_the_probe_could_not_place_refuses_the_pair():
     """A scan that can return zero needs a control, and this one can.
 
-    `streamingMessages()` walks selectors written against Studio's markup. Rename `data-status` and
+    `streamingMessages()` walks selectors written against Unsloth's markup. Rename `data-status` and
     it matches nothing, every capture reads as "no reply was in flight", and the instrument returns
     the strongest claim it has about the stream on the strength of never having looked. The app
     publishes the same fact through the Stop button, so the disagreement is carried out of the page

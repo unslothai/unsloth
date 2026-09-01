@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/* POTENCY PROBE for `content-visibility: auto` on Studio's chat message roots.
+/* POTENCY PROBE for `content-visibility: auto` on Unsloth's chat message roots.
  *
  * Installed through `SBENCH_EXTRA_INIT_SCRIPT`, reporting through `SBENCH_PAGE_CONSOLE`:
  *
@@ -13,14 +13,14 @@
  *         --password-b "$(cat "$STUDIO_HOME_B/auth/.bootstrap_password")"
  *
  * The credential flags are spelled out rather than trailed off with an ellipsis. A probe run
- * drives a real Studio like every other command in the loop, and without `--password` it dies on
- * an HTTP 401 only after the browser has already started. See "You need a Studio, and you need
+ * drives a real Unsloth like every other command in the loop, and without `--password` it dies on
+ * an HTTP 401 only after the browser has already started. See "You need an Unsloth, and you need
  * its password" in the studiobench README.
  *
- * ONE PASSWORD PER ARM when both arms are attached. Two separately booted Studios mint two
+ * ONE PASSWORD PER ARM when both arms are attached. Two separately booted Unsloth instances mint two
  * different bootstrap passwords, so reusing the first for the treatment is a 401 on the second
  * arm only, after the browser is up. `--password-b` defaults to `--password`, which is right
- * for the single-Studio case and wrong for this one.
+ * for the single-Unsloth case and wrong for this one.
  *
  * A run carrying this is a PROBE RUN and its payload is never scored: the probe forces layout on
  * every sample, and one of the things it forces is the very rendering it is asking about. See the
@@ -60,7 +60,7 @@
  * ALONE (a remembered size of zero) are all reported every sample, to be read against the
  * unarmed side of the same session.
  *
- * OUT OF THE PAGE VIA THE CONSOLE. Studio ships `connect-src 'self'`, so a beacon to a collector
+ * OUT OF THE PAGE VIA THE CONSOLE. Unsloth ships `connect-src 'self'`, so a beacon to a collector
  * on another port is blocked by CSP before it is sent. The console is the one channel that costs
  * nothing and cannot be silently dropped.
  */

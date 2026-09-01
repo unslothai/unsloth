@@ -55,7 +55,7 @@ class TestLocalhostHost:
 
 class TestZeroHost:
     def test_default_is_unset(self):
-        # A network bind installs no override, so the Studio UI's tool pills (which
+        # A network bind installs no override, so the Unsloth UI's tool pills (which
         # send enable_tools: false when all off) are honored rather than overridden.
         assert (
             resolve_tool_policy(
