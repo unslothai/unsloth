@@ -1916,8 +1916,6 @@ class ResearchSupervisor:
             preview_labels = True,
         )
         plan = _parse_and_validate_plan(response, planning_reasoning, max_steps)
-        # Arming research in the composer is the approval, so the plan is queued as it is
-        # stored rather than parked for a second confirmation.
         try:
             result = await asyncio.to_thread(
                 db.set_plan,
@@ -1925,7 +1923,6 @@ class ResearchSupervisor:
                 plan,
                 None,
                 self.worker_id,
-                auto_approve = True,
             )
         except db.ResearchConflictError:
             if await asyncio.to_thread(db.is_cancel_requested, run["id"]):
