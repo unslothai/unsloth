@@ -4705,92 +4705,30 @@ def _thread_has_checkpoint(thread_id, branch_messages = None) -> bool:
     cannot happen, and costs the request the tool-path guards that reject `n > 1` and
     non-streaming ask/auto.
 
-    Read from the assistant turn's own `contextTruncation`, the same metadata the sticky
-    boundary uses, so no new state is stored and it survives a restart. The NEWEST turn
-    answers: while an epoch is in force every fit records it on the turn it produced, so
-    a thread mid-epoch still says yes, and a thread whose window grew until the whole
-    branch fits again says no rather than forcing the loop open for ever.
+    Read through the sticky boundary's branch-state resolver, so no new state is stored and
+    admission cannot disagree about Retry siblings or wire-shaped tool turns. The newest
+    authoritative turn answers: while an epoch is in force every fit records it on the turn
+    it produced, while a completed boundary-less turn ends it.
     """
     if not thread_id:
         return False
     try:
-        from core.rag import conversation_archive
+        from core.inference.llama_cpp import _compaction_branch_states
         from storage import studio_db
 
-        # Scoped to the branch the request is on. The stored rows are the whole DAG, so a
-        # Retry that forked BEFORE the epoch-recording turn leaves it on an abandoned
-        # sibling; a thread-wide scan would then report a checkpoint for a branch that
-        # never reset. Same filter the sticky boundary applies, for the same reason.
-        # As dicts: on the ordinary completions path these are `ChatMessage` models, and
-        # the archive helper reads them with `.get`, so it raised, the caller swallowed it
-        # and every thread reported no checkpoint. A tools-off thread that HAD reset then
-        # never reopened the loop, so the block's promise that the history is searchable
-        # was false for the whole of that epoch.
-        branch = conversation_archive.branch_message_texts(
-            _as_plain_messages(branch_messages), ("assistant",)
+        # As dicts: the completions path sends `ChatMessage`, the resolver uses `.get`.
+        states = _compaction_branch_states(
+            list(studio_db.list_chat_messages(str(thread_id)) or []),
+            _as_plain_messages(branch_messages),
         )
-        if branch_messages and not branch:
-            # A branch with no reply of its own never recorded an epoch. Without this the
-            # filter below is skipped rather than applied and the scan goes thread-wide
-            # again, which editing or regenerating the FIRST user turn hits by re-sending
-            # [system, user]. `_sticky_compaction_boundary` returns 0 there.
-            return False
-        live = set(branch or ())
-        rows = [
-            message
-            for message in reversed(studio_db.list_chat_messages(str(thread_id)) or [])
-            if message.get("role") == "assistant"
-        ]
-        if branch:
-            # Exact matches where any exist, substring only as the fallback: the branch
-            # check is textual, so an abandoned short reply rides in on a longer live one
-            # ("Done" against "Not done yet") and reopens the loop on the live branch. The
-            # sticky boundary prefers exact matches for the same collision.
-            exact = [
-                message
-                for message in rows
-                if conversation_archive.message_text(message.get("content")) in live
-            ]
-            rows = exact or [
-                message
-                for message in rows
-                if conversation_archive.content_on_branch(message.get("content"), branch)
-            ]
-        if not rows:
-            return False
-        # Rows the text cannot tell apart decide TOGETHER. Two Retry siblings can carry
-        # byte-identical replies with only the abandoned one having reset, and taking the
-        # first match reopened the loop on the branch that never did. Where the branch
-        # check cannot separate them, choose the reading that leaves the request as it was,
-        # as the sticky boundary's `min(boundaries)` does. The case this loses -- a real
-        # epoch on the live sibling -- is one the sticky boundary declines to replay
-        # anyway, so there is nothing for the tool to reach back to.
-        newest = conversation_archive.message_text(rows[0].get("content"))
-        twins = [
-            message
-            for message in rows
-            if conversation_archive.message_text(message.get("content")) == newest
-        ]
-
-        def _checkpointed(message: dict) -> bool:
-            metadata = message.get("metadata") or {}
-            if not isinstance(metadata, dict):
-                return False
-            truncation = metadata.get("contextTruncation") or (metadata.get("custom") or {}).get(
-                "contextTruncation"
-            )
-            return bool(isinstance(truncation, dict) and truncation.get("checkpoint"))
-
-        # The NEWEST distinguishable state answers, and nothing older. While an epoch is
-        # in force every fit records it on the turn it produced, so the newest row says
-        # so too; once the window grows and the whole branch fits again the fit records
-        # nothing, and scanning back to an older reset then forced the tool loop on for
-        # the rest of the thread's life -- overriding enable_tools = false, and the n > 1
-        # and non-streaming guards with it, to repair a compaction that no longer exists.
-        return all(_checkpointed(message) for message in twins)
+        return bool(states) and all(
+            state.truncation is not None
+            and state.truncation.get("fits")
+            and state.truncation.get("checkpoint")
+            for state in states
+        )
     except Exception:
         return False
-    return False
 
 
 async def _select_request_tools(
