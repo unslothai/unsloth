@@ -48,8 +48,7 @@ const outboundPrune = slice(
   "function pruneOutboundHistory(",
   "function extractImageBase64(",
 );
-// Through the reconstruction, not just up to it: the branches below build the repository
-// from msgs, so a filter there drops turns after every check above has passed.
+// Through the reconstruction: the branches below build the repository from msgs.
 const historyLoad = slice(
   runtimeProvider,
   "let msgs: MessageRecord[];",
@@ -64,13 +63,11 @@ const historyAppend = slice(
 test("the outbound prune has no second way to drop a turn", () => {
   // The input is copied whole; filtering here drops a turn without touching the loop.
   assert.match(outboundPrune, /const history = \[\.\.\.messages\];/);
-  // Inside the loop a turn can only be lost three ways, and the guard already owns one of
-  // each. A second is a dedupe, whatever it is called.
+  // The guard owns one of each already, so a second is a dedupe under any name.
   assert.equal(count(outboundPrune, /\bcontinue;/g), 1);
   assert.equal(count(outboundPrune, /surviving\.pop\(\)/g), 1);
   assert.equal(count(outboundPrune, /surviving\.push\(message\);/g), 1);
-  // Directly in the loop and first on its line. A block wrapper changes the depth, an
-  // inline one leaves something before it, and either is a condition on surviving at all.
+  // Depth catches a block wrapper, line start catches an inline one.
   assert.equal(
     depthAt(outboundPrune, "surviving.push(message);"),
     depthAt(outboundPrune, "const message = history[index];"),
@@ -90,8 +87,7 @@ test("appending a message does not read the whole thread", () => {
 });
 
 test("nothing between the load and the rebuild narrows msgs", () => {
-  // A dangling parent breaks the thread, so cover both names and in-place removal.
-  // Not reordering: the existing msgs.sort keeps the set.
+  // Both names and in-place removal. Not reordering: the existing msgs.sort keeps the set.
   assert.deepEqual(
     historyLoad.match(/\b(?:msgs|snapshot\.messages)\s*=\s*[^=][^;\n]*/g),
     ["msgs = snapshot.messages", "msgs = []"],
