@@ -43,6 +43,7 @@ class SandboxProfilePathError(ValueError):
 class UnsafeSandboxWorkdirError(RuntimeError):
     """The writable workdir would expose an inode outside its path boundary."""
 
+
 _sandbox_available_cache: bool | None = None
 # Absolute path to ``bwrap``, resolved once at probe time so the runtime
 # sandbox argv doesn't depend on the child's PATH (``_build_safe_env``

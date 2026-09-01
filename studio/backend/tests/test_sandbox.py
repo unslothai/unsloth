@@ -507,12 +507,12 @@ def test_unrepresentable_profile_path_uses_configured_fallback(monkeypatch):
 
     monkeypatch.setattr(tools, "build_sandbox_argv", unsafe_profile)
     monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_STRICT", raising = False)
-    argv, sandboxed = tools._sandbox_argv_or_fallback(inner, "/tmp/legal\"path", True)
+    argv, sandboxed = tools._sandbox_argv_or_fallback(inner, '/tmp/legal"path', True)
     assert argv == inner
     assert sandboxed is False
 
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_STRICT", "1")
-    argv, sandboxed = tools._sandbox_argv_or_fallback(inner, "/tmp/legal\"path", True)
+    argv, sandboxed = tools._sandbox_argv_or_fallback(inner, '/tmp/legal"path', True)
     assert argv is None
     assert sandboxed is False
 
@@ -580,9 +580,7 @@ def test_linux_bwrap_argv_wraps_inner_argv_with_nproc_setter(monkeypatch, tmp_pa
 
     monkeypatch.setattr(sandbox, "_linux_bwrap_path", "/usr/bin/bwrap")
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_NPROC", "77")
-    argv = sandbox._linux_bwrap_argv(
-        ["/usr/bin/python3", "-c", "print(1)"], str(tmp_path)
-    )
+    argv = sandbox._linux_bwrap_argv(["/usr/bin/python3", "-c", "print(1)"], str(tmp_path))
     sep = argv.index("--")
     inner = argv[sep + 1 :]
     # Inner argv now starts with a python wrapper, not the user's argv.

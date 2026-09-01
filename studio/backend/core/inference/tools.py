@@ -7406,9 +7406,7 @@ def _strict_sandbox_required() -> bool:
 
 
 def _sandbox_argv_or_fallback(
-    inner_argv: list[str],
-    workdir: str,
-    sandboxed: bool,
+    inner_argv: list[str], workdir: str, sandboxed: bool
 ) -> tuple[list[str] | None, bool]:
     """Build the platform wrapper, honoring strict mode for unsafe paths."""
     if not sandboxed:
