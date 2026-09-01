@@ -2436,6 +2436,68 @@ class TestAnthropicMessagesToolRouting:
         assert entry["context_length"] == 2048
         assert monitor.active_count() == 0
 
+    @pytest.mark.parametrize("with_tools", [False, True])
+    def test_non_streaming_disconnect_stops_generation_and_records_it_cancelled(
+        self, monkeypatch, with_tools
+    ):
+        # The route already 499s a client that is gone before admission, so the gap is a
+        # client that leaves once a slot was granted and tokens are already flowing.
+        import routes.inference as inf_mod
+
+        total = 200
+        emitted = []
+        started = threading.Event()
+
+        class _LeavingRequest:
+            state = SimpleNamespace()
+            url = SimpleNamespace(path = "/v1/messages")
+            method = "POST"
+
+            async def is_disconnected(self):
+                return started.is_set()
+
+        def _emit(kwargs, event):
+            cancel_event = kwargs["cancel_event"]
+            for _ in range(total):
+                if cancel_event.wait(0.005):
+                    return
+                emitted.append(1)
+                started.set()
+                yield event
+
+        def _gen_plain(**kwargs):
+            text = ""
+            for _ in _emit(kwargs, None):
+                text += "x"
+                yield text
+
+        def _gen_tools(**kwargs):
+            yield from _emit(kwargs, {"type": "content", "text": "x"})
+
+        _mock_backend(
+            monkeypatch,
+            supports_tool_passthrough = False,
+            generate_chat_completion = _gen_plain,
+            generate_chat_completion_with_tools = _gen_tools,
+        )
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        fields = {"tools": [{"name": "x", "input_schema": {"type": "object"}}]} if with_tools else {}
+
+        response = _drive(
+            anthropic_messages(
+                _basic_payload(**fields), request = _LeavingRequest(), current_subject = "t"
+            )
+        )
+
+        assert response.status_code == 200
+        assert len(emitted) < total, "generation ran to completion after the client left"
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "cancelled"
+        # A cancelled run has no natural stop reason; end_turn would read as a full answer.
+        assert entry["stop_reason"] is None
+        assert monitor.active_count() == 0
+
     @pytest.mark.parametrize("stream", [False, True])
     @pytest.mark.parametrize("with_tools", [False, True])
     def test_reasoning_only_output_is_not_duplicated(self, monkeypatch, stream, with_tools):

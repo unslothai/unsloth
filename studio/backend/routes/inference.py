@@ -5812,17 +5812,22 @@ def _monitor_anthropic_json_response(
     response,
     monitor_id: Optional[str],
     context_length = None,
+    cancel_event = None,
 ) -> None:
     if not monitor_id:
         return
+    # A cancelled non-streaming run still returns a normal 200 body built from the
+    # partial output, so the body alone cannot tell the two apart. The streaming
+    # sibling reads cancel_event for the same reason.
+    status = "cancelled" if cancel_event is not None and cancel_event.is_set() else "completed"
     body = getattr(response, "body", b"")
     try:
         data = json.loads(body.decode("utf-8") if isinstance(body, bytes) else body)
     except Exception:
-        api_monitor.finish(monitor_id)
+        api_monitor.finish(monitor_id, status)
         return
     if not isinstance(data, dict):
-        api_monitor.finish(monitor_id)
+        api_monitor.finish(monitor_id, status)
         return
     text = _monitor_anthropic_content_blocks(data.get("content"))
     if text:
@@ -5830,7 +5835,7 @@ def _monitor_anthropic_json_response(
     if data.get("stop_reason"):
         api_monitor.set_perf(monitor_id, stop_reason = str(data["stop_reason"]))
     _monitor_anthropic_usage(monitor_id, data.get("usage"), context_length)
-    api_monitor.finish(monitor_id)
+    api_monitor.finish(monitor_id, status)
 
 
 def _monitor_anthropic_response(
@@ -5843,7 +5848,7 @@ def _monitor_anthropic_response(
         return response
     body_iterator = getattr(response, "body_iterator", None)
     if body_iterator is None:
-        _monitor_anthropic_json_response(response, monitor_id, context_length)
+        _monitor_anthropic_json_response(response, monitor_id, context_length, cancel_event)
         return response
 
     async def _monitored_body():
@@ -28865,14 +28870,19 @@ async def _anthropic_tool_non_streaming(
 
     disconnect_watcher = asyncio.create_task(_await_disconnect_then_cancel(request, cancel_event))
     try:
-        return await _run_blocking_generation(
+        response = await _run_blocking_generation(
             _drain_and_build,
             cancel_event,
             name = "anthropic-tool-nonstream",
             daemon = True,
         )
     finally:
-        disconnect_watcher.cancel()
+        await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
+    # The 200 is built from partial output, so unmarked the keepwarm middleware reads it
+    # as a clean completion and takes the resident model away from a preview.
+    if cancel_event is not None:
+        _mark_cancelled_json_response_failed(request, cancel_event)
+    return response
 
 
 def _anthropic_plain_response_from_events(
@@ -28943,13 +28953,18 @@ async def _anthropic_plain_non_streaming(
 
     disconnect_watcher = asyncio.create_task(_await_disconnect_then_cancel(request, cancel_event))
     try:
-        return await _run_blocking_generation(
+        response = await _run_blocking_generation(
             _drain_and_build,
             cancel_event,
             name = "anthropic-plain-nonstream",
         )
     finally:
-        disconnect_watcher.cancel()
+        await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
+    # The 200 is built from partial output, so unmarked the keepwarm middleware reads it
+    # as a clean completion and takes the resident model away from a preview.
+    if cancel_event is not None:
+        _mark_cancelled_json_response_failed(request, cancel_event)
+    return response
 
 
 # =====================================================================
