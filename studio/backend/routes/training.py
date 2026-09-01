@@ -75,6 +75,7 @@ except ImportError:
     from utils.paths import is_local_path, normalize_path, resolve_dataset_path
 
 from auth.authentication import authenticated_via_api_key, get_current_subject
+from auth.storage import is_installation_owner
 
 from utils.utils import (
     canonical_model_repo_id,
@@ -838,7 +839,11 @@ def _reject_untrainable_model_request(
                 )
             remote_format = _remote_untrainable_model_format(
                 request.model_name,
-                request.hf_token or None,
+                # False, not None: None lets huggingface_hub fall back to the
+                # process token or a cached login, which is the owner's, so a
+                # managed account would probe a private repo with it and learn
+                # whether it exists. The owner keeps the fallback.
+                request.hf_token or (None if is_installation_owner() else False),
             )
         except HTTPException as error:
             metadata_error = error

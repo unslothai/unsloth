@@ -1083,6 +1083,43 @@ def create_mlx_trainer_adapter(*args, **kwargs):
     return _MLXTrainerAdapter(*args, **kwargs)
 
 
+# The env keys huggingface_hub reads a token from, plus the switch that stops it
+# reaching for the machine's cached login when none of them is set.
+_HF_TOKEN_ENV_KEYS = (
+    "HF_TOKEN",
+    "HF_HUB_TOKEN",
+    "HUGGING_FACE_HUB_TOKEN",
+    "HUGGINGFACE_HUB_TOKEN",
+    "HUGGINGFACEHUB_API_TOKEN",
+)
+
+
+def _ambient_hub_credentials_suppressed_for(subject: "Optional[str]") -> dict:
+    """Env overrides that stop a managed account's worker using the owner's token.
+
+    The training child is spawned, so it copies the live parent environment: an
+    owner HF_TOKEN in the server's own environment, or a cached hub login, would
+    otherwise let a managed account train on a private repo it cannot read. That
+    is the same credential the hub download path already keeps owner-only, so the
+    two agree.
+
+    Blanked rather than removed because spawn takes no env argument: these are
+    applied to the parent environment for the duration of the start and restored
+    afterwards, and huggingface_hub reads an empty value as no token at all.
+
+    The owner gets an empty dict, so their runs are unchanged. An account that
+    supplies its own token is unaffected: that one travels in the config, and the
+    worker sets it after this.
+    """
+    from auth.storage import is_installation_owner
+
+    if is_installation_owner(subject):
+        return {}
+    suppressed = {key: "" for key in _HF_TOKEN_ENV_KEYS}
+    suppressed["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
+    return suppressed
+
+
 class TrainingBackend:
     """
     Training orchestration backend — subprocess-based.
@@ -1797,6 +1834,9 @@ class TrainingBackend:
             from utils.hf_cache_settings import child_environment_for_spawn, get_hf_cache_paths
 
             cache_env = get_hf_cache_paths().child_env({})
+            cache_env.update(
+                _ambient_hub_credentials_suppressed_for(self._active_workspace_subject)
+            )
 
             try:
                 with (
@@ -2455,10 +2495,16 @@ class TrainingBackend:
             config = {**config, "disable_xet": True}
             logger.warning("Respawning training worker with HF_HUB_DISABLE_XET=1 after Xet stall")
 
+            # Carries the ambient-credential suppression the first spawn applied;
+            # the fallback below rebuilds it, so a respawn cannot quietly restore
+            # the owner's token to a managed account's worker.
             cache_env = getattr(self, "_last_hf_cache_env", None)
             if not cache_env:
                 from utils.hf_cache_settings import get_hf_cache_paths
                 cache_env = get_hf_cache_paths().child_env({})
+                cache_env.update(
+                    _ambient_hub_credentials_suppressed_for(self._active_workspace_subject)
+                )
             from utils.hf_cache_settings import child_environment_for_spawn
             from utils.transformers_version import sidecar_swap_in_progress
 

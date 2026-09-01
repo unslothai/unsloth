@@ -438,6 +438,16 @@ def _client(
         # Belt-and-suspenders: never spawn unless stdio is enabled on this host.
         if not stdio_mcp_enabled():
             raise PermissionError("stdio MCP servers are disabled on this host")
+        # And never on behalf of a managed account, whatever row asked for it.
+        # The routes refuse to save one, but a row predating that, or reached by
+        # some path they do not cover, must not become a process running as the
+        # server's OS user for an account that cannot administer the install.
+        from auth.storage import is_installation_owner
+
+        if not is_installation_owner():
+            raise PermissionError(
+                "Only the installation owner can run local (stdio) MCP servers"
+            )
         from fastmcp.client.transports import StdioTransport
 
         parts = parse_stdio_command(url)

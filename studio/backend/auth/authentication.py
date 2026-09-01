@@ -410,18 +410,34 @@ async def authenticated_without_credential(
     return admitted_without_credential(credentials)
 
 
-def require_ui_session_for_local_commands(via_api_key: bool) -> None:
-    """Refuse an sk-unsloth API key that asks to define a local (stdio) MCP command.
+def require_ui_session_for_local_commands(
+    via_api_key: bool, subject: str | None = None
+) -> None:
+    """Refuse anyone but the owner's UI session a local (stdio) MCP command.
 
     stdio MCP runs a command on this host as the backend user, outside the
-    python/terminal sandbox, so only a UI session may choose what runs. API keys
-    keep http(s) MCP, and stdio servers the owner already configured.
+    python/terminal sandbox, so whoever chooses what runs can read and write
+    every account's workspace and anything else the process can reach. That is
+    installation administration, not a per-account setting.
+
+    The API-key half of this is older: keys keep http(s) MCP, and stdio servers
+    the owner already configured. The owner half is what managed accounts need,
+    since "a UI session" stopped meaning "the owner" once other accounts could
+    sign in. Path containment cannot help here, because the command is an
+    executable name rather than a path into a workspace.
     """
     if via_api_key:
         raise HTTPException(
             status_code = status.HTTP_403_FORBIDDEN,
             detail = "Local (stdio) MCP servers can only be configured from the Unsloth UI, "
             "not with an API key. Use an http:// or https:// MCP server instead.",
+        )
+    if not is_installation_owner(subject):
+        raise HTTPException(
+            status_code = status.HTTP_403_FORBIDDEN,
+            detail = "Only the installation owner can configure local (stdio) MCP servers, "
+            "because they run as the server's OS user. Use an http:// or https:// "
+            "MCP server instead.",
         )
 
 

@@ -2725,3 +2725,51 @@ def test_the_owner_check_does_not_depend_on_a_readable_auth_database(monkeypatch
     assert storage_mod.is_installation_owner(LEGACY_WORKSPACE_SUBJECT) is True
     # Anything else fails closed: withhold the capability rather than grant it.
     assert storage_mod.is_installation_owner("alice") is False
+
+
+def test_only_the_owner_may_configure_or_run_a_local_mcp_command():
+    from fastapi import HTTPException
+
+    from auth.authentication import require_ui_session_for_local_commands
+
+    # stdio MCP runs an executable of the caller's choosing as the server's OS
+    # user, which reaches every account's files. That is administration, not a
+    # per-account setting, and path containment cannot help: the command is an
+    # executable name, not a path into a workspace.
+    require_ui_session_for_local_commands(False, LEGACY_WORKSPACE_SUBJECT)
+    with pytest.raises(HTTPException) as exc:
+        require_ui_session_for_local_commands(False, "alice")
+    assert exc.value.status_code == 403
+    # The older API-key rule still holds, for the owner too.
+    with pytest.raises(HTTPException):
+        require_ui_session_for_local_commands(True, LEGACY_WORKSPACE_SUBJECT)
+
+
+def test_the_stdio_spawn_itself_refuses_a_managed_account(monkeypatch):
+    from core.inference import mcp_client
+
+    monkeypatch.setattr(mcp_client, "stdio_mcp_enabled", lambda: True)
+
+    # Second line of defence, behind the route check: a row that predates the
+    # route guard must not still become a process running as the server's user.
+    token = _bind("alice")
+    try:
+        with pytest.raises(PermissionError):
+            mcp_client._client("npx some-server", None)
+    finally:
+        reset_workspace_subject(token)
+
+
+def test_a_managed_training_run_cannot_borrow_the_owners_hub_token():
+    from core.training.training import _ambient_hub_credentials_suppressed_for
+
+    # The training child is spawned, so it copies the live parent environment.
+    # An owner HF_TOKEN there, or a cached hub login, would let a managed account
+    # train on a private repo it cannot read.
+    assert _ambient_hub_credentials_suppressed_for(LEGACY_WORKSPACE_SUBJECT) == {}
+    suppressed = _ambient_hub_credentials_suppressed_for("alice")
+    assert suppressed["HF_TOKEN"] == ""
+    assert suppressed["HUGGING_FACE_HUB_TOKEN"] == ""
+    # Blanking the variables is not enough on its own: without this the hub still
+    # reaches for the machine's cached login.
+    assert suppressed["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == "1"
