@@ -190,12 +190,10 @@ def _restricted_to_main(expr: str) -> bool:
             return any(restricted(p) for p in ands)
         if re.search(r"!(?!=)", part):
             return False
-        # The leaf must BE the equality, not merely contain it. Searching inside
-        # accepted every wrapper that inverts it while quoting it: `(... ) == false`
-        # and `... != true` chain a second comparison, and `startsWith(..., 'false')`
-        # is true off main because GitHub casts the inner boolean to the string
-        # 'false' for string functions. A whitelist ends that class rather than
-        # naming its members.
+        # The leaf must BE the equality, not contain it. Searching inside accepted
+        # every wrapper that quotes it and inverts it: `(...) == false`, `... != true`,
+        # and `startsWith(..., 'false')`, which is true off main because GitHub casts
+        # the inner boolean to a string. A whitelist ends the class.
         return bool(_LEAF_MAIN.fullmatch(part))
 
     return restricted(expr)
@@ -696,28 +694,24 @@ def test_local_action_references_use_the_nested_checkout_path():
 
 # --- Playwright browser caches -------------------------------------------------------
 #
-# The engines are ~470 MB each and four workflows download them. They are keyed by
-# `ms-playwright-<os>-<version>-<engine token>-<generation>`, and the engine token exists
-# so a chromium-only job cannot restore a three-engine entry and skip a download it needed
-# (see tests/studio/test_ui_shard_engines.py, which enforces the token against the SHARDS).
-#
-# What that guard cannot see is the other direction, ACROSS jobs: two jobs installing the
-# same engines on the same runner under two different keys. Nothing breaks, which is why
-# it survived. Measured 2026-09-01, four live entries holding two distinct payloads:
+# The engines are ~470 MB each and four workflows download them, keyed by
+# `ms-playwright-<os>-<version>-<engine token>-<generation>`. test_ui_shard_engines.py
+# enforces the token against the SHARDS, so a chromium-only job cannot restore a
+# three-engine entry. What it cannot see is the other direction, ACROSS jobs: two jobs
+# installing the same engines under two keys. Nothing breaks, which is why it survived.
+# Measured 2026-09-01, four live entries holding two distinct payloads:
 #
 #     467 MiB  ms-playwright-Linux-1.62.0-cfw-v1     ui-indicator
 #     467 MiB  ms-playwright-Linux-1.62.0-cfw-v2     ui-smoke chat/banner   <- same bytes
 #     269 MiB  ms-playwright-Linux-1.62.0-c-v2       studio-frontend-ci
 #     269 MiB  ms-playwright-Linux-1.62.0-sbench-v1  studiobench            <- same bytes
 #
-# Both duplicates came from the same mistake: a key was rewritten in one call site and not
-# in its twin. #9283 moved ui-smoke to `-<engine_key>-v2` and left ui-indicator on
-# `-cfw-v1` four hundred lines below its last hunk; #9296 minted `-sbench-v1` three days
-# after `-c-v2` already meant "chromium on Linux". Each cost a second copy of identical
-# bytes and a download the sibling job had already paid for.
+# Both came from one mistake: a key rewritten in one call site and not its twin. #9283
+# moved ui-smoke to `-<engine_key>-v2` and left ui-indicator on `-cfw-v1` four hundred
+# lines below its last hunk; #9296 minted `-sbench-v1` three days after `-c-v2` already
+# meant "chromium on Linux". Each bought a second copy of identical bytes.
 #
-# Derived from the workflows: adding a fifth Playwright consumer with a novel token fails
-# HERE rather than quietly buying another copy.
+# Derived from the workflows, so a fifth consumer with a novel token fails HERE.
 
 _PW_EXPR = re.compile(r"\$\{\{\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\}\}")
 # `install-deps` cannot match: `install` must be followed by whitespace.
@@ -727,13 +721,11 @@ PW_ENGINES = ("chromium", "firefox", "webkit")
 
 
 def _uses(step):
-    """A step's `uses`, casefolded, because GitHub resolves owner/repo case-insensitively.
+    """A step's `uses`, casefolded: GitHub resolves owner/repo case-insensitively.
 
-    `Actions/Cache/Save@v6` runs the same action as the lowercase spelling, so a
-    case-sensitive match let a writer skip these guards while still working. Only the
-    owner/repo half is case-insensitive; the ref after `@` is a git ref and is not, and
-    nothing here matches on the ref. Local `./.github/actions/...` references are
-    filesystem paths on the runner and are compared raw.
+    `Actions/Cache/Save@v6` is the same action, so a case-sensitive match let a writer
+    skip these guards. The ref after `@` is case-sensitive but nothing here matches on
+    it, and local `./.github/actions/...` paths are compared raw.
     """
     return str(step.get("uses", "")).casefold()
 
@@ -846,10 +838,9 @@ def _playwright_jobs():
             for step in cache_steps:
                 key = _resolve(str((step.get("with") or {}).get("key", "")), row)
                 key = _forwarded_key(key, steps, row)
-                # Carry the path: actions/cache folds it into the entry's version, so
-                # two steps sharing a key but not a path address DIFFERENT caches, and
-                # comparing keys alone would call that pair aligned while every run
-                # missed and re-downloaded the browsers.
+                # actions/cache folds the path into the entry version, so two steps
+                # sharing a key but not a path address DIFFERENT caches; comparing keys
+                # alone would call such a pair aligned while every run re-downloaded.
                 ident = (key, _resolve(str((step.get("with") or {}).get("path", "")), row))
                 (restore if "/restore@" in str(step["uses"]) else save).append(ident)
             shard = row.get("matrix.shard") or row.get("matrix.engine_key")
