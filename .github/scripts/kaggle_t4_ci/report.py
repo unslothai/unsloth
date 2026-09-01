@@ -92,6 +92,42 @@ def version_table(reports: list) -> list[str]:
     return lines
 
 
+# The label the Studio payload reports under. Duplicated in
+# kaggle_studio_ci/report.py rather than shared: these two packages have no
+# import relationship and both already ship a module called `report`, so a
+# shared helper would mean putting one of them on the other's sys.path -- which
+# is how `import report` starts resolving to the wrong file.
+STUDIO_LABEL = "studio-gpu"
+
+
+def own_verdict(kernel_verdict: str, kernel_reason: str, reports: list, expect: int):
+    """This reporter's verdict over ITS OWN payloads, not the kernel's.
+
+    The launcher writes one verdict for the whole kernel, and since
+    --with-studio that kernel holds two unrelated experiments. Reading the
+    kernel verdict here means a failing training leg prints "Kaggle T4 smoke: FAIL"
+    above a section listing zero failures, and a failing Studio payload prints
+    the same over four green legs. Both are the misleading-red twin of the
+    green tick that tested nothing, and both would send someone to read the
+    wrong payload.
+
+    So the verdict is recomputed from the filtered reports. The kernel reason
+    is kept only when the two agree; otherwise it describes the other half.
+
+    `infra` is deliberately not synthesised: with nothing of ours back, the
+    kernel-level reason (quota, concurrency cap, a push that was throttled) is
+    the only account of why, and it applies to every payload equally.
+    """
+    if not reports:
+        return (kernel_verdict if kernel_verdict == "infra" else "partial"), kernel_reason
+    failing = [r for r in reports if not r.get("passed")]
+    if failing:
+        return "fail", f"{len(failing)} of {len(reports)} payload(s) failed their assertions"
+    if len(reports) < expect:
+        return "partial", f"only {len(reports)} of {expect} payload(s) reported back"
+    return "pass", f"all {len(reports)} payload(s) passed"
+
+
 def render(report: dict) -> list[str]:
     lines = [
         f"#### payload `{report.get('label', '?')}`  " f"model `{report.get('model', '?')}`",
@@ -301,6 +337,66 @@ def kernel_log_text(evidence: Path) -> str:
     return "".join(chunks)
 
 
+PREFETCH_SENTINEL = "KAGGLE_CI_PREFETCH"
+
+
+def prefetch_table(evidence: Path) -> list[str]:
+    """What the prefetch lane actually achieved, from the kernel log.
+
+    This is the instrument, not decoration. The gpt-oss download time was never
+    measured -- an earlier estimate of "~282s" was subtraction, not measurement
+    -- and the whole leg order is arranged around it. Putting the number in the
+    job summary is what lets the next person confirm or reject the reorder
+    without downloading an artifact, including the case where it did not pay
+    for itself.
+
+    Absent on a kernel built without the lane, which reads as no section at
+    all rather than as a table of zeroes.
+    """
+    text = kernel_log_text(evidence)
+    if not text:
+        return []
+    records = []
+    for line in text.splitlines():
+        marker = PREFETCH_SENTINEL + " "
+        if marker in line:
+            try:
+                records.append(json.loads(line.split(marker, 1)[1]))
+            except (ValueError, IndexError):
+                continue
+    if not records:
+        return []
+    lines = [
+        "#### model prefetch",
+        "",
+        "| repo | ok | download s | MB/s | GB | transport | attempts |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for r in records:
+        gb = round((r.get("bytes") or 0) / 1e9, 2)
+        lines.append(
+            f"| `{r.get('repo', '?')}` | {'yes' if r.get('ok') else '**NO**'} | "
+            f"{r.get('download_seconds') if r.get('download_seconds') is not None else '-'} | "
+            f"{r.get('mb_per_s') if r.get('mb_per_s') is not None else '-'} | {gb} | "
+            f"{r.get('transport', '?')} | {r.get('attempts', '?')} |"
+        )
+    failed = [r for r in records if not r.get("ok")]
+    lines.append("")
+    if failed:
+        # Not a failure of the run. Said out loud anyway, because the schedule
+        # assumes this lane worked: legs.KERNELS starts gptoss third to give it
+        # a window, and if the window went unused the makespan is the ~568s
+        # fallback rather than the ~500s the order was chosen for.
+        lines.append(
+            f"{len(failed)} of {len(records)} prefetch(es) failed. This does not fail "
+            "the run -- the leg downloads the model itself -- but the leg order in "
+            "`legs.KERNELS` is arranged around this lane working, so the makespan "
+            "above is the fallback rather than the intended one."
+        )
+        lines.append("")
+    return lines
+
+
 def diagnostic_lines(evidence: Path, limit: int = 40) -> list[str]:
     """The lines of the kernel log worth putting in front of a human.
 
@@ -338,6 +434,15 @@ def main() -> int:
     reason = result.get("reason", "")
     reports = result.get("reports", [])
 
+    # The Studio payload can share this kernel (see kaggle_t4_ci/build_kernel.py
+    # --with-studio), and it emits its report through the same prefix, so it
+    # arrives in this list. It is a different SHAPE -- assertions rather than a
+    # per-step metric trace, no `config`, no `model` -- so rendering it here
+    # produces a training leg made of question marks. kaggle_studio_ci/report.py
+    # renders it properly; each reporter owns its own labels.
+    reports = [r for r in reports if r.get("label") != STUDIO_LABEL]
+    verdict, reason = own_verdict(verdict, reason, reports, args.expect)
+
     header = {
         "pass": "### Kaggle T4 smoke: PASS",
         "fail": "### Kaggle T4 smoke: FAIL",
@@ -363,6 +468,7 @@ def main() -> int:
         )
     lines.append("")
 
+    lines += prefetch_table(evidence)
     lines += version_table(reports)
     for report in reports:
         lines += render(report)

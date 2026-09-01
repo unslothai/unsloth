@@ -834,6 +834,16 @@ export const hi = {
         openError: "फ़ोल्डर नहीं खोला जा सका",
         copyError: "पथ कॉपी नहीं किया जा सका",
       },
+      repairInstall: {
+        label: "इंस्टॉलेशन ठीक करें",
+        description:
+          "प्रबंधित परिवेश पर इंस्टॉलर को फिर से चलाता है। यदि GPU का पता नहीं चल रहा है या ऐप शुरू नहीं हो रहा है तो इसका उपयोग करें।",
+        action: "इंस्टॉल ठीक करें",
+        confirmTitle: "क्या यह इंस्टॉलेशन ठीक करना है?",
+        confirmDescription:
+          "सर्वर रोकता है और इंस्टॉलर फिर से चलाता है, जो इस मशीन के GPU के लिए PyTorch को दोबारा इंस्टॉल करता है। चैट और सेटिंग्स सुरक्षित रहती हैं। इसमें कई मिनट लग सकते हैं।",
+        confirmAction: "अभी ठीक करें",
+      },
       resetPreferences: {
         sectionTitle: "खतरनाक क्षेत्र",
         label: "सभी स्थानीय प्राथमिकताएं रीसेट करें",
@@ -1089,6 +1099,8 @@ export const hi = {
         currentLoad: "वर्तमान लोड",
         free: "{value} खाली",
         noGpu: "कोई दृश्यमान GPU नहीं",
+        gpuUnusable: "GPU अनुपयोगी",
+        gpuUnusableDetail: "पहचाना गया, लेकिन PyTorch इसका उपयोग नहीं कर सकता",
       },
       gpu: {
         title: "GPU डिवाइस",
@@ -1097,6 +1109,12 @@ export const hi = {
         detecting: "GPU खोजे जा रहे हैं...",
         unreadable: "इस सर्वर का हार्डवेयर नहीं पढ़ा जा सका।",
         noGpu: "कोई दृश्यमान GPU नहीं मिला। केवल-CPU संसाधन ऊपर दिखाए गए हैं।",
+        noUsableGpu: "इस मशीन का कोई भी GPU PyTorch के लिए उपयोग योग्य नहीं है।",
+        mismatchCpuBuild:
+          "PyTorch केवल-CPU बिल्ड ({version}) है, इसलिए नीचे दिए गए GPU उपयोग नहीं किए जा सकते। GPU समर्थन बहाल करने के लिए इंस्टॉलेशन की मरम्मत करें।",
+        mismatchUnavailable:
+          "PyTorch ({version}) नीचे दिए गए GPU को आरंभ नहीं कर पा रहा है, इसलिए उनका उपयोग नहीं किया जा सकता। GPU ड्राइवर जाँचें या इंस्टॉलेशन की मरम्मत करें।",
+        unusableDevice: "अनुपयोगी",
         unknownDevice: "अज्ञात GPU",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",

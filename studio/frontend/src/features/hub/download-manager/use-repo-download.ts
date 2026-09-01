@@ -7,6 +7,7 @@ import { useLatestRef } from "../hooks/use-latest-ref";
 import type { ResolvedTransport } from "./constants";
 import type { TransportConflictInfo } from "./types";
 import {
+  conflictInfoForOwner,
   type DownloadKind,
   type JobListeners,
   downloadManager,
@@ -123,9 +124,11 @@ export function useRepoDownload(config: RepoDownloadConfig): DownloadJob {
   const visibleConflict = useDownloadManagerStore(
     useShallow((state) => {
       const exact = state.conflicts[conflictKey];
-      if (exact) return { key: conflictKey, info: exact.info };
-      const scoped = Object.entries(state.conflicts).find(([key]) =>
-        key.startsWith(`${repoConflictKey}#`),
+      const exactInfo = conflictInfoForOwner(exact, "caller");
+      if (exactInfo) return { key: conflictKey, info: exactInfo };
+      const scoped = Object.entries(state.conflicts).find(
+        ([key, entry]) =>
+          key.startsWith(`${repoConflictKey}#`) && entry.owner === "caller",
       );
       return scoped
         ? { key: scoped[0], info: scoped[1].info }

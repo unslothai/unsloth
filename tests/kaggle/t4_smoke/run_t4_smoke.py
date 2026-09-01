@@ -67,6 +67,7 @@ import json
 import os
 import platform
 import subprocess
+import tempfile
 import sys
 import time
 from pathlib import Path
@@ -84,6 +85,8 @@ from determinism import (  # noqa: E402
     set_all_seeds_fast,
     set_deterministic_algorithms,
 )
+from kernel_provenance import attention_choice, probe_kernels, vision_kernel_failures  # noqa: E402
+from naive_trl_compare import comparison_failures  # noqa: E402
 from training_evidence import LORA_B_MARKER, LORA_MARKER  # noqa: E402
 from versions import (  # noqa: E402
     GOAL_PACKAGES,
@@ -266,11 +269,40 @@ def train_once(args, run_index: int) -> dict:
     # float16 unconditionally: T4 is sm_75 and has no bf16. Pinned rather than
     # left to the loader so the local reproduction and the Kaggle run take the
     # same numeric path wherever they can share one.
+    load_kwargs: dict = {}
+    if getattr(args, "single_device", False):
+        # Both cards stay VISIBLE -- that is the point of the multi_gpu leg, and
+        # what makes unsloth's DEVICE_COUNT > 1 bindings live -- but the weights
+        # go on one, because a SHARDED model does not train.
+        #
+        # Measured on unsloth-probe-multigpu-r1-18beab: with two T4s visible
+        # accelerate split Qwen3-0.6B 232849408 params on cuda:0 and 155582464
+        # on cuda:1, unsloth printed `Num GPUs used = 2`, and step 0 died in
+        # unsloth/models/llama.py:972 --
+        #
+        #   inputs_embeds = self.embed_tokens(input_ids)
+        #   RuntimeError: Expected all tensors to be on the same device, but got
+        #   index is on cuda:0, different from other tensors on cuda:1
+        #
+        # WHETHER THAT IS A BUG IS NOT SETTLED, and an earlier version of this
+        # comment claimed it was filed. It is not filed, and the repo's own
+        # history is split on it: #2467 was closed with "unsloth runs on only 1
+        # gpu.. It wont run in multi gpu systems. force it to use only 1 gpu",
+        # while #2882 -- the same message, a different call site -- was closed
+        # as fixed. So this may be documented behaviour rather than a defect.
+        #
+        # What is not in doubt is that it is not THIS repo's to work around in a
+        # per-PR check. Training a sharded model here would put a red in front
+        # of every PR for a fault no reader can act on, which is how a check
+        # gets switched off before the day it is right. The binding coverage --
+        # the whole reason this leg exists -- does not depend on it.
+        load_kwargs["device_map"] = {"": 0}
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name = args.model,
         max_seq_length = args.max_seq_length,
         load_in_4bit = True,
         dtype = torch.float16,
+        **load_kwargs,
     )
     load_seconds = time.time() - t0
     # Which repository, and which commit of it. `load_in_4bit=True` redirects
@@ -283,6 +315,26 @@ def train_once(args, run_index: int) -> dict:
     resolved_checkpoint = getattr(_config, "_name_or_path", None)
     resolved_revision = getattr(_config, "_commit_hash", None)
     _log(f"loaded {resolved_checkpoint} @ {resolved_revision}")
+
+    # AFTER the load and not before, which is measured rather than tidy: on
+    # kernel unsloth-probe-vision-recon-c76ea3 `fla` was NOT importable before
+    # from_pretrained and WAS after, because unsloth reaches for it lazily when
+    # it sees the model. Reading provenance up front reports it absent.
+    if getattr(args, "kernel_provenance", False):
+        result_kernels = probe_kernels()
+        result_attention = attention_choice(model)
+        _log(f"kernels: {json.dumps(result_kernels)}")
+        _log(f"attention: {json.dumps(result_attention)}")
+    else:
+        result_kernels = None
+        result_attention = None
+
+    # AFTER the load for the same reason as the block above: the rotary caches
+    # are built when the model is, so reading them before from_pretrained finds
+    # nothing and reports it as an absence.
+    result_multi_gpu = multi_gpu_facts(model) if getattr(args, "require_multi_gpu", False) else None
+    if result_multi_gpu is not None:
+        _log(f"multi-gpu: {json.dumps(result_multi_gpu)}")
 
     # Bound to a name so the saved config is checked against the adapter that
     # was actually requested, rather than against a list repeated further down.
@@ -401,7 +453,16 @@ def train_once(args, run_index: int) -> dict:
     # function of the weights alone.
     FastLanguageModel.for_inference(model)
     prompt = PROMPT_TEMPLATE.format(question = rows[0]["question"])
-    inputs = tokenizer([prompt], return_tensors = "pt").to(model.device)
+    # `text = ` and not positional, and this cost a leg. A vision model's
+    # tokenizer IS a processor, whose signature is
+    # `__call__(self, images=None, text=None, videos=None, ...)` -- so a
+    # positional list is taken as IMAGES and transformers tries to fetch the
+    # prompt strings as image URLs. Measured on kernel
+    # unsloth-probe-latestcompile-r2-62b54d with gemma-4-E2B-it:
+    #   transformers/image_processing_backends.py, in fetch_images
+    # `text` is the first parameter of a plain tokenizer too, so the keyword is
+    # correct for both and is not a special case for vision.
+    inputs = tokenizer(text = [prompt], return_tensors = "pt").to(model.device)
     t0 = time.time()
     with torch.inference_mode():
         out = model.generate(
@@ -417,16 +478,123 @@ def train_once(args, run_index: int) -> dict:
     infer_seconds = time.time() - t0
     generated = tokenizer.decode(out[0][inputs["input_ids"].shape[1] :], skip_special_tokens = True)
 
+    # Batched generation, on the SAME trained model, immediately after the
+    # single-prompt generation above. Prompts of deliberately different lengths,
+    # because a batch of equal-length prompts pads nothing and would report a
+    # green left-padding check that never padded.
+    batch_prompts = [
+        PROMPT_TEMPLATE.format(question = row["question"]) for row in rows[: max(BATCH_SIZES)]
+    ]
+    while len(batch_prompts) < max(BATCH_SIZES):
+        # The canary dataset is small. Pad the LIST (not the tensors) by
+        # reusing questions with a varying prefix, which keeps the token
+        # lengths spread rather than repeating one length.
+        idx = len(batch_prompts)
+        batch_prompts.append(
+            PROMPT_TEMPLATE.format(
+                question = " ".join(["please"] * (idx % 5 + 1))
+                + " "
+                + rows[idx % len(rows)]["question"]
+            )
+        )
+    batched = batched_generation(
+        model,
+        tokenizer,
+        batch_prompts,
+        max_new_tokens = args.max_new_tokens,
+    )
+    _log(f"batched generation: {json.dumps({k: v for k, v in batched.items() if k != 'batched'})}")
+
+    # GGUF export, opt-in. Placed AFTER generation deliberately: the export
+    # merges the adapter into the base weights, and doing that before the
+    # canary and batched-generation checks would have them measure a different
+    # model from the one training produced.
+    gguf_export_record = None
+    gguf_run_record = None
+    # ONCE per leg, on the first cycle, not once per cycle. Measured: the
+    # conversion is 310.8s and 312.3s on the two Latest_compile cycles and
+    # 99.3s and 117.3s on the two vision ones, so the repeat is 47% of the
+    # longest leg in the suite. The second export is the same base weights and
+    # an adapter trained by the same script with the same seed, so it re-runs
+    # llama.cpp rather than asking a new question; reproducibility is already
+    # asserted on the step tables and on the generated text.
+    if getattr(args, "export_gguf", False) and run_index > 0:
+        gguf_export_record = {
+            "skipped": "exported on cycle 0; the conversion is the same weights twice"
+        }
+    elif getattr(args, "export_gguf", False):
+        from gguf_export import export_gguf, llama_cpp_facts, run_gguf
+
+        # unsloth must be imported before unsloth_zoo.llama_cpp, which raises
+        # "Please install Unsloth via pip install unsloth!" otherwise. It is,
+        # by the time train_once runs, but the import stays local so a payload
+        # that never exports does not pay for it.
+        install_log = ""
+        llama_dir = None
+        try:
+            import contextlib
+            import io
+
+            from unsloth_zoo.llama_cpp import install_llama_cpp
+
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                returned = install_llama_cpp()
+            install_log = buffer.getvalue()
+            facts = llama_cpp_facts(install_log, returned)
+            llama_dir = facts.get("dir")
+        except BaseException as exc:  # noqa: BLE001
+            facts = {"error": f"{type(exc).__name__}: {exc}"[:2000]}
+        _log(f"llama.cpp: {json.dumps(facts)}")
+
+        # NOT under args.outdir. That is `/kaggle/working`, which is 21.0 GB
+        # and is also what `kernels output` ships back, so a merge that fits
+        # there is downloaded and a merge that does not kills the leg. Measured
+        # on unsloth-probe-lcleg-final-a90fbb:
+        #
+        #   RuntimeError: Unsloth: Not enough disk space to convert to GGUF.
+        #   The export needs about 16.6GB on the filesystem holding
+        #   `/kaggle/working/t4_out_Latest_compile/cycle0/gguf_run0`
+        #
+        # /tmp is the same overlay as `/`, 8656.9 GB with ~1100 GB free, which
+        # this file has recorded since the first disk probe. tempfile honours
+        # TMPDIR and lands there. The RECORD travels back -- path, size,
+        # seconds -- and the multi-gigabyte artifact does not, which nobody
+        # wanted collected anyway.
+        #
+        # gpt-oss and the vision run were both moved for this exact reason and
+        # this path was missed, which is why a small model kept passing.
+        gguf_export_record = export_gguf(
+            model,
+            tokenizer,
+            tempfile.mkdtemp(prefix = f"gguf_run{run_index}_"),
+            quantization = args.gguf_quantization,
+        )
+        gguf_export_record["llama_cpp"] = facts
+        _log(
+            f"gguf export: {json.dumps({k: v for k, v in gguf_export_record.items() if k != 'llama_cpp'})}"
+        )
+
+        ggufs = gguf_export_record.get("ggufs") or []
+        if ggufs and llama_dir:
+            gguf_run_record = run_gguf(ggufs[0]["path"], llama_dir)
+
     peak_gb = torch.cuda.max_memory_reserved() / 1024**3 if torch.cuda.is_available() else 0.0
 
     result = {
         "run_index": run_index,
+        "kernels": result_kernels,
+        "attention": result_attention,
+        "multi_gpu": result_multi_gpu,
         "metrics": stats.logs,
         "generated": generated,
         # Both, because they answer different questions when this goes red:
         # `canary_found` says training reached the weights at all, `canary_exact`
         # is the assertion, and the gap between them is the signature of a
         # stopping/EOS regression rather than a training one.
+        "batched_generation": batched,
+        "gguf_export": gguf_export_record,
+        "gguf_run": gguf_run_record,
         "canary_found": CANARY in generated,
         "canary_exact": generated.strip() == CANARY,
         "prompt": prompt,
@@ -511,6 +679,27 @@ def _reconstruct_adapter_config(adapter_dir, expected: dict | None) -> dict:
             unchecked.append(key)
             continue
         got = getattr(config, key)
+        if key == "target_modules" and isinstance(got, str):
+            # PEFT allows target_modules to be a REGEX as well as a list, and
+            # unsloth writes one for vision models so the adapter targets the
+            # language tower and not the vision encoder. Measured on
+            # unsloth-probe-vision-leg-r2-793ec0 with Qwen3.5-2B and again on
+            # gemma-4-E2B-it, where the saved value begins
+            #   (?:.*?(?:language|text).*?(?:self_attn|attention|...
+            #
+            # Comparing that string against the list that was REQUESTED reports
+            # a difference on every vision model, which is correct behaviour
+            # being called a defect. The claim worth keeping is narrower and
+            # still falsifiable: every module name asked for must appear in the
+            # pattern, so a silently dropped projection is still caught.
+            missing = [name for name in (wanted or []) if name not in got]
+            same = not missing
+            if not same:
+                differences.append(
+                    f"{key}: trained with {wanted!r}, and the saved regex does "
+                    f"not mention {missing!r}: {got!r}"
+                )
+            continue
         if isinstance(wanted, (list, tuple, set)) or isinstance(got, (list, tuple, set)):
             same = sorted(got or []) == sorted(wanted or [])
         else:
@@ -519,6 +708,307 @@ def _reconstruct_adapter_config(adapter_dir, expected: dict | None) -> dict:
             differences.append(f"{key}: trained with {wanted!r}, saved {got!r}")
     out["config_differences"] = differences
     out["config_unchecked"] = unchecked
+    return out
+
+
+# Batch sizes to cross-check against one-at-a-time generation. 1 is the
+# baseline and is generated separately; the rest must reproduce it exactly.
+BATCH_SIZES = (2, 4, 8)
+
+
+def batched_generation(model, tokenizer, prompts, *, max_new_tokens) -> dict:
+    """Greedy generation one-at-a-time, then batched, and whether they agree.
+
+    WHAT THIS IS FOR. Batched generation with left padding has broken here
+    before, repeatedly and in ways that pass every other check in this file:
+
+    * #3699 batched generation with left-padding and caching produced incorrect
+      output,
+    * #1066 batch inference produced gibberish,
+    * #1456 batch inference was inconsistent for a self-trained model,
+    * #2138 a release silently FORCED the tokenizer padding side to right during
+      inference, which is why the side is recorded as OBSERVED after generating
+      rather than as the value this function set.
+
+    Greedy decoding makes the comparison meaningful: the output is then a
+    function of the weights and the attention mask alone, so any difference
+    between batch sizes is padding or cache handling rather than sampling.
+
+    THE VACUITY TRAP, and it is the whole reason this returns the token lengths:
+    padding only happens when the prompts in a batch have DIFFERENT lengths.
+    A batch of equal-length prompts pads nothing, agrees trivially, and reports
+    a green left-padding check that never once left-padded. The caller asserts
+    the spread; this function measures it.
+    """
+    # Imported here, not at module scope, matching every other torch user in
+    # this file: the module is loaded before unsloth is installed in some
+    # paths, and a top-level torch import would move the failure to import
+    # time. Kernel unsloth-probe-defaultleg-723c28 trained all 10 steps and
+    # then died on `NameError: name 'torch' is not defined` right here.
+    import torch
+
+    tokenizer.padding_side = "left"
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    def _gen(batch: list) -> list:
+        # Keyword for the same reason as the single-prompt path above: a
+        # processor reads a positional list as images.
+        enc = tokenizer(text = batch, return_tensors = "pt", padding = True).to(model.device)
+        with torch.inference_mode():
+            out = model.generate(
+                **enc,
+                max_new_tokens = max_new_tokens,
+                do_sample = False,
+                temperature = None,
+                top_p = None,
+                top_k = None,
+                use_cache = True,
+                # `x or y` is wrong here: pad_token_id 0 is a perfectly ordinary
+                # id (Qwen and Llama both use low ids) and is falsy, so `or`
+                # silently substitutes the EOS id for it and pads the batch with
+                # end-of-sequence tokens. Test for None.
+                pad_token_id = (
+                    tokenizer.pad_token_id
+                    if tokenizer.pad_token_id is not None
+                    else tokenizer.eos_token_id
+                ),
+            )
+        # Slice by the PADDED width, not by each prompt's own length: with left
+        # padding every row starts at the same column, and using the unpadded
+        # length would re-read the tail of the prompt as if it were output.
+        width = enc["input_ids"].shape[1]
+        return [tokenizer.decode(row[width:], skip_special_tokens = True) for row in out]
+
+    # `[0]`, and the missing index made this whole check vacuous. A processor
+    # returns input_ids with a BATCH dimension, so `len(...)` on it is the
+    # number of sequences -- 1 -- for every prompt. Measured on kernel
+    # unsloth-probe-latestcompile-r3-cb1125, where gemma-4 reported
+    # [1, 1, 1, 1, 1, 1, 1, 1] and the vacuity guard below caught it:
+    #   "every batched prompt tokenised to the same length ... so nothing was
+    #    ever padded and the left-padding check proved nothing"
+    # A plain tokenizer given one string returns a flat list, which is why this
+    # read correctly on every text model and only broke on the first vision one.
+    lengths = [len(tokenizer(text = [p])["input_ids"][0]) for p in prompts]
+    singles = [_gen([p])[0] for p in prompts]
+    result = {
+        "prompt_token_lengths": lengths,
+        "distinct_lengths": len(set(lengths)),
+        "padding_side_observed": tokenizer.padding_side,
+        "singles": singles,
+        "batched": {},
+        "agrees": {},
+        "empty_outputs": [i for i, text in enumerate(singles) if not text.strip()],
+    }
+    for size in BATCH_SIZES:
+        outs: list = []
+        for start in range(0, len(prompts), size):
+            outs.extend(_gen(prompts[start : start + size]))
+        result["batched"][str(size)] = outs
+        result["agrees"][str(size)] = outs == singles
+    # Read AGAIN, after all the generating. #2138 was a silent override applied
+    # inside the inference path, so the value set at the top of this function is
+    # not evidence of the value that was used.
+    result["padding_side_after"] = tokenizer.padding_side
+    return result
+
+
+# Models where batched greedy generation is CONFIRMED broken upstream, filed,
+# and not this repo's to fix. See unsloth #9708: on both of these, batch sizes
+# 2/4/8 fail to reproduce one-at-a-time output with real left padding and
+# demonstrably distinct prompt lengths, on both repeats.
+#
+# This is a STRICT expectation, not a mute. A model listed here that starts
+# AGREEING fails the leg, with a message saying to delete the entry -- so the
+# day #9708 is fixed, CI says so instead of quietly keeping a stale excuse.
+# Every other rule in this function stays live for these models: the padding
+# side, the distinct lengths and the empty-output check are what make the
+# disagreement a real finding rather than an unpadded batch.
+KNOWN_BATCHED_GENERATION_BREAKAGE = {
+    "unsloth/gemma-4-E2B-it": "unsloth#9708",
+    "unsloth/Qwen3.5-2B": "unsloth#9708",
+}
+
+
+def batched_generation_failures(batch: dict | None, model: str | None = None) -> list[str]:
+    """Turn a `batched_generation` record into failures, vacuity included."""
+    if not batch:
+        return ["batched generation was never run"]
+    out = []
+    known = KNOWN_BATCHED_GENERATION_BREAKAGE.get(model or "")
+    if batch.get("distinct_lengths", 0) < 2:
+        out.append(
+            "every batched prompt tokenised to the same length "
+            f"({batch.get('prompt_token_lengths')}), so nothing was ever padded "
+            "and the left-padding check proved nothing"
+        )
+    if len(batch.get("singles") or []) < max(BATCH_SIZES):
+        out.append(
+            f"only {len(batch.get('singles') or [])} prompts for a batch size of "
+            f"{max(BATCH_SIZES)}, so the largest batch was never actually formed"
+        )
+    for side_key in ("padding_side_observed", "padding_side_after"):
+        if batch.get(side_key) != "left":
+            out.append(
+                f"{side_key} is {batch.get(side_key)!r}, not 'left'; a right-padded "
+                f"decoder-only batch attends to pad tokens before the prompt (#2138)"
+            )
+    if batch.get("empty_outputs"):
+        out.append(f"prompts {batch['empty_outputs']} generated nothing at all")
+    agrees = batch.get("agrees") or {}
+    for size, agreed in agrees.items():
+        if not agreed and not known:
+            out.append(
+                f"batch size {size} did not reproduce one-at-a-time greedy output "
+                f"(#3699/#1456): {batch.get('batched', {}).get(size)!r} != "
+                f"{batch.get('singles')!r}"
+            )
+    if known and agrees and all(agrees.values()):
+        # The strict half. An expectation that only ever excuses is a mute, and
+        # a mute outlives the bug it was written for.
+        out.append(
+            f"{model} is listed in KNOWN_BATCHED_GENERATION_BREAKAGE for "
+            f"{known}, and every batch size AGREED. If the upstream fix has "
+            f"landed, delete the entry; the leg must not carry an excuse for a "
+            f"bug that is gone"
+        )
+    return out
+
+
+# Set by multi_gpu_facts as soon as it has an answer, so a crash LATER in the
+# cycle still reports what was measured. A reading that exists only inside a
+# frame that is being unwound is a reading nobody has.
+_LAST_MULTI_GPU_FACTS: dict | None = None
+
+
+def multi_gpu_facts(model) -> dict:
+    """What unsloth BOUND, given how many cards this process can see.
+
+    The point of the multi_gpu leg is a branch no pinned payload can reach.
+    `unsloth/kernels/utils.py:170`:
+
+        if DEVICE_COUNT > 1:
+            torch_gpu_device = torch.cuda.device      # a real device switch
+        else:
+            def torch_gpu_device(device): return nullcontext()
+
+    `build_kernel.py` pins every ordinary payload with CUDA_VISIBLE_DEVICES, so
+    every unsloth kernel this CI has run took the nullcontext branch, and so did
+    the DEVICE_COUNT-sized CUDA_STREAMS / WEIGHT_BUFFERS / ABSMAX_BUFFERS arrays
+    and the per-device rotary caches in unsloth/models/llama.py.
+
+    Read off the IMPORTED MODULE, not recomputed from `device_count()`. The
+    binding is made once at import time, so asking torch how many cards there
+    are answers a different question -- and answers it the way the check wants,
+    which is the shape of a rule that cannot fail.
+    """
+    import torch
+
+    global _LAST_MULTI_GPU_FACTS
+    facts: dict = {"device_count": torch.cuda.device_count()}
+    _LAST_MULTI_GPU_FACTS = facts
+    try:
+        from unsloth.kernels import utils as _kernel_utils
+    except BaseException as exc:  # noqa: BLE001
+        facts["error"] = f"{type(exc).__name__}: {exc}"
+        return facts
+
+    binding = getattr(_kernel_utils, "torch_gpu_device", None)
+    facts["module_device_count"] = getattr(_kernel_utils, "DEVICE_COUNT", None)
+    # `torch.cuda.device` is a CLASS; the single-card fallback is a module-level
+    # function closing over nullcontext. Identity against the real thing rather
+    # than a name check, because both are bound to the same name.
+    facts["torch_gpu_device_is_real_switch"] = binding is torch.cuda.device
+    facts["torch_gpu_device_repr"] = repr(binding)[:200]
+    for name in ("CUDA_STREAMS", "WEIGHT_BUFFERS", "ABSMAX_BUFFERS"):
+        value = getattr(_kernel_utils, name, None)
+        facts[name.lower() + "_len"] = None if value is None else len(value)
+
+    # Where the weights actually sit. With two cards visible accelerate may
+    # shard, and whether it does is a MEASUREMENT rather than something to
+    # assert blind: kernel unsloth-probe-vision-recon-c76ea3 saw a model split
+    # 897.7 MB / 1017.1 MB across two T4s, but that was a different model and a
+    # different loader path.
+    by_device: dict[str, int] = {}
+    try:
+        for _, param in model.named_parameters():
+            key = str(param.device)
+            by_device[key] = by_device.get(key, 0) + param.numel()
+    except BaseException as exc:  # noqa: BLE001
+        facts["parameter_walk_error"] = f"{type(exc).__name__}: {exc}"
+    facts["parameters_by_device"] = by_device
+    facts["cuda_devices_holding_parameters"] = sorted(d for d in by_device if d.startswith("cuda"))
+
+    # The per-device rotary caches, sized by DEVICE_COUNT at construction. A
+    # list of length 1 on a two-card box means the model was built while
+    # unsloth believed there was one card.
+    for module in getattr(model, "modules", lambda: [])():
+        cached = getattr(module, "multi_gpu_cos_cached", None)
+        if cached is not None:
+            facts["rotary_cache_slots"] = len(cached)
+            break
+    return facts
+
+
+def multi_gpu_failures(facts: dict | None, *, expected_cards: int) -> list[str]:
+    """The rules, separated from the reading so they can be driven on CPU.
+
+    Deliberately NOT asserting that the parameters are spread across both
+    cards. Whether unsloth shards them or pins them to cuda:0 is exactly what
+    this leg is being run to find out, and a rule written before the answer is
+    a rule written to match whatever happens.
+    """
+    if not facts:
+        return [
+            "the multi-GPU facts are missing, so nothing about the "
+            "DEVICE_COUNT > 1 path was measured on this run"
+        ]
+    if facts.get("error"):
+        return [f"unsloth.kernels.utils could not be read: {facts['error']}"]
+
+    out: list[str] = []
+    seen = facts.get("device_count")
+    if seen != expected_cards:
+        out.append(
+            f"this leg exists to exercise the multi-card path and torch sees "
+            f"{seen} card(s), not {expected_cards} -- the driver pinned it, so "
+            f"every assertion below would measure the single-card branch under "
+            f"a multi-GPU name"
+        )
+        # Everything after this measures the wrong machine, so say so once.
+        return out
+
+    if facts.get("module_device_count") != expected_cards:
+        out.append(
+            f"unsloth.kernels.utils.DEVICE_COUNT is "
+            f"{facts.get('module_device_count')!r} while torch sees "
+            f"{expected_cards}; the module was imported before the cards were "
+            f"visible, so its bindings are the single-card ones"
+        )
+    if not facts.get("torch_gpu_device_is_real_switch"):
+        out.append(
+            f"torch_gpu_device is not torch.cuda.device but "
+            f"{facts.get('torch_gpu_device_repr')!r} -- the nullcontext "
+            f"fallback, which performs NO device switch, so this run covered "
+            f"the same path a pinned leg already covers"
+        )
+    for name in ("cuda_streams", "weight_buffers", "absmax_buffers"):
+        length = facts.get(name + "_len")
+        if length is None or length < expected_cards:
+            out.append(
+                f"unsloth.kernels.utils.{name.upper()} has {length!r} entries "
+                f"for {expected_cards} cards, so a dequant on the second card "
+                f"has no stream or buffer of its own"
+            )
+    slots = facts.get("rotary_cache_slots")
+    if slots is not None and slots < expected_cards:
+        out.append(
+            f"the per-device rotary cache has {slots} slot(s) for "
+            f"{expected_cards} cards, so the model was built while unsloth "
+            f"believed there was one"
+        )
+    if not facts.get("cuda_devices_holding_parameters"):
+        out.append("no parameter is on a CUDA device at all")
     return out
 
 
@@ -1278,6 +1768,38 @@ def optimisation_failures(metrics: list[dict]) -> list[str]:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default = DEFAULT_MODEL)
+    # On by default: batched generation is the surface that has broken most
+    # often here (#3699, #1066, #1456, #2138) and a leg that quietly skips it
+    # is a leg that stops covering it.
+    ap.add_argument(
+        "--check-batched-generation",
+        dest = "check_batched_generation",
+        action = "store_true",
+        default = True,
+    )
+    ap.add_argument(
+        "--no-check-batched-generation",
+        dest = "check_batched_generation",
+        action = "store_false",
+    )
+    # OFF by default, unlike the batched-generation check above. That one is
+    # pure compute on a model already in memory; this one installs llama.cpp
+    # and merges the adapter, about 40s for a 0.6B on top of a ~10-46s install,
+    # so a leg opts in rather than every payload paying for it.
+    ap.add_argument(
+        "--export-gguf",
+        dest = "export_gguf",
+        action = "store_true",
+        default = False,
+    )
+    # What the exported filename is allowed to say. More than one because a
+    # model may legitimately override the request: gpt-oss answers q8_0 with
+    # "Overriding to MXFP4 format" by design, and failing on documented
+    # behaviour would be a failure invented rather than found.
+    ap.add_argument("--gguf-quantization", default = "q8_0")
+    ap.add_argument(
+        "--gguf-accept", default = "", help = "comma separated; defaults to the requested one"
+    )
     ap.add_argument("--dataset", default = str(_HERE / "canary_dataset.jsonl"))
     ap.add_argument("--outdir", required = True)
     # 3 steps, and the whole reason --init-loss-scale exists.
@@ -1367,6 +1889,76 @@ def main() -> int:
     )
     ap.add_argument("--require-canary", dest = "require_canary", action = "store_true", default = True)
     ap.add_argument("--no-require-canary", dest = "require_canary", action = "store_false")
+    ap.add_argument(
+        # The plain-TRL control arm, in its own process. Off by default: it
+        # doubles the leg's train time and only one leg is asking the question.
+        "--compare-naive-trl",
+        action = "store_true",
+        default = False,
+        help = "also train the same rows with plain TRL and report both traces",
+    )
+    ap.add_argument(
+        # The multi-card leg, and it is the ONLY thing that makes unsloth's
+        # DEVICE_COUNT > 1 bindings reachable. build_kernel.py pins every other
+        # payload with CUDA_VISIBLE_DEVICES, so `torch_gpu_device` is the
+        # nullcontext shim in every run this CI has ever produced.
+        "--require-multi-gpu",
+        dest = "require_multi_gpu",
+        action = "store_true",
+        default = False,
+        help = "assert unsloth bound its multi-card code path, and record where "
+        "the weights landed",
+    )
+    ap.add_argument(
+        # Keep every card VISIBLE and put the WEIGHTS on one. See the comment at
+        # the from_pretrained call: sharded training is broken upstream, and the
+        # DEVICE_COUNT > 1 bindings this leg exists to cover do not need it.
+        "--single-device",
+        dest = "single_device",
+        action = "store_true",
+        default = False,
+        help = "load with device_map={'': 0} while leaving both cards visible",
+    )
+    ap.add_argument(
+        # How many cards this leg was BUILT for, so the check compares against a
+        # declaration rather than against whatever the session happened to give
+        # it. Reading device_count() on both sides of the comparison is how a
+        # rule ends up unable to fail.
+        "--expected-cards",
+        dest = "expected_cards",
+        type = int,
+        default = 2,
+    )
+    ap.add_argument(
+        # Off by default: only the vendored-kernel leg is asking, and probing
+        # imports in every leg would add imports to legs that never wanted them.
+        "--kernel-provenance",
+        dest = "kernel_provenance",
+        action = "store_true",
+        default = False,
+        help = "record which fast kernels loaded and where each resolved from",
+    )
+    ap.add_argument(
+        # A SEPARATE PROCESS, like the plain-TRL control and for a related
+        # reason: the vision run loads a second model, and two 4bit models
+        # resident at once on a 14.56GB T4 is how a leg becomes an OOM blamed
+        # on the thing it was testing. It also runs AFTER the cycles, so a
+        # vision failure cannot be mistaken for a text-training one.
+        "--vision-run",
+        dest = "vision_run",
+        action = "store_true",
+        default = False,
+        help = "also drive run_vision_t4.py and fold its verdict into this report",
+    )
+    ap.add_argument(
+        # Only for models the control arm demonstrably cannot LOAD on the card.
+        # An OOM during training stays a failure either way.
+        "--control-oom-is-ok",
+        dest = "control_oom_is_ok",
+        action = "store_true",
+        default = False,
+        help = "a plain-TRL OOM before the first step is reported, not failed",
+    )
     ap.add_argument("--label", default = "t4-smoke")
     args = ap.parse_args()
 
@@ -1375,7 +1967,29 @@ def main() -> int:
 
     # Child mode: exactly one cycle, report to disk, no assertions.
     if args.cycle >= 0:
-        run = train_once(args, args.cycle)
+        try:
+            run = train_once(args, args.cycle)
+        except BaseException as exc:
+            # A crash mid-cycle must not take the readings taken BEFORE it down
+            # with it. On kernel unsloth-probe-multigpu-r1-18beab the multi-card
+            # facts were gathered, logged in full, and then lost: the cycle died
+            # in trainer.train() and wrote no report at all, so the leg reported
+            # `multi_gpu: null` while the driver log held every number. Reading
+            # the report alone said the measurement had not been taken.
+            #
+            # The partial report carries the error, so it can never be mistaken
+            # for a completed cycle: `cycle_error` is what the parent's own
+            # "cycle N did not complete" failure is already keyed on.
+            partial = {
+                "run_index": args.cycle,
+                "cycle_error": f"{type(exc).__name__}: {exc}"[:2000],
+                "partial": True,
+                "multi_gpu": _LAST_MULTI_GPU_FACTS,
+            }
+            (outdir / "cycle_report.json").write_text(
+                json.dumps(partial, indent = 2), encoding = "utf-8"
+            )
+            raise
         for entry in run["metrics"]:
             _log(
                 f"    step {entry['step']}  loss={entry['loss']!r}  "
@@ -1450,8 +2064,33 @@ def main() -> int:
             ("--gradient-checkpointing", args.gradient_checkpointing),
             ("--max-new-tokens", args.max_new_tokens),
             ("--label", args.label),
+            # The export settings travel too. Forgetting them is not a
+            # hypothetical: --export-gguf reached the PARENT on kernel
+            # unsloth-probe-default-gguf-637565, was parsed there, and never
+            # reached the child that actually runs train_once, so every cycle
+            # reported `gguf_export: null` and the leg failed with "GGUF export
+            # was never run" while the driver log plainly showed the flag on
+            # the command line.
+            ("--gguf-quantization", args.gguf_quantization),
+            ("--gguf-accept", args.gguf_accept),
+            # The CYCLE is what loads the model, so it is the only process that
+            # can read where unsloth bound its multi-card helpers. A parent that
+            # parsed this and kept it would report `multi_gpu: null` for every
+            # cycle and the leg would pass having measured nothing.
+            ("--expected-cards", args.expected_cards),
         ):
             cmd += [flag, str(value)]
+        if args.export_gguf:
+            cmd.append("--export-gguf")
+        # Forwarded explicitly. A flag parsed in the parent and never passed on
+        # is not hypothetical here: --export-gguf did exactly that on kernel
+        # unsloth-probe-default-gguf-637565 and every cycle reported null.
+        if args.kernel_provenance:
+            cmd.append("--kernel-provenance")
+        if args.require_multi_gpu:
+            cmd.append("--require-multi-gpu")
+        if args.single_device:
+            cmd.append("--single-device")
         if args.force_sdpa:
             cmd.append("--force-sdpa")
         if args.strict_deterministic:
@@ -1478,6 +2117,101 @@ def main() -> int:
             return 1
         runs.append(json.loads(report_file.read_text(encoding = "utf-8")))
 
+    # The plain-TRL control arm. AFTER the cycles, not before and not beside:
+    # it wants the same card, and two 4bit models resident at once on a 14.56GB
+    # T4 is how a comparison turns into an OOM blamed on the thing being
+    # compared. A fresh process because unsloth patches transformers, trl and
+    # peft at import; this parent has never imported it (only the cycle
+    # children do), but relying on that would make the control's validity a
+    # property of import order in a file nobody reads for that.
+    naive = None
+    if args.compare_naive_trl:
+        naive_dir = outdir / "naive_trl"
+        naive_dir.mkdir(parents = True, exist_ok = True)
+        _log("=== plain-TRL control arm (fresh process, unsloth not imported) ===")
+        cmd = [
+            sys.executable,
+            str(Path(__file__).resolve().parent / "naive_trl_compare.py"),
+            "--outdir",
+            str(naive_dir),
+        ]
+        # The repo UNSLOTH RESOLVED, not the name that was asked for. This is
+        # the difference between a comparison and an OOM: `load_in_4bit=True`
+        # sends unsloth through FLOAT_TO_INT_MAPPER to a pre-quantised
+        # `-unsloth-bnb-4bit` sibling, while the plain path quantises the
+        # ORIGINAL on the fly and therefore has to materialise the 16bit
+        # checkpoint first. On gemma-4-E2B-it that asked for 8.75GiB on top of
+        # 7.25GiB already resident and died (kernel
+        # unsloth-probe-latestcompile-r3-cb1125).
+        #
+        # Pointing both arms at the same weights is also the fairer comparison:
+        # the question is what the two TRAINING stacks do, not which repo each
+        # loader picks.
+        control_model = runs[0].get("resolved_checkpoint") or args.model
+        for flag, value in (
+            ("--model", control_model),
+            ("--dataset", args.dataset),
+            ("--max-steps", args.max_steps),
+            ("--batch-size", args.batch_size),
+            ("--grad-accum", args.grad_accum),
+            ("--max-seq-length", args.max_seq_length),
+            ("--learning-rate", args.learning_rate),
+            ("--lora-r", args.lora_r),
+            ("--lora-alpha", args.lora_alpha),
+            ("--optim", args.optim),
+        ):
+            cmd += [flag, str(value)]
+        # rc is not consulted: the child writes its own report on every path,
+        # including its own crash, and comparison_failures rules on the report.
+        # Reading rc here as well would give two sources of truth for one
+        # outcome, and they would disagree the first time the child died after
+        # writing.
+        subprocess.run(cmd)
+        naive_file = naive_dir / "naive_trl_report.json"
+        if naive_file.exists():
+            naive = json.loads(naive_file.read_text(encoding = "utf-8"))
+        else:
+            naive = {"error": "the plain-TRL process wrote no report"}
+
+    vision = None
+    if args.vision_run:
+        vision_dir = outdir / "vision"
+        vision_dir.mkdir(parents = True, exist_ok = True)
+        _log("=== vision training run (fresh process, after the cycles) ===")
+        vision_cmd = [
+            sys.executable,
+            str(Path(__file__).resolve().parent / "run_vision_t4.py"),
+            "--outdir",
+            str(vision_dir),
+            "--model",
+            args.model,
+            "--max-seq-length",
+            str(args.max_seq_length),
+            # Deliberately small and stated here rather than inherited. The
+            # text side runs 10-20 steps in seconds; a vision step on a T4 is
+            # ~100s (317.9s for three, kernel unsloth-probe-vision-train-r3),
+            # so inheriting --max-steps would quietly add half an hour to the
+            # leg. Three steps is what the pixel, adapter and export claims
+            # need; more of them prove nothing extra.
+            "--max-steps",
+            "3",
+            "--samples",
+            "8",
+        ]
+        if args.export_gguf:
+            # The merged-export half of the vision claim. Same flag the text
+            # side uses, so a leg cannot end up exporting on one path only.
+            vision_cmd.append("--export")
+        # rc is not consulted, for the same reason as the control arm: the
+        # child writes a report on every path including its own crash, and
+        # reading rc as well would give two sources of truth for one outcome.
+        subprocess.run(vision_cmd)
+        vision_file = vision_dir / "vision_report.json"
+        if vision_file.exists():
+            vision = json.loads(vision_file.read_text(encoding = "utf-8"))
+        else:
+            vision = {"error": "the vision process wrote no report"}
+
     report: dict = {
         "label": args.label,
         "model": args.model,
@@ -1497,6 +2231,59 @@ def main() -> int:
     }
 
     failures: list[str] = []
+
+    # -2. the vendored fast kernels and the attention choice. Read off cycle 0:
+    # every cycle loads the same model in the same process shape, so a
+    # per-cycle comparison would be comparing a constant with itself.
+    if args.kernel_provenance:
+        report["kernels"] = runs[0].get("kernels")
+        report["attention"] = runs[0].get("attention")
+        kernel_broken = vision_kernel_failures(
+            runs[0].get("kernels"),
+            runs[0].get("attention"),
+            capability = str(env.get("gpu_capability", "")),
+        )
+        report["kernel_failures"] = kernel_broken
+        failures += kernel_broken
+
+    # -1.5 the multi-card bindings. Read off cycle 0 for the same reason as the
+    # kernels above: the binding is made once, at import, so a per-cycle
+    # comparison compares a constant with itself.
+    if getattr(args, "require_multi_gpu", False):
+        report["multi_gpu"] = runs[0].get("multi_gpu")
+        multi_broken = multi_gpu_failures(
+            runs[0].get("multi_gpu"),
+            expected_cards = args.expected_cards,
+        )
+        report["multi_gpu_failures"] = multi_broken
+        failures += multi_broken
+
+    # -1. the plain-TRL control arm, reported side by side and NOT asserted
+    # equal. Two library stacks do not produce one fp16 trajectory -- frontier
+    # measured transformers 5.5.0 and 5.15.1 disagreeing at step 1 on identical
+    # weights, data and seed -- so the rules are "it ran" and "it converged",
+    # which are the same rules the unsloth arm is held to.
+    if args.vision_run:
+        report["vision"] = vision
+        if not vision:
+            report["vision_failures"] = ["the vision run produced no report at all"]
+        else:
+            # The child already ruled on itself against the same pure function
+            # the CPU guards drive. Re-deriving the verdict here would be a
+            # second implementation of one rule, and they would disagree the
+            # first time one moved.
+            report["vision_failures"] = list(vision.get("failures") or [])
+            if vision.get("error"):
+                report["vision_failures"].append(f"the vision run crashed: {vision['error']}"[:400])
+        failures += report["vision_failures"]
+
+    if args.compare_naive_trl:
+        report["naive_trl"] = naive
+        naive_broken = comparison_failures(
+            naive, report["metrics"], allow_oom = args.control_oom_is_ok
+        )
+        report["naive_trl_failures"] = naive_broken
+        failures += naive_broken
 
     # 0. the pins, if this leg claims to be a control
     if args.pins:
@@ -1557,6 +2344,49 @@ def main() -> int:
             f"run {run['run_index']}: {f}"
             for f in saved_adapter_failures(run.get("saved_adapter") or {})
         ]
+
+    # 4b. batched generation reproduces one-at-a-time greedy output. Gated on
+    # the flag because the legs that carry no reference still want it, while a
+    # payload run for something else (a bisect, a single-cycle debug) should not
+    # be forced to pay for it.
+    if args.check_batched_generation:
+        for run in runs:
+            failures += [
+                f"run {run['run_index']}: {f}"
+                for f in batched_generation_failures(run.get("batched_generation"), args.model)
+            ]
+
+    # 4c. the GGUF export, and whether the exported file runs. Both rules live
+    # in gguf_export.py so the gptoss and vision payloads can reuse them
+    # without copying the two traps (the sibling directory, and the tuple that
+    # install_llama_cpp returns) into three files.
+    if args.export_gguf:
+        from gguf_export import export_failures, run_failures
+
+        accept = tuple(
+            q.strip() for q in (args.gguf_accept or args.gguf_quantization).split(",") if q.strip()
+        )
+        # A cycle that deliberately skipped the export is excused ONLY when
+        # another cycle really exported. "No export anywhere" stays a failure,
+        # so the saving cannot turn into missing coverage.
+        exported = [run for run in runs if not (run.get("gguf_export") or {}).get("skipped")]
+        if not exported:
+            failures.append(
+                "every cycle skipped the GGUF export, so the leg asked for one "
+                "and never produced a file"
+            )
+        for run in exported:
+            failures += [
+                f"run {run['run_index']}: {f}"
+                for f in export_failures(run.get("gguf_export"), accept_quantizations = accept)
+            ]
+            # Only ask whether it RUNS once the export produced something; a
+            # missing file already failed above and would otherwise be reported
+            # twice under two different descriptions.
+            if (run.get("gguf_export") or {}).get("ggufs"):
+                failures += [
+                    f"run {run['run_index']}: {f}" for f in run_failures(run.get("gguf_run"))
+                ]
 
     # 5. band check against the committed reference
     if args.reference:

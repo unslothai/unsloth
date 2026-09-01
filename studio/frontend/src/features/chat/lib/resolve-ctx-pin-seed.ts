@@ -47,7 +47,8 @@ const CLEAR: CtxPinSeed = {
 export function resolveCtxPinSeed(options: {
   /** ``status.requested_context_length``; undefined on a backend that omits the field. */
   incoming: number | null | undefined;
-  /** ``status.is_gguf``: only a GGUF load carries an n_ctx. */
+  /** ``status.is_gguf``. A non-GGUF status reports ``incoming`` too, so this flag, not
+   * its presence, is what keeps a non-GGUF load out of the pin. */
   isGguf: boolean;
   /** No load of this tab's own is in flight (``!modelLoading``). */
   seedLoadParams: boolean;

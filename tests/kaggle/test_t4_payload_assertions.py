@@ -15,6 +15,7 @@ costs a Kaggle session has to be checkable without one.
 from __future__ import annotations
 
 import json
+import re
 import sys
 import types
 from pathlib import Path
@@ -908,6 +909,26 @@ def test_the_committed_reference_pins_the_model_it_was_captured_on():
 # -------------------------------------------- run_t4_smoke.py: main() paths
 
 
+def _batch_record(**over):
+    """A healthy batched-generation record, with fields overridable per test."""
+    base = {
+        "prompt_token_lengths": [11, 14, 9, 17, 12, 20, 8, 15],
+        "distinct_lengths": 8,
+        "padding_side_observed": "left",
+        "padding_side_after": "left",
+        "singles": [f"out{i}" for i in range(8)],
+        "batched": {
+            "2": [f"out{i}" for i in range(8)],
+            "4": [f"out{i}" for i in range(8)],
+            "8": [f"out{i}" for i in range(8)],
+        },
+        "agrees": {"2": True, "4": True, "8": True},
+        "empty_outputs": [],
+    }
+    base.update(over)
+    return base
+
+
 def _cycle(index: int, losses: list[float]) -> dict:
     return {
         "run_index": index,
@@ -916,6 +937,13 @@ def _cycle(index: int, losses: list[float]) -> dict:
         ],
         "generated": "__UNSLOTH__!!!",
         "canary_found": True,
+        # A simulated HEALTHY cycle has to look healthy in every respect a real
+        # one is judged on, this record included. Leaving it out made
+        # `--check-batched-generation` (on by default, because a leg that
+        # quietly skips it stops covering #3699/#1066/#1456/#2138) fail every
+        # simulated run with "batched generation was never run" -- which is the
+        # rule working, on a fixture that had not kept up.
+        "batched_generation": _batch_record(),
         "adapter_files": ["adapter_config.json", "adapter_model.safetensors"],
         "saved_adapter": _adapter_state(),
         "determinism": {},
@@ -1773,3 +1801,569 @@ def test_gptoss_still_reads_a_bf16_card_and_a_t4_the_way_it_did():
         )
         == []
     )
+
+
+def test_batched_generation_runs_end_to_end_against_a_stub_model():
+    """Every other test in this section feeds `batched_generation_failures` a
+    dict someone typed. That checks the RULE and never once executes the code
+    that produces the dict, which is how kernel unsloth-probe-defaultleg-723c28
+    trained all ten steps on a real T4 and then died on
+
+        NameError: name 'torch' is not defined
+
+    inside `batched_generation` itself. Every torch user in run_t4_smoke.py
+    imports it inside the function; that one did not, and no CPU test noticed
+    because none of them ever called it.
+
+    So drive the real function with a stub tokenizer and model. The stub echoes
+    a deterministic continuation per row, so agreement across batch sizes is
+    guaranteed and this asserts the plumbing rather than the model: shapes,
+    the padded-width slice, and that the function runs at all.
+    """
+    import torch
+
+    from run_t4_smoke import batched_generation, batched_generation_failures
+
+    class _Enc(dict):
+        def to(self, _device):
+            return self
+
+    class _Tok:
+        padding_side = "right"
+        pad_token = "<pad>"
+        eos_token = "<eos>"
+        pad_token_id = 0
+
+        def __call__(
+            self,
+            text,
+            return_tensors = None,
+            padding = False,
+        ):
+            texts = [text] if isinstance(text, str) else list(text)
+            # One token per character, so a length spread in the prompts is a
+            # length spread in the ids and the padding is real.
+            ids = [[ord(c) % 100 + 1 for c in t] for t in texts]
+            if return_tensors is None:
+                return {"input_ids": ids[0] if isinstance(text, str) else ids}
+            width = max(len(i) for i in ids)
+            # LEFT padding, which is what the function asks for and what the
+            # padded-width slice below depends on.
+            padded = [[0] * (width - len(i)) + i for i in ids]
+            return _Enc(
+                input_ids = torch.tensor(padded),
+                attention_mask = torch.tensor([[0] * (width - len(i)) + [1] * len(i) for i in ids]),
+            )
+
+        def decode(
+            self,
+            row,
+            skip_special_tokens = False,
+        ):
+            return "".join(chr(int(v)) for v in row if int(v) != 0)
+
+    class _Model:
+        device = "cpu"
+
+        def generate(
+            self,
+            input_ids = None,
+            attention_mask = None,
+            max_new_tokens = 8,
+            **_kw,
+        ):
+            # Append the same continuation to every row, derived from that
+            # row's own unpadded content, so batching cannot change it.
+            outs = []
+            for row in input_ids:
+                real = [int(v) for v in row if int(v) != 0]
+                tail = [(sum(real) % 26) + 65] * max_new_tokens
+                outs.append([int(v) for v in row] + tail)
+            return torch.tensor(outs)
+
+    # Eight, because BATCH_SIZES tops out at 8 and the rule rejects a record
+    # whose largest batch could never have been formed. Lengths 1..8 so every
+    # batch pads and the padded-width slice is exercised rather than skipped.
+    prompts = ["abcdefgh"[:n] * 1 for n in range(1, 9)]
+    record = batched_generation(_Model(), _Tok(), prompts, max_new_tokens = 4)
+
+    assert record["distinct_lengths"] == 8, "the stub prompts must actually pad"
+    assert record["padding_side_observed"] == "left"
+    assert len(record["singles"]) == len(prompts)
+    assert all(s for s in record["singles"]), "the padded-width slice dropped everything"
+    assert batched_generation_failures(record) == []
+
+
+def test_a_healthy_batched_generation_record_reports_no_failures():
+    from run_t4_smoke import batched_generation_failures
+    assert batched_generation_failures(_batch_record()) == []
+
+
+def test_a_batch_whose_prompts_are_all_one_length_is_reported_as_proving_nothing():
+    from run_t4_smoke import batched_generation_failures
+
+    """The vacuity case, and the reason this check exists in this shape.
+
+    Left padding only happens when the prompts in a batch differ in length. Feed
+    eight identical-length prompts and every batch agrees with every single --
+    perfectly, every time, having never padded once. That is a green
+    left-padding assertion covering nothing, which is the failure mode this
+    whole file keeps being caught by.
+    """
+    failures = batched_generation_failures(
+        _batch_record(prompt_token_lengths = [12] * 8, distinct_lengths = 1)
+    )
+    assert any("nothing was ever padded" in f for f in failures), failures
+
+
+def test_a_padding_side_silently_flipped_to_right_is_a_failure():
+    from run_t4_smoke import batched_generation_failures
+
+    """#2138: a release forced the tokenizer padding side to right in inference.
+
+    Checked twice, before and after generating, because the override that
+    caused it happened INSIDE the inference path -- so the value this payload
+    set is not evidence of the value that was used.
+    """
+    assert any(
+        "padding_side_after" in f
+        for f in batched_generation_failures(_batch_record(padding_side_after = "right"))
+    )
+    assert any(
+        "padding_side_observed" in f
+        for f in batched_generation_failures(_batch_record(padding_side_observed = "right"))
+    )
+
+
+def test_a_batch_that_disagrees_with_one_at_a_time_is_a_failure():
+    from run_t4_smoke import batched_generation_failures
+
+    """#3699 / #1456: batched output diverging from sequential greedy output."""
+    broken = _batch_record()
+    broken["batched"]["4"] = ["different"] * 8
+    broken["agrees"]["4"] = False
+    failures = batched_generation_failures(broken)
+    assert any("batch size 4 did not reproduce" in f for f in failures), failures
+
+
+def test_empty_generations_are_a_failure_even_when_every_batch_agrees():
+    from run_t4_smoke import batched_generation_failures
+
+    """#1066: gibberish, of which "nothing at all" is the degenerate case.
+
+    Agreement alone is not health: a model that emits an empty string for every
+    prompt agrees with itself at every batch size.
+    """
+    failures = batched_generation_failures(
+        _batch_record(
+            singles = [""] * 8,
+            empty_outputs = [0, 1, 2, 3, 4, 5, 6, 7],
+            batched = {"2": [""] * 8, "4": [""] * 8, "8": [""] * 8},
+        )
+    )
+    assert any("generated nothing at all" in f for f in failures), failures
+
+
+def test_too_few_prompts_to_fill_the_largest_batch_is_reported():
+    from run_t4_smoke import batched_generation_failures
+
+    """A batch size larger than the prompt list silently becomes one small batch."""
+    failures = batched_generation_failures(
+        _batch_record(singles = ["a", "b"], prompt_token_lengths = [5, 9], distinct_lengths = 2)
+    )
+    assert any("never actually formed" in f for f in failures), failures
+
+
+def test_a_missing_batched_record_is_a_failure_not_a_pass():
+    from run_t4_smoke import batched_generation_failures
+    """A leg where the check never ran must not look like a leg where it passed."""
+    assert batched_generation_failures(None) == ["batched generation was never run"]
+
+
+# ------------------------------------------------- run_grpo_t4.py: the reward
+
+
+def _completions(*lengths):
+    """GRPO hands reward functions a list of message lists."""
+    return [[{"role": "assistant", "content": "x" * n}] for n in lengths]
+
+
+def test_the_length_reward_still_discriminates_at_the_lengths_the_model_emits():
+    """The leg's only instrument, and it was broken in the least visible way.
+
+    `reward_length` was `min(len(t), 200) / 200.0` while its docstring claimed
+    to be "SENSITIVE to a group's diversity". Kernels
+    unsloth-probe-grpo-rep2-b03be8 and -rep3-bc3828 recorded completions of
+    2534 to 3396 characters, so every completion scored exactly 1.0, every
+    group tied, and the leg failed with `reward_std was zero on every step`.
+    Two runs in three died on it.
+
+    A reward that saturates below the range the model actually occupies reads
+    as a broken generation path in the report. So assert discrimination at the
+    OBSERVED lengths, not at convenient small ones: the old function passes any
+    test written with 10- and 20-character completions.
+    """
+    sys.path.insert(0, str(SMOKE_DIR))
+    from run_grpo_t4 import reward_length
+
+    for a, b in ((2534, 3396), (3013, 3328), (2738, 2633)):
+        scores = reward_length(_completions(a, b))
+        assert scores[0] != scores[1], (
+            f"lengths {a} and {b} scored identically ({scores}); the reward has "
+            f"saturated in the range the model actually produces"
+        )
+
+
+def test_the_length_reward_is_strictly_increasing_and_never_saturates():
+    """The property that makes the test above hold for lengths nobody has seen
+    yet. A cap is a length at which this stops being true, which is exactly how
+    the previous version passed review."""
+    from run_grpo_t4 import reward_length
+
+    lengths = [0, 1, 50, 200, 1000, 3000, 10000, 100000]
+    scores = reward_length(_completions(*lengths))
+    assert all(x < y for x, y in zip(scores, scores[1:])), scores
+    assert all(0.0 <= s < 1.0 for s in scores), scores
+
+
+def test_two_identical_completions_still_tie_because_that_is_real():
+    """Guard against overcorrecting. A group whose completions are genuinely
+    identical SHOULD tie -- that is degenerate generation and the leg is right
+    to fail on it. The bug was ties between DIFFERENT completions."""
+    from run_grpo_t4 import reward_length
+
+    scores = reward_length(_completions(2534, 2534))
+    assert scores[0] == scores[1]
+
+
+# --------------------------------------------------- gguf_export.py
+
+
+def _gguf_record(**over):
+    """A healthy export, shaped like the one measured on
+    unsloth-probe-gguf-q8-peft-920e3e: the GGUF in the SIBLING directory."""
+    record = {
+        "save_dir": "/tmp/q8p",
+        "requested_quantization": "q8_0",
+        "ok": True,
+        "seconds": 40.6,
+        "ggufs": [
+            {
+                "path": "/tmp/q8p_gguf/qwen3-0.6b.Q8_0.gguf",
+                "mb": 609.8,
+                "found_in": "/tmp/q8p_gguf",
+                "suffix": "_gguf",
+            }
+        ],
+    }
+    record.update(over)
+    return record
+
+
+def test_a_healthy_gguf_export_reports_no_failures():
+    from gguf_export import export_failures
+    assert export_failures(_gguf_record(), accept_quantizations = ("q8_0",)) == []
+
+
+def test_an_export_that_reported_ok_but_wrote_no_gguf_is_a_failure():
+    """The trap this module exists for. save_pretrained_gguf writes the merged
+    safetensors into the directory it was given and the GGUF into a SIBLING, so
+    code that globs the directory it passed finds nothing, raises nothing, and
+    calls it a successful export."""
+    from gguf_export import export_failures
+
+    failures = export_failures(_gguf_record(ggufs = []), accept_quantizations = ("q8_0",))
+    assert failures and "no .gguf" in failures[0]
+    assert "_gguf sibling" in failures[0]
+
+
+def test_a_gguf_search_finds_the_file_in_the_sibling_directory(tmp_path):
+    """Executed against a real directory pair rather than a hand-written dict,
+    because the whole point is WHERE the file is."""
+    from gguf_export import find_ggufs
+
+    save = tmp_path / "out"
+    save.mkdir()
+    (save / "model.safetensors").write_bytes(b"0" * 2048)
+    sibling = tmp_path / "out_gguf"
+    sibling.mkdir()
+    (sibling / "qwen3-0.6b.Q8_0.gguf").write_bytes(b"0" * 4096)
+
+    found = find_ggufs(str(save))
+    assert len(found) == 1, found
+    assert found[0]["suffix"] == "_gguf"
+    assert found[0]["path"].endswith("qwen3-0.6b.Q8_0.gguf")
+
+
+def test_a_gguf_that_is_only_a_header_is_not_an_export():
+    from gguf_export import export_failures
+    failures = export_failures(
+        _gguf_record(
+            ggufs = [
+                {
+                    "path": "/tmp/q8p_gguf/x.Q8_0.gguf",
+                    "mb": 0.1,
+                    "found_in": "/tmp/q8p_gguf",
+                    "suffix": "_gguf",
+                }
+            ]
+        ),
+        accept_quantizations = ("q8_0",),
+    )
+    assert failures and "header and no weights" in failures[0]
+
+
+def test_a_model_allowed_to_override_the_quantization_still_passes():
+    """gpt-oss answers q8_0 with "GPT-OSS does not support GGUF quantization
+    (requested: q8_0). Overriding to MXFP4 format." That is documented
+    behaviour, so a leg that accepts MXFP4 must not fail on it."""
+    from gguf_export import export_failures
+
+    record = _gguf_record(
+        ggufs = [
+            {
+                "path": "/tmp/g_gguf/gpt-oss-20b.MXFP4.gguf",
+                "mb": 11800.0,
+                "found_in": "/tmp/g_gguf",
+                "suffix": "_gguf",
+            }
+        ]
+    )
+    assert export_failures(record, accept_quantizations = ("mxfp4",)) == []
+    # ... and a leg that does NOT accept it still says so.
+    failures = export_failures(record, accept_quantizations = ("q8_0",))
+    assert failures and "accepted quantization" in failures[0]
+
+
+def test_a_gguf_that_no_runner_could_execute_is_a_failure():
+    from gguf_export import run_failures
+    failures = run_failures(
+        {
+            "gguf": "/tmp/q8p_gguf/x.gguf",
+            "bench": {"seconds": 240.0, "error": "TimeoutExpired: ..."},
+            "completion": {"seconds": 240.0, "returncode": 1, "stderr": "bad magic"},
+        }
+    )
+    assert failures and "produced no output from any runner" in failures[0]
+
+
+def test_one_successful_runner_is_enough():
+    from gguf_export import run_failures
+    assert (
+        run_failures(
+            {
+                "gguf": "/tmp/q8p_gguf/x.gguf",
+                "bench": {"seconds": 12.0, "returncode": 0, "stdout": "tg128 ... 41.2"},
+            }
+        )
+        == []
+    )
+
+
+def test_a_bundle_with_no_runners_at_all_is_reported_as_that():
+    """Distinct from "the file does not run": a missing binary is a bundle
+    problem and blaming the model file for it would send the reader to the
+    wrong place."""
+    from gguf_export import run_failures
+
+    failures = run_failures(
+        {
+            "gguf": "/tmp/x.gguf",
+            "bench": {"skipped": "no llama-bench in the bundle"},
+            "completion": {"skipped": "no llama-completion in the bundle"},
+        }
+    )
+    assert failures and "missing from the llama.cpp bundle" in failures[0]
+
+
+def test_the_llama_cpp_facts_read_a_tuple_not_a_directory(tmp_path):
+    """install_llama_cpp returns (llama-quantize, convert_hf_to_gguf.py). An
+    earlier probe treated the return value as a bin directory and reported
+    "0 binaries", which was the probe being wrong, not the bundle being
+    empty."""
+    from gguf_export import llama_cpp_facts
+
+    quant = tmp_path / "llama-quantize"
+    conv = tmp_path / "convert_hf_to_gguf.py"
+    quant.write_text("")
+    conv.write_text("")
+
+    facts = llama_cpp_facts(
+        "Unsloth: Installing prebuilt llama.cpp b10472-mix-4b653db "
+        "(app-b10472-mix-4b653db-linux-x64-cpu.tar.gz) - skipping compilation.",
+        (str(quant), str(conv)),
+    )
+    assert facts["all_exist"] is True
+    assert facts["dir"] == str(tmp_path)
+    assert facts["prebuilt"] is True
+    assert facts["source_build_markers"] == []
+
+
+def test_a_source_build_is_visible_even_though_it_succeeds():
+    """The failure to catch is not "kernel missing" but "kernel built from
+    source": silent, correct, and many minutes on 4 vCPUs."""
+    from gguf_export import llama_cpp_facts
+
+    facts = llama_cpp_facts("-- Configuring done\ncmake --build . -j 4\n", ())
+    assert facts["prebuilt"] is False
+    assert "cmake" in facts["source_build_markers"]
+
+
+# ------------------------------- run_t4_smoke.py: parent -> child argv
+
+
+# Options the PARENT alone acts on, so their absence from the child command is
+# correct rather than a leak. Each is here for a stated reason; an entry added
+# without one is how this guard stops working.
+PARENT_ONLY_DESTS = {
+    "outdir",  # the parent gives each cycle its own subdirectory
+    "cycle",  # set by the parent per child, never forwarded verbatim
+    "repeat",  # how many children to launch
+    "reference",  # band check runs in the parent, over collected cycles
+    "rel_tol",  # ... and its tolerances
+    "abs_floor",
+    "require_canary",  # evaluated by the parent's failure collector
+    "check_batched_generation",
+    "export_gguf",  # forwarded as a bare flag, asserted separately below
+    # The pin check reads the report the cycles produced, in the parent
+    # (run_t4_smoke.py:1741), so the children have nothing to do with it.
+    "pins",
+    # The plain-TRL control arm is spawned BY the parent, after the cycles, and
+    # ruled on there. A cycle child neither runs it nor judges it.
+    "compare_naive_trl",
+    "control_oom_is_ok",
+    # Kernel provenance IS collected in the child (it needs the loaded model),
+    # but the flag reaches it through the bare-flag block rather than the
+    # name/value pairs this check walks; asserted separately in
+    # test_kernel_provenance.py.
+    "kernel_provenance",
+    # The vision run is spawned BY the parent, after the cycles and in a
+    # process of its own: it loads a second model, and two 4bit models resident
+    # at once on a 14.56GB T4 is how a leg becomes an OOM blamed on the thing
+    # it was testing.
+    "vision_run",
+}
+
+
+def _smoke_source() -> str:
+    return (SMOKE_DIR / "run_t4_smoke.py").read_text(encoding = "utf-8")
+
+
+def _child_command_block() -> str:
+    """The argv the parent builds for each cycle."""
+    source = _smoke_source()
+    start = source.index("cmd = [\n            sys.executable,")
+    end = source.index("proc = subprocess.run(cmd)", start)
+    return source[start:end]
+
+
+def test_every_option_the_child_needs_actually_reaches_the_child():
+    """The class of bug, not one instance of it.
+
+    Cycles run in fresh child processes and the parent rebuilds their argv from
+    an explicit list. A flag added to the parser but not to that list is
+    accepted on the command line, parsed, logged in the driver's exec line, and
+    silently ignored -- which is exactly what happened to --export-gguf on
+    kernel unsloth-probe-default-gguf-637565: the leg failed with "GGUF export
+    was never run" while the driver log showed --export-gguf right there in the
+    command.
+
+    --check-batched-generation escaped this only because it defaults to True, so
+    the child got it without being told. That is luck, not design.
+    """
+    import argparse
+    import importlib
+
+    sys.path.insert(0, str(SMOKE_DIR))
+    module = importlib.import_module("run_t4_smoke")
+
+    # Build the parser the same way main() does, by calling it with a sentinel
+    # that makes it return rather than run.
+    parser = argparse.ArgumentParser()
+    source = _smoke_source()
+    dests = set(re.findall(r'dest\s*=\s*"([a-z_0-9]+)"', source))
+    dests |= {
+        m.replace("-", "_") for m in re.findall(r'ap\.add_argument\(\s*"--([a-z0-9-]+)"', source)
+    }
+    assert "export_gguf" in dests, "the parser no longer defines --export-gguf"
+    assert "model" in dests, "the dest scrape found nothing; fix the scrape"
+
+    block = _child_command_block()
+    forwarded = {m.replace("-", "_") for m in re.findall(r'"--([a-z0-9-]+)"', block)}
+
+    missing = sorted(d for d in dests - forwarded - PARENT_ONLY_DESTS if not d.startswith("no_"))
+    assert not missing, (
+        f"these options are parsed but never forwarded to the cycle child, so "
+        f"setting them does nothing: {missing}. Either forward them or list "
+        f"them in PARENT_ONLY_DESTS with a reason."
+    )
+    del parser, module
+
+
+def test_the_export_flag_is_forwarded_as_a_bare_flag():
+    """store_true options cannot ride the (flag, value) loop -- `--export-gguf
+    True` is not a thing -- so they need their own append, and that is the line
+    that was missing."""
+    block = _child_command_block()
+    assert 'cmd.append("--export-gguf")' in block
+    assert "if args.export_gguf:" in block
+
+
+def test_the_export_settings_ride_the_value_loop():
+    block = _child_command_block()
+    assert '("--gguf-quantization", args.gguf_quantization)' in block
+    assert '("--gguf-accept", args.gguf_accept)' in block
+
+
+def test_a_second_cycle_cannot_report_an_already_installed_llama_cpp_as_a_source_build():
+    """Measured on unsloth-probe-visleg-full-b3a317, and it is a trap.
+
+    The prebuilt banner is printed once, by the install that downloads the
+    bundle. A second cycle in the same session finds llama.cpp already there
+    and prints nothing, so the field read `prebuilt: true` on cycle 0 and
+    `prebuilt: false` on cycle 1 for the SAME installation -- and `false` reads
+    as "built from source", which is the one thing this field exists to catch.
+
+    None is the third state: this run did not install it, so it cannot say.
+    """
+    from gguf_export import llama_cpp_facts
+
+    quiet = llama_cpp_facts("", ())
+    assert (
+        quiet["prebuilt"] is None
+    ), "an install that printed nothing must not claim a source build"
+    assert quiet["source_build_markers"] == []
+
+    # And the two real answers are unchanged.
+    assert (
+        llama_cpp_facts(
+            "Unsloth: Installing prebuilt llama.cpp b10472 - skipping compilation.", ()
+        )["prebuilt"]
+        is True
+    )
+    assert llama_cpp_facts("cmake --build . -j 4\n", ())["prebuilt"] is False
+
+
+def test_the_text_leg_gguf_export_does_not_land_in_the_artifact_directory():
+    """`/kaggle/working` is 21.0 GB and is what `kernels output` ships back.
+
+    Measured on unsloth-probe-lcleg-final-a90fbb, which is the run that found
+    this:
+
+        RuntimeError: Unsloth: Not enough disk space to convert to GGUF.
+        The export needs about 16.6GB on the filesystem holding
+        `/kaggle/working/t4_out_Latest_compile/cycle0/gguf_run0`
+
+    Two failures in one. A merge too big for that volume kills the leg, and a
+    merge that DOES fit is downloaded as part of the artifact, which nobody
+    wanted. gpt-oss and the vision run were both moved to a tempdir for exactly
+    this reason and this path was missed -- so a small model kept passing and
+    hid it.
+    """
+    src = _smoke_source()
+    call = src[src.index("gguf_export_record = export_gguf(") :]
+    call = call[: call.index(")")]
+    assert "tempfile.mkdtemp" in call, "the export writes into the artifact directory"
+    assert (
+        "args.outdir" not in call
+    ), "args.outdir is /kaggle/working, which is 21 GB and is collected"

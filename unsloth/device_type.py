@@ -24,6 +24,8 @@ __all__ = [
     "clean_gpu_cache",
     "get_current_device",
     "resolve_hip_gpu_stats_name",
+    "arch_lacks_bf16",
+    "hip_visible_archs",
     "is_mlx_available",
 ]
 
@@ -187,6 +189,28 @@ if DEVICE_TYPE == "hip":
             from bitsandbytes.nn.modules import Params4bit
             if "blocksize = 64 if not HIP_ENVIRONMENT else 128" in inspect.getsource(Params4bit):
                 ALLOW_PREQUANTIZED_MODELS = False
+
+
+def arch_lacks_bf16(gcn_arch):
+    """gfx10 (RDNA 1/2) claims bf16 it lacks, and Triton's dot then kills the process in LLVM
+    with no Python exception (issue 7922). gfx11 has bf16, so the prefix must stay 5 chars."""
+    return str(gcn_arch or "").split(":", 1)[0].strip().lower().startswith("gfx10")
+
+
+def hip_visible_archs():
+    """Guarded per device: one unreadable device must not discard the archs beside it, or a
+    gfx10 keeps bf16 and dies in Triton (#7922). Only an unreadable count returns []."""
+    try:
+        count = torch.cuda.device_count()
+    except Exception:
+        return []
+    archs = []
+    for i in range(count):
+        try:
+            archs.append(str(getattr(torch.cuda.get_device_properties(i), "gcnArchName", "")))
+        except Exception:
+            continue
+    return archs
 
 
 def resolve_hip_gpu_stats_name(gpu_stats):
