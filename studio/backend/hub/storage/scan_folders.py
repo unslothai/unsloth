@@ -92,6 +92,9 @@ def contains_sensitive_path_component(path: str) -> bool:
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     global _schema_ready
+    # Read before any schema work: mark_ready() drops the add when a
+    # retirement lands in between, rather than caching a path that is gone.
+    cache_generation = schema_cache.generation()
     if not _schema_ready:
         _schema_ready_paths.clear()
     database_row = conn.execute("PRAGMA database_list").fetchone()
@@ -112,7 +115,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             """
         )
         conn.commit()
-        _schema_ready_paths.add(database_key)
+        schema_cache.mark_ready(_schema_ready_paths, database_key, cache_generation)
         _schema_ready = True
 
 

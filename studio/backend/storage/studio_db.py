@@ -1257,6 +1257,9 @@ def get_connection(
     conn.row_factory = sqlite3.Row
     # foreign_keys is session-scoped; set per connection
     conn.execute("PRAGMA foreign_keys=ON")
+    # Read before any schema work: mark_ready() drops the add when a
+    # retirement lands in between, rather than caching a path that is gone.
+    cache_generation = schema_cache.generation()
     if not _schema_ready:
         _schema_ready_paths.clear()
     if db_key not in _schema_ready_paths:
@@ -1265,7 +1268,7 @@ def get_connection(
                 try:
                     _ensure_schema(conn)
                     conn.commit()
-                    _schema_ready_paths.add(db_key)
+                    schema_cache.mark_ready(_schema_ready_paths, db_key, cache_generation)
                     _schema_ready = True
                 except Exception:
                     conn.close()

@@ -971,6 +971,11 @@ class _SdLoading:
     expected_bytes: int = 0
     downloaded_bytes: int = 0
     error: Optional[str] = None
+    # The account that started this load. A load is as much "somebody else is
+    # using the card" as a generation is, and the teardown guards only looked at
+    # the generation: with _gen still None the authenticated unload route ended
+    # another account's multi-gigabyte pull.
+    subject: str = LEGACY_WORKSPACE_SUBJECT
 
 
 @dataclass
@@ -1334,6 +1339,7 @@ class SdCppDiffusionBackend:
             self._loading = _SdLoading(
                 repo_id = repo_id,
                 base_repo = base,
+                subject = current_workspace_subject(),
                 asset_repos = tuple(
                     dict.fromkeys(
                         r
@@ -2724,6 +2730,15 @@ class SdCppDiffusionBackend:
                 if gen is not None and gen.subject != subject:
                     raise ForeignWorkspaceActiveError(
                         "Another account is generating an image right now."
+                    )
+                loading = self._loading
+                if (
+                    loading is not None
+                    and loading.error is None
+                    and loading.subject != subject
+                ):
+                    raise ForeignWorkspaceActiveError(
+                        "Another account is loading an image model right now."
                     )
         with self._lock:
             # Under the lock: begin_load rebinds this attribute, so an unlocked read could set an event the current load no longer watches.

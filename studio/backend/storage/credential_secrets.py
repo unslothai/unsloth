@@ -80,6 +80,9 @@ def get_connection() -> sqlite3.Connection:
         os.chmod(db_path, 0o600)
     except OSError:
         pass
+    # Read before any schema work: mark_ready() drops the add when a
+    # retirement lands in between, rather than caching a path that is gone.
+    cache_generation = schema_cache.generation()
     if not _schema_ready:
         _schema_ready_paths.clear()
     if db_key not in _schema_ready_paths:
@@ -87,7 +90,7 @@ def get_connection() -> sqlite3.Connection:
             if db_key not in _schema_ready_paths:
                 try:
                     _ensure_schema(conn)
-                    _schema_ready_paths.add(db_key)
+                    schema_cache.mark_ready(_schema_ready_paths, db_key, cache_generation)
                     _schema_ready = True
                 except Exception:
                     conn.close()

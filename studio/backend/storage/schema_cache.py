@@ -19,6 +19,12 @@ import threading
 
 _lock = threading.Lock()
 _caches: list[set[str]] = []
+# Bumped by every invalidation. A store reads it before it starts creating a
+# schema and passes it back to mark_ready(), so a clear that lands while that
+# work is in flight is not undone by the add that follows it: without this the
+# retired path went straight back into the cache, and the namesake's brand new
+# empty database was then treated as ready.
+_generation = 0
 
 
 def register(cache: set[str]) -> None:
@@ -28,9 +34,30 @@ def register(cache: set[str]) -> None:
             _caches.append(cache)
 
 
+def generation() -> int:
+    """The current invalidation generation. Read BEFORE creating a schema."""
+    with _lock:
+        return _generation
+
+
+def mark_ready(cache: set[str], key: str, at_generation: int) -> None:
+    """Record ``key`` as schema-ready, unless an invalidation intervened.
+
+    ``at_generation`` is what :func:`generation` returned before the schema work
+    began. If it has moved since, the path this call would cache may already have
+    been retired out from under it, so the store is left to check once more. That
+    costs one redundant ``_ensure_schema``, which is idempotent.
+    """
+    with _lock:
+        if at_generation == _generation:
+            cache.add(key)
+
+
 def forget_all() -> None:
     """Forget every cached path. Call when a workspace directory is retired."""
+    global _generation
     with _lock:
+        _generation += 1
         caches = list(_caches)
     for cache in caches:
         cache.clear()

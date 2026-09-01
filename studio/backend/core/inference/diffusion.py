@@ -889,6 +889,11 @@ class _LoadingState:
     # surfaced (``base_repo`` stays the id status() reports), but the cache scan and the delete
     # guard must look here.
     fetch_repo: Optional[str] = None
+    # The account that started this load. A load is as much "somebody else is
+    # using the card" as a generation is, and the teardown guards only looked at
+    # the generation: with _gen still None the authenticated unload route ended
+    # another account's multi-gigabyte pull.
+    subject: str = LEGACY_WORKSPACE_SUBJECT
 
 
 @dataclass
@@ -2088,7 +2093,11 @@ class DiffusionBackend:
             cancel_event = threading.Event()
             self._cancel_event = cancel_event
             # Seed with the family fallback; the worker resolves the real base and updates this.
-            self._loading = _LoadingState(repo_id = repo_id, base_repo = fam.base_repo)
+            self._loading = _LoadingState(
+                repo_id = repo_id,
+                base_repo = fam.base_repo,
+                subject = current_workspace_subject(),
+            )
 
         # Pinned, not a bare Thread: a new thread does not inherit this request's
         # context, so the worker would resolve loras_dir() and every other per-account
@@ -6443,6 +6452,15 @@ class DiffusionBackend:
                 raise ForeignWorkspaceActiveError(
                     "Another account is generating an image right now."
                 )
+        # Read without _lock on purpose: unload() takes _lock and then
+        # _generation_cancel_lock, so acquiring them the other way round here
+        # would invert that order. One reference read is enough, since a load
+        # that finishes in the meantime only makes this guard more permissive.
+        loading = self._loading
+        if loading is not None and loading.error is None and loading.subject != subject:
+            raise ForeignWorkspaceActiveError(
+                "Another account is loading an image model right now."
+            )
 
     def unload(self, subject: Optional[str] = None) -> dict[str, Any]:
         """Free the pipeline, cancelling whatever is running.

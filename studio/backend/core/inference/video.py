@@ -587,6 +587,11 @@ class _VideoLoadingState:
     # Companion repos this load is ALSO pulling from, beyond repo_id / base_repo (the native H3
     # GGUF and component repos). Mirrors the image backend's _SdLoading.asset_repos.
     asset_repos: tuple[str, ...] = ()
+    # The account that started this load. A load is as much "somebody else is
+    # using the card" as a generation is, and the teardown guards only looked at
+    # the generation: with _gen still None the authenticated unload route ended
+    # another account's multi-gigabyte pull.
+    subject: str = LEGACY_WORKSPACE_SUBJECT
 
 
 def _sd_cli_identity(binary: Optional[str]) -> Optional[tuple[int, int]]:
@@ -1407,6 +1412,7 @@ class VideoBackend:
                 repo_id = repo_id,
                 base_repo = fam.base_repo,
                 asset_repos = claimed_assets,
+                subject = current_workspace_subject(),
             )
 
         threading.Thread(
@@ -6367,6 +6373,15 @@ class VideoBackend:
                 if self._generate_job_active and self._gen_subject != subject:
                     raise ForeignWorkspaceActiveError(
                         "Another account is generating a video right now."
+                    )
+                loading = self._loading
+                if (
+                    loading is not None
+                    and loading.error is None
+                    and loading.subject != subject
+                ):
+                    raise ForeignWorkspaceActiveError(
+                        "Another account is loading a video model right now."
                     )
         with self._lock:
             self._load_token += 1

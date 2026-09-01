@@ -1899,6 +1899,7 @@ def test_unloading_the_image_engine_cannot_end_another_accounts_generation():
     backend._lock = threading.RLock()
     backend._generation_cancel_lock = threading.RLock()
     backend._gen = _GenState(total_steps = 20, step = 7, subject = "alice")
+    backend._loading = None
     cancel = threading.Event()
     backend._active_generate_cancel = cancel
     backend._active_generate_cancel_subject = "alice"
@@ -2530,3 +2531,55 @@ def test_the_image_persist_marker_is_read_per_account():
     inference_routes._end_image_persist("alice")
     assert inference_routes._diffusion_persist_active == {}
     assert inference_routes.generation_in_flight() is False
+
+
+def test_an_in_flight_model_load_is_not_another_accounts_to_tear_down():
+    import threading as _threading
+
+    from core.inference.diffusion import DiffusionBackend, _LoadingState
+    from utils.workspace_context import ForeignWorkspaceActiveError
+
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    backend._lock = _threading.RLock()
+    backend._generation_cancel_lock = _threading.RLock()
+    backend._gen = None
+    backend._loading = _LoadingState(
+        repo_id = "alice/private-model",
+        base_repo = "alice/private-model",
+        subject = "alice",
+    )
+
+    # _gen is None during the download, so the generation guard had nothing to
+    # look at and the authenticated unload route ended the other account's pull.
+    with pytest.raises(ForeignWorkspaceActiveError):
+        backend._refuse_foreign_teardown("bob")
+    backend._refuse_foreign_teardown("alice")
+    # The engine's own teardown paths still pass, whoever started the load.
+    backend._refuse_foreign_teardown(None)
+
+    # A load that already failed is nobody's to protect.
+    backend._loading.error = "boom"
+    backend._refuse_foreign_teardown("bob")
+
+
+def test_a_retirement_during_schema_creation_is_not_undone_by_the_add():
+    from storage import schema_cache
+
+    cache: set[str] = set()
+    schema_cache.register(cache)
+
+    # What a store does: read the generation, create the schema, then record the
+    # path. A retirement landing in that window used to be erased by the add, so
+    # the retired pathname stayed "ready" and the namesake's fresh empty database
+    # failed its first query with no such table until the process restarted.
+    generation = schema_cache.generation()
+    schema_cache.forget_all()
+    schema_cache.mark_ready(cache, "/workspaces/alice/studio.db", generation)
+    assert cache == set()
+
+    # The ordinary path still caches.
+    generation = schema_cache.generation()
+    schema_cache.mark_ready(cache, "/workspaces/alice/studio.db", generation)
+    assert cache == {"/workspaces/alice/studio.db"}
+    schema_cache.forget_all()
+    assert cache == set()
