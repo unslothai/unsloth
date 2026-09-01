@@ -3291,6 +3291,7 @@ def _count_route(
     template = _TOOL_TEMPLATE,
     models = None,
     request = None,
+    generations = None,
     **fields,
 ):
     """Drive the endpoint against `backend`, classifying capabilities from a real template."""
@@ -3302,7 +3303,7 @@ def _count_route(
     backend.models = models or _mirror(template)
     monkeypatch.setattr(route, "get_inference_backend", lambda: backend)
     monkeypatch.setattr(route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False))
-    monkeypatch.setattr(route.active_generations, "count", lambda: 0)
+    monkeypatch.setattr(route.active_generations, "count", generations or (lambda: 0))
     return asyncio.run(
         route.chat_count_tokens(
             route.ChatCountTokensRequest(**fields),
@@ -3844,3 +3845,61 @@ def test_an_mlx_count_reports_the_advertised_model_id(monkeypatch):
     monkeypatch.setattr(route, "_orchestrator_public_model_id", lambda _b: "org/advertised-repo-id")
     served = _count_route(monkeypatch, backend, messages = [{"role": "user", "content": "hello"}])
     assert json.loads(served.body)["model"] == "org/advertised-repo-id"
+
+
+def test_an_mlx_count_is_dropped_when_a_same_model_reload_lands_under_it(monkeypatch):
+    """The active name cannot see a same-ID reload, which is how a chat-template override
+    lands. A count whose routing came from the old entry must not be published."""
+    from fastapi import HTTPException
+    from routes import inference as route
+
+    backend = _RenderRecordingBackend()
+    backend.load_generation = 7
+
+    real_count = backend.count_chat_tokens
+
+    def _reload_midway(*args, **kwargs):
+        # The reload lands while the tokenizer runs: same name, new generation.
+        backend.load_generation = 8
+        return real_count(*args, **kwargs)
+
+    backend.count_chat_tokens = _reload_midway
+    with pytest.raises(HTTPException) as excinfo:
+        _count_route(monkeypatch, backend, messages = [{"role": "user", "content": "hi"}])
+    assert excinfo.value.status_code == 503
+    assert "changed while counting" in str(excinfo.value.detail)
+
+
+def test_an_mlx_count_yields_to_a_generation_that_started_while_it_prepared(monkeypatch):
+    """Everything between the endpoint's admission check and the tokenizer awaits, so a
+    chat can start in the gap and would then wait behind this count for the orchestrator
+    lock. The GGUF count re-checks at its last checkpoint; this one must too."""
+    from fastapi import HTTPException
+    from routes import inference as route
+
+    backend = _RenderRecordingBackend()
+    counts = iter([0, 1])  # admitted at the entry check, busy by the last checkpoint
+    with pytest.raises(HTTPException) as excinfo:
+        _count_route(
+            monkeypatch,
+            backend,
+            generations = lambda: next(counts, 1),
+            messages = [{"role": "user", "content": "hi"}],
+        )
+    assert excinfo.value.status_code == 503
+    assert "generation is in progress" in str(excinfo.value.detail)
+
+
+def test_the_mlx_mcp_snapshot_is_taken_under_the_same_guard_the_gguf_count_uses():
+    """The MCP update and delete handlers hold this guard across the row change and the
+    schema-cache invalidation, so a snapshot taken outside it can pair a new row with the
+    schema cached before it and report the view complete."""
+    import inspect
+
+    from routes import inference as route
+
+    body = inspect.getsource(route._mlx_count_chat_tokens)
+    assert "mcp_server_snapshot_guard" in body, "the MLX snapshot is unguarded"
+    guard = body.index("async with mcp_server_snapshot_guard():")
+    snapshot = body.index("asyncio.to_thread(cached_mcp_tools)")
+    assert guard < snapshot, "the guard must be held across the snapshot, not after it"

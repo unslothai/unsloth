@@ -27024,6 +27024,9 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
     # not worth stalling login and the health probe behind it.
     backend = await asyncio.to_thread(get_inference_backend)
     active = getattr(backend, "active_model_name", None)
+    # The name alone cannot see a same-ID reload, which is how a chat-template override
+    # lands, so the generation is captured with it and both are re-read at the end.
+    _load_generation = getattr(backend, "load_generation", 0)
     if not active:
         return None
     entry = getattr(backend, "models", {}).get(active) or {}
@@ -27083,11 +27086,14 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
         # for the same reason -- it is the flag that reaches the network.
         _mcp_tools: list[dict] = []
         if _mcp_on:
+            from core.inference.mcp_client import mcp_server_snapshot_guard
             from core.inference.tools import cached_mcp_tools
 
             # Off the loop with the store check below: reading which servers are enabled
-            # is a database read.
-            _mcp_tools, _mcp_complete = await asyncio.to_thread(cached_mcp_tools)
+            # is a database read. Guarded as the GGUF count guards it, or an interleaving
+            # edit pairs a new server row with the schema cached before it.
+            async with mcp_server_snapshot_guard():
+                _mcp_tools, _mcp_complete = await asyncio.to_thread(cached_mcp_tools)
             if not _mcp_complete:
                 raise HTTPException(
                     status_code = 503,
@@ -27224,6 +27230,14 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
     enable_thinking = payload.enable_thinking
     if enable_thinking is None:
         enable_thinking = _extra_body_enable_thinking(payload)
+    # Re-checked immediately before the only work that takes the orchestrator's lock:
+    # everything since the endpoint's entry check awaits, so a chat can have started in
+    # the gap and would then wait on this count. The GGUF path re-checks for this reason.
+    if active_generations.count() > 0:
+        raise HTTPException(
+            status_code = 503,
+            detail = "Cannot count tokens while a generation is in progress.",
+        )
     try:
         count, model = await asyncio.to_thread(
             backend.count_chat_tokens,
@@ -27240,7 +27254,10 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
             detail = "Unable to count tokens with the loaded model tokenizer.",
         )
     # A load landing mid-count leaves the total attributable to neither model.
-    if getattr(backend, "active_model_name", None) != active:
+    if (
+        getattr(backend, "active_model_name", None) != active
+        or getattr(backend, "load_generation", 0) != _load_generation
+    ):
         raise HTTPException(
             status_code = 503,
             detail = "The loaded model changed while counting tokens.",
