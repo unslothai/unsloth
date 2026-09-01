@@ -1113,6 +1113,7 @@ async def get_gguf_variants_answer(
                         quant = v.quant,
                         display_label = v.display_label,
                         size_bytes = v.size_bytes,
+                        shard_count = int(getattr(v, "shard_count", 0) or 0),
                         download_size_bytes = v.size_bytes,
                         download_remaining_bytes = (
                             None
@@ -1144,6 +1145,7 @@ async def get_gguf_variants_answer(
                         quant = v.quant,
                         display_label = v.display_label,
                         size_bytes = v.size_bytes,
+                        shard_count = int(getattr(v, "shard_count", 0) or 0),
                         download_size_bytes = v.download_size_bytes or v.size_bytes,
                         download_remaining_bytes = variant_remaining_bytes_from_state(
                             response_repo_id,
@@ -1185,6 +1187,7 @@ async def get_gguf_variants_answer(
                     quant = v.quant,
                     display_label = v.display_label,
                     size_bytes = v.size_bytes,
+                    shard_count = int(getattr(v, "shard_count", 0) or 0),
                     download_size_bytes = v.download_size_bytes or v.size_bytes,
                     download_remaining_bytes = variant_remaining_bytes_from_state(
                         repo_id,
@@ -1243,6 +1246,14 @@ async def get_gguf_variants_answer(
                 # The load resolver's own extractor over the context it reads, so the quant is
                 # what the echoed load resolves (the hub one differs on F16-checkpoint-Q4_K_M).
                 from utils.models.model_config import _extract_quant_label
+                from utils.models.model_config import colocated_split_shards
+
+                shards, split_complete = colocated_split_shards(local_target)
+                if split_complete and len(shards) > 1:
+                    try:
+                        size = sum(shard.stat().st_size for shard in shards)
+                    except OSError:
+                        size = 0
 
                 variants = [
                     GgufVariantInfo(
@@ -1251,6 +1262,7 @@ async def get_gguf_variants_answer(
                             f"{local_target.parent.name}/{local_target.name}"
                         ),
                         size_bytes = size,
+                        shard_count = len(shards) if split_complete and len(shards) > 1 else 0,
                     )
                 ]
                 # The shard scan resolves a file to its marked parent, so an unmarked one walks
@@ -1604,6 +1616,7 @@ async def get_gguf_variants_answer(
                 quant = v.quant,
                 display_label = v.display_label,
                 size_bytes = v.size_bytes,
+                shard_count = int(getattr(v, "shard_count", 0) or 0),
                 download_size_bytes = (
                     requirement.download_size_bytes if requirement is not None else v.size_bytes
                 ),

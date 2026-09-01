@@ -163,6 +163,22 @@ def test_every_playwright_driver_is_invoked_by_ci():
     )
 
 
+def test_mcp_argument_driver_launches_the_managed_studio_python():
+    document = yaml.safe_load(
+        (REPO / ".github" / "workflows" / "studio-ui-smoke.yml").read_text(encoding = "utf-8")
+    )
+    steps = document["jobs"]["ui-smoke"]["steps"]
+    run = next(
+        str(step["run"])
+        for step in steps
+        if step.get("name") == "MCP arguments end to end (Playwright)"
+    )
+    driver = (REPO / "tests" / "studio" / "playwright_mcp_arguments.py").read_text(encoding = "utf-8")
+
+    assert 'export STUDIO_MCP_PYTHON="$studio_home/unsloth_studio/bin/python"' in run
+    assert 'os.environ.get("STUDIO_MCP_PYTHON", sys.executable)' in driver
+
+
 def test_the_exemptions_are_still_exempt_and_still_exist():
     """An exemption that outlives its file, or its reason, quietly shrinks the check."""
     names = {driver.name for driver in DRIVERS}

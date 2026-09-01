@@ -839,6 +839,7 @@ def log_and_http_error(
     *,
     event: str = "request_failed",
     log = None,
+    headers: Optional[dict] = None,
 ):
     """Log ``error`` in full server-side and return an ``HTTPException`` whose
     ``detail`` is only ``public_message`` -- never the raw exception text.
@@ -847,9 +848,15 @@ def log_and_http_error(
     """
     from fastapi import HTTPException
 
-    # exc_info=error works for both structlog and stdlib loggers.
-    (log or logger).error(f"{event}: {error}", exc_info = error)
-    return HTTPException(status_code = status_code, detail = public_message)
+    # A 4xx is a normal outcome the caller handles, so one warning line and no traceback:
+    # at error with exc_info, one generation buried the log under 54 rejected saves. 5xx
+    # keeps the traceback, since that is a server bug. exc_info works for structlog too.
+    emitter = log or logger
+    if 400 <= status_code < 500:
+        emitter.warning(f"{event}: {error}")
+    else:
+        emitter.error(f"{event}: {error}", exc_info = error)
+    return HTTPException(status_code = status_code, detail = public_message, headers = headers)
 
 
 @contextmanager

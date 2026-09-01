@@ -12,6 +12,7 @@ quant's main files), and local drafter detection / self-pairing rejection.
 from __future__ import annotations
 
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -678,6 +679,41 @@ def test_download_mtp_prefers_root_over_new_scheme_copies(monkeypatch):
         "mtp-gemma-4-E4B-it.gguf",
     ]
     assert captured["pick"](repo_files) == "mtp-gemma-4-E4B-it.gguf"
+
+
+def test_companion_downloads_forward_the_load_cancel_event(monkeypatch):
+    import core.inference.llama_cpp as llama_cpp_module
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.setattr(
+        llama_cpp_module, "_companion_snapshot_sibling", lambda near_path, pick: None
+    )
+    event = threading.Event()
+    seen = []
+    b = LlamaCppBackend()
+    b.probe_server_capabilities = lambda binary = None: {
+        "supports_dspark": True,
+        "supports_dflash": True,
+    }
+
+    def _fake_companion(**kwargs):
+        seen.append((kwargs["label"], kwargs["cancel_event"]))
+        return None
+
+    b._download_companion_gguf = _fake_companion
+    b._download_mmproj(hf_repo = "org/repo", cancel_event = event)
+    b._download_mtp(hf_repo = "org/repo", cancel_event = event)
+    b._download_dspark(hf_repo = "org/repo", cancel_event = event)
+    b._download_dflash(hf_repo = "org/repo", cancel_event = event)
+
+    assert {label for label, _ in seen} == {
+        "mmproj",
+        "MTP drafter",
+        "DSpark drafter",
+        "DFlash drafter",
+    }
+    assert all(forwarded is event for _, forwarded in seen)
 
 
 # ── Reuse an on-disk drafter offline; fetch fresh online ─────────────

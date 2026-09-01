@@ -2255,7 +2255,7 @@ elif DEVICE_TYPE == "cuda":
         # Tri Dao's benchmark shows xformers is faster for now.
         HAS_FLASH_ATTENTION = False
 elif DEVICE_TYPE == "hip":
-    SUPPORTS_BFLOAT16 = True
+    SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
     if _package_available("flash_attn"):
         # Check for CUDA linking errors "undefined symbol: _ZNK3c106SymIntltEl"
         try:
@@ -2868,7 +2868,9 @@ if DEVICE_COUNT == 1 and int(os.environ.get("WORLD_SIZE", "1")) <= 1:
     import accelerate.state
 
     accelerate.state.PartialState._prepare_backend = _prepare_backend
-    accelerate.accelerator.Accelerator.distributed_type = lambda *args, **kwargs: DistributedType.NO
+    # Must be a property: a bare function binds as a method, inverting every
+    # `!= DistributedType.NO` guard in accelerate (#10016).
+    accelerate.accelerator.Accelerator.distributed_type = property(lambda self: DistributedType.NO)
 
 
 # to move multiple tensors to the same device
@@ -3625,6 +3627,13 @@ def unsloth_compile_transformers(
     return_logits = False,
     unsloth_force_compile = False,
 ):
+    # Again here, not only at import: a dotenv or config loader can populate
+    # `UNSLOTH_FORCE_CUSTOM_DTYPE` after this package was imported, and the compiler
+    # below reaches the older `unsloth_zoo` reader that still `eval`s the dtype field.
+    # Idempotent, so a registered or already sanitized value is unchanged.
+    from ._custom_dtype import neutralize_inherited_custom_dtype
+
+    neutralize_inherited_custom_dtype()
     if Version(torch_version) < Version("2.4.0"):
         print(
             "="

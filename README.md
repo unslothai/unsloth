@@ -69,7 +69,7 @@ irm https://unsloth.ai/install.ps1 | iex
 Unsloth works on **Windows, Linux, WSL** and **macOS**. We support **Multi GPU setups, NVIDIA, AMD, Intel GPUs, CPUs** and the **Vulkan** backend.
 
 ### Run & Build with AI
-* Run and train LLMs, diffusion, embedding, audio models: [Qwen3.8](https://unsloth.ai/docs/models/qwen3.8), [Kimi K3](https://unsloth.ai/docs/models/kimi-k3), MiniMax-H3, [Muse Glimmer](https://unsloth.ai/docs/models/muse-glimmer), [DeepSeek-V4](https://unsloth.ai/docs/models/deepseek-v4), [Gemma 4](https://unsloth.ai/docs/models/gemma-4).
+* Run and train LLMs, MLX, GGUF, diffusion, embedding, audio models: [Qwen3.8](https://unsloth.ai/docs/models/qwen3.8), [GLM-5.3-Flash](https://unsloth.ai/docs/models/glm-5.3-flash), [Kimi K3](https://unsloth.ai/docs/models/kimi-k3), MiniMax-H3, [DeepSeek-V4](https://unsloth.ai/docs/models/deepseek-v4), [Gemma 4](https://unsloth.ai/docs/models/gemma-4).
 * **Agents & Tools:** Use local models with [Claude Code](https://unsloth.ai/docs/basics/claude-code), [Codex](https://unsloth.ai/docs/basics/codex), and [MCP](https://unsloth.ai/docs/basics/mcp), including tool calling and code execution.
 * **Search & RAG:** Use private and unlimited web search, deep research, auto-compaction (rolling context window) and RAG.
 * **Image and video:** Run and train [image](https://unsloth.ai/docs/basics/diffusion-image) and video diffusion or multimodal models

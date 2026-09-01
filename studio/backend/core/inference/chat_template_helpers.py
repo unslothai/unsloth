@@ -13,6 +13,7 @@ import inspect
 import json
 import logging
 import re
+import string
 import weakref
 from dataclasses import dataclass
 from typing import Optional
@@ -31,6 +32,55 @@ _GEMMA_TEMPLATE_OPENERS = (
     _GEMMA_THOUGHT_OPEN + "\n",
     _GEMMA_THOUGHT_OPEN + "\\n",
     _GEMMA_THOUGHT_OPEN + _GEMMA_THOUGHT_CLOSE,
+)
+
+# Muse Glimmer's recipient-addressed blocks; see RecipientChannelNormalizer.
+# Both header prefixes occur: generation resumes after the prompt's trailing
+# "<|start|>assistant", so the first header arrives without it and later ones carry it.
+_ATEM_REASONING_RECIPIENT = "self"
+_ATEM_REPLY_RECIPIENT = "user"
+_ATEM_CLOSE = "<|eom|>"
+_ATEM_END_OF_TURN = "<|eot|>"
+# <|eom|> ends a block, <|eot|> ends the whole turn; either terminates the block in hand.
+_ATEM_BLOCK_ENDS = (_ATEM_CLOSE, _ATEM_END_OF_TURN)
+_ATEM_BLOCK_END_MAX_LEN = max(len(marker) for marker in _ATEM_BLOCK_ENDS)
+_ATEM_TEMPLATE_OPENER = "<|start|>assistant to=self<|message|>"
+_ATEM_HEADER_PREFIXES = ("<|start|>assistant to=", "to=")
+# Bound on a recipient so the holdback below can never be shorter than a real header.
+# Generous rather than a name cap: neither the grammar nor Studio caps a recipient.
+_ATEM_RECIPIENT_MAX_LEN = 256
+_ATEM_HEADER_RE = re.compile(
+    r"(?:<\|start\|>assistant )?to=(?P<recipient>[^<\s]{1,%d})<\|message\|>"
+    % _ATEM_RECIPIENT_MAX_LEN
+)
+# A partially streamed header tail: a recipient name, then a prefix of "<|message|>".
+_ATEM_PARTIAL_TAIL_RE = re.compile(
+    r"[^<\s]*(?:<(?:\|(?:m(?:e(?:s(?:s(?:a(?:g(?:e(?:\|)?)?)?)?)?)?)?)?)?)?"
+)
+# Longest holdback, derived from the same bound so the two cannot drift apart.
+_ATEM_HEADER_MAX_LEN = len("<|start|>assistant to=") + _ATEM_RECIPIENT_MAX_LEN + len("<|message|>")
+# Call syntax, taken verbatim from the response_template grammar the checkpoint ships:
+# a call repeats with no enclosing tag, other attributes may precede "name" on the call
+# and sit either side of it on a parameter.
+_ATEM_INVOKE_OPEN_RE = re.compile(r'<atem:invoke\b[^>]*?\bname="(?P<name>[^"]+)">')
+_ATEM_INVOKE_CLOSE = "</atem:invoke>"
+_ATEM_PARAMETER_RE = re.compile(
+    r'<atem:parameter\b[^>]*?\bname="(?P<key>[^"]+)"[^>]*?>(?P<value>.*?)</atem:parameter>',
+    re.DOTALL,
+)
+# The template wraps calls in this; the grammar does not model it, so it is framing.
+_ATEM_CALLS_ENVELOPE = ("<atem:function_calls>", "</atem:function_calls>")
+_ATEM_TAG_START_RE = re.compile(r"</?atem:")
+# Every tag of the call syntax, for recognizing one the token budget cut in half.
+# A tag name ends where these characters stop, matching the grammar's \b.
+_ATEM_NAME_CHARS = frozenset(string.ascii_letters + string.digits + "_-:")
+_ATEM_TAGS = (
+    "<atem:function_calls>",
+    "</atem:function_calls>",
+    "<atem:invoke",
+    "</atem:invoke>",
+    "<atem:parameter",
+    "</atem:parameter>",
 )
 
 # Control markup must not reach the prompt as raw text from a user / system / tool turn:
@@ -187,6 +237,10 @@ _TURN_BOUNDARY_MARKUP = re.compile(
 # closer truncates or garbles the audio. Per codec, and deliberately NOT the chat sweep: this
 # text is meant to be SPOKEN, so "please say <s>hello</s>" must reach the tokenizer as typed
 # (#7066).
+_MOSS_TTS_MARKUP = re.compile(
+    r"<(?=/?user_inst>|\|(?:im_(?:start|end)|audio(?:_start|_end|_pad)?"
+    r"|vision_pad|video_pad)\|>)"
+)
 _TTS_MARKUP_BY_CODEC = {
     # <custom_token_3>{text}<|eot_id|><custom_token_4>, stop <custom_token_2>. Those three
     # only, not any number: the transformers path spells the same ones as bare ids
@@ -210,6 +264,24 @@ _TTS_MARKUP_BY_CODEC = {
     # (model_config.py:992-995), and add_special_tokens = True makes the document boundaries
     # forgeable from the text too (#7066).
     "csm": re.compile(r"\[(?=\d+\])|<(?=\|(?:AUDIO|audio_eos|begin_of_text|end_of_text)\|>)"),
+    # Higgs TTS 2 renders scene and chat-role boundaries before opening the audio stream.
+    # Both the spoken text and the scene description are inserted verbatim by its template.
+    "higgs_tts2": re.compile(
+        r"<(?=\|(?:begin_of_text|end_of_text|start_header_id|end_header_id"
+        r"|scene_desc_start|scene_desc_end|eot_id|audio_out_bos|AUDIO_OUT"
+        r"|audio_eos|reserved_special_token_6)\|>)"
+    ),
+    # Higgs v3 tokenizes user text directly before adding its own <|audio|> boundary.
+    "higgs_tts3": re.compile(r"<(?=\|(?:tts|ref_audio|ref_text|text|audio)\|>)"),
+    # minimax wraps lyrics with chatml, caption, lyric, and audio stream boundaries.
+    "minimax_music3": re.compile(
+        r"<(?=\|(?:im_(?:start|end)|caption_(?:start|end)|lyrics_(?:start|end)"
+        r"|audio_(?:start|end|cfg))\|>)"
+    ),
+    # MOSS Local and Nano wrap client text in a user_inst block inside a ChatML turn.
+    # The remaining sentinels are codec placeholders accepted by their processors.
+    "moss_tts_local": _MOSS_TTS_MARKUP,
+    "moss_tts_nano": _MOSS_TTS_MARKUP,
 }
 # An unrecognised codec gets the union: still far narrower than the chat sweep, but it does
 # not assume a prompt shape this module has not seen.
@@ -1094,6 +1166,13 @@ def neutralize_control_markup_in_messages(
             new_name = neutralize_control_markup(name, markup)
             if new_name != name:
                 updates["name"] = new_name
+        # Concatenated into the header by a recipient-addressed template, so one
+        # carrying markup forged a whole system turn (#7066). Never holds delimiters.
+        recipient = msg.get("recipient")
+        if isinstance(recipient, str) and recipient:
+            new_recipient = neutralize_control_markup(recipient, markup)
+            if new_recipient != recipient:
+                updates["recipient"] = new_recipient
         # A separate reasoning field is the INNER text of a thought block the template wraps
         # itself (Qwen chat_templates.py:759, Gemma-4 gemma-4.jinja:245, Harmony
         # chat_templates.py:1330). None is "content", so it reached the prompt unswept and an
@@ -1635,6 +1714,110 @@ def _within(spans, index: int) -> bool:
     return any(start <= index < end for start, end in spans)
 
 
+_ENDRAW = re.compile(r"\{%-?\s*endraw\s*-?%\}")
+
+
+def _evaluated_spans(template: str) -> tuple:
+    """The ranges Jinja evaluates, walked quote-aware, with string literals taken out.
+
+    ``_jinja_expression_spans`` ends a block at the first ``}}``, so a template printing
+    literal Jinja -- ``{{ "{{ example.0 }}" }}`` -- reads as code. That scanner is shared
+    with ``model_markup`` (#7066) and stays as it is; this repair edits the template
+    llama-server launches with, so it walks the blocks itself.
+
+    A comment and a ``{% raw %}`` body are both skipped. Raw is tracked through this same
+    walk rather than matched in the source, so tag text that only appears inside a comment
+    or a literal cannot make a real expression between two of them look verbatim. Inside a
+    raw body nothing is interpreted at all, the way Jinja reads it: the walk runs to the
+    terminator, so a comment marker there stays text.
+    """
+    spans: list = []
+    index, end = 0, len(template)
+    verbatim = False
+    while index < end - 1:
+        if verbatim:
+            terminator = _ENDRAW.search(template, index)
+            if not terminator:
+                break
+            index = terminator.end()
+            verbatim = False
+            continue
+        if template[index] != "{" or template[index + 1] not in "{%#":
+            index += 1
+            continue
+        if template[index + 1] == "#":
+            closed = template.find("#}", index + 2)
+            index = end if closed < 0 else closed + 2
+            continue
+        closer = "}}" if template[index + 1] == "{" else "%}"
+        block: list = []
+        cursor = index + 2
+        run = cursor
+        quote = ""
+        closed = False
+        while cursor < end:
+            char = template[cursor]
+            if quote:
+                if char == "\\":
+                    cursor += 2
+                    continue
+                if char == quote:
+                    quote = ""
+                    run = cursor + 1
+            elif char in "'\"":
+                block.append((run, cursor))
+                quote = char
+            elif template.startswith(closer, cursor):
+                block.append((run, cursor))
+                closed = True
+                break
+            cursor += 1
+        if not closed:
+            # An unterminated block is text, not code, so nothing in it is rewritten.
+            break
+        tag = template[index + 2 : cursor].strip().strip("-").strip()
+        if closer == "%}" and tag == "raw":
+            verbatim = True
+        else:
+            spans.extend(block)
+        index = cursor + 2
+    return tuple(spans)
+
+
+_NUMERIC_MEMBER = re.compile(r"([A-Za-z_]\w*|\)|\])((?:\s*\.\s*\d+)+)")
+
+
+def repair_numeric_member_access(template) -> Optional[str]:
+    """Rewrite ``x.0`` as ``x[0]`` in evaluated code, or None when nothing needs it.
+
+    llama.cpp's Jinja rejects a numeric member property. The throw lands inside its
+    capability probe, which swallows it, so ``supports_object_arguments`` stays false and a
+    replayed tool call's arguments are never decoded back into an object -- the template's
+    own ``arguments.items()`` then dies on the JSON string (GLM-5.3).
+
+    Only the ranges Jinja evaluates are rewritten, never prompt text, a quoted literal, a
+    raw block, or Jinja syntax a template prints as an example.
+    A chain rewrites whole ("x.0.1" -> "x[0][1]"): leaving the tail behind still throws.
+    Jinja lets whitespace sit around each dot, and llama.cpp throws on that spelling too.
+    """
+    if not isinstance(template, str) or not template:
+        return None
+    spans = _evaluated_spans(template)
+    out: list = []
+    cursor = 0
+    for match in _NUMERIC_MEMBER.finditer(template):
+        if not _within(spans, match.start()):
+            continue
+        out.append(template[cursor : match.start()])
+        indices = "".join(f"[{n}]" for n in re.findall(r"\d+", match.group(2)))
+        out.append(f"{match.group(1)}{indices}")
+        cursor = match.end()
+    if not out:
+        return None
+    out.append(template[cursor:])
+    return "".join(out)
+
+
 def _reads_tools_variable(body: str) -> bool:
     """True when *body* evaluates the ``tools`` variable, rather than printing the word."""
     return any(_TOOLS_VARIABLE.search(_JINJA_STRING.sub("", code)) for code in _jinja_code(body))
@@ -1901,15 +2084,17 @@ def _selected_chat_template_strings(tokenizer, tools = None) -> tuple[str, ...]:
 
 def _detect_reasoning_channel_markers_from_templates(
     templates: tuple[str, ...],
-) -> Optional[tuple[str, str]]:
-    """Return Gemma native reasoning markers only when a template emits them."""
+) -> Optional[tuple[str, ...]]:
+    """Return native reasoning markers only when a template emits them."""
     if any(opener in template for template in templates for opener in _GEMMA_TEMPLATE_OPENERS):
         return _GEMMA_THOUGHT_OPEN, _GEMMA_THOUGHT_CLOSE
+    if any(_ATEM_TEMPLATE_OPENER in template for template in templates):
+        return _ATEM_REASONING_RECIPIENT, _ATEM_REPLY_RECIPIENT
     return None
 
 
-def detect_reasoning_channel_markers(tokenizer, tools = None) -> Optional[tuple[str, str]]:
-    """Return native Gemma thought-channel markers supported by a tokenizer.
+def detect_reasoning_channel_markers(tokenizer, tools = None) -> Optional[tuple[str, ...]]:
+    """Return the native reasoning-channel markers a tokenizer's template emits.
 
     Detection uses the active chat template rather than model names or vocabulary
     membership. Some models expose Gemma control tokens without using the native
@@ -1925,8 +2110,8 @@ def detect_reasoning_channel_markers(tokenizer, tools = None) -> Optional[tuple[
 
 def detect_reasoning_channel_markers_from_template(
     template, tools = None
-) -> Optional[tuple[str, str]]:
-    """Return native Gemma thought-channel markers from a raw template value."""
+) -> Optional[tuple[str, ...]]:
+    """Return native reasoning-channel markers from a raw template value."""
     return _detect_reasoning_channel_markers_from_templates(
         _selected_template_strings_from_value(template, tools)
     )
@@ -1936,7 +2121,7 @@ def detect_reasoning_channel_markers_from_model_info(
     tokenizer,
     model_info: Optional[dict] = None,
     tools = None,
-) -> Optional[tuple[str, str]]:
+) -> Optional[tuple[str, ...]]:
     """Return reasoning markers from the active or cached native template."""
     markers = detect_reasoning_channel_markers(tokenizer, tools = tools)
     if markers is not None or not isinstance(model_info, dict):
@@ -1958,12 +2143,33 @@ class ChatTemplateRenderResult:
     """Prompt plus response-protocol metadata selected by the renderer."""
 
     prompt: str
-    reasoning_channel_markers: Optional[tuple[str, str]] = None
+    reasoning_channel_markers: Optional[tuple[str, ...]] = None
     # The tool catalog the SELECTED template actually rendered. The native-template
     # fallback sanitizes with the native model's profile, which can drop a tool the active
     # profile kept, so a healer or controller built from the active catalog could promote a
     # call for a tool the prompt never advertised (#7066).
     advertised_tools: Optional[list] = None
+
+
+def _atem_header_can_extend(tail: str) -> bool:
+    """Whether ``tail`` is a prefix of some recipient header."""
+    for prefix in _ATEM_HEADER_PREFIXES:
+        if prefix.startswith(tail):
+            return True
+        if tail.startswith(prefix):
+            rest = tail[len(prefix) :]
+            # A recipient name, optionally followed by a partial "<|message|>".
+            if _ATEM_PARTIAL_TAIL_RE.fullmatch(rest):
+                return True
+    return False
+
+
+def _split_partial_atem_header(text: str) -> tuple[str, str]:
+    """Hold the longest suffix that may still become a recipient header."""
+    for start in range(max(0, len(text) - _ATEM_HEADER_MAX_LEN), len(text)):
+        if _atem_header_can_extend(text[start:]):
+            return text[:start], text[start:]
+    return text, ""
 
 
 def _split_partial_marker(text: str, marker: str) -> tuple[str, str]:
@@ -1972,6 +2178,142 @@ def _split_partial_marker(text: str, marker: str) -> tuple[str, str]:
         if text.endswith(marker[:length]):
             return text[:-length], text[-length:]
     return text, ""
+
+
+def _find_atem_block_end(text: str, start: int = 0) -> tuple[int, int]:
+    """Earliest block terminator at or after ``start``. Callers that keep feeding the
+    same buffer pass what they have already searched, so a held block costs one scan."""
+    index, length = -1, 0
+    for marker in _ATEM_BLOCK_ENDS:
+        found = text.find(marker, start)
+        if found >= 0 and (index < 0 or found < index):
+            index, length = found, len(marker)
+    return index, length
+
+
+def _atem_partial_framing_len(text: str) -> int:
+    """Length of the trailing fragment that can only be framing the model never finished:
+    one opening with "<", or a bare first header that has reached its "<|message|>".
+    "...auto=true" is still prose, so it stays."""
+    for size in range(min(len(text), _ATEM_HEADER_MAX_LEN), 0, -1):
+        tail = text[-size:]
+        if not (tail.startswith("<") or (tail.startswith("to=") and "<|" in tail)):
+            continue
+        if any(marker.startswith(tail) for marker in _ATEM_BLOCK_ENDS):
+            return size
+        if _atem_header_can_extend(tail):
+            return size
+    return 0
+
+
+def _split_partial_atem_boundary(text: str) -> tuple[str, str]:
+    """Between blocks either a header or a block terminator may follow, and both are
+    consumed there, so a partial of either has to be held for the next chunk."""
+    stable, held = _split_partial_atem_header(text)
+    candidate, tail = _split_partial_atem_block_end(text)
+    return (candidate, tail) if len(tail) > len(held) else (stable, held)
+
+
+def _split_partial_atem_block_end(text: str) -> tuple[str, str]:
+    stable, held = text, ""
+    for marker in _ATEM_BLOCK_ENDS:
+        candidate, tail = _split_partial_marker(text, marker)
+        if len(tail) > len(held):
+            stable, held = candidate, tail
+    return stable, held
+
+
+def _atem_parameter_value(raw: str):
+    """JSON where it parses, otherwise the text as written (the grammar's
+    ``allow_non_json``). Anything that will not re-serialize stays text: json.loads
+    accepts NaN and the infinities, which RFC 8259 s6 does not, and 1e400 becomes inf
+    without ever being one."""
+    try:
+        value = json.loads(raw)
+        json.dumps(value, allow_nan = False)
+    except (ValueError, RecursionError):
+        return raw
+    return value
+
+
+def _atem_unfinished_tag(text: str) -> int:
+    """Offset of the first ATEM tag the model had not finished writing, or -1.
+
+    Only the last tag start can be unfinished, and it must match a tag name to a name
+    boundary, so "<atem:invoker ..." stays the prose it is.
+    """
+    starts = [match.start() for match in _ATEM_TAG_START_RE.finditer(text)]
+    if not starts:
+        return -1
+    start = starts[-1]
+    fragment = text[start:]
+    if ">" in fragment:
+        return -1
+    for tag in _ATEM_TAGS:
+        if tag.startswith(fragment):
+            return start
+        if fragment.startswith(tag) and fragment[len(tag) : len(tag) + 1] not in _ATEM_NAME_CHARS:
+            return start
+    return -1
+
+
+def _atem_surrounding_text(segment: str, *, complete: bool = True) -> str:
+    """Text around calls, minus the envelope; whitespace alone is framing.
+
+    ``complete`` is False for the tail of a block the stream cut short, where a
+    trailing fragment of markup the model had not finished writing is framing too.
+    """
+    for tag in _ATEM_CALLS_ENVELOPE:
+        segment = segment.replace(tag, "")
+    if not complete:
+        unfinished = _atem_unfinished_tag(segment)
+        if unfinished >= 0:
+            segment = segment[:unfinished]
+    return segment if segment.strip() else ""
+
+
+def _atem_block_pieces(block: str, *, complete: bool) -> Optional[list[tuple[bool, str]]]:
+    """Split a tool-addressed block into ``(is_call, text)`` pieces, or None when it
+    holds no call syntax: nothing downstream recognizes the native form, so a block
+    passed through is shown as prose instead of executed. Text around the calls keeps
+    its place among them. ``complete`` is False for a block the stream cut short.
+    """
+    pieces: list[tuple[bool, str]] = []
+    cursor = 0
+    saw_call = False
+    for opening in _ATEM_INVOKE_OPEN_RE.finditer(block):
+        if opening.start() < cursor:
+            continue  # an opener quoted inside a call already taken
+        saw_call = True
+        pieces.append((False, _atem_surrounding_text(block[cursor : opening.start()])))
+        end = block.find(_ATEM_INVOKE_CLOSE, opening.end())
+        if end < 0:
+            return pieces  # the rest of the block is a call still being written
+        body = block[opening.end() : end]
+        parameters = list(_ATEM_PARAMETER_RE.finditer(body))
+        if len(parameters) != body.count("<atem:parameter") or "<atem:invoke" in body:
+            # An unclosed parameter, or a nested opener stealing this closer: either
+            # would run a tool the model did not specify, so keep it as text.
+            pieces.append((False, block[opening.start() : end + len(_ATEM_INVOKE_CLOSE)]))
+            cursor = end + len(_ATEM_INVOKE_CLOSE)
+            continue
+        arguments = {
+            parameter.group("key"): _atem_parameter_value(parameter.group("value"))
+            for parameter in parameters
+        }
+        pieces.append(
+            (
+                True,
+                "<tool_call>"
+                + json.dumps({"name": opening.group("name"), "arguments": arguments})
+                + "</tool_call>",
+            )
+        )
+        cursor = end + len(_ATEM_INVOKE_CLOSE)
+    if not saw_call:
+        return None
+    pieces.append((False, _atem_surrounding_text(block[cursor:], complete = complete)))
+    return pieces
 
 
 class ReasoningChannelNormalizer:
@@ -2064,6 +2406,197 @@ class ReasoningChannelNormalizer:
         return output
 
 
+class RecipientChannelNormalizer:
+    """Convert a recipient-addressed reasoning protocol to ``<think>``.
+
+    Muse Glimmer addresses every assistant block to a recipient: "self" carries
+    reasoning, "user" the reply, any other name a tool call. Blocks repeat, so
+    this tracks the recipient of each rather than one opener/closer pair.
+    Generation resumes after the prompt's trailing ``<|start|>assistant``, so
+    the first header arrives without that prefix.
+
+    A tool-addressed block is held until it closes and then rewritten as a
+    canonical ``<tool_call>``: no downstream parser recognizes the native form.
+    """
+
+    def __init__(
+        self,
+        reasoning_recipient: str = "self",
+        reply_recipient: str = "user",
+    ):
+        self._reasoning_recipient = reasoning_recipient
+        self._reply_recipient = reply_recipient
+        self._buffer = ""
+        self._in_reasoning = False
+        self._in_reply = False
+        self._tool_header = None
+        self._passthrough = False
+        self._skip_opening_newline = False
+        self._between_blocks = True
+        # How much of a held tool block has already been searched for a terminator,
+        # so a long argument is scanned once rather than once per delta.
+        self._tool_scanned = 0
+
+    def feed(self, text: str) -> str:
+        """Consume the next slice of model output and return the text it settles."""
+        self._buffer += text or ""
+        output: list[str] = []
+        while self._buffer:
+            if self._passthrough:
+                output.append(self._buffer)
+                self._buffer = ""
+                break
+
+            if self._tool_header is not None:
+                index, length = _find_atem_block_end(self._buffer, self._tool_scanned)
+                if index < 0:
+                    # Everything but a possible split terminator has been ruled out.
+                    self._tool_scanned = max(0, len(self._buffer) - _ATEM_BLOCK_END_MAX_LEN + 1)
+                    break  # a call is rewritten only once it is whole
+                block = self._buffer[:index]
+                self._buffer = self._buffer[index + length :]
+                self._tool_header = None
+                self._tool_scanned = 0
+                pieces = _atem_block_pieces(block, complete = True)
+                self._between_blocks = True
+                if pieces is not None:
+                    output.append("".join(text for _, text in pieces))
+                    continue
+                # No call in it at all: keep the body, but this block is closed and the
+                # next header is still ours to read, so do not stop normalizing the turn.
+                output.append(_atem_surrounding_text(block))
+                continue
+
+            if self._in_reply:
+                # The reply is content, but the turn can continue after it, so
+                # follow it to its close rather than giving up on the rest.
+                index, length = _find_atem_block_end(self._buffer)
+                if index < 0:
+                    stable, self._buffer = _split_partial_atem_block_end(self._buffer)
+                    output.append(stable)
+                    break
+                output.append(self._buffer[:index])
+                self._buffer = self._buffer[index + length :]
+                self._in_reply = False
+                self._between_blocks = True
+                continue
+
+            if self._in_reasoning:
+                if self._skip_opening_newline:
+                    if self._buffer == "\r":
+                        break  # cannot tell "\r\n" from a lone "\r" yet
+                    for newline in ("\r\n", "\n"):
+                        if self._buffer.startswith(newline):
+                            self._buffer = self._buffer[len(newline) :]
+                            break
+                    self._skip_opening_newline = False
+                    if not self._buffer:
+                        break
+                index, length = _find_atem_block_end(self._buffer)
+                if index < 0:
+                    stable, self._buffer = _split_partial_atem_block_end(self._buffer)
+                    output.append(stable)
+                    break
+                output.append(self._buffer[:index])
+                self._buffer = self._buffer[index + length :]
+                output.append(_THINK_CLOSE)
+                self._in_reasoning = False
+                self._between_blocks = True
+                continue
+
+            # Whitespace separating two blocks is framing, not content. Emitted, it
+            # puts a text run between two think blocks, and the UI merges only
+            # reasoning that is adjacent, so one reasoning pass renders as two. Gated
+            # on having emitted nothing since the last block, so that a space inside
+            # off-protocol text survives however the stream happens to be chunked.
+            if self._between_blocks:
+                stripped = self._buffer.lstrip()
+                if stripped != self._buffer:
+                    self._buffer = stripped
+                    if not self._buffer:
+                        break
+
+            match = _ATEM_HEADER_RE.search(self._buffer)
+            block_end, end_len = _find_atem_block_end(self._buffer)
+            if block_end >= 0 and (match is None or block_end < match.start()):
+                # A terminator with no block open is framing: the streamer keeps special
+                # tokens, and continue_final_message resumes inside a block.
+                output.append(self._buffer[:block_end])
+                self._buffer = self._buffer[block_end + end_len :]
+                self._between_blocks = True
+                continue
+            if match is None:
+                stable, self._buffer = _split_partial_atem_boundary(self._buffer)
+                output.append(stable)
+                self._between_blocks = self._between_blocks and not stable
+                break
+
+            recipient = match.group("recipient")
+            preface = self._buffer[: match.start()]
+            self._between_blocks = self._between_blocks and not preface
+            if recipient == self._reasoning_recipient:
+                output.append(self._buffer[: match.start()])
+                self._buffer = self._buffer[match.end() :]
+                output.append(_THINK_OPEN)
+                self._in_reasoning = True
+                self._skip_opening_newline = True
+            elif recipient == self._reply_recipient:
+                output.append(self._buffer[: match.start()])
+                self._buffer = self._buffer[match.end() :]
+                self._in_reply = True
+            else:
+                output.append(self._buffer[: match.start()])
+                self._tool_header = self._buffer[match.start() : match.end()]
+                self._buffer = self._buffer[match.end() :]
+        return "".join(output)
+
+    def finish(self) -> str:
+        """Flush a naturally completed stream, closing an open reasoning block and
+        keeping any call that closed inside a block the model never terminated."""
+        output = self._flush(keep_calls = True)
+        if self._in_reasoning:
+            output += _THINK_CLOSE
+            self._in_reasoning = False
+        return output
+
+    def drain(self) -> str:
+        """Flush buffered text without completing anything the model left open. Text
+        held back survives; a call held back does not, so cancelling a turn can never
+        be the thing that starts a tool running."""
+        return self._flush(keep_calls = False)
+
+    def _flush(self, *, keep_calls: bool) -> str:
+        output = self._buffer
+        self._buffer = ""
+        if self._tool_header is not None:
+            # No terminator arrived, so unlike feed() there is no complete block to
+            # hand on: keep the text the model had written and drop the rest.
+            pieces = _atem_block_pieces(output, complete = False)
+            if pieces is None:
+                output = _atem_surrounding_text(output, complete = False)
+            else:
+                output = "".join(t for is_call, t in pieces if keep_calls or not is_call)
+            self._tool_header = None
+        elif output:
+            # feed() held this back because it could still become framing. The stream
+            # ended before it did, so drop it rather than show the control markup.
+            held = _atem_partial_framing_len(output)
+            output = output[: len(output) - held] if held else output
+        if not self._in_reasoning:
+            # Flushed between blocks: a later delta must not be re-parsed as a
+            # header now that the text before it has already been emitted.
+            self._passthrough = True
+        return output
+
+
+def make_reasoning_normalizer(markers: tuple[str, ...], *, in_reasoning: bool = False):
+    if markers and markers[0] == _ATEM_REASONING_RECIPIENT:
+        # This protocol cannot start mid-block: its generation prompt ends at
+        # "<|start|>assistant", so the model always writes its own header.
+        return RecipientChannelNormalizer(*markers)
+    return ReasoningChannelNormalizer(*markers, in_reasoning = in_reasoning)
+
+
 def prompt_opens_reasoning_channel(
     prompt: Optional[str],
     markers: Optional[tuple[str, str]],
@@ -2100,7 +2633,7 @@ def normalize_reasoning_snapshots(
     stream,
     tokenizer = None,
     cancel_event = None,
-    markers: Optional[tuple[str, str]] = None,
+    markers: Optional[tuple[str, ...]] = None,
     tools = None,
     prompt: Optional[str] = None,
     continued: bool = False,
@@ -2115,8 +2648,8 @@ def normalize_reasoning_snapshots(
         yield from stream
         return
 
-    normalizer = ReasoningChannelNormalizer(
-        *markers,
+    normalizer = make_reasoning_normalizer(
+        markers,
         in_reasoning = prompt_opens_reasoning_channel(prompt, markers, continued),
     )
     raw_output = ""

@@ -38,14 +38,10 @@ DEFAULT_WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 
 BANNED_TRIGGERS: tuple[str, ...] = ("pull_request_target",)
 RESTRICTED_TRIGGERS: tuple[str, ...] = ("workflow_run",)
-# Stem, not filename: `.yaml` is scanned too, and a renamed publisher must
-# still be classified as one.
+# Match both workflow extensions by stem.
 PUBLISH_WORKFLOW_STEMS: tuple[str, ...] = ("release-desktop",)
 
-# A workflow running this script is a "host". `pull_request` resolves the
-# workflow file from the PR merge ref, so any narrowing a PR adds to its host
-# applies to that same PR, and the gate misses the change it exists to review.
-# Hence: a bare `pull_request:`, and a step that can fail.
+# The host must run on every PR and be able to fail.
 LINT_SCRIPT_NAME = "lint_workflow_triggers.py"
 
 
@@ -76,7 +72,7 @@ def _extract_cache_keys(path: Path) -> list[str]:
 
 
 def _on_field(yaml_doc):
-    # PyYAML resolves a bare `on:` key to the boolean True.
+    # PyYAML parses a bare `on:` key as True.
     on = yaml_doc.get(True) if isinstance(yaml_doc, dict) else None
     if on is None and isinstance(yaml_doc, dict):
         on = yaml_doc.get("on")
@@ -87,18 +83,12 @@ def _trigger_set(yaml_doc) -> set[str]:
     return _normalise_on(_on_field(yaml_doc))
 
 
-# A host runs this repo's script as a plain command with no arguments. Each
-# clause below is a way that looked satisfied while nothing was enforced: a
-# decoy path, a fake interpreter, a `|| true` (the default `run:` shell is
-# `bash -e`, no pipefail), or an argument that makes it exit early.
+# Accept only a plain invocation of this script; fail closed on wrappers.
 _PYTHON_BASENAME = re.compile(r"python(3(\.\d+)?)?")
-# Allowlist, not denylist: too many flags skip the file or mask its status
-# (-c, -m, --version, and -i, which exits 0 from the REPL even after
-# sys.exit(1)). Anything unrecognised fails closed.
+# Allow only flags that preserve script execution.
 _SAFE_OPTS = ("-u", "-E", "-s", "-S", "-B", "-O", "-OO", "-q")
 LINT_SCRIPT_PATH = f"scripts/{LINT_SCRIPT_NAME}"
-# Safe, but they consume the next token, so the script path is not mistaken
-# for their value.
+# These options consume the next token.
 _OPTS_WITH_VALUE = ("-X", "-W", "--check-hash-based-pycs")
 _SHELL_OPERATORS = ("|", "&", ";", ">", "<", "`", "$(")
 
@@ -139,8 +129,7 @@ def _classify_lint_line(line: str) -> tuple[bool, str | None]:
             return False, None
 
     rest = args[i:]
-    # Exactly the repo-relative path. A suffix match would accept a decoy at
-    # /tmp/scripts/lint_workflow_triggers.py.
+    # Require the repository-relative path, not a suffix match.
     if not rest or rest[0] not in (LINT_SCRIPT_PATH, f"./{LINT_SCRIPT_PATH}"):
         return False, None
     if len(rest) == 1:
@@ -159,13 +148,7 @@ def _classify_lint_line(line: str) -> tuple[bool, str | None]:
 
 
 def _lint_step_report(run: str) -> tuple[bool, list[str]]:
-    """(an enforcing invocation is present, problems with lint-ish commands).
-
-    The step body must be the lint command and nothing else. Judging lines in
-    isolation cannot tell a call from a definition, so an invocation parked in
-    an uncalled function or a here-document would read as enforcing while
-    executing nothing. Requiring a single command sidesteps shell parsing.
-    """
+    """Return whether the step enforces the lint and any problems found."""
     lines = [line for line in run.splitlines() if line.strip() and not line.strip().startswith("#")]
     mentions = [line for line in lines if LINT_SCRIPT_NAME in line]
     if not mentions:
@@ -182,11 +165,10 @@ def _lint_step_report(run: str) -> tuple[bool, list[str]]:
     return enforcing, problems
 
 
-# A `shell:` template can wrap the command, e.g. `bash -c '"{0}" || true'`.
+# Shell templates can wrap the command and hide its status.
 SAFE_SHELLS: tuple[str, ...] = ("bash", "sh")
 
-# Redirect execution without changing the command: bash sources BASH_ENV
-# before the step script, and PATH picks the interpreter.
+# These variables can redirect execution before the script runs.
 UNSAFE_ENV_KEYS: tuple[str, ...] = (
     "BASH_ENV",
     "ENV",
@@ -235,12 +217,7 @@ def _pull_request_config_problem(yaml_doc) -> str | None:
 
 
 def _lint_steps(yaml_doc) -> list[tuple[dict, dict, bool, list[str]]]:
-    """(job, step, enforcing, problems) for every step that runs the lint.
-
-    Reads the parsed steps rather than the raw text: a commented-out
-    `# - run: python3 scripts/lint_workflow_triggers.py` executes nothing, and
-    counting it as a host would let a deleted gate look wired.
-    """
+    """Return every step that runs the lint and its enforcement status."""
     jobs = yaml_doc.get("jobs") if isinstance(yaml_doc, dict) else None
     if not isinstance(jobs, dict):
         return []
@@ -304,8 +281,7 @@ def _is_truthy(value) -> bool:
 
 
 def main() -> int:
-    # No abbreviations: `--workflows-d` must not silently mean
-    # `--workflows-dir`, or a host could smuggle it past review.
+    # Do not let abbreviated options bypass the gate.
     parser = argparse.ArgumentParser(description = __doc__, allow_abbrev = False)
     parser.add_argument(
         "--workflows-dir",
@@ -335,9 +311,7 @@ def main() -> int:
         require_host = workflows_dir.resolve() == DEFAULT_WORKFLOWS_DIR.resolve()
 
     findings: list[str] = []
-    # GitHub Actions loads BOTH `.yml` and `.yaml` from .github/workflows/, so
-    # scanning only `*.yml` leaves a rename-away bypass: `evil.yaml` with
-    # `pull_request_target` would run for real and lint clean.
+    # GitHub Actions loads both workflow extensions.
     workflows = sorted(list(workflows_dir.glob("*.yml")) + list(workflows_dir.glob("*.yaml")))
     pr_triggered: list[tuple[Path, list[str]]] = []
     publish_triggered: list[tuple[Path, list[str]]] = []

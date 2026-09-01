@@ -29,18 +29,25 @@ const SYNC = SOURCE.slice(
   SOURCE.indexOf("/**\n * Reconcile the UI after the SERVER unloaded"),
 );
 
+/** The lora slot of that function's Promise.all, both handlers included. */
+const LORA_REQUEST = SYNC.slice(
+  SYNC.indexOf("listLoras().then("),
+  SYNC.indexOf("options?.preserveIdleUnloaded"),
+);
+
 test("every refresh takes a generation, and the newest one wins", () => {
   assert.match(SOURCE, /let syncGeneration = 0;/);
+  assert.match(SOURCE, /let loraSyncGeneration = 0;/);
   assert.match(SYNC, /const generation = \+\+syncGeneration;/);
   assert.match(SYNC, /const superseded = \(\) => generation !== syncGeneration;/);
 });
 
-test("a superseded refresh writes nothing back to the store", () => {
+test("a superseded refresh writes no stale model or status state", () => {
   const guard = SYNC.slice(0, SYNC.indexOf("setModels("));
   assert.match(
     guard,
     /if \(signal\?\.aborted \|\| superseded\(\)\) return;/,
-    "the check must sit between the await and the first write",
+    "the check must sit before model and status writes",
   );
 });
 
@@ -52,6 +59,21 @@ test("a superseded refresh does not report its failure either", () => {
     catchBlock.indexOf("superseded()") < catchBlock.indexOf("toast.error"),
     "the guard must precede the error toast",
   );
+});
+
+test("the lora inventory settles from its own request, not from a sibling's", () => {
+  assert.match(
+    SYNC,
+    /const loraGeneration = includeLoras \? \+\+loraSyncGeneration : null;/,
+  );
+  // Both outcomes hang off listLoras() itself. Read out of the shared Promise.all, a
+  // sibling rejection discarded a good list and still marked the inventory settled,
+  // which classified a resident LoRA as a base model and pinned a new pair generalized.
+  assert.match(LORA_REQUEST, /setLoras\(lorasRes\.loras\.map\(toLoraSummary\)\)/);
+  assert.match(LORA_REQUEST, /loraInventorySettled: true/);
+  assert.match(LORA_REQUEST, /!loraSuperseded\(\)/);
+  const catchBlock = SYNC.slice(SYNC.indexOf("} catch (error) {"));
+  assert.doesNotMatch(catchBlock, /loraInventorySettled|setLoras/);
 });
 
 test("the eviction branch is behind the same guard", () => {

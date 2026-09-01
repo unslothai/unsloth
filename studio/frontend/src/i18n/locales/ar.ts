@@ -831,6 +831,16 @@ export const ar = {
         openError: "تعذّر فتح المجلد",
         copyError: "تعذّر نسخ المسار",
       },
+      repairInstall: {
+        label: "إصلاح التثبيت",
+        description:
+          "يعيد تشغيل المثبّت على البيئة المُدارة. استخدمه إذا لم يتم اكتشاف وحدة معالجة الرسومات أو إذا تعذّر بدء التطبيق.",
+        action: "إصلاح التثبيت",
+        confirmTitle: "هل تريد إصلاح هذا التثبيت؟",
+        confirmDescription:
+          "يوقف الخادم ويعيد تشغيل المثبّت، الذي يعيد تثبيت PyTorch لوحدة معالجة الرسومات في هذا الجهاز. تُحفظ المحادثات والإعدادات. قد يستغرق ذلك عدة دقائق.",
+        confirmAction: "إصلاح الآن",
+      },
       resetPreferences: {
         sectionTitle: "منطقة الخطر",
         label: "إعادة تعيين جميع التفضيلات المحلية",
@@ -1086,6 +1096,8 @@ export const ar = {
         currentLoad: "الحمل الحالي",
         free: "{value} متاح",
         noGpu: "لا يوجد GPU مرئي",
+        gpuUnusable: "GPU غير قابل للاستخدام",
+        gpuUnusableDetail: "تم اكتشافه، لكن PyTorch لا يستطيع استخدامه",
       },
       gpu: {
         title: "أجهزة GPU",
@@ -1094,6 +1106,12 @@ export const ar = {
         detecting: "جارٍ البحث عن وحدات GPU...",
         unreadable: "تعذّرت قراءة عتاد هذا الخادم.",
         noGpu: "لم يُكتشف أي GPU مرئي. تُعرض موارد CPU فقط أعلاه.",
+        noUsableGpu: "لا يوجد على هذا الجهاز أي GPU يمكن لـ PyTorch استخدامه.",
+        mismatchCpuBuild:
+          "PyTorch إصدار للـ CPU فقط ({version})، لذا لا يمكن استخدام وحدات GPU أدناه. أصلح التثبيت لاستعادة دعم GPU.",
+        mismatchUnavailable:
+          "لا يستطيع PyTorch ({version}) تهيئة وحدات GPU أدناه، لذا لا يمكن استخدامها. تحقق من تعريف كرت الشاشة أو أصلح التثبيت.",
+        unusableDevice: "غير قابل للاستخدام",
         unknownDevice: "GPU غير معروف",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
@@ -1379,6 +1397,13 @@ export const ar = {
         collapseByDefaultDescription:
           "إبقاء التفكير مطويًا أثناء تفكير النموذج بدلًا من فتحه تلقائيًا. وسّع أي كتلة لقراءتها.",
       },
+      currentDate: {
+        label: "إخبار النموذج بتاريخ اليوم",
+        description:
+          "أضف التاريخ الحالي إلى المطالبة حتى يبحث البحث على الويب و Deep Research عن مصادر حديثة بدلًا من افتراض تاريخ انتهاء تدريب النموذج.",
+        loadError: "تعذّر تحميل إعدادات التاريخ الحالي",
+        saveError: "تعذّر تحديث إعدادات التاريخ الحالي",
+      },
       tools: {
         collapseByDefault: "طيّ نشاط الأدوات افتراضيًا",
         collapseByDefaultDescription:
@@ -1479,6 +1504,8 @@ export const ar = {
       archivedImagesDescription: "اعرض الصور التي أرشفتها وأدرها.",
       archivedVideos: "الفيديوهات المؤرشفة",
       archivedVideosDescription: "اعرض الفيديوهات التي أرشفتها وأدرها.",
+      archivedAudio: "الصوتيات المؤرشفة",
+      archivedAudioDescription: "اعرض المقاطع الصوتية التي أرشفتها وأدرها.",
       manageAction: "إدارة",
       manageChats: "إدارة المحادثات",
       manageChatsDescription:
@@ -1661,7 +1688,7 @@ export const ar = {
         desktopCheckingDescription: "يستغرق ذلك عادةً بضع ثوانٍ.",
         desktopAvailable: "يتوفر إصدار جديد من تطبيق سطح المكتب: {version}",
         desktopAvailableDescription:
-          "حدّث الآن، وسيُعاد تشغيل تطبيق سطح المكتب عند اكتمال التحديث.",
+          "حدّث الآن ليُجهَّز التحديث في الخلفية. يمكنك متابعة عملك وإعادة التشغيل عندما يصبح جاهزًا.",
         desktopExternalServer:
           "شغّل الأمر `unsloth studio update` في الطرفية التي شغّلت الخادم.",
         desktopManualInstall:
@@ -1670,11 +1697,20 @@ export const ar = {
         desktopCheckFailedDescription: "تحقق من اتصالك ثم حاول مرة أخرى.",
         desktopCurrent: "تطبيق سطح المكتب محدّث",
         desktopCurrentDescription: "سيواصل Unsloth التحقق تلقائيًا.",
+        desktopPreparingDescription:
+          "يجري تجهيز التحديث في الخلفية. يمكنك متابعة عملك.",
+        desktopReadyToRestartDescription:
+          "كل شيء جاهز. أعد التشغيل لإكمال تثبيت التحديث.",
+        desktopReadyToInstallDescription:
+          "تم تنزيل تحديث التطبيق. أكمل تحديث الواجهة الخلفية لتثبيته.",
         checkForUpdates: "التحقق من وجود تحديثات",
         checkAgain: "التحقق مرة أخرى",
         retryCheck: "إعادة المحاولة",
         checking: "جارٍ التحقق...",
+        preparing: "جارٍ التجهيز...",
         updateNow: "التحديث الآن",
+        restartToUpdate: "إعادة التشغيل للتحديث",
+        finishUpdate: "إكمال التحديث",
         openReleasePage: "فتح صفحة الإصدار",
         unknownInstall:
           "تعذّر اكتشاف طريقة تثبيت Unsloth. لعمليات تثبيت المثبّت أو PyPI، استخدم الأوامر أعلاه.",

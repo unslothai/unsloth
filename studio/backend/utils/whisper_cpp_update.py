@@ -98,13 +98,25 @@ _resolve_memo: dict = {}
 
 
 def _resolve_prebuilt_for_host(
-    *, force_refresh: bool = False, backend: Optional[str] = None
+    *,
+    force_refresh: bool = False,
+    backend: Optional[str] = None,
+    published_repo: Optional[str] = None,
+    published_release_tag: Optional[str] = None,
 ) -> Optional[dict]:
     """Run install_whisper_prebuilt.py --resolve-prebuilt (no download); return
     {prebuilt_available, repo, release_tag, upstream_tag, backend, asset, os,
     arch, ...} or None. Fail-open: any error -> None so a source build never
-    blocks the app."""
+    blocks the app.
+
+    A caller installing a pinned release must pass the same pin here, or it probes
+    a different artifact than it installs: the unpinned latest pointer sorts by
+    commit date and can lag the published_at pick (#6219)."""
     extra_args = ("--backend", backend) if backend else ()
+    if published_repo:
+        extra_args += ("--published-repo", published_repo)
+    if published_release_tag:
+        extra_args += ("--published-release-tag", published_release_tag)
     return _flow.resolve_prebuilt_for_host(
         force_refresh = force_refresh,
         memo = _resolve_memo,
@@ -592,6 +604,38 @@ def chained_phase_plan(
         "pin_release_tag": None if sys.platform == "darwin" else status.get("latest_tag"),
     }
     return plan
+
+
+def run_chained_phase_after_llama(phase: dict, set_progress) -> dict:
+    """Make the pairing check chained_phase_plan deferred, now that llama is installed.
+
+    The plan assumes the new llama supplies a workable pairing. That was false for ten
+    days (llama reached b10687, whisper stayed on b10472-mix-4b653db), so the phase ran
+    an install that could only exit 2 and failed a job llama had already won.
+
+    An attempt that goes ahead still surfaces exit 2, which is what keeps an
+    incompatible release actionable rather than a false success.
+    """
+    try:
+        backend = phase.get("backend")
+        repo = phase.get("repo")
+        pin = phase.get("pin_release_tag")
+        resolved = _resolve_prebuilt_for_host(
+            force_refresh = True,
+            backend = backend if isinstance(backend, str) else None,
+            published_repo = repo if isinstance(repo, str) else None,
+            published_release_tag = pin if isinstance(pin, str) else None,
+        )
+    except Exception as exc:
+        logger.debug("whisper pairing pre-flight failed", error = str(exc))
+        resolved = None
+    # A POSITIVE incompatibility only: an unreachable API reports prebuilt_available
+    # false too, and a pre-flight that cannot answer must fail towards the install.
+    # Deliberately no test on the INSTALLED kind -- a fat marker carries no
+    # install_kind, so gating on it skips the host most likely to meet a pairing gap.
+    if (resolved or {}).get("unavailable_reason") == "incompatible":
+        return {"skipped": True, "skip_reason": "paired_llama_unavailable"}
+    return run_chained_phase(phase, set_progress)
 
 
 def run_chained_phase(phase: dict, set_progress) -> dict:

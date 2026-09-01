@@ -291,6 +291,9 @@ TRANSFORMERS_550_MODEL_SUBSTRINGS: tuple[str, ...] = (
     "locateanything",
     "diffusion-gemma",
     "diffusiongemma",
+    "higgs-tts-2",
+    "higgs-audio-v2",
+    "higgs-audio-v3-tts",
 )
 
 # Architecture classes / model_type values requiring transformers 5.10.x (via config.json).
@@ -311,12 +314,16 @@ _TRANSFORMERS_550_ARCHITECTURES: set[str] = {
     "Gemma4ForConditionalGeneration",
     "KimiK3ForConditionalGeneration",
     "LocateAnythingForConditionalGeneration",
+    "HiggsAudioV2ForConditionalGeneration",
+    "HiggsMultimodalQwen3ForConditionalGeneration",
 }
 _TRANSFORMERS_550_MODEL_TYPES: set[str] = {
     "diffusion_gemma",
     "gemma4",
     "kimi_k3",
     "locateanything",
+    "higgs_audio_v2",
+    "higgs_multimodal_qwen3",
 }
 
 # Architecture classes / model_type values requiring transformers 5.3.0 (via config.json).

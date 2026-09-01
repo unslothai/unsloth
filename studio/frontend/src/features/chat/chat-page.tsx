@@ -12,11 +12,14 @@ import {
   ModelSelector,
   type ModelSelectorChangeMeta,
   type PerModelConfig,
+  isServedByMlx,
+  loadedContextFields,
   resolveInitialConfig,
   SidebarModelConfig,
   useActiveModelConfig,
 } from "@/features/model-picker";
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
+import { usePlatformStore } from "@/config/env";
 import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import {
   DropdownMenu,
@@ -66,6 +69,7 @@ import {
   INVENTORY_FRESHNESS_WINDOW_MS,
   useDeviceInventorySources,
 } from "@/features/hub/inventory";
+import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { DeleteChatFilesSwitch } from "./components/delete-chat-files-switch";
 import { chatLocalModelOptions } from "./local-model-options";
 import {
@@ -219,6 +223,12 @@ import { useResearchRunStore } from "./stores/research-run-store";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { buildChatTourSteps } from "./tour";
 import type { ChatView, MessageRecord } from "./types";
+import {
+  type ComparePairReadState,
+  checkpointCompareClass,
+  comparePairReadState,
+  resolveComparePaneThreadIds,
+} from "./utils/compare-pane-threads";
 import { clearNewChatDraft } from "./utils/composer-draft";
 import { isChatThreadDeleted } from "./utils/chat-thread-tombstones";
 import {
@@ -543,12 +553,95 @@ function modelMatchesDeleted(
  * True when the loaded checkpoint is a LoRA, meaning a base-vs-fine-tuned
  * compare that uses the fast simultaneous adapter-toggle path.
  */
-function useIsLoraCompare(): boolean {
-  return useChatRuntimeStore((s) => {
-    const cp = s.params.checkpoint;
-    const selected = cp ? s.loras.find((l) => l.id === cp) : undefined;
-    return selected?.exportType === "lora";
-  });
+function useIsLoraCompare(): boolean | null {
+  return useChatRuntimeStore((s) =>
+    checkpointCompareClass({
+      checkpoint: s.params.checkpoint,
+      isExternal: isExternalModelId(s.params.checkpoint),
+      residentUnknown: s.residentCheckpoint === undefined,
+      models: s.models,
+      loras: s.loras,
+      inventorySettled: s.loraInventorySettled,
+    }),
+  );
+}
+
+/** `pending` while the pair is still being read, so neither component hydrates first. */
+function useCompareVariant(pairId: string): {
+  state: ComparePairReadState;
+  retry: () => void;
+} {
+  const checkpointIsLora = useIsLoraCompare();
+  const [read, setRead] = useState<{
+    pairId: string;
+    state: ComparePairReadState;
+  }>();
+  const [storageRetry, setStorageRetry] = useState<{
+    pairId: string;
+    count: number;
+  }>();
+  const settled = read?.pairId === pairId ? read.state : undefined;
+  const retryCount = storageRetry?.pairId === pairId ? storageRetry.count : 0;
+
+  useEffect(() => {
+    if (settled) return;
+    let isActive = true;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    const settle = (state: ComparePairReadState) => {
+      if (!isActive || state.status === "pending") return;
+      if (state.status === "retry") {
+        retryTimer = setTimeout(() => {
+          if (isActive) setStorageRetry({ pairId, count: retryCount + 1 });
+        }, 250);
+        return;
+      }
+      setRead({ pairId, state });
+    };
+    listStoredChatThreads({ pairId })
+      .then((threads) =>
+        settle(comparePairReadState({ threads }, checkpointIsLora, retryCount)),
+      )
+      .catch((error) => {
+        if (!isExpectedBackgroundChatStorageError(error)) {
+          console.error("Could not read a comparison's stored threads", error);
+        }
+        settle(
+          comparePairReadState({ failed: true }, checkpointIsLora, retryCount),
+        );
+      });
+    return () => {
+      isActive = false;
+      if (retryTimer !== null) clearTimeout(retryTimer);
+    };
+  }, [pairId, checkpointIsLora, retryCount, settled]);
+
+  const retry = useCallback(() => {
+    setRead(undefined);
+    setStorageRetry({ pairId, count: 0 });
+  }, [pairId]);
+
+  return { state: settled ?? { status: "pending" }, retry };
+}
+
+/**
+ * The pair read failed. Its persisted shape is unknown, and picking a renderer from the
+ * loaded checkpoint would relabel existing histories, so offer the read again instead.
+ */
+function CompareUnreadable({
+  onRetry,
+}: {
+  onRetry: () => void;
+}): ReactElement {
+  return (
+    <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col items-center justify-center gap-3 p-6 text-center">
+      <p className="text-sm text-muted-foreground">
+        Could not load this comparison's history.
+      </p>
+      <Button variant="outline" size="sm" onClick={onRetry}>
+        Try again
+      </Button>
+    </div>
+  );
 }
 
 const CompareContent = memo(function CompareContent({
@@ -574,9 +667,15 @@ const CompareContent = memo(function CompareContent({
   deleteDisabled?: boolean;
   onExitCompare?: () => void;
 }): ReactElement {
-  const isLoraCompare = useIsLoraCompare();
+  const { state: compareRead, retry: retryCompareRead } =
+    useCompareVariant(pairId);
 
-  return isLoraCompare ? (
+  if (compareRead.status === "unreadable") {
+    return <CompareUnreadable onRetry={retryCompareRead} />;
+  }
+  if (compareRead.status !== "ready") return <></>;
+
+  return compareRead.variant === "lora" ? (
     <LoraCompareContent
       pairId={pairId}
       onExitCompare={onExitCompare}
@@ -739,9 +838,12 @@ const LoraCompareContent = memo(function LoraCompareContent({
   const handlesRef = useRef<Record<string, CompareHandle>>({});
   const [baseThreadId, setBaseThreadId] = useState<string>();
   const [loraThreadId, setLoraThreadId] = useState<string>();
+  const [pairLoraModelId, setPairLoraModelId] = useState<string>();
   const [threadsSettled, setThreadsSettled] = useState(false);
   const markInitialHistoryReady = useCompareReloadReadiness(pairId);
   const active = useChatActive();
+  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
+  const checkpointIsLora = useIsLoraCompare();
 
   // Global on purpose: a first compare run starts before either thread exists, so there is
   // no pair id to scope BY -- it files its handles under "__default" until initialize()
@@ -749,7 +851,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
   // `initialThreadId`, so learning them mid-run points ThreadAutoSwitch at a thread that is
   // still generating.
   const anyRunning = useChatRuntimeStore(
-    (s) => Object.keys(s.runningByThreadId).length > 0,
+    (s) => Object.keys(s.localRunByThreadId).length > 0,
   );
   // ...but only RE-lists wait. The shared provider (#8908) keeps a base chat's run alive
   // across the switch into compare, so `anyRunning` is true on arrival for a reason that has
@@ -765,8 +867,16 @@ const LoraCompareContent = memo(function LoraCompareContent({
     listStoredChatThreads({ pairId })
       .then((threads) => {
         if (!isActive) return;
-        setBaseThreadId(threads.find((t) => t.modelType === "base")?.id);
-        setLoraThreadId(threads.find((t) => t.modelType === "lora")?.id);
+        // No model1/model2 fallback: useCompareVariant never routes a generalized
+        // pair here, so adopting one could only mislabel it and write adapter
+        // answers into its histories.
+        const baseThread = threads.find((t) => t.modelType === "base");
+        const loraThread = threads.find((t) => t.modelType === "lora");
+        setBaseThreadId(baseThread?.id);
+        setLoraThreadId(loraThread?.id);
+        setPairLoraModelId(
+          loraThread?.modelId?.trim() || baseThread?.modelId?.trim() || undefined,
+        );
       })
       .catch((error) => {
         if (!isExpectedBackgroundChatStorageError(error)) {
@@ -792,6 +902,16 @@ const LoraCompareContent = memo(function LoraCompareContent({
     threadsSettled,
   ]);
 
+  const sendUnavailableReason = !threadsSettled
+    ? "Loading comparison history."
+    : checkpointIsLora === null
+      ? "Checking the loaded model."
+      : !checkpointIsLora ||
+          (pairLoraModelId !== undefined &&
+            !modelIdsMatch(pairLoraModelId, checkpoint))
+        ? "Load the LoRA saved with this comparison before sending."
+        : undefined;
+
   return (
     <CompareShell
       handlesRef={handlesRef}
@@ -802,6 +922,8 @@ const LoraCompareContent = memo(function LoraCompareContent({
             onExitCompare={onExitCompare}
             model1ThreadId={baseThreadId}
             model2ThreadId={loraThreadId}
+            sendUnavailableReason={sendUnavailableReason}
+            requireStableCheckpoint={true}
           />
         ) : (
           <></>
@@ -993,16 +1115,9 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     listStoredChatThreads({ pairId })
       .then((threads) => {
         if (!isActive) return;
-        setModel1ThreadId(
-          threads.find(
-            (t) => t.modelType === "model1" || t.modelType === "base",
-          )?.id,
-        );
-        setModel2ThreadId(
-          threads.find(
-            (t) => t.modelType === "model2" || t.modelType === "lora",
-          )?.id,
-        );
+        const pair = resolveComparePaneThreadIds(threads);
+        setModel1ThreadId(pair.first);
+        setModel2ThreadId(pair.second);
       })
       .catch((error) => {
         if (!isExpectedBackgroundChatStorageError(error)) {
@@ -2197,13 +2312,21 @@ export function ChatPage({
   const residentCheckpoint = useChatRuntimeStore(
     (state) => state.residentCheckpoint,
   );
-  const ggufContextLength = useChatRuntimeStore(
-    (state) => state.ggufContextLength,
+  const loadedContextLength = useChatRuntimeStore(
+    (state) => state.loadedContextLength,
   );
-  const ggufNativeContextLength = useChatRuntimeStore(
-    (state) => state.ggufNativeContextLength,
+  const nativeContextLength = useChatRuntimeStore(
+    (state) => state.nativeContextLength,
   );
   const contextUsage = useChatRuntimeStore((state) => state.contextUsage);
+  const loadedIsGguf = useChatRuntimeStore((state) => state.loadedIsGguf);
+  const loadedContextEnforced = useChatRuntimeStore(
+    (state) => state.loadedContextEnforced,
+  );
+  const platformDeviceType = usePlatformStore((state) => state.deviceType);
+  const platformChatOnlyReason = usePlatformStore(
+    (state) => state.chatOnlyReason,
+  );
   const modelsFromStore = useChatRuntimeStore((state) => state.models);
   const lorasFromStore = useChatRuntimeStore((state) => state.loras);
   const modelsError = useChatRuntimeStore((state) => state.modelsError);
@@ -2342,7 +2465,7 @@ export function ChatPage({
     [inferenceParams.checkpoint],
   );
   const contextWindowKnown = hasKnownContextWindow({
-    ggufContextLength,
+    loadedContextLength,
     modelLoading,
     isExternalModel,
     residentCheckpoint,
@@ -3153,9 +3276,7 @@ export function ChatPage({
           : false;
         useChatRuntimeStore.setState({
           activeGgufVariant: null,
-          ggufContextLength: null,
-          ggufMaxContextLength: null,
-          ggufNativeContextLength: null,
+          ...loadedContextFields(null),
           activeNativePathToken: null,
           activeNativePathExpiresAtMs: null,
           // Clear previous-model counters, else the relaxed external-provider render gate shows
@@ -3501,7 +3622,11 @@ export function ChatPage({
           }
           // For local turns, also require the restored count to fit in
           // the active window. Skip when unknown (external provider).
-          const limit = store.ggufContextLength;
+          //
+          // llama.cpp only: it stops at the window, so a count past it is stale by
+          // definition. MLX generates straight past instead, where an over-window count
+          // is the true one and the bar has a state for it.
+          const limit = store.loadedIsGguf ? store.loadedContextLength : null;
           if (
             typeof limit === "number" &&
             limit > 0 &&
@@ -3933,7 +4058,7 @@ export function ChatPage({
                 })}
                 activeGgufVariant={activeGgufVariant}
                 activeModelConfig={activeModelConfig}
-                activeGgufContextLength={ggufContextLength}
+                activeLoadedContextLength={loadedContextLength}
                 onValueChange={handleCheckpointChange}
                 onEject={handleEject}
                 onFoldersChange={refreshLocalModels}
@@ -4022,11 +4147,17 @@ export function ChatPage({
               <ContextUsageBar
                 used={contextUsage?.totalTokens ?? null}
                 // null on external providers; the bar handles that.
-                total={ggufContextLength}
+                total={loadedContextLength}
                 cached={contextUsage?.cachedTokens}
                 cacheWrites={contextUsage?.cacheWriteTokens}
                 promptTokens={contextUsage?.promptTokens}
                 completionTokens={contextUsage?.completionTokens}
+                isMlx={isServedByMlx(
+                  Boolean(loadedIsGguf),
+                  platformDeviceType,
+                  platformChatOnlyReason,
+                )}
+                contextEnforced={loadedContextEnforced}
                 className="h-[var(--studio-chat-control-height,34px)]"
               />
             ) : null}
@@ -4238,8 +4369,8 @@ export function ChatPage({
               ggufVariant={activeGgufVariant ?? null}
               isGguf={activeModelIsGguf}
               isDiffusion={activeModelIsDiffusion}
-              nativeContextLength={ggufNativeContextLength}
-              loadedContextLength={ggufContextLength}
+              nativeContextLength={nativeContextLength}
+              loadedContextLength={loadedContextLength}
               loadedConfig={activeModelConfig}
               onReload={handleReloadActiveModel}
             />

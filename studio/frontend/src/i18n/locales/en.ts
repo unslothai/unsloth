@@ -832,6 +832,16 @@ export const en = {
         openError: "Couldn't open the folder",
         copyError: "Couldn't copy the path",
       },
+      repairInstall: {
+        label: "Repair installation",
+        description:
+          "Reruns the installer over the managed environment. Use this if the GPU is not detected or the app will not start.",
+        action: "Repair install",
+        confirmTitle: "Repair this installation?",
+        confirmDescription:
+          "Stops the server and reruns the installer, which reinstalls PyTorch for this machine's GPU. Chats and settings are kept. This can take several minutes.",
+        confirmAction: "Repair now",
+      },
       resetPreferences: {
         sectionTitle: "Danger zone",
         label: "Reset all local preferences",
@@ -1081,6 +1091,8 @@ export const en = {
         currentLoad: "Current load",
         free: "{value} free",
         noGpu: "No visible GPU",
+        gpuUnusable: "GPU unusable",
+        gpuUnusableDetail: "Detected, but PyTorch cannot use it",
       },
       gpu: {
         title: "GPU devices",
@@ -1089,6 +1101,12 @@ export const en = {
         detecting: "Checking for GPUs...",
         unreadable: "Could not read this server's hardware.",
         noGpu: "No visible GPU detected. CPU-only resources are shown above.",
+        noUsableGpu: "No GPU on this machine is usable by PyTorch.",
+        mismatchCpuBuild:
+          "PyTorch is a CPU-only build ({version}), so the GPUs below cannot be used. Repair the installation to restore GPU support.",
+        mismatchUnavailable:
+          "PyTorch ({version}) cannot initialise the GPUs below, so they cannot be used. Check the GPU driver, or repair the installation.",
+        unusableDevice: "unusable",
         unknownDevice: "Unknown GPU",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
@@ -1372,6 +1390,13 @@ export const en = {
         collapseByDefaultDescription:
           "Keep reasoning collapsed while the model thinks instead of streaming it open. Expand any block to read it.",
       },
+      currentDate: {
+        label: "Tell the model today's date",
+        description:
+          "Add the current date to the prompt so web search and Deep Research look for recent sources instead of assuming the model's training cutoff.",
+        loadError: "Failed to load current date settings",
+        saveError: "Failed to update current date settings",
+      },
       tools: {
         collapseByDefault: "Collapse tool activity by default",
         collapseByDefaultDescription:
@@ -1470,6 +1495,8 @@ export const en = {
       archivedImagesDescription: "View and manage images you have archived.",
       archivedVideos: "Archived videos",
       archivedVideosDescription: "View and manage videos you have archived.",
+      archivedAudio: "Archived audio",
+      archivedAudioDescription: "View and manage audio clips you have archived.",
       manageAction: "Manage",
       manageChats: "Manage chats",
       manageChatsDescription:
@@ -1652,7 +1679,7 @@ export const en = {
         desktopCheckingDescription: "This usually takes a few seconds.",
         desktopAvailable: "Desktop app {version} is available",
         desktopAvailableDescription:
-          "Update now and the desktop app will restart when it finishes.",
+          "Update now to prepare it in the background. You keep working and restart when it is ready.",
         desktopExternalServer:
           "Run `unsloth studio update` from the terminal that started your server.",
         desktopManualInstall:
@@ -1662,11 +1689,20 @@ export const en = {
         desktopCurrent: "Desktop app is up to date",
         desktopCurrentDescription:
           "Unsloth will continue checking automatically.",
+        desktopPreparingDescription:
+          "The update is being prepared in the background. You can keep working.",
+        desktopReadyToRestartDescription:
+          "Everything is ready. Restart to finish installing the update.",
+        desktopReadyToInstallDescription:
+          "The app update is downloaded. Finish updating the backend to install it.",
         checkForUpdates: "Check for updates",
         checkAgain: "Check again",
         retryCheck: "Try again",
         checking: "Checking...",
+        preparing: "Preparing...",
         updateNow: "Update now",
+        restartToUpdate: "Restart to update",
+        finishUpdate: "Finish update",
         openReleasePage: "Open release page",
         unknownInstall:
           "Could not detect how Unsloth was installed. For installer or PyPI installs, use the commands above.",

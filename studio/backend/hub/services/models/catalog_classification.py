@@ -50,6 +50,26 @@ _ORPHEUS_GGUF_HINT = re.compile(
 )
 
 
+class _LocalProbeModel:
+    def __init__(self, model, path: str):
+        self._model = model
+        self.path = path
+
+    def __getattr__(self, name):
+        return getattr(self._model, name)
+
+
+def _local_probe_model(model):
+    if getattr(model, "source", None) != "hf_cache" or _hf_cache_snapshot_repo_id(model.path):
+        return model
+    try:
+        from hub.utils.inventory_scan import resolve_hf_cache_realpath
+        path = resolve_hf_cache_realpath(Path(model.path))
+    except Exception:
+        path = None
+    return _LocalProbeModel(model, path) if path and path != model.path else model
+
+
 def _is_h3_bundle_gguf_hint(hint: Optional[str]) -> bool:
     if not hint:
         return False
@@ -398,14 +418,22 @@ def _local_family_needles(model) -> tuple[str, ...]:
 
 
 def _local_model_can_chat(model) -> Optional[bool]:
+    model = _local_probe_model(model)
     return _local_path_can_chat(model.path, getattr(model, "base_model", None))
 
 
 def _local_model_task(model) -> Optional[str]:
+    model = _local_probe_model(model)
     path = model.path
     id_hints = (model.model_id, model.display_name, model.id)
     if model.model_format == "gguf" or Path(path).suffix.lower() == ".gguf":
         return _gguf_path_task(path, id_hints)
+    try:
+        from core.inference.native_audio import native_audio_type_from_local_path
+        if native_audio_type_from_local_path(path):
+            return "text-to-speech"
+    except Exception:
+        pass
     if not _local_is_diffusers(model):
         return None
     try:
@@ -438,9 +466,17 @@ def _local_model_task(model) -> Optional[str]:
 
 
 def _local_model_audio_type(model) -> Optional[str]:
+    model = _local_probe_model(model)
     path = model.path
     if model.model_format == "gguf" or Path(path).suffix.lower() == ".gguf":
         return _gguf_path_audio_type(path, (model.model_id, model.display_name, model.id))
+    try:
+        from core.inference.native_audio import native_audio_type_from_local_path
+        native_audio_type = native_audio_type_from_local_path(path)
+        if native_audio_type is not None:
+            return native_audio_type
+    except Exception:
+        pass
     try:
         from utils.audio_tokens import detect_local_tts_audio_type
         return detect_local_tts_audio_type(path)
@@ -448,18 +484,25 @@ def _local_model_audio_type(model) -> Optional[str]:
         return None
 
 
-def _local_model_classification(model) -> tuple[Optional[str], Optional[str]]:
-    """Return picker task and decoder provenance from one local-row probe."""
-    task = _local_model_task(model)
+def _local_model_classification_for_task(
+    model, task: Optional[str]
+) -> tuple[Optional[str], Optional[str]]:
+    """Add decoder provenance to an already classified local-row task."""
     audio_type = _local_model_audio_type(model) if task is None or task == _SPEECH_TASK else None
     if task is None and audio_type is not None:
-        from utils.audio_tokens import is_tts_audio_type
-        if is_tts_audio_type(audio_type):
+        from utils.audio_tokens import is_output_audio_type
+        if is_output_audio_type(audio_type):
             task = _SPEECH_TASK
     return task, audio_type
 
 
+def _local_model_classification(model) -> tuple[Optional[str], Optional[str]]:
+    """Return picker task and decoder provenance from one local-row probe."""
+    return _local_model_classification_for_task(model, _local_model_task(model))
+
+
 def _local_is_diffusers(model) -> bool:
+    model = _local_probe_model(model)
     try:
         path = Path(model.path)
         if path.is_dir() and _is_diffusers_pipeline_dir(path):

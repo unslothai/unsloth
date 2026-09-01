@@ -298,7 +298,14 @@ RE_FS_ENUM = re.compile(
     re.DOTALL,
 )
 
-# Reverse shell / bind shell patterns
+# Reverse shell / bind shell patterns. LEFT EXACTLY AS IT WAS, dup2 included,
+# because this pattern is what the evidence is extracted with. It is re.DOTALL,
+# so a match spans from the first signal to the last and the rendered evidence
+# for a long span is a digest of the whole thing; editing the alternation moves
+# the span, moves the digest, and silently reopens every reviewed baseline entry
+# taken against it. Removing the dup2 branch here un-suppressed 11 entries on
+# the studio and hf-stack shards, multiprocess/tests/__init__.py among them.
+# Whether dup2 alone is enough is decided below instead, where it costs nothing.
 RE_REVERSE_SHELL = re.compile(
     r"\bsocket\b.*\bconnect\b.*\bsubprocess\b"
     r"|\bsocket\b.*\bconnect\b.*\b(?:sh|bash|cmd)\b"
@@ -308,6 +315,33 @@ RE_REVERSE_SHELL = re.compile(
     r"|\bwebbrowser\s*\.\s*open\b.*\bdata:\b",  # data: URI abuse
     re.DOTALL,
 )
+
+# The same thing without the dup2 branch, used only to answer "would this file
+# still be a reverse shell if dup2 did not count?".
+#
+# dup2 is the ordinary way to point a file descriptor at a file, and it was the
+# only single-token alternative above, in a pattern whose every other branch
+# names two co-occurring signals. So it fired on capture helpers and redirect
+# plumbing: ten of the nineteen reverse-shell entries in the committed baseline
+# are dup2 with no socket anywhere in the file (click/testing.py,
+# numba/tests/support.py, rich/console.py, torch elastic redirects.py,
+# sentencepiece) and not one is a true positive. triton 3.8.0 shipped an
+# eleventh in _internal_testing.py, which reddened main.
+#
+# A reverse shell dup2s onto a SOCKET, so the socket is the half carrying the
+# meaning. A file with one is judged exactly as before, evidence included; a
+# file without one has to earn the finding on a branch other than dup2. Nothing
+# is lost: a payload has to name socket to obtain the descriptor at all, and the
+# socket + connect + subprocess branch catches it independently.
+RE_REVERSE_SHELL_WITHOUT_DUP = re.compile(
+    r"\bsocket\b.*\bconnect\b.*\bsubprocess\b"
+    r"|\bsocket\b.*\bconnect\b.*\b(?:sh|bash|cmd)\b"
+    r"|\b/bin/(?:sh|bash)\b.*\bsocket\b"
+    r"|\bpty\s*\.\s*spawn\b"
+    r"|\bwebbrowser\s*\.\s*open\b.*\bdata:\b",  # data: URI abuse
+    re.DOTALL,
+)
+RE_SOCKET_USE = re.compile(r"\bsocket\b")
 
 # Process injection / code loading from remote
 RE_REMOTE_CODE = re.compile(
@@ -730,7 +764,11 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
     has_anti = bool(RE_ANTI_ANALYSIS.search(content))
     has_dns_exfil = bool(RE_DNS_EXFIL.search(content))
     has_fs_enum = bool(RE_FS_ENUM.search(content))
-    has_rev_shell = bool(RE_REVERSE_SHELL.search(content))
+    # dup2 counts only alongside a socket; see RE_FD_DUP.
+    # dup2 counts only alongside a socket; see RE_REVERSE_SHELL_WITHOUT_DUP.
+    has_rev_shell = bool(RE_REVERSE_SHELL.search(content)) and (
+        bool(RE_SOCKET_USE.search(content)) or bool(RE_REVERSE_SHELL_WITHOUT_DUP.search(content))
+    )
     has_remote_code = bool(RE_REMOTE_CODE.search(content))
     has_crypto_theft = bool(RE_CRYPTO_THEFT.search(content))
     has_openssl_cli = bool(RE_OPENSSL_CLI.search(content))
@@ -828,6 +866,8 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
                 package,
                 filename,
                 "Reverse shell / bind shell pattern",
+                # Still RE_REVERSE_SHELL, so every finding that survives the gate
+                # renders byte-identical evidence to before this change.
                 _extract_evidence(content, RE_REVERSE_SHELL),
             )
         )

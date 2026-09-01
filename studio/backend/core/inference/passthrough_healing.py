@@ -29,7 +29,10 @@ import os
 from collections.abc import Mapping
 from typing import Any, Optional
 
-from core.inference.tool_loop_controller import coerce_tool_arguments
+from core.inference.tool_loop_controller import (
+    coerce_arguments_by_schema,
+    coerce_tool_arguments,
+)
 from core.tool_healing import parse_tool_calls_from_text
 
 # Only the formats this healer's parser can promote -- narrower than the loops'
@@ -147,15 +150,20 @@ def _string_arg_key_from_schema(schema: Any) -> Optional[str]:
 def _coerce_promoted_arguments(
     raw_args: Any, tool_name: str, tool_schemas: Optional[dict]
 ) -> Optional[dict]:
-    if isinstance(raw_args, Mapping):
-        return dict(raw_args)
+    """Promoted arguments, typed against the client's declared schema: the call was TEXT a
+    moment ago, so its XML parameters arrive as raw strings and closing a truncated container
+    is this healer's own job rather than something to gate."""
+    parameters = (tool_schemas or {}).get(tool_name)
+    properties = parameters.get("properties") if isinstance(parameters, Mapping) else None
+    parsed = raw_args
     if isinstance(raw_args, str):
         try:
             parsed = json.loads(raw_args)
-            if isinstance(parsed, Mapping):
-                return dict(parsed)
         except (json.JSONDecodeError, ValueError):
-            pass
+            parsed = raw_args
+    if isinstance(parsed, Mapping):
+        return coerce_arguments_by_schema(parsed, properties, repair = True)
+    if isinstance(raw_args, str):
         if tool_schemas is not None:
             key = _string_arg_key_from_schema(tool_schemas.get(tool_name))
             return {key: raw_args} if key else None

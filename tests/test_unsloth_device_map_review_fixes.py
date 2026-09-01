@@ -91,7 +91,13 @@ def _build(
             or (
                 isinstance(node, ast.Assign)
                 and getattr(node.targets[0], "id", None)
-                in ("UNSLOTH_DEVICE_MAP", "DEFAULT_DEVICE_MAP", "_SIZE_UNITS")
+                in (
+                    "UNSLOTH_DEVICE_MAP",
+                    "UNSLOTH_BALANCED_DEVICE_MAP",
+                    "_PLANNED_DEVICE_MAPS",
+                    "DEFAULT_DEVICE_MAP",
+                    "_SIZE_UNITS",
+                )
             )
         )
         if keep:
