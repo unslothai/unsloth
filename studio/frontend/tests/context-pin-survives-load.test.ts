@@ -490,3 +490,49 @@ test("a positive echo under manual memory with auto layers is an explicit pin", 
     /loadedPin: prevState\.loadedCustomContextLength \?\? null,/,
   );
 });
+
+test("a resident MLX pin from another tab is adopted, not read as Auto", () => {
+  // An unpinned MLX load sends 0, so a positive echo can only be an explicit pin.
+  // Model changed underneath this tab and there is no saved config to corroborate it.
+  const seeded = resolveCtxPinSeed({
+    incoming: 32768,
+    isGguf: true,
+    isMlx: true,
+    seedLoadParams: true,
+    modelChanged: true,
+    remembered: null,
+    gpuMemoryMode: null,
+    gpuLayers: null,
+    loadedPin: null,
+  });
+  assert.equal(seeded.customContextLength, 32768);
+  assert.equal(seeded.loadedCustomContextLength, 32768);
+
+  // Auto still clears: 0 is the wire form and proves its own meaning.
+  const auto = resolveCtxPinSeed({
+    incoming: 0,
+    isGguf: true,
+    isMlx: true,
+    seedLoadParams: true,
+    modelChanged: true,
+    remembered: null,
+    gpuMemoryMode: null,
+    gpuLayers: null,
+    loadedPin: null,
+  });
+  assert.equal(auto.customContextLength, null);
+
+  // GGUF keeps the old rule: its positive echo is the ambiguous resolved n_ctx.
+  const gguf = resolveCtxPinSeed({
+    incoming: 32768,
+    isGguf: true,
+    isMlx: false,
+    seedLoadParams: true,
+    modelChanged: true,
+    remembered: null,
+    gpuMemoryMode: null,
+    gpuLayers: null,
+    loadedPin: null,
+  });
+  assert.equal(gguf.customContextLength, null);
+});

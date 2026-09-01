@@ -318,6 +318,7 @@ export function applyActiveModelStatusToStore(
     // MLX reports a requested context as well, so the rule below is about any
     // backend that sizes its own window, not llama.cpp alone.
     isGguf: (status.is_gguf ?? true) || (status.is_mlx ?? false),
+    isMlx: status.is_mlx ?? false,
     seedLoadParams,
     modelChanged: slotsModelChanged,
     // Both fields: a record written before the MLX pin moved still carries it
