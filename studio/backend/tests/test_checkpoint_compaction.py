@@ -3837,6 +3837,7 @@ def test_a_completed_reasoning_only_reply_is_replayed_so_it_must_match(monkeypat
     rows[2]["metadata"] = {"incomplete": {"reason": "cancelled"}, **_checkpoint_metadata(30)}
     assert llama_cpp._sticky_compaction_state("t1", branch) == (30, True)
 
+
 def _image_turn(text, *, payload = 30000):
     return {
         "role": "user",
@@ -3858,9 +3859,7 @@ def test_an_instruction_typed_beside_an_image_is_still_carried():
 
 def test_an_image_turn_costs_the_same_as_the_words_it_carries():
     with_image = carried_forward_items([_image_turn(INSTRUCTION)], max_tokens = 1024)
-    plain = carried_forward_items(
-        [{"role": "user", "content": INSTRUCTION}], max_tokens = 1024
-    )
+    plain = carried_forward_items([{"role": "user", "content": INSTRUCTION}], max_tokens = 1024)
 
     assert with_image == plain
 
@@ -3904,6 +3903,4 @@ def test_a_nudge_sent_with_an_image_is_not_quoted_as_an_instruction():
 
 def test_an_image_turn_is_judged_on_its_words_not_its_attachment():
     assert carried_forward_items([_image_turn("continue")], max_tokens = 1024) == []
-    assert carried_forward_items([_image_turn(INSTRUCTION)], max_tokens = 1024) == [
-        INSTRUCTION
-    ]
+    assert carried_forward_items([_image_turn(INSTRUCTION)], max_tokens = 1024) == [INSTRUCTION]

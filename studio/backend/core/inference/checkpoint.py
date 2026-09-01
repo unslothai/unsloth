@@ -563,9 +563,7 @@ def fit_checkpoint_context(
         """`kept` plus the carried-forward block built from everything it dropped."""
         alive = {id(message) for message in kept}
         evicted = [message for message in messages if id(message) not in alive]
-        items = carried_forward_items(
-            evicted, max_tokens = budget, estimate_message = estimate_message
-        )
+        items = carried_forward_items(evicted, max_tokens = budget, estimate_message = estimate_message)
         # A second reset in one request can arrive with a block already in the system turn.
         # Merged and re-capped into ONE block: appending would cap each block separately,
         # bounding a block instead of the (unevictable) system turn. Merged rather than
