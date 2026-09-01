@@ -97,6 +97,7 @@ def log(message: str) -> None:
     print(f"[node-prebuilt] {message}", file = sys.stdout if _LOG_TO_STDOUT else sys.stderr)
 
 
+# ── Host detection ──
 @dataclass(frozen = True)
 class HostInfo:
     system: str

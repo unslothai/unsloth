@@ -42,6 +42,7 @@ _ENERGY_UNIT_DIVISORS = {"mJ": 1e3, "uJ": 1e6, "nJ": 1e9}
 
 
 
+# ========== Pure helpers ==========
 def _fourcc(key: str) -> int:
     """Encode a 4-char SMC key/type name as a big-endian integer."""
     return int.from_bytes(key.encode("ascii"), "big")
@@ -74,6 +75,7 @@ def _is_gpu_energy_channel(name: str) -> bool:
 
 
 
+# ========== AppleSMC structs (layout must match the kernel exactly) ==========
 class _SMCKeyDataVers(ctypes.Structure):
     _fields_ = [
         ("major", ctypes.c_uint8),
@@ -118,6 +120,7 @@ class _SMCKeyData(ctypes.Structure):
 
 
 
+# ========== Library loaders ==========
 def _load_iokit() -> ctypes.CDLL:
     iokit = ctypes.CDLL(_IOKIT_PATH)
     iokit.IOServiceMatching.restype = ctypes.c_void_p
@@ -215,6 +218,7 @@ def _from_cfstr(cf: ctypes.CDLL, ref: Optional[int]) -> str:
 
 
 
+# ========== SMC connection (GPU temperature) ==========
 class _SMCConnection:
     """Connection to AppleSMCKeysEndpoint; discovers "Tg*" GPU temp keys once."""
 
@@ -325,6 +329,7 @@ class _SMCConnection:
 
 
 
+# ========== IOReport subscription (GPU power) ==========
 class _IOReportEnergy:
     """Persistent subscription to the "Energy Model" group for GPU wattage."""
 
@@ -387,6 +392,7 @@ class _IOReportEnergy:
 
 
 
+# ========== Public API (module singletons, failure-latched) ==========
 _smc: Optional[_SMCConnection] = None
 _smc_failed = False
 _energy: Optional[_IOReportEnergy] = None

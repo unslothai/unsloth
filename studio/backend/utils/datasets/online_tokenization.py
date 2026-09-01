@@ -427,6 +427,7 @@ def decide_online_tokenization(
         return veto("not enough CPU workers to stay ahead of the GPU")
     checks.append(("correctness gates", True))
 
+    # ---- cost gates: the escape hatch may override these ----
     forced = override is True
 
     if row_count is None:

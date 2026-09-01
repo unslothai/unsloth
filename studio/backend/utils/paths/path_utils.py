@@ -42,6 +42,7 @@ def file_contents_available_locally(path, stat_result = None) -> bool:
 # way the real file does; only the magic bytes settle it.
 # The volumes are exFAT, FAT, most SMB and NFS, and nothing may be refused for the prefix alone: a user's own
 # "._model.gguf" is a real model.
+# ── macOS Finder metadata companions ───────────────────────────
 _MAGIC = b"\x00\x05\x16\x07"
 
 PathLike = TypeVar("PathLike", str, Path)

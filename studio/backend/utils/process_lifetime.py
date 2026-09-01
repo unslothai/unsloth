@@ -760,6 +760,7 @@ def _group_member_pids(pgid: int) -> "Optional[list[int]]":
 
 # macOS has neither PR_SET_PDEATHSIG nor job objects, so a crash leaves every sidecar running: record children as they
 # are adopted and sweep the previous run's leftovers at startup.
+# ── Crash-survivable child record ──
 def _breadcrumb_dir():
     from pathlib import Path
 

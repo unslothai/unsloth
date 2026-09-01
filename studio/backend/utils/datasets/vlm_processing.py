@@ -39,6 +39,7 @@ def generate_smart_vlm_instruction(
     sample = next(iter(dataset))
 
     # Columns that hold per-sample instructions
+    # ===== LEVEL 1: Explicit Instruction Columns =====
     question_columns = ["question", "query", "prompt", "instruction", "user_prompt"]
 
     for col in question_columns:
@@ -54,6 +55,7 @@ def generate_smart_vlm_instruction(
                     "confidence": 1.0,
                 }
 
+    # ===== LEVEL 2: Infer from Column Names + Content =====
     text_col_lower = text_column.lower()
 
     text_sample = str(sample.get(text_column, ""))[:500]
@@ -152,6 +154,7 @@ def generate_smart_vlm_instruction(
             "confidence": min(best_score, best_match["confidence"]),
         }
 
+    # ===== LEVEL 3: Analyze Dataset Name =====
     if dataset_name:
         name_lower = dataset_name.lower()
 
@@ -173,6 +176,7 @@ def generate_smart_vlm_instruction(
                 "confidence": 0.75,
             }
 
+    # ===== LEVEL 4: LLM-Assisted Instruction Generation =====
     try:
         from .llm_assist import llm_generate_vlm_instruction
 

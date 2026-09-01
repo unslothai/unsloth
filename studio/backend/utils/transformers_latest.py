@@ -509,6 +509,7 @@ def check_upgrade_for_model(model_name: str, hf_token: str | None = None) -> dic
 
 # Sidecars install transformers --no-deps atop the base env. Before installing, compare
 # requires_dist: unsatisfied shadowable deps become exact --target pins, anything else blocks.
+# --- Dependency compatibility preflight ------------------------------------------------------
 _SHADOWABLE_DEPS = frozenset({"tokenizers", "safetensors"})
 # Provided by the sidecar recipe; checked against its pin, not the base env.
 _SIDECAR_PROVIDED = {"huggingface-hub": "1.8.0", "hf-xet": "1.4.2"}

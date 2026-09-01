@@ -42,6 +42,7 @@ DEFAULT_HTTP_STALL_TIMEOUT = 180.0
 # The worker runs snapshot_download(max_workers=1), so every finished shard is already a blob and is skipped.
 DEFAULT_XET_ATTEMPTS = 2
 
+# --- lazy shared-backend loader ----------------------------------------------------------------
 _shared: Any = None
 _shared_available: Optional[bool] = None
 _shared_import_error: Optional[BaseException] = None
@@ -343,6 +344,7 @@ def _as_int(value: str) -> "Optional[int]":
 # would each read the same untouched `available` and promise the whole machine. Reservations bridge
 # that window, counting only the unmaterialized remainder: once buffers are resident `available` has
 # already dropped by them, and charging the promise again would double-count for the worker's life.
+# --- concurrent-worker budget ledger -------------------------------------------------------------
 _budget_lock = threading.RLock()
 # token -> [bytes, pid or None, monotonic stamp]
 _budget_reservations: "dict[int, list]" = {}
@@ -655,6 +657,7 @@ def xet_attempts() -> int:
 
 
 # Degraded stubs, used only when unsloth_zoo is unavailable.
+# --- degraded stubs (used only when unsloth_zoo is unavailable) -------------------------------
 class _DegradedDownloadStallError(RuntimeError):
     """Stub mirror so callers' ``except`` clauses resolve; never raised in degraded mode."""
 
@@ -766,6 +769,7 @@ def _degraded_snapshot_download_with_xet_fallback(
 # Resolved via PEP 562 so importing them triggers the heavy load and the light names do not.
 # The light names, `child_should_disable_xet` / `DEFAULT_*`, are importable from utils.hf_xet_fallback without
 # triggering the load.
+# --- lazy attribute access for the heavy shared API -------------------------------------------
 _DEGRADED_ATTRS = {
     "DownloadStallError": _DegradedDownloadStallError,
     "get_hf_download_state": _degraded_get_hf_download_state,

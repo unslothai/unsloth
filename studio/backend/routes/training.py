@@ -2458,6 +2458,7 @@ async def stream_training_progress(
 
 # ── Diffusion (SDXL) LoRA training ──────────────────────────────────────────── A separate, lightweight job path:
 # diffusion runs use DiffusionTrainingService (its own subprocess + event pump), not the LLM TrainingBackend.
+# ── Diffusion (SDXL) LoRA training ────────────────────────────────────────────
 def _diffusion_training_active() -> bool:
     """Whether a diffusion (SDXL) LoRA job is currently running. Best-effort so the
     interlock never blocks a start just because the service could not be imported."""
@@ -3620,6 +3621,7 @@ async def upload_diffusion_dataset(
 
 # Thumbnails live in a hidden subdir so they never appear in dataset listings or the trainer's
 # image discovery.
+# ── Dataset labeling (per-image caption editing) + one-click example imports ──
 _THUMBS_DIRNAME = ".thumbs"
 _MAX_CAPTION_CHARS = 2000
 

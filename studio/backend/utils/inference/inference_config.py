@@ -156,6 +156,7 @@ def load_inference_config(model_identifier: str) -> Dict[str, Any]:
 # field -> (env var, static default, min, max, is_int)
 # Precedence per field: an operator pin via UNSLOTH_SAMPLING_* wins even over an explicit client value, then the client
 # value, then the per-model recommendation, then the static schema default.
+# ── Effective sampling resolution for `unsloth run` / `unsloth start` ──────────
 _SAMPLING_FIELDS = {
     "temperature": ("UNSLOTH_SAMPLING_TEMPERATURE", 0.6, 0.0, 2.0, False),
     "top_p": ("UNSLOTH_SAMPLING_TOP_P", 0.95, 0.0, 1.0, False),

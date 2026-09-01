@@ -66,6 +66,7 @@ BACKEND_LOGS = STUDIO / "logs"
 # /api/auth/status is deliberately absent: it fetches on navigation with a 30s TTL, never on a
 # timer, so scoring it would invent a freeze out of somebody sitting still. The native shell
 # requests only /api/liveness and /api/health, so every hit here comes from the webview.
+#                                   `localStorage.getItem(KEY) === "true"` and therefore
 INTERFACE = re.compile(
     r"/api/(?:export/status|inference/monitor|inference/status"
     r"|inference/images/status|inference/video/status|inference/audio/stt/status)"

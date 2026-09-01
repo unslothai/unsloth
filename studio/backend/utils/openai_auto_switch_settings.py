@@ -404,6 +404,7 @@ def set_openai_auto_switch(
 # Legacy entries hold just {llama_extra_args, max_seq_length}, and a write replaces the fields it expresses, so the
 # route carries `llama_extra_args` over. Known gap: the picker's global fallbacks for GPU memory mode and speculative
 # decoding live in browser localStorage, so an API load following the global gets the default.
+# --- Per-model launch config -------------------------------------------------
 VALID_KV_CACHE_DTYPES = frozenset(
     {"f16", "bf16", "q8_0", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl", "f32"}
 )
