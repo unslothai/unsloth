@@ -803,7 +803,7 @@ class TestAnthropicMessagesToOpenAI:
                 "tool_call_id": "tu_1",
             }
         }
-        assert folded[1] is msgs[1]   # assistant turn untouched, tool_calls intact
+        assert folded[1] is msgs[1]  # assistant turn untouched, tool_calls intact
 
     def test_folding_is_a_no_op_without_tool_messages(self):
         from core.inference.anthropic_compat import fold_tool_results_into_user
