@@ -861,9 +861,7 @@ def test_a_no_op_attach_to_a_custom_code_resident_is_allowed(monkeypatch):
         },
     ).install(monkeypatch)
 
-    entry = start_cli._resolve_model(
-        BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 4096)
-    )
+    entry = start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 4096))
 
     assert "force_reload" not in server.loads[0]
     assert entry["id"] == RESIDENT["id"]
@@ -884,9 +882,7 @@ def test_cpu_fallback_placement_is_not_restarted(monkeypatch):
         BASE,
         KEY,
         None,
-        start_cli.LoadOptions(
-            gpu_memory_mode = "auto", supplied = frozenset({"gpu_memory_mode"})
-        ),
+        start_cli.LoadOptions(gpu_memory_mode = "auto", supplied = frozenset({"gpu_memory_mode"})),
     )
 
     assert "force_reload" not in server.loads[0]
@@ -931,7 +927,12 @@ def test_a_proven_no_op_skips_the_preload_gate(monkeypatch):
 def test_a_real_change_still_runs_the_preload_gate(monkeypatch):
     server = FakeServer([dict(RESIDENT)], _gguf_status()).install(monkeypatch)
 
-    def gate(base, key, model, variant = None):
+    def gate(
+        base,
+        key,
+        model,
+        variant = None,
+    ):
         raise typer.Exit(code = 1)
 
     with pytest.raises(typer.Exit):
@@ -957,9 +958,7 @@ def test_a_quant_override_on_a_direct_file_is_refused(monkeypatch):
     ).install(monkeypatch)
 
     with pytest.raises(typer.Exit):
-        start_cli._resolve_model(
-            BASE, KEY, None, start_cli.LoadOptions(gguf_variant = "UD-Q8_K_XL")
-        )
+        start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(gguf_variant = "UD-Q8_K_XL"))
 
     assert server.loads == []
 
