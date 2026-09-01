@@ -13,7 +13,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
-import { useChatRuntimeStore } from "@/features/chat";
+import { isExternalModelId, useChatRuntimeStore } from "@/features/chat";
 import { useT } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
@@ -606,16 +606,20 @@ export function UsageExamples({
     (s) => s.activeNativePathToken,
   );
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
-  // null until a model is known: all three fields above start null, so before
-  // /api/inference/status lands they are indistinguishable from a real non-GGUF model.
-  // Acting on that guess re-steered a GGUF session to opencode for good, and cleared a
-  // saved preference on the way. checkpoint is the same signal useExampleModelName trusts.
+  // null when these fields do not describe the model the snippet names. They all start
+  // null, so before /api/inference/status lands they are indistinguishable from a real
+  // non-GGUF model; acting on that guess re-steered a GGUF session to opencode for good
+  // and cleared a saved preference on the way. An external selection is the other case:
+  // use-chat-model-runtime deliberately stops applying local status while one is active,
+  // so the fields freeze while useExampleModelName keeps naming the resident model from
+  // /v1/models, and the two can drift apart with no way back.
   const activeCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
-  const isGguf: boolean | null = !activeCheckpoint
-    ? null
-    : activeGgufVariant != null ||
-      activeNativePathToken != null ||
-      ggufContextLength != null;
+  const isGguf: boolean | null =
+    !activeCheckpoint || isExternalModelId(activeCheckpoint)
+      ? null
+      : activeGgufVariant != null ||
+        activeNativePathToken != null ||
+        ggufContextLength != null;
 
   useEffect(() => {
     void fetchDeviceType({ force: true });

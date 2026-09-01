@@ -216,3 +216,27 @@ test("a manual pick is revalidated when the model changes under it", () => {
   assert.equal(manualPick(true, false, "opencode"), "kept");
   assert.equal(manualPick(false, true, "opencode"), "kept");
 });
+
+// An external chat selection freezes the local GGUF fields (use-chat-model-runtime stops
+// applying status while one is active) while the snippet keeps naming the resident model
+// from /v1/models, so the two can drift with no way back. Compatibility is unknown there.
+function ggufState(checkpoint: string, fields: { variant?: string; ctx?: number }) {
+  const external = checkpoint.startsWith("external::");
+  if (!checkpoint || external) return null;
+  return fields.variant != null || fields.ctx != null;
+}
+
+test("an external selection makes GGUF-ness unknown, not stale-true", () => {
+  assert.equal(ggufState("unsloth/Qwen3-1.7B-GGUF", { variant: "Q4_K_M" }), true);
+  assert.equal(ggufState("unsloth/Qwen3-1.7B", {}), false);
+  // Frozen fields from before the external switch must not read as a live verdict.
+  assert.equal(ggufState("external::openai::gpt-5", { variant: "Q4_K_M" }), null);
+  assert.equal(ggufState("", { variant: "Q4_K_M" }), null);
+});
+
+test("unknown GGUF-ness leaves both the pick and the stored preference alone", () => {
+  const state = ggufState("external::openai::gpt-5", { variant: "Q4_K_M" });
+  assert.equal(state, null);
+  // Both effects bail on null, so nothing is re-steered and nothing is cleared.
+  assert.equal(state === null, true);
+});
