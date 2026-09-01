@@ -101,8 +101,8 @@ def _jobs():
                 yield name, jid, job
 
 
-def _or_alternatives(expr: str) -> list[str]:
-    """``expr`` split on its TOP-LEVEL ``||``, ignoring ``||`` inside parens or quotes."""
+def _split_top(expr: str, op: str) -> list[str]:
+    """``expr`` split on its TOP-LEVEL ``op``, ignoring occurrences in parens or quotes."""
     parts, depth, quote, buf, i = [], 0, "", [], 0
     while i < len(expr):
         ch = expr[i]
@@ -119,7 +119,7 @@ def _or_alternatives(expr: str) -> list[str]:
         elif ch == ")":
             depth -= 1
             buf.append(ch)
-        elif ch == "|" and depth == 0 and expr[i : i + 2] == "||":
+        elif depth == 0 and expr[i : i + 2] == op:
             parts.append("".join(buf))
             buf = []
             i += 2
@@ -131,6 +131,24 @@ def _or_alternatives(expr: str) -> list[str]:
     return parts
 
 
+def _balanced(expr: str) -> bool:
+    """Whether parentheses in ``expr`` are balanced outside quotes."""
+    depth, quote = 0, ""
+    for ch in expr:
+        if quote:
+            if ch == quote:
+                quote = ""
+        elif ch in "'\"":
+            quote = ch
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth < 0:
+                return False
+    return depth == 0
+
+
 # A POSITIVE equality against main, in either quote style. `!=` must not match: an
 # expression restricting a save to everything EXCEPT main is the exact inversion of the
 # rule, and a substring search for "refs/heads/main" accepts it.
@@ -140,18 +158,36 @@ _MAIN_ONLY = re.compile(r"github\.ref\s*==\s*['\"]refs/heads/main['\"]")
 def _restricted_to_main(expr: str) -> bool:
     """Whether ``expr`` can only be true on ``refs/heads/main``.
 
-    Every alternative of a top-level `||` has to carry the main check, because `||` is how
-    a condition GAINS refs: `github.ref == 'refs/heads/main' || github.event_name ==
-    'pull_request'` mentions main and runs on every PR. Requiring the check in each
-    alternative is conservative -- it rejects some conditions that happen to be safe -- and
-    that is the right direction for a guard whose failure mode is a silently refilled cache.
+    Evaluated over the whole boolean structure. `||` is how a condition GAINS refs, so an
+    OR restricts only if EVERY branch restricts; `&&` narrows, so an AND restricts if ANY
+    branch does. Parentheses are descended into: splitting only the top level accepted
+    `always() && (github.ref == 'refs/heads/main' || github.event_name == 'pull_request')`,
+    which runs on every pull request. Anything negated is refused rather than reasoned
+    about, since `!(github.ref == 'refs/heads/main')` contains a positive main equality
+    and means its exact opposite.
 
-    Structural rather than a substring test because three shapes all contain the literal
-    "refs/heads/main" while permitting PR saves: a `!=` comparison, an `||` that admits
-    another event, and the check appearing only inside one branch of one.
+    Structural rather than a substring test because several shapes contain the literal
+    "refs/heads/main" while permitting PR saves, and the failure mode of this guard is a
+    silently refilled cache.
     """
-    alternatives = _or_alternatives(expr)
-    return bool(expr.strip()) and all(_MAIN_ONLY.search(a) for a in alternatives)
+    if not expr.strip():
+        return False
+
+    def restricted(part: str) -> bool:
+        part = part.strip()
+        while part.startswith("(") and part.endswith(")") and _balanced(part[1:-1]):
+            part = part[1:-1].strip()
+        ors = _split_top(part, "||")
+        if len(ors) > 1:
+            return all(restricted(p) for p in ors)
+        ands = _split_top(part, "&&")
+        if len(ands) > 1:
+            return any(restricted(p) for p in ands)
+        if re.search(r"!(?!=)", part):
+            return False
+        return bool(_MAIN_ONLY.search(part))
+
+    return restricted(expr)
 
 
 @pytest.mark.parametrize(
@@ -173,6 +209,18 @@ def _restricted_to_main(expr: str) -> bool:
         # A `||` inside a string or parenthesised sub-expression is not a top-level split.
         ("github.ref == 'refs/heads/main' && contains(x, 'a||b')", True),
         ("", False),
+        # A `||` inside parens is still a `||`; splitting only the top level read this
+        # as one alternative carrying the main equality and accepted it.
+        (
+            "always() && (github.ref == 'refs/heads/main' "
+            "|| github.event_name == 'pull_request')",
+            False,
+        ),
+        # Contains a positive main equality and means its exact opposite.
+        ("!(github.ref == 'refs/heads/main')", False),
+        # Parenthesised but genuinely restricted, so the fix is not over-rejection.
+        ("(github.ref == 'refs/heads/main') && always()", True),
+        ("always() && (github.ref == 'refs/heads/main' && !cancelled())", True),
     ],
 )
 def test_the_main_only_expression_check_reads_the_expression(expr, restricted):
@@ -686,6 +734,29 @@ def _resolve(text: str, row: dict) -> str:
     return _PW_EXPR.sub(lambda m: row.get(m.group(1), m.group(0)), text)
 
 
+_PRIMARY_KEY = re.compile(
+    r"\$\{\{\s*steps\.([A-Za-z0-9_-]+)\.outputs\.cache-primary-key\s*\}\}"
+)
+
+
+def _forwarded_key(key: str, steps: list, row: dict) -> str:
+    """Resolve `steps.<id>.outputs.cache-primary-key` to the key that step restored.
+
+    `actions/cache/restore` re-exports the key it was given under that output, and a save
+    commonly forwards it instead of respelling the string. Comparing the literal would
+    make a forwarding save look like a different key from its own restore -- and matching
+    on the key text alone made the save invisible to this file entirely, so a save later
+    pointed at an unrelated cache step's key would not have been noticed.
+    """
+    m = _PRIMARY_KEY.fullmatch(key.strip())
+    if not m:
+        return key
+    for step in steps:
+        if step.get("id") == m.group(1):
+            return _resolve(str((step.get("with") or {}).get("key", "")), row)
+    return key
+
+
 def _playwright_jobs():
     """(label, engines, restore_keys, save_keys) for every job that caches the engines."""
     for name, jid, job in _jobs():
@@ -697,7 +768,7 @@ def _playwright_jobs():
             step
             for step in steps
             if "actions/cache" in str(step.get("uses", ""))
-            and "ms-playwright" in str((step.get("with") or {}).get("key", ""))
+            and "ms-playwright" in str((step.get("with") or {}).get("path", ""))
         ]
         if not cache_steps:
             continue
@@ -711,6 +782,7 @@ def _playwright_jobs():
             restore, save = [], []
             for step in cache_steps:
                 key = _resolve(str((step.get("with") or {}).get("key", "")), row)
+                key = _forwarded_key(key, steps, row)
                 (restore if "/restore@" in str(step["uses"]) else save).append(key)
             shard = row.get("matrix.shard") or row.get("matrix.engine_key")
             label = f"{name}:{jid}" + (f"[{shard}]" if shard else "")
