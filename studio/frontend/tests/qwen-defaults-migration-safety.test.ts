@@ -987,3 +987,103 @@ test("per-model memory enabled during the read cancels the global migration", as
   assert.equal(globals.presencePenalty, 0);
   assert.equal(globals.minP, 0.01);
 });
+
+test("a wedged backend does not hold a send open forever", async () => {
+  resetHttp({ ...LEGACY_SETTINGS });
+  // Neither the confirming GET nor the conditional write takes an abort signal.
+  settingsHttp.hold();
+  seedActiveQwen();
+
+  const active = useChatRuntimeStore.getState();
+  active.setParams(
+    { ...active.params, minP: 0, presencePenalty: 1.5 },
+    { fromModelDefaults: true },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  const started = Date.now();
+  let timedOut = false;
+  await Promise.race([
+    awaitPendingQwenDefaultsMigration(),
+    new Promise((resolve) => {
+      setTimeout(() => {
+        timedOut = true;
+        resolve(undefined);
+      }, 6000);
+    }),
+  ]);
+  settingsHttp.release?.();
+
+  assert.equal(timedOut, false, "the barrier never released");
+  assert.ok(Date.now() - started < 4000);
+});
+
+test("adopting the startup model clears the unowned pre-hydration mark", async () => {
+  // Status finds a resident Qwen before hydration finishes. setCheckpoint marks
+  // any pre-hydration switch as an interactive pick, and adoption is the signal
+  // that says otherwise, so the global snapshot is still this model's.
+  resetHttp({
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    inferenceParams: { ...LEGACY_SNAPSHOT },
+  });
+  useChatRuntimeStore.setState((state) => ({
+    params: { ...state.params, ...LEGACY_SNAPSHOT, checkpoint: "" },
+    paramsByModel: {},
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    rememberParamsPerModel: false,
+    reasoningAlwaysOn: false,
+    reasoningEnabled: true,
+    supportsReasoning: true,
+    settingsHydrated: false,
+  }));
+  settingsHttp.hold();
+  const hydrating = useChatRuntimeStore.getState().hydratePersistedSettings();
+
+  useChatRuntimeStore.getState().setCheckpoint(QWEN38);
+  const adopting = useChatRuntimeStore.getState();
+  adopting.setParams(
+    { ...adopting.params, ...LEGACY_SNAPSHOT, checkpoint: QWEN38 },
+    { fromModelDefaults: true, migrateOwnedGlobalQwenDefaults: true },
+  );
+
+  settingsHttp.release?.();
+  await hydrating;
+  await new Promise((resolve) => setTimeout(resolve, 60));
+
+  const global = settingsHttp.settings.inferenceParams as Record<
+    string,
+    number
+  >;
+  assert.equal(global.presencePenalty, 1.5);
+});
+
+test("a thread pin survives the race recovery path", async () => {
+  // Applying a thread snapshot advances no installation mutation version, so
+  // nothing in the recovery path would otherwise notice the pin.
+  resetHttp({ ...LEGACY_SETTINGS });
+  seedActiveQwen();
+  useChatRuntimeStore
+    .getState()
+    .applyThreadScopedSettings("thread-1", { presencePenalty: 0.9 });
+  useChatRuntimeStore.setState({ activeThreadId: "thread-1" });
+  // Provenance moves while the conditional write is in flight, which is the
+  // branch that copies migrated fields straight into the live params.
+  settingsHttp.beforeConditionalApply = () => {
+    useChatRuntimeStore.getState().setActivePresetSource("modified");
+  };
+
+  const active = useChatRuntimeStore.getState();
+  active.setParams(
+    { ...active.params, minP: 0, presencePenalty: 1.5 },
+    { fromModelDefaults: true },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 80));
+
+  assert.equal(
+    useChatRuntimeStore.getState().params.presencePenalty,
+    0.9,
+    "the open chat's pinned value was replaced by the migrated default",
+  );
+});

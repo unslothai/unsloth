@@ -629,9 +629,16 @@ function flushSettingsOnPageHidden(terminal: boolean): void {
   // tab is going away, so send it rather than let the next session hydrate over it.
   drainPreHydrationPatch();
   if (Object.keys(pendingPatch).length === 0) return;
+  // Counted like any other flush: settingsWritesAreDrained answers "can the
+  // migration write now", and a keepalive PUT still on the wire would land
+  // after the compare-and-set and restore the legacy row.
+  unsettledFlushes += 1;
   inflightFlush = inflightFlush
     .catch(() => undefined)
-    .then(() => flushSettingsPatch(true));
+    .then(() => flushSettingsPatch(true))
+    .finally(() => {
+      unsettledFlushes -= 1;
+    });
 }
 
 if (typeof window !== "undefined") {
@@ -3550,6 +3557,12 @@ function noteModelDefaultsBeforeHydration(
   if (!sameCheckpointIdentity(modelLoadedBeforeHydration, checkpoint)) {
     modelLoadedBeforeHydration = null;
   }
+  // setCheckpoint marks any pre-hydration switch as an interactive pick. This
+  // is the adoption signal that says otherwise, and leaving the mark would tell
+  // hydration the global belongs to nobody.
+  if (sameCheckpointIdentity(unownedCheckpointBeforeHydration, checkpoint)) {
+    unownedCheckpointBeforeHydration = null;
+  }
 }
 
 /**
@@ -4114,7 +4127,10 @@ function adoptMigratedFieldsAfterLocalEdit(
     }
     const storedRow = state.paramsByModel[checkpoint];
     return {
-      params: nextParams,
+      // As the normal application path does: a thread pin is not an
+      // installation default, and applying one advances no mutation version, so
+      // nothing above would have noticed it.
+      params: restoreThreadScopedParams(nextParams),
       ...(storedRow
         ? {
             paramsByModel: {
@@ -4232,6 +4248,9 @@ async function retryLegacyQwenDefaultsAfterPresetChange(
 
 let qwenMigrationInFlight: Promise<void> | null = null;
 
+// Same bound as SETTINGS_FLUSH_TIMEOUT_MS, for the same reason.
+const QWEN_MIGRATION_BARRIER_TIMEOUT_MS = 2000;
+
 /**
  * Settles once a scheduled migration has finished deciding and persisting.
  *
@@ -4240,9 +4259,27 @@ let qwenMigrationInFlight: Promise<void> | null = null;
  * put on screen. Resolves immediately when nothing is scheduled.
  */
 export async function awaitPendingQwenDefaultsMigration(): Promise<void> {
-  // Re-read rather than await once: a status or model change can schedule a
-  // replacement while this waits, and that retry owns the checkpoint the send
-  // is about to generate from. Ends when nothing is scheduled.
+  if (qwenMigrationInFlight === null) return;
+  // Bounded like the settings flush: the confirming GET and the conditional
+  // write take no abort signal, so a wedged backend would hold every send open
+  // here. Past this the run goes ahead on what the server already has.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      followPendingQwenDefaultsMigrations(),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, QWEN_MIGRATION_BARRIER_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+// Re-read rather than await once: a status or model change can schedule a
+// replacement while this waits, and that retry owns the checkpoint the send is
+// about to generate from. Ends when nothing is scheduled.
+async function followPendingQwenDefaultsMigrations(): Promise<void> {
   let pending = qwenMigrationInFlight;
   while (pending) {
     await pending;

@@ -1609,14 +1609,23 @@ def get_settings(current_subject: str = Depends(get_current_subject)):
 
 @router.post("/settings/compare-and-set", response_model = ConditionalChatSettingsResponse)
 def compare_and_set_settings(
-    payload: ConditionalChatSettingsPayload, current_subject: str = Depends(get_current_subject)
+    payload: dict[str, Any], current_subject: str = Depends(get_current_subject)
 ):
+    # A raw dict, as put_settings takes: automatic validation of a typed body
+    # renders the offending input back, and Starlette dumps with allow_nan =
+    # False, so a rejected NaN would 500 a request the validator refused.
+    try:
+        parsed = ConditionalChatSettingsPayload.model_validate(payload)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code = 400, detail = safe_validation_errors(exc.errors())
+        ) from exc
     try:
         settings, applied = upsert_chat_settings_merge_if_current(
-            payload.expected.model_dump(exclude_unset = True),
-            payload.patch.model_dump(exclude_unset = True),
-            payload.expectedAbsent,
-            payload.expectedAbsentPaths,
+            parsed.expected.model_dump(exclude_unset = True),
+            parsed.patch.model_dump(exclude_unset = True),
+            parsed.expectedAbsent,
+            parsed.expectedAbsentPaths,
         )
         return ConditionalChatSettingsResponse(settings = settings, applied = applied)
     except CorruptSettingsError as exc:
