@@ -120,10 +120,24 @@ case "${UNSLOTH_SKIP_AUTOSTART:-}" in 1|true|TRUE|yes|YES|on|ON) _SKIP_AUTOSTART
 case "${UNSLOTH_PORTABLE:-}" in 1|true|TRUE|yes|YES|on|ON) _PORTABLE_MODE=true ;; esac
 [ -z "$_USER_PYTHON" ] && [ -n "${UNSLOTH_PYTHON:-}" ] && _USER_PYTHON="$UNSLOTH_PYTHON"
 [ -n "$_UNSLOTH_ROOT" ] && _PORTABLE_MODE=true
-# --portable with no --root keeps the familiar location; the point of the flag
-# on its own is containment, not moving the install somewhere new.
+# --portable with no --root keeps the install where it already is; the point of
+# the flag on its own is containment, not moving anything.
+#
+# _PORTABLE_FLAT: whether the master root IS the Studio root. A root the user
+# named for Studio specifically must not gain a studio/ level underneath it --
+# that would relocate an existing install and leave the old one behind, and
+# `UNSLOTH_PORTABLE=1 UNSLOTH_STUDIO_HOME=/home/me/unsloth` is the most natural
+# way to ask for this. A root of our choosing nests, matching ~/.unsloth.
+_PORTABLE_FLAT=false
 if [ "$_PORTABLE_MODE" = true ] && [ -z "$_UNSLOTH_ROOT" ]; then
-    _UNSLOTH_ROOT="$HOME/.unsloth"
+    _existing_studio="${UNSLOTH_STUDIO_HOME:-${STUDIO_HOME:-}}"
+    _existing_studio=$(printf '%s' "$_existing_studio" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+    if [ -n "$_existing_studio" ]; then
+        _UNSLOTH_ROOT="$_existing_studio"
+        _PORTABLE_FLAT=true
+    else
+        _UNSLOTH_ROOT="$HOME/.unsloth"
+    fi
 fi
 
 if [ "$_VERBOSE" = true ]; then
@@ -658,7 +672,11 @@ _resolve_studio_destinations() {
             # whisper.cpp and the caches are its siblings, matching the layout
             # the runtime already builds from $HOME/.unsloth.
             UNSLOTH_ROOT="$_resolved_root"
-            STUDIO_HOME="$UNSLOTH_ROOT/studio"
+            if [ "$_PORTABLE_FLAT" = true ]; then
+                STUDIO_HOME="$UNSLOTH_ROOT"
+            else
+                STUDIO_HOME="$UNSLOTH_ROOT/studio"
+            fi
             mkdir -p -- "$STUDIO_HOME" 2>/dev/null || { echo "ERROR: $STUDIO_HOME cannot be created." >&2; exit 1; }
             DATA_DIR="$UNSLOTH_ROOT/share"
             _LOCAL_BIN="$UNSLOTH_ROOT/bin"
@@ -734,6 +752,13 @@ _export_portable_roots() {
     # astral's installer writes PATH lines into every shell rc it can find.
     # Portable mode already skips our own rc writes; this stops uv's.
     export UV_NO_MODIFY_PATH=1
+
+    # npm, which builds the frontend. Its logs and update-notifier stamp live
+    # inside the cache dir, so this one variable covers all of ~/.npm.
+    export NPM_CONFIG_CACHE="$UNSLOTH_ROOT/cache/npm"
+    # NVIDIA's JIT cache. The backend pins this at runtime (storage_roots), but
+    # the installer's own CUDA probes run before any of that exists.
+    export CUDA_CACHE_PATH="$UNSLOTH_ROOT/cache/cuda"
 
     # The venv is built from the cache by hardlink where it can be. Landing them
     # on different filesystems silently degrades that to a full copy, which for
@@ -1699,6 +1724,8 @@ LAUNCHER_EOF
                 printf '%s\n' "export UV_TOOL_DIR='$_css_quoted_root/cache/uv-tools'"
                 printf '%s\n' "export UV_PYTHON_BIN_DIR='$_css_quoted_root/bin'"
                 printf '%s\n' "export UV_NO_MODIFY_PATH=1"
+                printf '%s\n' "export NPM_CONFIG_CACHE='$_css_quoted_root/cache/npm'"
+                printf '%s\n' "export CUDA_CACHE_PATH='$_css_quoted_root/cache/cuda'"
             fi
             _css_quoted_home=$(printf '%s' "$STUDIO_HOME" | sed "s/'/'\\\\''/g")
             _css_quoted_llama=$(printf '%s' "$_css_llama_path" | sed "s/'/'\\\\''/g")
@@ -6174,6 +6201,8 @@ if [ "$_PORTABLE_MODE" = true ]; then
             "export UV_TOOL_DIR='$UNSLOTH_ROOT/cache/uv-tools'" \
             "export UV_PYTHON_BIN_DIR='$UNSLOTH_ROOT/bin'" \
             "export UV_NO_MODIFY_PATH=1" \
+            "export NPM_CONFIG_CACHE='$UNSLOTH_ROOT/cache/npm'" \
+            "export CUDA_CACHE_PATH='$UNSLOTH_ROOT/cache/cuda'" \
             "exec '$VENV_DIR/bin/unsloth' \"\$@\"" > "$_shim_tmp" 2>/dev/null \
         && chmod +x "$_shim_tmp" 2>/dev/null \
         && mv -f "$_shim_tmp" "$_shim_path" 2>/dev/null
