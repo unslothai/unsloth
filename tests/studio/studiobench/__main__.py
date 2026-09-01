@@ -293,7 +293,9 @@ def planned_rungs(args) -> list:
 #: calibration, chars-per-token, the drain and the two censuses.
 # Measured from the steps `CellRunner._run_inner` runs around the film.
 CELL_OVERHEAD_S = 60
+#: One optional `--surfaces` sweep per arm, before the cells.
 SURFACE_SWEEP_S = 120
+#: The same generosity the tier budget already carries, applied to the planned work.
 WATCHDOG_MARGIN = 3
 #: An absolute ceiling on the MEASUREMENT half of the deadline: without it `--reps 1000` arms a
 #: deadline measured in months and the watchdog guarantees nothing.

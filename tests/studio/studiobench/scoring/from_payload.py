@@ -56,9 +56,8 @@ FRAME_METRICS: tuple[str, ...] = ("time_in_jank_pct", "jank_index", "max_frame_m
 # The three metrics above are not blind to the stream (`_frame_measures` pools every non-`idle`
 # window) but they cannot separate it: one 57.3 s film collapses eighteen action windows and the
 # streaming stretch into one number the action windows dominate. On a measured 100K null control
-# `reasoning_toggle` alone contributed 2,865 ms blocked at 99.3% busy while the streaming
-# stretch beside it ran at 3.6% busy with a 100 ms worst frame.
-# With a 1,866 ms worst frame.
+# `reasoning_toggle` alone contributed 2,865 ms blocked at 99.3% busy with a 1,866 ms worst frame
+# while the streaming stretch beside it ran at 3.6% busy with a 100 ms worst frame.
 # THE WINDOW KIND CANNOT BE USED TO SEPARATE THEM, and the name is what misleads:
 # `SceneRunner._gap_window` opens every inter-slot gap as `kind = "stream"`, so eighteen windows
 # are named `stream:gapN` and only the first four contain streaming, while `stream:drain` is

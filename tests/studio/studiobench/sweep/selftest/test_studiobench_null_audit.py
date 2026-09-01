@@ -527,7 +527,6 @@ def test_one_arms_missed_slot_in_one_repetition_is_still_only_a_warning(tmp_path
     # The other half, and why this is not failed on sight: a contended runner can lose one arm's
     # slot once, so it is held to the SAME corroboration bar as a differing digest. A build that
     # cannot open a control cannot open it on either pass.
-    # The measured pair was one arm's slot lost against 18,253 on the other.
     path = one_sided_payload(tmp_path, "flake", "settings", ("rep0",))
     assert U.report([path], "t", frozenset(), min_reps = 2, min_compared = 16) == 0
     assert "UNCORROBORATED one-arm-only" in capsys.readouterr().out

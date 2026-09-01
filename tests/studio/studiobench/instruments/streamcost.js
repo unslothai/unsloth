@@ -4,8 +4,8 @@
 // WHAT THE HARNESS CANNOT DO: `time_in_jank_pct`, `jank_index` and `max_frame_ms` cover the
 // stream but cannot SEPARATE it. One 57.3 s film collapses eighteen action windows and the
 // streaming stretch into one number; on a 100K null control `reasoning_toggle` alone
-// contributes 2,865 ms of blocked time at 99.3% busy while streaming runs at 3.6%.
-// With a 1,866 ms worst frame.
+// contributes 2,865 ms of blocked time at 99.3% busy with a 1,866 ms worst frame, while the
+// streaming stretch next to it runs at 3.6% busy.
 // The window KIND cannot separate them either: `SceneRunner._gap_window` opens every
 // inter-slot gap as `kind = "stream"`, so eighteen windows are labelled `stream:` and only
 // four carry streaming. The phase is detected here from the SSE traffic itself.
@@ -18,7 +18,6 @@
 // clamped to 4 ms past nesting level five, ~720 ms over a 13 s stream. Not the ping-pong loop
 // frames.js bans (one post per SSE burst, ~14/s, only in flight) and it never touches rAF, so
 // the 888-fps inversion cannot recur here.
-// through this file.
 
 (() => {
   if (window.__sb && window.__sb.streamcost) return;
@@ -44,7 +43,8 @@
   // keeps both original goals: constant-bounded work, and a bundle must still put `data:` in its
   // first 65,536 characters.
   // Field cadence arrives at 2.97 characters per millisecond.
-  // for the same scan left unbounded.
+  // Measured in v8: 0.04 us on an SSE batch and 0.68 us on a 2 MB blob with no frame in it,
+  // against 0.70 us for the same scan left unbounded.
   const MAX_SSE_CHUNK_CHARS = 65536;
 
   const S = {

@@ -317,8 +317,8 @@
   // ordinal-less arm needs is taken once for the whole batch.
   const observeAdded = (records) => {
     // ONE INDEX PER BATCH AT MOST, dropped on the way out so the next batch cannot be answered from a
-    // stale list: a position read from the previous DOM is precisely the wrong answer.
-    // the wrong answer -- the same class of mistake as the lifetime counter this replaced.
+    // stale list: a position read from the previous DOM is precisely the wrong answer, the same
+    // class of mistake as the lifetime counter this replaced.
     VIS.index = null;
     for (const rec of records) {
       // A RENUMBERED ROW ARRIVES AS ITS OWN TARGET, not in anybody's `addedNodes`, so the row to

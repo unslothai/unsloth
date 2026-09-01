@@ -1410,7 +1410,6 @@ NULL_WITH_A_NOISY_REPETITION = [
 
 # The same null control where that fourth repetition missed its slot, so the reading that
 # carried the noise never happened.
-# the reading that carried the noise is the reading that never happened.
 NULL_THAT_MISSED_THE_SLOT = NULL_WITH_A_NOISY_REPETITION[:3] + [(1000.0, None)]
 
 # A consistent 10% with a spread well inside its own effect: it clears gates 2 and 3, so only
