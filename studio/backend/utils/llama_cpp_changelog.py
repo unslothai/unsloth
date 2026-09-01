@@ -137,10 +137,7 @@ def _release_for_tag(
         failed_at = _release_failed_at.get(key)
         cached = _release_memo.get(key)
         fresh = cached is not None and now - cached[0] < RELEASE_CACHE_TTL_SECONDS
-        if (
-            failed_at is not None
-            and now - failed_at < RELEASE_FAILURE_CACHE_TTL_SECONDS
-        ):
+        if failed_at is not None and now - failed_at < RELEASE_FAILURE_CACHE_TTL_SECONDS:
             # Suppress the retry, but an entry past its TTL is still expired: do
             # not let a recent failure resurrect a stale body as if it were fresh.
             return cached[1] if fresh else None

@@ -222,9 +222,7 @@ def test_a_bullet_with_no_summary_does_not_suppress_a_later_real_one(monkeypatch
 
     result = changes.changelog_for_update("unslothai/llama.cpp", "old", "new")
 
-    assert [item["summary"] for item in result["changes"]] == [
-        "Real change for PR 900"
-    ]
+    assert [item["summary"] for item in result["changes"]] == ["Real change for PR 900"]
 
 
 def test_a_missing_target_body_fails_closed(monkeypatch):
@@ -288,12 +286,14 @@ def test_unavailable_reason_separates_permanent_from_transient(monkeypatch):
         lambda _repo, tag, *, force_refresh = False: releases.get(tag),
     )
 
-    assert changes.unavailable_reason(
-        "unslothai/llama.cpp", "prose", "itemised"
-    ) == "notes_not_itemised"
-    assert changes.unavailable_reason(
-        "unslothai/llama.cpp", "missing", "itemised"
-    ) == "release_notes_unavailable"
+    assert (
+        changes.unavailable_reason("unslothai/llama.cpp", "prose", "itemised")
+        == "notes_not_itemised"
+    )
+    assert (
+        changes.unavailable_reason("unslothai/llama.cpp", "missing", "itemised")
+        == "release_notes_unavailable"
+    )
 
 
 def test_a_bodyless_target_is_transient_not_permanent(monkeypatch):
@@ -307,9 +307,10 @@ def test_a_bodyless_target_is_transient_not_permanent(monkeypatch):
         lambda _repo, tag, *, force_refresh = False: releases.get(tag),
     )
 
-    assert changes.unavailable_reason(
-        "unslothai/llama.cpp", "itemised", "bodyless"
-    ) == "release_notes_unavailable"
+    assert (
+        changes.unavailable_reason("unslothai/llama.cpp", "itemised", "bodyless")
+        == "release_notes_unavailable"
+    )
 
 
 def test_a_truncated_response_does_not_escape_to_the_caller(monkeypatch):
@@ -323,9 +324,7 @@ def test_a_truncated_response_does_not_escape_to_the_caller(monkeypatch):
         def read(self, size = -1):
             raise http.client.IncompleteRead(b"partial")
 
-    monkeypatch.setattr(
-        changes.urllib.request, "urlopen", lambda *_a, **_k: _Response()
-    )
+    monkeypatch.setattr(changes.urllib.request, "urlopen", lambda *_a, **_k: _Response())
 
     # IncompleteRead is an HTTPException, not an OSError.
     assert changes._fetch_release_blocking("unslothai/llama.cpp", "b1", 5.0) is None
@@ -342,8 +341,6 @@ def test_an_oversized_release_body_is_rejected(monkeypatch):
         def read(self, size = -1):
             return b"x" * (changes.MAX_RELEASE_BYTES + 1)
 
-    monkeypatch.setattr(
-        changes.urllib.request, "urlopen", lambda *_a, **_k: _Response()
-    )
+    monkeypatch.setattr(changes.urllib.request, "urlopen", lambda *_a, **_k: _Response())
 
     assert changes._fetch_release_blocking("unslothai/llama.cpp", "b1", 5.0) is None
