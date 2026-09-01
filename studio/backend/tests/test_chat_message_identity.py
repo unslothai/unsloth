@@ -283,3 +283,61 @@ def test_an_empty_string_parent_reads_as_the_root(db):
     db.upsert_chat_message(_msg("u1", "user", "", "hi", 1000))
 
     _assert_no_dangling_parents()
+
+
+# The thread from the #9984 report, id for id. Two user rows under cOfdER0 with identical
+# content and attachments, 26.12 hours apart, each carrying its own replies. Whatever writes
+# the second row, a fix for it must not merge them: four assistant rows hang off the pair.
+_REPORTED_THREAD = [
+    ("4dwSP7r", "user", None, 1787854341631),
+    ("Nmi02kB", "assistant", "4dwSP7r", 1787854341640),
+    ("1GW3S79", "user", "Nmi02kB", 1787856918464),
+    ("d7YROpZ", "assistant", "1GW3S79", 1787856918469),
+    ("zLNf9Wp", "user", "d7YROpZ", 1787858909474),
+    ("cOfdER0", "assistant", "zLNf9Wp", 1787858909480),
+    ("oHXbD51", "user", "cOfdER0", 1787861739724),
+    ("EenXxCU", "assistant", "oHXbD51", 1787861739732),
+    ("MAVhZII", "assistant", "oHXbD51", 1787862065697),
+    ("SaKf868", "user", "cOfdER0", 1787955784827),
+    ("i59wGIe", "assistant", "SaKf868", 1787955784827),
+    ("toVAdjZ", "assistant", "SaKf868", 1788232805365),
+]
+
+
+def _seed_reported_thread(db):
+    for message_id, role, parent, created in _REPORTED_THREAD:
+        attachments = _doc() if role == "user" and parent == "cOfdER0" else None
+        db.upsert_chat_message(
+            _msg(message_id, role, parent, "improved version of the document v3.1", created,
+                 attachments)
+        )
+
+
+def test_the_reported_duplicate_pair_survives_a_reload(db):
+    _seed_reported_thread(db)
+
+    stored = _assert_no_dangling_parents()
+    assert len(stored) == len(_REPORTED_THREAD)
+    assert stored["oHXbD51"]["parentId"] == stored["SaKf868"]["parentId"] == "cOfdER0"
+
+
+def test_the_reported_duplicate_pair_survives_a_whole_thread_sync(db):
+    _seed_reported_thread(db)
+    records = [
+        _msg(m, r, p, "improved version of the document v3.1", c,
+             _doc() if r == "user" and p == "cOfdER0" else None)
+        for m, r, p, c in _REPORTED_THREAD
+    ]
+
+    db.sync_chat_messages(THREAD, records, prune_missing = True)
+
+    assert len(_assert_no_dangling_parents()) == len(_REPORTED_THREAD)
+
+
+def test_collapsing_the_reported_pair_would_strand_four_replies(db):
+    """Why a fix must key on identity: the duplicate is not a leaf."""
+    _seed_reported_thread(db)
+    stored = _stored()
+
+    children = [m for m in stored.values() if m["parentId"] in ("oHXbD51", "SaKf868")]
+    assert len(children) == 4
