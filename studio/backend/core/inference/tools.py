@@ -14899,6 +14899,49 @@ def _check_signal_escape_patterns(code: str):
             stack.extend(reversed(list(ast.iter_child_nodes(current))))
         return names
 
+    def _declared_enclosing_binding_names(node: ast.AST) -> tuple[set[str], set[str]]:
+        """Return direct ``global`` and ``nonlocal`` declarations for one scope."""
+        global_names: set[str] = set()
+        nonlocal_names: set[str] = set()
+        for current in _walk_lexical_scope(node):
+            if isinstance(current, ast.Global):
+                global_names.update(current.names)
+            elif isinstance(current, ast.Nonlocal):
+                nonlocal_names.update(current.names)
+        return global_names, nonlocal_names
+
+    def _name_matches_binding(value: object, names: set[str]) -> bool:
+        return isinstance(value, str) and any(
+            value == name or value.startswith(f"{name}.") for name in names
+        )
+
+    def _binding_subset(container: dict | set, names: set[str]) -> dict | set:
+        if isinstance(container, dict):
+            return {
+                key: value
+                for key, value in container.items()
+                if _name_matches_binding(key, names)
+            }
+        return {value for value in container if _name_matches_binding(value, names)}
+
+    def _replace_binding_subset(
+        container: dict | set, names: set[str], values: dict | set
+    ) -> None:
+        if isinstance(container, dict):
+            for key in list(container):
+                if _name_matches_binding(key, names):
+                    container.pop(key, None)
+            container.update(values)
+            return
+        container.difference_update(
+            [value for value in container if _name_matches_binding(value, names)]
+        )
+        container.update(values)
+
+    active_local_scopes: list[set[str]] = []
+    pending_global_bindings: dict[int, tuple[dict | set, dict | set]] = {}
+    pending_global_names: set[str] = set()
+
     def _visit_local_binding_scope(visitor: ast.NodeVisitor, node: ast.AST) -> None:
         """Visit a nested lexical scope with only its own binding overlay."""
         saved_bindings = dict(string_bindings)
@@ -14918,13 +14961,28 @@ def _check_signal_escape_patterns(code: str):
             for name, value in vars(visitor).items()
             if isinstance(value, (dict, set))
         }
+        tracked_containers = [
+            string_bindings,
+            string_bindings_all,
+            eval_exec_aliases,
+            os_path_module_aliases,
+            bare_path_join_aliases,
+            bare_path_expanduser_aliases,
+            shutil_module_aliases,
+            bare_shutil_copy_aliases,
+            pathlib_module_aliases_prepass,
+            path_class_aliases_prepass,
+            *(value for value in vars(visitor).values() if isinstance(value, (dict, set))),
+        ]
+        global_names, nonlocal_names = _declared_enclosing_binding_names(node)
+        local_names = _local_scope_binding_names(node) - global_names - nonlocal_names
         # Defaults, decorators, annotations, bases, and class keywords are
         # evaluated by the enclosing scope before local parameters exist.
         for child in _definition_time_children(node):
             visitor.visit(child)
-        for name in _local_scope_binding_names(node):
-            string_bindings.pop(name, None)
-            string_bindings_all.pop(name, None)
+        for container in tracked_containers:
+            _replace_binding_subset(container, local_names, container.__class__())
+        active_local_scopes.append(local_names)
         _run_alias_prepass(node)
         _run_string_binding_prepass(node)
         try:
@@ -14934,6 +14992,18 @@ def _check_signal_escape_patterns(code: str):
                 for child in node.body:
                     visitor.visit(child)
         finally:
+            nonlocal_values = [
+                _binding_subset(container, nonlocal_names) for container in tracked_containers
+            ]
+            if global_names:
+                pending_global_names.update(global_names)
+                for container in tracked_containers:
+                    current = pending_global_bindings.get(id(container))
+                    pending = current[1] if current is not None else container.__class__()
+                    _replace_binding_subset(
+                        pending, global_names, _binding_subset(container, global_names)
+                    )
+                    pending_global_bindings[id(container)] = (container, pending)
             string_bindings.clear()
             string_bindings.update(saved_bindings)
             string_bindings_all.clear()
@@ -14958,6 +15028,18 @@ def _check_signal_escape_patterns(code: str):
                 current = getattr(visitor, name)
                 current.clear()
                 current.update(saved)
+            for container, values in zip(tracked_containers, nonlocal_values):
+                _replace_binding_subset(container, nonlocal_names, values)
+            active_local_scopes.pop()
+            shadowed_globals = set().union(*active_local_scopes) if active_local_scopes else set()
+            visible_globals = pending_global_names - shadowed_globals
+            for container, pending in pending_global_bindings.values():
+                _replace_binding_subset(
+                    container, visible_globals, _binding_subset(pending, visible_globals)
+                )
+            if not active_local_scopes:
+                pending_global_bindings.clear()
+                pending_global_names.clear()
 
     def _literal_getattr_target(node: ast.AST) -> "tuple[ast.AST, str] | None":
         """Return ``(receiver, attribute)`` for a literal two-arg getattr."""

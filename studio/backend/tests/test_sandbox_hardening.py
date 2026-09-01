@@ -2665,6 +2665,60 @@ class TestCurrentHeadReviewRegressions:
         code = "path = '/etc/shadow'\ndef read(path):\n    open(path)\nread('README.md')"
         assert not _is_blocked(code), "outer binding leaked through a local parameter"
 
+    @pytest.mark.parametrize(
+        "code",
+        [
+            (
+                "path = 'README.md'\n"
+                "def arm():\n    global path\n    path = '/etc/shadow'\n"
+                "arm()\nopen(path).read()"
+            ),
+            (
+                "def outer():\n    path = 'README.md'\n"
+                "    def arm():\n        nonlocal path\n        path = '/etc/shadow'\n"
+                "    arm()\n    return open(path).read()\nouter()"
+            ),
+            (
+                "path = 'README.md'\n"
+                "def outer():\n"
+                "    def arm():\n        global path\n        path = '/etc/shadow'\n"
+                "    arm()\nouter()\nopen(path).read()"
+            ),
+        ],
+    )
+    def test_enclosing_sensitive_binding_writes_blocked(self, code):
+        assert _is_blocked(code), "global/nonlocal sensitive binding write leaked"
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import builtins\nf = builtins.exec\ndef consumer(f, payload):\n    f(payload)",
+            "import requests as r\ndef consumer(r):\n    r.get('https://private.example')",
+            "import shutil as sh\ndef consumer(sh):\n    sh.copy('/etc/shadow', 'x')",
+            "import os as o\ndef consumer(o):\n    o.system('cat /etc/shadow')",
+            "import pathlib as pl\ndef consumer(pl):\n    pl.Path('/etc/shadow').read_text()",
+            "import requests as r\nasync def consumer(r):\n    r.get('https://private.example')",
+            "import requests as r\nconsumer = lambda r: r.get('https://private.example')",
+            (
+                "import requests as r\nclass Client:\n"
+                "    def get(self, url): return url\n"
+                "def consumer():\n    r = Client()\n    return r.get('https://private.example')"
+            ),
+        ],
+    )
+    def test_local_binding_shadows_outer_alias(self, code):
+        assert not _is_blocked(code), "outer callable/module alias leaked into local scope"
+
+    def test_nested_global_write_does_not_replace_outer_local_binding(self):
+        code = (
+            "path = 'README.md'\n"
+            "def outer(path):\n"
+            "    def arm():\n        global path\n        path = '/etc/shadow'\n"
+            "    arm()\n    return open(path).read()\n"
+            "outer('README.md')"
+        )
+        assert not _is_blocked(code), "nested global write replaced an outer local binding"
+
     def test_function_local_sensitive_binding_still_blocks(self):
         code = "def read():\n    path = '/etc/shadow'\n    open(path)\nread()"
         assert _is_blocked(code), "function-local sensitive binding leaked"
