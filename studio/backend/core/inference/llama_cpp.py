@@ -1063,13 +1063,19 @@ def _artifact_spans(text: str) -> "list[tuple[int, int]]":
     ]
 
 
-def _find_outside_artifacts(text: str, needle: str) -> int:
+def _find_outside_artifacts(text: str, needle: str, spans=None) -> int:
     """First index of ``needle`` that is not inside a complete artifact, or -1.
 
     A reasoning marker shown in a code example is the example, not reasoning.
+
+    The scan comes first: most answers carry no reasoning marker at all, and
+    mapping the artifacts is two regex passes over the whole response.
     """
-    spans = _artifact_spans(text)
     at = text.find(needle)
+    if at < 0:
+        return -1
+    if spans is None:
+        spans = _artifact_spans(text)
     while at >= 0:
         if not any(start <= at < end for start, end in spans):
             return at
@@ -1088,13 +1094,16 @@ def _text_outside_think(text: str) -> str:
     only its closer.
     """
     stripped = text.lstrip()
+    spans = None
     # Longest opener first: "<think" is also a prefix of "<thinking".
     for lead, opener, closer in (
         (_THINKING_OPEN_RE, "<thinking", "</thinking>"),
         (_THINK_OPEN_RE, "<think", "</think>"),
         (_BRACKET_THINK_OPEN_RE, "[THINK]", "[/THINK]"),
     ):
-        close = _find_outside_artifacts(text, closer)
+        if closer in text and spans is None:
+            spans = _artifact_spans(text)
+        close = _find_outside_artifacts(text, closer, spans)
         if close < 0:
             # A leading block with no closer runs to the end: a thought the window
             # cut off has no closing tag, and none of it was shown.
