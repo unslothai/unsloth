@@ -5190,8 +5190,11 @@ class VideoBackend:
             # run_in_workspace: _run_generate persists through video_gallery.save(), which is
             # per account, and a bare thread would write the owner's gallery instead.
             target = functools.partial(
-                run_in_workspace, current_workspace_subject(),
-                self._run_generate, job_token = job_token, video_id = video_id,
+                run_in_workspace,
+                current_workspace_subject(),
+                self._run_generate,
+                job_token = job_token,
+                video_id = video_id,
             ),
             kwargs = dict(
                 prompt = prompt,

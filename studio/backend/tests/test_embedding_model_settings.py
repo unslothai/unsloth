@@ -156,6 +156,7 @@ def test_a_concurrent_save_is_not_reverted_by_a_late_pending_clear(settings_stor
     assert stale[1] == "org/a" and stale[4] is True
     ems.set_rag_embedding_model("org/b", gguf_repo = "org/b-GGUF", backend = "sentence-transformers")
     from utils.workspace_context import current_workspace_subject
+
     ems._cached[current_workspace_subject()] = (0.0, stale)  # its 2s snapshot still says A
 
     assert ems.clear_stored_download_pending("org/a") is False

@@ -14910,8 +14910,7 @@ async def check_transformers_upgrade_route(
     "/install-latest-transformers", response_model = InstallLatestTransformersResponse
 )
 async def install_latest_transformers_route(
-    request: InstallLatestTransformersRequest,
-    current_subject: str = Depends(require_install_admin),
+    request: InstallLatestTransformersRequest, current_subject: str = Depends(require_install_admin)
 ):
     """
     Consented install of the latest transformers release into the persistent
