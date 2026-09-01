@@ -22268,15 +22268,24 @@ async def produce_openai_chat_completions(
     except Exception:
         _sf_probe_messages = None
 
-    def _sf_response_protocol(tools = None):
-        features = _detect_safetensors_features(backend, _sf_tpl, tools = tools)
+    def _sf_response_protocol(
+        tools = None,
+        template = None,
+        prefer_tool_use = True,
+    ):
+        body = _sf_tpl if template is None else template
+        # Only forward the non-default, the same shape the vision render uses for tools=:
+        # passing it unconditionally breaks every caller and test stub that predates the
+        # parameter, and the default is what all of them already assume.
+        _pref = {} if prefer_tool_use else {"prefer_tool_use": False}
+        features = _detect_safetensors_features(backend, body, tools = tools, **_pref)
         parse_think = bool(
             features.get("supports_reasoning") or features.get("reasoning_always_on")
         )
         reasoning_prefilled = _sf_reasoning_prefill_mode(
             features,
             payload.enable_thinking,
-            _sf_tpl,
+            body,
             reasoning_effort = payload.reasoning_effort,
             messages = _sf_probe_messages,
         )
@@ -22858,19 +22867,20 @@ async def produce_openai_chat_completions(
         if image is not None
         else None
     )
-    _sf_supports_tools = (
-        _detect_safetensors_features(
-            backend,
-            _sf_image_tpl,
-            tools = _sf_template_tools,
-            # A ProcessorMixin render does not implicitly select the "tool_use" branch the
-            # way a tokenizer does, so classifying from it would advertise a catalog the
-            # prompt never shows. Same rule _renders_tool_schema applies (#10092).
+    if _sf_image_tpl is not None:
+        # Reclassify the WHOLE protocol from the body this turn renders with, not just
+        # tool support. A processor template can carry a reasoning channel the nested
+        # tokenizer never declares, and both VLM backends normalize it into <think>
+        # markup; classifying from the tokenizer body left the route treating that markup
+        # as visible content, leaking reasoning and letting the healer read it (#10092).
+        # prefer_tool_use is off because a ProcessorMixin render never implicitly selects
+        # the "tool_use" branch, the same rule _renders_tool_schema applies.
+        _sf_features, _sf_parse_think, _sf_reasoning_prefilled = _sf_response_protocol(
+            _sf_template_tools,
+            template = _sf_image_tpl,
             prefer_tool_use = False,
-        ).get("supports_tools", False)
-        if _sf_image_tpl is not None
-        else _sf_features.get("supports_tools", False)
-    )
+        )
+    _sf_supports_tools = _sf_features.get("supports_tools", False)
     # Gate on _sf_use_tools (did the server-side path claim the request?), not
     # raw mcp_enabled: an empty MCP registry must not silently drop client tools.
     _sf_client_tools = (
@@ -23000,7 +23010,13 @@ async def produce_openai_chat_completions(
     # known. This standard path now has the exact schemas that will be rendered,
     # so resolve reasoning parsing again to keep empty registries, forced-tool
     # misses, and tool_choice="none" on the marker-free template branch.
-    _, _sf_parse_think, _sf_reasoning_prefilled = _sf_response_protocol(gen_kwargs.get("tools"))
+    # Same body the turn renders with: on an image turn that is the processor template,
+    # and re-resolving from the tokenizer body here would undo the reclassification above.
+    _, _sf_parse_think, _sf_reasoning_prefilled = _sf_response_protocol(
+        gen_kwargs.get("tools"),
+        template = _sf_image_tpl,
+        prefer_tool_use = _sf_image_tpl is None,
+    )
 
     # Request-scoped usage/timings receptacle (filled at gen_done).
     stats_holder: dict = {}

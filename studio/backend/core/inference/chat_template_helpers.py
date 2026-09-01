@@ -3089,12 +3089,21 @@ def messages_with_attached_image(
         # than drop tool history, turning a valid request into a 500. Restricting this to
         # system/developer covered only the folded instruction the client-tools route puts
         # in messages[0] (#10092).
-        conversation = [
-            {**m, "content": [{"type": "text", "text": m["content"]}]}
-            if (isinstance(m, dict) and isinstance(m.get("content"), str) and m["content"])
-            else m
-            for m in conversation
-        ]
+        def _as_parts(message):
+            if not isinstance(message, dict):
+                return message
+            body = message.get("content")
+            if isinstance(body, list):
+                return message
+            if isinstance(body, str) and body:
+                return {**message, "content": [{"type": "text", "text": body}]}
+            # Absent, None or empty. A standard OpenAI assistant tool-call turn loses its
+            # content key entirely to exclude_none, and a template that iterates or indexes
+            # content raises on the missing field just as it does on a bare string, so the
+            # empty list is the representation that keeps the turn renderable.
+            return {**message, "content": []}
+
+        conversation = [_as_parts(m) for m in conversation]
     if system_prompt:
         conversation.insert(
             0,

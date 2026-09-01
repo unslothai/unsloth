@@ -909,3 +909,78 @@ def test_a_tool_loop_replay_is_wrapped_for_a_part_based_processor():
     assert by_role["system"] == [{"type": "text", "text": "SENTINEL_RULE"}]
     # The image still lands on the user turn, as parts.
     assert any(p.get("type") == "image" for p in by_role["user"])
+
+
+def test_an_assistant_tool_call_turn_without_content_is_still_parts():
+    """A standard OpenAI assistant tool-call turn has content=None, and exclude_none drops
+    the key entirely, so the earlier non-empty-string wrap skipped it. A template that
+    iterates content raises on the missing field just as it does on a bare string, and tool
+    history disables both backends' recovery, so the request became a 500 (#10092)."""
+    from core.inference.chat_template_helpers import messages_with_attached_image
+
+    out = messages_with_attached_image(
+        [
+            {"role": "user", "content": "what is in this"},
+            # exclude_none leaves no content key at all.
+            {"role": "assistant", "tool_calls": [{"id": "c1", "type": "function"}]},
+            {"role": "tool", "content": ""},
+        ],
+        structured_content = True,
+    )
+    assert all(isinstance(m["content"], list) for m in out), out
+    assistant = [m for m in out if m["role"] == "assistant"][0]
+    assert assistant["content"] == []
+    # tool_calls survive the rewrite.
+    assert assistant["tool_calls"] == [{"id": "c1", "type": "function"}]
+
+
+def test_image_reasoning_is_classified_from_the_processor_template():
+    """A processor template can carry a reasoning channel the nested tokenizer never
+    declares. Classifying only supports_tools from it left _sf_parse_think derived from the
+    tokenizer body, so the backends' normalized <think> markup was treated as visible
+    content, leaking reasoning into the answer (#10092)."""
+    import asyncio
+    import os
+    import sys
+
+    import pytest as _pytest
+
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import routes.inference as inf
+    import test_sf_client_tools_passthrough as passthrough
+
+    backend = passthrough._ScriptedBackend(
+        passthrough._fixed("<think>hidden reasoning</think>the visible answer")
+    )
+    backend.models["sf-model"]["is_vision"] = True
+    backend.models["sf-model"]["chat_template_info"] = {
+        "template": _PROCESSOR_TEMPLATE_NO_TOOLS,
+        "processor_template": _CHATML_WITH_TOOLS,
+    }
+    payload = _image_request(stream = False)
+
+    monkeypatch = _pytest.MonkeyPatch()
+    try:
+        passthrough._install(monkeypatch, backend)
+        # Only the processor body declares the reasoning channel.
+        monkeypatch.setattr(
+            inf,
+            "_detect_safetensors_features",
+            lambda _b, template, **k: {
+                "supports_tools": False,
+                "supports_reasoning": template == _CHATML_WITH_TOOLS,
+            },
+        )
+
+        async def _run():
+            return await inf.openai_chat_completions(
+                payload, request = passthrough._Request(), current_subject = "u"
+            )
+
+        body = passthrough._json_body(asyncio.run(_run()))
+    finally:
+        monkeypatch.undo()
+
+    message = body["choices"][0]["message"]
+    assert message["reasoning_content"] == "hidden reasoning", message
+    assert "hidden reasoning" not in (message["content"] or "")
