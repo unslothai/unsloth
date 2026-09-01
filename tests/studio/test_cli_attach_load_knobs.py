@@ -1042,3 +1042,62 @@ def test_non_gguf_gpu_selection_survives_a_reload(monkeypatch):
     start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768))
 
     assert server.loads[0]["gpu_ids"] == [2, 3]
+
+
+def _direct_gguf_server(monkeypatch, path = "/srv/models/Foo-Q4_K_M.gguf"):
+    return FakeServer(
+        [{"id": "Foo-Q4_K_M", "loaded": True}],
+        {
+            "is_gguf": True,
+            "active_model": "Foo-Q4_K_M",
+            "model_identifier": path,
+            "gguf_variant": "Q4_K_M",
+            "requested_context_length": 4096,
+        },
+    ).install(monkeypatch)
+
+
+def test_restating_the_running_quant_applies_the_other_overrides(monkeypatch):
+    """A matching variant asks for no change, so it must not block the context change."""
+    path = "/srv/models/Foo-Q4_K_M.gguf"
+    server = _direct_gguf_server(monkeypatch, path)
+
+    start_cli._resolve_model(
+        BASE,
+        KEY,
+        None,
+        start_cli.LoadOptions(gguf_variant = "Q4_K_M", max_seq_length = 32768),
+    )
+
+    sent_payload = server.loads[0]
+    assert sent_payload["model_path"] == path
+    assert sent_payload["max_seq_length"] == 32768
+    # The field is inapplicable to a direct file, so it is dropped rather than posted.
+    assert "gguf_variant" not in sent_payload
+
+
+def test_a_matching_quant_is_compared_case_insensitively(monkeypatch):
+    server = _direct_gguf_server(monkeypatch)
+
+    start_cli._resolve_model(
+        BASE,
+        KEY,
+        None,
+        start_cli.LoadOptions(gguf_variant = "q4_k_m", max_seq_length = 32768),
+    )
+
+    assert server.loads[0]["max_seq_length"] == 32768
+
+
+def test_a_differing_quant_on_a_direct_file_is_still_refused(monkeypatch):
+    server = _direct_gguf_server(monkeypatch)
+
+    with pytest.raises(typer.Exit):
+        start_cli._resolve_model(
+            BASE,
+            KEY,
+            None,
+            start_cli.LoadOptions(gguf_variant = "UD-Q8_K_XL", max_seq_length = 32768),
+        )
+
+    assert server.loads == []

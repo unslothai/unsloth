@@ -2056,16 +2056,25 @@ def _resolve_model(
         # truthiness: a reset like --context-length 0 equals the default yet must be sent.
         payload = {"model_path": requested}
         if "gguf_variant" in overrides and load.gguf_variant:
-            if attach_public_id is not None and str(requested).lower().endswith(".gguf"):
-                # from_identifier consults a variant only for a DIRECTORY, so posting one
-                # here would reload the very same file and then label it with a quant that
-                # does not describe its weights, disrupting every session for nothing.
-                _fail(
-                    f"'{attach_public_id}' was loaded from a single .gguf file, so "
-                    f"--gguf-variant {load.gguf_variant} cannot select a different quant. "
-                    "Re-run with --model naming the repository to switch quants."
-                )
-            payload["gguf_variant"] = load.gguf_variant
+            direct_file = attach_public_id is not None and str(requested).lower().endswith(".gguf")
+            if direct_file:
+                # from_identifier consults a variant only for a DIRECTORY, so a DIFFERENT
+                # quant cannot be selected: posting one would reload the very same file and
+                # label it with a quant that does not describe its weights. Restating the
+                # one already running asks for no change, so drop the inapplicable field
+                # and let the other overrides through.
+                resident_variant = status_snapshot.get("gguf_variant")
+                same = bool(resident_variant) and str(resident_variant).strip().lower() == str(
+                    load.gguf_variant
+                ).strip().lower()
+                if not same:
+                    _fail(
+                        f"'{attach_public_id}' was loaded from a single .gguf file, so "
+                        f"--gguf-variant {load.gguf_variant} cannot select a different quant. "
+                        "Re-run with --model naming the repository to switch quants."
+                    )
+            else:
+                payload["gguf_variant"] = load.gguf_variant
         elif attach_public_id is not None and status_snapshot.get("is_gguf"):
             # Re-send the running quant: a repo id carries none, so from_identifier would
             # auto-pick (_GGUF_QUANT_PREFERENCE, UD-Q4_K_XL first) and changing only the
