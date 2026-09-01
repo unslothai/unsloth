@@ -5513,7 +5513,12 @@ def test_start_dsh_forwards_reasoning_effort(fake_studio, monkeypatch):
     captured = {}
     fake = SimpleNamespace(pid = 1, poll = lambda: None)
 
-    def fake_start(base, model, load, server_options = None):
+    def fake_start(
+        base,
+        model,
+        load,
+        server_options = None,
+    ):
         captured["server_options"] = server_options
         start._auto_served_server = fake
         return fake
@@ -5523,7 +5528,11 @@ def test_start_dsh_forwards_reasoning_effort(fake_studio, monkeypatch):
     monkeypatch.setattr(start, "_managed_node_tools", lambda: None)
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/dsh")
 
-    def run(command, env = None, **kwargs):
+    def run(
+        command,
+        env = None,
+        **kwargs,
+    ):
         captured["command"] = command
         return SimpleNamespace(returncode = 0)
 
