@@ -202,6 +202,10 @@ test("every presentation path scrubs citation markers, not just the screen", () 
       "../src/components/assistant-ui/thread.tsx",
       /scrubOpenAICitationMarkers\(\s*stripSearchImageTokens\(\s*replySourceMarkdown\(/,
     ],
+    [
+      "../src/components/assistant-ui/thread.tsx",
+      /scrubOpenAICitationMarkers\(stripSearchImageTokens\(content\)\)/,
+    ],
   ];
   for (const [relative, pattern] of sites) {
     const source = readFileSync(

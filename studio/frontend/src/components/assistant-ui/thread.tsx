@@ -7943,8 +7943,9 @@ async function exportMessageMarkdown(content: string): Promise<void> {
   try {
     await downloadFile(
       // Same rule as the copy button and the whole-chat export: the tokens are
-      // renderer markup, so a saved answer must not carry them as prose.
-      stripSearchImageTokens(content),
+      // renderer markup, so a saved answer must not carry them as prose, and a
+      // citation marker left by a dropped stream is the same.
+      scrubOpenAICitationMarkers(stripSearchImageTokens(content)),
       `message-${Date.now()}.md`,
       "text/markdown",
     );
