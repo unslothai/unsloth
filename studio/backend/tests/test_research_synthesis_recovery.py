@@ -72,9 +72,7 @@ def _claimed_run(supervisor) -> dict:
 def _run_synthesis(monkeypatch, *, synthesis, recovery) -> dict:
     from core import research_runs as worker
 
-    supervisor = worker.ResearchSupervisor(
-        SimpleNamespace(state = SimpleNamespace(server_port = 1))
-    )
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
     claimed = _claimed_run(supervisor)
     phases: list[str] = []
 
@@ -95,9 +93,7 @@ def _run_synthesis(monkeypatch, *, synthesis, recovery) -> dict:
     return finished
 
 
-def test_an_empty_recovery_does_not_discard_the_report_it_was_rescuing(
-    research_home, monkeypatch
-):
+def test_an_empty_recovery_does_not_discard_the_report_it_was_rescuing(research_home, monkeypatch):
     finished = _run_synthesis(
         monkeypatch,
         synthesis = (FIRST_DRAFT, "", "length", {"completion_tokens": 16384}),
@@ -109,9 +105,7 @@ def test_an_empty_recovery_does_not_discard_the_report_it_was_rescuing(
     assert FIRST_DRAFT in finished["report"]
 
 
-def test_two_length_stops_deliver_the_longer_draft_with_a_notice(
-    research_home, monkeypatch
-):
+def test_two_length_stops_deliver_the_longer_draft_with_a_notice(research_home, monkeypatch):
     finished = _run_synthesis(
         monkeypatch,
         synthesis = (FIRST_DRAFT, "", "length", {"completion_tokens": 16384}),
@@ -158,9 +152,7 @@ def test_two_empty_attempts_still_fail_the_run(research_home, monkeypatch):
         )
 
 
-def test_a_complete_recovery_beats_a_longer_truncated_first_draft(
-    research_home, monkeypatch
-):
+def test_a_complete_recovery_beats_a_longer_truncated_first_draft(research_home, monkeypatch):
     """`length` is the one finish reason that means the text is unfinished, so size is
     the wrong tiebreak: picking the longer draft delivered a truncated report, and
     labelled it incomplete, while a finished one was in hand."""
@@ -177,9 +169,7 @@ def test_a_complete_recovery_beats_a_longer_truncated_first_draft(
     assert "Incomplete report." not in finished["report"]
 
 
-def test_a_longer_truncated_draft_still_wins_when_neither_finished(
-    research_home, monkeypatch
-):
+def test_a_longer_truncated_draft_still_wins_when_neither_finished(research_home, monkeypatch):
     finished = _run_synthesis(
         monkeypatch,
         synthesis = (FIRST_DRAFT, "", "length", {"completion_tokens": 16384}),
@@ -190,9 +180,7 @@ def test_a_longer_truncated_draft_still_wins_when_neither_finished(
     assert "Incomplete report." in finished["report"]
 
 
-def test_an_empty_recovery_never_counts_as_the_finished_one(
-    research_home, monkeypatch
-):
+def test_an_empty_recovery_never_counts_as_the_finished_one(research_home, monkeypatch):
     """Empty plus `stop` is not a complete report; the truncated draft must survive it."""
     finished = _run_synthesis(
         monkeypatch,
