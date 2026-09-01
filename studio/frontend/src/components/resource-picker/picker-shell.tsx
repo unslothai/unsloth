@@ -11,10 +11,12 @@ import { Spinner } from "@/components/ui/spinner";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
-  ArrowRight01Icon,
   FolderSearchIcon,
   Search01Icon,
 } from "@hugeicons/core-free-icons";
+import {
+  ChevronRightIcon,
+} from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type KeyboardEvent,
@@ -396,8 +398,7 @@ export function PickerShell({
                     {useThisLabel}
                   </span>
                 </span>
-                <HugeiconsIcon
-                  icon={ArrowRight01Icon}
+                <ChevronRightIcon
                   strokeWidth={1.5}
                   className="size-3.5 shrink-0 text-muted-foreground/70"
                 />

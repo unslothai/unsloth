@@ -168,7 +168,7 @@ def test_stdio_command_codec_windows_preserves_final_whitespace_argument_end_to_
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(routes_mcp, "stdio_mcp_enabled", lambda: True)
     monkeypatch.setattr(mcp_client, "stdio_mcp_enabled", lambda: True)
-    monkeypatch.setattr(routes_mcp, "close_stdio_sessions", lambda *args: None)
+    monkeypatch.setattr(routes_mcp, "close_mcp_sessions", lambda *args: None)
 
     probed_urls: list[str] = []
 
@@ -376,7 +376,7 @@ def test_stdio_raw_nul_is_rejected_before_route_side_effects(tmp_path, monkeypat
         routes_mcp, "invalidate_tool_cache", lambda *args: side_effects.append("invalidate")
     )
     monkeypatch.setattr(
-        routes_mcp, "close_stdio_sessions", lambda *args: side_effects.append("close")
+        routes_mcp, "close_mcp_sessions", lambda *args: side_effects.append("close")
     )
 
     with pytest.raises(HTTPException):
@@ -1298,7 +1298,7 @@ def test_update_rename_keeps_stdio_session(tmp_path, monkeypatch):
 
     closed: list = []
     monkeypatch.setattr(routes_mcp, "stdio_mcp_enabled", lambda: True)
-    monkeypatch.setattr(routes_mcp, "close_stdio_sessions", lambda *a, **k: closed.append(a))
+    monkeypatch.setattr(routes_mcp, "close_mcp_sessions", lambda *a, **k: closed.append(a))
     mcp_servers_db.create_server(
         id = "s1",
         display_name = "A",
@@ -1332,7 +1332,7 @@ def test_update_stdio_command_change_closes_session(tmp_path, monkeypatch):
 
     closed: list = []
     monkeypatch.setattr(routes_mcp, "stdio_mcp_enabled", lambda: True)
-    monkeypatch.setattr(routes_mcp, "close_stdio_sessions", lambda *a, **k: closed.append(a))
+    monkeypatch.setattr(routes_mcp, "close_mcp_sessions", lambda *a, **k: closed.append(a))
     mcp_servers_db.create_server(
         id = "s1",
         display_name = "A",
@@ -1362,7 +1362,7 @@ def test_stdio_arguments_update_preserves_untouched_bytes_then_invalidates_once(
     invalidated: list[str] = []
     closed: list[tuple] = []
     monkeypatch.setattr(routes_mcp, "invalidate_tool_cache", invalidated.append)
-    monkeypatch.setattr(routes_mcp, "close_stdio_sessions", lambda *args: closed.append(args))
+    monkeypatch.setattr(routes_mcp, "close_mcp_sessions", lambda *args: closed.append(args))
     cached = _one_tool()
     monkeypatch.setattr(mcp_client, "_tool_cache", {"s1": cached})
 
