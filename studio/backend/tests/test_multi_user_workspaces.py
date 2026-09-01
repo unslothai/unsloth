@@ -854,7 +854,6 @@ def test_a_claimed_training_backend_is_private_to_the_account_that_started_it():
     assert not backend.owns_workspace("unsloth")
 
 
-
 def test_enqueuing_a_legacy_sync_does_not_spawn_a_second_folder_sync_worker():
     """_request_sync lazily starts a worker so a newly-created managed account does
     not need a restart. The legacy account already has one from the lifespan, and a
@@ -867,4 +866,4 @@ def test_enqueuing_a_legacy_sync_does_not_spawn_a_second_folder_sync_worker():
     source = inspect.getsource(folder_sync._request_sync)
     start = source.index("start_auto_sync()")
     guard = source.rindex("LEGACY_WORKSPACE_SUBJECT", 0, start)
-    assert "current_workspace_subject() != LEGACY_WORKSPACE_SUBJECT" in source[guard - 40:start]
+    assert "current_workspace_subject() != LEGACY_WORKSPACE_SUBJECT" in source[guard - 40 : start]
