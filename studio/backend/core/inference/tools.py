@@ -9969,6 +9969,8 @@ def _edit_file_confined_project(
         )
     finally:
         boundary.close()
+
+
 # Each entry costs a full `count` scan of the file plus a search pass, and the file may be
 # up to 16 MiB, so the work is entries x size. Unbounded, a model-generated batch of a few
 # thousand one-line edits turns a single call into gigabytes of repeated scanning and holds

@@ -3506,6 +3506,7 @@ class AnthropicMessagesRequest(BaseModel):
     @classmethod
     def _reject_server_owned_agent_task_ids(cls, value: Any) -> Any:
         return _reject_reserved_agent_task_binding(value)
+
     @model_validator(mode = "after")
     def _effort_from_output_config(self) -> "AnthropicMessagesRequest":
         if self.reasoning_effort is not None or not isinstance(self.output_config, dict):

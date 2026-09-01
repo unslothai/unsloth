@@ -27635,6 +27635,8 @@ def _with_anthropic_project_context(
             cleaned.append({"type": "text", "text": resolved.addition})
         return cleaned
     return system
+
+
 def _resident_context_satisfies(model_info: dict, max_seq_length: Any) -> bool:
     """Whether the resident model already serves the context this load asks for.
 

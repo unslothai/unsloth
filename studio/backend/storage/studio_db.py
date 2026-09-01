@@ -1840,6 +1840,8 @@ def consume_native_path_lease_nonce(
         raise
     finally:
         conn.close()
+
+
 # Every accessor here opens and closes its own connection, so a writer is routinely the last
 # WAL participant, and sqlite checkpoints the WAL back into studio.db on that close. At the
 # durable chat stream's flush cadence that is several rewrites a second (#9934).
