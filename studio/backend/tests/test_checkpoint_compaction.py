@@ -1799,8 +1799,13 @@ def test_retrying_the_newest_turn_twice_still_resolves_the_proved_branch(monkeyp
             "parentId": "u1",
             "role": "assistant",
             "content": [
-                {"type": "tool-call", "toolCallId": "c1", "toolName": "terminal",
-                 "args": {"command": "probe"}, "result": "PROBE-9915"},
+                {
+                    "type": "tool-call",
+                    "toolCallId": "c1",
+                    "toolName": "terminal",
+                    "args": {"command": "probe"},
+                    "result": "PROBE-9915",
+                },
                 {"type": "text", "text": "The diagnostic passed."},
             ],
             "metadata": _checkpoint_metadata(4),

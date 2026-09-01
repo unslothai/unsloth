@@ -1098,9 +1098,7 @@ def _archive_branch_chain(
             settled.pop()
         if settled:
             proof = _chain(settled)
-            if not proof or not any(
-                row.get("id") == proof[-1].get("id") for row in chain
-            ):
+            if not proof or not any(row.get("id") == proof[-1].get("id") for row in chain):
                 return None
         return chain
     except Exception:
