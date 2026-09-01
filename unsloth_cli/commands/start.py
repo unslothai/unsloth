@@ -600,6 +600,71 @@ class LoadOptions(NamedTuple):
     load_in_4bit: bool = True
     tensor_parallel: bool = False
     gpu_memory_mode: Optional[Literal["auto", "manual"]] = None
+    # Names the user actually typed: --context-length 0 equals the declared default yet
+    # is a reset the server must hear. Appended last to keep positional callers working.
+    supplied: frozenset = frozenset()
+
+    def overrides(self) -> frozenset:
+        """Fields that must reach the load: typed explicitly, or differing from default."""
+        differing = {
+            name
+            for name, default in (
+                ("gguf_variant", None),
+                ("max_seq_length", 0),
+                ("load_in_4bit", True),
+                ("tensor_parallel", False),
+                ("gpu_memory_mode", None),
+            )
+            if getattr(self, name) != default
+        }
+        # Internal callers never populate `supplied`, so a non-default value counts too.
+        return frozenset(differing) | frozenset(self.supplied)
+
+
+_LOAD_OPTION_PARAMS = (
+    "gguf_variant",
+    "max_seq_length",
+    "load_in_4bit",
+    "tensor_parallel",
+    "gpu_memory_mode",
+)
+
+
+def _supplied_load_params(ctx) -> frozenset:
+    """Which load knobs Click saw on the command line.
+
+    The context must be PASSED IN: Typer invokes callbacks with no active click context,
+    so click.get_current_context() is None. Unaskable -> empty set, and `overrides()`
+    falls back to comparing values.
+    """
+    getter = getattr(ctx, "get_parameter_source", None)
+    if getter is None:
+        return frozenset()
+    supplied = set()
+    for name in _LOAD_OPTION_PARAMS:
+        try:
+            source = getter(name)
+        except Exception:
+            continue
+        # By member NAME, not identity or ordering: Typer vendors its own click, so this
+        # is typer._click's ParameterSource, and click 8.3 reordered the IntEnum.
+        if getattr(source, "name", None) == "COMMANDLINE":
+            supplied.add(name)
+    return frozenset(supplied)
+
+
+def _load_options(
+    ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode
+) -> LoadOptions:
+    """Build LoadOptions for an agent command, recording what was typed."""
+    return LoadOptions(
+        gguf_variant,
+        max_seq_length,
+        load_in_4bit,
+        tensor_parallel,
+        gpu_memory_mode,
+        _supplied_load_params(ctx),
+    )
 
 
 class ServerOptions(NamedTuple):
@@ -1645,12 +1710,214 @@ def _model_id_matches(
     return str(actual).casefold() == str(requested).casefold()
 
 
+def _inference_status(base: str, key: str) -> dict:
+    """Runtime state of the resident model. {} means "cannot prove anything" (older
+    server), never "nothing is set"."""
+    try:
+        return _http_json("GET", f"{base}/api/inference/status", key)
+    except Exception:
+        return {}
+
+
+def _resident_load_target(models: list, status: dict, allow_casefold: bool):
+    """(identifier to post, id it is advertised as) for the running model.
+
+    /v1/models shows only the sanitized basename while _same_loaded_identifier compares
+    resident paths exactly, so the load must carry the identifier status reports.
+    """
+    if status.get("is_diffusion"):
+        # An image runtime answers with an active_model like any other, but it cannot
+        # serve chat: targeting it would tear down the diffusion server and then point
+        # the agent at a model that can never answer it.
+        _fail(
+            "Unsloth is serving an image model, which cannot serve chat, so there are no "
+            "settings to apply. Re-run with --model naming the chat model to load."
+        )
+    active_id = status.get("active_model")
+    entry = None
+    if active_id:
+        entry = next(
+            (
+                m
+                for m in models
+                if _model_id_matches(m.get("id"), active_id, allow_casefold = allow_casefold)
+                and m.get("loaded") is not False
+            ),
+            None,
+        )
+    if entry is None and not status:
+        # Only when there is no status at all (older server). A status that ANSWERED with
+        # active_model null is stating there is no chat resident.
+        # Catalog ORDER is not evidence either: /v1/models lists loaded speech sidecars
+        # too, so the first entry can be one. Answer only when the catalog is unambiguous.
+        loaded = [m for m in models if m.get("loaded") is not False]
+        if len(loaded) == 1:
+            entry = loaded[0]
+        elif loaded:
+            _fail(
+                "This Unsloth cannot say which model is serving chat, and more than one is "
+                "loaded. Re-run with --model naming the one these settings are for."
+            )
+    public_id = active_id or (entry or {}).get("id")
+    if not public_id:
+        if status:
+            # Status answered and named no chat model. Returning empty here would drop
+            # the knobs silently, which is the bug this path exists to fix.
+            _fail(
+                "No chat model is currently loaded, so there are no settings to apply. "
+                "Re-run with --model naming the model to load."
+            )
+        return None, None
+    identifier = status.get("model_identifier")
+    if identifier:
+        return identifier, public_id
+    # A native path lease redacts the internal path; inventing one from the basename
+    # would address the wrong file, so only a hub id can be posted back.
+    if _is_hub_model_id(public_id):
+        return public_id, public_id
+    _fail(
+        f"Unsloth is serving '{public_id}' from a local path it does not expose, so these "
+        "settings cannot be applied by attaching. Re-run with --model naming that path."
+    )
+
+
+# /api/inference/status field -> the /api/inference/load field that reproduces it. The
+# "requested_" values are what the load was INVOKED with, which is what has to be resent;
+# the bare names are the resolved ones and would pin a value the user never chose.
+_RESIDENT_RUNTIME_FIELDS = {
+    "cache_type_kv": "cache_type_kv",
+    "chat_template_override": "chat_template_override",
+    "disable_vision": "disable_vision",
+    "gpu_memory_mode": "gpu_memory_mode",
+    "gpu_layers": "gpu_layers",
+    "n_cpu_moe": "n_cpu_moe",
+    "tensor_split": "tensor_split",
+    "tensor_parallel": "tensor_parallel",
+    "speculative_type": "speculative_type",
+    "spec_draft_n_max": "spec_draft_n_max",
+    # The applied value is null when the runtime refused the request.
+    "mlx_kv_bits_requested": "mlx_kv_bits",
+    # LoadRequest defaults this to True, so omitting it would reload a full-precision
+    # model in 4-bit. Null on GGUF, which has no such setting.
+    "load_in_4bit": "load_in_4bit",
+    # Same trap: max_seq_length defaults to 0, which _gguf_request_intent copies into
+    # n_ctx, so changing another knob would reset a custom context to automatic.
+    "requested_context_length": "max_seq_length",
+    "requested_gpu_ids": "gpu_ids",
+    "requested_parallel_slots": "n_parallel",
+    "requested_n_batch": "n_batch",
+    "requested_n_ubatch": "n_ubatch",
+    "requested_load_mode": "load_mode",
+    "requested_ctx_checkpoints": "ctx_checkpoints",
+    "requested_cache_ram": "cache_ram",
+    "requested_spec_draft_cache_type": "spec_draft_cache_type",
+    "requested_llama_extra_args": "llama_extra_args",
+}
+
+
+def _resident_runtime_payload(status: dict, payload: dict) -> dict:
+    """The resident's own settings for knobs this load did not name.
+
+    None means "never set" for every one of these, so it is dropped rather than sent:
+    omitting a field is what lets the server inherit, while sending null would pin the
+    absence. An explicit empty list is kept, since that is a real "launch with none".
+    """
+    if not status:
+        return {}
+    carried = {}
+    for field, load_field in _RESIDENT_RUNTIME_FIELDS.items():
+        if load_field in payload:
+            continue
+        value = status.get(field)
+        if value is None:
+            continue
+        carried[load_field] = value
+    return carried
+
+
+def _load_settings_differ(status: dict, load: LoadOptions, overrides: frozenset) -> bool:
+    """Whether applying these settings can restart the resident. Unproven equality
+    counts as a difference: a silent restart is worse than a spurious warning."""
+    if not status:
+        return True
+    # _runtime_matches_intent rejects an identical intent while a spec probe, a DFlash
+    # drafter or a changed speculative binary is waiting to be retried, so the server
+    # reloads regardless of what the CLI asked for. Equality of the overrides is then no
+    # proof of a no-op, and claiming one would skip the gate and the warning.
+    if any(
+        status.get(field)
+        for field in (
+            "spec_probe_retry_pending",
+            "spec_dflash_retry_pending",
+            "spec_fallback_binary_changed",
+        )
+    ):
+        return True
+    for name in overrides:
+        if name == "gguf_variant":
+            resident = status.get("gguf_variant") if status.get("is_gguf") else None
+            # Casefold, not _normalized_variant, which strips separators: a mistyped Q4KM
+            # would read as equal here yet still really reload on the server. The preload
+            # gate below already compares this way, and the two have to agree.
+            if (
+                not resident
+                or str(resident).strip().lower() != str(load.gguf_variant).strip().lower()
+            ):
+                return True
+        elif name == "max_seq_length":
+            # Requested, not resolved: llama.cpp clamps n_ctx at fit time.
+            resident = status.get("requested_context_length")
+            if resident is None or int(resident) != int(load.max_seq_length):
+                return True
+        elif name == "load_in_4bit":
+            # GGUF has no 4-bit setting and reports null, which would read as "differs"
+            # and warn about an unload the server is not going to perform.
+            if status.get("is_gguf"):
+                continue
+            resident = status.get("load_in_4bit")
+            if resident is None or bool(resident) != bool(load.load_in_4bit):
+                return True
+        elif name == "tensor_parallel":
+            # llama.cpp only. The standard load never forwards it, so a restart would
+            # apply nothing.
+            if not status.get("is_gguf"):
+                continue
+            # The architecture gate can normalize a tensor request to layer mode and say
+            # so. Asking for it AGAIN is the request already applied, not a difference,
+            # and the backend dedupes exactly this state. Asking to turn it OFF is the
+            # opposite: the backend keeps the tensor intent behind that fallback and does
+            # not read a bare false as an explicit drop (the UI sends false routinely), so
+            # only a real reload can clear it.
+            if status.get("tensor_parallel_dropped_by_arch_gate"):
+                if load.tensor_parallel:
+                    continue
+                return True
+            if bool(status.get("tensor_parallel")) != bool(load.tensor_parallel):
+                return True
+        elif name == "gpu_memory_mode":
+            if not status.get("is_gguf"):
+                continue
+            # A paravirtual host pins every placement request to the same runtime, and a
+            # CPU fallback is preserved across reloads by _preserve_cpu_fallback_intent, so
+            # in both cases the raw mode cannot tell two requests apart. resident-config-
+            # match.ts skips placement on exactly these two for the same reason.
+            if status.get("gpu_placement_paravirtual") or status.get("cpu_fallback_reason"):
+                continue
+            if status.get("gpu_memory_mode") != load.gpu_memory_mode:
+                return True
+            # Manual to manual is a real no-op: the payload only sends the implicit
+            # gpu_layers = -1 when switching INTO manual, so a resident already pinned to
+            # a layer count keeps it through the round-trip and nothing changes.
+    return False
+
+
 def _resolve_model(
     base: str,
     key: str,
     requested: Optional[str],
     load: LoadOptions = LoadOptions(),
     preload_check = None,
+    infer_resident: bool = True,
 ) -> dict:
     models = _loaded_models(base, key)
     load_requested = False
@@ -1663,13 +1930,22 @@ def _resolve_model(
     # /api/inference/load: the server's already-loaded dedup answers "already_loaded"
     # without reloading when the variant AND settings match, so a second session running
     # the same command still attaches without evicting the first.
-    load_has_overrides = bool(
-        load.gguf_variant
-        or load.max_seq_length
-        or not load.load_in_4bit
-        or load.tensor_parallel
-        or load.gpu_memory_mode is not None
-    )
+    overrides = load.overrides()
+    load_has_overrides = bool(overrides)
+    # Inferred-attach path only: `requested` becomes the resident's internal identifier
+    # (possibly a server path), so this is the id to show and to match on.
+    attach_public_id = None
+    status_snapshot = None
+    # Whether the inferred settings can restart the resident. Computed once: the preload
+    # gate, the warning, the consent refusal and force_reload must all agree, and asking
+    # twice against a snapshot taken at different times is how they drift apart.
+    inferred_differs = False
+    if requested is None and load_has_overrides and infer_resident:
+        status_snapshot = _inference_status(base, key)
+        requested, attach_public_id = _resident_load_target(models, status_snapshot, allow_casefold)
+        inferred_differs = _load_settings_differ(status_snapshot, load, overrides)
+        # preload_check deliberately survives: it is the only gate before the load evicts
+        # the shared model (_require_gguf_for_codex runs after _connect returns).
     # /v1/models also lists cached-but-unloaded catalog entries (loaded == False);
     # matching one would skip /api/inference/load and leave the agent pointed at a
     # model that is not resident, so only attach to an entry that is actually loaded.
@@ -1692,17 +1968,27 @@ def _resolve_model(
         # resident model already satisfies (a path-loaded GGUF shown as a bare basename
         # can collide with a non-GGUF unsloth/<name>).
         active = next((m for m in models if m.get("loaded") is not False), None)
+        # On the inferred path the target came from status, so catalog order can name a
+        # different entry (a speech sidecar listed first). Using it would make the
+        # survivor probe below report the wrong model as still serving.
+        if attach_public_id is not None:
+            active = next(
+                (
+                    m
+                    for m in models
+                    if _model_id_matches(
+                        m.get("id"), attach_public_id, allow_casefold = allow_casefold
+                    )
+                    and m.get("loaded") is not False
+                ),
+                None,
+            ) or {"id": attach_public_id}
         if preload_check is not None:
             # An explicit knob forces match to None so the server's disk-free dedupe can
             # answer already_loaded; gating it would reject a second session for the model
             # already serving, whose file may have moved. Only the quant is checked below:
             # any other run knob changes the runtime intent, a real reload nothing dedupes.
-            other_overrides = bool(
-                load.max_seq_length
-                or not load.load_in_4bit
-                or load.tensor_parallel
-                or load.gpu_memory_mode is not None
-            )
+            other_overrides = bool(overrides - {"gguf_variant"})
             # /v1/models shows a path-loaded GGUF under its basename, so match that spelling
             # too, or a second session reruns the gate.
             wanted_ids = {requested, _public_model_id(requested)} - {None}
@@ -1714,6 +2000,11 @@ def _resolve_model(
                 )
                 for m in models
             )
+            # A proven no-op evicts nothing, so the gate has nothing to protect, and
+            # running it would reject an attach the disk-free already-loaded path can
+            # still serve (a direct .gguf the server has mapped but that has since moved).
+            if attach_public_id is not None and not inferred_differs:
+                resident_serves_request = True
             # /v1/models shows only the basename, so confirm a path request against the
             # identifier the server loaded -- else /new/foo.gguf reads as resident because
             # /old/foo.gguf is.
@@ -1749,7 +2040,14 @@ def _resolve_model(
                 preload_check(base, key, requested, load.gguf_variant)
         active_id = active.get("id") if active else None
         announced_switch = False
-        if active_id and not _model_id_matches(
+        if attach_public_id is not None:
+            # An inferred attach never switches model, so the comparison below would
+            # misreport a switch and print the server's path.
+            if inferred_differs:
+                typer.echo(f"Applying new load settings to {attach_public_id}.")
+                typer.echo("This unloads the current model for every attached session.")
+                announced_switch = True
+        elif active_id and not _model_id_matches(
             active_id,
             requested,
             allow_casefold = allow_casefold,
@@ -1773,20 +2071,83 @@ def _resolve_model(
                 typer.echo("This unloads the current model for every attached session.")
                 announced_switch = True
         # Mirror `unsloth run`'s load knobs; keep the default payload as just
-        # model_path so a bare `--model` load is unchanged.
+        # model_path so a bare `--model` load is unchanged. Membership decides, not
+        # truthiness: a reset like --context-length 0 equals the default yet must be sent.
         payload = {"model_path": requested}
-        if load.gguf_variant:
-            payload["gguf_variant"] = load.gguf_variant
-        if load.max_seq_length:
+        if "gguf_variant" in overrides and load.gguf_variant:
+            direct_file = attach_public_id is not None and str(requested).lower().endswith(".gguf")
+            if direct_file:
+                # from_identifier consults a variant only for a DIRECTORY, so a DIFFERENT
+                # quant cannot be selected: posting one would reload the very same file and
+                # label it with a quant that does not describe its weights. Restating the
+                # one already running asks for no change, so drop the inapplicable field
+                # and let the other overrides through.
+                resident_variant = status_snapshot.get("gguf_variant")
+                same = (
+                    bool(resident_variant)
+                    and str(resident_variant).strip().lower()
+                    == str(load.gguf_variant).strip().lower()
+                )
+                if not same:
+                    _fail(
+                        f"'{attach_public_id}' was loaded from a single .gguf file, so "
+                        f"--gguf-variant {load.gguf_variant} cannot select a different quant. "
+                        "Re-run with --model naming the repository to switch quants."
+                    )
+            else:
+                payload["gguf_variant"] = load.gguf_variant
+        elif attach_public_id is not None and status_snapshot.get("is_gguf"):
+            # Re-send the running quant: a repo id carries none, so from_identifier would
+            # auto-pick (_GGUF_QUANT_PREFERENCE, UD-Q4_K_XL first) and changing only the
+            # context would evict a chosen Q8_0 to download a different quant. Skip a
+            # .gguf path, which loads as itself -- the server gates on the same suffix.
+            resident_variant = status_snapshot.get("gguf_variant")
+            if resident_variant and not str(requested).lower().endswith(".gguf"):
+                payload["gguf_variant"] = resident_variant
+        if "max_seq_length" in overrides:
             payload["max_seq_length"] = load.max_seq_length
-        if not load.load_in_4bit:
-            payload["load_in_4bit"] = False
-        if load.tensor_parallel:
-            payload["tensor_parallel"] = True
-        if load.gpu_memory_mode is not None:
+        if "load_in_4bit" in overrides:
+            payload["load_in_4bit"] = load.load_in_4bit
+        if "tensor_parallel" in overrides:
+            payload["tensor_parallel"] = load.tensor_parallel
+        if "gpu_memory_mode" in overrides and load.gpu_memory_mode is not None:
             payload["gpu_memory_mode"] = load.gpu_memory_mode
-            if load.gpu_memory_mode == "manual":
+            # -1 means "pick the layers", which is right when the user is switching INTO
+            # manual, but on an inferred attach to a resident already in manual it would
+            # throw away the layer count it was pinned to. Leave it for the round-trip.
+            already_manual = (
+                attach_public_id is not None and status_snapshot.get("gpu_memory_mode") == "manual"
+            )
+            if load.gpu_memory_mode == "manual" and not already_manual:
                 payload["gpu_layers"] = -1
+        if (
+            attach_public_id is not None
+            and inferred_differs
+            and status_snapshot.get("requires_trust_remote_code")
+        ):
+            # The reload cannot reproduce the consent: the payload has no
+            # trust_remote_code and no approval fingerprint, and the standard backend
+            # tears the worker down BEFORE the replacement is accepted, so a rejected
+            # custom-code load leaves nothing resident. Refuse while the model is still
+            # serving; naming it with --model goes through the normal consent path.
+            _fail(
+                f"'{attach_public_id}' was loaded with trust_remote_code, which an attach "
+                "cannot re-authorize. Re-run with --model naming it to apply these settings."
+            )
+        if attach_public_id is not None:
+            # An inferred reload is a full load, not a PATCH: _gguf_request_intent copies
+            # every defaulted LoadRequest field into the new intent, so a knob we leave out
+            # is reset rather than kept. Carry the resident's own values for the ones the
+            # user did not name, or changing the context alone would drop their KV dtype,
+            # slot count, batch sizes and GPU placement.
+            payload.update(_resident_runtime_payload(status_snapshot, payload))
+            # The server cannot tell an explicit `--context-length 0` reset from the 0 that
+            # every UI load sends, so it treats 0 as "no preference" and would answer
+            # already_loaded. Say outright that this one is a reload, but only when status
+            # PROVED a difference: on an older server _load_settings_differ cannot tell,
+            # and forcing there would evict on every attach.
+            if status_snapshot and inferred_differs:
+                payload["force_reload"] = True
         try:
             loaded = _load_model_with_progress(base, key, requested, load, payload)
         except Exception:
@@ -1797,12 +2158,16 @@ def _resolve_model(
                 typer.echo(f"Nothing was unloaded; {active_id} is still serving.", err = True)
             raise
         if loaded.get("status") == "already_loaded":
-            typer.echo(f"Reusing loaded model: {_display_model_spec(requested, load.gguf_variant)}")
+            # Show the public id on the inferred path; `requested` may be a server path.
+            shown = attach_public_id or requested
+            typer.echo(f"Reusing loaded model: {_display_model_spec(shown, load.gguf_variant)}")
         # Unsloth registers the model under a canonical id (resolved identifier,
         # casing) that /v1/models echoes but which may differ from the path we
         # passed; match on the id the load reports so we don't silently fall
         # through to models[0] and connect to a different loaded model.
-        wanted = {requested, _public_model_id(requested)} - {None}
+        # attach_public_id: our _public_model_id only strips a basename, while the
+        # server also maps an HF cache path to its repo id, so the two can disagree.
+        wanted = {requested, _public_model_id(requested), attach_public_id} - {None}
         if isinstance(loaded, dict):
             wanted |= {loaded.get("model"), loaded.get("display_name")} - {None}
         models = _loaded_models(base, key)
@@ -3868,6 +4233,9 @@ def _connect(
             None if server is not None else model,
             load,
             preload_check = None if server is not None else preload_check,
+            # That server was started FROM these knobs, so inferring a target here would
+            # reload what was just loaded.
+            infer_resident = server is None,
         )
     except BaseException:
         _shutdown_auto_served()
@@ -4535,7 +4903,9 @@ def claude(
     base, key, entry = _connect(
         api_key,
         model,
-        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode),
+        _load_options(
+            ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode
+        ),
         serve = serve,
         launch = launch,
         server_options = ServerOptions(
@@ -4656,7 +5026,9 @@ def codex(
     base, key, entry = _connect(
         api_key,
         model,
-        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode),
+        _load_options(
+            ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode
+        ),
         serve = serve,
         launch = launch,
         preload_check = _attach_gguf_check_for_codex,
@@ -4766,7 +5138,9 @@ def openclaw(
     base, key, entry = _connect(
         api_key,
         model,
-        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode),
+        _load_options(
+            ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode
+        ),
         serve = serve,
         launch = launch,
         server_options = ServerOptions(
@@ -4856,7 +5230,9 @@ def opencode(
     base, key, entry = _connect(
         api_key,
         model,
-        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode),
+        _load_options(
+            ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode
+        ),
         serve = serve,
         launch = launch,
         server_options = ServerOptions(
@@ -5041,7 +5417,9 @@ def hermes(
     base, key, entry = _connect(
         api_key,
         model,
-        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode),
+        _load_options(
+            ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode
+        ),
         serve = serve,
         launch = launch,
         server_options = ServerOptions(
@@ -5106,7 +5484,9 @@ def pi(
     base, key, entry = _connect(
         api_key,
         model,
-        LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode),
+        _load_options(
+            ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode
+        ),
         serve = serve,
         launch = launch,
         server_options = ServerOptions(
