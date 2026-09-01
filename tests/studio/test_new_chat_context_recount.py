@@ -586,9 +586,7 @@ def _harness_source() -> str:
     )
     resident = HARNESS_RESIDENT.replace("__FAST_PATH__", _resident_fast_path())
     history = HARNESS_HISTORY.replace("__RESTORE__", _history_usage_restore())
-    return (
-        prelude + _message_order_body() + _refresh_module_body() + render + resident + history
-    )
+    return prelude + _message_order_body() + _refresh_module_body() + render + resident + history
 
 
 def _run(script: str) -> dict:
