@@ -40,7 +40,7 @@ function unescapeMarkers(text: string): string {
  * marker recording where each non-editable part sat among the prose.
  */
 export function extractTaggedText(content: any): string {
-  if (typeof content === 'string') return content;
+  if (typeof content === 'string') return escapeMarkers(content);
   if (!Array.isArray(content)) return "";
 
   const open = "\u003C"; // <

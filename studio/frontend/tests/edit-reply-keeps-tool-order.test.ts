@@ -392,6 +392,18 @@ test("a raw string part is prose, and does not consume a card's slot", async () 
   ]);
 });
 
+test("a reply stored as one plain string round-trips, markers and all", async () => {
+  // Legacy and imported rows can hold the whole reply as a top-level string, which
+  // takes its own path out of extractTaggedText and has to be escaped there too.
+  const content = "Use <TOOL 1: web_search> literally" as unknown as Part[];
+
+  const { result } = await save(content);
+
+  assert.deepEqual(result, [
+    { type: "text", text: "Use <TOOL 1: web_search> literally" },
+  ]);
+});
+
 test("a code block quoting the marker syntax survives a no-op save", async () => {
   const content = [
     { type: "text", text: "```xml\n<TOOL>read_file</TOOL>\n```" },
