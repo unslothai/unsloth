@@ -1310,8 +1310,12 @@ class InferenceBackend:
         # prompts from the turn that asked the question.
         from core.inference.chat_template_helpers import (
             last_user_text,
+            messages_have_tool_history,
+            messages_with_attached_image,
+            render_advertising_tools,
             render_prompt_with_boundary,
             trailing_assistant_text,
+            vlm_prompt_issue,
         )
 
         user_message = last_user_text(messages)
@@ -1322,82 +1326,157 @@ class InferenceBackend:
 
         # Prepare vision messages
         if image:
-            user_msg = {
-                "role": "user",
-                "content": [
-                    {"type": "image"},
-                    {"type": "text", "text": user_message},
-                ],
-            }
-            if system_prompt:
-                vision_messages = [
-                    {
-                        "role": "system",
-                        "content": [{"type": "text", "text": system_prompt}],
-                    },
-                    user_msg,
-                ]
-            else:
-                vision_messages = [user_msg]
-
-            # Resume the partial answer instead of opening a new turn.
-            if continue_partial:
-                vision_messages.append(
-                    {
-                        "role": "assistant",
-                        "content": [{"type": "text", "text": continue_partial}],
-                    }
+            # Only a turn that carries tools or replays tool history needs the whole
+            # conversation. Without either, the render keeps the collapse to the system
+            # prompt plus the newest user text that this path has always used. Sending every
+            # prior turn instead is a large prompt-token increase on an ordinary multi-turn
+            # vision chat, nothing on this path truncates it, and that is a behaviour change
+            # for every shipped client rather than part of the client-tools fix (#10092).
+            # The history the collapse loses is a real bug, and a separate one.
+            has_tool_history = messages_have_tool_history(messages)
+            if bool(tools) or has_tool_history:
+                # Keep the whole conversation and attach the image to the turn it belongs to,
+                # the way the MLX backend does (generate_chat_response). Rebuilding from the
+                # newest user TEXT dropped the system instruction the client-tools route folds
+                # into messages[0] and the tool history a second-turn OpenAI loop replays,
+                # neither of which the model can answer the request without (#10092).
+                vision_messages = messages_with_attached_image(
+                    messages,
+                    system_prompt = system_prompt,
+                    fallback_user_text = user_message,
+                    structured_system_content = True,
                 )
 
-            # Processor's own template skips the choke point (#7066). Rebind user_msg
-            # so the no-system retry keeps the copy. Profiled from the processor, so a
-            # vision request is gated on the loaded model exactly as the text path is.
-            from core.inference.chat_template_helpers import markup_for_tokenizer
+                def _render_vision(catalog):
+                    # The shared choke point, as _generate_vlm uses: it sweeps the catalog and
+                    # the messages for control markup in the one correct order (#7066), and
+                    # peels a kwarg the processor rejects rather than failing the request.
+                    nonlocal vision_messages
+                    try:
+                        return self._apply_chat_template_for_generation(
+                            processor,
+                            vision_messages,
+                            tools = catalog,
+                            continue_final_message = bool(continue_partial),
+                        )
+                    except Exception as e:
+                        # Dropping the system turn drops the caller's instructions, so it stays
+                        # where that is the only thing left to try: a processor that cannot
+                        # render a system role at all. With tool history in the conversation it
+                        # would also hide a tool-rendering failure behind a prompt the model
+                        # cannot answer from, which is the failure this path used to mask by
+                        # catching every exception (#10092).
+                        without_system = [
+                            m
+                            for m in vision_messages
+                            if not (isinstance(m, dict) and m.get("role") == "system")
+                        ]
+                        if has_tool_history or len(without_system) == len(vision_messages):
+                            raise
+                        logger.warning(
+                            f"Vision processor for '{self.active_model_name}' may not support "
+                            f"system messages; retrying without. Original error: {e}"
+                        )
+                        # Kept only once the retry has actually rendered: a second failure
+                        # re-raises with the conversation the caller sent still intact.
+                        rendered = self._apply_chat_template_for_generation(
+                            processor,
+                            without_system,
+                            tools = catalog,
+                            continue_final_message = bool(continue_partial),
+                        )
+                        vision_messages = without_system
+                        return rendered
 
-            vision_messages = neutralize_control_markup_in_messages(
-                vision_messages, None, markup_for_tokenizer(processor)
-            )
-            user_msg = next(m for m in reversed(vision_messages) if m.get("role") == "user")
+                # Whether the catalog reaches the prompt is decided by comparing the two
+                # renders, as the text path decides it (render_with_native_template_fallback):
+                # a template body that merely names the ``tools`` variable can still drop the
+                # schema, and a processor taking tools= through **kwargs can swallow it.
+                input_text, tools_advertised = render_advertising_tools(_render_vision, tools)
 
-            if any(
-                isinstance(m, dict)
-                and (m.get("role") == "tool" or m.get("tool_calls") or m.get("tool_call_id"))
-                for m in messages
-            ):
-                raise RuntimeError(
-                    "This vision request cannot be rendered without dropping tool-call history."
-                )
-
-            if tools:
-                from core.inference.chat_template_helpers import _renders_tool_schema
-                if not _renders_tool_schema(processor, None, tools):
+                # A prompt the template did not understand is not a prompt the model can
+                # answer from, and _generate_vlm already refuses both shapes.
+                prompt_issue = vlm_prompt_issue(input_text, vision_messages)
+                if prompt_issue and has_tool_history:
                     raise RuntimeError(
-                        "This vision chat template cannot render an image alongside the "
-                        "requested tools, and the request cannot be served without "
-                        "dropping them."
+                        f"Vision chat template returned {prompt_issue} and cannot be recovered "
+                        "without dropping tool-call history."
                     )
+                if prompt_issue:
+                    raise RuntimeError(f"Vision chat template returned {prompt_issue}.")
 
-            def _render_vision(msgs):
-                # Partial taken from the swept msgs, not the raw pre-sweep capture.
-                return render_prompt_with_boundary(
-                    processor,
-                    msgs,
-                    continue_final_message = bool(continue_partial),
-                    tools = tools,
-                )
-
-            try:
-                input_text = _render_vision(vision_messages)
-            except Exception as e:
-                if system_prompt:
+                if tools and not tools_advertised:
+                    # The turn is still served. There is no native-template fallback behind a
+                    # processor, since the native template of a text model cannot place the
+                    # image, and refusing would turn an answerable image question into an
+                    # error. Nothing is promoted on the strength of a catalog the prompt never
+                    # carried either: the route profiles this same processor through
+                    # renderable_tool_catalog, which reports an empty advertised catalog and so
+                    # switches healing off (#7066).
                     logger.warning(
-                        f"Vision processor for '{self.active_model_name}' may not support "
-                        f"system messages; retrying without. Original error: {e}"
+                        "Vision chat template for '%s' rendered the same prompt with and "
+                        "without the requested tools; serving the turn without the catalog.",
+                        self.active_model_name,
                     )
-                    vision_messages = [m for m in vision_messages if m.get("role") != "system"]
-                    input_text = _render_vision(vision_messages)
+            else:
+                user_msg = {
+                    "role": "user",
+                    "content": [
+                        {"type": "image"},
+                        {"type": "text", "text": user_message},
+                    ],
+                }
+                if system_prompt:
+                    vision_messages = [
+                        {
+                            "role": "system",
+                            "content": [{"type": "text", "text": system_prompt}],
+                        },
+                        user_msg,
+                    ]
                 else:
-                    raise
+                    vision_messages = [user_msg]
+
+                # Resume the partial answer instead of opening a new turn.
+                if continue_partial:
+                    vision_messages.append(
+                        {
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": continue_partial}],
+                        }
+                    )
+
+                # Processor's own template skips the choke point (#7066). Rebind user_msg
+                # so the no-system retry keeps the copy. Profiled from the processor, so a
+                # vision request is gated on the loaded model exactly as the text path is.
+                from core.inference.chat_template_helpers import markup_for_tokenizer
+
+                vision_messages = neutralize_control_markup_in_messages(
+                    vision_messages, None, markup_for_tokenizer(processor)
+                )
+                user_msg = next(m for m in reversed(vision_messages) if m.get("role") == "user")
+
+                def _render_collapsed_vision(msgs):
+                    # Partial taken from the swept msgs, not the raw pre-sweep capture.
+                    return render_prompt_with_boundary(
+                        processor, msgs, continue_final_message = bool(continue_partial)
+                    )
+
+                try:
+                    input_text = _render_collapsed_vision(vision_messages)
+                except Exception as e:
+                    # The blanket retry is kept as it was. Nothing on this branch can hide a
+                    # tool-rendering failure behind it, since the branch is only taken when
+                    # the request has no catalog and no tool history to render.
+                    if system_prompt:
+                        logger.warning(
+                            f"Vision processor for '{self.active_model_name}' may not support "
+                            f"system messages; retrying without. Original error: {e}"
+                        )
+                        vision_messages = [m for m in vision_messages if m.get("role") != "system"]
+                        input_text = _render_collapsed_vision(vision_messages)
+                    else:
+                        raise
             inputs = processor(
                 image,
                 input_text,
@@ -1427,8 +1506,12 @@ class InferenceBackend:
                 protocol_source = processor,
                 # The text-only VLM fallback above did not render with the
                 # processor template, so its native markers do not describe
-                # this request's response protocol.
-                reasoning_channel_markers = detect_reasoning_channel_markers(processor)
+                # this request's response protocol. With *tools*, matching the
+                # render: a named template selects "tool_use" for a tool-calling
+                # turn, and profiling without them reads "default" instead.
+                reasoning_channel_markers = detect_reasoning_channel_markers(
+                    processor, tools = tools
+                )
                 if image
                 else None,
                 reasoning_channel_markers_resolved = True,
