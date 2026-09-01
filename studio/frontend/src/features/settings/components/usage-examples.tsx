@@ -13,12 +13,13 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
-import { publicModelId } from "@/features/hub";
 import {
   getInferenceStatus,
   isExternalModelId,
   useChatRuntimeStore,
 } from "@/features/chat";
+import { publicModelId } from "@/features/hub";
+import { isServedByLlamaCpp } from "@/features/model-picker";
 import { useT } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
@@ -599,13 +600,13 @@ export function UsageExamples({
   const base =
     useTunnel && cloudflareUrl ? cloudflareUrl : (serverUrl ?? origin);
   const localAgentDetection = canUseLocalAgentDetection(base);
-  // Three signals: a hub pick reports a variant, a drag-dropped file only a path token,
-  // and ggufContextLength is set only when /api/inference/status said is_gguf.
+  // isServedByLlamaCpp owns which store fields count; a context length is not among them,
+  // since MLX reports one too.
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const activeNativePathToken = useChatRuntimeStore(
     (s) => s.activeNativePathToken,
   );
-  const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
+  const loadedIsGguf = useChatRuntimeStore((s) => s.loadedIsGguf);
   // null when these fields do not describe the model the snippet names: before status
   // lands they all read like a non-GGUF model, and under an external selection
   // use-chat-model-runtime stops updating them while the snippet still follows /v1/models.
@@ -613,9 +614,12 @@ export function UsageExamples({
   const storeIsGguf: boolean | null =
     !activeCheckpoint || isExternalModelId(activeCheckpoint)
       ? null
-      : activeGgufVariant != null ||
-        activeNativePathToken != null ||
-        ggufContextLength != null;
+      : isServedByLlamaCpp({
+          loadedIsGguf,
+          activeGgufVariant,
+          activeNativePathToken,
+          checkpoint: activeCheckpoint,
+        });
 
   // Only the chat and hub pages mount useChatModelRuntime, and local checkpoints are not
   // persisted, so off those routes the store never answers and the server has to. Tags the

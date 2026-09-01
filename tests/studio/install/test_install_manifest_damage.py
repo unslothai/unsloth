@@ -686,8 +686,15 @@ def test_an_unimportable_helper_forces_the_dependency_pass(tmp_path, contents, e
     script_dir.mkdir()
     if contents is not None:
         (script_dir / "install_manifest.py").write_text(contents, encoding = "utf-8")
+    # -I -S so `script_dir` is the ONLY place install_manifest can come from. The probe
+    # imports it off sys.path, and an install_manifest reachable from site-packages or
+    # PYTHONPATH satisfies that import even when the directory under test is empty: the
+    # "absent" case then falls through to a real verify_install against whatever tree the
+    # runner happens to have, and answers about that instead. -I drops PYTHONPATH and the
+    # user site, -S drops site-packages. Neither is needed by the probe, whose only
+    # imports are os, sys and the file being tested.
     result = subprocess.run(
-        [sys.executable, "-c", _installer_helper_probe(), str(script_dir)],
+        [sys.executable, "-I", "-S", "-c", _installer_helper_probe(), str(script_dir)],
         capture_output = True,
     )
     assert result.returncode == expected

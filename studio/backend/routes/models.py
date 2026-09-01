@@ -2248,12 +2248,16 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
 
 
 def _get_max_position_embeddings(config) -> Optional[int]:
-    """Extract max_position_embeddings from a config, with text_config fallback."""
-    if hasattr(config, "max_position_embeddings"):
-        return config.max_position_embeddings
-    if hasattr(config, "text_config") and hasattr(config.text_config, "max_position_embeddings"):
-        return config.text_config.max_position_embeddings
-    return None
+    """The window this model was trained for, by the rule a load resolves it with.
+
+    Reading one field name showed a dash for a model spelling it another way -- Kimi
+    Linear carries model_max_length alone -- and a number as soon as it loaded.
+    """
+    from types import SimpleNamespace
+
+    from core.inference.mlx_inference import mlx_native_context_length
+
+    return mlx_native_context_length(SimpleNamespace(config = config))
 
 
 _MODEL_WEIGHT_EXTENSIONS = (".safetensors", ".bin", ".pt", ".pth", ".gguf")
