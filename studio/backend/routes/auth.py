@@ -32,7 +32,6 @@ from models.auth import (
     DesktopLoginRequest,
     CurrentUserResponse,
     ManagedUserListResponse,
-    ManagedUserResponse,
     RefreshTokenRequest,
 )
 from models.users import Token
