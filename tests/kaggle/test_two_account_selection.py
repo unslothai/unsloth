@@ -102,13 +102,13 @@ def test_only_the_gate_sees_both_accounts(path):
         if not tokens:
             continue
         if step.get("id") == "decide":
-            assert tokens == sorted(gate.DEFAULT_ACCOUNT_ENVS), (
-                f"the gate must weigh every account, got {tokens}"
-            )
+            assert tokens == sorted(
+                gate.DEFAULT_ACCOUNT_ENVS
+            ), f"the gate must weigh every account, got {tokens}"
         else:
-            assert tokens == ["KAGGLE_API_TOKEN"], (
-                f"{job_name}/{step_name} sees {tokens}; only the gate may see more than one"
-            )
+            assert tokens == [
+                "KAGGLE_API_TOKEN"
+            ], f"{job_name}/{step_name} sees {tokens}; only the gate may see more than one"
 
 
 @pytest.mark.parametrize("path", (NOTEBOOK_WF, STUDIO_WF), ids = ("notebook", "studio"))
@@ -135,9 +135,9 @@ def test_the_chosen_token_is_INDEXED_and_never_a_ternary(path):
             f"{job_name}/{step_name} selects its token with a ternary ({expr}), which "
             "silently falls through to the other account when the first secret is empty"
         )
-        assert "secrets[matrix." in expr, (
-            f"{job_name}/{step_name} does not index the secrets context: {expr}"
-        )
+        assert (
+            "secrets[matrix." in expr
+        ), f"{job_name}/{step_name} does not index the secrets context: {expr}"
 
 
 @pytest.mark.parametrize("path", (NOTEBOOK_WF, STUDIO_WF), ids = ("notebook", "studio"))
@@ -146,9 +146,9 @@ def test_no_token_is_ever_a_job_output(path):
     a place GitHub redacts by pattern rather than by promise."""
     for job_name, job in _wf(path)["jobs"].items():
         for key, value in (job.get("outputs") or {}).items():
-            assert "secrets." not in str(value) and "secrets[" not in str(value), (
-                f"{job_name}.outputs.{key} publishes a secret: {value}"
-            )
+            assert "secrets." not in str(value) and "secrets[" not in str(
+                value
+            ), f"{job_name}.outputs.{key} publishes a secret: {value}"
 
 
 # ----------------------------------------------------------- the concurrency
@@ -174,9 +174,9 @@ def test_the_concurrency_group_is_keyed_on_the_account(path, suffix):
     account_groups = [g for g in groups if g and suffix in g]
     assert account_groups, f"no per-account {suffix} group found in {path.name}"
     for group in account_groups:
-        assert "needs.gate.outputs.account" in group, (
-            f"{group!r} does not vary by account, so two accounts share one lock"
-        )
+        assert (
+            "needs.gate.outputs.account" in group
+        ), f"{group!r} does not vary by account, so two accounts share one lock"
 
 
 @pytest.mark.parametrize("path", (NOTEBOOK_WF, STUDIO_WF), ids = ("notebook", "studio"))
@@ -185,9 +185,9 @@ def test_the_gpu_job_takes_the_account_through_a_one_element_matrix(path):
         if job_name == "gate":
             continue
         matrix = (job.get("strategy") or {}).get("matrix")
-        assert matrix and "needs.gate.outputs.matrix" in str(matrix), (
-            f"{job_name} does not receive the gate's account matrix: {matrix!r}"
-        )
+        assert matrix and "needs.gate.outputs.matrix" in str(
+            matrix
+        ), f"{job_name} does not receive the gate's account matrix: {matrix!r}"
 
 
 @pytest.mark.parametrize("path", (NOTEBOOK_WF, STUDIO_WF), ids = ("notebook", "studio"))
@@ -203,9 +203,9 @@ def test_no_kaggle_username_is_hardcoded_on_the_launch_path(path):
         # To end of line, not the next token: the value is quoted, so `\S+`
         # captures `'${{` and reports a correct workflow as hardcoded.
         for match in re.findall(r"--user\s+(.+)", body):
-            assert "matrix.kaggle_user" in match, (
-                f"{job_name}/{step_name} pushes under a hardcoded owner {match!r}"
-            )
+            assert (
+                "matrix.kaggle_user" in match
+            ), f"{job_name}/{step_name} pushes under a hardcoded owner {match!r}"
 
 
 @pytest.mark.parametrize("path", (NOTEBOOK_WF, STUDIO_WF), ids = ("notebook", "studio"))
@@ -225,9 +225,9 @@ def test_the_recheck_can_actually_stop_the_push(path):
     launched = [s for _, _, s in steps if "launch.py" in (s.get("run") or "")]
     assert launched, f"{path.name} never launches"
     for step in launched:
-        assert "steps.recheck.outputs.should_run == 'true'" in (step.get("if") or ""), (
-            "the push does not depend on the recheck, so the recheck decides nothing"
-        )
+        assert "steps.recheck.outputs.should_run == 'true'" in (
+            step.get("if") or ""
+        ), "the push does not depend on the recheck, so the recheck decides nothing"
 
 
 # ------------------------------------------------------------------ the draw
@@ -282,9 +282,9 @@ def test_the_account_draw_is_salted_apart_from_the_sampling_draw():
     """
     source = (CI_DIR / "gate.py").read_text(encoding = "utf-8")
     picked = source.split("def weighted_pick", 1)[1].split("\ndef ", 1)[0]
-    assert 'sha256(("account:" + run_id)' in picked, (
-        "the account draw hashes the bare run id, which is what sampled_in hashes"
-    )
+    assert (
+        'sha256(("account:" + run_id)' in picked
+    ), "the account draw hashes the bare run id, which is what sampled_in hashes"
 
 
 def test_an_account_with_no_readable_quota_gets_no_weight_but_keeps_its_turn():
@@ -352,13 +352,13 @@ def test_a_sweep_leaves_the_other_account_s_kernels_filed(tmp_path, monkeypatch)
 
     launch.sweep_orphans("alice")
 
-    assert all("bob/" not in slug for slug in attempted), (
-        f"the sweep tried to delete another account's kernel: {attempted}"
-    )
+    assert all(
+        "bob/" not in slug for slug in attempted
+    ), f"the sweep tried to delete another account's kernel: {attempted}"
     left = {e["slug"] for e in json.loads(registry.read_text(encoding = "utf-8"))}
-    assert "bob/unsloth-t4-ci-bbbb" in left, (
-        "the other account's kernel was dropped from the registry, so nothing knows it exists"
-    )
+    assert (
+        "bob/unsloth-t4-ci-bbbb" in left
+    ), "the other account's kernel was dropped from the registry, so nothing knows it exists"
 
 
 class types_simple:  # noqa: N801 - a stand-in CompletedProcess
@@ -449,6 +449,6 @@ def test_neither_token_name_can_reach_the_kernel():
         encoding = "utf-8"
     )
     for name in gate.DEFAULT_ACCOUNT_ENVS:
-        assert f'"{name}"' in source, (
-            f"{name} is not in the credential-leak guard, so a kernel could carry it"
-        )
+        assert (
+            f'"{name}"' in source
+        ), f"{name} is not in the credential-leak guard, so a kernel could carry it"
