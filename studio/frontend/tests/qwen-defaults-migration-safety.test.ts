@@ -15,7 +15,11 @@ localStorageFake.set("unsloth_chat_settings_imported_to_studio_db", "true");
 register("./store-settings-resolver.mjs", import.meta.url);
 
 const { settingsHttp } = await import("./helpers/store-stubs/settings-http.ts");
-const { noteLoadedModelReasoningMode, useChatRuntimeStore } = await import(
+const {
+  awaitPendingQwenDefaultsMigration,
+  noteLoadedModelReasoningMode,
+  useChatRuntimeStore,
+} = await import(
   "../src/features/chat/stores/chat-runtime-store.ts"
 );
 
@@ -560,4 +564,63 @@ test("selecting an external Qwen migrates its dormant row", async () => {
   assert.equal(row.presencePenalty, 1.5);
   assert.equal(row.minP, 0);
   assert.equal(useChatRuntimeStore.getState().params.presencePenalty, 1.5);
+});
+
+test("the send barrier waits for a migration a model pick just scheduled", async () => {
+  const external = `external::openrouter::${encodeURIComponent(
+    "Qwen/Qwen3.6-9B",
+  )}`;
+  resetHttp({
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    inferenceParamsByModel: { [external]: LEGACY_SNAPSHOT },
+  });
+  useChatRuntimeStore.setState((state) => ({
+    params: { ...state.params, checkpoint: "unsloth/Llama-3.2-3B-Instruct-GGUF" },
+    paramsByModel: { [external]: { ...LEGACY_SNAPSHOT } },
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    rememberParamsPerModel: true,
+    reasoningAlwaysOn: false,
+    reasoningEnabled: true,
+    supportsReasoning: true,
+    settingsHydrated: true,
+  }));
+
+  useChatRuntimeStore.getState().setCheckpoint(external, null);
+  // What the run does before sending. No sleep: the point is that this alone
+  // is enough, since the row is still legacy the microtask before it. Raced
+  // against a deadline so a regression fails here instead of hanging CI.
+  const settled = await Promise.race([
+    awaitPendingQwenDefaultsMigration().then(() => "settled"),
+    new Promise((resolve) => setTimeout(() => resolve("timeout"), 5000)),
+  ]);
+  assert.equal(settled, "settled", "the barrier never released");
+
+  assert.equal(useChatRuntimeStore.getState().params.presencePenalty, 1.5);
+  assert.equal(serverRow(external).presencePenalty, 1.5);
+});
+
+test("an edit racing the conditional write does not strand local on legacy", async () => {
+  resetHttp({ ...LEGACY_SETTINGS });
+  // The user moves a control after the confirming GET, while the write is out.
+  settingsHttp.beforeConditionalApply = () => {
+    useChatRuntimeStore.getState().setActivePresetSource("modified");
+  };
+  seedActiveQwen();
+
+  const active = useChatRuntimeStore.getState();
+  active.setParams(
+    { ...active.params, minP: 0, presencePenalty: 1.5 },
+    { fromModelDefaults: true },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 60));
+
+  // The server took the migration, so the tab must not keep generating from the
+  // values it no longer holds.
+  assert.equal(serverRow().presencePenalty, 1.5);
+  const after = useChatRuntimeStore.getState();
+  assert.equal(after.activePresetSource, "modified");
+  assert.equal(after.params.presencePenalty, 1.5);
+  assert.equal(after.params.minP, 0);
 });

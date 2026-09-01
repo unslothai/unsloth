@@ -388,3 +388,27 @@ test("a Windows path still folds case", () => {
 
   assert.deepEqual(migrated.migratedModelIds, [active]);
 });
+
+test("filename and tag delimiters end the family segment", () => {
+  for (const id of [
+    "/models/Qwen3.8.gguf",
+    "qwen3.8:27b",
+    "C:\\models\\Qwen3.6.gguf",
+  ]) {
+    assert.equal(isPresenceBumpQwen(id), true, id);
+  }
+  // The future-version and parameter-count guards still hold.
+  for (const id of ["qwen3.80-27b", "qwen3.8b", "qwen3.85-27b"]) {
+    assert.equal(isPresenceBumpQwen(id), false, id);
+  }
+});
+
+test("external model keys are matched exactly, not normalized", () => {
+  const active = `external::vendor::${encodeURIComponent("Vendor/Qwen3.8-27B")}`;
+  const other = `external::vendor::${encodeURIComponent("vendor/qwen3.8-27b")}`;
+  const migrated = migrateLegacyQwenDefaults(settingsFor(other), active, true);
+
+  // Provider-qualified ids are opaque, so the other row is a different model.
+  assert.deepEqual(migrated.migratedModelIds, []);
+  assert.equal(migrated.patch, null);
+});

@@ -3,6 +3,7 @@
 
 import type { PersistedChatSettings } from "../api/chat-settings-api";
 import type { PersistedInferenceParams } from "../types/runtime";
+import { isExternalModelId } from "../external-providers";
 import { normalizeModelIdentity } from "../../hub/lib/model-identity";
 import { resolveQwenThinkingParams } from "./qwen-sampling-table";
 
@@ -137,12 +138,20 @@ function migrateStoredModelDefaults(
   // normalizeModelIdentity, not toLowerCase: it folds case for repository ids
   // and case-insensitive path forms while preserving it for POSIX paths, which
   // can name two different files differing only by case.
+  // An external id is provider-qualified and opaque, so its case is the
+  // provider's business, not ours. It is also always built by
+  // buildExternalModelId, so it has no legacy spellings to reconcile.
   const activeIdentity = normalizeModelIdentity(activeCheckpoint);
+  const activeIsExternal = isExternalModelId(activeCheckpoint);
   const activeStoredId =
     storedEntries.find(([modelId]) => modelId === activeCheckpoint)?.[0] ??
-    storedEntries.find(
-      ([modelId]) => normalizeModelIdentity(modelId) === activeIdentity,
-    )?.[0];
+    (activeIsExternal
+      ? undefined
+      : storedEntries.find(
+          ([modelId]) =>
+            !isExternalModelId(modelId) &&
+            normalizeModelIdentity(modelId) === activeIdentity,
+        )?.[0]);
   for (const [modelId, entry] of storedEntries) {
     const isActiveCheckpoint = modelId === activeStoredId;
     if (

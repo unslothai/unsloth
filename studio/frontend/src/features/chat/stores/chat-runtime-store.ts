@@ -4024,6 +4024,58 @@ function applyLegacyQwenDefaultsAfterPresetChange(
   });
 }
 
+/**
+ * Bring local params back in line after a migration the server accepted while a
+ * local edit was in flight.
+ *
+ * The edit flips provenance to "modified", so the ordinary apply refuses and
+ * the tab keeps generating from values the server no longer holds. Only the
+ * fields the user did not touch are adopted, which is what the per-field
+ * mutation versions captured before the write identify.
+ */
+function adoptMigratedFieldsAfterLocalEdit(
+  patch: PersistedChatSettings,
+  checkpoint: string,
+  versionsBefore: Record<PersistedInferenceParamKey, number>,
+): void {
+  const migratedRow =
+    patch.inferenceParamsByModel?.[checkpoint] ?? patch.inferenceParams;
+  if (migratedRow === undefined) {
+    return;
+  }
+  useChatRuntimeStore.setState((state) => {
+    const nextParams = { ...state.params };
+    let changed = false;
+    for (const [key, value] of Object.entries(migratedRow)) {
+      const field = key as PersistedInferenceParamKey;
+      if (
+        versionsBefore[field] === undefined ||
+        inferenceParamMutationVersions[field] !== versionsBefore[field] ||
+        nextParams[field] === value
+      ) {
+        continue;
+      }
+      (nextParams as Record<string, unknown>)[field] = value;
+      changed = true;
+    }
+    if (!changed) {
+      return state;
+    }
+    const storedRow = state.paramsByModel[checkpoint];
+    return {
+      params: nextParams,
+      ...(storedRow
+        ? {
+            paramsByModel: {
+              ...state.paramsByModel,
+              [checkpoint]: { ...storedRow, ...migratedRow },
+            },
+          }
+        : {}),
+    };
+  });
+}
+
 async function retryLegacyQwenDefaultsAfterPresetChange(
   ownedGlobalCheckpoint: string | null,
   migrateOwnedGlobalAlongsideModelMemory: boolean,
@@ -4072,6 +4124,10 @@ async function retryLegacyQwenDefaultsAfterPresetChange(
       migrateOwnedGlobalAlongsideModelMemory,
     );
     if (!migration.patch) return;
+    // Captured before the write: an edit landing while it is in flight is the
+    // one case where the server takes the migration and local refuses it.
+    const presetSourceBeforeWrite = activePresetSourceMutationVersion;
+    const paramVersionsBeforeWrite = { ...inferenceParamMutationVersions };
     const persisted = await savePersistedChatSettingsPatchIfCurrent(
       confirmed,
       migration.patch,
@@ -4094,14 +4150,35 @@ async function retryLegacyQwenDefaultsAfterPresetChange(
         checkpoint,
       )
     ) {
-      applyLegacyQwenDefaultsAfterPresetChange(
-        ownedGlobalCheckpoint,
-        migrateOwnedGlobalAlongsideModelMemory,
-      );
+      if (activePresetSourceMutationVersion === presetSourceBeforeWrite) {
+        applyLegacyQwenDefaultsAfterPresetChange(
+          ownedGlobalCheckpoint,
+          migrateOwnedGlobalAlongsideModelMemory,
+        );
+      } else if (migration.patch) {
+        adoptMigratedFieldsAfterLocalEdit(
+          migration.patch,
+          checkpoint,
+          paramVersionsBeforeWrite,
+        );
+      }
     }
   } catch {
     warnSettingsPersistenceFailure();
   }
+}
+
+let qwenMigrationInFlight: Promise<void> | null = null;
+
+/**
+ * Settles once a scheduled migration has finished deciding and persisting.
+ *
+ * The send path joins this so a prompt sent right after picking a Qwen with a
+ * dormant legacy row does not generate from the values getReplayedParams just
+ * put on screen. Resolves immediately when nothing is scheduled.
+ */
+export function awaitPendingQwenDefaultsMigration(): Promise<void> {
+  return qwenMigrationInFlight ?? Promise.resolve();
 }
 
 let qwenDefaultsRetryScheduled = false;
@@ -4132,6 +4209,16 @@ function scheduleLegacyQwenDefaultsRetry(
     return;
   }
   qwenDefaultsRetryScheduled = true;
+  // Published so the send path can join it. The promise exists from scheduling
+  // time, not from when the microtask runs, or a send landing in between would
+  // find nothing to wait for and generate from the row just replayed.
+  let settleMigration: () => void = () => undefined;
+  qwenMigrationInFlight = new Promise<void>((resolve) => {
+    settleMigration = () => {
+      qwenMigrationInFlight = null;
+      resolve();
+    };
+  });
   queueMicrotask(() => {
     const scheduledOwnedGlobalCheckpoint =
       qwenDefaultsRetryOwnedGlobalCheckpointConflicted
@@ -4148,6 +4235,7 @@ function scheduleLegacyQwenDefaultsRetry(
       !state.settingsHydrated ||
       state.activePresetSource !== "builtin-default"
     ) {
+      settleMigration();
       return;
     }
     const localSettings = localQwenMigrationSettings(state);
@@ -4169,12 +4257,13 @@ function scheduleLegacyQwenDefaultsRetry(
     const hasOwnedGlobalCandidate =
       includeOwnedGlobal && isPresenceBumpQwen(state.params.checkpoint);
     if (!hasLocalCandidate && !hasOwnedGlobalCandidate) {
+      settleMigration();
       return;
     }
     void retryLegacyQwenDefaultsAfterPresetChange(
       scheduledOwnedGlobalCheckpoint,
       migrateScheduledOwnedGlobalAlongsideModelMemory,
-    );
+    ).finally(settleMigration);
   });
 }
 

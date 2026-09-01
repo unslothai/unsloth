@@ -22,9 +22,10 @@ export type QwenThinkingParams = {
 
 // Boundary-anchored, not a substring: "Qwen3.80" and "Qwen3.8B" are a future
 // family and a parameter count, and a substring test would give both the
-// presence bump. Real ids still match, since a family segment always ends the
-// string or runs into -, _, / or \.
-const PRESENCE_BUMP_QWEN = /(?:^|[^a-z0-9])qwen3\.(?:5|6|8)(?:$|[-_/\\])/;
+// presence bump. The trailing set covers every delimiter a real id ends the
+// family on: path separators, a "-"/"_" in the name, the "." of a .gguf
+// filename, and the ":" of a model tag such as qwen3.8:27b.
+const PRESENCE_BUMP_QWEN = /(?:^|[^a-z0-9])qwen3\.(?:5|6|8)(?:$|[-_/\\.:])/;
 
 const OLLAMA_MANIFEST_REF_PREFIX = "ollama-manifest:";
 
