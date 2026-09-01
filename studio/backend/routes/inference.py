@@ -22734,6 +22734,14 @@ async def produce_openai_chat_completions(
     _sf_chat_targets = (
         (_sf_mlx_target,) if _sf_hf_target is _sf_mlx_target else (_sf_mlx_target, _sf_hf_target)
     )
+    if image is not None and _sf_processor is not None:
+        # An image turn renders through the PROCESSOR on both backends
+        # (_generate_vision_response, _generate_vlm), so the nested text tokenizer never
+        # selects a template here. Intersecting with it anyway empties the catalog whenever
+        # that tokenizer carries an explicit non-tool template, and the healer then relays a
+        # real tool call as prose. The two-target intersection above is for the TEXT turn on
+        # a vision model, where the backends genuinely disagree about the render target.
+        _sf_chat_targets = (_sf_processor,)
     _sf_healing_tools = (
         # Safe under EVERY template this turn could select: when the active one drops the
         # schema the render falls back to the native template, whose profile can drop a tool

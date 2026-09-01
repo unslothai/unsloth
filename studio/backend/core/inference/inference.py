@@ -1334,7 +1334,18 @@ class InferenceBackend:
             # for every shipped client rather than part of the client-tools fix (#10092).
             # The history the collapse loses is a real bug, and a separate one.
             has_tool_history = messages_have_tool_history(messages)
-            if bool(tools) or has_tool_history:
+            # A system turn INSIDE messages with no separate system_prompt is the signature
+            # of the client-tools route, which folds the instruction into messages[0] and
+            # clears the argument. Keying on the catalog alone missed tool_choice="none" and
+            # a forced name matching no schema, which both arrive with tools=None and would
+            # have taken the collapse and dropped the instruction (#10092). The ordinary
+            # path always fills system_prompt and leaves no system turn here, so this cannot
+            # fire on it.
+            folded_system = not system_prompt and any(
+                isinstance(m, dict) and m.get("role") in ("system", "developer")
+                for m in messages
+            )
+            if bool(tools) or has_tool_history or folded_system:
                 # Keep the whole conversation and attach the image to the turn it belongs to,
                 # the way the MLX backend does (generate_chat_response). Rebuilding from the
                 # newest user TEXT dropped the system instruction the client-tools route folds
@@ -1347,11 +1358,17 @@ class InferenceBackend:
                     structured_system_content = True,
                 )
 
+                # The conversation the LAST render actually used. render_advertising_tools
+                # runs a throwaway no-tools probe first, and a processor can reject a system
+                # turn on one catalog and accept it on the other, so a probe that fell back
+                # must not decide what the real render sends (#10092).
+                rendered_with: dict = {"messages": vision_messages}
+
                 def _render_vision(catalog):
                     # The shared choke point, as _generate_vlm uses: it sweeps the catalog and
                     # the messages for control markup in the one correct order (#7066), and
                     # peels a kwarg the processor rejects rather than failing the request.
-                    nonlocal vision_messages
+                    rendered_with["messages"] = vision_messages
                     try:
                         return self._apply_chat_template_for_generation(
                             processor,
@@ -1377,15 +1394,16 @@ class InferenceBackend:
                             f"Vision processor for '{self.active_model_name}' may not support "
                             f"system messages; retrying without. Original error: {e}"
                         )
-                        # Kept only once the retry has actually rendered: a second failure
-                        # re-raises with the conversation the caller sent still intact.
+                        # Recorded only once the retry has actually rendered, and only for
+                        # this call: a second failure re-raises with the conversation the
+                        # caller sent still intact.
                         rendered = self._apply_chat_template_for_generation(
                             processor,
                             without_system,
                             tools = catalog,
                             continue_final_message = bool(continue_partial),
                         )
-                        vision_messages = without_system
+                        rendered_with["messages"] = without_system
                         return rendered
 
                 # Whether the catalog reaches the prompt is decided by comparing the two
@@ -1393,6 +1411,7 @@ class InferenceBackend:
                 # a template body that merely names the ``tools`` variable can still drop the
                 # schema, and a processor taking tools= through **kwargs can swallow it.
                 input_text, tools_advertised = render_advertising_tools(_render_vision, tools)
+                vision_messages = rendered_with["messages"]
 
                 # A prompt the template did not understand is not a prompt the model can
                 # answer from, and _generate_vlm already refuses both shapes.

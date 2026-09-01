@@ -344,3 +344,51 @@ def test_the_stubs_do_not_outlive_this_module():
     """A leaked stub silently disables coverage in every module collected after this one."""
     for name in _STUBBED:
         assert name not in sys.modules, name
+
+
+def test_tool_choice_none_on_an_image_turn_keeps_the_system_message():
+    """tool_choice="none" reaches the renderer as tools=None, but the route has already
+    folded the instruction into messages and cleared system_prompt, so keying the
+    history-preserving branch on the catalog alone dropped it (#10092)."""
+    backend, seen = _vision_probe()
+    _drain(
+        backend,
+        messages = [
+            {"role": "system", "content": "SENTINEL_RULE: always answer in French."},
+            {"role": "user", "content": "what is in this picture"},
+        ],
+        system_prompt = "",
+        tools = None,
+    )
+    assert "SENTINEL_RULE" in json.dumps(seen.get("messages"), ensure_ascii = False)
+
+
+def test_the_no_tools_probe_does_not_strip_the_system_turn_from_the_real_render():
+    """A processor can reject a system turn on the throwaway no-tools probe and accept it
+    with a catalog. The probe's fallback must not decide what the real render sends."""
+    calls: list = []
+
+    backend, seen = _vision_probe()
+    processor = backend.models["vision-tools"]["processor"]
+    original = processor.apply_chat_template
+
+    def _picky(messages, **kwargs):
+        has_system = any(m.get("role") == "system" for m in messages)
+        calls.append({"tools": kwargs.get("tools"), "has_system": has_system})
+        if not kwargs.get("tools") and has_system:
+            raise ValueError("System role not supported without tools")
+        return original(messages, **kwargs)
+
+    processor.apply_chat_template = _picky
+    _drain(
+        backend,
+        messages = [
+            {"role": "system", "content": "SENTINEL_RULE: always answer in French."},
+            {"role": "user", "content": "look it up"},
+        ],
+        system_prompt = "",
+        tools = [_LOOKUP],
+    )
+    # The render that is actually served is the last one, and it must still carry the turn.
+    assert calls[-1]["has_system"] is True
+    assert "SENTINEL_RULE" in json.dumps(seen.get("messages"), ensure_ascii = False)
