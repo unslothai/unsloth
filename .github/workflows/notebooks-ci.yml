@@ -546,11 +546,25 @@ jobs:
         # workflow, so a silent stall was indistinguishable from a pass.
         #
         # The inner `timeout` calls bound each phase and print why; this is the
-        # backstop for the step as a whole (6 + 12 + 8 = 26 inside).
-        timeout-minutes: 28
+        # backstop for the step as a whole. Every phase is counted at its real
+        # worst case, which is its duration PLUS its --kill-after grace, since
+        # that grace is additional time after the first signal:
+        #
+        #   pip upgrade   2m + 15s  =  2m15
+        #   torch         6m + 30s  =  6m30
+        #   bulk resolve 12m + 30s  = 12m30
+        #   per-pin       8m + 10s  =  8m10   (see the deadline below)
+        #                             ------
+        #                              29m25
+        #
+        # The earlier sum said 6 + 12 + 8 = 26 and ignored all four graces, which
+        # put the true worst case at 28m40 against a 28m cap. The step backstop
+        # would then have killed the run BEFORE the per-pin loop could print the
+        # budget error that is the whole point of bounding it.
+        timeout-minutes: 30
         run: |
           set -uo pipefail
-          python -m pip install --upgrade pip
+          timeout --signal=INT --kill-after=15s 2m python -m pip install --upgrade pip
 
           # Only the three torch packages want the PyTorch index. Pointing
           # --index-url at it globally made all 682 other pins resolve against it
@@ -613,7 +627,13 @@ jobs:
               exit 1
             fi
             done_n=$(( done_n + 1 ))
-            timeout --signal=INT --kill-after=10s 90s \
+            # Capped at what is LEFT, not a flat 90s. The deadline is only tested
+            # before launch, so a flat cap let the last pin start at the deadline
+            # and run 90s past it, plus its kill grace -- the loop then overran its
+            # own budget by 100s and could take the step cap with it.
+            cap=$(( deadline - SECONDS ))
+            [ "$cap" -gt 90 ] && cap=90
+            timeout --signal=INT --kill-after=10s "${cap}s" \
               pip install --only-binary=:all: "${BUILDABLE[@]}" "$spec" \
               --index-url https://pypi.org/simple \
               > /dev/null 2>&1 || { failed_n=$(( failed_n + 1 )); echo "::warning::pin failed: $spec"; }
