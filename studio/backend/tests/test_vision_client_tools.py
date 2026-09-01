@@ -507,9 +507,7 @@ def test_a_processor_body_is_not_rescued_by_the_native_tokenizer_template(monkey
     through it, so a native template that reads tools must not re-authorize the catalog."""
     from core.inference import chat_template_helpers as helpers
 
-    monkeypatch.setattr(
-        helpers, "resolve_native_chat_template", lambda *a, **k: _CHATML_WITH_TOOLS
-    )
+    monkeypatch.setattr(helpers, "resolve_native_chat_template", lambda *a, **k: _CHATML_WITH_TOOLS)
     catalog = helpers.renderable_tool_catalog_for_targets(
         [_LOOKUP],
         (None,),
