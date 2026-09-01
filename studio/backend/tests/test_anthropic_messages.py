@@ -876,6 +876,60 @@ class TestAnthropicMessagesToOpenAI:
         assert _sanitize_anthropic_openai_messages(msgs, Hostile()) == msgs
         assert _sanitize_anthropic_openai_messages(msgs, object()) == msgs
 
+    def test_folding_follows_the_passthrough_capability_not_the_tool_loop_one(self):
+        """DiffusionGemma reports supports_tools=False so it never enters the
+        agentic tool loop, but its template can still render a tool role and
+        client-tool requests are dispatched through passthrough on
+        supports_tool_passthrough. Folding on supports_tools would strip the
+        native framing out from under that path."""
+        from routes.inference import _sanitize_anthropic_openai_messages, _template_supports_tools
+
+        class DiffusionGemma:
+            supports_tools = False            # forced off: keeps it out of the tool loop
+            supports_tool_passthrough = True  # the real template capability
+
+        class ToollessTemplate:
+            supports_tools = False
+            supports_tool_passthrough = False
+
+        assert _template_supports_tools(DiffusionGemma()) is True
+        assert _template_supports_tools(ToollessTemplate()) is False
+
+        msgs = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "tu_1",
+                        "type": "function",
+                        "function": {"name": "Bash", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tu_1", "content": "README.md"},
+            {"role": "user", "content": "keep going"},
+        ]
+        kept = _sanitize_anthropic_openai_messages(msgs, DiffusionGemma())
+        assert [m["role"] for m in kept] == ["assistant", "tool", "user"]
+
+        folded = _sanitize_anthropic_openai_messages(msgs, ToollessTemplate())
+        assert [m["role"] for m in folded] == ["assistant", "user"]
+
+    def test_folding_gate_prefers_passthrough_even_when_supports_tools_raises(self):
+        from routes.inference import _template_supports_tools
+
+        class HalfReady:
+            supports_tool_passthrough = False
+
+            @property
+            def supports_tools(self):
+                raise RuntimeError("not ready")
+
+        # The passthrough flag answers first, so a raising supports_tools never
+        # forces the conservative default and the fold still runs.
+        assert _template_supports_tools(HalfReady()) is False
+
     def test_mixed_text_and_tool_use_blocks(self):
         msgs = [
             {

@@ -29858,13 +29858,24 @@ def _coalesce_consecutive_user_turns(messages: list[dict]) -> list[dict]:
 
 
 def _template_supports_tools(backend) -> bool:
-    """``backend.supports_tools``, defaulting to True when asking is not safe.
+    """Whether the loaded chat template can render a ``role="tool"`` message.
 
-    True is the conservative default here: it leaves the message list exactly as
-    the converter built it, so an unreadable backend never changes the prompt.
+    ``supports_tool_passthrough`` is the raw template flag and is the question
+    being asked here. ``supports_tools`` is that same flag with DiffusionGemma
+    forced off so it never enters the agentic tool loop, which says nothing
+    about what its template renders: folding on it would strip native tool
+    framing from a client-tool passthrough request, which is dispatched on
+    exactly this predicate. Same order as that gate, so the two cannot disagree.
+
+    Defaults to True when the backend cannot answer, which leaves the message
+    list as the converter built it so an unreadable backend never changes the
+    prompt.
     """
     try:
-        return bool(getattr(backend, "supports_tools", True))
+        for attr in ("supports_tool_passthrough", "supports_tools"):
+            if hasattr(backend, attr):
+                return bool(getattr(backend, attr))
+        return True
     except Exception:
         return True
 
