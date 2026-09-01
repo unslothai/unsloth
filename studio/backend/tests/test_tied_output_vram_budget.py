@@ -911,17 +911,13 @@ def test_the_host_shortfall_stays_a_floor_over_the_file(backend, mib_embd_pair):
 
     for rows, kwargs in (([(0, 4 * 1024)], {}), ([], {"child_has_no_gpu": True})):
         priced = [
-            instance._launch_host_shortfall_message(
-                argv(path), rows, avail_mib = avail_mib, **kwargs
-            )
+            instance._launch_host_shortfall_message(argv(path), rows, avail_mib = avail_mib, **kwargs)
             for path in (tied, untied)
         ]
         assert priced[0] == priced[1], (rows, kwargs)
     # And on the file alone the spill is exactly 16 GiB, which the headroom covers.
     assert (
-        instance._launch_host_shortfall_message(
-            argv(tied), [(0, 4 * 1024)], avail_mib = avail_mib
-        )
+        instance._launch_host_shortfall_message(argv(tied), [(0, 4 * 1024)], avail_mib = avail_mib)
         is None
     )
 
