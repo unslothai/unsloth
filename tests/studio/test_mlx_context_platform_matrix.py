@@ -311,9 +311,9 @@ def test_detected_device_per_cell(os_key, vendor, spoof_cell):
     if expected.chat_only_reason == "no_gpu":
         assert hw.CHAT_ONLY_REASON in _CPU_ONLY_REASONS, f"{os_key}/{vendor}: chat-only reason"
     else:
-        assert hw.CHAT_ONLY_REASON == expected.chat_only_reason, (
-            f"{os_key}/{vendor}: chat-only reason"
-        )
+        assert (
+            hw.CHAT_ONLY_REASON == expected.chat_only_reason
+        ), f"{os_key}/{vendor}: chat-only reason"
 
 
 # ======================================================================================
