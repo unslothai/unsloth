@@ -251,7 +251,7 @@ test("a cap never lands below the Max Tokens control's own minimum", () => {
 
 test("a load keeps the pin it was built from, wherever the record held it", () => {
   // resolveLoadMaxSeqLength takes the pre-move field for an unpinned MLX target, so the
-  // completed load has to pin the same number or the UI shows Auto for a pinned runtime.
+  // load must pin the same number or the UI shows Auto for a pinned runtime.
   assert.equal(loadRequestContextPin(null, true, 8192), 8192);
   assert.equal(loadRequestContextPin(32768, true, 8192), 32768, "the live field leads");
   // llama.cpp's maxSeqLength is not a context pin, so only MLX admits it.

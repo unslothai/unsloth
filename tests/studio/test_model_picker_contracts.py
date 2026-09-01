@@ -1125,8 +1125,8 @@ def test_every_load_path_asks_the_backend_before_it_asks_for_a_window():
     nobody measured."""
     load_paths = ("chat/hooks/use-chat-model-runtime.ts", "chat/api/chat-adapter.ts")
     derived_backend = r"isMlx: isServedByMlx\(\s*[\w.=\" ]+,\s*platform\.deviceType,\s*platform\.chatOnlyReason,?\s*\)"
-    # A name bound to that same call counts, so hoisting one out of three call sites is
-    # not a literal creeping in; the binding itself is checked below.
+    # A name bound to that same call counts, so hoisting one is not a literal creeping
+    # in; the binding itself is checked below.
     hoisted = r"isMlx: (\w+),"
     hoist_source = r"const {name} = isServedByMlx\(\s*\w+,\s*platform\.deviceType,\s*platform\.chatOnlyReason,?\s*\);"
     for name in load_paths:

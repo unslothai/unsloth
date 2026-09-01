@@ -357,8 +357,7 @@ test("the three in-app writers pin what the user asked for, not what they sent",
     RUNTIME,
     /const keepCustomCtx = resolveExplicitCtxPin\(\s*\n\s*loadResponse\.is_gguf \|\| targetIsMlx \? explicitCtxPin : null,\s*\n\s*\);/,
   );
-  // And the captured pin is the one the request was built from, including the pre-move
-  // field a legacy MLX record still holds it in.
+  // And the captured pin is the one the request was built from, pre-move field included.
   assert.match(
     RUNTIME,
     /const explicitCtxPin = loadRequestContextPin\(\s*\n\s*loadCustomContextLength,\s*\n\s*targetIsMlx,\s*\n\s*pinnedMaxSeqLength,\s*\n\s*\);/,
