@@ -1240,3 +1240,86 @@ def test_openai_video_jobs_are_not_listed_or_deletable_by_another_account():
             reset_workspace_subject(token)
     finally:
         video_routes._jobs.clear()
+
+
+def test_deleting_a_thread_cancels_only_this_accounts_generation():
+    from state import active_generations
+
+    active_generations.reset_for_tests()
+    alice_event, bob_event = threading.Event(), threading.Event()
+    handles = []
+    for subject, event in (("alice", alice_event), ("bob", bob_event)):
+        token = _bind(subject)
+        try:
+            handle = active_generations.ActiveGeneration(event, thread_id = "same-thread")
+            handle.__enter__()
+            handles.append((subject, handle))
+        finally:
+            reset_workspace_subject(token)
+    try:
+        token = _bind("bob")
+        try:
+            assert active_generations.cancel_thread("same-thread", current_workspace_subject()) == 1
+        finally:
+            reset_workspace_subject(token)
+        assert bob_event.is_set() and not alice_event.is_set()
+    finally:
+        for subject, handle in handles:
+            token = _bind(subject)
+            try:
+                handle.__exit__()
+            finally:
+                reset_workspace_subject(token)
+        active_generations.reset_for_tests()
+
+
+def test_closing_one_accounts_mcp_row_leaves_the_others_session_alive():
+    from core.inference import mcp_client
+
+    keys = {}
+    for subject in ("alice", "bob"):
+        token = _bind(subject)
+        try:
+            keys[subject] = mcp_client._session_key("stdio:same-cmd", None, "")
+        finally:
+            reset_workspace_subject(token)
+    saved = dict(mcp_client._stdio_sessions)
+    mcp_client._stdio_sessions.clear()
+    try:
+        for subject, key in keys.items():
+            mcp_client._stdio_sessions[key] = SimpleNamespace(close = lambda: None)
+        token = _bind("alice")
+        try:
+            mcp_client.close_stdio_sessions("stdio:same-cmd")
+        finally:
+            reset_workspace_subject(token)
+        assert keys["alice"] not in mcp_client._stdio_sessions
+        assert keys["bob"] in mcp_client._stdio_sessions
+    finally:
+        mcp_client._stdio_sessions.clear()
+        mcp_client._stdio_sessions.update(saved)
+
+
+def test_a_delete_that_cannot_retire_leaves_the_name_reserved_from_the_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    _auth_db(tmp_path, monkeypatch)
+    auth_storage.create_managed_user("casey")
+    for root in auth_storage._subject_owned_roots("casey"):
+        root.mkdir(parents = True, exist_ok = True)
+    monkeypatch.setattr(
+        Path, "rename", lambda self, target: (_ for _ in ()).throw(OSError("locked"))
+    )
+    auth_storage.delete_managed_user("casey")
+    # Written in the delete transaction, so the row and the tombstone are never
+    # both absent for a create racing the delete.
+    conn = auth_storage.get_connection()
+    try:
+        assert conn.execute(
+            "SELECT 1 FROM retired_usernames WHERE username = ?", ("casey",)
+        ).fetchone() is not None
+        assert conn.execute(
+            "SELECT 1 FROM auth_user WHERE username = ?", ("casey",)
+        ).fetchone() is None
+    finally:
+        conn.close()

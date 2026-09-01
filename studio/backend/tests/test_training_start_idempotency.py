@@ -823,9 +823,11 @@ def test_cancel_start_route_returns_the_scoped_rejection():
         error_code = "training_start_cancelled",
     )
     backend = SimpleNamespace(
+        # The route authorizes from the record, not from backend ownership.
+        get_start_request = lambda start_request_id: record,
         cancel_start_request = lambda start_request_id: (
             calls.append(start_request_id) or ("cancelled", record)
-        )
+        ),
     )
 
     with (
@@ -854,7 +856,10 @@ def test_cancel_start_route_reports_tombstone_capacity():
             "Too many training start cancellations are pending"
         )
 
-    backend = SimpleNamespace(cancel_start_request = reject_cancel)
+    backend = SimpleNamespace(
+        get_start_request = lambda start_request_id: SimpleNamespace(),
+        cancel_start_request = reject_cancel,
+    )
     with (
         patch.object(route, "get_training_backend", return_value = backend),
         patch.object(route.asyncio, "to_thread", new = _inline_to_thread),
