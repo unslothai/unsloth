@@ -1206,3 +1206,47 @@ def test_status_source_build_includes_update_size(monkeypatch, tmp_path):
     assert st["source_build"] is True
     assert st["update_available"] is True
     assert st["update_size_bytes"] == 77_000_000
+
+
+def test_update_changelog_uses_full_installed_release_identity(monkeypatch, tmp_path):
+    binary = _write_install(
+        tmp_path,
+        "b10698",
+        release_tag = "b10698-mix-old",
+    )
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(
+        freshness,
+        "_fetch_latest_release_tag",
+        lambda repo, timeout = 5.0: "b10715-mix-new",
+    )
+    seen = {}
+
+    def fake_changelog(repo, installed, latest, *, force_refresh = False):
+        seen.update(
+            repo = repo,
+            installed = installed,
+            latest = latest,
+            force_refresh = force_refresh,
+        )
+        return {
+            "changes": [{"summary": "New model", "links": []}],
+            "total_changes": 1,
+            "truncated": False,
+            "release_url": "https://github.com/unslothai/llama.cpp/releases/tag/new",
+        }
+
+    monkeypatch.setattr(upd, "changelog_for_update", fake_changelog)
+
+    result = upd.get_update_changelog(force_refresh = True)
+
+    assert result["matched"] is True
+    assert result["installed_tag"] == "b10698"
+    assert result["latest_tag"] == "b10715-mix-new"
+    assert result["changes"][0]["summary"] == "New model"
+    assert seen == {
+        "repo": "unslothai/llama.cpp",
+        "installed": "b10698-mix-old",
+        "latest": "b10715-mix-new",
+        "force_refresh": True,
+    }

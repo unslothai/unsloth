@@ -304,7 +304,6 @@ export function UpdateBanner({
               <ReleaseNotesPanel
                 version={notesTargetVersion}
                 open={notesOpen}
-                className="min-h-0 flex-1"
                 releaseNotesUrl={releasePageUrl ?? manualReleaseUrl}
               />
             ) : null}

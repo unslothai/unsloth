@@ -49,6 +49,7 @@ from utils.llama_cpp_freshness import (
     reset_caches,
     update_download_size_bytes,
 )
+from utils.llama_cpp_changelog import changelog_for_update
 from utils.prebuilt import update_flow as _flow
 from utils.prebuilt.llama_backend import (
     REQUESTABLE_BACKENDS,
@@ -370,6 +371,58 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
     """
     status = _llama_only_status(force_refresh = force_refresh)
     return _merge_whisper_status(status, force_refresh = force_refresh)
+
+
+def get_update_changelog(*, force_refresh: bool = False) -> dict:
+    """Only carried changes added after the installed llama.cpp release.
+
+    This is separate from the polled status endpoint so opening the banner is
+    what pays for the two exact release lookups. Failure stays explicit and
+    empty: returning the latest cumulative body would relabel old PRs as new.
+    """
+    empty = {
+        "matched": False,
+        "installed_tag": None,
+        "latest_tag": None,
+        "changes": [],
+        "total_changes": 0,
+        "truncated": False,
+        "release_url": None,
+        "error": None,
+    }
+    binary = _find_binary()
+    if _studio_custom_path_active() or _active_install_is_local_link(binary):
+        return empty
+    marker = read_install_marker(binary)
+    if not marker:
+        return empty
+    repo = marker.get("published_repo") or DEFAULT_PUBLISHED_REPO
+    installed_full = marker.get("release_tag") or marker.get("tag")
+    if force_refresh and repo:
+        try:
+            latest_published_release(repo, force_refresh = True)
+        except Exception as exc:  # pragma: no cover - network defensive
+            logger.debug("llama changelog refresh failed", error = str(exc))
+    freshness = check_prebuilt_freshness(binary)
+    latest = freshness.get("latest_tag")
+    empty["installed_tag"] = freshness.get("installed_tag")
+    empty["latest_tag"] = latest
+    if not freshness.get("behind") or not installed_full or not latest:
+        return empty
+    try:
+        result = changelog_for_update(
+            repo,
+            installed_full,
+            latest,
+            force_refresh = force_refresh,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("llama changelog comparison failed", error = str(exc))
+        result = None
+    if result is None:
+        empty["error"] = "release_notes_unavailable"
+        return empty
+    return {**empty, **result, "matched": True}
 
 
 def _llama_only_status(

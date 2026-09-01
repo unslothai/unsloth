@@ -2,10 +2,19 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
+import {
+  UPDATE_NOTES_BULLET_CLASS,
+  UPDATE_NOTES_EXPANDED_SCROLL_CLASS,
+  UPDATE_NOTES_FOOTER_CLASS,
+  UPDATE_NOTES_ITEM_CLASS,
+  UPDATE_NOTES_LEAD_CLASS,
+  UPDATE_NOTES_LINK_CLASS,
+  UPDATE_NOTES_ROOT_CLASS,
+  UPDATE_NOTES_SURFACE_CLASS,
+} from "@/components/update/update-notes-layout";
 import { useReleaseNotes } from "@/hooks/use-release-notes";
 import { resolveReleaseBodyLinks } from "@/lib/release-body-links";
 import { releaseNotesPreview } from "@/lib/release-notes-preview";
-import { cn } from "@/lib/utils";
 import {
   type ReactElement,
   type ReactNode,
@@ -20,11 +29,7 @@ interface ReleaseNotesPanelProps {
   // Collapsed previews the top bullets; expanded scrolls the full notes.
   open: boolean;
   releaseNotesUrl?: string | null;
-  className?: string;
 }
-
-const NOTES_LINK_CLASS =
-  "shrink-0 whitespace-nowrap text-ui-11 font-medium text-foreground underline underline-offset-2";
 
 function NotesMessage({
   children,
@@ -53,7 +58,7 @@ function NotesLink({
       href={href}
       target="_blank"
       rel="noopener noreferrer"
-      className={NOTES_LINK_CLASS}
+      className={UPDATE_NOTES_LINK_CLASS}
       data-testid="update-release-notes-link"
     >
       {isRelease ? "Open release" : "Open changelog"}
@@ -65,7 +70,6 @@ export function ReleaseNotesPanel({
   version,
   open,
   releaseNotesUrl = null,
-  className,
 }: ReleaseNotesPanelProps): ReactElement | null {
   // Fetched with the popup: the collapsed preview needs the notes too.
   const { state, notes, retry } = useReleaseNotes({ version, enabled: true });
@@ -114,7 +118,7 @@ export function ReleaseNotesPanel({
     <div
       // Clipped, not just capped: this is the one part of the card allowed to
       // give up height, so its content must not paint over the buttons below.
-      className={cn("mt-3 flex min-h-0 flex-col overflow-hidden", className)}
+      className={UPDATE_NOTES_ROOT_CLASS}
       data-testid="update-release-notes-panel"
       data-notes-state={state}
       data-notes-version={version}
@@ -122,7 +126,7 @@ export function ReleaseNotesPanel({
       data-notes-open={open}
     >
       {/* borderless fill, lighter than the card in dark mode */}
-      <div className="flex min-h-0 flex-col rounded-[14px] bg-muted/40 px-3 py-1 dark:bg-white/[0.06]">
+      <div className={UPDATE_NOTES_SURFACE_CLASS}>
         {markdown ? (
           open ? (
             <section
@@ -131,7 +135,7 @@ export function ReleaseNotesPanel({
               tabIndex={0}
               aria-label={`Release notes for ${notes?.tag ?? `version ${version}`}`}
               // Long notes scroll here instead of pushing the buttons off screen.
-              className="hover-scrollbar max-h-64 min-h-0 flex-1 overflow-y-auto overscroll-contain py-3 pr-1"
+              className={UPDATE_NOTES_EXPANDED_SCROLL_CLASS}
               data-testid="update-release-notes-scroll"
             >
               <MarkdownPreview
@@ -159,7 +163,7 @@ export function ReleaseNotesPanel({
         )}
       </div>
       {open && markdown && link ? (
-        <div className="mt-2 flex justify-end px-1">{link}</div>
+        <div className={UPDATE_NOTES_FOOTER_CLASS}>{link}</div>
       ) : null}
     </div>
   );
@@ -191,14 +195,14 @@ function ReleaseNotesSummary({
         <li
           // Two releases can carry the same bullet text, so index is the key.
           key={`${index}-${item.lead}`}
-          className="flex gap-1.5 text-ui-11 leading-snug text-muted-foreground"
+          className={UPDATE_NOTES_ITEM_CLASS}
         >
-          <span aria-hidden="true" className="text-muted-foreground/60">
+          <span aria-hidden="true" className={UPDATE_NOTES_BULLET_CLASS}>
             &bull;
           </span>
           <span className="line-clamp-2 min-w-0">
             {/* lead sentence carries the change */}
-            <span className="font-medium text-foreground">{item.lead}</span>
+            <span className={UPDATE_NOTES_LEAD_CLASS}>{item.lead}</span>
             {item.rest ? <span> {item.rest}</span> : null}
           </span>
         </li>
@@ -237,7 +241,7 @@ function NotesStatus({
             <button
               type="button"
               onClick={retry}
-              className={NOTES_LINK_CLASS}
+              className={UPDATE_NOTES_LINK_CLASS}
               data-testid="update-release-notes-retry"
             >
               Retry
