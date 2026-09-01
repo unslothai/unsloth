@@ -535,9 +535,7 @@ def test_the_explicitly_supplied_new_name_beats_the_renamed_old_one(tmp_path, ca
         pytest.skip("installed trl does not show this rename on SFTConfig")
 
     config = config_class(output_dir = str(tmp_path), report_to = [])
-    trainer = Trainer(
-        model = _Bare(), args = config, use_liger_loss = False, use_liger_kernel = True
-    )
+    trainer = Trainer(model = _Bare(), args = config, use_liger_loss = False, use_liger_kernel = True)
     assert trainer.args.use_liger_kernel is True
     assert "is ignored" in capsys.readouterr().out
 
