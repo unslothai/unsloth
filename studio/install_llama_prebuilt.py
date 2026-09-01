@@ -8310,7 +8310,9 @@ def install_prebuilt(
             if preserve_backend
             else "prebuilt install path failed; falling back to source build"
         )
-        log(f"prebuilt fallback reason: {exc}")
+        # log_lines, not log: a preflight failure lists one library per line, and
+        # only prefixed lines are distinguishable from the system report below.
+        log_lines(f"prebuilt fallback reason: {exc}".splitlines())
         # Diagnostics must never change the verdict: a probe that raises here
         # would replace the fallback with EXIT_ERROR, which never source builds.
         try:
@@ -8755,7 +8757,7 @@ if __name__ == "__main__":
         fatal = _environment_fatal_reason(exc)
         if fatal:
             _fail_no_space(f"prebuilt install failed: {fatal}")
-        log(textwrap.shorten(str(exc), width = 400, placeholder = "..."))
+        log(f"prebuilt install failed: {textwrap.shorten(str(exc), width = 400, placeholder = '...')}")
         raise SystemExit(EXIT_FALLBACK)
     except Exception as exc:
         fatal = _environment_fatal_reason(exc)

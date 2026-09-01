@@ -53,13 +53,22 @@ class InstallerExit(RuntimeError):
         self.returncode = returncode
 
 
-# The verdict line every installer logs before it exits: "prebuilt fallback
+# Any installer log line. whisper.cpp updates run through this same helper, so
+# the component is matched as a pattern rather than llama's alone. The prefix is
+# also what separates the installer's own lines from the unprefixed system
+# report it prints after them.
+_PREBUILT_LOG_RE = re.compile(r"^\[[\w.-]+-prebuilt\]\s?(?P<body>.*)$")
+# The verdict line an installer logs before it exits: "prebuilt fallback
 # reason:", "prebuilt install failed:", "prebuilt install refused:", "prebuilt
-# busy reason:". whisper.cpp updates run through this same helper, so the
-# component prefix is matched as a pattern rather than llama's alone.
+# busy reason:", "fatal helper error:", "fatal helper busy conflict:".
 _PREBUILT_VERDICT_RE = re.compile(
-    r"^\[[\w.-]+-prebuilt\]\s+prebuilt\b[^:]*\b(?:reason|failed|refused):\s*(?P<detail>.*)$"
+    r"^(?:prebuilt\b[^:]*\b(?:reason|failed|refused)"
+    r"|fatal helper (?:error|busy conflict)):\s*(?P<detail>.*)$"
 )
+# A multi-line reason (the preflight failure lists one library per line) is
+# logged one prefixed line at a time, so a verdict owns the prefixed lines that
+# follow it. Bounded because only the installer's own framing bounds them.
+_VERDICT_CONTINUATION_LIMIT = 8
 
 
 def is_github_rate_limit_text(text: str) -> bool:
@@ -82,41 +91,50 @@ def is_github_rate_limit_text(text: str) -> bool:
     )
 
 
-def _installer_actionable_detail(lines: Sequence[str]) -> str | None:
-    """Pull a short, user-facing reason out of installer stdout.
+def _installer_verdict(lines: Sequence[str]) -> str | None:
+    """The reason the installer exited on, with its continuation lines.
 
-    The installer logs the real failure before dumping a long system report
-    (Windows PATH lines, nvidia-smi, ldd), so a raw tail hides rate-limit and
-    network errors behind noise (#9970). The last verdict line wins: it is the
-    one the installer exited on, while an earlier rate-limit retry may have
-    succeeded on a later attempt.
+    The installer logs that reason before dumping a long system report (Windows
+    PATH lines, nvidia-smi, ldd), so a raw tail hides rate-limit and network
+    errors behind noise (#9970). The last verdict wins: it is the one the
+    installer exited on, while an earlier rate-limit retry may have succeeded on
+    a later attempt. An unprefixed line ends a verdict, which is where the
+    system report begins.
     """
-    verdict: str | None = None
+    verdict: list[str] | None = None
+    open_block: list[str] | None = None
     for line in lines:
-        match = _PREBUILT_VERDICT_RE.match(line.strip())
+        log_line = _PREBUILT_LOG_RE.match(line.strip())
+        if log_line is None:
+            open_block = None
+            continue
+        body = log_line.group("body").strip()
+        match = _PREBUILT_VERDICT_RE.match(body)
         if match is not None:
-            verdict = match.group("detail").strip()
-    if verdict:
-        return verdict
-    for line in lines:
-        stripped = line.strip()
-        if is_github_rate_limit_text(stripped):
-            return stripped
-    return None
+            verdict = open_block = [match.group("detail").strip()]
+        elif open_block is not None and len(open_block) <= _VERDICT_CONTINUATION_LIMIT:
+            open_block.append(body)
+    if verdict is None:
+        return None
+    detail = "\n".join(part for part in verdict if part)
+    return detail or None
 
 
 def format_installer_failure_message(
     returncode: int,
     lines: Sequence[str],
-    actionable_lines: Sequence[str] = (),
+    verdict_lines: Sequence[str] = (),
+    hint_lines: Sequence[str] = (),
 ) -> str:
-    """Build an installer failure message that prefers actionable lines over tail noise.
+    """Build an installer failure message that prefers the verdict over tail noise.
 
-    *actionable_lines* are the ones stream_installer kept as they streamed: the
-    system report is long enough on a Linux CUDA host to push the reason out of
-    the bounded tail, so the tail alone is not a reliable place to find it.
+    *verdict_lines* and *hint_lines* are what stream_installer kept as they
+    streamed: the system report is long enough on a Linux CUDA host to push the
+    reason out of the bounded tail, so the tail alone is not a reliable place to
+    find it. A rate-limit hint only annotates the tail, because the run may have
+    retried past it and died of something else entirely.
     """
-    detail = _installer_actionable_detail(actionable_lines) or _installer_actionable_detail(lines)
+    detail = _installer_verdict(verdict_lines) or _installer_verdict(lines)
     if detail:
         if is_github_rate_limit_text(detail):
             return (
@@ -126,8 +144,14 @@ def format_installer_failure_message(
             )
         clipped = detail if len(detail) <= 1500 else detail[:1497] + "..."
         return f"installer exited {returncode}: {clipped}"
-    tail = "".join(lines).strip()[-1500:]
-    return f"installer exited {returncode}: {tail or 'no output'}"
+    tail = "".join(lines).strip()[-1500:] or "no output"
+    if any(is_github_rate_limit_text(line) for line in (*hint_lines, *lines)):
+        return (
+            f"installer exited {returncode}: GitHub API rate limit exceeded while fetching "
+            "prebuilt releases. Set GH_TOKEN or GITHUB_TOKEN to avoid GitHub API rate limits. "
+            f"Installer output: {tail}"
+        )
+    return f"installer exited {returncode}: {tail}"
 
 
 JOB_IDLE = "idle"
@@ -459,17 +483,26 @@ def stream_installer(
     # verdict, which is the line the user needs.
     verdict_lines: list[str] = []
     hint_lines: list[str] = []
+    open_verdict = False
     try:
         assert proc.stdout is not None
         for line in proc.stdout:
             tail_lines.append(line)
             if len(tail_lines) > 80:
                 del tail_lines[0]
-            if _PREBUILT_VERDICT_RE.match(line.strip()) is not None:
-                verdict_lines.append(line)
-                if len(verdict_lines) > 4:
-                    del verdict_lines[0]
-            elif len(hint_lines) < 4 and is_github_rate_limit_text(line):
+            log_line = _PREBUILT_LOG_RE.match(line.strip())
+            body = log_line.group("body").strip() if log_line is not None else None
+            if body is not None and _PREBUILT_VERDICT_RE.match(body) is not None:
+                # Restart the block: this verdict supersedes any earlier one.
+                verdict_lines = [line]
+                open_verdict = True
+            elif open_verdict and body is not None:
+                if len(verdict_lines) <= _VERDICT_CONTINUATION_LIMIT:
+                    verdict_lines.append(line)
+            elif body is None:
+                # Where the unprefixed system report starts, the verdict ends.
+                open_verdict = False
+            if not open_verdict and len(hint_lines) < 4 and is_github_rate_limit_text(line):
                 hint_lines.append(line)
             child = CHILD_PID_LINE_RE.match(line.strip())
             if child is not None:
@@ -500,7 +533,7 @@ def stream_installer(
     if returncode != 0:
         raise InstallerExit(
             returncode,
-            format_installer_failure_message(returncode, tail_lines, verdict_lines + hint_lines),
+            format_installer_failure_message(returncode, tail_lines, verdict_lines, hint_lines),
         )
 
 

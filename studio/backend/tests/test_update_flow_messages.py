@@ -108,3 +108,62 @@ def test_stream_installer_keeps_the_verdict_behind_a_run_of_rate_limit_retries(t
     assert str(exc) == (
         "installer exited 2: no published prebuilt asset matches this host (windows-rocm gfx803)"
     )
+
+
+def test_stream_installer_keeps_a_multiline_verdict_whole(tmp_path):
+    # The linux preflight failure names one binary per line; truncating at the
+    # first line leaves "preflight failed:" and nothing to act on.
+    exc = _run_fake_installer(
+        tmp_path,
+        "print('[llama-prebuilt] prebuilt install path failed; falling back to source build')\n"
+        "for line in ['prebuilt fallback reason: linux extracted binary preflight failed:',\n"
+        "             'llama-server: missing=libcuda.so.1 ld_library_path=none',\n"
+        "             'llama-quantize: missing=libgomp.so.1 ld_library_path=none']:\n"
+        "    print('[llama-prebuilt] ' + line)\n"
+        "print('platform=Linux machine=x86_64')\n"
+        "for i in range(300):\n"
+        "    print(f'linux_runtime_dirs_{i}=/usr/lib')\n"
+        "sys.exit(2)\n",
+    )
+    assert exc.returncode == 2
+    assert "missing=libcuda.so.1" in str(exc)
+    assert "missing=libgomp.so.1" in str(exc)
+    # The unprefixed system report is where the verdict ends.
+    assert "linux_runtime_dirs" not in str(exc)
+    assert "platform=Linux" not in str(exc)
+
+
+def test_stream_installer_reports_a_fatal_error_that_follows_a_survived_retry(tmp_path):
+    # The retry succeeded and the run died of something else; the stale hint must
+    # not replace the error the installer actually exited on.
+    exc = _run_fake_installer(
+        tmp_path,
+        "url = 'https://api.github.com/repos/unslothai/llama.cpp/releases/tags/b10679'\n"
+        "print(f'[llama-prebuilt] fetch failed (1/4) for {url}: "
+        "HTTP Error 429: Too Many Requests; retrying')\n"
+        "print('[llama-prebuilt] resolved published release b10679-mix-67dfc8b')\n"
+        "print('[llama-prebuilt] fatal helper error: staged install could not be "
+        "activated: [Errno 13] Permission denied')\n"
+        "sys.exit(1)\n",
+    )
+    assert exc.returncode == 1
+    assert str(exc) == (
+        "installer exited 1: staged install could not be activated: [Errno 13] Permission denied"
+    )
+
+
+def test_stream_installer_keeps_the_output_when_only_a_rate_limit_hint_is_present(tmp_path):
+    # No verdict line at all: the hint annotates the output rather than replacing
+    # it, so a crash is still readable.
+    exc = _run_fake_installer(
+        tmp_path,
+        "url = 'https://api.github.com/repos/unslothai/llama.cpp/releases/tags/b10679'\n"
+        "print(f'[llama-prebuilt] fetch failed (1/4) for {url}: "
+        "HTTP Error 403: rate limit exceeded; retrying')\n"
+        "print('Traceback (most recent call last):')\n"
+        "print('MemoryError')\n"
+        "sys.exit(1)\n",
+    )
+    assert exc.returncode == 1
+    assert "GH_TOKEN" in str(exc)
+    assert "MemoryError" in str(exc)
