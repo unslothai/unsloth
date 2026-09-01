@@ -1063,7 +1063,11 @@ def _artifact_spans(text: str) -> "list[tuple[int, int]]":
     ]
 
 
-def _find_outside_artifacts(text: str, needle: str, spans=None) -> int:
+def _find_outside_artifacts(
+    text: str,
+    needle: str,
+    spans = None,
+) -> int:
     """First index of ``needle`` that is not inside a complete artifact, or -1.
 
     A reasoning marker shown in a code example is the example, not reasoning.
