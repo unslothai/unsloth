@@ -171,3 +171,48 @@ test("a panel offering only GGUF-only agents leaves the pick alone", () => {
     );
   }
 });
+
+// The two effects consume isGguf as a tri-state: null while /api/inference/status has not
+// resolved. These pin the sequences that reading null as `false` produced.
+
+function browserSession(ggufAfterHydration: boolean) {
+  // Not Tauri, so detection never runs and detectedAgents stays empty for good.
+  const detected: string[] = [];
+  let agent = "claude"; // DEFAULT_AGENT
+  const step = (isGguf: boolean | null) => {
+    if (isGguf === null) return; // the guard under test
+    const next = pickCompatibleAgent(detected, agent, isGguf, VISIBLE_AGENTS);
+    if (next !== null) agent = next;
+  };
+  step(null); // first paint: store still holds its null defaults
+  step(ggufAfterHydration); // status lands
+  return agent;
+}
+
+test("an unresolved model status never re-steers the pick", () => {
+  // Was: paint 1 read null as non-GGUF and moved claude -> opencode, then paint 2 could
+  // not move back, because pickCompatibleAgent([], "opencode", true) is null.
+  assert.equal(browserSession(true), "claude");
+  assert.equal(browserSession(false), "opencode");
+});
+
+test("reading an unresolved status as non-GGUF is a one-way trip", () => {
+  // The reason the guard has to be in the effect and not just in the helper.
+  let agent = "claude";
+  agent = pickCompatibleAgent([], agent, false, VISIBLE_AGENTS) ?? agent;
+  assert.equal(agent, "opencode");
+  assert.equal(pickCompatibleAgent([], agent, true, VISIBLE_AGENTS), null);
+});
+
+function manualPick(clickedUnder: boolean, now: boolean, agent: string) {
+  // The revalidation guard: a hand-made pick survives until GGUF-ness changes under it.
+  if (clickedUnder === now) return "kept";
+  return agentRunsOnActiveModel(agent, now) ? "kept" : "corrected";
+}
+
+test("a manual pick is revalidated when the model changes under it", () => {
+  assert.equal(manualPick(true, true, "claude"), "kept");
+  assert.equal(manualPick(true, false, "claude"), "corrected");
+  assert.equal(manualPick(true, false, "opencode"), "kept");
+  assert.equal(manualPick(false, true, "opencode"), "kept");
+});

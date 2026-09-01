@@ -591,8 +591,9 @@ export function UsageExamples({
   // True once the user has picked an agent themselves; guards the detection
   // effect below from clobbering that choice if it resolves afterward.
   const agentPickedByUserRef = useRef(storedPrefs.apiExampleAgent != null);
-  // Narrower than the ref above, which is also true for a merely restored preference.
-  const agentClickedThisSessionRef = useRef(false);
+  // isGguf at the moment of a hand-made pick, null if there has been none this session.
+  // A manual pick is kept only until the model's GGUF-ness changes under it.
+  const clickedUnderGgufRef = useRef<boolean | null>(null);
   const [useTunnel, setUseTunnel] = useState<boolean>(readUseTunnelPref);
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   const base =
@@ -605,10 +606,16 @@ export function UsageExamples({
     (s) => s.activeNativePathToken,
   );
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
-  const isGguf =
-    activeGgufVariant != null ||
-    activeNativePathToken != null ||
-    ggufContextLength != null;
+  // null until a model is known: all three fields above start null, so before
+  // /api/inference/status lands they are indistinguishable from a real non-GGUF model.
+  // Acting on that guess re-steered a GGUF session to opencode for good, and cleared a
+  // saved preference on the way. checkpoint is the same signal useExampleModelName trusts.
+  const activeCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
+  const isGguf: boolean | null = !activeCheckpoint
+    ? null
+    : activeGgufVariant != null ||
+      activeNativePathToken != null ||
+      ggufContextLength != null;
 
   useEffect(() => {
     void fetchDeviceType({ force: true });
@@ -655,7 +662,8 @@ export function UsageExamples({
   // Drop a restored preference this build no longer offers, or that cannot run the model.
   useEffect(() => {
     if (!agentPickedByUserRef.current) return;
-    if (agentClickedThisSessionRef.current) return;
+    if (isGguf === null) return;
+    if (clickedUnderGgufRef.current === isGguf) return;
     if (localAgentDetection && !agentsLoaded) return;
     if (availableAgents.includes(agent) && agentRunsOnActiveModel(agent, isGguf)) {
       return;
@@ -678,6 +686,7 @@ export function UsageExamples({
   // answer, and acting on an unresolved list flips the command between paints.
   useEffect(() => {
     if (agentPickedByUserRef.current) return;
+    if (isGguf === null) return;
     if (localAgentDetection && !agentsLoaded) return;
     const next = pickCompatibleAgent(
       detectedAgents,
@@ -929,7 +938,7 @@ export function UsageExamples({
                   type="button"
                   onClick={() => {
                     agentPickedByUserRef.current = true;
-                    agentClickedThisSessionRef.current = true;
+                    clickedUnderGgufRef.current = isGguf;
                     setAgent(id);
                     setStoredAgent(id);
                   }}
