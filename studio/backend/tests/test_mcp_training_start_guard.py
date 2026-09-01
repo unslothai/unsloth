@@ -351,8 +351,14 @@ def test_the_mcp_tool_surfaces_the_409_as_a_tool_error_not_a_dict(monkeypatch):
 
     # The tool body raises rather than returning the {"status": ...} dict that
     # stop_training / get_training_status return.
+    # Public fastmcp API only. The private equivalents (_get_tool/_call_tool_mcp)
+    # work too, but _call_tool_mcp was dropped in fastmcp 4.0.0 while the pin is an
+    # open ">=3.0.2", so a private call here breaks the suite on an upstream major
+    # that the product itself is unaffected by. get_tool/call_tool are present with
+    # these same signatures on both 3.0.2 (the floor) and 4.x.
     async def run_tool_body():
-        tool = await server._get_tool("start_training")
+        tool = await server.get_tool("start_training")
+        assert tool is not None, "start_training must be registered on the studio MCP server"
         return await tool.fn(config = _config())
 
     with pytest.raises(HTTPException) as excinfo:
@@ -368,7 +374,9 @@ def test_the_mcp_tool_surfaces_the_409_as_a_tool_error_not_a_dict(monkeypatch):
 
     # mask_error_details defaults False, so the 409 detail survives to the client
     # (as the text of an isError CallToolResult, not a JSON-RPC protocol error).
-    assert server._mask_error_details is False
+    # Asserted through the surfaced message rather than the server's private
+    # _mask_error_details flag: the detail reaching the caller is the property that
+    # matters, and it stays true however that flag is spelled upstream.
     assert "inference request is in progress" in str(tool_error.value)
     assert "Error calling tool 'start_training'" in str(tool_error.value)
 
