@@ -21,12 +21,13 @@ KV cache is exhausted.
 
 from __future__ import annotations
 
+import asyncio
 import math
 import sys
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Protocol, runtime_checkable
 
 from core.inference.llama_admission import LlamaAdmissionLease, _bool_env
 
@@ -46,6 +47,12 @@ DEFAULT_PREEMPT_ENABLED = True
 DEFAULT_PREEMPT_BUFFER_RATIO = 0.05
 DEFAULT_PREEMPT_BUFFER_MIN_TOKENS = 256
 
+# A resume is cheap (the prefix cache usually still holds the prompt) but not free, so a
+# pathological loop that pauses the same chat forever is bounded. Deliberately far above
+# _MAX_LENGTH_CONTINUATIONS: that one caps how often a model may be asked to finish its own
+# sentence, a quality judgement, while this caps churn under contention, a capacity one.
+DEFAULT_MAX_PREEMPT_RESUMES = 32
+
 # Approved anti-starvation rule: a chat preempted this many times in a row outranks
 # longest-wins for the next epoch.
 PROMOTE_AFTER_CONSECUTIVE_PREEMPTIONS = 3
@@ -55,6 +62,183 @@ PROMOTE_AFTER_CONSECUTIVE_PREEMPTIONS = 3
 # that may not exist is worse than the overrun it guards.
 DEFAULT_RECLAIM_BARRIER_TIMEOUT_S = 10.0
 DEFAULT_RECLAIM_BARRIER_POLL_S = 0.05
+
+
+class LlamaStreamPreempted(Exception):
+    """The upstream stream was aborted to free KV, not abandoned.
+
+    Distinct from ``_LlamaStreamCancelled`` on purpose. A cancel ends the turn;
+    this one is expected to be caught and resumed, so anything that treats a
+    dead stream as failure must not see it.
+    """
+
+
+class PreemptSignal:
+    """A pause request that tool execution can hold off.
+
+    ``request()`` asks the stream to stop. ``is_set()`` is what the stream
+    plumbing polls, and it reports False while an unsafe window is open even
+    though a request is pending, so a preempt lands at a safe point or not at
+    all. Nothing is lost by deferring: the request stays pending and becomes
+    visible the moment the window closes.
+    """
+
+    def __init__(self):
+        self._event = threading.Event()
+        self._lock = threading.RLock()
+        self._depth = 0
+        self._pending = False
+        self._reason: Optional[str] = None
+
+    # ── asking ──────────────────────────────────────────────────
+
+    def request(self, reason: str = "kv_pressure") -> None:
+        with self._lock:
+            self._pending = True
+            self._reason = reason
+            if self._depth == 0:
+                self._event.set()
+
+    # Spelled like threading.Event so the policy half reads the same as any other
+    # signal it sets, and so a Participant's field can be swapped for a bare Event in a
+    # test double without the call sites changing.
+    def set(self, reason: str = "kv_pressure") -> None:
+        self.request(reason)
+
+    def clear(self) -> None:
+        """Forget a pending request, deferred or not. Called on resume."""
+        with self._lock:
+            self._pending = False
+            self._reason = None
+            self._event.clear()
+
+    @property
+    def reason(self) -> Optional[str]:
+        with self._lock:
+            return self._reason
+
+    @property
+    def pending(self) -> bool:
+        """A request exists, whether or not it is currently visible."""
+        with self._lock:
+            return self._pending
+
+    @property
+    def deferred(self) -> bool:
+        with self._lock:
+            return self._depth > 0
+
+    # ── what the stream plumbing sees ───────────────────────────
+
+    def is_set(self) -> bool:
+        return self._event.is_set()
+
+    def wait(self, timeout: Optional[float] = None) -> bool:
+        return self._event.wait(timeout = timeout)
+
+    # ── safe points ─────────────────────────────────────────────
+
+    class _Window:
+        __slots__ = ("_signal",)
+
+        def __init__(self, signal: "PreemptSignal"):
+            self._signal = signal
+
+        def __enter__(self):
+            self._signal._enter_unsafe()
+            return self._signal
+
+        def __exit__(self, *exc):
+            self._signal._exit_unsafe()
+            return False
+
+    def unsafe_window(self) -> "PreemptSignal._Window":
+        """Hold any pause request invisible for the duration.
+
+        Nests: an inner window closing does not re-expose the request while an
+        outer one is still open.
+        """
+        return PreemptSignal._Window(self)
+
+    def _enter_unsafe(self) -> None:
+        with self._lock:
+            self._depth += 1
+            # A request that arrived before the window opened is hidden too. It
+            # was not acted on yet, and acting on it now would be exactly the
+            # mid-execution abort the window exists to prevent.
+            self._event.clear()
+
+    def _exit_unsafe(self) -> None:
+        with self._lock:
+            if self._depth > 0:
+                self._depth -= 1
+            if self._depth == 0 and self._pending:
+                self._event.set()
+
+
+@dataclass
+class StreamCheckpoint:
+    """What a paused attempt had produced when it was cut.
+
+    Written by the preemptor from the live stream accumulators. Deliberately not
+    read back off the thread's trailing assistant row: an aborted run never
+    writes one, so that row lags the stream by a whole attempt and resuming from
+    it would replay text the user has already seen.
+    """
+
+    visible_text: str = ""
+    reasoning_text: str = ""
+    # Carried rather than re-derived. The archive is content-hash idempotent but
+    # the `context_truncated` SSE event is not, so a truncation observed on the
+    # aborted attempt has to be emitted exactly once, by whoever resumes.
+    pending_truncations: list = field(default_factory = list)
+    # Tokens the aborted attempt really did produce, to be charged once.
+    charged_tokens: int = 0
+    resumes: int = 0
+    reason: Optional[str] = None
+
+    def has_resume_point(self) -> bool:
+        """Whether there is anything to continue from.
+
+        Empty means the pause landed before the first token. There is nothing to
+        extend, and ``continue_final_message`` refuses an empty assistant turn,
+        so such a request is re-issued whole rather than continued.
+        """
+        return bool(self.visible_text.strip())
+
+
+@runtime_checkable
+class PreemptionPolicy(Protocol):
+    """Supplied by the admission side; this module only calls it.
+
+    ``await_resume`` returning False means "stop waiting and finish the turn",
+    so a policy that dies or times out degrades to today's behaviour instead of
+    hanging the chat.
+    """
+
+    def should_preempt(self) -> bool: ...
+
+    def on_preempted(self, checkpoint: StreamCheckpoint) -> None: ...
+
+    def await_resume(self, timeout: Optional[float] = None) -> bool: ...
+
+    def on_resumed(self) -> None: ...
+
+
+class NullPreemptionPolicy:
+    """Never pauses. The default, so every existing call site is unchanged."""
+
+    def should_preempt(self) -> bool:
+        return False
+
+    def on_preempted(self, checkpoint: StreamCheckpoint) -> None:
+        return None
+
+    def await_resume(self, timeout: Optional[float] = None) -> bool:
+        return True
+
+    def on_resumed(self) -> None:
+        return None
 
 
 class ParticipantState:
@@ -96,11 +280,17 @@ def preemption_enabled() -> bool:
 
 
 def preemption_buffer_tokens(budget: int) -> int:
-    """Tokens held clear of ``budget``. Zero for an unknown budget, which disables it."""
+    """Tokens held clear of ``budget``. Zero for an unknown budget, which disables it.
+
+    Never the whole cache. The 256-token floor is larger than a very small ``-c``, and a
+    buffer that swallows the budget leaves a ceiling of zero, which reads as "no room
+    for anyone" and would preempt every participant on every call, forever. Capped at
+    half so a tiny cache degrades to a smaller buffer rather than to a livelock.
+    """
     if budget <= 0:
         return 0
     scaled = int(math.ceil(budget * DEFAULT_PREEMPT_BUFFER_RATIO))
-    return max(DEFAULT_PREEMPT_BUFFER_MIN_TOKENS, scaled)
+    return min(max(DEFAULT_PREEMPT_BUFFER_MIN_TOKENS, scaled), max(1, budget // 2))
 
 
 @dataclass(**_SLOTS)
@@ -117,7 +307,7 @@ class Participant:
     # llama-server stream on it and keeps its own generator, ledgers, conversation and
     # SSE response alive; a shared cancel event could not express that, because six
     # separate consumers treat cancellation as terminal.
-    preempt_event: threading.Event = field(default_factory = threading.Event)
+    preempt_event: PreemptSignal = field(default_factory = PreemptSignal)
 
     @property
     def promoted(self) -> bool:
@@ -248,6 +438,15 @@ class PreemptionController:
                 return
             participant.preempt_event.clear()
             participant.state = ParticipantState.DECODING
+
+    def participant(self, gen_id: str) -> Optional[Participant]:
+        """The registered participant, or None once it has finished.
+
+        Returned by reference so the caller reads live state; every field the adapter
+        touches is either immutable or written under this lock.
+        """
+        with self._lock:
+            return self._participants.get(gen_id)
 
     def is_idle(self) -> bool:
         """Nothing in flight, so this controller may be retired. Mirrors the queue's."""
@@ -380,6 +579,96 @@ def wait_for_reclaim(
         if monotonic() >= deadline:
             return False
         sleep(poll_s)
+
+
+class ControllerPreemptionPolicy:
+    """Binds one generation to the controller, satisfying ``PreemptionPolicy``.
+
+    The two halves of this module were designed against each other but neither could
+    build this seam: the stream side knows when it is safe to stop and how to resume,
+    the controller knows who should. This is the whole of the coupling between them.
+
+    ``await_resume`` is where a policy bug would show up as a hung chat, so it is bounded
+    twice over: by the caller's timeout, and by refusing to wait at all once the room is
+    already back. Returning False means "give up and finish the turn", which degrades to
+    the behaviour that predates preemption rather than parking the conversation.
+
+    ``loop`` is the bridge, and the reason this is a separate class rather than the
+    controller implementing the protocol directly. The stream funnels are synchronous and
+    run on a worker thread, while ``resume_async`` has to await the queue's slot acquire,
+    so the two are joined with ``run_coroutine_threadsafe`` as ``mcp_client`` already
+    does. With no loop there is nothing to resume onto and the turn simply finishes.
+    """
+
+    __slots__ = ("_controller", "_gen_id", "_signal", "_resumes", "_loop")
+
+    def __init__(
+        self,
+        controller: "PreemptionController",
+        gen_id: str,
+        signal: PreemptSignal,
+        *,
+        loop = None,
+    ):
+        self._controller = controller
+        self._gen_id = gen_id
+        self._signal = signal
+        self._resumes = 0
+        self._loop = loop
+
+    def should_preempt(self) -> bool:
+        return self._signal.is_set()
+
+    def on_preempted(self, checkpoint: StreamCheckpoint) -> None:
+        """The upstream response is closed, so the tokens may go back.
+
+        Order matters and is the rule ``_release_admission`` already states: hand the
+        lease back only once nothing can still be decoding against it. The stream side
+        guarantees that by calling this from its except branch, after teardown.
+        """
+        self._resumes = checkpoint.resumes
+        participant = self._controller.participant(self._gen_id)
+        if participant is None:
+            return
+        self._controller.set_state(self._gen_id, ParticipantState.PAUSED)
+        lease = participant.lease
+        if lease is not None:
+            try:
+                lease.preempt()
+            except Exception:
+                # A handback that fails must not take the conversation with it: the
+                # tokens are reclaimed when the lease is finally released either way.
+                pass
+
+    def await_resume(self, timeout: Optional[float] = None) -> bool:
+        if self._resumes >= DEFAULT_MAX_PREEMPT_RESUMES:
+            # Churning on one chat helps nobody; let it finish and take its room back.
+            return False
+        participant = self._controller.participant(self._gen_id)
+        if participant is None:
+            return False
+        lease = participant.lease
+        if lease is None:
+            return True
+        if self._loop is None:
+            return False
+        # Re-stated, not remembered: a resumed run carries the partial it already
+        # generated, so it needs more room than it was preempted holding.
+        want = max(0, int(participant.tokens or 0))
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                lease.resume_async(want, timeout_s = timeout), self._loop
+            )
+            # The future's own timeout is a backstop for a loop that never runs the
+            # coroutine at all; resume_async is already bounded by timeout_s.
+            return bool(future.result(timeout = None if timeout is None else timeout + 5.0))
+        except Exception:
+            # Includes the future timing out. Whatever the cause, the honest answer is
+            # that the room did not come back, and the caller finishes the turn.
+            return False
+
+    def on_resumed(self) -> None:
+        self._controller.note_resumed(self._gen_id)
 
 
 _CONTROLLERS_LOCK = threading.Lock()

@@ -1223,8 +1223,17 @@ async def stream_with_studio_tools(
     run: ToolLoopRun,
     policy: ToolLoopPolicy,
     cancel_event: threading.Event,
+    preempt_signal = None,
 ) -> AsyncIterator[str]:
-    """Stream a provider, execute requested Unsloth tools, continue to a final answer."""
+    """Stream a provider, execute requested Unsloth tools, continue to a final answer.
+
+    ``preempt_signal`` lets a KV-pressure pause interrupt the provider stream. Tool
+    execution is not interruptible -- an abort between the point where calls
+    materialise and the point where their results are appended would either lose
+    the work of tools that already ran or re-run them on resume -- so this holds the
+    signal off for that stretch. Deferring costs nothing: the request stays pending
+    and is honoured at the next round's stream, which is a safe point.
+    """
     conversation = [dict(message) for message in run.messages]
     # Kept before the loop appends anything: this is the branch the request is on.
     request_branch = list(run.messages)
@@ -1291,7 +1300,27 @@ async def stream_with_studio_tools(
     # a lower bound here only cuts a productive run short with no final answer.
     max_provider_turns = max(1, remaining) + 2 * MAX_ACT_REPROMPTS + 4
 
+    # Opened when a round's calls materialise, closed at the top of the next round.
+    # A superset of the strictly unsafe stretch, which is the safe direction to err:
+    # it only delays a pause to the next stream, and that is where a pause belongs.
+    _unsafe_window = None
+
+    def _close_unsafe_window() -> None:
+        nonlocal _unsafe_window
+        if _unsafe_window is not None:
+            _unsafe_window.__exit__(None, None, None)
+            _unsafe_window = None
+
+    def _open_unsafe_window() -> None:
+        nonlocal _unsafe_window
+        if preempt_signal is not None and _unsafe_window is None:
+            _unsafe_window = preempt_signal.unsafe_window()
+            _unsafe_window.__enter__()
+
     while not cancel_event.is_set():
+        # Any window the previous round opened ends here: the top of a round, before
+        # its stream, which is exactly where a pause is safe to land.
+        _close_unsafe_window()
         if provider_turns >= max_provider_turns:
             # Reached only by a model that keeps asking for tools it cannot run
             # (all disabled, or the budget is gone). Executions are already
@@ -1510,6 +1539,11 @@ async def stream_with_studio_tools(
             if (truncated or tool_choice == "none")
             else turn.calls(used_call_ids, painted_card_ids)
         )
+        if calls:
+            # From here until the next round's stream, results are being produced and
+            # appended. A pause in that stretch would either discard the work of tools
+            # that already ran or re-run them on resume.
+            _open_unsafe_window()
         if not calls:
             # The badge clears between iterations, and this turn is over too.
             # Without it a turn whose only call was refused never reaches the
@@ -1899,6 +1933,7 @@ async def stream_with_studio_tools(
             # next pass ask for a tool that is no longer offered.
             _append_user_turn(conversation, _BUDGET_EXHAUSTED_NUDGE)
 
+    _close_unsafe_window()
     usage_line = _usage_chunk_line(model_name, usage_totals)
     if usage_line is not None:
         yield usage_line

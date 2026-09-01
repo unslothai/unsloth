@@ -424,6 +424,7 @@ from core.inference.tool_call_parser import (
     unfinished_thought_progress as _unfinished_thought_progress,
 )
 from core.inference.passthrough_healing import nudge_enabled as _nudge_enabled
+from core.inference import llama_preemption as _preemption
 from core.inference.repetition_guard import is_repetition_dominated
 from core.inference.tool_loop_controller import (
     ToolLoopController,
@@ -496,6 +497,22 @@ class _CombinedCancelEvent:
             self._events[0].wait(pause)
             if self.is_set():
                 return True
+
+
+def _interrupt_event(cancel_event, preempt_event):
+    """One waitable standing for "stop reading", from either reason.
+
+    The stream plumbing threads a single event through a watcher thread, a socket
+    shutdown and a per-slice poll inside the httpcore read. Combining here rather
+    than duplicating those three mechanisms is why a pause needs no new teardown.
+    None-safe, so a caller with only one of the two passes it straight through.
+    """
+    events = [event for event in (cancel_event, preempt_event) if event is not None]
+    if not events:
+        return None
+    if len(events) == 1:
+        return events[0]
+    return _CombinedCancelEvent(*events)
 
 
 # Deliberately NOT ``slots=True``: it drops ``__dict__``, so ``vars(intent)`` raises and
@@ -26786,7 +26803,7 @@ class LlamaCppBackend:
     # ── Generation (proxy to llama-server) ────────────────────────
 
     @contextlib.contextmanager
-    def _open_stream(self, url: str, payload: dict, cancel_event):
+    def _open_stream(self, url: str, payload: dict, cancel_event, preempt_event = None):
         """Open a streaming POST to llama-server, retrying through prefill, and
         yield ``(response, first_token_deadline)`` once a 200 lands. Owns the
         httpx.Client + auth headers for the stream's lifetime; raises
@@ -26806,6 +26823,9 @@ class LlamaCppBackend:
                 cancel_event,
                 headers = self._auth_headers,
                 first_token_deadline = first_token_deadline,
+                # Only when set, so an override or test double written against the
+                # old signature keeps working untouched.
+                **({} if preempt_event is None else {"preempt_event": preempt_event}),
             ) as response:
                 if response.status_code != 200:
                     error_body = response.read().decode()
@@ -26852,8 +26872,15 @@ class LlamaCppBackend:
         stall_timeout_s: float = _DEFAULT_STREAM_STALL_TIMEOUT_S,
         first_token_deadline: Optional[float] = None,
         post_first_chunk_read_timeout_s: Optional[float] = _DEFAULT_STREAM_STALL_TIMEOUT_S,
+        preempt_event = None,
     ) -> Generator[str, None, None]:
-        """Iterate a stream while polling cancel and stall timeouts."""
+        """Iterate a stream while polling cancel and stall timeouts.
+
+        A preempt stops the iteration the same way a cancel does, but raises so the
+        caller can tell "paused to free KV" from "the user stopped this" and resume.
+        """
+        user_cancel = cancel_event
+        cancel_event = _interrupt_event(cancel_event, preempt_event)
         text_iter = response.iter_text()
         if first_token_deadline is None:
             first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
@@ -26862,6 +26889,15 @@ class LlamaCppBackend:
         while True:
             if cancel_event is not None and cancel_event.is_set():
                 response.close()
+                # A preempt that is not also a cancel is a pause: say so, so the
+                # turn is resumed rather than silently ending mid-sentence. A user
+                # who pressed Stop during a pause still meant Stop, so cancel wins.
+                if (
+                    preempt_event is not None
+                    and preempt_event.is_set()
+                    and not (user_cancel is not None and user_cancel.is_set())
+                ):
+                    raise _preemption.LlamaStreamPreempted
                 return
             try:
                 if last_chunk_at is None:
@@ -26943,6 +26979,7 @@ class LlamaCppBackend:
         cancel_event: threading.Event,
         response: Optional["httpx.Response"] = None,
         poll_s: float = 0.2,
+        preempt_event = None,
     ) -> None:
         """Wrap the httpcore stream so the reader interrupts its own blocked recv() on cancel.
 
@@ -26951,8 +26988,15 @@ class LlamaCppBackend:
         (plain or TLS); slice timeouts are swallowed so a slow-but-alive stream survives.
         httpcore snapshots request.extensions["timeout"]["read"] once at body start, so
         given ``response`` we re-read the live value per call to honor the post-first-token
-        stall timeout instead of the long prefill timeout."""
+        stall timeout instead of the long prefill timeout.
+
+        ``preempt_event`` interrupts the same way but means "pause to free KV", not
+        "the user stopped this". The read cannot tell them apart, so it aborts on
+        either and the caller decides which exception the abort becomes."""
         import httpcore
+
+        if preempt_event is not None:
+            cancel_event = _interrupt_event(cancel_event, preempt_event)
 
         def _live_read_timeout() -> Optional[float]:
             if response is None:
@@ -27015,17 +27059,30 @@ class LlamaCppBackend:
         cancel_event: Optional[threading.Event] = None,
         headers: Optional[dict] = None,
         first_token_deadline: Optional[float] = None,
+        preempt_event = None,
     ):
-        """Open one streaming POST and let cancel interrupt prefill or reads."""
-        if cancel_event is not None and cancel_event.is_set():
-            raise _LlamaStreamCancelled
+        """Open one streaming POST and let cancel interrupt prefill or reads.
+
+        A preempt interrupts identically but raises ``LlamaStreamPreempted``, which
+        the tool loop resumes from. Cancel wins when both are set: a user who pressed
+        Stop during a pause meant Stop.
+        """
+
+        def _raise_interrupt():
+            if cancel_event is not None and cancel_event.is_set():
+                raise _LlamaStreamCancelled
+            raise _preemption.LlamaStreamPreempted
+
+        _interrupt = _interrupt_event(cancel_event, preempt_event)
+        if _interrupt is not None and _interrupt.is_set():
+            _raise_interrupt()
 
         _cancel_closed = threading.Event()
         _response_ref: list = [None]
 
         def _cancel_watcher():
             while not _cancel_closed.is_set():
-                if cancel_event.wait(timeout = 0.3):
+                if _interrupt.wait(timeout = 0.3):
                     while not _cancel_closed.is_set():
                         r = _response_ref[0]
                         try:
@@ -27041,7 +27098,7 @@ class LlamaCppBackend:
                     return
 
         watcher = None
-        if cancel_event is not None:
+        if _interrupt is not None:
             watcher = threading.Thread(target = _cancel_watcher, daemon = True, name = "prefill-cancel")
             watcher.start()
 
@@ -27063,19 +27120,24 @@ class LlamaCppBackend:
                 headers = headers,
             ) as response:
                 _response_ref[0] = response
-                if cancel_event is not None:
+                if _interrupt is not None:
                     # Portable mid-stream cancel: the reader polls cancel itself, so
                     # Stop interrupts a stalled read where the watcher's Windows socket
                     # shutdown does not. Pass response to honor the live stall timeout.
-                    LlamaCppBackend._install_cancel_aware_read(client, cancel_event, response)
-                if cancel_event is not None and cancel_event.is_set():
-                    raise _LlamaStreamCancelled
+                    LlamaCppBackend._install_cancel_aware_read(
+                        client,
+                        cancel_event,
+                        response,
+                        **({} if preempt_event is None else {"preempt_event": preempt_event}),
+                    )
+                if _interrupt is not None and _interrupt.is_set():
+                    _raise_interrupt()
                 yield response
                 return
         except (httpx.RequestError, RuntimeError):
             # Response was closed by the cancel watcher
-            if cancel_event is not None and cancel_event.is_set():
-                raise _LlamaStreamCancelled
+            if _interrupt is not None and _interrupt.is_set():
+                _raise_interrupt()
             raise
         finally:
             _cancel_closed.set()
@@ -27181,6 +27243,7 @@ class LlamaCppBackend:
         payload: dict,
         cancel_event,
         on_respawn: Optional[Callable[[], None]] = None,
+        preempt_event = None,
     ):
         """Open a chat stream, respawning a dead llama-server once before streaming.
 
@@ -27202,7 +27265,12 @@ class LlamaCppBackend:
             response_opened = False
             try:
                 url = f"{self.base_url}/v1/chat/completions"
-                with self._open_stream(url, payload, cancel_event) as opened:
+                with self._open_stream(
+                    url,
+                    payload,
+                    cancel_event,
+                    **({} if preempt_event is None else {"preempt_event": preempt_event}),
+                ) as opened:
                     response_opened = True
                     yield opened
                     return
@@ -27636,6 +27704,8 @@ class LlamaCppBackend:
         logit_bias: Optional[dict] = None,
         stop: Optional[list[str]] = None,
         cancel_event: Optional[threading.Event] = None,
+        preempt_event = None,
+        preempt_policy = None,
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
@@ -28139,6 +28209,19 @@ class LlamaCppBackend:
         _continuation_max_tokens: Optional[int] = None
         _continuation_credits = 0
         _MAX_CONTINUATION_CREDITS = _MAX_LENGTH_CONTINUATIONS * max(1, max_tool_iterations)
+        # A pause is not the model's doing, so it is counted separately from every
+        # other reason this loop re-enters. Charging a resume to the tool budget
+        # would let contention silently shorten an agent run, and capping it at
+        # _MAX_LENGTH_CONTINUATIONS would strand a chat that got unlucky three
+        # times. Bounded only against churn.
+        _preempt_resumes = 0
+        _MAX_PREEMPT_RESUMES = _preemption.DEFAULT_MAX_PREEMPT_RESUMES
+        if preempt_policy is None:
+            preempt_policy = _preemption.NullPreemptionPolicy()
+        # `context_truncated` is not idempotent on the client, and the per-iteration
+        # list is rebuilt by `continue`. A truncation seen on an attempt that was
+        # then paused rides across on this instead of being lost.
+        _carried_truncations: list[dict] = []
         iteration = -1
         while True:
             iteration += 1
@@ -28149,7 +28232,7 @@ class LlamaCppBackend:
                     on_conversation_grew(conversation)
                 except Exception:  # accounting must never break a run in progress
                     logger.debug("tool loop recost failed", exc_info = True)
-            if iteration >= max_tool_iterations + _extra + _continuation_credits:
+            if iteration >= max_tool_iterations + _extra + _continuation_credits + _preempt_resumes:
                 break
             if cancel_event is not None and cancel_event.is_set():
                 return
@@ -28392,7 +28475,8 @@ class LlamaCppBackend:
                 payload["stop"] = stop
             _apply_seeded_llama_request(payload, seed)
 
-            _respawn_truncations: list[dict] = []
+            _respawn_truncations: list[dict] = _carried_truncations
+            _carried_truncations = []
 
             def _refit_iteration_after_respawn() -> None:
                 nonlocal conversation
@@ -28588,17 +28672,21 @@ class LlamaCppBackend:
                     payload,
                     cancel_event,
                     on_respawn = _refit_iteration_after_respawn,
+                    **({} if preempt_event is None else {"preempt_event": preempt_event}),
                 ) as (
                     response,
                     first_token_deadline,
                 ):
                     for truncation in _respawn_truncations:
                         yield {"type": "context_truncated", **truncation}
+                    # Emitted, so a pause must not replay them.
+                    _respawn_truncations = []
                     raw_buf = ""
                     for raw_chunk in self._iter_text_cancellable(
                         response,
                         cancel_event,
                         first_token_deadline = first_token_deadline,
+                        **({} if preempt_event is None else {"preempt_event": preempt_event}),
                     ):
                         raw_buf += raw_chunk
                         while "\n" in raw_buf:
@@ -30637,6 +30725,76 @@ class LlamaCppBackend:
 
             except _LlamaStreamCancelled:
                 return
+            except _preemption.LlamaStreamPreempted:
+                # Paused to free KV, not abandoned. Everything that makes this
+                # recoverable is still alive in this frame -- the controller's
+                # one-shot ledger, the conversation, the client's open SSE response
+                # -- because only the upstream request was closed. No tool has run:
+                # execution happens after the stream ends, never during it.
+                _pre_usage = _backfill_usage_from_timings(_iter_usage, _iter_timings) or {}
+                _checkpoint = _preemption.StreamCheckpoint(
+                    visible_text = content_accum,
+                    reasoning_text = reasoning_accum,
+                    pending_truncations = list(_respawn_truncations),
+                    charged_tokens = _pre_usage.get("completion_tokens", 0) or 0,
+                    resumes = _preempt_resumes + 1,
+                    reason = getattr(preempt_event, "reason", None),
+                )
+                if _preempt_resumes >= _MAX_PREEMPT_RESUMES:
+                    # Churning rather than progressing. Refusing to pause again is
+                    # better than pausing forever, and the admitted output clamp
+                    # still bounds what this request can occupy.
+                    logger.warning(
+                        "Not pausing again after %d resumes; finishing the turn instead",
+                        _preempt_resumes,
+                    )
+                    if preempt_event is not None:
+                        preempt_event.clear()
+                    break
+                _preempt_resumes += 1
+                # The attempt really did decode these, so charge them once, exactly
+                # as the length continuation charges its own.
+                _accumulated_completion_tokens += _pre_usage.get("completion_tokens", 0) or 0
+                _it_p = _iter_timings or {}
+                _accumulated_predicted_ms += _it_p.get("predicted_ms", 0)
+                _accumulated_predicted_n += _it_p.get("predicted_n", 0)
+                # Unemitted when the pause landed during prefill; carried so the next
+                # attempt emits them exactly once. The archive is content-hash
+                # idempotent, the `context_truncated` event is not.
+                _carried_truncations = list(_respawn_truncations)
+                if _checkpoint.has_resume_point():
+                    # Unstripped, for the reason the length continuation gives: the
+                    # replayed prefix has to match the text already streamed, or the
+                    # next delta is concatenated onto a different string.
+                    #
+                    # A half-parsed tool call is dropped simply by not being appended.
+                    # That is the intended behaviour for a pause mid-call: back up to
+                    # the end of visible prose and let the model re-issue the call.
+                    # Nothing executed, so nothing is lost by asking again.
+                    append_assistant_turn(
+                        conversation,
+                        {"role": "assistant", "content": content_accum},
+                        continue_final_message = True,
+                    )
+                    continue_final_message = True
+                # No visible text means the pause landed before the first token. There
+                # is nothing to continue, and `continue_final_message` refuses an empty
+                # assistant turn, so the attempt is re-issued whole instead.
+                try:
+                    preempt_policy.on_preempted(_checkpoint)
+                    _resumed = preempt_policy.await_resume()
+                    preempt_policy.on_resumed()
+                except Exception:
+                    logger.debug("preemption policy raised; resuming anyway", exc_info = True)
+                    _resumed = True
+                if preempt_event is not None:
+                    preempt_event.clear()
+                if not _resumed:
+                    # The policy stopped waiting for room. Ending the turn leaves the
+                    # partial in the conversation rather than hanging the chat.
+                    logger.info("Paused generation was not resumed; ending the turn")
+                    break
+                continue
             except httpx.ConnectError:
                 # Mark unresolved provisional cards as failed before raising.
                 for _pid, _pname in provisional_started_tool_calls.items():
