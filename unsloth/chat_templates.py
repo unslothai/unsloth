@@ -1930,7 +1930,12 @@ def get_chat_template(
 
     # We first check if the tokenizer is a fast one. If not, we cannot convert this!
     is_fast_tokenizer = getattr(tokenizer, "is_fast", False)
-    old_padding_side = tokenizer.padding_side
+    # Vision models hand us a processor, which keeps padding_side on the tokenizer it
+    # wraps rather than on itself, so reading it here is an AttributeError. Unwrap the
+    # same way models/vision.py does when it forces the inference padding side.
+    old_padding_side = getattr(tokenizer, "padding_side", None)
+    if old_padding_side is None:
+        old_padding_side = getattr(getattr(tokenizer, "tokenizer", None), "padding_side", None)
 
     same_padding_token = False
     type_chat_template = None
@@ -2116,7 +2121,8 @@ def get_chat_template(
     else:
         from .models._utils import patch_tokenizer
     _, tokenizer = patch_tokenizer(model = None, tokenizer = tokenizer)
-    tokenizer.padding_side = old_padding_side
+    if old_padding_side is not None:
+        tokenizer.padding_side = old_padding_side
 
     # If not normal HF, we add a check to make old templates work
     if mapping != {"role" : "role", "content" : "content", "user" : "user", "assistant" : "assistant"}:

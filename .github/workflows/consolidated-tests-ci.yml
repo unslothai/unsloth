@@ -447,6 +447,7 @@ jobs:
             tests/test_gemma_2b_mapper_key.py \
             tests/test_raw_text_json_loading.py \
             tests/test_map_eos_token.py \
+            tests/test_get_chat_template_processor.py \
             tests/test_apertus_instruct_mapping.py
           # test_run_attention_flash_varlen_receives_window_and_softcap was deselected
           # until attention_dispatch.py predefined flash_attn_varlen_func as None; it
