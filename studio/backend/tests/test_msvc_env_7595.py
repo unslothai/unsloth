@@ -391,16 +391,28 @@ def test_an_unrunnable_probe_keeps_the_header_verdict(tmp_path, monkeypatch):
     assert _msvc_env.crt_headers_reachable() is False
 
 
-def test_the_probe_is_skipped_when_the_headers_are_already_there(tmp_path, monkeypatch):
-    """No compile cost on the machines that do not need rescuing, which is nearly all of them."""
+def test_marker_positive_dirs_are_still_probed(tmp_path, monkeypatch):
+    """stdlib.h and vcruntime.h are entry points, not the whole toolchain: vcruntime.h includes
+    sal.h, which lives in the SDK's `shared` directory rather than beside either marker, so a
+    mismatched SDK can carry both markers and still fail to compile. The markers must not
+    short-circuit the compiler."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.delenv("INCLUDE", raising = False)
+    dirs = _sdk_dirs(tmp_path, with_toolset = True)
+    _fake_triton(monkeypatch, dirs)
+    monkeypatch.setattr(_msvc_env, "_compiles_a_trivial_translation_unit", lambda cc, d: False)
+    # The heuristic would say yes; the compiler says no, and the compiler wins.
+    assert _msvc_env._headers_complete(dirs) is True
+    assert _msvc_env.crt_headers_reachable() is False
+
+
+def test_marker_positive_dirs_survive_an_unrunnable_probe(tmp_path, monkeypatch):
+    """The fallback still has to exist: a host where the compiler cannot be run keeps the
+    header verdict, so a complete-looking toolchain is not gated on an absent measurement."""
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.delenv("INCLUDE", raising = False)
     _fake_triton(monkeypatch, _sdk_dirs(tmp_path, with_toolset = True))
-    monkeypatch.setattr(
-        _msvc_env,
-        "_compiles_a_trivial_translation_unit",
-        lambda cc, d: (_ for _ in ()).throw(AssertionError("probed a complete toolchain")),
-    )
+    monkeypatch.setattr(_msvc_env, "_compiles_a_trivial_translation_unit", lambda cc, d: None)
     assert _msvc_env.crt_headers_reachable() is True
 
 

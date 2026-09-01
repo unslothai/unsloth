@@ -166,31 +166,35 @@ def crt_headers_reachable() -> bool:
         return True
     if not _needs_msvc_headers():
         return True
+    triton_dirs = _triton_include_dirs()
+
+    # The compiler is asked FIRST, because every check below it is inference and inference is
+    # wrong in both directions. It over-gates when clang-cl locates MSVC through its own search,
+    # which the directory listing cannot see. It under-gates on a partial or mismatched SDK: the
+    # two markers are only the entry points, and `vcruntime.h` includes `sal.h`, which lives in
+    # the SDK's `shared` directory rather than beside either marker, so a dir set can carry both
+    # markers and still fail to compile. Only a compile answers the question the JIT will ask.
+    if triton_dirs is not None:
+        try:
+            verdict = _compiles_a_trivial_translation_unit(_triton_cc(), triton_dirs)
+        except Exception:  # noqa: BLE001
+            verdict = None
+        if verdict is not None:
+            return verdict
+
+    # Fallback, for a host where the probe could not be run at all. Unknown is not evidence of
+    # a broken toolchain, so these keep their fail-open shape.
     env_dirs = os.environ.get("INCLUDE", "").split(os.pathsep)
     if _headers_complete(env_dirs):
         return True
     # INCLUDE is a positive signal only: unset is the normal case (Studio is not launched from a
     # Developer Command Prompt), so only Triton's own search coming back empty may gate.
-    triton_dirs = _triton_include_dirs()
     if triton_dirs is None:
         return True
     # Judged over the UNION, because that is what the compile sees: clang-cl reads INCLUDE as
     # system include paths and Triton passes its own dirs as /I. Judging each alone rejects a
     # split toolchain (VC toolset on INCLUDE, SDK discovered by Triton) that compiles fine.
-    if _headers_complete(triton_dirs + env_dirs):
-        return True
-    # Everything above is inference, and inference alone must not disable a working machine.
-    # Before gating, run the real thing: a compiler that succeeds here overrules every header
-    # heuristic, because it is the same question Triton's JIT will ask minutes later.
-    #
-    # Deliberately `is True`, so the probe can only ever RESCUE. A probe that cannot be run
-    # says nothing, and falling back to "ungated" there would trade a measured protection for
-    # an absent one -- the #7595 crash is exactly the case where a probe might not run.
-    try:
-        cc = _triton_cc()
-    except Exception:  # noqa: BLE001
-        return False
-    return _compiles_a_trivial_translation_unit(cc, triton_dirs) is True
+    return _headers_complete(triton_dirs + env_dirs)
 
 
 def gate_torch_compile_on_windows(log: logging.Logger) -> None:
