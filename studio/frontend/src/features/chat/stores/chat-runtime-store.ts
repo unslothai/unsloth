@@ -4073,7 +4073,19 @@ async function retryLegacyQwenDefaultsAfterPresetChange(
     // Only now touch local state. Applying before persisting would leave this
     // tab generating with values the server rejected, with no read to correct
     // it; the write decides.
-    if (persisted.applied) {
+    //
+    // Revalidated again after the await: the checkpoint can move between the
+    // CAS committing and its response arriving, and applying then would mark a
+    // different model's row migrated while the server updated the first. An
+    // external pick has no model-load callback to schedule another retry, so
+    // that row would stay stale until the next start.
+    if (
+      persisted.applied &&
+      sameCheckpointIdentity(
+        useChatRuntimeStore.getState().params.checkpoint,
+        checkpoint,
+      )
+    ) {
       applyLegacyQwenDefaultsAfterPresetChange(
         ownedGlobalCheckpoint,
         migrateOwnedGlobalAlongsideModelMemory,
@@ -4096,8 +4108,10 @@ function scheduleLegacyQwenDefaultsRetry(
   if (ownedGlobalCheckpoint !== null) {
     if (
       qwenDefaultsRetryOwnedGlobalCheckpoint !== null &&
-      qwenDefaultsRetryOwnedGlobalCheckpoint.toLowerCase() !==
-        ownedGlobalCheckpoint.toLowerCase()
+      !sameCheckpointIdentity(
+        qwenDefaultsRetryOwnedGlobalCheckpoint,
+        ownedGlobalCheckpoint,
+      )
     ) {
       qwenDefaultsRetryOwnedGlobalCheckpointConflicted = true;
     } else if (!qwenDefaultsRetryOwnedGlobalCheckpointConflicted) {

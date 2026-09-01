@@ -450,3 +450,82 @@ test("case-distinct POSIX paths keep separate reasoning-mode records", async () 
   // No record for this checkpoint, so the persisted toggle stands.
   assert.equal(useChatRuntimeStore.getState().reasoningEnabled, true);
 });
+
+test("a checkpoint switch during the conditional write is not migrated", async () => {
+  // The CAS commits for QWEN38, but the user moves to another Qwen before the
+  // response resolves. Applying then would mark the second model's row migrated
+  // while the server updated only the first.
+  const other = "unsloth/Qwen3.6-9B-GGUF";
+  resetHttp({ ...LEGACY_SETTINGS });
+  settingsHttp.beforeConditionalApply = () => {
+    useChatRuntimeStore.setState((state) => ({
+      params: { ...state.params, checkpoint: other },
+      paramsByModel: {
+        ...state.paramsByModel,
+        [other]: { ...LEGACY_SNAPSHOT },
+      },
+    }));
+  };
+  seedActiveQwen();
+
+  const active = useChatRuntimeStore.getState();
+  active.setParams(
+    { ...active.params, minP: 0, presencePenalty: 1.5 },
+    { fromModelDefaults: true },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 60));
+
+  // The row the user switched to keeps its legacy values locally.
+  const after = useChatRuntimeStore.getState();
+  const otherRow = after.paramsByModel[other] as Record<string, number>;
+  assert.equal(otherRow.presencePenalty, 0);
+  assert.equal(otherRow.minP, 0.01);
+});
+
+test("case-distinct POSIX ownership claims still conflict", async () => {
+  // Two resident-model callbacks enqueue ownership before the microtask runs.
+  // They are different files, so the competing claims must cancel each other
+  // rather than the later one silently replacing the earlier.
+  const upper = "/home/u/Models/qwen3.8-27b";
+  const lower = "/home/u/models/qwen3.8-27b";
+  resetHttp({
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    inferenceParams: {
+      temperature: 0.6,
+      topP: 0.95,
+      minP: 0.01,
+      presencePenalty: 0.0,
+    },
+  });
+  useChatRuntimeStore.setState((state) => ({
+    params: { ...state.params, ...LEGACY_SNAPSHOT, checkpoint: lower },
+    paramsByModel: {},
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    rememberParamsPerModel: false,
+    reasoningAlwaysOn: false,
+    reasoningEnabled: true,
+    supportsReasoning: true,
+    settingsHydrated: true,
+  }));
+
+  const store = useChatRuntimeStore.getState();
+  store.setParams(
+    { ...store.params, checkpoint: upper },
+    { fromModelDefaults: true, migrateOwnedGlobalQwenDefaults: true },
+  );
+  const second = useChatRuntimeStore.getState();
+  second.setParams(
+    { ...second.params, checkpoint: lower },
+    { fromModelDefaults: true, migrateOwnedGlobalQwenDefaults: true },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 60));
+
+  const global = settingsHttp.settings.inferenceParams as Record<
+    string,
+    number
+  >;
+  assert.equal(global.presencePenalty, 0);
+  assert.equal(global.minP, 0.01);
+});
