@@ -31,6 +31,9 @@ const anonymousForSession = new Set<string>();
 // positive-only on purpose: an "invalid" verdict is never cached, so the warning dialog
 // still appears, and a token that expires later is re-checked once the window lapses.
 const VALIDATION_REUSE_MS = 15_000;
+// Bumped whenever the cache is cleared, so a request that was already in flight cannot
+// repopulate it after the credential it belongs to is gone.
+let cacheGeneration = 0;
 const recentlyValid = new Map<string, number>();
 const inFlight = new Map<string, Promise<HfTokenValidationResult>>();
 
@@ -55,11 +58,16 @@ function validateOncePerBurst(token: string): Promise<HfTokenValidationResult> {
   if (pending) {
     return pending;
   }
+  // Clearing the maps cannot cancel a request already in flight, so a logout landing
+  // mid-validation would have the later resolution write the raw token straight back into
+  // recentlyValid -- and expiry only runs during another preparation, so it would sit
+  // there indefinitely. The generation makes a stale resolution non-cacheable.
+  const generation = cacheGeneration;
   const request = validateHfToken(token)
     .then((result) => {
       // Only a definitive pass is reusable: "unavailable" says nothing, and reusing it
       // would suppress the dialog for a token that is genuinely bad.
-      if (result.status === "valid") {
+      if (result.status === "valid" && generation === cacheGeneration) {
         recentlyValid.set(token, Date.now());
       }
       return result;
@@ -73,6 +81,7 @@ function validateOncePerBurst(token: string): Promise<HfTokenValidationResult> {
 
 // Called with no argument the whole cache goes; with one, just that credential.
 export function forgetHfTokenValidation(token?: string): void {
+  cacheGeneration += 1;
   if (token == null) {
     recentlyValid.clear();
     inFlight.clear();

@@ -45,10 +45,21 @@ function tokenStoreStub() {
   };
 }
 
+type Gate = { promise: Promise<void>; open: () => void };
+
+function makeGate(): Gate {
+  let open: () => void = () => {};
+  const promise = new Promise<void>((resolve) => {
+    open = () => resolve();
+  });
+  return { promise, open };
+}
+
 function load(
   status: ValidationStatus,
   calls: { n: number },
   tokenStore = tokenStoreStub(),
+  gate: Gate | null = null,
 ): ConfirmToken {
   const noopStore = {
     getState: () => ({
@@ -73,6 +84,9 @@ function load(
       "./api": {
         validateHfToken: async () => {
           calls.n += 1;
+          if (gate) {
+            await gate.promise;
+          }
           return { status, retryAfterSeconds: null };
         },
       },
@@ -176,4 +190,22 @@ test("replacing the stored credential drops the superseded key", async () => {
 
   await mod.prepareHfTokenForUse("hf_old");
   assert.equal(calls.n, 2, "the replaced credential kept its window");
+});
+
+
+test("a logout mid-validation does not let the reply repopulate the cache", async () => {
+  // Clearing the maps cannot cancel a request already in flight; without a generation
+  // the late resolution writes the raw token back and expiry never runs to remove it.
+  const calls = { n: 0 };
+  const gate = makeGate();
+  const mod = load("valid", calls, tokenStoreStub(), gate);
+
+  const pending = mod.prepareHfTokenForUse("hf_valid");
+  mod.forgetHfTokenValidation();
+  gate.open();
+  await pending;
+  assert.equal(calls.n, 1);
+
+  await mod.prepareHfTokenForUse("hf_valid");
+  assert.equal(calls.n, 2, "the in-flight reply repopulated the cleared cache");
 });

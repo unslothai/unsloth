@@ -921,9 +921,19 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
     if _safe_is_dir(Path(model_name)):
         return None
 
+    # Every route to the hub cache below reads it without authorizing, so a caller denied
+    # the ambient credential is refused them all: keying the memo apart is not enough when
+    # the value it memoizes came off disk in the first place.
+    if is_anonymous(hf_token):
+        cache_denied = True
+    else:
+        cache_denied = False
+
     if _env_offline():
         # No network: a downloaded repo can still tier from the hub cache. Cache a real hit,
         # never the miss, so a later online read still fetches the config.
+        if cache_denied:
+            return None
         cfg = _config_json_from_hf_cache(model_name)
         if cfg is not None:
             _config_json_cache[cache_key] = cfg
@@ -948,11 +958,11 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
             logger.debug("config.json access denied for '%s': %s", model_name, exc)
             return None
         logger.debug("Could not fetch config.json for '%s': %s", model_name, exc)
-        return _config_json_from_hf_cache(model_name)
+        return None if cache_denied else _config_json_from_hf_cache(model_name)
     except Exception as exc:
         logger.debug("Could not fetch config.json for '%s': %s", model_name, exc)
         # Transient: serve the hub cache uncached so the next call retries the network.
-        return _config_json_from_hf_cache(model_name)
+        return None if cache_denied else _config_json_from_hf_cache(model_name)
 
 
 def _config_json_is_definitive(model_name: str, hf_token: str | None = None) -> bool:

@@ -661,3 +661,109 @@ def test_offline_capability_probes_do_not_read_the_cache_anonymously(
         assert reached["vision"] == 0, "the anonymous caller probed the offline cache"
     else:
         assert reached["vision"] == 1, "the authorized caller lost its offline probe"
+
+
+@pytest.mark.parametrize("hf_token", [None, "hf_tok", False])
+def test_the_config_json_fallbacks_do_not_reach_the_cache_anonymously(
+    monkeypatch, hf_token
+):
+    """Keying the memo apart is not enough when the value came off disk to begin with."""
+    import utils.transformers_version as tv
+
+    monkeypatch.setattr(tv, "_env_offline", lambda: True)
+    monkeypatch.setattr(tv, "_safe_is_file", lambda _p: False)
+    monkeypatch.setattr(tv, "_safe_is_dir", lambda _p: False)
+    monkeypatch.setattr(tv, "_config_json_cache", {})
+    reads = {"n": 0}
+
+    def _from_cache(_name):
+        reads["n"] += 1
+        return {"max_position_embeddings": 4096}
+
+    monkeypatch.setattr(tv, "_config_json_from_hf_cache", _from_cache)
+
+    cfg = tv._load_config_json("org/private", hf_token = hf_token)
+
+    if is_anonymous(hf_token):
+        assert cfg is None
+        assert reads["n"] == 0, "the anonymous caller read the offline config cache"
+    else:
+        assert cfg == {"max_position_embeddings": 4096}
+
+
+def test_a_cache_only_gguf_listing_is_refused_for_an_anonymous_caller(monkeypatch):
+    """siblings is None means the lister already answered from its own cache.
+
+    Declining to build a second cached response is not enough: falling through would
+    serialize the first one.
+    """
+    import asyncio
+
+    import fastapi
+
+    from hub.services.models import gguf_variants
+
+    monkeypatch.setattr(
+        gguf_variants,
+        "list_gguf_variants",
+        lambda *_a, **_k: ([SimpleNamespace(filename = "m-Q4.gguf")], False, None),
+    )
+    monkeypatch.setattr(gguf_variants, "select_gguf_cache_snapshot", lambda *_a, **_k: None)
+    monkeypatch.setattr(gguf_variants, "_quants_from_state", lambda *_a, **_k: None)
+
+    with pytest.raises(fastapi.HTTPException) as excinfo:
+        asyncio.run(
+            gguf_variants.get_gguf_variants_answer("org/private", hf_token = False)
+        )
+
+    assert excinfo.value.status_code == 404
+
+
+def test_the_scan_route_derives_its_caller_rather_than_trusting_an_absent_body_token():
+    """An absent body token must not read as ambient-authorized."""
+    import inspect
+
+    signature = inspect.signature(models_routes.scan_model_remote_code)
+
+    assert "allow_ambient_token" in signature.parameters, (
+        "the scan route cannot tell an api key from a ui session"
+    )
+    source = inspect.getsource(models_routes.scan_model_remote_code)
+    assert "hf_token_arg(hf_token" in source, (
+        "the body token reaches the cache-backed scan target unresolved"
+    )
+
+
+def test_an_anonymous_seed_preview_is_refused_while_offline(monkeypatch):
+    """Offline, `datasets` satisfies a streaming load from its own cache.
+
+    The sentinel never reaches an authorization check there, so a previously cached
+    private dataset would come back as rows.
+    """
+    import asyncio
+
+    import fastapi
+
+    from routes.data_recipe import seed as seed_routes
+
+    monkeypatch.setattr(seed_routes, "hf_env_offline", lambda: True)
+
+    def _never(*_a, **_k):
+        raise AssertionError("the anonymous caller reached the dataset load")
+
+    monkeypatch.setattr(seed_routes, "_list_hf_data_files", _never)
+
+    payload = SimpleNamespace(
+        dataset_name = "org/private",
+        split = None,
+        subset = None,
+        hf_token = None,
+        preview_size = 5,
+    )
+
+    with pytest.raises(fastapi.HTTPException) as excinfo:
+        asyncio.run(
+            seed_routes.inspect_seed_dataset(payload, allow_ambient_token = False)
+        )
+
+    assert excinfo.value.status_code == 404

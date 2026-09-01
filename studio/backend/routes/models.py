@@ -2537,6 +2537,7 @@ async def scan_model_remote_code(
     model_local_path: Optional[str] = Body(None, embed = True),
     model_snapshot_path: Optional[str] = Body(None, embed = True),
     model_snapshot_repo_id: Optional[str] = Body(None, embed = True),
+    allow_ambient_token: bool = Depends(allow_ambient_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     """Scan a model's ``auto_map`` custom code so the UI can show findings before
@@ -2547,6 +2548,9 @@ async def scan_model_remote_code(
     POST (not GET) so the ``hf_token`` for gated repos travels in the body and
     never lands in a URL, browser history, or access log.
     """
+    # Without this the body's absent token reads as None, i.e. ambient-authorized, and the
+    # scan below would read a cached private repo's Python and return source snippets.
+    hf_token = hf_token_arg(hf_token, allow_ambient_token = allow_ambient_token)
     try:
         from utils.security import (
             load_scan_target,
