@@ -17,8 +17,13 @@
 #   macho    Every Mach-O under $MACHO_ROOT is the host architecture, and every
 #            Mach-O MAIN EXECUTABLE is signed. Closes the Rosetta 2 gap, the one
 #            divergence masking cannot reproduce.
+#   contained  A portable install (install.sh --portable / --root) wrote nothing
+#              into $HOME outside $CONTAINED_ROOT. Needs $CONTAINED_STAMP, a file
+#              created before the install, so the check sees what this run wrote
+#              rather than what the image shipped with. Issue #8865.
 #
 # Usage: bash .github/scripts/clean-machine-assert.sh absent nodylibtool notools dylibpatch nobuild macho
+#        CONTAINED_ROOT=... CONTAINED_STAMP=... bash .github/scripts/clean-machine-assert.sh contained
 set -uo pipefail
 
 LOG="${INSTALL_LOG:-logs/install.log}"
@@ -352,6 +357,63 @@ $f
           fail "Mach-O main executable carries a signature that does not verify:$broken"
         else
           ok "$n Mach-O files under $root, plus uv and the venv's base interpreter, are $want$([ "$want" = arm64 ] && echo "; all $nexe main executable(s) signed")"
+        fi
+      fi
+      ;;
+
+    contained)
+      # A portable install (install.sh --portable / --root) promises the home
+      # directory is untouched: one root, one rm to remove it. Issue #8865.
+      #
+      # Compares against a stamp file the caller created BEFORE the install
+      # (CONTAINED_STAMP), so this reports what the install itself wrote rather
+      # than whatever the image shipped with.
+      root="${CONTAINED_ROOT:-${UNSLOTH_HOME:-}}"
+      stamp="${CONTAINED_STAMP:-}"
+      if [ -z "$root" ]; then
+        fail "contained: set CONTAINED_ROOT (or UNSLOTH_HOME) to the portable root"
+      elif [ ! -d "$root" ]; then
+        fail "contained: $root does not exist, so the install did not land where it said"
+      elif [ -z "$stamp" ] || [ ! -e "$stamp" ]; then
+        fail "contained: set CONTAINED_STAMP to a file created before the install"
+      else
+        # Physical paths on both sides. A lexical prefix test accepts
+        # "$root/../elsewhere" and follows a symlink out of the tree, which is
+        # exactly the escape this check exists to catch.
+        root_p=$(CDPATH= cd -P -- "$root" 2>/dev/null && pwd -P) || root_p="$root"
+        home_p=$(CDPATH= cd -P -- "$HOME" 2>/dev/null && pwd -P) || home_p="$HOME"
+
+        # Ephemeral or OS-owned paths that no install can keep out of the home.
+        # Each is here because the OS or the shell writes it, not the installer.
+        strays=$(find "$home_p" -newer "$stamp" \
+            \( -type f -o -type d \) -print 2>/dev/null |
+          while IFS= read -r p; do
+            pp=$(CDPATH= cd -P -- "$(dirname "$p")" 2>/dev/null && pwd -P) || continue
+            pp="$pp/$(basename "$p")"
+            case "$pp" in
+              "$root_p"|"$root_p"/*) continue ;;
+              "$home_p") continue ;;
+              "$home_p"/.bash_history|"$home_p"/.zsh_history) continue ;;
+              "$home_p"/.sudo_as_admin_successful) continue ;;
+              "$home_p"/.wget-hsts|"$home_p"/.lesshst) continue ;;
+              # The directory NODES only: their mtime moves when anything is
+              # added, and on a CI image something always is. Children are still
+              # reported, which is the whole point -- ~/.cache/uv is the leak.
+              "$home_p"/.local|"$home_p"/.cache|"$home_p"/.config) continue ;;
+              "$home_p"/.docker/*|"$home_p"/.gitconfig) continue ;;
+            esac
+            printf ' %s\n' "$pp"
+          done)
+        # A run that finds nothing at all has usually lost its stamp or its
+        # HOME, and would then pass no matter how much leaked.
+        probe=$(find "$root_p" -newer "$stamp" -print -quit 2>/dev/null || true)
+        if [ -z "$probe" ]; then
+          fail "contained: nothing under $root_p is newer than the stamp, so this check proved nothing"
+        elif [ -n "$strays" ]; then
+          fail "contained: the install wrote outside $root_p:
+$strays"
+        else
+          ok "the install wrote nothing into $home_p outside $root_p"
         fi
       fi
       ;;
