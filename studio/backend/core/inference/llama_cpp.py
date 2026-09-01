@@ -3376,6 +3376,27 @@ def _auto_mode_drops_mtp(
     return req_mode == "auto" and size_b is not None and size_b < _MTP_MIN_SIZE_B
 
 
+# MLA architectures whose embedded MTP path is measured FASTER than no speculation,
+# so Auto keeps it despite the gate below. Named individually rather than widening
+# the gate: a new MLA arch still defaults to the safe side until someone benches it.
+#
+# glm5next (GLM-5.3-Flash) runs its NextN block as an ordinary DSA layer against its
+# own one-layer KV cache, so it does not pay the duplicated target-KV and per-draft
+# indexer recompute the gate describes.
+# unslothai/llama.cpp b10715-mix-86bd2d3, UD-IQ1_S on one B200, --spec-draft-n-max 3:
+# 61.1 -> 80.2 tok/s (1.31x), draft acceptance 0.634.
+#
+# Only the unhyphenated spelling. A second upstream port of the same model uses the
+# arch name "glm5-next" and does not implement the NextN graph at all (it loads the
+# blk.45 tensors and logs them as unused), so Auto must not promote MTP there.
+_MLA_MTP_FAST_ARCHS = frozenset({"glm5next"})
+
+
+def _arch_has_fast_mla_mtp(architecture: Optional[str]) -> bool:
+    """Whether this MLA architecture's embedded MTP head is worth promoting in Auto."""
+    return bool(architecture) and str(architecture).strip().lower() in _MLA_MTP_FAST_ARCHS
+
+
 def _mla_mtp_auto_enabled() -> bool:
     """Whether Auto may pick embedded MTP for an MLA model (GLM-5.2/DeepSeek/Kimi).
 
@@ -4068,6 +4089,11 @@ _TARGET_KV_EXCLUDES_NEXTN_ARCHS = frozenset(
         # MLA/DSA trunk with a dense MTP head, llama-model.cpp:2129
         "glm-dsa",
         "deepseek32",
+        # Hybrid KDA + DSA trunk, filtered in the same block as the Qwen hybrids.
+        # Both upstream spellings of GLM-5.3-Flash keep blk.45 out of the trunk cache,
+        # so the sizing is the same either way even though only glm5next runs NextN.
+        "glm5next",
+        "glm5-next",
         # Plain attention trunk with an explicit nextn filter, llama-model.cpp:2356
         "step35",
         "hy_v3",
@@ -24149,6 +24175,7 @@ class LlamaCppBackend:
             and self._kv_lora_rank is not None
             and not bool(mtp_draft_path)
             and not _mla_mtp_auto_enabled()
+            and not _arch_has_fast_mla_mtp(getattr(self, "_architecture", None))
         )
 
         if user_owns_spec_type:
