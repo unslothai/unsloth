@@ -4619,6 +4619,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           globalBelongsToActiveCheckpoint,
           globalBelongsToActiveCheckpoint && !remembersPerModel,
         );
+        // Set when the confirming read is declined because the model moved.
+        // Neither switch path can schedule the new model's own retry: both are
+        // gated on settingsHydrated, still false here.
+        let checkpointMovedDuringConfirm = false;
         if (fromServer && migration.patch) {
           try {
             // Re-read immediately before the write, so the patch derives from
@@ -4638,6 +4642,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
               activePresetSourceMutationVersion ===
                 hydrationVersions.presets.activePresetSource &&
               confirmedState.activePresetSource === "builtin-default";
+            checkpointMovedDuringConfirm =
+              confirmedState.params.checkpoint !== checkpoint;
             migration =
               confirmedState.params.checkpoint === checkpoint &&
               presetSourceUnchanged
@@ -4729,6 +4735,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           if (fromServer) backfillMirroredSettings(hydratedSettings);
           // After the backfill, so a startup edit wins over the stored value.
           flushPreHydrationSettings();
+          // Now that hydration is marked complete, the model this switched to
+          // can have its own legacy row repaired.
+          if (checkpointMovedDuringConfirm) {
+            scheduleLegacyQwenDefaultsRetry(null);
+          }
           // The previous session's tab-close writes, for the rows that did not exist
           // yet when it sent them. A replay of one that did land is refused by its own
           // seq, so this cannot revert anything newer.

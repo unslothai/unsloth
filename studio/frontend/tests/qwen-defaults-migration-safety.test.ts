@@ -1112,3 +1112,56 @@ test("an unreachable backend does not spin the migration rearm", async () => {
   );
   settingsHttp.putFailures = [];
 });
+
+test("a model switch during hydration still gets its own row migrated", async () => {
+  const QWEN36 = "unsloth/Qwen3.6-14B-GGUF";
+  const stored = {
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    inferenceParamsByModel: {
+      [QWEN38]: { ...LEGACY_SNAPSHOT },
+      [QWEN36]: { ...LEGACY_SNAPSHOT },
+    },
+  };
+  resetHttp({ ...stored });
+  // The first GET is hydration's own read; the second is the confirming read
+  // taken immediately before the write, and that is the one to hold open.
+  let releaseConfirm: () => void = () => undefined;
+  const confirming = new Promise<Record<string, unknown>>((resolve) => {
+    releaseConfirm = () => resolve(settingsHttp.settings);
+  });
+  settingsHttp.getResponses.push(stored, confirming);
+  useChatRuntimeStore.setState((state) => ({
+    params: { ...state.params, ...LEGACY_SNAPSHOT, checkpoint: QWEN38 },
+    paramsByModel: {
+      [QWEN38]: { ...LEGACY_SNAPSHOT },
+      [QWEN36]: { ...LEGACY_SNAPSHOT },
+    },
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    rememberParamsPerModel: true,
+    reasoningAlwaysOn: false,
+    reasoningEnabled: true,
+    supportsReasoning: true,
+    settingsHydrated: false,
+  }));
+  const hydrating = useChatRuntimeStore.getState().hydratePersistedSettings();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  // The model moves while the confirming read is out. Neither switch path can
+  // schedule a retry from here, since hydration has not finished.
+  useChatRuntimeStore.setState((state) => ({
+    params: { ...state.params, ...LEGACY_SNAPSHOT, checkpoint: QWEN36 },
+  }));
+  releaseConfirm();
+  await hydrating;
+  await new Promise((resolve) => setTimeout(resolve, 80));
+
+  const row = (
+    settingsHttp.settings.inferenceParamsByModel as Record<
+      string,
+      Record<string, number>
+    >
+  )[QWEN36];
+  assert.equal(row.presencePenalty, 1.5);
+  assert.equal(row.minP, 0);
+});
