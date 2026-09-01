@@ -30,8 +30,15 @@ TOOLS_WITH_MCP_FILESYSTEM = TOOLS + [
 RAG_SCOPE = {"project_id": "p1"}
 
 
-def _rag_nudge(*, nudge: str, tools: list[dict], rag_scope) -> str:
-    return asyncio.run(inference._apply_rag_nudge(nudge, tools, rag_scope = rag_scope))
+def _rag_nudge(*, nudge: str, tools: list[dict], rag_scope, max_tool_calls = None) -> str:
+    return asyncio.run(
+        inference._apply_rag_nudge(
+            nudge,
+            tools,
+            rag_scope = rag_scope,
+            max_tool_calls = max_tool_calls,
+        )
+    )
 
 
 @pytest.fixture(autouse = True)
@@ -104,6 +111,10 @@ def test_external_provider_routes_apply_rag_nudge_before_streaming():
 def test_rag_nudge_unchanged_without_scope():
     assert _rag_nudge(nudge = "keep", tools = TOOLS, rag_scope = None) == "keep"
     assert _rag_nudge(nudge = "keep", tools = [], rag_scope = RAG_SCOPE) == "keep"
+
+
+def test_rag_nudge_unchanged_when_tool_budget_is_zero():
+    assert _rag_nudge(nudge = "keep", tools = TOOLS, rag_scope = RAG_SCOPE, max_tool_calls = 0) == "keep"
 
 
 def _fake_search_factory(captured):

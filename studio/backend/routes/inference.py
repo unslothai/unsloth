@@ -4803,6 +4803,7 @@ async def _apply_rag_nudge(
     *,
     rag_scope,
     tool_choice = None,
+    max_tool_calls = None,
 ) -> str:
     """Append the RAG grounding nudge to ``nudge`` when the knowledge-base tool
     is active (search_knowledge_base present and a retrieval scope is set).
@@ -4821,7 +4822,12 @@ async def _apply_rag_nudge(
 
     Returns ``nudge`` unchanged when RAG isn't active or the caller disabled tools."""
     tool_names = {(t.get("function") or {}).get("name") for t in (tools or [])}
-    if tool_choice == "none" or "search_knowledge_base" not in tool_names or not rag_scope:
+    if (
+        max_tool_calls == 0
+        or tool_choice == "none"
+        or "search_knowledge_base" not in tool_names
+        or not rag_scope
+    ):
         return nudge
     has_internet_tool = bool(tool_names & _RAG_INTERNET_TOOL_NAMES)
     conditional = ""
@@ -18562,6 +18568,7 @@ async def _proxy_to_external_provider(
                 studio_tool_payloads,
                 rag_scope = payload.rag_scope,
                 tool_choice = payload.tool_choice,
+                max_tool_calls = payload.max_tool_calls_per_message,
             )
             if _codex_nudge:
                 chat_messages = _append_to_codex_instructions(chat_messages, _codex_nudge)
@@ -18887,6 +18894,7 @@ async def _proxy_to_external_provider(
             external_studio_tools,
             rag_scope = payload.rag_scope,
             tool_choice = payload.tool_choice,
+            max_tool_calls = payload.max_tool_calls_per_message,
         )
         if _external_nudge:
             chat_messages = _append_to_system_message(chat_messages, _external_nudge)
@@ -20469,6 +20477,7 @@ async def produce_openai_chat_completions(
                 tools_to_use,
                 rag_scope = payload.rag_scope,
                 tool_choice = payload.tool_choice,
+                max_tool_calls = payload.max_tool_calls_per_message,
             )
             # This path fits through `_fit_context`, the only fit that can reset the epoch,
             # and only when the request asked for truncation. Otherwise the checkpoint half
@@ -22151,6 +22160,7 @@ async def produce_openai_chat_completions(
             _sf_tools_to_use,
             rag_scope = payload.rag_scope,
             tool_choice = payload.tool_choice,
+            max_tool_calls = payload.max_tool_calls_per_message,
         )
         # No `checkpoint_fitted`: this path never calls `fit_checkpoint_context`, so there
         # is no reset and no carried_forward block to describe.
@@ -27190,6 +27200,7 @@ async def chat_count_tokens(
                 # the attribute access raised AttributeError and 500'd every count that
                 # reached the RAG branch.
                 tool_choice = getattr(payload, "tool_choice", None),
+                max_tool_calls = getattr(payload, "max_tool_calls_per_message", None),
             )
             openai_messages = _append_to_system_message(openai_messages, _count_nudge)
 
