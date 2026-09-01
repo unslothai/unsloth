@@ -359,6 +359,30 @@ fedora_no_version_host gfx1200 gfx1201
 mock_lspci "Navi 48 [Radeon RX 9070 XT]"
 assert_eq "a same-family pair names no single card" "" "$(run_gfx)"
 
+# Real ROCm 7.x rocminfo for one gfx1201: the agent Name, an ISA triple carrying feature
+# flags, and a SECOND ISA "gfx12-generic" (ROCm/ROCm#6110). One card must not read as two,
+# and gfx12-generic must not read as an arch -- either way the sole-arch check rejects the
+# host and a working 9070 XT falls back to cpu.
+fedora_no_version_host gfx1201
+{
+    echo "ROCk module is loaded"
+    echo "Agent 1"
+    echo "  Name:                    AMD Ryzen 9 9950X"
+    echo "  Device Type:             CPU"
+    echo "Agent 2"
+    echo "  Name:                    gfx1201"
+    echo "  Marketing Name:          AMD Radeon RX 9070 XT"
+    echo "  Device Type:             GPU"
+    echo "  ISA Info:"
+    echo "    ISA 1"
+    echo "      Name:                    amdgcn-amd-amdhsa--gfx1201:sramecc+:xnack-"
+    echo "    ISA 2"
+    echo "      Name:                    amdgcn-amd-amdhsa--gfx12-generic"
+} > "$_MOCK/.rocminfo.out"
+assert_eq "a ROCm 7.x gfx1201 with two ISAs is still one card" \
+    "$_AMD/gfx120X-all/" "$(run_index)"
+assert_eq "and gfx12-generic does not count as a second arch" "gfx1201" "$(run_gfx)"
+
 reset_host
 mock_nvidia_smi "12.8" "9.0"
 mock_hipconfig_offpath "6.4.43483-0"
