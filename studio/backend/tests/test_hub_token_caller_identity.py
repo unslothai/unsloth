@@ -570,3 +570,51 @@ def test_offline_embedding_detection_does_not_read_the_cache_anonymously(monkeyp
     monkeypatch.setattr(model_config_module, "_embedding_marker_in_hf_cache", _marker)
 
     assert model_config_module.is_embedding_model("org/private", hf_token = False) is False
+
+
+@pytest.mark.parametrize("hf_token", [None, "hf_tok", False])
+def test_gguf_variants_serve_the_hf_cache_only_to_an_authorized_caller(
+    monkeypatch, hf_token
+):
+    """prefer_local_cache answers off disk with the credential never consulted.
+
+    The listing carries variant filenames, sizes and the vision flag, so a caller denied
+    the ambient token could name a private repo the UI had cached and read it back.
+    """
+    import asyncio
+
+    from hub.services.models import gguf_variants
+
+    reads = {"snapshot": 0, "state": 0}
+
+    def _snapshot(*_a, **_k):
+        reads["snapshot"] += 1
+        return None
+
+    def _state(*_a, **_k):
+        reads["state"] += 1
+        return None
+
+    monkeypatch.setattr(gguf_variants, "select_gguf_cache_snapshot", _snapshot)
+    monkeypatch.setattr(gguf_variants, "_quants_from_state", _state)
+
+    try:
+        asyncio.run(
+            gguf_variants.get_gguf_variants_answer(
+                "org/private",
+                prefer_local_cache = True,
+                offline = True,
+                local_path = None,
+                hf_token = hf_token,
+            )
+        )
+    except Exception:
+        # Offline with nothing cached is a 404 either way; the reads are the point.
+        pass
+
+    if is_anonymous(hf_token):
+        assert reads == {"snapshot": 0, "state": 0}, (
+            "the anonymous caller was served from the hub cache"
+        )
+    else:
+        assert reads["snapshot"] > 0, "the authorized caller lost its cache fast path"

@@ -23,6 +23,7 @@ from hub.utils import download_manifest
 from hub.utils import download_registry
 from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.hf_errors import hf_error_status
+from hub.utils.hf_tokens import is_anonymous
 from hub.utils.hf_cache_state import (
     incomplete_blob_hash,
     iter_destructive_repo_cache_dirs,
@@ -1287,9 +1288,15 @@ async def get_gguf_variants_answer(
         if not _is_valid_repo_id(repo_id):
             raise HTTPException(status_code = 400, detail = f"Invalid repo_id: {repo_id!r}")
 
+        # The HF cache answers from disk without ever authorizing, so a caller denied the
+        # ambient credential must not be served out of it: it could name a private repo the
+        # UI had already cached and read back its variant filenames, sizes and vision flag.
+        # A local_path the caller named itself is not the Hub cache and stays available.
+        cache_reads_authorized = not is_anonymous(hf_token)
+
         def _scoped_local_response():
             """The pinned snapshot's own answer, or None when it holds nothing."""
-            if snapshot_scope is None:
+            if snapshot_scope is None or not cache_reads_authorized:
                 return None
             variants, has_vision = list_local_gguf_variants(str(snapshot_scope))
             if not (variants or has_vision):
@@ -1306,7 +1313,11 @@ async def get_gguf_variants_answer(
             scoped_response = _scoped_local_response()
             if scoped_response is not None:
                 return scoped_response
-            cached = select_gguf_cache_snapshot(repo_id, root = hub_cache)
+            cached = (
+                select_gguf_cache_snapshot(repo_id, root = hub_cache)
+                if cache_reads_authorized
+                else None
+            )
             if cached is not None:
                 variants, has_vision, complete, snapshot = _merge_when_the_repo_id_loads(
                     repo_id, cached, hub_cache
@@ -1326,7 +1337,9 @@ async def get_gguf_variants_answer(
                     return _local_response(
                         repo_id, variants, has_vision, _complete_quants_under(local_path)
                     )
-            partial = _quants_from_state(repo_id, hub_cache)
+            partial = (
+                _quants_from_state(repo_id, hub_cache) if cache_reads_authorized else None
+            )
             if partial is not None:
                 variants, has_vision = partial
                 return _partial_local_response(repo_id, variants, has_vision)
@@ -1349,6 +1362,10 @@ async def get_gguf_variants_answer(
             The lister's own cache read is repo-wide, so redoing it here pins the listing and,
             through ``answered_from``, its context metadata to the named copy.
             """
+            if not cache_reads_authorized:
+                # Same reason as the local_only branch: an unauthorized caller whose hub
+                # call failed must get that failure, not the cache's answer to it.
+                return None
             scoped_response = _scoped_local_response()
             if scoped_response is not None:
                 return scoped_response
