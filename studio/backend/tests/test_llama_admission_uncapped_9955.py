@@ -309,6 +309,45 @@ class TestTheTokenizerPricesThePrompt:
         assert all(r is not None for r in results)
         assert live["peak"] <= routes_inference._OPENAI_LLAMA_COUNT_CONCURRENCY
 
+    def test_a_burst_declines_the_count_instead_of_queueing_for_it(self):
+        """Ahead of admission there is no queue_limit and no queue timeout to catch a
+        waiter, so a burst prices itself with the bound rather than lining up behind a
+        stalled llama-server."""
+        import asyncio as _asyncio
+
+        started = {"n": 0}
+
+        def slow(*a, **k):
+            started["n"] += 1
+            time.sleep(0.5)
+            return 700
+
+        backend = self._counting_backend(700)
+        backend.count_chat_tokens = slow
+
+        async def burst():
+            return await _asyncio.gather(
+                *[
+                    routes_inference._openai_llama_uncapped_max_tokens(
+                        _uncapped(), request = None, llama_backend = backend
+                    )
+                    for _ in range(10)
+                ]
+            )
+
+        routes_inference._openai_llama_count_gate = None
+        started_at = time.monotonic()
+        results = _run(burst())
+        elapsed = time.monotonic() - started_at
+        # The two that got a slot are priced by the count; the rest by the bound, and
+        # nobody waited for the ten counts to drain.
+        assert started["n"] <= routes_inference._OPENAI_LLAMA_COUNT_CONCURRENCY
+        assert elapsed < 2.0
+        assert {r.max_tokens for r in results} <= {
+            SHARE - HEADROOM - 700,
+            SHARE - HEADROOM - _charged(_uncapped()),
+        }
+
     def test_a_tokenizer_that_cannot_answer_falls_back_to_the_bound(self):
         def boom(*a, **k):
             raise RuntimeError("llama-server is not loaded")

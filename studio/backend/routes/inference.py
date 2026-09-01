@@ -2089,6 +2089,13 @@ class _UncappedMaxTokens(NamedTuple):
 # a count is 3-36ms, so two workers sustain far more of them than a slot count can consume,
 # and two can never starve even the five-worker executor of a single-CPU container.
 _OPENAI_LLAMA_COUNT_CONCURRENCY = 2
+# How long a request waits for one of those two before giving up and pricing itself with the
+# bound instead. Nobody QUEUES here: this is ahead of admission, so waiters would be counted
+# by no queue_limit and cut off by no queue timeout, and a stalled llama-server would hold
+# both slots for two 10-second calls while a burst piled up behind them. Declining is free --
+# the bound is always available and only ever over-prices -- so the wait is sized to absorb a
+# couple of ordinary counts (3-36ms) and nothing longer.
+_OPENAI_LLAMA_COUNT_WAIT_S = 0.1
 _openai_llama_count_gate: Optional[asyncio.Semaphore] = None
 
 
@@ -2119,9 +2126,9 @@ async def _openai_llama_counted_prompt_tokens(
     None when the count is unavailable, which is the caller's signal to fall back to the
     bound rather than to guess.
 
-    Bounded by `_openai_llama_count_slot`: this runs before admission, so it must not be
-    able to park the default executor's workers away from the generations that already
-    passed it.
+    Bounded by `_openai_llama_count_slot`, and it DECLINES rather than queues when the
+    bound is busy: this runs before admission, where a waiter is subject to no queue limit
+    and no queue timeout, so a burst prices itself with the bound instead of lining up.
     """
     messages = getattr(payload, "messages", None)
     if not (isinstance(messages, list) and messages):
@@ -2136,7 +2143,12 @@ async def _openai_llama_counted_prompt_tokens(
             getattr(payload, "preserve_thinking", None),
         )
         continue_final = _continue_final_message(payload)
-        async with _openai_llama_count_slot():
+        gate = _openai_llama_count_slot()
+        try:
+            await asyncio.wait_for(gate.acquire(), _OPENAI_LLAMA_COUNT_WAIT_S)
+        except (asyncio.TimeoutError, TimeoutError):
+            return None
+        try:
             counted = await asyncio.to_thread(
                 llama_backend.count_chat_tokens,
                 estimate_messages,
@@ -2146,6 +2158,8 @@ async def _openai_llama_counted_prompt_tokens(
                 reasoning_kwargs,
                 continue_final,
             )
+        finally:
+            gate.release()
         if not isinstance(counted, int) or counted <= 0:
             return None
         counted += _openai_llama_admission_extra_prompt_tokens(payload, strict = True)
