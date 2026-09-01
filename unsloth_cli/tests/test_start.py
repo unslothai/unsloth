@@ -8172,9 +8172,7 @@ def test_a_rejected_model_never_offers_to_install_the_agent(
     assert offered == []
 
 
-def test_a_missing_agent_is_still_reported_for_a_model_that_passes(
-    monkeypatch, tmp_path
-):
+def test_a_missing_agent_is_still_reported_for_a_model_that_passes(monkeypatch, tmp_path):
     # The reorder must not turn the install prompt into dead code for a runnable model.
     _fake_hub_listing(monkeypatch, {"unsloth/Qwen3-0.6B-GGUF": ["Q4_K_M.gguf"]})
     monkeypatch.setattr(start, "_agents_config_root", lambda: tmp_path / "agents")
