@@ -281,11 +281,13 @@ class TestSandboxEnvIsolation:
             assert key not in env, f"parent env var {key!r} leaked into sandbox env"
 
     def test_sandbox_env_is_minimal_whitelist(self, monkeypatch, tmp_path):
+        import core.inference.tools as tools_mod
         from core.inference.tools import _build_safe_env
 
         # Pollute parent env with arbitrary keys
         for key in ("EVIL", "RANDOM", "ATTACK_VEC", "MY_TOKEN", "X_API_KEY"):
             monkeypatch.setenv(key, "leak-me")
+        monkeypatch.setattr(tools_mod, "plain_pth_pythonpath_roots", lambda: [])
         env = _build_safe_env(str(tmp_path))
         allowed = {
             "PATH",
@@ -320,6 +322,22 @@ class TestSandboxEnvIsolation:
         # sitecustomize shim dir (code-interpreter path remap).
         assert env["PYTHONPATH"].endswith("sandbox_site")
         assert "leak-me" not in env["PYTHONPATH"]
+
+    def test_plain_pth_roots_are_added_to_child_pythonpath(self, monkeypatch, tmp_path):
+        import core.inference.tools as tools_mod
+        from core.inference.tools import _build_safe_env
+
+        source = tmp_path / "editable-source"
+        source.mkdir()
+        monkeypatch.setattr(
+            tools_mod,
+            "plain_pth_pythonpath_roots",
+            lambda: [os.path.realpath(source)],
+        )
+
+        child_paths = _build_safe_env(str(tmp_path))["PYTHONPATH"].split(os.pathsep)
+        assert child_paths[0] == tools_mod._SANDBOX_SITE_DIR
+        assert os.path.realpath(source) in child_paths
 
     def _trusted_git_bash(
         self,

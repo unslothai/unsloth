@@ -2448,7 +2448,8 @@ case "$OS" in
         bubblewrap_usable() {
             BWRAP_BIN="$(command -v bwrap 2>/dev/null)" || return 1
             TRUE_BIN="$(command -v true 2>/dev/null)" || TRUE_BIN="/usr/bin/true"
-            "$BWRAP_BIN" --ro-bind / / --unshare-all --die-with-parent "$TRUE_BIN" \
+            "$BWRAP_BIN" --ro-bind / / --unshare-all --die-with-parent \
+                --proc /proc --dev /dev --tmpfs /tmp "$TRUE_BIN" \
                 </dev/null >/dev/null 2>&1
         }
 

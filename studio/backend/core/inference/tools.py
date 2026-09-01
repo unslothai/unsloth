@@ -81,6 +81,7 @@ from core.inference.sandbox import (
     SandboxProfilePathError,
     build_sandbox_argv,
     opted_in_user_site_path,
+    plain_pth_pythonpath_roots,
     sandbox_available,
 )
 from storage import mcp_servers_db
@@ -6888,6 +6889,7 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     user_site = opted_in_user_site_path()
     if user_site:
         python_path_entries.append(user_site)
+    python_path_entries.extend(plain_pth_pythonpath_roots())
     env = {
         "PATH": os.pathsep.join(deduped),
         "HOME": workdir,

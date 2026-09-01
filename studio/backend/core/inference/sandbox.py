@@ -29,7 +29,6 @@ _NIX_STORE = "/nix/store"
 
 _LINUX_ACCELERATOR_DEVICE_PATHS = (
     "/dev/dxg",
-    "/dev/dri",
     "/dev/kfd",
     "/dev/accel",
     "/dev/nvidia-caps",
@@ -38,6 +37,14 @@ _LINUX_ACCELERATOR_DEVICE_PATHS = (
     "/dev/nvidia-uvm",
     "/dev/nvidia-uvm-tools",
 )
+_LINUX_DRM_DIR = "/dev/dri"
+_LINUX_ROCM_OPT_ROOT = "/opt"
+_LINUX_ROCM_ROOTS = ("/opt/rocm",)
+_LINUX_ROCM_RUNTIME_LIBRARY_PREFIXES = (
+    "libamdhip64.so",
+    "libhsa-runtime64.so",
+    "librocdxg.so",
+)
 _LINUX_ACCELERATOR_SYSFS_CLASS_PATHS = (
     "/sys/class/drm",
     "/sys/class/kfd",
@@ -45,6 +52,8 @@ _LINUX_ACCELERATOR_SYSFS_CLASS_PATHS = (
 _LINUX_MOUNTINFO = "/proc/self/mountinfo"
 _WORKDIR_SCAN_MAX_ENTRIES = 100_000
 _WORKDIR_SCAN_MAX_DEPTH = 128
+_PTH_NAMESPACE_SCAN_MAX_ENTRIES = 10_000
+_PTH_NAMESPACE_SCAN_MAX_DEPTH = 32
 
 _MACOS_DEVELOPER_PREFIXES = (
     "/Library/Developer/CommandLineTools",
@@ -204,6 +213,7 @@ def _linux_accelerator_device_nodes() -> list[str]:
                         nodes.append(entry.path)
         except OSError:
             continue
+    nodes.extend(_linux_drm_render_device_paths())
     try:
         with os.scandir("/dev") as entries:
             for entry in entries:
@@ -220,6 +230,64 @@ def _linux_accelerator_device_nodes() -> list[str]:
     except OSError:
         pass
     return list(dict.fromkeys(nodes))
+
+
+def _linux_drm_render_device_paths() -> list[str]:
+    """Existing DRM render nodes, excluding display/control ``card*`` nodes."""
+    paths: list[str] = []
+    try:
+        with os.scandir(_LINUX_DRM_DIR) as entries:
+            for entry in entries:
+                suffix = entry.name.removeprefix("renderD")
+                if not entry.name.startswith("renderD") or not suffix.isdigit():
+                    continue
+                try:
+                    entry_stat = os.lstat(entry.path)
+                except OSError:
+                    continue
+                if stat.S_ISCHR(entry_stat.st_mode) or stat.S_ISBLK(entry_stat.st_mode):
+                    paths.append(entry.path)
+    except OSError:
+        pass
+    return paths
+
+
+def _linux_rocm_runtime_bindings() -> list[tuple[str, str]]:
+    """Detected ROCm library directories as ``(real source, logical dest)``."""
+    roots = list(_LINUX_ROCM_ROOTS)
+    try:
+        with os.scandir(_LINUX_ROCM_OPT_ROOT) as entries:
+            roots.extend(
+                entry.path
+                for entry in entries
+                if entry.name.startswith("rocm-") and entry.is_dir(follow_symlinks = True)
+            )
+    except OSError:
+        pass
+
+    bindings: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for root in roots:
+        for leaf in ("lib", "lib64"):
+            destination = os.path.normpath(os.path.join(root, leaf))
+            try:
+                with os.scandir(destination) as entries:
+                    detected = any(
+                        any(
+                            entry.name.startswith(prefix)
+                            for prefix in _LINUX_ROCM_RUNTIME_LIBRARY_PREFIXES
+                        )
+                        for entry in entries
+                    )
+            except OSError:
+                continue
+            if not detected:
+                continue
+            binding = (os.path.realpath(destination), destination)
+            if binding not in seen:
+                seen.add(binding)
+                bindings.append(binding)
+    return bindings
 
 
 def _linux_supplementary_group_devices() -> list[str]:
@@ -592,6 +660,65 @@ def _plain_pth_source_paths() -> list[str]:
     return paths
 
 
+def plain_pth_pythonpath_roots() -> list[str]:
+    """Validated plain-``.pth`` roots safe to place on the child import path.
+
+    The roots themselves are not added to the sandbox read allow-list. Only
+    their importable children are mounted/readable, so checkout-level secrets
+    remain unavailable even though Python can resolve those child names.
+    """
+    expanded_home = os.path.expanduser("~")
+    real_home = os.path.realpath(expanded_home) if expanded_home and expanded_home != "~" else None
+    roots: list[str] = []
+    for path in _plain_pth_source_paths():
+        resolved = os.path.realpath(path)
+        if os.path.dirname(resolved) == resolved:
+            logger.warning("Ignoring unsafe filesystem-root editable path: %s", resolved)
+            continue
+        if real_home and _path_is_within(real_home, resolved):
+            logger.warning("Ignoring editable path containing user home: %s", resolved)
+            continue
+        roots.append(resolved)
+    return list(dict.fromkeys(roots))
+
+
+def _namespace_tree_is_importable(root: str) -> bool:
+    """Boundedly find an importable module/package below a PEP 420 root."""
+    stack = [(root, 0)]
+    inspected = 0
+    while stack:
+        directory, depth = stack.pop()
+        if depth > _PTH_NAMESPACE_SCAN_MAX_DEPTH:
+            logger.warning("Ignoring over-deep editable namespace tree: %s", root)
+            return False
+        try:
+            entries = os.scandir(directory)
+        except OSError:
+            continue
+        with entries:
+            for entry in entries:
+                inspected += 1
+                if inspected > _PTH_NAMESPACE_SCAN_MAX_ENTRIES:
+                    logger.warning("Ignoring oversized editable namespace tree: %s", root)
+                    return False
+                if entry.name.startswith("."):
+                    continue
+                try:
+                    if entry.is_file(follow_symlinks = True):
+                        stem, extension = os.path.splitext(entry.name)
+                        if extension == ".py" and stem.isidentifier():
+                            return True
+                        continue
+                    if not entry.is_dir(follow_symlinks = True) or not entry.name.isidentifier():
+                        continue
+                    if os.path.isfile(os.path.join(entry.path, "__init__.py")):
+                        return True
+                    stack.append((entry.path, depth + 1))
+                except OSError:
+                    continue
+    return False
+
+
 def _plain_pth_import_paths() -> list[str]:
     """Narrow plain-``.pth`` roots to importable package/module entries.
 
@@ -619,30 +746,13 @@ def _plain_pth_import_paths() -> list[str]:
                         continue
                     if not entry.is_dir(follow_symlinks = True) or not name.isidentifier():
                         continue
-                    # Regular packages have __init__.py. A namespace package
-                    # has importable modules/subpackages immediately below it;
-                    # inspect only one level so this scan stays bounded.
+                    # Regular packages have __init__.py. Namespace packages
+                    # can have several identifier-only levels before the first
+                    # module/package, so traverse them with explicit bounds.
                     if os.path.isfile(os.path.join(entry.path, "__init__.py")):
                         paths.append(entry.path)
                         continue
-                    try:
-                        with os.scandir(entry.path) as children:
-                            namespace_importable = any(
-                                (
-                                    child.is_file(follow_symlinks = True)
-                                    and child.name.endswith(".py")
-                                    and child.name[:-3].isidentifier()
-                                )
-                                or (
-                                    child.is_dir(follow_symlinks = True)
-                                    and child.name.isidentifier()
-                                    and os.path.isfile(os.path.join(child.path, "__init__.py"))
-                                )
-                                for child in children
-                            )
-                    except OSError:
-                        namespace_importable = False
-                    if namespace_importable:
+                    if _namespace_tree_is_importable(entry.path):
                         paths.append(entry.path)
                 except OSError:
                     continue
@@ -675,32 +785,35 @@ def _exec_chain_symlinks(executable: str) -> list[str]:
     """
     out: list[str] = []
     seen_links: set[str] = set()
-    current = executable
+    current = os.path.abspath(os.path.normpath(executable))
+    seen_paths: set[str] = set()
     for _ in range(40):  # cycle guard against pathological symlink loops
+        if current in seen_paths:
+            break
+        seen_paths.add(current)
         parts = current.split(os.sep)
         prefix = "/"
-        for p in parts[1:]:
+        next_current = None
+        for index, p in enumerate(parts[1:]):
             prefix = os.path.normpath(os.path.join(prefix, p))
-            if prefix in seen_links:
-                continue
             try:
-                if os.path.islink(prefix):
+                if not os.path.islink(prefix):
+                    continue
+                if prefix not in seen_links:
                     seen_links.add(prefix)
                     out.append(prefix)
+                target = os.readlink(prefix)
             except OSError as e:
-                logger.debug("exec-chain islink(%s) failed: %s", prefix, e)
-        try:
-            if not os.path.islink(current):
-                break
-            target = os.readlink(current)
-        except OSError as e:
-            logger.debug("exec-chain readlink(%s) failed: %s", current, e)
+                logger.debug("exec-chain link resolution failed for %s: %s", prefix, e)
+                continue
+            if not os.path.isabs(target):
+                target = os.path.join(os.path.dirname(prefix), target)
+            suffix = parts[index + 2 :]
+            next_current = os.path.abspath(os.path.normpath(os.path.join(target, *suffix)))
             break
-        if not target.startswith(os.sep):
-            target = os.path.normpath(os.path.join(os.path.dirname(current), target))
-        if target == current:
+        if next_current is None or next_current == current:
             break
-        current = target
+        current = next_current
     return out
 
 
@@ -947,6 +1060,7 @@ def _macos_seatbelt_profile(workdir: str) -> str:
 (allow process-info-pidfdinfo (target self))
 (allow sysctl-read)
 (allow ipc-posix-shm)
+(allow ipc-posix-sem)
 (allow file-read-metadata)
 
 (allow file-read*
@@ -1164,6 +1278,11 @@ def _linux_bwrap_argv(inner_argv: list[str], workdir: str) -> list[str]:
     # child env separately preserves the operator's visible-device selectors.
     for device_path in _LINUX_ACCELERATOR_DEVICE_PATHS:
         args.extend(["--dev-bind-try", device_path, device_path])
+    drm_render_paths = _linux_drm_render_device_paths()
+    if drm_render_paths:
+        args.extend(["--dir", _LINUX_DRM_DIR])
+        for device_path in drm_render_paths:
+            args.extend(["--dev-bind-try", device_path, device_path])
     try:
         with os.scandir("/dev") as entries:
             nvidia_devices = sorted(
@@ -1179,6 +1298,8 @@ def _linux_bwrap_argv(inner_argv: list[str], workdir: str) -> list[str]:
         args.extend(["--dev-bind-try", device_path, device_path])
     for sysfs_path in _linux_accelerator_sysfs_paths():
         args.extend(["--ro-bind-try", sysfs_path, sysfs_path])
+    for source, destination in _linux_rocm_runtime_bindings():
+        args.extend(["--ro-bind-try", source, destination])
     # -try variants skip missing paths so the same argv works on
     # usrmerge distros (/lib, /lib64 are symlinks into /usr or absent).
     for d in top_ro_dirs:

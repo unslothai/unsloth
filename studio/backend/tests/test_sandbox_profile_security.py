@@ -29,6 +29,14 @@ def test_backend_ci_calls_the_production_sandbox_probe():
     assert "bwrap --ro-bind / / --unshare-all" not in text
 
 
+def test_installer_bwrap_probe_uses_production_mount_primitives():
+    install = Path(__file__).resolve().parents[3] / "install.sh"
+    text = install.read_text(encoding = "utf-8")
+    probe = text.split("bubblewrap_usable() {", 1)[1].split("}", 1)[0]
+    for required in ("--proc /proc", "--dev /dev", "--tmpfs /tmp"):
+        assert required in probe
+
+
 def test_python_read_paths_rejects_filesystem_roots(monkeypatch):
     sandbox = _load_sandbox_module()
     root = os.path.abspath(os.sep)
@@ -133,6 +141,41 @@ def test_plain_pth_root_exposes_import_entries_not_checkout_secrets(tmp_path, mo
     assert os.path.realpath(module) in paths
 
 
+def test_plain_pth_preserves_nested_namespace_packages(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    site_dir = tmp_path / "site-packages"
+    source = tmp_path / "checkout"
+    namespace_root = source / "google"
+    package = namespace_root / "cloud" / "example"
+    site_dir.mkdir()
+    package.mkdir(parents = True)
+    (package / "__init__.py").write_text("VALUE = 1\n")
+    (site_dir / "editable.pth").write_text(str(source) + "\n")
+    monkeypatch.setattr(sandbox.site, "getsitepackages", lambda: [str(site_dir)])
+    monkeypatch.setattr(sandbox, "opted_in_user_site_path", lambda: None)
+
+    paths = {os.path.realpath(path) for path in sandbox._editable_source_paths()}
+    assert os.path.realpath(source) not in paths
+    assert os.path.realpath(namespace_root) in paths
+
+
+def test_plain_pth_pythonpath_root_does_not_become_a_read_mount(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    site_dir = tmp_path / "site-packages"
+    source = tmp_path / "checkout"
+    package = source / "safe_package"
+    site_dir.mkdir()
+    package.mkdir(parents = True)
+    (package / "__init__.py").write_text("VALUE = 1\n")
+    (source / ".env").write_text("SECRET=not-mounted\n")
+    (site_dir / "editable.pth").write_text(str(source) + "\n")
+    monkeypatch.setattr(sandbox.site, "getsitepackages", lambda: [str(site_dir)])
+    monkeypatch.setattr(sandbox, "opted_in_user_site_path", lambda: None)
+
+    assert sandbox.plain_pth_pythonpath_roots() == [os.path.realpath(source)]
+    assert os.path.realpath(source) not in sandbox._python_read_paths()
+
+
 def test_linux_ca_mounts_exclude_private_key_directories(tmp_path, monkeypatch):
     sandbox = _load_sandbox_module()
     monkeypatch.setattr(sandbox, "_linux_bwrap_path", "/usr/bin/bwrap")
@@ -157,6 +200,8 @@ def test_linux_restores_accelerator_devices_after_synthetic_dev(tmp_path, monkey
     sandbox = _load_sandbox_module()
     monkeypatch.setattr(sandbox, "_linux_bwrap_path", "/usr/bin/bwrap")
     monkeypatch.setattr(sandbox, "_python_read_paths", lambda: [])
+    monkeypatch.setattr(sandbox, "_linux_drm_render_device_paths", lambda: ["/dev/dri/renderD128"])
+    monkeypatch.setattr(sandbox, "_linux_rocm_runtime_bindings", lambda: [])
 
     argv = sandbox._linux_bwrap_argv(["/usr/bin/true"], str(tmp_path))
     device_targets = {
@@ -166,10 +211,50 @@ def test_linux_restores_accelerator_devices_after_synthetic_dev(tmp_path, monkey
     }
 
     assert "/dev/dxg" in device_targets
-    assert "/dev/dri" in device_targets
+    assert "/dev/dri/renderD128" in device_targets
+    assert "/dev/dri" not in device_targets
+    assert "/dev/dri/card0" not in device_targets
     assert "/dev/kfd" in device_targets
     assert "/dev/nvidiactl" in device_targets
     assert "/dev/nvidia-uvm" in device_targets
+
+
+def test_linux_binds_detected_rocm_runtime_libraries(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    monkeypatch.setattr(sandbox, "_linux_bwrap_path", "/usr/bin/bwrap")
+    monkeypatch.setattr(sandbox, "_python_read_paths", lambda: [])
+    monkeypatch.setattr(sandbox, "_linux_drm_render_device_paths", lambda: [])
+    monkeypatch.setattr(
+        sandbox,
+        "_linux_rocm_runtime_bindings",
+        lambda: [("/real/rocm/lib", "/opt/rocm/lib")],
+    )
+
+    argv = sandbox._linux_bwrap_argv(["/usr/bin/true"], str(tmp_path))
+    assert ["--ro-bind-try", "/real/rocm/lib", "/opt/rocm/lib"] == argv[
+        argv.index("/opt/rocm/lib") - 2 : argv.index("/opt/rocm/lib") + 1
+    ]
+
+
+def test_linux_detects_versioned_rocm_library_roots(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    opt = tmp_path / "opt"
+    versioned = opt / "rocm-7.2"
+    lib = versioned / "lib"
+    lib.mkdir(parents = True)
+    (lib / "librocdxg.so").write_text("runtime")
+    logical = opt / "rocm"
+    try:
+        os.symlink(versioned, logical, target_is_directory = True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    monkeypatch.setattr(sandbox, "_LINUX_ROCM_OPT_ROOT", str(opt))
+    monkeypatch.setattr(sandbox, "_LINUX_ROCM_ROOTS", (str(logical),))
+    bindings = sandbox._linux_rocm_runtime_bindings()
+
+    assert (os.path.realpath(logical / "lib"), os.path.normpath(logical / "lib")) in bindings
+    assert (os.path.realpath(lib), os.path.normpath(lib)) in bindings
 
 
 def test_linux_restores_accelerator_sysfs_class_and_backing_tree(tmp_path, monkeypatch):
@@ -377,6 +462,29 @@ def test_linux_recreates_unbound_executable_symlink(tmp_path, monkeypatch):
     )
 
 
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX executable symlink layout")
+def test_exec_chain_resolves_multi_hop_ancestor_symlinks(tmp_path):
+    sandbox = _load_sandbox_module()
+    data_users = tmp_path / "data" / "users"
+    executable = data_users / "venv" / "bin" / "python"
+    executable.parent.mkdir(parents = True)
+    executable.write_text("binary")
+    home = tmp_path / "home"
+    mount = tmp_path / "mnt"
+    home.mkdir()
+    mount.mkdir()
+    first = home / "user"
+    second = mount / "users"
+    try:
+        os.symlink(second, first, target_is_directory = True)
+        os.symlink(data_users, second, target_is_directory = True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    through_links = first / "venv" / "bin" / "python"
+    assert sandbox._exec_chain_symlinks(str(through_links)) == [str(first), str(second)]
+
+
 def test_linux_reapplies_nested_runtime_after_writable_workdir(tmp_path, monkeypatch):
     sandbox = _load_sandbox_module()
     workdir = tmp_path / "project"
@@ -480,6 +588,7 @@ def test_macos_profile_allows_child_signals_and_dev_null_writes(monkeypatch):
 
     assert "(allow signal (target same-sandbox))" in profile
     assert "(allow signal (target self))" not in profile
+    assert "(allow ipc-posix-sem)" in profile
     assert "(allow file-write-data" in profile
     assert '(path "/dev/null")' in profile
     assert "(vnode-type CHARACTER-DEVICE)" in profile

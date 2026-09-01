@@ -432,6 +432,9 @@ def test_narrow_plain_pth_entries_import_inside_sandbox(tmp_path, monkeypatch):
     (package / "__init__.py").write_text("VALUE = 1\n")
     module = source / "editable_module.py"
     module.write_text("VALUE = 2\n")
+    namespace = source / "google" / "cloud" / "example"
+    namespace.mkdir(parents = True)
+    (namespace / "__init__.py").write_text("VALUE = 3\n")
     workdir = tmp_path / "workdir"
     workdir.mkdir()
 
@@ -439,17 +442,27 @@ def test_narrow_plain_pth_entries_import_inside_sandbox(tmp_path, monkeypatch):
     monkeypatch.setattr(
         sandbox,
         "_python_read_paths",
-        lambda: [*host_runtime_paths, os.path.realpath(package), os.path.realpath(module)],
+        lambda: [
+            *host_runtime_paths,
+            os.path.realpath(package),
+            os.path.realpath(module),
+            os.path.realpath(source / "google"),
+        ],
     )
     inner = [
         sys.executable,
         "-c",
-        "import editable_module, editable_package; "
-        "print(editable_module.VALUE + editable_package.VALUE)",
+        "import editable_module, editable_package; from google.cloud import example; "
+        "print(editable_module.VALUE + editable_package.VALUE + example.VALUE)",
     ]
     argv = sandbox._linux_bwrap_argv(inner, str(workdir))
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(source)
+    env = {
+        "HOME": str(workdir),
+        "LOGNAME": "sandbox",
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "PYTHONPATH": str(source),
+        "USER": "sandbox",
+    }
     completed = subprocess.run(
         argv,
         cwd = workdir,
@@ -460,7 +473,7 @@ def test_narrow_plain_pth_entries_import_inside_sandbox(tmp_path, monkeypatch):
         timeout = 20,
     )
     assert completed.returncode == 0, completed.stderr
-    assert completed.stdout.strip() == "3"
+    assert completed.stdout.strip() == "6"
 
 
 def test_python_read_paths_survives_missing_site_helpers(monkeypatch):
