@@ -4,9 +4,9 @@
 import { useEffect, useMemo, useRef } from "react";
 import {
   SHORTCUT_SLOTS,
-  activationBelongsToFocus,
   type ShortcutBinding,
   type ShortcutId,
+  activationBelongsToFocus,
   formatBindingLabel,
   matchesBinding,
   parseBinding,
@@ -119,8 +119,9 @@ export interface UseShortcutOptions {
 /** The chords `id` answers to now, joined so the effect re-runs only on a real change. */
 function useBindingValues(id: ShortcutId): string {
   return useKeyboardShortcutsStore((s) =>
-    SHORTCUT_SLOTS.map((slot) => resolveBinding(s.overrides, id, slot) ?? "")
-      .join("\0"),
+    SHORTCUT_SLOTS.map(
+      (slot) => resolveBinding(s.overrides, id, slot) ?? "",
+    ).join("\0"),
   );
 }
 

@@ -18,13 +18,14 @@ import {
   FIND_HIGHLIGHT_ACTIVE,
   MAX_PAINTED_RANGES,
   paintWindow,
+  resolvePortalSurfaces,
   selectRangeFallback,
 } from "../src/features/find-in-page/lib/find-dom.ts";
 import {
   BLOCK_SEPARATOR,
+  FIND_SKIP_ATTRIBUTE,
   type FindElementLike,
   type FindTextNodeLike,
-  FIND_SKIP_ATTRIBUTE,
   MAX_INDEX_CHARS,
   MAX_MATCHES,
   MAX_NODE_CHARS,
@@ -162,13 +163,21 @@ test("an offset on a separator belongs to no node", () => {
   assert.equal(startPositionAt(index.segments, 1), null);
 });
 
-test("a case fold that would change a run's length is not applied", () => {
-  // Turkish İ folds to two code units. Folding it would shift every offset after it by one, so the
-  // run keeps its case instead and the offsets stay true -- which is what this asserts, by finding
-  // a word that sits AFTER one.
-  assert.equal("İ".toLowerCase().length, 2, "premise: the fold grows this run");
-  assert.equal(foldText("İ"), "İ");
+test("dotted I folds to a plain i, and the offsets still hold", () => {
+  // Its default fold is two code units, which one index character cannot stand for. The Turkic fold
+  // is a bare `i`, which fits and is what a search wants: the platform's own find matches all four
+  // spellings of Istanbul against a visible dotted one, and now so does this.
+  assert.equal("İ".toLowerCase().length, 2, "premise: the default fold grows");
+  assert.equal(foldText("İ"), "i");
 
+  const spellings = buildTextIndex(
+    el("DIV", [el("P", [text("Welcome to İstanbul")])]),
+  );
+  for (const query of ["istanbul", "İstanbul", "ISTANBUL", "Istanbul"]) {
+    assert.equal(findMatches(spellings, query).length, 1, query);
+  }
+
+  // And the offsets stay true, which is what folding it in place buys.
   const marker = text("İ");
   const after = text("Unsloth");
   const index = buildTextIndex(el("DIV", [el("P", [marker, after])]));
@@ -193,8 +202,8 @@ test("an expanding fold does not change the letters around it", () => {
   // Both sigmas are word-final here, so both fold to the final form the query folds to.
   assert.equal(findMatches(index, "\u039f\u03a3").length, 2);
   assert.equal(findMatches(index, "\u039f\u0394\u039f\u03a3").length, 1);
-  // And the character that could not fit is still itself, not half of its own fold.
-  assert.equal(index.text.includes(dottedI), true);
+  // And the character that would have grown is one plain `i`, still one wide.
+  assert.equal(index.text, "\u03bf\u03b4\u03bf\u03c2 i \u03bf\u03c2");
 });
 
 test("casing context carries across inline markup", () => {
@@ -211,13 +220,14 @@ test("casing context carries across inline markup", () => {
   assert.equal(index.segments[1].start, 1);
 });
 
-test("several expanding characters splice without drift", () => {
+test("several dotted I in a run fold without drift", () => {
   const dottedI = String.fromCharCode(0x0130);
   const raw = `${dottedI}a${dottedI}\u039f\u03a3${dottedI}b`;
   const index = buildTextIndex(el("DIV", [el("P", [text(raw)])]));
   assert.equal(index.text.length, raw.length);
-  // Each one is left as itself, and everything between keeps the contextual fold.
-  assert.equal(index.text, `${dottedI}a${dottedI}\u03bf\u03c3${dottedI}b`);
+  // Each one is a plain `i`, and the sigma between them still reads its own context: a cased letter
+  // follows it, so it stays medial.
+  assert.equal(index.text, "iai\u03bf\u03c3ib");
 });
 
 test("a sigma that is not word-final keeps its own form", () => {
@@ -242,9 +252,9 @@ test("a non-breaking space answers to the space key", () => {
   assert.equal(index.text.includes(nbsp), false);
 });
 
-test("an expanding fold does not make the rest of its run case-sensitive", () => {
-  // Turkish dotted I grows under toLowerCase. Giving up on the whole run for it left ordinary
-  // words in the same node unmatchable.
+test("a dotted I does not make the rest of its run case-sensitive", () => {
+  // Its default fold grows, and giving up on the whole run for that left ordinary words in the
+  // same node unmatchable.
   const index = buildTextIndex(el("DIV", [el("P", [text("HELLO İ")])]));
   assert.equal(findMatches(index, "hello").length, 1);
   // And the offsets still line up, which is what the whole-run fallback was protecting.
@@ -267,7 +277,9 @@ test("an oversized node does not take the whole budget with it", () => {
   // It used to: the node claimed every remaining character, the walk stopped, and the messages the
   // reader was looking at were not in the index at all. A share each, and the walk goes on.
   const log = el("PRE", [text("x".repeat(MAX_INDEX_CHARS + 1000))]);
-  const onScreen = el("P", [text("the message in front of the reader says unsloth")]);
+  const onScreen = el("P", [
+    text("the message in front of the reader says unsloth"),
+  ]);
   const index = buildTextIndex(el("DIV", [log, onScreen]));
   assert.equal(index.truncated, true);
   assert.equal(findMatches(index, "in front of the reader").length, 1);
@@ -357,6 +369,36 @@ test("an inline SVG is skipped despite reporting a lowercase tag", () => {
   assert.equal(index.text.includes("prose"), true);
 });
 
+test("a portaled surface is indexed after the scope, behind a boundary", () => {
+  // A popover renders to the body, outside the scope, and a reader sees it as part of the page.
+  const scope = el("DIV", [el("P", [text("in the thread")])]);
+  const portal = el("DIV", [el("P", [text("in the popover")])]);
+  const index = buildTextIndex(scope, [portal]);
+  assert.equal(index.text, `in the thread${BLOCK_SEPARATOR}in the popover`);
+  assert.equal(findMatches(index, "in the popover").length, 1);
+  // Separate surfaces, so nothing runs out of one and into the other.
+  assert.deepEqual(findMatches(index, "thread in"), []);
+});
+
+test("every portaled surface is separated from the one before it", () => {
+  const index = buildTextIndex(el("DIV", [el("P", [text("a")])]), [
+    el("DIV", [text("b")]),
+    el("DIV", [text("c")]),
+  ]);
+  assert.equal(index.text, `a${BLOCK_SEPARATOR}b${BLOCK_SEPARATOR}c`);
+});
+
+test("a portaled surface with nothing to contribute leaves no separator behind", () => {
+  // The boundary is pending until text follows it, so a surface that is skipped, or empty, does
+  // not leave a gap at the end of the index for a match to be measured against.
+  const scope = el("DIV", [el("P", [text("only")])]);
+  const index = buildTextIndex(scope, [
+    el("DIV", [text("parked")], { inert: "" }),
+    el("DIV"),
+  ]);
+  assert.equal(index.text, "only");
+});
+
 /** Run `body` with `getComputedStyle` answering from `styles`, and `{}` for anything else. */
 function withStyles(
   styles: Map<
@@ -398,9 +440,7 @@ test("two spans the CSS renders as blocks do not run together", () => {
   // An inline span is not a boundary, so markup inside a sentence still reads as one word.
   const inline = el("SPAN", [text("slo")]);
   withStyles(new Map([[inline, { display: "inline" }]]), () => {
-    const index = buildTextIndex(
-      el("P", [text("un"), inline, text("th")]),
-    );
+    const index = buildTextIndex(el("P", [text("un"), inline, text("th")]));
     assert.equal(findMatches(index, "unsloth").length, 1);
   });
 });
@@ -515,7 +555,9 @@ test("a clipped node does not run into the next one", () => {
   // What the clip threw away is still in the document. Without a boundary the retained prefix and
   // the next node touch, a query across the seam matches, and the Range it maps back to spans every
   // discarded character in between: measured at 8503 characters of unrelated highlight.
-  const clipped = text(`${"x".repeat(MAX_NODE_CHARS)}${"discarded ".repeat(500)}`);
+  const clipped = text(
+    `${"x".repeat(MAX_NODE_CHARS)}${"discarded ".repeat(500)}`,
+  );
   const next = text("yz");
   const index = buildTextIndex(el("DIV", [el("P", [clipped, next])]));
   assert.equal(index.truncated, true);
@@ -630,7 +672,10 @@ test("the bar keeps itself out of the region it searches", async () => {
 });
 
 test("light mode is the chatbox's background, under a slightly heavier shadow", async () => {
-  const css = await readFile(new URL("../src/index.css", import.meta.url), "utf8");
+  const css = await readFile(
+    new URL("../src/index.css", import.meta.url),
+    "utf8",
+  );
   const composer = cssRule(css, ".unsloth-composer-surface");
   const bar = cssRule(css, ".find-bar-surface");
 
@@ -645,7 +690,9 @@ test("light mode is the chatbox's background, under a slightly heavier shadow", 
   // weight.
   const shape = (rule: string) => {
     const hit =
-      /box-shadow:\s*0 (\d+)px (\d+)px (-?\d+)px rgba\(0, 0, 0, ([\d.]+)\);/.exec(rule);
+      /box-shadow:\s*0 (\d+)px (\d+)px (-?\d+)px rgba\(0, 0, 0, ([\d.]+)\);/.exec(
+        rule,
+      );
     assert.ok(hit, "box-shadow is not in the shape this test reads");
     return {
       y: Number(hit[1]),
@@ -656,20 +703,40 @@ test("light mode is the chatbox's background, under a slightly heavier shadow", 
   };
   const from = shape(composer);
   const to = shape(bar);
-  assert.ok(to.blur > from.blur, `blur ${to.blur} is not wider than ${from.blur}`);
-  assert.ok(to.spread > from.spread, `spread ${to.spread} is not wider than ${from.spread}`);
+  assert.ok(
+    to.blur > from.blur,
+    `blur ${to.blur} is not wider than ${from.blur}`,
+  );
+  assert.ok(
+    to.spread > from.spread,
+    `spread ${to.spread} is not wider than ${from.spread}`,
+  );
   // Wider, never heavier: the width is what lifts it off the page, not the ink.
-  assert.ok(to.alpha < from.alpha, `alpha ${to.alpha} is not softer than ${from.alpha}`);
+  assert.ok(
+    to.alpha < from.alpha,
+    `alpha ${to.alpha} is not softer than ${from.alpha}`,
+  );
   // But still a shadow, and still in the composer's family.
-  assert.ok(to.alpha >= from.alpha * 0.7, `alpha ${to.alpha} has faded to nothing`);
-  assert.ok(to.blur <= from.blur * 2, `blur ${to.blur} is more than slightly wider`);
+  assert.ok(
+    to.alpha >= from.alpha * 0.7,
+    `alpha ${to.alpha} has faded to nothing`,
+  );
+  assert.ok(
+    to.blur <= from.blur * 2,
+    `blur ${to.blur} is more than slightly wider`,
+  );
   assert.ok(to.y >= from.y);
 });
 
 test("dark mode sits above the cards it floats over", async () => {
-  const css = await readFile(new URL("../src/index.css", import.meta.url), "utf8");
+  const css = await readFile(
+    new URL("../src/index.css", import.meta.url),
+    "utf8",
+  );
   const value = (selector: string, property: string) => {
-    const hit = new RegExp(`${property}:\\s*([^;]+);`).exec(cssRule(css, selector));
+    const hit = new RegExp(`${property}:\\s*([^;]+);`).exec(
+      cssRule(css, selector),
+    );
     assert.ok(hit, `${selector} has no ${property}`);
     return hit[1].trim();
   };
@@ -682,17 +749,26 @@ test("dark mode sits above the cards it floats over", async () => {
   assert.ok(bar > card, `bar ${bar} is not lighter than --card ${card}`);
   assert.ok(bar < border, `bar ${bar} is not darker than --border ${border}`);
   // And a halo in the page background, not a dark edge around a borderless panel.
-  assert.match(value(".dark .find-bar-surface", "box-shadow"), /var\(--background\)/);
+  assert.match(
+    value(".dark .find-bar-surface", "box-shadow"),
+    /var\(--background\)/,
+  );
 });
 
 test("the bar stays out of a backgrounded scope, and off the document origin", async () => {
   const bar = await readFile(
-    new URL("../src/features/find-in-page/components/find-in-page.tsx", import.meta.url),
+    new URL(
+      "../src/features/find-in-page/components/find-in-page.tsx",
+      import.meta.url,
+    ),
     "utf8",
   );
   // Every modal, not just Settings: Radix marks the shell aria-hidden for as long as one is up,
   // and `enabled` is read at render, which a dialog opening need not cause.
-  assert.match(bar, /isSurfaceBackgrounded\(`\[\$\{FIND_SCOPE_ATTRIBUTE\}\]`\)/);
+  assert.match(
+    bar,
+    /isSurfaceBackgrounded\(`\[\$\{FIND_SCOPE_ATTRIBUTE\}\]`\)/,
+  );
   // Fixed, not absolute: on a route whose outer container scrolls, an absolutely positioned bar
   // sits at the top of a scope taller than the window and scrolls out of reach.
   const surface = /className="(find-bar-surface[^"]*)"/.exec(bar);
@@ -710,11 +786,17 @@ test("a match with no geometry is aimed at through its nearest laid-out ancestor
   );
   // Text inside a skipped subtree has a collapsed rect while the subtree's own box keeps its
   // placeholder geometry, so the walk aims at that instead of giving up.
-  assert.match(dom, /export function revealRect\(range: Range\): DOMRect \| null/);
+  assert.match(
+    dom,
+    /export function revealRect\(range: Range\): DOMRect \| null/,
+  );
   assert.match(dom, /export function rangeTop\(range: Range\): number \| null/);
   // And both readers go through it rather than reading the range rect directly.
   const engine = await readFile(
-    new URL("../src/features/find-in-page/hooks/use-find-in-page.ts", import.meta.url),
+    new URL(
+      "../src/features/find-in-page/hooks/use-find-in-page.ts",
+      import.meta.url,
+    ),
     "utf8",
   );
   assert.match(engine, /const top = rangeTop\(range\);/);
@@ -723,7 +805,10 @@ test("a match with no geometry is aimed at through its nearest laid-out ancestor
 
 test("a fresh query starts from the scroll container's top, not the window's", async () => {
   const engine = await readFile(
-    new URL("../src/features/find-in-page/hooks/use-find-in-page.ts", import.meta.url),
+    new URL(
+      "../src/features/find-in-page/hooks/use-find-in-page.ts",
+      import.meta.url,
+    ),
     "utf8",
   );
   // The thread viewport starts below the navbar and the chat header, so a match clipped just off
@@ -734,7 +819,10 @@ test("a fresh query starts from the scroll container's top, not the window's", a
 
 test("re-indexing while the document changes is a throttle, and says so", async () => {
   const engine = await readFile(
-    new URL("../src/features/find-in-page/hooks/use-find-in-page.ts", import.meta.url),
+    new URL(
+      "../src/features/find-in-page/hooks/use-find-in-page.ts",
+      import.meta.url,
+    ),
     "utf8",
   );
   // A debounce would leave the count frozen and new text unfindable for as long as a reply takes
@@ -817,6 +905,69 @@ test("the observer watches the attributes a workspace switch flips", async () =>
   assert.equal(engine.includes('attributeFilter: ["class"'), false);
 });
 
+/** Stand in for the document `resolvePortalSurfaces` queries: node has no version of one. */
+function withPortals<T>(surfaces: Element[], body: () => T): T {
+  const view = globalThis as { document?: unknown };
+  const had = "document" in view;
+  const saved = view.document;
+  view.document = { querySelectorAll: () => surfaces };
+  try {
+    return body();
+  } finally {
+    if (had) view.document = saved;
+    else delete view.document;
+  }
+}
+
+/** A portaled surface, which is asked only what state it is in and what it contains. */
+function surface(state: string | null, children: Element[] = []): Element {
+  const node = {
+    getAttribute: (name: string) => (name === "data-state" ? state : null),
+    contains: (other: Element) => other === node || children.includes(other),
+  };
+  return node as unknown as Element;
+}
+
+test("a portaled surface is searched unless it is on its way out", () => {
+  const open = surface("open");
+  const closing = surface("closed");
+  // A plain menu, which says nothing about its state because it is only rendered while open.
+  const plain = surface(null);
+  const scope = { contains: () => false } as unknown as Element;
+  assert.deepEqual(
+    withPortals([open, closing, plain], () => resolvePortalSurfaces(scope)),
+    [open, plain],
+  );
+});
+
+test("a surface inside the scope, or inside one already taken, is not indexed twice", () => {
+  const inner = surface("open");
+  const outer = surface("open", [inner]);
+  const own = surface("open");
+  const scope = {
+    contains: (other: Element) => other === own,
+  } as unknown as Element;
+  assert.deepEqual(
+    withPortals([own, outer, inner], () => resolvePortalSurfaces(scope)),
+    [outer],
+  );
+});
+
+test("the observer watches the document, since a portal lands outside the scope", async () => {
+  const engine = await readFile(
+    new URL(
+      "../src/features/find-in-page/hooks/use-find-in-page.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  // A popover renders to the body: an observer on the scope alone never hears one open or close.
+  assert.match(engine, /scope\?\.ownerDocument\?\.body \?\? scope/);
+  // And `data-state` is the only thing a dismissed one changes. It keeps its box until the
+  // animation that follows finishes, so without this it stays in the count after it is gone.
+  assert.match(engine, /attributeFilter: \[[^\]]*"data-state"/);
+});
+
 test("the rows progressive completion adds are re-anchored, not renumbered", async () => {
   // Streaming APPENDS, so keeping the ordinal is right there. Progressive completion PREPENDS the
   // older half of a thread, and match 3 of the tail is not match 3 of the whole conversation:
@@ -856,7 +1007,10 @@ test("Escape closes the bar from the walk buttons, not just the field", async ()
     /if \(event\.key !== "Escape"\) return;[\s\S]*?event\.preventDefault\(\);[\s\S]*?event\.stopPropagation\(\);[\s\S]*?close\(\);/,
   );
   // And not left behind on the field as well, where it would swallow the bubble first.
-  assert.equal(landmark.slice(landmark.indexOf("<input")).includes('"Escape"'), false);
+  assert.equal(
+    landmark.slice(landmark.indexOf("<input")).includes('"Escape"'),
+    false,
+  );
 });
 
 test("only threads this search can read are forced to finish mounting", async () => {
@@ -883,7 +1037,10 @@ test("only threads this search can read are forced to finish mounting", async ()
   );
   // The loop's exit has to read the filtered set too, or a completer this caller declined holds it
   // open forever.
-  assert.match(progressive, /if \(wanted\(\)\.length === 0 && \(observed \|\| Date\.now\(\) >= deadline\)\)/);
+  assert.match(
+    progressive,
+    /if \(wanted\(\)\.length === 0 && \(observed \|\| Date\.now\(\) >= deadline\)\)/,
+  );
 });
 
 test("the chord is left to the browser when the scope is behind a modal", async () => {
@@ -943,7 +1100,10 @@ test("closing the bar hands focus back to where it came from", async () => {
   assert.match(bar, /barRef\.current\?\.contains\(active\) !== true/);
   assert.equal(bar.includes("closest(`[${FIND_SKIP_ATTRIBUTE}]`)"), false);
   // And only when closing dropped focus: the reader having moved it is not an invitation.
-  assert.match(bar, /if \(focused !== null && focused !== document\.body\) return;/);
+  assert.match(
+    bar,
+    /if \(focused !== null && focused !== document\.body\) return;/,
+  );
 });
 
 test("the chat composer is out of the searchable scope", async () => {
@@ -1006,7 +1166,10 @@ test("the ordinal survives an append and nothing else", async () => {
   assert.equal(engine.includes("search(false, false)"), false);
   assert.equal((engine.match(/search\(false, reindex\(\)\)/g) ?? []).length, 2);
   // Except a fresh open, which starts from the reader whatever the index says.
-  assert.match(engine, /reindex\(\);\n\s*\/\/[^\n]*\n\s*search\(false, true\);/);
+  assert.match(
+    engine,
+    /reindex\(\);\n\s*\/\/[^\n]*\n\s*search\(false, true\);/,
+  );
 });
 
 test("a breakpoint that changes what is rendered invalidates the index", async () => {
@@ -1187,8 +1350,14 @@ test("the counter says '+' only when the cap actually cut something off", () => 
   assert.equal(occurrences(MAX_MATCHES + 1) > MAX_MATCHES, true);
   // The count itself cannot tell the last two apart, which is why the flag exists.
   assert.equal(
-    findMatches(buildTextIndex(el("DIV", [el("P", [text("a".repeat(MAX_MATCHES))])])), "a").length,
-    findMatches(buildTextIndex(el("DIV", [el("P", [text("a".repeat(MAX_MATCHES + 1))])])), "a").length,
+    findMatches(
+      buildTextIndex(el("DIV", [el("P", [text("a".repeat(MAX_MATCHES))])])),
+      "a",
+    ).length,
+    findMatches(
+      buildTextIndex(el("DIV", [el("P", [text("a".repeat(MAX_MATCHES + 1))])])),
+      "a",
+    ).length,
   );
 });
 
@@ -1206,7 +1375,10 @@ test("the cap flag is what the bar renders, not the count", async () => {
   );
   assert.match(engine, /cappedRef\.current = matches\.length > MAX_MATCHES;/);
   // Trimmed back to the cap, so nothing downstream sees the probe match.
-  assert.match(engine, /if \(cappedRef\.current\) matches\.length = MAX_MATCHES;/);
+  assert.match(
+    engine,
+    /if \(cappedRef\.current\) matches\.length = MAX_MATCHES;/,
+  );
   const bar = await readFile(
     new URL(
       "../src/features/find-in-page/components/find-in-page.tsx",
@@ -1239,7 +1411,10 @@ test("Escape is left to the IME while it is composing", async () => {
     new URL("../src/features/settings/hooks/use-shortcut.ts", import.meta.url),
     "utf8",
   );
-  assert.match(shortcut, /if \(isImeComposing\(event\)\) return;\n\s*const hit = bindings\.find/);
+  assert.match(
+    shortcut,
+    /if \(isImeComposing\(event\)\) return;\n\s*const hit = bindings\.find/,
+  );
 });
 
 test("the selection fallback only clears what it put there", () => {
@@ -1337,7 +1512,10 @@ test("a container query resizing the scope invalidates the index", async () => {
   assert.match(engine, /sized\?\.disconnect\(\);/);
   // The first delivery reports the size the scope already had, which is not news and would cost a
   // flatten on every open.
-  assert.match(engine, /if \(!measured\) \{\s*\n\s*measured = true;\s*\n\s*return;/);
+  assert.match(
+    engine,
+    /if \(!measured\) \{\s*\n\s*measured = true;\s*\n\s*return;/,
+  );
 });
 
 test("nothing of the engine is mounted while the bar is closed", async () => {

@@ -9,6 +9,11 @@
 // what a streaming reply costs an open bar are only answerable here.
 
 /* eslint-disable no-restricted-imports -- a harness entry point, not app code. */
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { FindInPage } from "@/features/find-in-page";
 import {
   FIND_SCOPE_ATTRIBUTE,
@@ -82,14 +87,19 @@ function Conversation({ extra, older }: { extra: string[]; older: string[] }) {
           </p>
           <p>{PARAGRAPHS[i % PARAGRAPHS.length]}</p>
           {/* A markdown soft wrap: one text node with a newline, rendered as one line. */}
-          {i === 0 ? <p>{"A soft wrapped\n          phrase about unsloth."}</p> : null}
+          {i === 0 ? (
+            <p>{"A soft wrapped\n          phrase about unsloth."}</p>
+          ) : null}
         </div>
       ))}
       {/* Skipped, not hidden: what a Hub README and a maths-bearing thread use. It sits below the
           fold of a long list, so the engine really is skipping it, and it has to stay searchable. */}
       <div
         data-skipped=""
-        style={{ contentVisibility: "auto", containIntrinsicSize: "auto 400px" }}
+        style={{
+          contentVisibility: "auto",
+          containIntrinsicSize: "auto 400px",
+        }}
       >
         <p>unsloth inside a skipped subtree</p>
       </div>
@@ -134,7 +144,9 @@ function Conversation({ extra, older }: { extra: string[]; older: string[] }) {
           document, which is how it slipped past a skip list spelled in HTML casing. */}
       <svg viewBox="0 0 200 40" role="img" aria-label="diagram">
         <title>diagram</title>
-        <text x="0" y="20">unsloth drawn into a diagram</text>
+        <text x="0" y="20">
+          unsloth drawn into a diagram
+        </text>
       </svg>
       {/* Boxless, not hidden: `display: contents` is how the shell and the training page hand a
           grid its children, and `checkVisibility` calls a wrapper with no box invisible. */}
@@ -233,16 +245,28 @@ function Harness() {
       <div className="flex shrink-0 items-center gap-3 border-border border-b px-4 py-2 text-sm">
         <strong>find-in-page smoke</strong>
         <span className="text-muted-foreground">
-          Press {navigator.platform.toLowerCase().includes("mac") ? "⌘F" : "Ctrl+F"} and search for
-          "unsloth"
+          Press{" "}
+          {navigator.platform.toLowerCase().includes("mac") ? "⌘F" : "Ctrl+F"}{" "}
+          and search for "unsloth"
         </span>
         <button
           type="button"
           className="rounded-md border border-border px-2 py-1"
-          onClick={() => stream("A streamed reply mentioning unsloth as it arrives.")}
+          onClick={() =>
+            stream("A streamed reply mentioning unsloth as it arrives.")
+          }
         >
           Stream a reply
         </button>
+        {/* The app's own popover, which portals to the body and so lands outside the scope. */}
+        <Popover>
+          <PopoverTrigger className="rounded-md border border-border px-2 py-1">
+            Model picker
+          </PopoverTrigger>
+          <PopoverContent data-picker="">
+            <p>unsloth inside a portaled popover</p>
+          </PopoverContent>
+        </Popover>
       </div>
       {/* The shell's content region: relative because the bar floats inside it, and the scope. */}
       {/* `outerScroll` mirrors a non-chat route, where SidebarInset scrolls and the scope is
@@ -281,13 +305,18 @@ function Harness() {
           </div>
           {/* The composer, marked out of the index the way thread.tsx marks the real one. The
               chord is pressed from here more than anywhere, so closing has to give focus back. */}
-          <form data-find-skip="" className="shrink-0 border-border border-t p-2">
+          <form
+            data-find-skip=""
+            className="shrink-0 border-border border-t p-2"
+          >
             <textarea
               className="aui-composer-input w-full resize-none bg-transparent text-sm outline-none"
               placeholder="Message"
               rows={2}
             />
-            <span className="text-muted-foreground text-xs">unsloth pill label</span>
+            <span className="text-muted-foreground text-xs">
+              unsloth pill label
+            </span>
           </form>
           {/* A workspace parked off-route, as `__root.tsx` parks one. Never counted. */}
           <div hidden={true} inert={true}>

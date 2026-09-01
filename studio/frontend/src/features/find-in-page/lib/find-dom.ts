@@ -5,10 +5,10 @@
 // to one. The arithmetic and the flatten live in find-text-index.ts, which is pure.
 
 import {
-  type FindMatch,
-  type FindTextIndex,
   FIND_SCOPE_ATTRIBUTE,
   FIND_SKIP_ATTRIBUTE,
+  type FindMatch,
+  type FindTextIndex,
   endPositionAt,
   startPositionAt,
 } from "./find-text-index.ts";
@@ -73,6 +73,32 @@ export function resolveFindScope(): Element | null {
   return (
     document.querySelector(`[${FIND_SCOPE_ATTRIBUTE}]`) ?? document.body ?? null
   );
+}
+
+/**
+ * Surfaces the shell renders in front of the workspace but outside it.
+ *
+ * A popover portals its content to the body, so the model picker's list is on screen and not in the
+ * scope. Searching the page behind it while it is up is a lie, and it is the one thing the reader
+ * can see. Narrow on purpose: the layers a reader works IN, not every portal, so a toast arriving
+ * or a tooltip on the pointer does not change the count under them.
+ */
+const PORTAL_SURFACE_SELECTOR =
+  '[data-slot="popover-content"], [role="menu"], [role="listbox"]';
+
+export function resolvePortalSurfaces(scope: Element | null): Element[] {
+  if (typeof document === "undefined" || scope === null) return [];
+  const found: Element[] = [];
+  for (const element of document.querySelectorAll(PORTAL_SURFACE_SELECTOR)) {
+    // Inside the scope already, or nested in a surface already taken.
+    if (scope.contains(element)) continue;
+    if (found.some((taken) => taken.contains(element))) continue;
+    // On its way out. These animate closed and are only unmounted when that finishes, and until
+    // then they still have a box, so nothing else here would turn them down.
+    if (element.getAttribute("data-state") === "closed") continue;
+    found.push(element);
+  }
+  return found;
 }
 
 /**
@@ -210,7 +236,8 @@ export function selectRangeFallback(range: Range | null): void {
     // was already gone.
     const owned = ownedSelection;
     ownedSelection = null;
-    if (owned === null || !sameBoundaries(owned, currentRange(selection))) return;
+    if (owned === null || !sameBoundaries(owned, currentRange(selection)))
+      return;
     selection.removeAllRanges();
     return;
   }

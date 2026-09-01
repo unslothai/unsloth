@@ -16,21 +16,22 @@ import {
   paintHighlights,
   paintWindow,
   rangeForMatch,
-  resolveFindScope,
   rangeTop,
-  viewportOffset,
+  resolveFindScope,
+  resolvePortalSurfaces,
   scrollRangeIntoView,
   scrollViewportTop,
   selectRangeFallback,
   supportsHighlightApi,
+  viewportOffset,
 } from "../lib/find-dom.ts";
 import {
   EMPTY_TEXT_INDEX,
   FIND_SKIP_ATTRIBUTE,
-  MAX_MATCHES,
   type FindElementLike,
   type FindMatch,
   type FindTextIndex,
+  MAX_MATCHES,
   buildTextIndex,
   findMatches,
 } from "../lib/find-text-index.ts";
@@ -241,7 +242,12 @@ export function useFindInPage(query: string): FindResults {
     const before = indexRef.current.text;
     const scope = scopeRef.current;
     indexRef.current = scope
-      ? buildTextIndex(scope as unknown as FindElementLike)
+      ? buildTextIndex(
+          scope as unknown as FindElementLike,
+          // Resolved every time: a popover opens and closes under an open bar, and its list is on
+          // screen in front of the workspace while it is up.
+          resolvePortalSurfaces(scope) as unknown as FindElementLike[],
+        )
       : EMPTY_TEXT_INDEX;
     return !indexRef.current.text.startsWith(before);
   }, []);
@@ -309,15 +315,20 @@ export function useFindInPage(query: string): FindResults {
       sized.observe(scope);
     }
 
+    // The body, not the scope: a portaled surface is a sibling of the shell, so a popover opening
+    // is not a mutation of the region it floats over. Everything the walk does not index still runs
+    // through `mutatesSearchableText` and the interval below, so the cost of the wider net is at
+    // most one flatten per interval.
+    const watched = scope?.ownerDocument?.body ?? scope;
     let observer: MutationObserver | null = null;
-    if (scope && typeof MutationObserver !== "undefined") {
+    if (watched && typeof MutationObserver !== "undefined") {
       observer = new MutationObserver((records) => {
         // The bar floats inside the region it searches, so its own counter re-rendering is a
         // mutation of the scope. Without this it re-indexes every time the match count changes.
         if (!records.some(mutatesSearchableText)) return;
         invalidate();
       });
-      observer.observe(scope, {
+      observer.observe(watched, {
         childList: true,
         subtree: true,
         characterData: true,
@@ -328,11 +339,15 @@ export function useFindInPage(query: string): FindResults {
         // `open` for the same reason: toggling a `<details>` changes that attribute and nothing
         // else, while the body inside it goes from visible to not. A Hub README's collapsibles are
         // the case, and without this one opened after indexing stays unfindable.
+        // `data-state` for the same reason as `open`: a popover, a menu and an accordion all say
+        // they are closing with that and nothing else, and they keep their box until the animation
+        // that follows finishes.
         attributeFilter: [
           "inert",
           "hidden",
           "aria-hidden",
           "open",
+          "data-state",
           FIND_SKIP_ATTRIBUTE,
         ],
       });

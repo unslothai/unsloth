@@ -152,55 +152,39 @@ export const EMPTY_TEXT_INDEX: FindTextIndex = {
   truncated: false,
 };
 
-/** U+0130 folded, which is two units. The only expansion there is, so its width is a constant. */
-const DOTTED_I = "\u0130";
-const DOTTED_I_FOLDED_LENGTH = DOTTED_I.toLowerCase().length;
+/**
+ * Turkish capital dotted I, the only code point in Unicode whose `toLowerCase` is longer than
+ * itself. Verified by scanning every assigned one. It is folded to a bare `i`, which is the Turkic
+ * case fold of it and the only fold that fits: the default one adds a combining dot, and one index
+ * character has to stand for one document character.
+ */
 const DOTTED_I_PATTERN = /\u0130/g;
 
 /**
  * Case-fold the whole flattened document without changing its length.
  *
- * One character of `text` has to stand for one character of a document, and Turkish dotted I folds
- * to two code units. Scanning every assigned code point says it is the ONLY one in Unicode that
- * changes length under `toLowerCase`, so the fold is the whole string at once and İ is spliced back
- * in as itself wherever it appears.
- *
  * The whole string, not a node at a time, because the fold of a run is not the folds of its pieces.
  * Greek final sigma is decided by what follows it, so `\u039f<em>\u03a3</em>` folded per node gives
  * a medial sigma while the query gives a final one, and a word plainly on screen matches nothing.
  *
- * Splicing rather than walking code points: measured on a document at the ceiling, the fast path is
- * 1.7ms and a per-code-point walk is 150ms.
+ * With dotted I mapped first, `toLowerCase` cannot change a length, so this is one pass over the
+ * string. On a document at the 4,000,000 character ceiling that is 11ms, of which the dotted I pass
+ * is 0.7ms; walking code points to the same answer is 146ms.
  */
 export function foldText(raw: string): string {
-  const spaced = raw.replace(HARD_SPACE_PATTERN, " ");
+  const spaced = raw
+    .replace(HARD_SPACE_PATTERN, " ")
+    .replace(DOTTED_I_PATTERN, "i");
   const folded = spaced.toLowerCase();
   if (folded.length === spaced.length) return folded;
-  let out = "";
-  let readAt = 0;
-  let foldedAt = 0;
-  DOTTED_I_PATTERN.lastIndex = 0;
-  for (;;) {
-    const hit = DOTTED_I_PATTERN.exec(spaced);
-    if (hit === null) break;
-    const run = hit.index - readAt;
-    out += folded.slice(foldedAt, foldedAt + run);
-    out += DOTTED_I;
-    readAt = hit.index + 1;
-    foldedAt += run + DOTTED_I_FOLDED_LENGTH;
+  // Nothing reaches this: dotted I was the only expansion and it is gone by here. But a wrong
+  // length would misplace every offset after it, so fall back to the fold that cannot drift.
+  let plain = "";
+  for (const point of spaced) {
+    const lower = point.toLowerCase();
+    plain += lower.length === point.length ? lower : point;
   }
-  out += folded.slice(foldedAt, foldedAt + (spaced.length - readAt));
-  // Nothing reaches this, since that is the only expansion; but a wrong length here would misplace
-  // every offset after it, so fall back to the fold that cannot drift.
-  if (out.length !== spaced.length) {
-    let plain = "";
-    for (const point of spaced) {
-      const lower = point.toLowerCase();
-      plain += lower.length === point.length ? lower : point;
-    }
-    return plain;
-  }
-  return out;
+  return plain;
 }
 
 /** True when the walk must not descend into this element. */
@@ -311,7 +295,11 @@ function preservesWhitespace(whiteSpace: string | undefined): boolean {
  * Recursive rather than a `TreeWalker`: the walker reports entering an element but not leaving one,
  * and the closing separator is what stops `<p>a</p>b` reading as "ab". Depth is bounded by markup.
  */
-export function buildTextIndex(root: FindElementLike): FindTextIndex {
+export function buildTextIndex(
+  root: FindElementLike,
+  /** Subtrees to index after `root`, in the order they sit in the document. Portaled surfaces. */
+  extraRoots: readonly FindElementLike[] = [],
+): FindTextIndex {
   const parts: string[] = [];
   const segments: TextSegment[] = [];
   let length = 0;
@@ -387,6 +375,12 @@ export function buildTextIndex(root: FindElementLike): FindTextIndex {
   };
 
   visit(root, false);
+  for (const extra of extraRoots) {
+    if (full) break;
+    // A boundary between roots: they are separate surfaces, and a match must not run across.
+    pendingSeparator = true;
+    visit(extra, false);
+  }
   // Folded once, over the joined document: see foldText for why it cannot be done a node at a time.
   return { text: foldText(parts.join("")), segments, truncated };
 }
