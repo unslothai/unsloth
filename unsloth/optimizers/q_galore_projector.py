@@ -111,6 +111,7 @@ class GaLoreProjector:
         self.ortho_matrix_shape = None
 
     # ------------------------------------------------------------------
+
     def project(self, full_rank_grad: torch.Tensor, step: int) -> torch.Tensor:
         """Project a full-rank gradient into the low-rank subspace.
 
@@ -178,6 +179,7 @@ class GaLoreProjector:
         return full_rank_grad * self.scale
 
     # ------------------------------------------------------------------
+
     @staticmethod
     def _compute_orthogonal(weights: torch.Tensor, rank: int, side: str) -> torch.Tensor:
         """Compute the top-``rank`` orthogonal matrix via truncated SVD.
@@ -214,6 +216,7 @@ class GaLoreProjector:
         return result
 
     # ------------------------------------------------------------------
+
     def _update_adaptive_schedule(self, float_ortho: torch.Tensor, side: str) -> None:
         """Track subspace stability and increase ``update_proj_gap`` if stable."""
         self.svd_count += 1
@@ -237,6 +240,7 @@ class GaLoreProjector:
         self.past_ortho_vector = current_vector.clone()
 
     # ------------------------------------------------------------------
+
     def _store_ortho(self, float_ortho: torch.Tensor) -> None:
         """Store the orthogonal matrix, optionally quantized."""
         if self.quant:

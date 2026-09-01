@@ -22,6 +22,7 @@ OLLAMA_TEMPLATES = {}
 
 
 # =========================================== Unsloth
+
 unsloth_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{ if .System }}{{ .System }}
@@ -38,6 +39,7 @@ OLLAMA_TEMPLATES["unsloth"] = unsloth_ollama
 
 
 # =========================================== Zephyr
+
 zephyr_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{ if .System }}<|system|>
@@ -1210,6 +1212,7 @@ OLLAMA_TEMPLATES["gemma4"] = gemma4_ollama
 
 # Ollama from https://ollama.com/library/gpt-oss:latest/blobs/fa6710a93d78
 # =========================================== GPT-OSS
+
 gptoss_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
@@ -1460,6 +1463,7 @@ OLLAMA_TEMPLATES["qwen3-thinking"] = qwen3_ollama
 
 # Ollama from https://ollama.com/library/starling-lm:7b/blobs/4b21bfc435b4
 # =========================================== Starling-LM
+
 starling_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{ if .System }}GPT4 Correct System: {{ .System }}<|end_of_turn|>
@@ -1480,6 +1484,7 @@ OLLAMA_TEMPLATES["starling"] = starling_ollama
 
 # Ollama from https://ollama.com/library/yi:34b-chat/blobs/62fbfd9ed093
 # =========================================== Yi-chat
+
 yi_chat_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{ if .System }}<|im_start|>system
@@ -1495,6 +1500,7 @@ OLLAMA_TEMPLATES["yi-chat"] = yi_chat_ollama
 
 # Ollama from https://ollama.com/library/granite3.2:latest/blobs/3e7ca51acd6e
 # =========================================== Granite
+
 granite_32_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{- /*

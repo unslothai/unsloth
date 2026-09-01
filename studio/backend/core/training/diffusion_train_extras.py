@@ -44,6 +44,7 @@ from typing import Any, Iterable, Optional
 # Effective decay is min(decay, (1 + updates) / (WARMUP_OFFSET + updates)); at offset 10 step 1
 # averages aggressively (~0.18) and the ramp reaches 0.99 after ~1000 updates.
 # ── LoRA EMA ──────────────────────────────────────────────────────────────────
+
 _EMA_WARMUP_OFFSET = 10.0
 
 
@@ -202,6 +203,7 @@ def save_ema_adapter(ema: "LoRAEMA", transformer: Any, spec_save: Any, out_dir: 
 
 
 # ── persistent conditioning cache ─────────────────────────────────────────────
+
 _CACHE_VERSION = "1"
 
 
@@ -394,6 +396,7 @@ class PersistentConditioningCache:
 # Buckets snap to 64 pixels: the DiT families divide by 8 in the VAE and 2 again in latent patching,
 # and regional torch.compile prefers few distinct shapes.
 # ── aspect-ratio bucketing ────────────────────────────────────────────────────
+
 BUCKET_DIVISOR = 64
 
 # Widest aspect ratio a bucket may take; anything more extreme clamps to it (matching the common

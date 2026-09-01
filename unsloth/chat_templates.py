@@ -1808,6 +1808,7 @@ DEFAULT_SYSTEM_MESSAGE["lfm-2.5"] = None
 
 
 # =========================================== Starling-LM
+
 starling_template = \
 """{{ bos_token }}
 {%- for message in messages %}
@@ -1827,6 +1828,7 @@ DEFAULT_SYSTEM_MESSAGE["starling"] = None
 
 
 # =========================================== Yi-chat
+
 yi_chat_template = \
 """
 {% if not add_generation_prompt is defined %}{% set add_generation_prompt = false %}{% endif %}{% for message in messages %}{{'<|im_start|>' + message['role'] + '

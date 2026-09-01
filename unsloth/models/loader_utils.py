@@ -1685,6 +1685,7 @@ def _exclude_rope_inv_freq_from_ddp(model):
 # the load boundary and force it ONCE around the whole load, so nested HF calls inherit it.
 
 # =============================================================================
+
 _OFFLINE_ENV_VALUES = {"1", "true", "yes", "on"}
 _OFFLINE_ENV_KEYS = ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
 

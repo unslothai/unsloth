@@ -2705,6 +2705,7 @@ def disable_broken_wandb():
 
 # Stamped on stub modules so a second call is a strict no-op and third parties can introspect __unsloth_stub__.
 # ---------------------------------------------------------------------------
+
 _UNSLOTH_STUB_SENTINEL = "__unsloth_stub__"
 _PEFT_TENSOR_PARALLEL_FALLBACK_SYMBOLS = (
     "ALL_PARALLEL_STYLES",
@@ -3787,6 +3788,7 @@ def configure_amdgpu_asic_id_table_path():
 # `import unsloth_zoo`.
 
 # ---------------------------------------------------------------------------
+
 _BNB_CUDA_SPECS_MODULE = "bitsandbytes.cuda_specs"
 _BNB_ROCM_FIX_FINDER_SENTINEL = "_unsloth_bnb_rocm_fix_finder"
 _BNB_ROCM_FIX_FUNCTION_FLAG = "__unsloth_bnb_rocm_fix__"

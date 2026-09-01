@@ -77,6 +77,7 @@ class ExportOrchestrator:
         logger.info("ExportOrchestrator initialized (subprocess mode)")
 
     # ------------------------------------------------------------------
+
     def _append_log(self, entry: Dict[str, Any]) -> None:
         """Append a worker log line to the buffer, stamped with a monotonic seq."""
         line = entry.get("line")
@@ -197,6 +198,7 @@ class ExportOrchestrator:
         return True
 
     # ------------------------------------------------------------------
+
     def _spawn_subprocess(self, config: dict) -> None:
         """Spawn a new export subprocess."""
         # Inside an op a reservation is an install about to abort on is_export_active(), so raising here
@@ -308,6 +310,7 @@ class ExportOrchestrator:
         return self._proc is not None and self._proc.is_alive()
 
     # ------------------------------------------------------------------
+
     def _send_cmd(self, cmd: dict) -> None:
         """Send a command to the subprocess."""
         if self._cmd_queue is None:
@@ -401,6 +404,7 @@ class ExportOrchestrator:
                 return events
 
     # ------------------------------------------------------------------
+
     def load_checkpoint(
         self,
         checkpoint_path: str,
