@@ -50,7 +50,7 @@
     "_xml_signal_inside_leading_bare_json": "cf11bfa0c4e24866937d1061926d94b7b40c5aac33acadb2d2fc38e9bad2d333",
     "_xml_signal_inside_leading_mistral": "85f54cf6f5c3fd321c2221435b7608d2d99f05806636c8f0000a0e861b3eb489",
     "blocked_bare_json_chain_may_continue": "19d7f9eab73b5d2f7560dd7a2eaff6878c842c20ac34c248cbbb29a94691858a",
-    "blocked_gemma_chain_may_continue": "7a15288d95f66ec528ca6b6588f7e135fa3caecec636db20018c3b1c3e101807",
+    "blocked_gemma_chain_may_continue": "5de95d523c29af7bed551bfebc43bd6dab5d848f142ec9435e38a79a1c29eea8",
     "has_tool_signal": "6378450bcbe873de9952b7d152b8759f16f1d221425650de4cfab1c215129c30",
     "is_reprompt_repeat": "79f832c93bb00ef158d3c5fa49e25f5316ada0d9237c31da373ceabaef5c058e",
     "is_reprompt_restatement": "79f832c93bb00ef158d3c5fa49e25f5316ada0d9237c31da373ceabaef5c058e",

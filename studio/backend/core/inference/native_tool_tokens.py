@@ -201,11 +201,19 @@ class NativeToolTokenDecoder:
         if not self._special_ids:
             return False
         for token_id in self._tool_ids:
-            try:
-                if self._tokenizer.convert_ids_to_tokens(token_id) == token:
-                    return True
-            except Exception:  # noqa: BLE001 -- third-party tokenizer adapters vary
-                continue
+            # Same two steps `_special_token_sets` used to retain the id: the converted
+            # token, then the decoded one, since an adapter may only answer the second.
+            for lookup in (
+                lambda: self._tokenizer.convert_ids_to_tokens(token_id),
+                lambda: _decode_without_special_spacing(
+                    self._tokenizer, [token_id], skip_special_tokens = False
+                ),
+            ):
+                try:
+                    if lookup() == token:
+                        return True
+                except Exception:  # noqa: BLE001 -- third-party tokenizer adapters vary
+                    continue
         return False
 
     def decode(self, token_ids, **_decode_kwargs) -> str:

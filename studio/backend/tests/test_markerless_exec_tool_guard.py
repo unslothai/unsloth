@@ -676,8 +676,12 @@ def test_a_promotable_gemma_peer_behind_a_blocked_call_is_held():
     assert may_continue('call:terminal{command:"i', EXEC_ENABLED) is True  # body still arriving
     # A run of blocked calls keeps looking for the peer behind them.
     assert may_continue("call:terminal{a:1} call:python{b:2} call:web_search{q:3}", EXEC_ENABLED)
+    # The parser SEARCHES forward, so a peer behind a separator or a sentence counts too.
+    assert may_continue(f"{blocked};call:web_search{{q:1}}", EXEC_ENABLED) is True
+    assert may_continue(f"{blocked} but you could also call:web_search{{q:1}}", EXEC_ENABLED)
     # Settled prose, a disabled peer, or a promotable leading call are all somebody else's job.
     assert may_continue(f"{blocked} and prose", EXEC_ENABLED) is False
+    assert may_continue(f"{blocked} I recall: nothing", EXEC_ENABLED) is False
     assert may_continue("call:terminal{a:1} call:nope{b:2}", EXEC_ENABLED) is False
     assert may_continue("call:web_search{q:1}", EXEC_ENABLED) is False
     assert may_continue("hello world", EXEC_ENABLED) is False
@@ -782,3 +786,27 @@ def test_the_think_prefill_flag_asks_the_decoder_not_the_policy():
     assert decoder_preserves_token(_WithThinkId(), "</think>") is True
     assert decoder_preserves_token(_WithThinkId(), "<eos>") is False  # not a tool control
     assert decoder_preserves_token(None, "</think>") is False
+    # An adapter whose convert_ids_to_tokens is unusable is still retained by the decode
+    # fallback in _special_token_sets, so preserves() has to take the same second step.
+    assert decoder_preserves_token(_DecodeOnlyTokenizer(), "</think>") is True
+
+
+class _DecodeOnlyTokenizer:
+    """Only ``decode`` identifies its special ids; ``convert_ids_to_tokens`` gives nothing."""
+
+    _IDS = {1: "</think>", 2: "<eos>"}
+    all_special_ids = tuple(_IDS)
+
+    def convert_ids_to_tokens(self, _token_id):
+        return None
+
+    def decode(
+        self,
+        token_ids,
+        skip_special_tokens = False,
+        **_kwargs,
+    ):
+        return "".join(
+            "" if (skip_special_tokens and i in self.all_special_ids) else self._IDS.get(i, "")
+            for i in token_ids
+        )

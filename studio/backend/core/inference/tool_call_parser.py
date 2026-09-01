@@ -2853,32 +2853,34 @@ def blocked_bare_json_chain_may_continue(text: str, enabled_tool_names: Optional
 
 
 def blocked_gemma_chain_may_continue(text: str, enabled_tool_names: Optional[set]) -> bool:
-    """Whether a leading guarded ``call:NAME{..}`` may still be followed by a promotable peer.
+    """Whether a leading guarded ``call:NAME{..}`` still hides a call the parser will promote.
 
     Sibling of ``blocked_bare_json_chain_may_continue``. Bare Gemma syntax is not in
     ``TOOL_XML_SIGNALS``, so without this the peer's serialization streams to the client and
-    is then promoted at end of turn, too late to retract.
+    is only promoted at end of turn, too late to retract. The tail is SEARCHED, not matched:
+    ``_parse_gemma_tool_calls`` scans forward from the blocked call's body, so a peer behind a
+    ``;`` or a sentence counts exactly as much as an adjacent one.
     """
     probe = text.lstrip()
     m = _GEMMA_BARE_TC_RE.match(probe)
     if m is None or not _markerless_blocked_execution(m.group(1), enabled_tool_names):
         return False
-    while True:
-        end = _gemma_body_brace_end(probe, m.end() - 1)
-        if end is None:
-            return True  # body still arriving
-        probe = probe[end + 1 :].lstrip()
-        if not probe:
-            return True  # a peer may still arrive
-        m = _GEMMA_BARE_TC_RE.match(probe)
-        if m is None:
-            # A peer whose name is still being typed (``call``, ``call:web``) has to keep the
-            # buffer private; both are ``$``-anchored, so ordinary prose does not match.
-            return "call:".startswith(probe) or _GEMMA_BARE_TC_PREFIX_RE.match(probe) is not None
-        if _markerless_promotable(m.group(1), enabled_tool_names):
-            return True  # this peer WILL be promoted; it must not stream first
-        if not _markerless_blocked_execution(m.group(1), enabled_tool_names):
-            return False  # a disabled name is prose
+    end = _gemma_body_brace_end(probe, m.end() - 1)
+    if end is None:
+        return True  # body still arriving
+    tail = probe[end + 1 :]
+    # Any promotable call in the tail will be executed, wherever it sits.
+    for nxt in _GEMMA_BARE_TC_RE.finditer(tail):
+        if _markerless_promotable(nxt.group(1), enabled_tool_names):
+            return True
+    # Nothing yet, but a name still being typed at the very end could become one.
+    trailing = tail.rstrip()
+    idx = trailing.rfind("call")
+    if idx >= 0 and (idx == 0 or not (trailing[idx - 1].isalnum() or trailing[idx - 1] == "_")):
+        rest = trailing[idx:]
+        if "call:".startswith(rest) or _GEMMA_BARE_TC_PREFIX_RE.match(rest) is not None:
+            return True
+    return not tail  # an empty tail may still grow a peer
 
 
 def leading_blocked_bare_json_end(text: str, enabled_tool_names: Optional[set]) -> int:
