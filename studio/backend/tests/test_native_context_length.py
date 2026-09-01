@@ -3,11 +3,11 @@
 
 """Tests for the native_context_length feature (PR #4746).
 
-Verifies that the new `native_context_length` property on LlamaCppBackend
-and the corresponding Pydantic model fields work correctly.  The raw GGUF
-`_context_length` must never be overwritten by VRAM-capping logic.
+Verifies the `native_context_length` property on LlamaCppBackend and the
+matching Pydantic fields. The raw GGUF `_context_length` must never be
+overwritten by VRAM-capping logic.
 
-Requires no GPU, network, or external libraries beyond pytest and pydantic.
+Needs no GPU, network, or libraries beyond pytest and pydantic.
 """
 
 import io
@@ -21,8 +21,8 @@ from unittest.mock import patch
 import pytest
 
 # ---------------------------------------------------------------------------
-# Stub heavy / unavailable external dependencies before importing the
-# module under test.  Same pattern as test_kv_cache_estimation.py.
+# Stub heavy / unavailable deps before importing the module under test.
+# Same pattern as test_kv_cache_estimation.py.
 # ---------------------------------------------------------------------------
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
@@ -38,7 +38,7 @@ sys.modules.setdefault("loggers", _loggers_stub)
 _structlog_stub = _types.ModuleType("structlog")
 sys.modules.setdefault("structlog", _structlog_stub)
 
-# httpx -- stub only the names referenced at import / class-definition time
+# httpx -- stub only names referenced at import / class-definition time
 _httpx_stub = _types.ModuleType("httpx")
 for _exc_name in (
     "ConnectError",
@@ -66,10 +66,18 @@ _httpx_stub.Client = type(
         "__exit__": lambda self, *a: None,
     },
 )
-sys.modules.setdefault("httpx", _httpx_stub)
+# Only when the real library is absent. sys.modules holds what has been IMPORTED, not
+# what is installed, so setdefault does not defer to a real httpx that nothing in this
+# process has touched yet: the stub wins and shadows it for the whole session. This stub
+# has no Response, and starlette.testclient reads httpx.Response at import, so every
+# module collected afterwards that reaches fastapi.testclient or routes.inference dies.
+try:
+    import httpx  # noqa: F401
+except ImportError:
+    sys.modules.setdefault("httpx", _httpx_stub)
 
 from core.inference.llama_cpp import LlamaCppBackend
-from models.inference import LoadRequest, LoadResponse, InferenceStatusResponse
+from models.inference import LoadResponse, InferenceStatusResponse
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -227,7 +235,7 @@ class TestContextValueSeparation:
     def test_all_equal_when_uncapped(self, backend):
         """All three equal when no VRAM constraint."""
         backend._context_length = 8192
-        # No effective or max set -- properties fall back to _context_length
+        # No effective/max set -- properties fall back to _context_length.
         assert backend.native_context_length == 8192
         assert backend.max_context_length == 8192
         assert backend.context_length == 8192
@@ -241,16 +249,16 @@ class TestContextValueSeparation:
         backend._embedding_length = 4096
         original = backend._context_length
 
-        # Simulate a very small VRAM budget that forces capping
+        # Tiny VRAM budget forces capping.
         result = backend._fit_context_to_vram(
             requested_ctx = 131072,
             available_mib = 512,  # very small
             model_size_bytes = 0,
         )
-        # _fit_context_to_vram returns the capped value, not modifying _context_length
+        # Returns the capped value without modifying _context_length.
         assert backend._context_length == original
         assert backend.native_context_length == original
-        # The returned capped value should be <= requested
+        # Capped value must be <= requested.
         assert result <= 131072
 
     def test_native_gt_context_when_capped(self, backend):
@@ -268,24 +276,10 @@ class TestContextValueSeparation:
 class TestPydanticModels:
     """Tests native_context_length field on Pydantic models."""
 
-    def test_load_request_has_fit_target_field(self):
-        """Field exists in LoadRequest.model_fields."""
-        assert "fit_target" in LoadRequest.model_fields
-
-    def test_load_request_fit_target_defaults_none(self):
-        """Omitting fit_target defaults to None."""
-        req = LoadRequest(model_path = "unsloth/test")
-        assert req.fit_target is None
-
-    def test_load_request_fit_target_accepts_int(self):
-        """fit_target stores valid integer values."""
-        req = LoadRequest(model_path = "unsloth/test", fit_target = 256)
-        assert req.fit_target == 256
-
     def test_load_response_has_field(self):
         """Field exists in LoadResponse.model_fields."""
         assert "native_context_length" in LoadResponse.model_fields
-        assert "fit_target" in LoadResponse.model_fields
+        assert "context_length" in LoadResponse.model_fields
 
     def test_load_response_defaults_none(self):
         """Omitting native_context_length defaults to None."""
@@ -334,12 +328,22 @@ class TestPydanticModels:
     def test_status_response_has_field(self):
         """Field exists in InferenceStatusResponse.model_fields."""
         assert "native_context_length" in InferenceStatusResponse.model_fields
-        assert "fit_target" in InferenceStatusResponse.model_fields
+        assert "context_length" in InferenceStatusResponse.model_fields
+
+    def test_status_response_has_chat_template_field(self):
+        """Status includes chat_template so the UI can rehydrate after refresh."""
+        assert "chat_template" in InferenceStatusResponse.model_fields
 
     def test_status_response_defaults_none(self):
         """Omitting native_context_length defaults to None."""
         resp = InferenceStatusResponse()
         assert resp.native_context_length is None
+
+    def test_status_response_chat_template_roundtrip(self):
+        """chat_template serializes and validates as part of status."""
+        resp = InferenceStatusResponse(chat_template = "{{ messages }}")
+        roundtripped = InferenceStatusResponse.model_validate_json(resp.model_dump_json())
+        assert roundtripped.chat_template == "{{ messages }}"
 
     def test_roundtrip_preserves_value(self):
         """model_validate_json(model_dump_json()) round-trips."""
@@ -352,6 +356,18 @@ class TestPydanticModels:
         )
         roundtripped = LoadResponse.model_validate_json(resp.model_dump_json())
         assert roundtripped.native_context_length == 131072
+
+    def test_context_length_roundtrip(self):
+        """Runtime context_length serializes for non-GGUF/hub models."""
+        resp = LoadResponse(
+            status = "loaded",
+            model = "test",
+            display_name = "Test",
+            inference = {},
+            context_length = 8192,
+        )
+        roundtripped = LoadResponse.model_validate_json(resp.model_dump_json())
+        assert roundtripped.context_length == 8192
 
 
 # =====================================================================
@@ -366,7 +382,7 @@ class TestRouteCompleteness:
     def _load_source(self):
         """Read routes/inference.py source once."""
         routes_path = Path(__file__).resolve().parent.parent / "routes" / "inference.py"
-        self._source = routes_path.read_text()
+        self._source = routes_path.read_text(encoding = "utf-8")
 
     def _find_construction_blocks(self, class_name: str) -> list[str]:
         """Extract all code blocks that construct a given response class."""
@@ -376,7 +392,7 @@ class TestRouteCompleteness:
             start = self._source.find(f"{class_name}(", idx)
             if start == -1:
                 break
-            # Find matching closing paren (simple depth counter)
+            # Find the matching closing paren via a depth counter.
             depth = 0
             end = start
             for i, ch in enumerate(self._source[start:], start):
@@ -392,146 +408,77 @@ class TestRouteCompleteness:
         return blocks
 
     def test_gguf_load_responses_have_field(self):
-        """Every GGUF LoadResponse (is_gguf = True) includes native_context_length + fit_target."""
+        """Every GGUF LoadResponse (is_gguf = True) includes native_context_length."""
         blocks = self._find_construction_blocks("LoadResponse")
-        gguf_blocks = [
-            b for b in blocks if "is_gguf = True" in b or "is_gguf=True" in b
-        ]
+        gguf_blocks = [b for b in blocks if "is_gguf = True" in b or "is_gguf=True" in b]
         assert (
-            len(gguf_blocks) >= 2
-        ), f"Expected at least 2 GGUF LoadResponse blocks, found {len(gguf_blocks)}"
+            len(gguf_blocks) == 1
+        ), f"Expected one shared GGUF LoadResponse block, found {len(gguf_blocks)}"
         for i, block in enumerate(gguf_blocks):
             assert (
-                "native_context_length" in block
-            ), f"GGUF LoadResponse block #{i} missing native_context_length:\n{block[:200]}"
-            assert (
-                "fit_target" in block
-            ), f"GGUF LoadResponse block #{i} missing fit_target:\n{block[:200]}"
+                "_llama_runtime_fields(llama_backend)" in block
+            ), f"GGUF LoadResponse block #{i} missing runtime fields:\n{block[:200]}"
+        assert "for name in _InferenceRuntimeFields.model_fields" in self._source
 
     def test_non_gguf_load_responses_omit_field(self):
         """Non-GGUF LoadResponse blocks do not set native_context_length (defaults to None)."""
         blocks = self._find_construction_blocks("LoadResponse")
-        non_gguf = [
-            b for b in blocks if "is_gguf = True" not in b and "is_gguf=True" not in b
-        ]
-        # Non-GGUF paths should not reference native_context_length
-        # (Pydantic defaults it to None, so not setting it is correct)
+        non_gguf = [b for b in blocks if "is_gguf = True" not in b and "is_gguf=True" not in b]
+        # Non-GGUF paths shouldn't reference native_context_length
+        # (Pydantic defaults it to None, so omitting it is correct).
         for block in non_gguf:
             assert (
                 "native_context_length" not in block
             ), f"Non-GGUF LoadResponse should not set native_context_length:\n{block[:200]}"
 
+    def test_non_gguf_load_responses_set_runtime_context_length(self):
+        """Non-GGUF LoadResponse blocks report runtime context_length."""
+        blocks = self._find_construction_blocks("LoadResponse")
+        non_gguf = [b for b in blocks if "is_gguf = True" not in b and "is_gguf=True" not in b]
+        assert non_gguf, "Expected at least one non-GGUF LoadResponse block"
+        for block in non_gguf:
+            assert (
+                "context_length" in block
+            ), f"Non-GGUF LoadResponse should set context_length:\n{block[:200]}"
+
     def test_status_path(self):
-        """InferenceStatusResponse construction with llama_backend has both fields."""
+        """InferenceStatusResponse construction with llama_backend has the field.
+
+        The route may splat the helper's result straight in, or bind it first
+        and adjust a field before passing it on. Both carry the runtime fields.
+        """
         blocks = self._find_construction_blocks("InferenceStatusResponse")
         found = False
         for block in blocks:
-            if (
-                "llama_backend" in block
-                and "native_context_length" in block
-                and "fit_target" in block
-            ):
+            if "llama_backend" not in block:
+                continue
+            if "_llama_runtime_fields(llama_backend)" in block:
                 found = True
                 break
-        assert found, (
-            "No InferenceStatusResponse block with llama_backend has "
-            "native_context_length and fit_target"
-        )
+            if "**_runtime_fields" in block:
+                # Only counts if that dict is the helper's, not any local name.
+                assert (
+                    "_runtime_fields = _llama_runtime_fields(llama_backend)" in self._source
+                ), "**_runtime_fields is not built from _llama_runtime_fields(llama_backend)"
+                found = True
+                break
+        assert found, "No InferenceStatusResponse block with llama_backend has runtime fields"
+        assert "for name in _InferenceRuntimeFields.model_fields" in self._source
 
+    def test_non_gguf_status_path_reports_runtime_context_length(self):
+        """Non-GGUF InferenceStatusResponse reports context_length from model_info."""
+        blocks = self._find_construction_blocks("InferenceStatusResponse")
+        found = False
+        for block in blocks:
+            if "is_gguf = False" in block and "context_length" in block:
+                found = True
+                break
+        assert found, "No non-GGUF InferenceStatusResponse block with context_length"
 
-# =====================================================================
-# E.1 TestFitTargetSource -- source-level verification
-# =====================================================================
-
-
-class TestFitTargetSource:
-    """Verify fit_target support is wired in llama_cpp backend source."""
-
-    @pytest.fixture(autouse = True)
-    def _load_source(self):
-        backend_path = (
-            Path(__file__).resolve().parent.parent
-            / "core"
-            / "inference"
-            / "llama_cpp.py"
-        )
-        self._source = backend_path.read_text()
-
-    def test_backend_has_fit_target_property(self):
-        assert "def fit_target(self)" in self._source
-        assert "self._fit_target" in self._source
-
-    def test_backend_passes_fit_target_to_command(self):
-        assert '"--fit-target"' in self._source
-        assert "fit_target if fit_target and fit_target > 0 else None" in self._source
-
-
-# =====================================================================
-# E.2 TestFitTargetBehavior -- runtime behavior
-# =====================================================================
-
-
-class TestFitTargetBehavior:
-    """Runtime behavior for explicit fit_target + explicit context."""
-
-    def test_explicit_fit_target_keeps_requested_context(self, tmp_path, backend):
-        """When full ctx won't fit GPU-only, fit_target keeps requested ctx via --fit."""
-        gguf_path = tmp_path / "model.gguf"
-        gguf_path.write_bytes(b"not-a-real-gguf")
-
-        captured_cmd = {}
-
-        class _DummyProc:
-            def __init__(self, cmd, **kwargs):
-                captured_cmd["cmd"] = cmd
-                self.stdout = iter(())
-
-            def terminate(self):
-                pass
-
-            def wait(self, timeout = None):
-                return 0
-
-            def kill(self):
-                pass
-
-        def _fake_read_metadata(_path: str):
-            backend._context_length = 131072
-            backend._n_layers = 32
-            backend._n_kv_heads = 8
-            backend._n_heads = 32
-            backend._embedding_length = 4096
-
-        with (
-            patch.object(
-                backend, "_find_llama_server_binary", return_value = "llama-server"
-            ),
-            patch.object(
-                backend, "_read_gguf_metadata", side_effect = _fake_read_metadata
-            ),
-            patch.object(backend, "_get_gguf_size_bytes", return_value = 4 * 1024**3),
-            patch.object(backend, "_get_gpu_free_memory", return_value = [(0, 12000)]),
-            patch.object(backend, "_select_gpus", return_value = (None, True)),
-            patch.object(backend, "_fit_context_to_vram", return_value = 8192),
-            patch.object(backend, "_wait_for_health", return_value = True),
-            patch("core.inference.llama_cpp.subprocess.Popen", side_effect = _DummyProc),
-        ):
-            ok = backend.load_model(
-                gguf_path = str(gguf_path),
-                model_identifier = "test-model",
-                n_ctx = 100000,
-                fit_target = 256,
-            )
-
-        assert ok is True
-        cmd = captured_cmd["cmd"]
-        assert "-c" in cmd
-        assert cmd[cmd.index("-c") + 1] == "100000"
-        assert "--fit" in cmd and cmd[cmd.index("--fit") + 1] == "on"
-        assert "--fit-target" in cmd and cmd[cmd.index("--fit-target") + 1] == "256"
-        assert backend.fit_target == 256
-
-        backend.unload_model()
+    def test_openai_models_listing_reports_context_length(self):
+        """/v1/models includes context_length when the backend knows it."""
+        assert 'entry["context_length"]' in self._source
+        assert 'model_info.get("context_length")' in self._source
 
 
 # =====================================================================
@@ -589,7 +536,7 @@ class TestNativeContextEdgeCases:
         backend._read_gguf_metadata(path)
         assert backend.native_context_length == 131072
 
-        # Simulate VRAM capping by setting effective and max
+        # Simulate VRAM capping via effective and max.
         backend._effective_context_length = 16384
         backend._max_context_length = 32768
         assert backend.native_context_length == 131072

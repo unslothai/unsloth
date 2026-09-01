@@ -1,3 +1,16 @@
+# tests/saving scripts run their whole body at import, so plain pytest
+# collection would download checkpoints and train. Skip unless opted in.
+import sys as _sys
+from pathlib import Path as _Path
+
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
+from tests.utils.os_utils import require_opt_in as _require_opt_in
+
+_require_opt_in(
+    "UNSLOTH_RUN_SAVING_SCRIPTS",
+    "GPU + Hub saving script; its body runs at import.",
+)
+
 # inference_on_merged.py
 from unsloth import FastLanguageModel
 from transformers import TextStreamer
@@ -39,12 +52,10 @@ inputs = merged_tokenizer.apply_chat_template(
     add_generation_prompt = True,
     return_tensors = "pt",
     return_dict = True,
-    reasoning_effort = "low",  # **NEW!** Set reasoning effort to low, medium or high
+    reasoning_effort = "low",  # low, medium or high
 ).to(merged_model.device)
 
-_ = merged_model.generate(
-    **inputs, max_new_tokens = 512, streamer = TextStreamer(merged_tokenizer)
-)
+_ = merged_model.generate(**inputs, max_new_tokens = 512, streamer = TextStreamer(merged_tokenizer))
 print("\n✅ Inference complete.")
 
 # --- Final Cleanup ---
@@ -54,7 +65,5 @@ torch.cuda.empty_cache()
 gc.collect()
 
 safe_remove_directory("./gpt-oss-finetuned-merged")
-safe_remove_directory(
-    "./unsloth_compiled_cache"
-)  # Clean up cache created by this process
+safe_remove_directory("./unsloth_compiled_cache")  # Clean up cache created by this process
 print("✅ Final cleanup complete. Exiting inference script.")

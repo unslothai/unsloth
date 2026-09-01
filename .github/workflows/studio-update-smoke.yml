@@ -1,0 +1,271 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Verifies that `unsloth studio update --local` is idempotent: a fresh
+# install via install.sh, followed by `unsloth studio update --local`,
+# succeeds and is a no-op for the llama.cpp prebuilt (it should report
+# "prebuilt up to date and validated", not re-run the source build).
+#
+# This catches regressions in setup.sh's update path that the existing
+# GGUF / wheel jobs would miss because they only invoke install.sh once.
+
+name: Unsloth Update CI
+
+on:
+  pull_request:
+    paths:
+      - 'install.sh'
+      - 'scripts/uninstall.sh'
+      - 'studio/setup.sh'
+      - 'studio/install_python_stack.py'
+      - 'studio/install_llama_prebuilt.py'
+      - 'studio/backend/requirements/**'
+      - 'unsloth_cli/commands/studio.py'
+      - 'unsloth_cli/__init__.py'
+      - 'unsloth_cli/_system_dir_guard.py'
+      - 'pyproject.toml'
+      - '.github/workflows/studio-update-smoke.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
+      # The install step in this workflow is `uses:` on that composite action,
+      # so an edit to the action changes what this workflow actually runs.
+      - '.github/actions/install-unsloth-local/action.yml'
+      # The dist cache moved out of install-unsloth-local so the Windows jobs could
+      # share one definition of its key; a change to it still has to re-run the jobs
+      # that depend on it.
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  # Latest-only on a PR branch. On main this does less than it reads like: it stops
+  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
+  # the moment a newer one is queued, so a merge burst still leaves only the tip.
+  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  update-idempotency:
+    name: Unsloth Updating Tests
+    runs-on: ubuntu-latest
+    # Sized for the apt step's bounded worst case (15m) plus the smoke itself.
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Linux deps for llama.cpp prebuilt
+        # Bounded and retried through the shared helper: an unbounded apt step does
+        # not fail, it spends the job's whole budget and is reported as "cancelled"
+        # with no reason and every later step skipped. update and install go as one
+        # unit, since retrying the install after a stalled update re-reads the same
+        # broken package list.
+        # Two long attempts, not three short ones. 150s killed apt mid-`update`
+        # against a mirror that was degraded rather than dead, and every attempt
+        # then hit the same wall -- three kills and no result. The bound exists to
+        # stop an infinite hang, not to race a slow mirror.
+        timeout-minutes: 15
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '360'
+        run: |
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq || { apt-get update && apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq; }'
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+          # Don't cache pip: this job runs `bash install.sh` and
+          # `unsloth studio update --local` which both go through
+          # `uv` and never populate ~/.cache/pip. setup-python's
+          # post-step then fatal-errors with "Cache folder path is
+          # retrieved for pip but doesn't exist on disk".
+
+      - name: Install Unsloth (--local, --no-torch)
+        uses: ./.github/actions/install-unsloth-local
+        with:
+          gh-token: ${{ secrets.GITHUB_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+
+      - name: First update should be a no-op (prebuilt already validated)
+        # `unsloth studio update --local` runs studio/setup.sh against
+        # the local repo. Right after install.sh the llama.cpp prebuilt
+        # has just been installed and validated, so the second run must
+        # take the "prebuilt up to date and validated" code path. Any
+        # source-build fallback or re-download here means setup.sh's
+        # idempotency regressed.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+        run: |
+          set -o pipefail
+          unsloth studio update --local 2>&1 | tee logs/update.log
+          if grep -q "falling back to source build" logs/update.log; then
+            echo "::error::studio update fell back to source-build llama.cpp on a fresh install. setup.sh idempotency regressed."
+            grep -E "llama-prebuilt|llama.cpp" logs/update.log | tail -60
+            exit 1
+          fi
+          if ! grep -qE "prebuilt up to date and validated|prebuilt installed and validated" logs/update.log; then
+            echo "::error::no prebuilt up-to-date marker in update.log. Did setup.sh skip the prebuilt path on update?"
+            grep -E "llama-prebuilt|llama.cpp" logs/update.log | tail -60
+            exit 1
+          fi
+          echo "update path took the prebuilt fast path"
+
+      - name: Second update must also be a no-op
+        # Two consecutive `update`s back-to-back is the usual desktop
+        # flow (auto-update, then user-triggered update). Asserting the
+        # second run is also clean rules out hidden state changes from
+        # the first one.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+        run: |
+          set -o pipefail
+          unsloth studio update --local 2>&1 | tee logs/update2.log
+          grep -q "falling back to source build" logs/update2.log && {
+              echo "::error::second update fell back to source build"
+              tail -60 logs/update2.log; exit 1; } || true
+          grep -qE "prebuilt up to date and validated|prebuilt installed and validated" logs/update2.log
+          echo "second update was clean"
+
+      - name: Boot Unsloth briefly to confirm the install is still usable
+        # If `update --local` accidentally broke the venv or wiped the
+        # llama-server binary, the server would fail to start here.
+        run: |
+          mkdir -p logs
+          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p 18891 \
+            > logs/studio.log 2>&1 &
+          PID=$!
+          for i in $(seq 1 60); do
+            if curl -fs http://127.0.0.1:18891/api/health > /tmp/health.json; then
+              jq -e '.status == "healthy"' /tmp/health.json
+              break
+            fi
+            sleep 1
+          done
+          if ! jq -e '.status == "healthy"' /tmp/health.json 2>/dev/null; then
+            echo "Unsloth failed to come up after `update`"
+            tail -200 logs/studio.log
+            kill "$PID" 2>/dev/null || true
+            exit 1
+          fi
+          kill "$PID" 2>/dev/null || true
+          echo "post-update Unsloth /api/health OK"
+
+      - name: A complete install reports itself complete
+        run: |
+          set -o pipefail
+          unsloth studio verify-install
+          unsloth studio desktop-capabilities --json | tee /tmp/caps.json
+          jq -e '.studio_install_ok == true' /tmp/caps.json
+          jq -e '.desktop_manageability_version >= 2' /tmp/caps.json
+
+      - name: An incomplete install must not report itself ready
+        # An installer killed part-way leaves a working CLI but no studio.txt
+        # deps, which the old preflight called ManagedReady. The manifest is
+        # written last, so removing it reproduces that state.
+        run: |
+          set -o pipefail
+          # install.sh's default root, resolved explicitly: `python` on PATH
+          # here is setup-python's, not the managed venv.
+          MANIFEST="$HOME/.unsloth/studio/unsloth_studio/unsloth_install_manifest.json"
+          test -f "$MANIFEST" || { echo "::error::installer never wrote $MANIFEST"; exit 1; }
+          rm -f "$MANIFEST"
+          unsloth studio desktop-capabilities --json | tee /tmp/caps_bad.json
+          jq -e '.studio_install_ok == false' /tmp/caps_bad.json
+          if unsloth studio verify-install; then
+            echo "::error::verify-install passed on an install with no manifest"
+            exit 1
+          fi
+          echo "incomplete install correctly reported not-ready"
+
+      - name: Update repairs an incomplete install
+        # `--local` bypasses setup.sh's PyPI version compare, so this asserts
+        # the repair OUTCOME. The non-local fast path the desktop Repair button
+        # uses is covered by tests/studio/install/test_setup_fast_path_guard.py.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -o pipefail
+          unsloth studio update --local 2>&1 | tee logs/update_repair.log
+          unsloth studio verify-install
+          unsloth studio desktop-capabilities --json | jq -e '.studio_install_ok == true'
+          echo "update repaired the incomplete install"
+
+      - name: Uninstall and verify clean
+        # Round-trip the installer through scripts/uninstall.sh: confirms the
+        # uninstaller actually finds and removes everything install.sh +
+        # update wrote. Safety-guard scenarios (refuse-$HOME etc.) belong
+        # in a separate fast smoke job; this is the happy-path cleanup
+        # assertion that catches regressions where install.sh starts
+        # writing to a new location and scripts/uninstall.sh hasn't caught up.
+        # Skips gracefully if scripts/uninstall.sh has not landed yet (lets
+        # this workflow merge before #5497).
+        run: |
+          set -o pipefail
+          if [ ! -f scripts/uninstall.sh ]; then
+            echo "scripts/uninstall.sh not present in this tree; skipping round-trip"
+            : > logs/uninstall.log
+            exit 0
+          fi
+          sh scripts/uninstall.sh 2>&1 | tee logs/uninstall.log
+          leak=0
+          for p in \
+            "$HOME/.unsloth/studio" \
+            "$HOME/.unsloth/whisper.cpp" \
+            "$HOME/.unsloth/.llama.cpp.install.lock" \
+            "$HOME/.unsloth/.node.install.lock" \
+            "$HOME/.unsloth/.whisper.cpp.install.lock" \
+            "$HOME/.local/share/unsloth" \
+            "$HOME/Desktop/Unsloth Studio.desktop" \
+            "$HOME/.local/bin/unsloth"; do
+            if [ -e "$p" ] || [ -L "$p" ]; then
+              echo "::error::leak: $p"
+              ls -la "$p" 2>&1 | head -3
+              leak=$((leak + 1))
+            fi
+          done
+          # Catch-all that does not need updating when a new artifact is added:
+          # nothing but Unsloth writes under ~/.unsloth on a runner, so a
+          # surviving directory means the uninstaller missed something. This is
+          # what caught the node/whisper install locks, which individually look
+          # harmless but keep the uninstaller's rmdir from pruning ~/.unsloth.
+          if [ -d "$HOME/.unsloth" ]; then
+            echo "::error::leak: ~/.unsloth survived the uninstall"
+            find "$HOME/.unsloth" | head -40
+            leak=$((leak + 1))
+          fi
+          [ "$leak" -eq 0 ] || exit 1
+          # Idempotent: re-runs exit 0 on an empty $HOME.
+          sh scripts/uninstall.sh 2>&1 | tail -5
+          sh scripts/uninstall.sh 2>&1 | tail -5
+          echo "PASS: install -> update -> uninstall round-trip clean"
+
+      - name: Upload update logs
+        # Always upload so a green run still leaves the install + two
+        # update logs + uninstall log reviewable.
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: studio-update-log
+          path: |
+            logs/install.log
+            logs/update.log
+            logs/update2.log
+            logs/studio.log
+            logs/uninstall.log
+          retention-days: 7

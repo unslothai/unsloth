@@ -9,23 +9,30 @@ export type TrainingPhase =
   | "loading_dataset"
   | "configuring"
   | "training"
+  // Steps done, worker still saving. Non-terminal: 100% is not success.
+  | "finalizing"
   | "completed"
   | "error"
   | "stopped";
 
 export interface TrainingStatusResponse {
   job_id: string;
+  start_request_id?: string | null;
+  start_request_state?: "pending" | "accepted" | "rejected" | null;
   phase: TrainingPhase;
   is_training_running: boolean;
   eval_enabled: boolean;
   message: string;
   error: string | null;
+  warnings?: string[];
   details?: {
     epoch?: number;
     step?: number;
     total_steps?: number;
     loss?: number;
     learning_rate?: number;
+    // null = explicit clear (run stopped without saving); absent = unchanged.
+    output_dir?: string | null;
   } | null;
   metric_history?: {
     steps?: number[];
@@ -39,6 +46,7 @@ export interface TrainingStatusResponse {
 }
 
 export interface TrainingMetricsResponse {
+  job_id: string;
   loss_history: number[];
   lr_history: number[];
   step_history: number[];
@@ -76,51 +84,75 @@ export interface TrainingRuntimeState {
   evalEnabled: boolean;
   message: string;
   error: string | null;
+  warnings: string[];
   isHydrating: boolean;
   hasHydrated: boolean;
   isStarting: boolean;
+  startRequestId: string | null;
   startError: string | null;
+  startModelName: string | null;
+  startDatasetName: string | null;
+  startProjectName: string | null;
+  startFromResume: boolean;
   sseConnected: boolean;
   firstStepReceived: boolean;
   lastEventId: number | null;
   currentStep: number;
   totalSteps: number;
   currentEpoch: number;
-  currentLoss: number;
+  // null while the latest reported loss is non-finite
+  currentLoss: number | null;
   currentLearningRate: number;
   progressPercent: number;
   elapsedSeconds: number | null;
   etaSeconds: number | null;
   currentGradNorm: number | null;
   currentNumTokens: number | null;
+  outputDir: string | null;
   lossHistory: TrainingSeriesPoint[];
   lrHistory: TrainingSeriesPoint[];
   gradNormHistory: TrainingSeriesPoint[];
   evalLossHistory: TrainingSeriesPoint[];
   resetGeneration: number;
   stopRequested: boolean;
+  selectedHistoryRunId: string | null;
+  // True while the studio "Current Run" tab is the active view, so the sidebar can highlight it.
+  currentRunViewActive: boolean;
 }
 
 export interface TrainingRuntimeActions {
   setStopRequested: (value: boolean) => void;
   setHydrating: (value: boolean) => void;
   setHasHydrated: (value: boolean) => void;
+  tryBeginStarting: (startRequestId: string) => boolean;
   setStarting: (value: boolean) => void;
   setStartError: (value: string | null) => void;
+  setStartResources: (
+    modelName: string | null,
+    datasetName: string | null,
+    fromResume?: boolean,
+    projectName?: string | null,
+  ) => void;
   setSseConnected: (value: boolean) => void;
   setLastEventId: (value: number | null) => void;
   resetRuntime: () => void;
   applyStatus: (payload: TrainingStatusResponse) => void;
   applyMetrics: (payload: TrainingMetricsResponse) => void;
   applyProgress: (payload: TrainingProgressPayload, eventId?: number) => void;
-  setStartQueued: (jobId: string, message: string) => void;
+  setStartPending: (
+    jobId: string | null,
+    message: string,
+    startRequestId?: string | null,
+  ) => void;
   setRuntimeError: (message: string) => void;
+  setSelectedHistoryRunId: (id: string | null) => void;
+  setCurrentRunViewActive: (value: boolean) => void;
 }
 
-export type TrainingRuntimeStore = TrainingRuntimeState & TrainingRuntimeActions;
+export type TrainingRuntimeStore = TrainingRuntimeState &
+  TrainingRuntimeActions;
 
 export interface TrainingViewData {
-  // Current metrics (for ProgressSection)
   phase: TrainingPhase;
   currentStep: number;
   totalSteps: number;
@@ -129,19 +161,22 @@ export interface TrainingViewData {
   currentGradNorm: number | null;
   currentEpoch: number | null;
   currentNumTokens: number | null;
+  outputDir: string | null;
+  // True when a newer run reused this run's output_dir (resume), so its on-disk contents differ.
+  resumedLater?: boolean;
   progressPercent: number;
   elapsedSeconds: number | null;
   etaSeconds: number | null;
   evalEnabled: boolean;
   message: string;
   error: string | null;
+  warnings: string[];
   isTrainingRunning: boolean;
 
-  // Config summary
   modelName: string;
+  projectName: string | null;
   trainingMethod: string;
 
-  // Time-series (for ChartsSection)
   lossHistory: TrainingSeriesPoint[];
   lrHistory: TrainingSeriesPoint[];
   gradNormHistory: TrainingSeriesPoint[];

@@ -1,0 +1,734 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import {
+  type ManagedDownload,
+  clearCompletedInventoryHint,
+  downloadInventoryHintKind,
+  useDownloadManagerStore,
+} from "@/features/hub/download-manager";
+import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
+import { useCallback, useEffect, useMemo, useRef } from "react";
+import type { LocalDatasetInfo } from "./api";
+import {
+  dedupeSameSourceHubCacheRows,
+  partialSetFromRows,
+} from "./inventory-dedupe";
+import {
+  type PendingHintReconciliationCommit,
+  pendingHintReconciliationNeedsCommit,
+  pendingInventoryHintsEqual,
+  pendingWithInventoryHints,
+  reconcileInventoryHints,
+  useInventoryHintStore,
+} from "./inventory-hint-store";
+import {
+  type PendingInventoryHints,
+  inventoryHintKey,
+  nextInventoryHintExpiryDelay,
+  repoKey,
+} from "./inventory-hints";
+import { resolveInventorySettlement } from "./inventory-settlement";
+import type {
+  CachedInventoryRow,
+  InventoryHint,
+  LocalInventoryRow,
+} from "./types";
+import {
+  type DeviceInventorySource,
+  useDeviceInventorySources,
+} from "./use-device-inventory";
+import {
+  buildCachedInventoryRow,
+  buildLocalInventoryRows,
+  cachedInventoryId,
+  defaultCapabilities,
+} from "./view-models";
+import { normalizeTimestamp } from "./inventory-timestamps";
+import {
+  INVENTORY_FRESHNESS_WINDOW_MS,
+  isInventoryStampFresh,
+} from "./inventory-freshness";
+
+export interface HubInventory {
+  cachedRows: CachedInventoryRow[];
+  localRows: LocalInventoryRow[];
+  availableSet: Set<string>;
+  partialSet: Set<string>;
+  downloadedReady: boolean;
+  inventorySettled: boolean;
+  inventoryError: boolean;
+  inventoryWarning: boolean;
+  refreshInventory: () => Promise<void>;
+  refreshInventoryIfOlderThan: (maxAgeMs: number) => Promise<void>;
+}
+
+export type HubInventoryKind = "models" | "datasets";
+
+type HubInventoryOptions = {
+  kind?: HubInventoryKind;
+  enabled?: boolean;
+  includeLocal?: boolean;
+};
+
+const MODEL_HUB_CACHE_SOURCES = [
+  "cachedGguf",
+  "cachedModels",
+] as const satisfies readonly DeviceInventorySource[];
+
+const DATASET_HUB_CACHE_SOURCES = [
+  "cachedDatasets",
+] as const satisfies readonly DeviceInventorySource[];
+
+const LOCAL_MODEL_INVENTORY_SOURCE = [
+  "localModels",
+] as const satisfies readonly DeviceInventorySource[];
+
+const LOCAL_DATASET_INVENTORY_SOURCE = [
+  "localDatasets",
+] as const satisfies readonly DeviceInventorySource[];
+
+type LiveInventoryJob = Pick<
+  ManagedDownload,
+  | "kind"
+  | "repoId"
+  | "variant"
+  | "inventoryKind"
+  | "state"
+  | "startedAt"
+> & {
+  displayBytes: number;
+};
+
+function compareCachedRows(
+  a: CachedInventoryRow,
+  b: CachedInventoryRow,
+): number {
+  if (Boolean(a.partial) !== Boolean(b.partial)) return a.partial ? 1 : -1;
+  return a.repoId.localeCompare(b.repoId);
+}
+
+function localDatasetSourceLabel(source?: string | null): string {
+  switch (source) {
+    case "recipe":
+      return "Recipe dataset";
+    case "upload":
+      return "Uploaded dataset";
+    default:
+      return "Local dataset";
+  }
+}
+
+function isReadyForDisplay(source: {
+  error: string | null;
+  loading: boolean;
+  ready: boolean;
+  rows: readonly unknown[];
+}): boolean {
+  if (source.error !== null) return true;
+  if (!source.ready) return false;
+  return !(source.loading && source.rows.length === 0);
+}
+
+function hasUnreadyFailure(source: {
+  error: string | null;
+  ready: boolean;
+}): boolean {
+  return source.error !== null && !source.ready;
+}
+
+function liveInventoryRank(job: ManagedDownload): number {
+  if (job.state === "running" || job.state === "cancelling") return 2;
+  if (job.state === "cancelled" || job.state === "error") return 1;
+  return 0;
+}
+
+export function liveInventorySelectionKey(
+  job: Pick<ManagedDownload, "kind" | "repoId" | "variant" | "inventoryKind">,
+): string {
+  return inventoryHintKey(
+    downloadInventoryHintKind(job.kind, job.variant, job.inventoryKind),
+    job.repoId,
+  );
+}
+
+export function observedKeyProtections(
+  jobs: Record<string, ManagedDownload>,
+): Record<InventoryHint["kind"], Set<string>> {
+  const keys: Record<InventoryHint["kind"], Set<string>> = {
+    model: new Set(),
+    gguf: new Set(),
+    dataset: new Set(),
+  };
+  for (const job of Object.values(jobs)) {
+    if (
+      job.external ||
+      (job.state !== "running" &&
+        job.state !== "cancelling" &&
+        job.state !== "complete")
+    ) {
+      continue;
+    }
+    keys[
+      downloadInventoryHintKind(job.kind, job.variant, job.inventoryKind)
+    ].add(repoKey(job.repoId));
+  }
+  return keys;
+}
+
+function shouldSurfaceLiveJob(
+  job: ManagedDownload,
+  isDatasetMode: boolean,
+): boolean {
+  if (isDatasetMode !== (job.kind === "dataset")) return false;
+  if (job.state === "running" || job.state === "cancelling") return true;
+  if (job.state !== "cancelled" && job.state !== "error") return false;
+  return Math.max(job.downloadedBytes, job.completedBytes) > 0;
+}
+
+function liveJobDisplayBytes(job: ManagedDownload): number {
+  if (job.expectedBytes > 0) return job.expectedBytes;
+  if (job.state === "running" || job.state === "cancelling") return 0;
+  return Math.max(job.downloadedBytes, job.completedBytes, 0);
+}
+
+export function createLiveInventoryJobsSelector(isDatasetMode: boolean): (state: {
+  jobs: Record<string, ManagedDownload>;
+}) => LiveInventoryJob[] {
+  let cache: { signature: string; jobs: LiveInventoryJob[] } = {
+    signature: "",
+    jobs: [],
+  };
+  return (state) => {
+    const selectedByRepoAndKind = new Map<string, ManagedDownload>();
+    for (const job of Object.values(state.jobs)) {
+      if (!shouldSurfaceLiveJob(job, isDatasetMode)) continue;
+      if (!repoKey(job.repoId)) continue;
+      const selectionKey = liveInventorySelectionKey(job);
+      const current = selectedByRepoAndKind.get(selectionKey);
+      if (
+        !current ||
+        liveInventoryRank(job) > liveInventoryRank(current) ||
+        (liveInventoryRank(job) === liveInventoryRank(current) &&
+          job.startedAt > current.startedAt)
+      ) {
+        selectedByRepoAndKind.set(selectionKey, job);
+      }
+    }
+    const jobs = [...selectedByRepoAndKind.values()]
+      .map((job) => ({
+        kind: job.kind,
+        repoId: job.repoId,
+        variant: job.variant,
+        inventoryKind: job.inventoryKind,
+        state: job.state,
+        startedAt: job.startedAt,
+        displayBytes: liveJobDisplayBytes(job),
+      }))
+      .sort(
+        (a, b) =>
+          repoKey(a.repoId).localeCompare(repoKey(b.repoId)) ||
+          liveInventorySelectionKey(a).localeCompare(
+            liveInventorySelectionKey(b),
+          ),
+      );
+    const signature = jobs
+      .map(
+        (job) =>
+          `${job.kind}\u0001${job.repoId.toLowerCase()}\u0001${job.variant ?? ""}\u0001${job.inventoryKind ?? ""}\u0001${job.state}\u0001${job.startedAt}\u0001${job.displayBytes}`,
+      )
+      .join("\u0002");
+    if (signature === cache.signature) return cache.jobs;
+    cache = { signature, jobs };
+    return jobs;
+  };
+}
+
+function liveDownloadInventoryRows(
+  jobs: readonly LiveInventoryJob[],
+  isDatasetMode: boolean,
+): CachedInventoryRow[] {
+  return jobs.map((job) => {
+    const inventoryKind = downloadInventoryHintKind(
+      job.kind,
+      job.variant,
+      job.inventoryKind,
+    );
+    const modelFormat = isDatasetMode
+      ? "unknown"
+      : inventoryKind === "gguf"
+        ? "gguf"
+        : "safetensors";
+    return {
+      ...buildCachedInventoryRow(
+        {
+          repo_id: job.repoId,
+          inventory_id: cachedInventoryId(modelFormat, job.repoId),
+          load_id: job.repoId,
+          model_format: modelFormat,
+          runtime:
+            modelFormat === "gguf"
+              ? "llama_cpp"
+              : modelFormat === "safetensors"
+                ? "transformers"
+                : "unknown",
+          size_bytes: job.displayBytes,
+          // live jobs already use epoch milliseconds
+          last_modified: job.startedAt,
+          partial: true,
+          partial_transport: null,
+          optimistic: true,
+        },
+        modelFormat,
+      ),
+      liveDownload: true,
+    };
+  });
+}
+
+export function useHubInventory(
+  options: HubInventoryOptions = {},
+): HubInventory {
+  const hfToken = useHfTokenStore((state) => state.token) || undefined;
+  const isDatasetMode = (options.kind ?? "models") === "datasets";
+  const enabled = options.enabled ?? true;
+  const includeLocal = options.includeLocal ?? true;
+  const modelInventory = useDeviceInventorySources(MODEL_HUB_CACHE_SOURCES, {
+    hfToken,
+    enabled: enabled && !isDatasetMode,
+  });
+  const datasetInventory = useDeviceInventorySources(
+    DATASET_HUB_CACHE_SOURCES,
+    {
+      hfToken,
+      enabled: enabled && isDatasetMode,
+    },
+  );
+  const localModelInventory = useDeviceInventorySources(
+    LOCAL_MODEL_INVENTORY_SOURCE,
+    {
+      hfToken,
+      enabled: enabled && !isDatasetMode && includeLocal,
+    },
+  );
+  const localDatasetInventory = useDeviceInventorySources(
+    LOCAL_DATASET_INVENTORY_SOURCE,
+    {
+      hfToken,
+      enabled: enabled && isDatasetMode && includeLocal,
+    },
+  );
+  const cachedGgufSource = modelInventory.cachedGguf;
+  const cachedModelsSource = modelInventory.cachedModels;
+  const cachedDatasetsSource = datasetInventory.cachedDatasets;
+  const localModelsSource = localModelInventory.localModels;
+  const localDatasetsSource = localDatasetInventory.localDatasets;
+  const refreshModelInventory = modelInventory.refresh;
+  const refreshDatasetInventory = datasetInventory.refresh;
+  const refreshLocalModelInventory = localModelInventory.refresh;
+  const refreshLocalDatasetInventory = localDatasetInventory.refresh;
+  const refreshModelInventoryIfOlderThan = modelInventory.refreshIfOlderThan;
+  const refreshDatasetInventoryIfOlderThan =
+    datasetInventory.refreshIfOlderThan;
+  const refreshLocalModelInventoryIfOlderThan =
+    localModelInventory.refreshIfOlderThan;
+  const refreshLocalDatasetInventoryIfOlderThan =
+    localDatasetInventory.refreshIfOlderThan;
+  const pendingHints = useInventoryHintStore((state) => state.pending);
+  const observedInventoryKeys = useInventoryHintStore(
+    (state) => state.observedKeys,
+  );
+  const pruneExpiredPendingHints = useInventoryHintStore(
+    (state) => state.pruneExpiredHints,
+  );
+  const commitPendingHintReconciliations = useInventoryHintStore(
+    (state) => state.commitReconciliations,
+  );
+  const completedHints = useDownloadManagerStore(
+    (state) => state.completedInventoryHints,
+  );
+  const selectLiveInventoryJobs = useMemo(
+    () => createLiveInventoryJobsSelector(isDatasetMode),
+    [isDatasetMode],
+  );
+  const liveInventoryJobs = useDownloadManagerStore(selectLiveInventoryJobs);
+  const pendingForRenderRef = useRef<PendingInventoryHints | null>(null);
+
+  const pendingForRenderNext = useMemo(
+    () => pendingWithInventoryHints(pendingHints, completedHints),
+    [completedHints, pendingHints],
+  );
+  const pendingForRender = useMemo(() => {
+    const current = pendingForRenderRef.current;
+    if (current && pendingInventoryHintsEqual(current, pendingForRenderNext)) {
+      return current;
+    }
+    return pendingForRenderNext;
+  }, [pendingForRenderNext]);
+
+  useEffect(() => {
+    const current = pendingForRenderRef.current;
+    if (!current || !pendingInventoryHintsEqual(current, pendingForRender)) {
+      pendingForRenderRef.current = pendingForRender;
+    }
+  }, [pendingForRender]);
+
+  useEffect(() => {
+    const delay = nextInventoryHintExpiryDelay(pendingHints);
+    if (delay === null) {
+      return;
+    }
+    if (typeof window === "undefined") {
+      pruneExpiredPendingHints();
+      return;
+    }
+    const timer = window.setTimeout(pruneExpiredPendingHints, delay + 1);
+    return () => window.clearTimeout(timer);
+  }, [pendingHints, pruneExpiredPendingHints]);
+
+  const cachedGgufReconciliation = useMemo(
+    () =>
+      reconcileInventoryHints({
+        pending: pendingForRender,
+        kind: "gguf",
+        rows: cachedGgufSource.rows,
+        previouslyObserved: observedInventoryKeys.gguf,
+        refreshStartedAt: cachedGgufSource.refreshStartedAt,
+      }),
+    [
+      cachedGgufSource.rows,
+      cachedGgufSource.refreshStartedAt,
+      observedInventoryKeys.gguf,
+      pendingForRender,
+    ],
+  );
+  const cachedModelsReconciliation = useMemo(
+    () =>
+      reconcileInventoryHints({
+        pending: pendingForRender,
+        kind: "model",
+        rows: cachedModelsSource.rows,
+        previouslyObserved: observedInventoryKeys.model,
+        refreshStartedAt: cachedModelsSource.refreshStartedAt,
+      }),
+    [
+      cachedModelsSource.rows,
+      cachedModelsSource.refreshStartedAt,
+      observedInventoryKeys.model,
+      pendingForRender,
+    ],
+  );
+  const cachedDatasetsReconciliation = useMemo(
+    () =>
+      reconcileInventoryHints({
+        pending: pendingForRender,
+        kind: "dataset",
+        rows: cachedDatasetsSource.rows,
+        previouslyObserved: observedInventoryKeys.dataset,
+        refreshStartedAt: cachedDatasetsSource.refreshStartedAt,
+      }),
+    [
+      cachedDatasetsSource.rows,
+      cachedDatasetsSource.refreshStartedAt,
+      observedInventoryKeys.dataset,
+      pendingForRender,
+    ],
+  );
+
+  useEffect(() => {
+    const protectedObservedKeys = observedKeyProtections(
+      useDownloadManagerStore.getState().jobs,
+    );
+    const reconciliations: PendingHintReconciliationCommit[] = [];
+    if (!isDatasetMode) {
+      reconciliations.push(
+        {
+          kind: "gguf",
+          protectedObservedKeys: protectedObservedKeys.gguf,
+          reconciliation: cachedGgufReconciliation,
+        },
+        {
+          kind: "model",
+          protectedObservedKeys: protectedObservedKeys.model,
+          reconciliation: cachedModelsReconciliation,
+        },
+      );
+    }
+    if (isDatasetMode) {
+      reconciliations.push({
+        kind: "dataset",
+        protectedObservedKeys: protectedObservedKeys.dataset,
+        reconciliation: cachedDatasetsReconciliation,
+      });
+    }
+    if (
+      completedHints.length === 0 &&
+      !reconciliations.some((commit) =>
+        pendingHintReconciliationNeedsCommit(
+          pendingForRender,
+          observedInventoryKeys,
+          commit,
+        ),
+      )
+    ) {
+      return;
+    }
+    const completedHintsToSuppress = commitPendingHintReconciliations(
+      completedHints,
+      pendingForRender,
+      reconciliations,
+    );
+    for (const hint of completedHintsToSuppress) {
+      clearCompletedInventoryHint(hint);
+    }
+  }, [
+    completedHints,
+    commitPendingHintReconciliations,
+    pendingForRender,
+    observedInventoryKeys,
+    isDatasetMode,
+    cachedGgufReconciliation,
+    cachedModelsReconciliation,
+    cachedDatasetsReconciliation,
+  ]);
+
+  const cachedGguf = cachedGgufReconciliation.rows;
+  const cachedModels = cachedModelsReconciliation.rows;
+  const cachedDatasets = cachedDatasetsReconciliation.rows;
+  const liveDownloadRows = useMemo(
+    () => liveDownloadInventoryRows(liveInventoryJobs, isDatasetMode),
+    [isDatasetMode, liveInventoryJobs],
+  );
+
+  const cachedModelRows = useMemo<CachedInventoryRow[]>(
+    () =>
+      [
+        ...(isDatasetMode ? [] : liveDownloadRows),
+        ...cachedGguf.map((row) => buildCachedInventoryRow(row, "gguf")),
+        ...cachedModels.map((row) =>
+          buildCachedInventoryRow(row, "safetensors"),
+        ),
+      ].sort(compareCachedRows),
+    [cachedGguf, cachedModels, isDatasetMode, liveDownloadRows],
+  );
+
+  const cachedDatasetRows = useMemo<CachedInventoryRow[]>(
+    () =>
+      [
+        ...(isDatasetMode ? liveDownloadRows : []),
+        ...cachedDatasets.map((row) => buildCachedInventoryRow(row, "unknown")),
+      ].sort(compareCachedRows),
+    [cachedDatasets, isDatasetMode, liveDownloadRows],
+  );
+
+  const localRows = useMemo(
+    () => buildLocalInventoryRows(localModelsSource.rows),
+    [localModelsSource.rows],
+  );
+
+  const localDatasetRows = useMemo<LocalInventoryRow[]>(() => {
+    return localDatasetsSource.rows
+      .map((ds: LocalDatasetInfo) => {
+        const repoId = ds.id.includes("/") ? ds.id : null;
+        const owner = repoId ? ds.id.split("/")[0] : "Local";
+        return {
+          kind: "local" as const,
+          id: ds.id,
+          repoId,
+          owner,
+          title: ds.label || ds.id,
+          source: "custom" as const,
+          sourceLabel: localDatasetSourceLabel(ds.source),
+          datasetSource:
+            ds.source === "recipe" || ds.source === "upload"
+              ? ds.source
+              : undefined,
+          path: ds.path,
+          isGguf: false,
+          loadId: ds.id,
+          modelFormat: "unknown" as const,
+          runtime: "unknown" as const,
+          formatVariant: null,
+          capabilities: defaultCapabilities("unknown"),
+          updatedAt: normalizeTimestamp(ds.updated_at),
+        };
+      })
+      .sort((a, b) => a.title.localeCompare(b.title));
+  }, [localDatasetsSource.rows]);
+
+  const dedupedModelInventory = useMemo(
+    () =>
+      dedupeSameSourceHubCacheRows({
+        cachedRows: cachedModelRows,
+        localRows,
+      }),
+    [cachedModelRows, localRows],
+  );
+
+  const dedupedDatasetInventory = useMemo(
+    () =>
+      dedupeSameSourceHubCacheRows({
+        cachedRows: cachedDatasetRows,
+        localRows: localDatasetRows,
+      }),
+    [cachedDatasetRows, localDatasetRows],
+  );
+
+  const cachedRows = isDatasetMode
+    ? dedupedDatasetInventory.cachedRows
+    : dedupedModelInventory.cachedRows;
+  const effectiveLocalRows = isDatasetMode
+    ? dedupedDatasetInventory.localRows
+    : dedupedModelInventory.localRows;
+
+  const availableSet = useMemo(() => {
+    const set = new Set<string>();
+    for (const row of cachedRows) set.add(row.repoId.toLowerCase());
+    for (const row of effectiveLocalRows) {
+      if (row.repoId) set.add(row.repoId.toLowerCase());
+    }
+    return set;
+  }, [cachedRows, effectiveLocalRows]);
+
+  const partialSet = useMemo(() => {
+    return partialSetFromRows(
+      [...cachedRows, ...effectiveLocalRows],
+      (row) => row.repoId,
+    );
+  }, [cachedRows, effectiveLocalRows]);
+
+  const modelReady =
+    isReadyForDisplay(cachedGgufSource) &&
+    isReadyForDisplay(cachedModelsSource) &&
+    (!includeLocal || isReadyForDisplay(localModelsSource));
+  const datasetReady =
+    isReadyForDisplay(cachedDatasetsSource) &&
+    (!includeLocal || isReadyForDisplay(localDatasetsSource));
+  const inventoryFailed = isDatasetMode
+    ? Boolean(
+        cachedDatasetsSource.error ||
+          (includeLocal && localDatasetsSource.error),
+      )
+    : Boolean(
+        cachedGgufSource.error ||
+          cachedModelsSource.error ||
+          (includeLocal && localModelsSource.error),
+      );
+  const hasUnreadyInventoryFailure = isDatasetMode
+    ? hasUnreadyFailure(cachedDatasetsSource) ||
+      (includeLocal && hasUnreadyFailure(localDatasetsSource))
+    : hasUnreadyFailure(cachedGgufSource) ||
+      hasUnreadyFailure(cachedModelsSource) ||
+      (includeLocal && hasUnreadyFailure(localModelsSource));
+  const inventoryWarning =
+    inventoryFailed && (cachedRows.length > 0 || effectiveLocalRows.length > 0);
+
+  const refreshDeviceInventory = useCallback(async () => {
+    if (isDatasetMode) {
+      await Promise.all([
+        refreshDatasetInventory(),
+        ...(includeLocal ? [refreshLocalDatasetInventory()] : []),
+      ]);
+      return;
+    }
+    await Promise.all([
+      refreshModelInventory(),
+      ...(includeLocal ? [refreshLocalModelInventory()] : []),
+    ]);
+  }, [
+    includeLocal,
+    isDatasetMode,
+    refreshDatasetInventory,
+    refreshLocalDatasetInventory,
+    refreshLocalModelInventory,
+    refreshModelInventory,
+  ]);
+  const refreshInventory = useCallback(async () => {
+    await refreshDeviceInventory();
+  }, [refreshDeviceInventory]);
+  const refreshInventoryIfOlderThan = useCallback(
+    async (maxAgeMs: number) => {
+      if (isDatasetMode) {
+        await Promise.all([
+          refreshDatasetInventoryIfOlderThan(maxAgeMs),
+          ...(includeLocal
+            ? [refreshLocalDatasetInventoryIfOlderThan(maxAgeMs)]
+            : []),
+        ]);
+        return;
+      }
+      await Promise.all([
+        refreshModelInventoryIfOlderThan(maxAgeMs),
+        ...(includeLocal
+          ? [refreshLocalModelInventoryIfOlderThan(maxAgeMs)]
+          : []),
+      ]);
+    },
+    [
+      includeLocal,
+      isDatasetMode,
+      refreshDatasetInventoryIfOlderThan,
+      refreshLocalDatasetInventoryIfOlderThan,
+      refreshLocalModelInventoryIfOlderThan,
+      refreshModelInventoryIfOlderThan,
+    ],
+  );
+  const downloadedReady = isDatasetMode ? datasetReady : modelReady;
+  const hasInventoryRows =
+    cachedRows.length > 0 || effectiveLocalRows.length > 0;
+  const hasActiveEmptyRefresh = isDatasetMode
+    ? cachedDatasetsSource.loading ||
+      (includeLocal && localDatasetsSource.loading)
+    : cachedGgufSource.loading ||
+      cachedModelsSource.loading ||
+      (includeLocal && localModelsSource.loading);
+  const relevantInventorySources = isDatasetMode
+    ? [cachedDatasetsSource, ...(includeLocal ? [localDatasetsSource] : [])]
+    : [
+        cachedGgufSource,
+        cachedModelsSource,
+        ...(includeLocal ? [localModelsSource] : []),
+      ];
+  const now = Date.now();
+  const emptyRevalidationFresh = relevantInventorySources.every(
+    (source) =>
+      source.error === null &&
+      isInventoryStampFresh(
+        source.revalidatedAt,
+        now,
+        INVENTORY_FRESHNESS_WINDOW_MS,
+      ),
+  );
+  const { emptyRevalidationRequired, inventorySettled } =
+    resolveInventorySettlement({
+      downloadedReady,
+      emptyRevalidationFresh,
+      hasActiveEmptyRefresh,
+      hasInventoryRows,
+      hasUnreadyInventoryFailure,
+      inventoryFailed,
+    });
+
+  useEffect(() => {
+    if (!(enabled && emptyRevalidationRequired)) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void refreshDeviceInventory();
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [emptyRevalidationRequired, enabled, refreshDeviceInventory]);
+
+  return {
+    cachedRows,
+    localRows: effectiveLocalRows,
+    availableSet,
+    partialSet,
+    downloadedReady,
+    inventorySettled,
+    inventoryError: inventoryFailed,
+    inventoryWarning,
+    refreshInventory,
+    refreshInventoryIfOlderThan,
+  };
+}

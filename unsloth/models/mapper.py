@@ -30,29 +30,29 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/gemma-4-E4B-it",
         "google/gemma-4-E4B-it",
     ),
+    "unsloth/gemma-4-31B-it-unsloth-bnb-4bit" : (
+        "unsloth/gemma-4-31B-it",
+        "google/gemma-4-31B-it",
+    ),
     "unsloth/gemma-4-26B-A4B-it" : (
         "unsloth/gemma-4-26B-A4B-it",
         "google/gemma-4-26B-A4B-it",
     ),
-    "unsloth/gemma-4-31B-it" : (
-        "unsloth/gemma-4-31B-it",
-        "google/gemma-4-31B-it",
-    ),
-    "unsloth/gemma-4-E2B" : (
+    "unsloth/gemma-4-E2B-unsloth-bnb-4bit" : (
         "unsloth/gemma-4-E2B",
         "google/gemma-4-E2B",
     ),
-    "unsloth/gemma-4-E4B" : (
+    "unsloth/gemma-4-E4B-unsloth-bnb-4bit" : (
         "unsloth/gemma-4-E4B",
         "google/gemma-4-E4B",
     ),
-    "unsloth/gemma-4-26B-A4B" : (
-        "unsloth/gemma-4-26B-A4B",
-        "google/gemma-4-26B-A4B",
-    ),
-    "unsloth/gemma-4-31B" : (
+    "unsloth/gemma-4-31B-unsloth-bnb-4bit" : (
         "unsloth/gemma-4-31B",
         "google/gemma-4-31B",
+    ),
+    "unsloth/LFM2-1.2B-unsloth-bnb-4bit" : (
+        "unsloth/LFM2-1.2B",
+        "LiquidAI/LFM2-1.2B",
     ),
 
     "unsloth/mistral-7b-bnb-4bit" : (
@@ -94,10 +94,6 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/llama-2-7b-chat",
         "meta-llama/Llama-2-7b-chat-hf",
     ),
-    "unsloth/llama-2-7b-chat-bnb-4bit" : (
-        "unsloth/llama-2-7b-chat",
-        "meta-llama/Llama-2-7b-chat-hf",
-    ),
     "unsloth/Mixtral-8x7B-v0.1-unsloth-bnb-4bit" : (
         "unsloth/Mixtral-8x7B-v0.1",
         "mistralai/Mixtral-8x7B-v0.1",
@@ -134,7 +130,7 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/gemma-7b-it",
         "google/gemma-7b-it",
     ),
-    "unsloth/gemma-2b-bnb-4bit" : (
+    "unsloth/gemma-2b-it-bnb-4bit" : (
         "unsloth/gemma-2b-it",
         "google/gemma-2b-it",
     ),
@@ -701,7 +697,7 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/Qwen2.5-VL-72B-Instruct-bnb-4bit",
     ),
     "unsloth/DeepScaleR-1.5B-Preview-unsloth-bnb-4bit" : (
-        "unsloth/DeepHermes-3-Llama-3-8B-Preview",
+        "unsloth/DeepScaleR-1.5B-Preview",
         "agentica-org/DeepScaleR-1.5B-Preview",
         "unsloth/DeepScaleR-1.5B-Preview-bnb-4bit",
     ),
@@ -794,6 +790,18 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/OLMo-2-0325-32B-Instruct",
         "allenai/OLMo-2-0325-32B-Instruct",
         "unsloth/OLMo-2-0325-32B-Instruct-bnb-4bit",
+    ),
+    "unsloth/Olmo-3-7B-Instruct-unsloth-bnb-4bit" : (
+        "unsloth/Olmo-3-7B-Instruct",
+        "allenai/Olmo-3-7B-Instruct",
+    ),
+    "unsloth/Olmo-3-7B-Think-unsloth-bnb-4bit" : (
+        "unsloth/Olmo-3-7B-Think",
+        "allenai/Olmo-3-7B-Think",
+    ),
+    "unsloth/Olmo-3-32B-Think-unsloth-bnb-4bit" : (
+        "unsloth/Olmo-3-32B-Think",
+        "allenai/Olmo-3-32B-Think",
     ),
     "unsloth/Mistral-Small-3.1-24B-Instruct-2503-unsloth-bnb-4bit" : (
         "unsloth/Mistral-Small-3.1-24B-Instruct-2503",
@@ -1108,14 +1116,14 @@ __INT_TO_FLOAT_MAPPER = \
             "unsloth/Magistral-Small-2509-bnb-4bit",
         ),
     },
+    # No Unsloth 16bit repo exists at this size, so this is a 1-tuple naming the
+    # real upstream, same as the other 70B and 405B rows.
     "unsloth/Apertus-70B-Instruct-2509-unsloth-bnb-4bit" : (
-        "unsloth/Apertus-70B-Instruct-2509",
-        "swiss-ai/Apertus-70B-2509",
-        "unsloth/Apertus-70B-Instruct-2509-unsloth-bnb-4bit",
+        "swiss-ai/Apertus-70B-Instruct-2509",
     ),
     "unsloth/Apertus-8B-Instruct-2509-unsloth-bnb-4bit" : (
         "unsloth/Apertus-8B-Instruct-2509",
-        "swiss-ai/Apertus-8B-2509",
+        "swiss-ai/Apertus-8B-Instruct-2509",
         "unsloth/Apertus-8B-Instruct-2509-unsloth-bnb-4bit",
     ),
     "unsloth/granite-4.0-micro-unsloth-bnb-4bit" : (
@@ -1373,14 +1381,17 @@ __INT_TO_FLOAT_MAPPER = \
     "unsloth/Kimi-K2-Instruct-BF16" : (
         "unsloth/Kimi-K2-Instruct",
     ),
+    "unsloth/Muse-Glimmer-30B-unsloth-bnb-4bit" : (
+        "unsloth/Muse-Glimmer-30B",
+        "meta-models/Muse-Glimmer-30B",
+        "unsloth/Muse-Glimmer-30B-unsloth-bnb-4bit",
+    ),
+    "unsloth/Qwen3.8-27B-unsloth-bnb-4bit" : (
+        "unsloth/Qwen3.8-27B",
+        "Qwen/Qwen3.8-27B",
+        "unsloth/Qwen3.8-27B-unsloth-bnb-4bit",
+    ),
 }
-
-INT_TO_FLOAT_MAPPER  = {}
-FLOAT_TO_INT_MAPPER  = {}
-MAP_TO_UNSLOTH_16bit = {}
-FLOAT_TO_FP8_BLOCK_MAPPER = {}
-FLOAT_TO_FP8_ROW_MAPPER   = {}
-
 
 def _add_with_lower(mapper, key, value):
     if key is None:
@@ -1394,58 +1405,94 @@ def _add_lower_only(mapper, key, value):
         return
     mapper[key.lower()] = value
 
-for key, values in __INT_TO_FLOAT_MAPPER.items():
-    block, row = None, None
-    if type(values) is dict:
-        assert "16" in values
-        float16_values = values["16"]
-        # Float8 and other quantized types
-        if "8" in values:
-            float8_values = values["8"]
-            assert len(float8_values) == 3
-            official, block, row = float8_values
-            _add_lower_only(FLOAT_TO_FP8_BLOCK_MAPPER, key, block)
-            _add_lower_only(FLOAT_TO_FP8_ROW_MAPPER, key, row)
-            _add_lower_only(FLOAT_TO_FP8_BLOCK_MAPPER, official + "-dynamic", block)
-            _add_lower_only(FLOAT_TO_FP8_ROW_MAPPER, official, row)
-            _add_lower_only(FLOAT_TO_FP8_ROW_MAPPER, official + "-dynamic", row)
-            for k in float8_values + float16_values:
-                _add_lower_only(FLOAT_TO_FP8_BLOCK_MAPPER, k, block)
-                _add_lower_only(FLOAT_TO_FP8_ROW_MAPPER, k, row)
 
-            if float8_values[1] is not None and float8_values[1].startswith("unsloth"):
+def build_mappers(__INT_TO_FLOAT_MAPPER):
+    """ Derives the five lookup tables from the one source table.
+
+    A function rather than module-level statements so `loader_utils._get_new_mapper`
+    can run it over a *newer* `__INT_TO_FLOAT_MAPPER` parsed out of the mapper.py on
+    GitHub main. That probe used to `exec` the fetched file; going through here means
+    the fetched text only ever supplies data, and the derivation is this installed
+    version's code.
+    """
+    INT_TO_FLOAT_MAPPER  = {}
+    FLOAT_TO_INT_MAPPER  = {}
+    MAP_TO_UNSLOTH_16bit = {}
+    FLOAT_TO_FP8_BLOCK_MAPPER = {}
+    FLOAT_TO_FP8_ROW_MAPPER   = {}
+
+    for key, values in __INT_TO_FLOAT_MAPPER.items():
+        block, row = None, None
+        if type(values) is dict:
+            assert "16" in values
+            float16_values = values["16"]
+            # Float8 and other quantized types
+            if "8" in values:
+                float8_values = values["8"]
+                assert len(float8_values) == 3
+                official, block, row = float8_values
+                _add_lower_only(FLOAT_TO_FP8_BLOCK_MAPPER, key, block)
+                _add_lower_only(FLOAT_TO_FP8_ROW_MAPPER, key, row)
+                _add_lower_only(FLOAT_TO_FP8_BLOCK_MAPPER, official + "-dynamic", block)
+                _add_lower_only(FLOAT_TO_FP8_ROW_MAPPER, official, row)
+                _add_lower_only(FLOAT_TO_FP8_ROW_MAPPER, official + "-dynamic", row)
+                for k in float8_values + float16_values:
+                    _add_lower_only(FLOAT_TO_FP8_BLOCK_MAPPER, k, block)
+                    _add_lower_only(FLOAT_TO_FP8_ROW_MAPPER, k, row)
+
+                if float8_values[1] is not None and float8_values[1].startswith("unsloth"):
+                    for value in float8_values:
+                        if value is not None:
+                            _add_with_lower(MAP_TO_UNSLOTH_16bit, value, float8_values[1])
+
                 for value in float8_values:
                     if value is not None:
-                        _add_with_lower(MAP_TO_UNSLOTH_16bit, value, float8_values[1])
+                        FLOAT_TO_INT_MAPPER[value] = key
+                        FLOAT_TO_INT_MAPPER[value.lower()] = key.lower()
+            values = float16_values
+        INT_TO_FLOAT_MAPPER[key] = values[0]
 
-            for value in float8_values:
-                if value is not None:
-                    FLOAT_TO_INT_MAPPER[value] = key
-                    FLOAT_TO_INT_MAPPER[value.lower()] = key.lower()
-        values = float16_values
-    INT_TO_FLOAT_MAPPER[key] = values[0]
+        for value in values:
+            FLOAT_TO_INT_MAPPER[value] = key
 
-    for value in values:
-        FLOAT_TO_INT_MAPPER[value] = key
+        # Map to Unsloth version for 16bit versions
+        if len(values) == 2:
+            if values[0].startswith("unsloth"):
+                _add_with_lower(MAP_TO_UNSLOTH_16bit, values[1], values[0])
+                _add_with_lower(MAP_TO_UNSLOTH_16bit, block, values[0])
+                _add_with_lower(MAP_TO_UNSLOTH_16bit, row, values[0])
+        elif len(values) == 3:
+            # Dynamic Unsloth quantization
+            if values[0].startswith("unsloth"):
+                _add_with_lower(MAP_TO_UNSLOTH_16bit, values[1], values[0])
+                _add_with_lower(MAP_TO_UNSLOTH_16bit, values[2], values[0])
+                _add_with_lower(MAP_TO_UNSLOTH_16bit, block, values[0])
+                _add_with_lower(MAP_TO_UNSLOTH_16bit, row, values[0])
+            pass
 
-    # Map to Unsloth version for 16bit versions
-    if len(values) == 2:
-        if values[0].startswith("unsloth"):
-            _add_with_lower(MAP_TO_UNSLOTH_16bit, values[1], values[0])
-            _add_with_lower(MAP_TO_UNSLOTH_16bit, block, values[0])
-            _add_with_lower(MAP_TO_UNSLOTH_16bit, row, values[0])
-    elif len(values) == 3:
-        # Dynamic Unsloth quantization
-        if values[0].startswith("unsloth"):
-            _add_with_lower(MAP_TO_UNSLOTH_16bit, values[1], values[0])
-            _add_with_lower(MAP_TO_UNSLOTH_16bit, values[2], values[0])
-            _add_with_lower(MAP_TO_UNSLOTH_16bit, block, values[0])
-            _add_with_lower(MAP_TO_UNSLOTH_16bit, row, values[0])
-        pass
+        # Get lowercased
+        lowered_key = key.lower()
+        INT_TO_FLOAT_MAPPER[lowered_key] = values[0].lower()
 
-    # Get lowercased
-    lowered_key = key.lower()
-    INT_TO_FLOAT_MAPPER[lowered_key] = values[0].lower()
+        for value in values:
+            FLOAT_TO_INT_MAPPER[value.lower()] = lowered_key
 
-    for value in values:
-        FLOAT_TO_INT_MAPPER[value.lower()] = lowered_key
+    _add_with_lower(MAP_TO_UNSLOTH_16bit, "google/gemma-4-26B-A4B", "unsloth/gemma-4-26B-A4B")
+    _add_with_lower(MAP_TO_UNSLOTH_16bit, "LiquidAI/LFM2.5-1.2B-Instruct", "unsloth/LFM2.5-1.2B-Instruct")
+
+    return (
+        INT_TO_FLOAT_MAPPER,
+        FLOAT_TO_INT_MAPPER,
+        MAP_TO_UNSLOTH_16bit,
+        FLOAT_TO_FP8_BLOCK_MAPPER,
+        FLOAT_TO_FP8_ROW_MAPPER,
+    )
+
+
+(
+    INT_TO_FLOAT_MAPPER,
+    FLOAT_TO_INT_MAPPER,
+    MAP_TO_UNSLOTH_16bit,
+    FLOAT_TO_FP8_BLOCK_MAPPER,
+    FLOAT_TO_FP8_ROW_MAPPER,
+) = build_mappers(__INT_TO_FLOAT_MAPPER)

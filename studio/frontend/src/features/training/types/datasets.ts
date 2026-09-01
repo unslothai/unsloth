@@ -10,6 +10,7 @@ export type CheckFormatResponse = {
   detected_audio_column?: string | null;
   detected_text_column?: string | null;
   detected_speaker_column?: string | null;
+  chat_column?: string | null;
   preview_samples?: Record<string, unknown>[] | null;
   total_rows?: number | null;
   is_image?: boolean;
@@ -21,23 +22,4 @@ export type CheckFormatResponse = {
 export type UploadDatasetResponse = {
   filename: string;
   stored_path: string;
-};
-
-export type LocalDatasetInfo = {
-  metadata?: {
-    actual_num_records?: number | null;
-    target_num_records?: number | null;
-    total_num_batches?: number | null;
-    num_completed_batches?: number | null;
-    columns?: string[] | null;
-  } | null;
-  id: string;
-  label: string;
-  path: string;
-  rows?: number | null;
-  updated_at?: number | null;
-};
-
-export type LocalDatasetsResponse = {
-  datasets: LocalDatasetInfo[];
 };

@@ -1,15 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type {
-  ModelConfig,
-  ModelProviderConfig,
-} from "../../../types";
-import {
-  isRecord,
-  readNumberString,
-  readString,
-} from "../helpers";
+import type { ModelConfig, ModelProviderConfig } from "../../../types";
+import { isRecord, readNumberString, readString } from "../helpers";
 
 export function parseModelProvider(
   provider: Record<string, unknown>,
@@ -53,6 +46,8 @@ export function parseModelConfig(
     kind: "model_config",
     name,
     model: readString(model.model) ?? "",
+    // biome-ignore lint/style/useNamingConvention: api schema
+    gguf_variant: readString(model.gguf_variant) ?? undefined,
     provider: readString(model.provider) ?? "",
     // biome-ignore lint/style/useNamingConvention: api schema
     inference_temperature: readNumberString(inference.temperature),

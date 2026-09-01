@@ -1,0 +1,566 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Frontend PR gate: lockfile freshness, typecheck, build, and a bundle grep
+# that catches the 2026.5.1 chat-history regression at the JS level.
+#
+# biome runs as non-blocking for now: the codebase currently has accumulated
+# ~470 errors and ~1650 warnings against the existing biome config. Surfacing
+# the count in CI lets us drive it down without forcing a fleet-wide cleanup
+# in the same PR. Drop `continue-on-error` once that number is zero.
+
+name: Frontend CI
+
+on:
+  pull_request:
+    paths:
+      - 'studio/frontend/**'
+      - 'scripts/check_frontend_dep_removal.py'
+      - 'tests/studio/test_frontend_dep_removal.py'
+
+      - 'tests/studio/playwright_strip_ansi_smoke.py'
+      - 'tests/studio/playwright_chat_autoscroll.py'
+      - 'tests/studio/playwright_research_freeze.py'
+      - 'tests/studio/playwright_heavy_thread.py'
+      - 'tests/studio/probe_dismiss_guard.py'
+      - 'tests/studio/playwright_settings_tabs.py'
+      - 'tests/studio/playwright_keyboard_shortcuts.py'
+      - 'tests/studio/playwright_tool_activity.py'
+      - 'tests/studio/playwright_stream_pacing.py'
+      - 'tests/studio/playwright_code_block_flicker.py'
+      - 'tests/studio/_code_block_flicker_analysis.py'
+      - 'tests/studio/test_code_block_flicker_contract.py'
+      # Shared lifecycle helpers, and the contract tests that keep verdicts from going unread.
+      - 'tests/studio/_playwright_robust.py'
+      - 'tests/studio/test_autoscroll_harness_contract.py'
+      - 'tests/studio/test_heavy_thread_harness_contract.py'
+      - 'tests/studio/test_heavy_thread_gap_contract.py'
+      - 'tests/studio/test_heavy_thread_measurement_integrity.py'
+      - 'tests/studio/test_playwright_server_lifecycle.py'
+      - 'scripts/sync_allow_scripts_pins.py'
+      - 'tests/studio/test_sync_allow_scripts_pins.py'
+      - '.github/workflows/studio-frontend-ci.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  # Latest-only on a PR branch. On main this does less than it reads like: it stops
+  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
+  # the moment a newer one is queued, so a merge burst still leaves only the tip.
+  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Frontend build + bundle sanity
+    runs-on: ubuntu-latest
+    # Two browser smokes (~50s) plus the Chromium install now sit inside this.
+    # 20 was not a budget, it was the bound on the Chromium install: the step had
+    # none of its own, so the job timeout was what eventually stopped it, and it
+    # stopped everything after it too. That step carries its own bound now -- 33m,
+    # covering the two guarded helper calls it authorises -- so this is sized for
+    # the work plus that worst case, and stays above it so the STEP timeout is what
+    # fires first and names itself.
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: studio/frontend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # FIXME: drop this step once @assistant-ui/* and assistant-stream
+      # leave 0.x -- on 1.x, caret ranges are conventional. Until then,
+      # every 0.minor on this surface is a SemVer-major (this is exactly
+      # how 2026.5.1 shipped a broken chat runtime: ^0.12.19 quietly
+      # resolved to 0.12.28).
+      - name: '@assistant-ui must be pinned exactly (no caret/tilde)'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -e
+          if grep -nE '"(@assistant-ui/[a-z-]+|assistant-stream)":[[:space:]]*"[\^~]' studio/frontend/package.json; then
+            echo "::error file=studio/frontend/package.json::These packages must be pinned to exact versions until they leave 0.x. Drop the leading ^ or ~."
+            exit 1
+          fi
+          echo "All assistant-ui packages are pinned exactly."
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: '22'
+
+      # node 22 bundles npm 10.x, which predates allowScripts. Move to the
+      # 11.x line and fail loudly if the gate is still missing, so the
+      # strict flag below can never silently degrade into a warning.
+      - name: Upgrade npm to 11.x (allowScripts enforcement)
+        working-directory: ${{ github.workspace }}
+        run: |
+          npm install -g npm@^11 --no-fund --no-audit
+          V=$(npm -v)
+          case "$V" in
+            11.1[6-9].*|11.[2-9][0-9].*|1[2-9].*) echo "npm $V has allowScripts" ;;
+            *) echo "::error::npm $V lacks allowScripts (need >=11.16)"; exit 1 ;;
+          esac
+
+      # Run the structural lockfile scan BEFORE npm ci. A compromised
+      # tarball runs its `prepare` / `postinstall` during `npm ci`,
+      # so any catch has to fire upstream of that. The scanner is
+      # pure-Python read-only; safe to call ahead of every install.
+      - name: Lockfile supply-chain audit (pre-install scan)
+        working-directory: ${{ github.workspace }}
+        run: python3 scripts/lockfile_supply_chain_audit.py
+
+      # Dependency bumps strand the version-pinned allowScripts entries.
+      # The paired pre-commit hook auto-fixes PRs; this is the backstop.
+      - name: allowScripts pins must match the lockfile
+        working-directory: ${{ github.workspace }}
+        run: |
+          python3 tests/studio/test_sync_allow_scripts_pins.py
+          python3 scripts/sync_allow_scripts_pins.py --check
+
+      - name: Lockfile must agree with package.json (npm ci is strict)
+        # The vite 8 chain (rolldown, lightningcss, tailwind oxide) ships napi
+        # binaries with no install scripts. The only script-bearing deps are
+        # covered by `allowScripts` in package.json (npm >=11.16, default in
+        # npm 12). The pre-install lockfile audit above stays the first line
+        # of defence -- it fires before any tarball can run code.
+        # --strict-allow-scripts: any unreviewed install script hard-fails
+        # the job; the sync hook keeps the pins fresh after bumps.
+        run: npm ci --strict-allow-scripts --no-fund --no-audit
+
+      - name: npm ci must not have modified the working tree
+        working-directory: ${{ github.workspace }}
+        run: |
+          if ! git diff --quiet -- studio/frontend; then
+            echo "::error::npm ci modified files; commit the updated lockfile"
+            git status -- studio/frontend
+            exit 1
+          fi
+
+      # Catch the common foot-gun: a dep dropped from package.json that is
+      # still imported somewhere. The script walks the lockfile dep graph
+      # from the new top-level deps and only counts top-level node_modules
+      # paths as valid resolution targets for bare src/ imports.
+      #
+      # actions/checkout uses fetch-depth: 1 by default, so the base branch
+      # is not available locally. Fetch the single base commit with an
+      # explicit refspec so origin/<base> is reliably created (a bare
+      # `git fetch origin <ref>` only updates FETCH_HEAD in some configs).
+      - name: Dependency removal safety check
+        if: github.event_name == 'pull_request'
+        working-directory: ${{ github.workspace }}
+        run: |
+          git fetch --no-tags --depth=1 origin \
+            "${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
+          python3 scripts/check_frontend_dep_removal.py \
+            --base "origin/${{ github.base_ref }}" \
+            --enumerate-dead
+          python3 tests/studio/test_frontend_dep_removal.py
+
+      # A key added only to en.ts falls back to English at runtime, so nothing
+      # breaks and nothing complains -- which is how the overlays drifted 22
+      # keys behind, were repaired, then drifted 18 behind inside a day.
+      - name: Locale parity
+        run: npm run i18n:check:strict
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+
+      - name: Build
+        run: npm run build
+
+      - name: Built bundle must not contain Unsloth's unstable_Provider call site
+        run: |
+          set -e
+          JS=$(ls dist/assets/index-*.js | head -1)
+          HITS=$(grep -c 'unstable_Provider:' "$JS" || echo 0)
+          echo "main bundle: $JS"
+          echo "unstable_Provider: hits=$HITS (assistant-ui internals contribute up to 3)"
+          if [ "$HITS" -gt 3 ]; then
+            echo "::error file=studio/frontend/src/features/chat/runtime-provider.tsx::Unsloth bundle still passes unstable_Provider through useRemoteThreadListRuntime; this is the 2026.5.1 chat-history regression. Pass adapters directly into useLocalRuntime instead."
+            exit 1
+          fi
+
+      - name: Bundle size budget (75 MB)
+        run: |
+          SIZE=$(du -sb dist | cut -f1)
+          BUDGET=$((75 * 1024 * 1024))
+          echo "dist size: $SIZE bytes ($((SIZE/1024/1024)) MB), budget: $BUDGET bytes (75 MB)"
+          if [ "$SIZE" -gt "$BUDGET" ]; then
+            echo "::error::studio/frontend/dist/ exceeded the 75 MB budget. Drop dead deps (e.g. the unused next dep) or split chunks."
+            exit 1
+          fi
+
+      # The 75 MB above is the whole artifact, which a lazily loaded page does not
+      # make worse. This is the part the user waits through: the entry chunk plus
+      # everything Vite preloads for it, fetched and executed before first paint.
+      - name: Startup bundle budget
+        run: npm run bundle:check
+
+      # Smokes go last: every step carries an implicit success(), so running them ahead of
+      # the build gates let one red smoke skip the build and all three bundle assertions.
+      # Costs nothing here, since each smoke starts its own vite server and reads no dist/.
+      #
+      # The install below was `playwright install --with-deps chromium`. That flag
+      # shells out to apt, so it was an apt step wearing a different name and it
+      # failed the same way: it once sat here for 16m38s, the job hit its
+      # `timeout-minutes`, and the run was reported as "cancelled" with the browser
+      # smokes and the lifecycle tests below simply skipped. It was still failing on
+      # 2026-08-19 (job 96072994354): 9 packages, 21.1 MB, `fonts-wqy-zenhei
+      # [7472 kB]` alone taking 5m50s off azure.archive.ubuntu.com, both 420s
+      # attempts dying mid-download -- the same mirror and the same package that took
+      # the webkit shards down in #9289.
+      #
+      # So it is split the way studio-ui-smoke.yml splits it: engine download, then a
+      # launch probe, then apt ONLY if the probe says the libraries are missing. The
+      # 2 x 420s budget stays: it is the engine download that is genuinely large, and
+      # a third attempt would not fit the step timeout.
+      - name: Pin the Playwright version so the browser cache has a key
+        id: pw
+        working-directory: ${{ github.workspace }}
+        run: |
+          python3 -m pip install 'playwright>=1.45,<2' pytest
+          echo "version=$(python3 -c 'from importlib.metadata import version; print(version("playwright"))')" >> "$GITHUB_OUTPUT"
+
+      # Keys deliberately IDENTICAL to the chromium-only shards in
+      # studio-ui-smoke.yml (engine token `c`): same runner image, same Playwright
+      # version, same single engine, so the same entry is correct for both and this
+      # job starts warm off whatever main saved there. Diverging the key here would
+      # cost a second copy of the same bytes against a budget measured at 99.3% full.
+      - name: Restore the Playwright browser cache
+        id: pw-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        continue-on-error: true
+        with:
+          path: ~/.cache/ms-playwright
+          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-c-v2
+
+      - name: Restore the apt archive cache (chromium's .deb set)
+        id: apt-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        continue-on-error: true
+        with:
+          path: ${{ github.workspace }}/.apt-archives
+          key: apt-archives-${{ runner.os }}-${{ env.ImageOS }}-${{ env.ImageVersion }}-c-v1
+
+      - name: Install Chromium for browser smokes
+        working-directory: ${{ github.workspace }}
+        # Two helper calls now, not one -- the engine download and the apt
+        # transaction are separated -- so the authorised worst case doubles:
+        # 2 x (2 x 420s + 125s lock wait) = 1930s. 17m used to cover one call and
+        # would now cut the last attempt off mid-download, which
+        # test_the_retry_budget_fits_inside_the_step_timeout fails the build for.
+        #
+        # Both calls are guarded, so the common path spends none of this: the engine
+        # download is skipped on a browser-cache hit, and apt is skipped entirely
+        # when the probe says the libraries are already there. This budget is only
+        # reachable when the cache misses AND the image is missing libraries AND the
+        # mirror is degraded -- which is the run that used to fail outright.
+        timeout-minutes: 33
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '420'
+          # `--with-deps` used to run apt unconditionally here, and apt's own retries
+          # multiplied every stalled transfer inside the attempt budget. Observed on
+          # main 2026-08-19 (job 96072994354): 9 packages, 21.1 MB, and
+          # `fonts-wqy-zenhei [7472 kB]` alone took 5m50s off
+          # azure.archive.ubuntu.com -- both 420s attempts died mid-download and the
+          # job failed. Same mirror and the same package that took the webkit shards
+          # down in #9289.
+          APT_ACQUIRE_RETRIES: '0'
+        run: |
+          # The engine first, and WITHOUT --with-deps. That flag makes playwright run
+          # its own `apt-get update` internally, which is the one apt call this repo
+          # cannot restructure -- so it is not used. A CDN download and an apt
+          # transaction are two different failures and they are separated here, the
+          # same way studio-ui-smoke.yml separates them.
+          if [ "${{ steps.pw-cache.outputs.cache-hit }}" != "true" ]; then
+            bash .github/scripts/retry-with-apt-lock.sh \
+              python3 -m playwright install chromium
+          fi
+
+          # Then ask whether the system libraries are actually missing instead of
+          # assuming they are. ubuntu-latest is a browser-testing image and ships
+          # nearly all of them; when it does, this skips an apt update and a
+          # transaction that would install nothing. Launching the engine is the
+          # honest test of that -- it is what the smokes below are about to do.
+          probe() {
+            python3 - "$@" <<'PY'
+          import sys
+          from playwright.sync_api import sync_playwright
+
+          missing = []
+          with sync_playwright() as p:
+              for name in sys.argv[1:]:
+                  try:
+                      browser = getattr(p, name).launch()
+                      browser.close()
+                  except Exception as exc:
+                      missing.append(f"{name}: {type(exc).__name__}")
+          if missing:
+              print("engines that will not start: " + "; ".join(missing))
+              sys.exit(1)
+          print("chromium launches; system libraries are present")
+          PY
+          }
+
+          if probe chromium; then
+            echo "::notice::skipped playwright install-deps; the runner image already has the libraries"
+          else
+            echo "system libraries are missing, installing them"
+            # Hand apt last run's .debs before it goes looking for them. apt checks
+            # each file against its index and re-fetches only what does not match, so
+            # a stale cache costs a download rather than a wrong install.
+            if [ -d "${{ github.workspace }}/.apt-archives" ]; then
+              sudo cp "${{ github.workspace }}"/.apt-archives/*.deb /var/cache/apt/archives/ 2>/dev/null || true
+              echo "seeded $(ls "${{ github.workspace }}"/.apt-archives/*.deb 2>/dev/null | wc -l) cached .deb files"
+            fi
+            bash .github/scripts/retry-with-apt-lock.sh \
+              python3 -m playwright install-deps chromium
+            # Harvest for next time: apt keeps what it installed in the archive dir
+            # until something runs `apt-get clean`, so this is exactly what it used.
+            mkdir -p "${{ github.workspace }}/.apt-archives"
+            sudo cp /var/cache/apt/archives/*.deb "${{ github.workspace }}/.apt-archives/" 2>/dev/null || true
+            sudo chown -R "$(id -u):$(id -g)" "${{ github.workspace }}/.apt-archives" || true
+            # Fail loudly rather than proceeding into smokes that cannot launch a
+            # browser: without this the real error surfaces later as an opaque
+            # per-test timeout in whichever smoke happens to run first.
+            probe chromium
+          fi
+
+      # Both saves are main-only, the rule every cache in this repo follows: a
+      # PR-scoped entry can only be restored by re-runs of that same PR while still
+      # counting against the shared budget, evicting the copy every PR can read.
+      #
+      # And NOT under always(). These keys are immutable, so a save that runs after a
+      # failed install would store a half-downloaded engine or a partial .deb set
+      # under the key every later run reads, and no later run could replace it. The
+      # implicit success() is what makes the payload trustworthy;
+      # test_cache_budget_discipline.py fails the build if either save reaches for
+      # always() again.
+      - name: Save the Playwright browser cache
+        if: github.ref == 'refs/heads/main' && steps.pw-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        continue-on-error: true
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ steps.pw-cache.outputs.cache-primary-key }}
+
+      - name: Save the apt archive cache
+        if: github.ref == 'refs/heads/main' && steps.apt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        continue-on-error: true
+        with:
+          path: ${{ github.workspace }}/.apt-archives
+          key: ${{ steps.apt-cache.outputs.cache-primary-key }}
+
+      # Browserless, but imports the harnesses (hence playwright), so it sits after the
+      # install. Covers the Windows teardown branch no runner here executes.
+      - name: Dev-server lifecycle tests
+        working-directory: ${{ github.workspace }}
+        run: |
+          python3 -m pytest tests/studio/test_playwright_server_lifecycle.py \
+            tests/studio/test_autoscroll_harness_contract.py \
+            tests/studio/test_heavy_thread_harness_contract.py \
+            tests/studio/test_heavy_thread_measurement_integrity.py \
+            tests/studio/test_heavy_thread_gap_contract.py \
+            tests/studio/test_code_block_flicker_contract.py -q
+
+      - name: Browser smoke for ANSI tool output
+        working-directory: ${{ github.workspace }}
+        env:
+          PW_BROWSER: chromium
+        run: python3 tests/studio/playwright_strip_ansi_smoke.py
+
+      # Each harness owns its vite server: starting one here backgrounds npm, so $! is the
+      # wrapper and killing it orphans the node child.
+      - name: Browser smoke for chat autoscroll
+        working-directory: ${{ github.workspace }}
+        run: python3 tests/studio/playwright_chat_autoscroll.py
+
+      - name: Browser smoke for research freeze
+        working-directory: ${{ github.workspace }}
+        run: python3 tests/studio/playwright_research_freeze.py
+
+      # A gate, not a measurement. The released and streamdown variants are positive controls
+      # that MUST flicker: a run where neither collapses means the detector stopped seeing, not
+      # that the flicker stopped. Chromium only on a PR, the engine whose content-visibility
+      # fallback the index.css override exists for.
+      - name: Browser smoke for code block flicker
+        working-directory: ${{ github.workspace }}
+        env:
+          SMOKE_FLICKER_ENGINES: chromium
+        run: python3 tests/studio/playwright_code_block_flicker.py
+
+      # Two small sizes and one repetition on Chromium: enough to prove the fixture still
+      # renders every kind of content it claims to and that the curve still rises, which is all
+      # a PR gate can afford. The measurement this harness exists for is the three-engine,
+      # three-size, three-repetition run, which takes tens of minutes and belongs on a runner
+      # asked for it deliberately, not on every frontend PR.
+      - name: Browser smoke for heavy-thread interaction cost
+        working-directory: ${{ github.workspace }}
+        env:
+          SMOKE_HEAVY_CHARS: '25000,100000'
+          SMOKE_HEAVY_ENGINES: chromium
+          SMOKE_HEAVY_REPEATS: '1'
+          PW_ART_DIR: logs/playwright_heavy_thread
+        run: python3 tests/studio/playwright_heavy_thread.py
+
+      # A failure means dismissal triggered an unconfirmed delete.
+      - name: Browser check for non-modal menu dismissal
+        working-directory: ${{ github.workspace }}
+        run: python3 tests/studio/probe_dismiss_guard.py --label ci --engine chromium
+
+      # The settings panels are fetched on first view, so only a browser can answer whether
+      # every tab renders and deep-opens land (and abandoned ones do not come back).
+      - name: Browser smoke for the settings tab panels
+        working-directory: ${{ github.workspace }}
+        run: python3 tests/studio/playwright_settings_tabs.py
+
+      # A listener is not a pure function: what a chord does to a focused button, to a
+      # text field, on auto-repeat, or under AltGr is only answerable in a browser, and
+      # the node suite pins those through source text. Chromium here because that is what
+      # this job installs; SMOKE_ENGINES=chromium,firefox,webkit runs the same checks
+      # against all three when the matcher or the reserved sets change.
+      - name: Browser smoke for keyboard shortcuts
+        working-directory: ${{ github.workspace }}
+        run: python3 tests/studio/playwright_keyboard_shortcuts.py
+
+      - name: Browser smoke for tool activity collapse
+        working-directory: ${{ github.workspace }}
+        env:
+          PW_ENGINE: chromium
+        run: python3 tests/studio/playwright_tool_activity.py --json
+
+      # A panel that cannot be fetched is new with lazy loading, and nothing above the
+      # root-mounted dialog catches, so unguarded it unmounts Unsloth, not one panel.
+      - name: Browser smoke for a settings panel that cannot load
+        working-directory: ${{ github.workspace }}
+        env:
+          PW_CHUNK_FAIL: data
+          PW_PORT: '5400'
+          PW_OUT: logs/settings_tabs_blocked_report.json
+        run: python3 tests/studio/playwright_settings_tabs.py
+
+      # Reports, does not gate, for now. The budgets inside are calibrated on a
+      # developer machine, and this measures a CPU-bound render on a shared runner
+      # under 6x throttling, so a budget set from one box is a flake waiting to
+      # happen. Tighten it from observed runs here and drop continue-on-error, the
+      # way the startup profile did.
+      - name: Browser smoke for chat stream pacing
+        id: stream_pacing
+        working-directory: ${{ github.workspace }}
+        continue-on-error: true
+        run: python3 tests/studio/playwright_stream_pacing.py
+
+      # Screenshot and serialized DOM the harnesses write on failure; small, kept only then.
+      #
+      # `failure()` alone is not enough. The stream-pacing smoke is `continue-on-error`, which
+      # rewrites its CONCLUSION to success while leaving its OUTCOME as failure, so on the runs
+      # where it is the only thing that failed -- the runs where its report is the whole point --
+      # `failure()` is false and the report went nowhere. Check its raw outcome too.
+      - name: Upload browser smoke artifacts
+        if: failure() || steps.stream_pacing.outcome == 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: studio-frontend-smoke-artifacts
+          # Include the settings and dismissal probe reports as well as playwright-* logs.
+          path: |
+            logs/playwright-*
+            logs/settings_tabs_report.json
+            logs/settings_tabs_blocked_report.json
+            logs/pw/
+          retention-days: 3
+          if-no-files-found: ignore
+
+      - name: Biome (non-blocking until accumulated drift is cleared)
+        continue-on-error: true
+        run: npm run biome:check
+
+      - name: Upload built dist
+        # Failures only. This uploads a whole build directory (~35MB), and
+        # keeping it from green runs too made it the second-largest artifact
+        # family in the repo at ~3.5GB. Actions storage is not free on public
+        # repos, and exceeding the account allowance silently stops GitHub
+        # scheduling jobs org-wide, so a build tree retained purely for review
+        # is not worth that risk.
+        #
+        # The "bundle changed unexpectedly" check this previously enabled is
+        # better served by asserting on the build inside the job -- the size
+        # gate in build.sh is the existing precedent -- rather than by keeping
+        # every green run's output for inspection.
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: studio-frontend-dist
+          path: studio/frontend/dist
+          retention-days: 1
+
+  # The suite reads its own sources off disk, resolves modules by URL and walks
+  # directories, so it can be correct on POSIX and wrong on Windows. Running it
+  # on ubuntu only, this job's absence let 13 such failures accumulate unseen
+  # across three files: two shapes of path/URL confusion, one of them added by a
+  # PR whose whole purpose was to fix a Windows bug.
+  #
+  # Deliberately NOT a matrix over the job above. Measured on a staging replica
+  # of this workflow, `windows-latest` runs `npm test` in 49s against ubuntu's
+  # 47s, so the tests themselves are not the expensive part; typecheck (48s),
+  # build (33s), the Chromium install and the three browser smokes are, and none
+  # of them can fail on Windows for a reason they would not also fail on ubuntu.
+  # Repeating them would roughly triple the cost of this workflow to re-answer a
+  # question ubuntu already answered. Checkout, node, `npm ci` and `npm test` on
+  # Windows measured ~132s.
+  #
+  # Line endings need no special handling here: .gitattributes pins
+  # `studio/frontend/** text=auto eol=lf`, so the tree checks out LF whatever the
+  # runner's core.autocrlf says, and the assertions that match on exact source
+  # substrings see the bytes in the repo.
+  windows:
+    name: Frontend unit tests (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+        working-directory: studio/frontend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+
+      # The same pre-install scan the ubuntu job runs, and for the same reason:
+      # a compromised tarball runs its `prepare` / `postinstall` during `npm ci`,
+      # so any catch has to fire upstream of that. Jobs run concurrently, so the
+      # ubuntu job rejecting the lockfile does not help a Windows runner that has
+      # already installed it. Pure-Python and read-only.
+      - name: Lockfile supply-chain audit (pre-install scan)
+        working-directory: ${{ github.workspace }}
+        run: python scripts/lockfile_supply_chain_audit.py
+
+      # `--ignore-scripts`, not the `--strict-allow-scripts` install the ubuntu
+      # job runs. That one needs the npm 11.16 upgrade step, and the pins it
+      # enforces are a property of the lockfile, which this job does not need to
+      # re-check: it is a platform gate. Running no install script at all is the
+      # stronger position anyway, and the suite is node:test over TypeScript
+      # sources, so nothing here needs a native build step.
+      - run: npm ci --ignore-scripts --no-fund --no-audit
+
+      - name: Unit tests
+        run: npm test

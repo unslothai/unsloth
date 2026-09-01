@@ -1,0 +1,238 @@
+{
+  "recipe": {
+    "model_providers": [
+      {
+        "name": "Local Model",
+        "endpoint": "",
+        "provider_type": "openai",
+        "extra_headers": {},
+        "extra_body": {},
+        "is_local": true
+      }
+    ],
+    "mcp_providers": [],
+    "model_configs": [
+      {
+        "alias": "model_1",
+        "model": "unsloth/gemma-4-E2B-it-GGUF",
+        "provider": "Local Model",
+        "inference_parameters": {
+          "temperature": 0.4,
+          "max_tokens": 800
+        }
+      }
+    ],
+    "seed_config": {
+      "source": {
+        "seed_type": "github_repo",
+        "repos": [
+          "unslothai/unsloth",
+          "unslothai/unsloth-zoo"
+        ],
+        "item_types": [
+          "issues",
+          "pulls"
+        ],
+        "limit": 100,
+        "include_comments": true,
+        "max_comments_per_item": 20
+      },
+      "sampling_strategy": "shuffle",
+      "selection_strategy": null
+    },
+    "tool_configs": [],
+    "columns": [
+      {
+        "column_type": "llm-text",
+        "name": "User",
+        "drop": false,
+        "model_alias": "model_1",
+        "prompt": "Read the GitHub {{ item_type }} below and write ONE realistic user request that could have produced it. Imagine a developer asking a GitHub co-author model to either file this {{ item_type }} or draft a PR that resolves it. Use first-person imperative phrasing (\"Open an issue...\", \"Draft a PR that...\", \"Investigate why...\"). Preserve concrete technical details (model names, flags, file paths, tracebacks) that appear in the thread. Keep it 1-3 sentences. Output ONLY the user request, no preamble.\n\n--- INPUT ---\nRepo: {{ repo }}\nType: {{ item_type }}\nTitle: {{ title }}\nBody:\n{{ body }}\n\nFirst comments:\n{{ comments }}",
+        "system_prompt": "You invert real GitHub threads into the user request that would have produced them. Faithful to the thread, no invented facts, no em-dashes, no emojis.",
+        "with_trace": "none",
+        "extract_reasoning_content": false
+      },
+      {
+        "column_type": "llm-structured",
+        "name": "Assistant",
+        "drop": false,
+        "model_alias": "model_1",
+        "prompt": "You are generating one training row for an Unsloth GitHub co-author model. Given the real GitHub thread and a synthesized user request, produce a grounded structured response.\n\nSource thread:\n- Repo: {{ repo }}\n- Type: {{ item_type }}\n- Title: {{ title }}\n- URL: {{ url }}\n- State: {{ state }}\n- Labels: {{ labels }}\n- Body: {{ body }}\n- First comments: {{ comments }}\n\nUser request:\n{{ User }}\n\nRules:\n- `response`: 100-250 words of Markdown grounded in the thread. If the thread is a closed / resolved issue, follow the `issue_fix_plan` shape: brief diagnosis, numbered fix steps, and a short repro. If the thread is a PR, follow the `explain_pr` shape: what changed, why, and which files or symbols were touched. If the thread is open / unresolved, answer honestly and ask for the missing info.\n- Cite the source URL at least once inline as `[source: {{ url }}]`.\n- Name at least one concrete symbol (function, class, flag, env var, or file path) from the thread when available.\n- Include a short ```bash or ```python code block ONLY if the thread itself contains that code or command.\n- Never recommend `rm -rf`, force push, or other destructive commands without an explicit warning.\n- No em-dashes, no emojis, no AI-disclaimer phrases. Only cite URLs / paths that appear in the thread.\n- `followups`: 0-4 follow-up questions when the thread is missing info (versions, GPU, traceback). Empty list if the response is complete.\n- `cites`: URLs / file paths actually used. Always include `{{ url }}`.\n- `task`: one of `explain_pr`, `issue_fix_plan`, `issue_solution`, `discussion_qa`. Pick the closest match.\n- `confidence`: `high` / `medium` / `low`. Use `low` when ambiguous or out of scope.",
+        "system_prompt": "You write grounded GitHub co-author responses for Unsloth. Faithful to the thread, no invented facts, no em-dashes, no emojis, no AI-disclaimer phrases.",
+        "with_trace": "none",
+        "extract_reasoning_content": false,
+        "output_format": {
+          "type": "object",
+          "properties": {
+            "response": {
+              "type": "string",
+              "minLength": 1
+            },
+            "followups": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 4
+            },
+            "cites": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 6
+            },
+            "task": {
+              "type": "string",
+              "enum": [
+                "explain_pr",
+                "issue_fix_plan",
+                "issue_solution",
+                "discussion_qa"
+              ]
+            },
+            "confidence": {
+              "type": "string",
+              "enum": [
+                "high",
+                "medium",
+                "low"
+              ]
+            }
+          },
+          "required": [
+            "response",
+            "followups",
+            "cites",
+            "task",
+            "confidence"
+          ],
+          "additionalProperties": false
+        }
+      }
+    ],
+    "processors": []
+  },
+  "run": {
+    "rows": 5,
+    "preview": true,
+    "output_formats": [
+      "jsonl"
+    ]
+  },
+  "ui": {
+    "nodes": [
+      {
+        "id": "note_1",
+        "x": 460.4272962489311,
+        "y": 123.10114554082236,
+        "width": 400,
+        "node_type": "markdown_note",
+        "name": "note_1",
+        "markdown": "### GitHub Crawler\nReal GitHub issues and PRs turned into `{User, Assistant}` training pairs. Mirrors two of the eleven canonical enrichment tasks in the `github_data_gatherer` dataset: `pr_requests_20` / `issue_requests_20` for the input side, and `explain_pr` / `issue_fix_plan` / `issue_solution` for the output side.\n\n**Click `Run` below for 10 sample rows.** Defaults point at `unslothai/unsloth` + `unslothai/unsloth-zoo`, use the server's `GH_TOKEN` / `GITHUB_TOKEN` env var, and run the bundled local model. Paste a PAT only when you need private repos.\n\n**Configure source data**\n- Paste `owner/name` values or GitHub URLs; the editor normalizes and dedupes them.\n- Keep the seed `limit` around 100 for previews. Increase toward 5000 per item type for larger backfills.\n- Comments and large repos can make Check or Run take minutes; watch logs for GitHub page and rate-limit messages.\n\n**Upgrade to production**\n- Swap `unsloth/gemma-4-E2B-it-GGUF` for a stronger model (`gpt-5.4-mini` with `reasoning_effort=medium` is what the reference dataset uses).\n- Replace the demo prompts with the task-specific prompts from the reference dataset (see Note 3).\n- Raise `max_parallel_requests` to 4 once the inference server can handle it.",
+        "note_color": "#E0F2FE",
+        "note_opacity": "35"
+      },
+      {
+        "id": "note_2",
+        "x": -514.4586648521598,
+        "y": 869.2785862193363,
+        "width": 400,
+        "node_type": "markdown_note",
+        "name": "note_2",
+        "markdown": "The **User** column inverts each GitHub thread into a realistic request a developer would give a co-author model (`\"Draft a PR that...\"`, `\"Investigate why...\"`). Same shape as the `pr_requests_20` and `issue_requests_20` enrichments.\n\nTweak the prompt to:\n- always keep the traceback verbatim\n- vary persona (newcomer, maintainer, ops)\n- split one thread into multiple alternative phrasings for data augmentation.",
+        "note_color": "#E0F2FE",
+        "note_opacity": "35"
+      },
+      {
+        "id": "note_3",
+        "x": -536.3163554442993,
+        "y": -84.18780704666585,
+        "width": 400,
+        "node_type": "markdown_note",
+        "name": "note_3",
+        "markdown": "The **Assistant** block emits `{response, followups, cites, task, confidence}` and branches on thread type: closed issues become `issue_fix_plan` rows, PRs become `explain_pr` rows, everything else becomes `issue_solution` or `discussion_qa`.\n\n**Demo default**: 100-250 word response, one inline `[source: <url>]` cite, `max_parallel_requests=1` so a small local model stays stable.\n\n**Production prompt (paste in):**\n- Match the reference dataset's per-task prompts (`explain_pr`, `issue_fix_plan`, `pr_review_critique`, `pr_test_plan`, etc.).\n- Require 300 words for explanations, 6-12 bullets for test plans.\n- Enforce named symbols (function / flag / env var / file path).\n- Code fences only for content already in the thread.\n- Reject rows with em-dashes, emojis, or AI-disclaimer phrases.\n\nSee the `github_data_gatherer` dataset card for the full task catalog and the codex prompts used to train the reference GitHub model.",
+        "note_color": "#E0F2FE",
+        "note_opacity": "35"
+      },
+      {
+        "id": "seed",
+        "x": 0,
+        "y": 140,
+        "width": 400
+      },
+      {
+        "id": "Local Model",
+        "x": -1056,
+        "y": 520,
+        "width": 400
+      },
+      {
+        "id": "model_1",
+        "x": -544,
+        "y": 488,
+        "width": 400
+      },
+      {
+        "id": "User",
+        "x": 0,
+        "y": 440,
+        "width": 400
+      },
+      {
+        "id": "Assistant",
+        "x": 0,
+        "y": 740,
+        "width": 400
+      }
+    ],
+    "edges": [
+      {
+        "from": "seed",
+        "to": "User",
+        "type": "canvas",
+        "source_handle": "data-out-bottom",
+        "target_handle": "data-in-top"
+      },
+      {
+        "from": "User",
+        "to": "Assistant",
+        "type": "canvas",
+        "source_handle": "data-out-bottom",
+        "target_handle": "data-in-top"
+      },
+      {
+        "from": "Local Model",
+        "to": "model_1",
+        "type": "semantic",
+        "source_handle": "semantic-out",
+        "target_handle": "semantic-in"
+      },
+      {
+        "from": "model_1",
+        "to": "User",
+        "type": "semantic",
+        "source_handle": "semantic-out",
+        "target_handle": "data-in"
+      },
+      {
+        "from": "model_1",
+        "to": "Assistant",
+        "type": "semantic",
+        "source_handle": "semantic-out-bottom",
+        "target_handle": "data-in"
+      }
+    ],
+    "layout_direction": "LR",
+    "seed_source_type": "github_repo",
+    "seed_columns": [],
+    "seed_drop_columns": [],
+    "seed_preview_rows": [],
+    "local_file_name": "",
+    "unstructured_file_ids": [],
+    "unstructured_file_names": [],
+    "unstructured_file_sizes": [],
+    "unstructured_chunk_size": "1200",
+    "unstructured_chunk_overlap": "200"
+  }
+}

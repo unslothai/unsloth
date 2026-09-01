@@ -1,0 +1,449 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# PR-time smoke for the Tauri desktop wrapper. Builds the frontend and the
+# Tauri Linux debug binary, with no codesigning. Catches:
+#   - tauri.conf.json drift
+#   - src-tauri Cargo.toml or rust source breakage
+#   - Tauri CLI version drift (we pin 2.10.1, matching release-desktop.yml)
+#   - frontend output not picked up by Tauri's distDir
+#
+# The build job stays on Linux; signed desktop builds remain in the manual
+# release workflow.
+#
+# A second job covers `#[cfg(windows)]` code, which Linux strips before type
+# checking and cannot cross-compile because `ring` requires MSVC `lib.exe`.
+
+name: Unsloth Tauri CI
+
+on:
+  pull_request:
+    paths:
+      - 'studio/frontend/**'
+      - 'studio/src-tauri/**'
+      # CLI rename / signature change can break Tauri's spawned
+      # `unsloth studio` -- include unsloth_cli in the trigger set.
+      - 'unsloth_cli/**'
+      - '.github/workflows/studio-tauri-smoke.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
+      # The Linux job installs and runs the Tauri CLI out of the studio/ package
+      # root (`npm install --prefix studio`, `npx --prefix studio`), so these
+      # manifests decide what it builds with.
+      - 'studio/package.json'
+      - 'studio/package-lock.json'
+      # Run as a step of the Linux job.
+      - 'scripts/lockfile_supply_chain_audit.py'
+  push:
+    branches: [main]
+    # Same list as the PR filter. Without it this workflow ran on EVERY commit to
+    # main: a README-only commit fired all four unfiltered macOS workflows, seven
+    # macOS legs, against an account-wide cap of five concurrent macOS jobs. The
+    # post-merge backstop is unchanged, because a commit that cannot touch what
+    # this workflow tests has nothing here to back up.
+    # clean-machine-install-ci.yml and mlx-ci.yml already do exactly this.
+    paths:
+      - 'studio/frontend/**'
+      - 'studio/src-tauri/**'
+      # CLI rename / signature change can break Tauri's spawned
+      # `unsloth studio` -- include unsloth_cli in the trigger set.
+      - 'unsloth_cli/**'
+      - '.github/workflows/studio-tauri-smoke.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
+      # The Linux job installs and runs the Tauri CLI out of the studio/ package
+      # root (`npm install --prefix studio`, `npx --prefix studio`), so these
+      # manifests decide what it builds with.
+      - 'studio/package.json'
+      - 'studio/package-lock.json'
+      # Run as a step of the Linux job.
+      - 'scripts/lockfile_supply_chain_audit.py'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  # Latest-only on a PR branch. On main this does less than it reads like: it stops
+  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
+  # the moment a newer one is queued, so a merge burst still leaves only the tip.
+  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  linux-debug-build:
+    name: Tauri Linux debug build (no codesign)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Linux native deps for Tauri / WebKit2GTK
+        # Bounded and retried through the shared helper: an unbounded apt step does
+        # not fail, it spends the job's whole budget and is reported as "cancelled"
+        # with no reason and every later step skipped. update and install go as one
+        # unit, since retrying the install after a stalled update re-reads the same
+        # broken package list.
+        # Two long attempts, not three short ones. 150s killed apt mid-`update`
+        # against a mirror that was degraded rather than dead, and every attempt
+        # then hit the same wall -- three kills and no result. The bound exists to
+        # stop an infinite hang, not to race a slow mirror.
+        timeout-minutes: 15
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '360'
+        run: |
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf xvfb || { apt-get update && apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf xvfb; }'
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: '24'
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
+
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          # Save only on main. This action defaults to saving on every ref, and
+          # a PR-scoped rust cache (550-840MB here) can only be restored by
+          # re-runs of that same PR while still counting against the 50 GiB
+          # per-repo budget, evicting main's copy that every PR can restore.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          workspaces: studio/src-tauri -> target
+
+      - name: Lockfile supply-chain audit (pre-install scan)
+        # Must run BEFORE any `npm install` (including the Tauri CLI
+        # install below). Lifecycle scripts in a compromised lockfile
+        # would otherwise execute inside this runner before the audit
+        # gets a chance to refuse the lockfile.
+        run: python3 scripts/lockfile_supply_chain_audit.py
+
+      - name: Install pinned Tauri CLI (matches release-desktop.yml)
+        # Lifecycle scripts (esbuild native-binary postinstall, etc.) are
+        # required for `vite build`. The pre-install lockfile structural
+        # audit (lockfile_supply_chain_audit.py) above is the practical
+        # defence against the npm postinstall-dropper class -- it fires
+        # BEFORE any tarball runs, on the injection pattern itself
+        # rather than an advisory-DB lookup.
+        run: npm install --save-dev --prefix studio @tauri-apps/cli@2.10.1 --no-fund --no-audit
+
+      - name: Verify pinned Tauri CLI version
+        run: |
+          out="$(npx --prefix studio tauri --version)"
+          echo "$out"
+          [ "$out" = "tauri-cli 2.10.1" ] || { echo "::error::expected tauri-cli 2.10.1, got $out"; exit 1; }
+
+      - name: Frontend build (npm ci, vite)
+        working-directory: studio/frontend
+        # Lifecycle scripts (esbuild native-binary postinstall, etc.) are
+        # required for `vite build`. The pre-install lockfile structural
+        # audit (lockfile_supply_chain_audit.py) is the practical defence
+        # against the npm postinstall-dropper class -- it fires BEFORE any
+        # tarball runs, on the injection pattern itself rather than an
+        # advisory-DB lookup.
+        run: |
+          npm ci --no-fund --no-audit
+          npm run build
+          test -f dist/index.html
+
+      # The crate carries ~100 unit tests (native_file_dialogs, preflight,
+      # install, desktop_auth, ...) that nothing ran until now: this workflow
+      # only ever built. Run them here, where the toolchain and the WebKit dev
+      # packages are already installed, so a broken assertion fails the PR
+      # instead of sitting unnoticed. `--no-fail-fast` reports every failing
+      # test in one run rather than stopping at the first.
+      - name: Rust unit tests (studio/src-tauri)
+        working-directory: studio/src-tauri
+        run: cargo test --no-fail-fast
+
+      - name: Tauri debug build (Linux, no bundle, no codesign)
+        # `--debug` + `--no-bundle` keeps this lean: compiles the Rust crate,
+        # confirms the frontend dist is wired into Tauri, but skips the AppImage
+        # / .deb production. Code signing is irrelevant because we never produce
+        # a distributable artifact.
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ''
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+        run: npx --prefix studio tauri build --debug --no-bundle
+
+      - name: Inspect produced binary
+        run: |
+          BIN=$(find studio/src-tauri/target/debug -maxdepth 1 -type f -executable 2>/dev/null \
+                | grep -Ev '\.(d|so|dylib|dll)$' \
+                | grep -Ev '/(deps|build|examples)$' \
+                | head -1)
+          echo "binary: $BIN"
+          if [ -z "$BIN" ]; then
+            echo "::error::Tauri debug binary not produced"
+            ls -la studio/src-tauri/target/debug/ || true
+            exit 1
+          fi
+          file "$BIN"
+          du -h "$BIN"
+
+      # desktop-app-clean-machine-ci.yml launches a SHIPPED release, so this is
+      # the only job that catches a Linux startup regression from a source change
+      # before a release is cut.
+      #
+      # Ten launches, not one: the #8062 X11 race killed roughly one launch in
+      # three, so a single launch passes two times in three with the bug present.
+      #
+      # The backend is a stub -- preflight only needs `-h` to exit 0 and
+      # `studio desktop-capabilities --json` to answer, and the crash lands
+      # milliseconds after the spawn -- which covers the whole startup-to-app-shell
+      # transition without a Python install, in ~4 minutes.
+      - name: Launch repeatedly under Xvfb
+        run: |
+          set -u
+          BIN="$PWD/studio/src-tauri/target/debug/unsloth-studio"
+          [ -x "$BIN" ] || { echo "::error::no debug binary at $BIN"; exit 1; }
+
+          # From libX11 1.8 the library calls XInitThreads() from its own
+          # constructor, so the #8062 race cannot happen and these launches would
+          # pass even with the fix reverted. ubuntu-22.04 ships 1.7.5, which does not.
+          x11ver="$(dpkg-query -W -f='${Version}' libx11-6 2>/dev/null || true)"
+          echo "libx11-6: ${x11ver:-not installed}"
+          if [ -z "$x11ver" ] || dpkg --compare-versions "$x11ver" ge 2:1.8; then
+            echo "::warning::libX11 ${x11ver:-unknown} initialises threading itself, so these launches no longer cover the #8062 race, only that the app starts. Keep this job on a runner with libX11 < 1.8 to keep that coverage."
+          fi
+
+          # Derived, not hardcoded: a bump to MIN_DESKTOP_BACKEND_VERSION would
+          # leave the stub Stale, park the app on the repair screen and quietly
+          # stop testing the startup transition this job exists to test.
+          STUB_VERSION="$(sed -n 's/.*MIN_DESKTOP_BACKEND_VERSION: &str = "\([^"]*\)".*/\1/p' \
+            studio/src-tauri/src/preflight/version.rs)"
+          [ -n "$STUB_VERSION" ] || {
+            echo "::error::could not read MIN_DESKTOP_BACKEND_VERSION from preflight/version.rs"
+            exit 1
+          }
+          echo "stub backend version: $STUB_VERSION"
+
+          mkdir -p "$RUNNER_TEMP/stub" launch-logs
+          cat > "$RUNNER_TEMP/stub/unsloth" <<'STUB'
+          #!/bin/sh
+          case "$*" in
+            "-h") exit 0 ;;
+            *desktop-capabilities*)
+              printf '%s\n' '{"desktop_protocol_version":1,"desktop_manageability_version":2,"supports_api_only":true,"supports_provision_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_install_ok":true,"version":"__STUB_VERSION__"}'
+              exit 0 ;;
+            *studio*--api-only*) exec sleep 60 ;;
+          esac
+          exit 1
+          STUB
+          sed -i "s/__STUB_VERSION__/$STUB_VERSION/" "$RUNNER_TEMP/stub/unsloth"
+          chmod +x "$RUNNER_TEMP/stub/unsloth"
+
+          fails=0
+          for i in $(seq 1 10); do
+            H="$RUNNER_TEMP/launch-$i"
+            rm -rf "$H"
+            mkdir -p "$H/.unsloth/studio/unsloth_studio/bin" "$H/.config" "$H/xdg"
+            cp "$RUNNER_TEMP/stub/unsloth" "$H/.unsloth/studio/unsloth_studio/bin/unsloth"
+            D=$((70 + i))
+            Xvfb ":$D" -screen 0 1440x900x24 -nolisten tcp > "launch-logs/xvfb-$i.log" 2>&1 &
+            XV=$!
+            for _ in $(seq 1 40); do [ -e "/tmp/.X11-unix/X$D" ] && break; sleep 0.25; done
+            (
+              export DISPLAY=":$D" HOME="$H" XDG_RUNTIME_DIR="$H/xdg" XDG_CONFIG_HOME="$H/.config"
+              # Without this GTK drops its fatal-X-error report and the app exits
+              # 1 with no output at all, which is what made #8062 so opaque.
+              export G_MESSAGES_DEBUG=all RUST_BACKTRACE=full
+              unset UNSLOTH_STUDIO_HOME STUDIO_HOME
+              exec "$BIN"
+            ) > "launch-logs/app-$i.log" 2>&1 &
+            APP=$!
+            for _ in $(seq 1 20); do kill -0 "$APP" 2>/dev/null || break; sleep 1; done
+            if kill -0 "$APP" 2>/dev/null; then
+              kill -TERM "$APP" 2>/dev/null || true
+              # Surviving only counts if the launch reached the transition that
+              # used to kill it: an app parked on the install or repair screen
+              # also survives 20s while testing none of this.
+              if grep -q "start_managed_server spawned" "launch-logs/app-$i.log"; then
+                echo "launch $i: reached the backend spawn and stayed up"
+              else
+                fails=$((fails + 1))
+                echo "::error::launch $i never reached the backend spawn, so it never exercised the startup transition"
+                tail -25 "launch-logs/app-$i.log" || true
+              fi
+            else
+              rc=0; wait "$APP" 2>/dev/null || rc=$?
+              fails=$((fails + 1))
+              echo "::error::launch $i exited early with rc=$rc"
+              tail -25 "launch-logs/app-$i.log" || true
+            fi
+            kill "$XV" 2>/dev/null || true
+            wait "$XV" 2>/dev/null || true
+          done
+
+          # Anything less is a user watching the window vanish on startup.
+          if [ "$fails" -ne 0 ]; then
+            echo "::error::$fails of 10 launches did not reach the app shell and stay there"
+            exit 1
+          fi
+          echo "10 of 10 launches reached the backend spawn and stayed up"
+
+      - name: Upload launch logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: tauri-launch-logs
+          path: launch-logs
+          if-no-files-found: warn
+          retention-days: 1
+
+      - name: Upload Tauri debug build
+        # Failures only, and only the binary -- never the whole target/debug
+        # tree. That directory is ~1.3GB per run: the 405MB unstripped binary
+        # plus deps/, build/ and incremental/ intermediates that are useless
+        # without the exact toolchain that produced them. Uploading it on every
+        # run accumulated ~350GB of live artifacts, which is two orders of
+        # magnitude past the org allowance. Actions storage is the one resource
+        # that is NOT free on public repos, and exceeding it silently stops
+        # GitHub scheduling jobs across the whole account -- no error, nothing
+        # runs. A green run does not need its binary kept; a red one does.
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: tauri-debug-build
+          path: |
+            studio/src-tauri/target/debug/unsloth-studio
+            studio/frontend/dist
+          # The build can fail before the binary exists; still upload the
+          # frontend dist rather than failing the upload itself.
+          if-no-files-found: warn
+          retention-days: 1
+
+  # install.rs carries a Windows-only path normalizer for PowerShell 5.1. The
+  # job above is Linux, and `cfg(windows)` items are stripped before type
+  # checking, so nothing there compiles that code, let alone runs its tests.
+  # That is how the RemoteSigned regression in #7819 reached two draft bundles.
+  windows-unit-tests:
+    name: Rust unit tests (windows)
+    runs-on: windows-latest
+    # A cold cache compiles both the debug and the release dependency tree.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: '24'
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
+
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          # Save only on main. This action defaults to saving on every ref, and
+          # a PR-scoped rust cache (550-840MB here) can only be restored by
+          # re-runs of that same PR while still counting against the 50 GiB
+          # per-repo budget, evicting main's copy that every PR can restore.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          workspaces: studio/src-tauri -> target
+
+      # Windows runners expose `python`, not `python3`, so pin an interpreter
+      # the way every other windows job here does.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Lockfile supply-chain audit (pre-install scan)
+        run: python scripts/lockfile_supply_chain_audit.py
+
+      # tauri-build resolves frontendDist at compile time, so dist/ must exist
+      # before cargo test, exactly as in the Linux job.
+      - name: Frontend build (npm ci, vite)
+        working-directory: studio/frontend
+        run: |
+          npm ci --no-fund --no-audit
+          npm run build
+
+      - name: Rust unit tests (studio/src-tauri)
+        working-directory: studio/src-tauri
+        run: cargo test --no-fail-fast
+
+      # `cargo test` builds only the debug profile, and the browser guard is
+      # installed under `not(debug_assertions)`, so nothing above compiles its
+      # call site. Check the release profile so that path cannot rot.
+      - name: Rust release type check (studio/src-tauri)
+        working-directory: studio/src-tauri
+        run: cargo check --all-targets --release
+
+  macos-unit-tests:
+    name: Rust unit tests (macos)
+    # macos-26, not macos-15, on a measurement rather than a preference. Both are
+    # free Apple Silicon standard runners, so this is the same class of machine.
+    #
+    # studio-mac-install-matrix runs both images from ONE matrix, so their queues
+    # can be compared on identical commits and identical triggers. Over 163 jobs
+    # per leg:
+    #
+    #                   exec med   exec p90   queue p90
+    #     macos-15          160s       713s      20667s
+    #     macos-26          176s       597s       3866s
+    #
+    # The medians say the two are the same machine. The queue p90 says they are
+    # not the same pool: macos-15 is 5.3x worse in the tail, five and a half hours
+    # against one. That tail is what sets this repo's wall clock -- the census
+    # behind it found every commit's last finisher to be this job, minutes of work
+    # behind hours of waiting -- and the median hides it completely, because the
+    # median wait on both images is zero.
+    #
+    # The likely cause is the macos-14 retirement (brownouts 2026-10-05, removal
+    # 2026-11-02): everything migrated onto macos-15, including this job, and
+    # macos-26 was left comparatively empty. That also means this is a fact about
+    # today's pool and not a property of the image, so it is worth re-measuring
+    # rather than assuming. The comparison above is one query against the install
+    # matrix and can be re-run whenever the queue looks wrong again.
+    #
+    # Not macos-14 for the retirement above; all three are Apple Silicon, so the
+    # arm64 paths are still what gets tested.
+    runs-on: macos-26
+    # A cold cache compiles both the debug and the release dependency tree.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: '24'
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
+
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          # Save only on main. This action defaults to saving on every ref, and
+          # a PR-scoped rust cache (550-840MB here) can only be restored by
+          # re-runs of that same PR while still counting against the 50 GiB
+          # per-repo budget, evicting main's copy that every PR can restore.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          workspaces: studio/src-tauri -> target
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Lockfile supply-chain audit (pre-install scan)
+        run: python scripts/lockfile_supply_chain_audit.py
+
+      # tauri-build resolves frontendDist at compile time, so dist/ must exist
+      # before cargo test, exactly as in the Linux and Windows jobs.
+      - name: Frontend build (npm ci, vite)
+        working-directory: studio/frontend
+        run: |
+          npm ci --no-fund --no-audit
+          npm run build
+
+      - name: Rust unit tests (studio/src-tauri)
+        working-directory: studio/src-tauri
+        run: cargo test --no-fail-fast
+
+      # `cargo test` builds only the debug profile, and the browser guard is
+      # installed under `not(debug_assertions)`, so nothing above compiles its
+      # call site. Check the release profile so that path cannot rot.
+      - name: Rust release type check (studio/src-tauri)
+        working-directory: studio/src-tauri
+        run: cargo check --all-targets --release

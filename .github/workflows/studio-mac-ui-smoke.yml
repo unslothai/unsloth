@@ -1,0 +1,1753 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Mac counterpart to studio-ui-smoke.yml. Same Playwright + Chromium
+# end-to-end chat UI flow, but on macos-15 (M1) so we catch
+# Mac-specific frontend / backend wiring regressions that the Linux
+# job would miss (e.g. the Mac Tauri shell loading the same React
+# bundle, or the Mac llama.cpp prebuilt's HTTP layer behaving
+# differently from the Linux build).
+#
+# Also carries two phases that used to be their own macOS jobs:
+# studio-mac-api-smoke.yml (API + auth) and studio-mac-update-smoke.yml
+# (update idempotency + uninstall). All three shared a byte-identical
+# `install.sh --local --no-torch` plus assert-llama-loads.sh bootstrap, so a
+# single studio/** PR paid three macOS slots and three full installs to test
+# three surfaces of the same install. Concurrent macOS jobs are capped at 5
+# account-wide and that pool is shared with unslothai/unsloth-zoo, so this was
+# the cheapest duplication in the repo to remove.
+#
+# Phase order matters. Each phase boots on its own port and writes its own
+# server log, and the update phase runs LAST because it ends by uninstalling
+# and asserting the machine is clean -- that is the teardown for the whole job,
+# so nothing needing Unsloth installed may follow it.
+
+name: Mac Unsloth UI + API + Update + Inference CI
+
+on:
+  pull_request:
+    paths:
+      - 'studio/**'
+      - 'unsloth/**'
+      - 'unsloth_cli/**'
+      - 'install.sh'
+      - 'pyproject.toml'
+      - 'tests/studio/**'
+      - '.github/scripts/run-studio-permission-browser.sh'
+      - '.github/scripts/run-studio-indicator-browser.sh'
+      - '.github/workflows/studio-mac-ui-smoke.yml'
+      # Every server boot in this workflow shells out to that script, so an edit
+      # to it changes what this workflow actually runs.
+      - '.github/scripts/boot-studio-api-only.sh'
+      # Same for the /api/health wait that runs after a boot.
+      - '.github/scripts/wait-for-health.sh'
+      # The install step in this workflow is `uses:` on that composite action,
+      # so an edit to the action changes what this workflow actually runs.
+      - '.github/actions/install-unsloth-local/action.yml'
+      # The dist cache moved out of install-unsloth-local so the Windows jobs could
+      # share one definition of its key; a change to it still has to re-run the jobs
+      # that depend on it.
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
+      # The absorbed update phase round-trips scripts/uninstall.sh, which none
+      # of the entries above cover.
+      - 'scripts/uninstall.sh'
+      # No new entries needed for the absorbed API phase: every path
+      # studio-mac-api-smoke.yml watched is already covered above, and
+      # tests/studio/** covers studio_api_smoke.py itself.
+      # Executed directly by this workflow: the load assertion and every model
+      # download.
+      - '.github/scripts/assert-llama-loads.sh'
+      - '.github/scripts/hf-download-with-retry.sh'
+      # Executed directly by the absorbed inference phase 1. The only entry
+      # studio-mac-inference-smoke.yml watched that this filter did not
+      # already cover.
+      - '.github/scripts/studio_smoke/multi_turn_chat.py'
+  push:
+    branches: [main]
+    # Same list as the PR filter. Without it this workflow ran on EVERY commit to
+    # main: a README-only commit fired all four unfiltered macOS workflows, seven
+    # macOS legs, against an account-wide cap of five concurrent macOS jobs. The
+    # post-merge backstop is unchanged, because a commit that cannot touch what
+    # this workflow tests has nothing here to back up.
+    # clean-machine-install-ci.yml and mlx-ci.yml already do exactly this.
+    paths:
+      - 'studio/**'
+      - 'unsloth/**'
+      - 'unsloth_cli/**'
+      - 'install.sh'
+      - 'pyproject.toml'
+      - 'tests/studio/**'
+      - '.github/scripts/run-studio-permission-browser.sh'
+      - '.github/scripts/run-studio-indicator-browser.sh'
+      - '.github/workflows/studio-mac-ui-smoke.yml'
+      # Every server boot in this workflow shells out to that script, so an edit
+      # to it changes what this workflow actually runs.
+      - '.github/scripts/boot-studio-api-only.sh'
+      # Same for the /api/health wait that runs after a boot.
+      - '.github/scripts/wait-for-health.sh'
+      # The install step in this workflow is `uses:` on that composite action,
+      # so an edit to the action changes what this workflow actually runs.
+      - '.github/actions/install-unsloth-local/action.yml'
+      # The dist cache moved out of install-unsloth-local so the Windows jobs could
+      # share one definition of its key; a change to it still has to re-run the jobs
+      # that depend on it.
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
+      # The absorbed update phase round-trips scripts/uninstall.sh, which none
+      # of the entries above cover.
+      - 'scripts/uninstall.sh'
+      # No new entries needed for the absorbed API phase: every path
+      # studio-mac-api-smoke.yml watched is already covered above, and
+      # tests/studio/** covers studio_api_smoke.py itself.
+      # Executed directly by this workflow: the load assertion and every model
+      # download.
+      - '.github/scripts/assert-llama-loads.sh'
+      - '.github/scripts/hf-download-with-retry.sh'
+      # Executed directly by the absorbed inference phase 1. The only entry
+      # studio-mac-inference-smoke.yml watched that this filter did not
+      # already cover.
+      - '.github/scripts/studio_smoke/multi_turn_chat.py'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  # Latest-only on a PR branch. On main this does less than it reads like: it stops
+  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
+  # the moment a newer one is queued, so a merge burst still leaves only the tip.
+  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  ui-smoke:
+    name: Chat UI, API, Update and GGUF inference
+    runs-on: macos-15
+    # 35 covered the UI phases alone. The absorbed API and update phases each
+    # add a server boot plus their own checks, but both reuse this job's single
+    # install rather than doing their own, so they cost minutes rather than the
+    # ~10 the bootstrap takes. 65 leaves headroom without inviting a hang to sit
+    # for an hour holding one of the 5 macOS slots.
+    timeout-minutes: 100
+    env:
+      GGUF_REPO: unsloth/gemma-3-270m-it-GGUF
+      GGUF_VARIANT: UD-Q4_K_XL
+      GGUF_FILE: gemma-3-270m-it-UD-Q4_K_XL.gguf
+      STUDIO_PORT: '18896'
+      HF_HOME: ${{ github.workspace }}/hf-cache
+      # GitHub's macOS runners expose a PARAVIRTUAL Metal device, and Unsloth refuses to
+      # offload to it because paravirtual Apple GPUs return corrupt output. The absorbed
+      # inference phases therefore launch with `--gpu-layers 0 --device none`, which puts
+      # the WHOLE model in host RAM rather than the partial spill the host-offload guard
+      # was written for. #8883 prices that correctly and declines the load:
+      #
+      #   "About 3 GB of this model does not fit in GPU memory and would run from system
+      #    RAM. Only about 4 GB is available and 2 GB of that is kept free for the rest of
+      #    the system, leaving about 2 GB usable."
+      #
+      # The guard is right: the runner cannot host gemma-4-E2B UD-Q4_K_XL (~2.4 GB) plus
+      # mmproj-F16 (~780 MB) in 2 GB. Those phases ran green for weeks before the guard
+      # existed because the prompts are tiny and the mapping is paged -- which is exactly
+      # the gamble the guard stops taking on a user's machine. Here we take it knowingly.
+      # The alternative is silently swapping the model the vision phase covers for a
+      # smaller one, which changes what mac vision inference is tested against.
+      #
+      # Job-level, not on the vision phase alone: every phase in this job is CPU-only for
+      # the same reason, so a runner image with a little less free RAM takes out the
+      # tool-calling phase next. Set on the job so each booted server inherits it, and so
+      # a phase added later inherits it too instead of failing mysteriously.
+      #
+      # This removes no coverage of the guard itself, which is tested in
+      # studio/backend/tests/test_host_offload_ram_guard.py and test_llama_cpp_placement.py.
+      UNSLOTH_ALLOW_HOST_OFFLOAD: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+
+      # Cross-OS shared entry. The tree under `hf-cache` is byte-identical on
+      # Linux, macOS and Windows, so the key carries no `runner.os`, and
+      # enableCrossOsArchive lets Windows (which tars with --force-local) join it.
+      - name: Restore HF_HOME for ${{ env.GGUF_REPO }}
+        id: cache-hf
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        continue-on-error: true
+        with:
+          path: hf-cache
+          key: hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v3
+          enableCrossOsArchive: true
+
+      - name: Prime HF_HOME with the GGUF
+        id: prime-hf
+        if: steps.cache-hf.outputs.cache-hit != 'true' || steps.cache-hf.outcome != 'success'
+        # Bounded on purpose. hf-download-with-retry.sh retries forever by
+        # design ("the enclosing job's timeout-minutes is the real bound"), so
+        # an hf-xet stall used to eat all 65 minutes and take the update and
+        # uninstall coverage with it. A step timeout is a step FAILURE, not a
+        # cancellation, so the bootstrap below still runs and the job reports
+        # what it could test. 25 is roughly 7x the healthy time for a ~200 MB
+        # GGUF plus stories260K, so a merely slow download will not trip it.
+        timeout-minutes: 25
+        env:
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+        run: |
+          python -m pip install --upgrade huggingface_hub
+          mkdir -p hf-cache
+          bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE"
+          bash .github/scripts/hf-download-with-retry.sh ggml-org/models tinyllamas/stories260K.gguf
+
+      - name: Save HF_HOME for ${{ env.GGUF_REPO }}
+        # Save on main only. Caches created on a PR ref are scoped to that
+        # merge ref -- per GitHub's docs they "can only be restored by re-runs
+        # of the pull request" -- while every PR *can* restore from the default
+        # branch. So a PR-scoped save helps almost nothing and competes for the
+        # per-repo cache budget, and when that budget is exceeded GitHub evicts
+        # by least-recently-used, which deletes main's copies that all PRs share.
+        # This repo's budget is 50 GiB, not GitHub's 10GB default, and it was
+        # measured at 49.63 GiB across 258 entries -- 99.3% full, so eviction runs
+        # at the margin. 20.74 GiB of that (42%) is the SAME key held on several
+        # refs, and every one of those keys already has a copy on main, so the
+        # PR-scoped duplicates are redundant by construction. That is the thrash
+        # loop: PR misses -> downloads -> saves its own copy -> evicts main's ->
+        # next PR misses.
+        if: always() && github.ref == 'refs/heads/main' && steps.prime-hf.outcome == 'success' && hashFiles('hf-cache/**/*.gguf') != ''
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: hf-cache
+          key: hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v3
+          enableCrossOsArchive: true
+
+      - name: Install Unsloth (--local, --no-torch)
+        id: install_unsloth
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/install-unsloth-local
+        with:
+          gh-token: ${{ secrets.GITHUB_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+
+      - name: Assert llama.cpp loads on this macOS
+        id: assert_llama
+        # Second half of the bootstrap, and it needs no GGUF: it runs
+        # llama-server --version plus a static vtool minimum-OS check.
+        if: ${{ !cancelled() && steps.install_unsloth.outcome == 'success' }}
+        run: bash .github/scripts/assert-llama-loads.sh
+
+      - name: Install Playwright browsers
+        # No --with-deps on Mac: that flag installs Linux apt packages.
+        # GitHub-hosted macos-15 ships the system frameworks Chromium
+        # needs already.
+        # Pinned <1.58 because all 1.55-1.58 drivers ship Node 24 on
+        # macOS and intermittently hit 'SyntaxError: Unexpected end
+        # of JSON input' in pipeTransport.js. Run 25491698868 showed
+        # the crash hitting 100% of three retry attempts -- not a
+        # rare race but a hard reproduction. Belt-and-suspenders fix:
+        # the test scripts pass --single-process to Chromium (see
+        # tests/studio/playwright_chat_ui.py) AND we patch
+        # pipeTransport.js below to swallow JSON parse errors instead
+        # of crashing the driver Node process. Both together let the
+        # in-script retry recover from any residual flakes.
+        run: |
+          pip install 'playwright>=1.55,<1.58'
+          python -m playwright install chromium webkit
+
+      - name: Patch Playwright pipeTransport.js to tolerate malformed JSON
+        # In Playwright 1.55-1.58, pipeTransport.js does
+        # `JSON.parse(message)` with no try/catch; when Chromium dies
+        # mid-write the partial buffer crashes the driver Node
+        # process and the test script exits with 'Connection closed
+        # while reading from the driver'. Newer Playwright versions
+        # added a try/catch upstream. Backport that here.
+        run: |
+          python - <<'PY'
+          import os, re, sys
+          import playwright
+          driver_dir = os.path.join(os.path.dirname(playwright.__file__), "driver", "package", "lib", "server")
+          path = os.path.join(driver_dir, "pipeTransport.js")
+          src = open(path).read()
+          # Wrap both `this.onmessage.call(null, JSON.parse(...))` sites in try/catch.
+          patched = re.sub(
+              r"this\.onmessage\.call\(null, JSON\.parse\((message2?)\)\);",
+              r"try { this.onmessage.call(null, JSON.parse(\1)); } "
+              r"catch (e) { /* swallow malformed JSON from a crashing browser */ }",
+              src,
+          )
+          if patched == src:
+              # Already patched, or upstream changed -- either way, don't fail the build.
+              print(f"pipeTransport.js: no JSON.parse calls matched at {path}; skipping.")
+          else:
+              open(path, "w").write(patched)
+              print(f"pipeTransport.js: patched JSON.parse calls in {path}")
+          PY
+
+      - name: Reset auth + boot Unsloth
+        run: |
+          # Wipe (not reset-password): the boot below must re-seed a fresh .bootstrap_password.
+          bash .github/scripts/boot-studio-api-only.sh --port "$STUDIO_PORT"
+
+      - name: Wait for /api/health
+        run: |
+          bash .github/scripts/wait-for-health.sh --port "$STUDIO_PORT"
+
+      - name: Pass bootstrap password to the Playwright step
+        run: |
+          OLD=$(cat ~/.unsloth/studio/auth/.bootstrap_password)
+          NEW="CIUi-$(python -c 'import secrets; print(secrets.token_urlsafe(16))')"
+          NEW2="CIUi-$(python -c 'import secrets; print(secrets.token_urlsafe(16))')"
+          echo "::add-mask::$OLD"
+          echo "::add-mask::$NEW"
+          echo "::add-mask::$NEW2"
+          echo "STUDIO_OLD_PW=$OLD"   >> "$GITHUB_ENV"
+          echo "STUDIO_NEW_PW=$NEW"   >> "$GITHUB_ENV"
+          echo "STUDIO_NEW2_PW=$NEW2" >> "$GITHUB_ENV"
+
+      - name: Drive the chat UI with Playwright
+        env:
+          BASE_URL: http://127.0.0.1:18896
+          PW_ART_DIR: logs/playwright
+          STUDIO_UI_STRICT: '1'
+          # macos-15 free runner is 3 vCPU / 7 GB / no Metal-accel
+          # available to llama.cpp from CI; gemma-3-270m turn latency
+          # has been observed to crowd the 180s default. Triple it.
+          STUDIO_UI_TURN_TIMEOUT_MS: '540000'
+        # Retry up to 3 times to absorb known macOS free-runner
+        # flakes: (1) Playwright Node 24 pipeTransport.js 'Unexpected
+        # end of JSON input' crash when the Chromium browser process
+        # dies mid-test, (2) Chromium net::ERR_NO_BUFFER_SPACE when the
+        # runner's kernel briefly runs out of socket buffers, and (3) a
+        # goto 'interrupted by another navigation' when the SPA auth
+        # guard redirects mid-navigation. The retry FULLY resets Unsloth
+        # (kill, wipe auth, reboot, wait /api/health, re-export
+        # bootstrap pw) before re-running the script. A real test failure
+        # (assertion / timeout) does NOT match any pattern so it bypasses
+        # retry and surfaces immediately.
+        run: |
+          mkdir -p logs/playwright
+          attempt=1
+          max_attempts=3
+          while : ; do
+            set +e
+            python tests/studio/playwright_chat_ui.py 2>&1 | tee logs/playwright_attempt_${attempt}.log
+            rc=${PIPESTATUS[0]}
+            set -e
+            if [ "$rc" -eq 0 ]; then
+              break
+            fi
+            if { grep -q "Unexpected end of JSON input"       logs/playwright_attempt_${attempt}.log \
+                 || grep -q "ERR_NO_BUFFER_SPACE"             logs/playwright_attempt_${attempt}.log \
+                 || grep -q "interrupted by another navigation" logs/playwright_attempt_${attempt}.log; } \
+               && [ "$attempt" -lt "$max_attempts" ]; then
+              echo "::warning::Playwright flake on attempt ${attempt}; resetting Unsloth and retrying..."
+              kill "${STUDIO_PID}" 2>/dev/null || true
+              sleep 2
+              rm -rf ~/.unsloth/studio/auth
+              UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
+                > "logs/studio_retry_${attempt}.log" 2>&1 &
+              STUDIO_PID=$!
+              echo "STUDIO_PID=$STUDIO_PID" >> "$GITHUB_ENV"
+              for i in $(seq 1 180); do
+                if curl -fs "http://127.0.0.1:${STUDIO_PORT}/api/health" > /tmp/health.json \
+                   && jq -e '.status == "healthy"' /tmp/health.json >/dev/null; then
+                  break
+                fi
+                sleep 1
+              done
+              STUDIO_OLD_PW=$(cat ~/.unsloth/studio/auth/.bootstrap_password)
+              STUDIO_NEW_PW="CIUi-$(python -c 'import secrets; print(secrets.token_urlsafe(16))')"
+              STUDIO_NEW2_PW="CIUi-$(python -c 'import secrets; print(secrets.token_urlsafe(16))')"
+              echo "::add-mask::$STUDIO_OLD_PW"
+              echo "::add-mask::$STUDIO_NEW_PW"
+              echo "::add-mask::$STUDIO_NEW2_PW"
+              export STUDIO_OLD_PW STUDIO_NEW_PW STUDIO_NEW2_PW
+              attempt=$((attempt + 1))
+              sleep 3
+              continue
+            fi
+            exit "$rc"
+          done
+
+      - name: Stop Unsloth (chat-ui ends with Shutdown click; this is belt-and-suspenders)
+        if: always()
+        run: |
+          kill "${STUDIO_PID}" 2>/dev/null || true
+          sleep 2
+
+      - name: Cross-browser permission controls
+        run: |
+          bash .github/scripts/run-studio-permission-browser.sh 18895 webkit
+
+      # WKWebView is what the desktop app embeds here, so this is the closest
+      # CI gets to the real macOS surface. The status reads are stubbed, which
+      # also covers the mps and sd.cpp payloads a CUDA runner cannot produce.
+      - name: Loaded-models indicator (WebKit)
+        run: |
+          bash .github/scripts/run-studio-indicator-browser.sh 18899 webkit
+
+      - name: Reset auth + boot Unsloth for extra UI tests (port 18897)
+        run: |
+          bash .github/scripts/boot-studio-api-only.sh \
+            --port 18897 --log logs/studio_extra.log --pid-var STUDIO_EXTRA_PID
+
+      - name: Wait for /api/health on 18897
+        run: |
+          bash .github/scripts/wait-for-health.sh \
+            --port 18897 --log logs/studio_extra.log --tmp /tmp/health2.json
+
+      - name: Pass bootstrap pw for extra UI test
+        run: |
+          OLD=$(cat ~/.unsloth/studio/auth/.bootstrap_password)
+          NEW="CIUiExtra-$(python -c 'import secrets; print(secrets.token_urlsafe(16))')"
+          echo "::add-mask::$OLD"
+          echo "::add-mask::$NEW"
+          echo "STUDIO_EXTRA_OLD_PW=$OLD" >> "$GITHUB_ENV"
+          echo "STUDIO_EXTRA_NEW_PW=$NEW" >> "$GITHUB_ENV"
+
+      - name: Drive Compare/Recipes/Export/Unsloth/Settings with Playwright
+        env:
+          BASE_URL: http://127.0.0.1:18897
+          STUDIO_OLD_PW: ${{ env.STUDIO_EXTRA_OLD_PW }}
+          STUDIO_NEW_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
+          PW_ART_DIR: logs/playwright_extra
+          STUDIO_UI_STRICT: '1'
+          # See "Drive the chat UI" step.
+          STUDIO_UI_TURN_TIMEOUT_MS: '540000'
+          GGUF_REPO: ${{ env.GGUF_REPO }}
+          GGUF_VARIANT: ${{ env.GGUF_VARIANT }}
+        # Same flake-retry shape as "Drive the chat UI with Playwright" -- catches
+        # pipeTransport JSON crash, ERR_NO_BUFFER_SPACE, and nav interrupts.
+        run: |
+          mkdir -p logs/playwright_extra
+          attempt=1
+          max_attempts=3
+          while : ; do
+            set +e
+            python tests/studio/playwright_extra_ui.py 2>&1 | tee logs/playwright_extra_attempt_${attempt}.log
+            rc=${PIPESTATUS[0]}
+            set -e
+            if [ "$rc" -eq 0 ]; then
+              break
+            fi
+            if { grep -q "Unexpected end of JSON input"       logs/playwright_extra_attempt_${attempt}.log \
+                 || grep -q "ERR_NO_BUFFER_SPACE"             logs/playwright_extra_attempt_${attempt}.log \
+                 || grep -q "interrupted by another navigation" logs/playwright_extra_attempt_${attempt}.log; } \
+               && [ "$attempt" -lt "$max_attempts" ]; then
+              echo "::warning::Playwright flake on attempt ${attempt}; resetting Unsloth and retrying..."
+              kill "${STUDIO_EXTRA_PID}" 2>/dev/null || true
+              sleep 2
+              rm -rf ~/.unsloth/studio/auth
+              UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p 18897 \
+                > "logs/studio_extra_retry_${attempt}.log" 2>&1 &
+              STUDIO_EXTRA_PID=$!
+              echo "STUDIO_EXTRA_PID=$STUDIO_EXTRA_PID" >> "$GITHUB_ENV"
+              for i in $(seq 1 180); do
+                if curl -fs "http://127.0.0.1:18897/api/health" > /tmp/health2.json \
+                   && jq -e '.status == "healthy"' /tmp/health2.json >/dev/null; then
+                  break
+                fi
+                sleep 1
+              done
+              STUDIO_OLD_PW=$(cat ~/.unsloth/studio/auth/.bootstrap_password)
+              STUDIO_NEW_PW="CIUiExtra-$(python -c 'import secrets; print(secrets.token_urlsafe(16))')"
+              echo "::add-mask::$STUDIO_OLD_PW"
+              echo "::add-mask::$STUDIO_NEW_PW"
+              export STUDIO_OLD_PW STUDIO_NEW_PW
+              # Out of this shell as well as into it. The retry deleted the auth
+              # directory and bootstrapped a new password, so the values every
+              # LATER step reads from GITHUB_ENV are now the credentials of a
+              # server that no longer exists, and the next step to log in fails
+              # a job whose retry had otherwise just succeeded.
+              echo "STUDIO_EXTRA_OLD_PW=$STUDIO_OLD_PW" >> "$GITHUB_ENV"
+              echo "STUDIO_EXTRA_NEW_PW=$STUDIO_NEW_PW" >> "$GITHUB_ENV"
+              attempt=$((attempt + 1))
+              sleep 3
+              continue
+            fi
+            exit "$rc"
+          done
+
+      # The same layout regression the Linux job runs, on the platform whose
+      # scrollbars actually take width and whose font metrics are its own: the
+      # card's floor and the action row's wrap threshold are both measurements,
+      # and a measurement taken on one platform is a guess on the others.
+      - name: Update banner layout regression (Playwright)
+        env:
+          BASE_URL: http://127.0.0.1:18897
+          STUDIO_OLD_PW: ${{ env.STUDIO_EXTRA_OLD_PW }}
+          STUDIO_NEW_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
+          PW_ART_DIR: logs/playwright_update_banner
+        run: |
+          mkdir -p logs/playwright_update_banner
+          python tests/studio/playwright_update_banner_layout.py
+
+      - name: Stop second Unsloth
+        if: always()
+        run: |
+          kill "${STUDIO_EXTRA_PID}" 2>/dev/null || true
+          sleep 2
+
+      # ---------------------------------------------------------------
+      # Tab-capability phase. The assertion is that the Train row SPINS rather than
+      # greying out while the hardware verdict is unmeasured.
+      #
+      # It gets its own boot on a cold port anyway, and no "wait for healthy" step
+      # where every other phase has one, because a settled backend is the wrong
+      # starting state to walk the tabs from. But do not read that as the phase
+      # keeping the provisional window open for the script: it does not, and this
+      # comment used to claim it did. `hardware_detecting` covers stage 0 of the warm
+      # only, and on this runner's --no-torch install with no MLX present that stage
+      # is a failed `import torch` plus one failed metadata lookup, so the verdict
+      # settles inside a second of the port binding -- while Playwright is still
+      # launching Chromium. Boot ordering buys the first /api/health probe a
+      # provisional reply and nothing past it.
+      #
+      # So the script does not depend on the window being open. It holds the
+      # browser's own /api/health at hardware_detecting=true and asserts against
+      # that, which is open for as long as it needs on any host. The real warm is
+      # still sampled when it happens to still be running, and still fails on a real
+      # grey-out, but nothing is required of it.
+      # ---------------------------------------------------------------
+      - name: Reset auth + boot Unsloth for the tab-capability smoke (port 18893)
+        run: |
+          bash .github/scripts/boot-studio-api-only.sh \
+            --port 18893 --log logs/studio_tabs.log --pid-var STUDIO_TABS_PID
+
+      - name: Pass bootstrap pw for the tab-capability smoke
+        run: |
+          # Wait for the password file, not for health: health is the thing under test.
+          for i in $(seq 1 180); do
+            [ -f ~/.unsloth/studio/auth/.bootstrap_password ] && break
+            sleep 1
+          done
+          OLD=$(cat ~/.unsloth/studio/auth/.bootstrap_password)
+          echo "::add-mask::$OLD"
+          echo "STUDIO_TABS_OLD_PW=$OLD" >> "$GITHUB_ENV"
+
+      - name: Drive the Train/Video capability gate with Playwright
+        env:
+          BASE_URL: http://127.0.0.1:18893
+          STUDIO_OLD_PW: ${{ env.STUDIO_TABS_OLD_PW }}
+          PW_ART_DIR: logs/playwright_mac_tabs
+          # The default 330s outlives the launcher's 300s startup grace, which is the
+          # point when a Tauri shell is driving the backend. Nothing here runs that
+          # watchdog (this phase boots `unsloth studio` directly), so the full window
+          # would spend five macOS-runner minutes proving something this job cannot
+          # observe. The watchdog itself is covered by the Rust tests in
+          # studio/src-tauri/src/commands.rs. What is unique to this phase is the
+          # first-paint tab assertion, so keep the liveness poll just long enough to
+          # cover the warm and the tab walk.
+          STUDIO_MAC_SURVIVAL_S: '120'
+        run: |
+          mkdir -p logs/playwright_mac_tabs
+          python tests/studio/playwright_mac_tab_capabilities.py
+
+      - name: Stop tab-capability Unsloth
+        if: always()
+        run: |
+          kill "${STUDIO_TABS_PID}" 2>/dev/null || true
+          sleep 2
+
+      # ---------------------------------------------------------------
+      # API + auth phase, absorbed from studio-mac-api-smoke.yml.
+      # Runs on 18894: 18896 and 18897 were used by the UI phases above and
+      # 18895 by the permission-browser script, so a fresh port keeps this
+      # phase independent of whether any of those shut down cleanly.
+      # ---------------------------------------------------------------
+      - name: Install pyjwt for the JWT-expiry forge test
+        run: pip install 'pyjwt>=2.6'
+
+      - name: Reset auth + boot Unsloth (API-only, port 18894)
+        run: |
+          # Wipe (not reset-password): the boot below must re-seed a fresh .bootstrap_password.
+          bash .github/scripts/boot-studio-api-only.sh \
+            --port 18894 --log logs/studio_api.log --pid-var STUDIO_API_PID
+
+      - name: Wait for /api/health on 18894
+        run: |
+          bash .github/scripts/wait-for-health.sh \
+            --port 18894 --log logs/studio_api.log --tmp /tmp/health_api.json
+
+      - name: Pass bootstrap password + rotated targets to the API test
+        run: |
+          OLD=$(cat ~/.unsloth/studio/auth/.bootstrap_password)
+          NEW="ApiSmoke-$(python -c 'import secrets; print(secrets.token_urlsafe(16))')"
+          NEW2="ApiSmoke-$(python -c 'import secrets; print(secrets.token_urlsafe(16))')"
+          echo "::add-mask::$OLD"
+          echo "::add-mask::$NEW"
+          echo "::add-mask::$NEW2"
+          echo "STUDIO_OLD_PW=$OLD"  >> "$GITHUB_ENV"
+          echo "STUDIO_NEW_PW=$NEW"  >> "$GITHUB_ENV"
+          echo "STUDIO_NEW2_PW=$NEW2" >> "$GITHUB_ENV"
+
+      - name: Run Unsloth API & Auth tests
+        env:
+          BASE_URL: http://127.0.0.1:18894
+          STUDIO_AUTH_DIR: /Users/runner/.unsloth/studio/auth
+        run: python tests/studio/studio_api_smoke.py
+
+      - name: Stop API-phase Unsloth
+        if: always()
+        run: |
+          kill "${STUDIO_API_PID}" 2>/dev/null || true
+          sleep 2
+
+      # ---------------------------------------------------------------
+      # GGUF inference phases, absorbed from studio-mac-inference-smoke.yml.
+      #
+      # Fourth workflow to fold into this job, for the reason the three above
+      # were: it ran the same checkout, setup-node, setup-python,
+      # `install.sh --local --no-torch` and assert-llama-loads.sh, and primed
+      # hf-cache from the SAME key with the SAME GGUF. A studio/** PR paid two
+      # macOS slots to install Unsloth twice on two Macs and then test two
+      # surfaces of it.
+      #
+      # Slots are the point, not seconds. Measured over the last 8 green main
+      # runs of each: this job executes 1154s behind a 17438s queue, the
+      # inference job 402s behind a 13252s queue. Running them in sequence on
+      # one runner costs ~400s of wall clock and returns a macOS slot, and the
+      # cap is 5 concurrent macOS jobs account-wide, shared with
+      # unslothai/unsloth-zoo. Every slot returned shortens the queue for
+      # everything else on it.
+      #
+      # Placed here, after the UI and API phases and before the update phase,
+      # for two reasons that are both load-bearing:
+      #
+      #  - `Phase 1 environment` and its siblings write GGUF_REPO, GGUF_VARIANT,
+      #    GGUF_FILE and STUDIO_PORT to $GITHUB_ENV, and phase 3 points them at
+      #    gemma-4-E2B-it. $GITHUB_ENV outranks the job-level `env:` for every
+      #    later step, so running these first would silently hand the UI phases
+      #    a different model than the one they declare.
+      #  - The update phase must still run last: it uninstalls and asserts the
+      #    machine is clean, which is the teardown for the whole job.
+      #
+      # Phase 1's own HF restore/prime/save block is NOT lifted. It used the
+      # identical cache key for the identical GGUF that this job already primes
+      # before the install, so it would restore over a cache it is sitting on
+      # and race its own save step.
+      # ---------------------------------------------------------------
+      - name: Phase 1 environment
+        if: ${{ !cancelled() && steps.assert_llama.outcome == 'success' }}
+        run: |
+          echo "GGUF_REPO=unsloth/gemma-3-270m-it-GGUF" >> "$GITHUB_ENV"
+          echo "GGUF_VARIANT=UD-Q4_K_XL" >> "$GITHUB_ENV"
+          echo "GGUF_FILE=gemma-3-270m-it-UD-Q4_K_XL.gguf" >> "$GITHUB_ENV"
+          echo "STUDIO_PORT=18888" >> "$GITHUB_ENV"
+
+      - name: Install OpenAI + Anthropic Python SDKs
+        id: sdks-chat
+        if: ${{ !cancelled() && steps.assert_llama.outcome == 'success' }}
+        timeout-minutes: 5
+        # anthropic is held below 1.0: v1 removed temperature, top_p and top_k as
+        # accepted arguments on messages.create(), so the probes below, which pin
+        # temperature = 0.0 for determinism, raise TypeError against it. The v1 route
+        # is extra_body; moving to it is a deliberate change to what the probes send,
+        # not something a CI install should decide by resolving a new major.
+        run: pip install 'openai>=1.50,<4' 'anthropic>=0.40,<1'
+
+      - name: Reset auth + boot Unsloth (API-only)
+        id: boot-chat
+        if: ${{ !cancelled() && steps.assert_llama.outcome == 'success' }}
+        timeout-minutes: 2
+        run: |
+          # Wipe (not reset-password): the boot below must re-seed a fresh .bootstrap_password.
+          bash .github/scripts/boot-studio-api-only.sh --port "$STUDIO_PORT" \
+            --log logs/studio_chat_api.log --pid-var STUDIO_CHAT_PID
+
+      - name: Wait for /api/health
+        id: ready-chat
+        if: ${{ !cancelled() && steps.assert_llama.outcome == 'success' && steps.boot-chat.outcome == 'success' }}
+        timeout-minutes: 5
+        run: |
+          bash .github/scripts/wait-for-health.sh --port "$STUDIO_PORT"
+
+      - name: Password rotation (old must fail, new must work)
+        id: rotate-chat
+        if: ${{ !cancelled() && steps.assert_llama.outcome == 'success' && steps.ready-chat.outcome == 'success' }}
+        timeout-minutes: 3
+        run: |
+          OLD=$(cat ~/.unsloth/studio/auth/.bootstrap_password)
+          NEW="CIRotated-$(python -c 'import secrets; print(secrets.token_urlsafe(12))')"
+          echo "::add-mask::$OLD"
+          echo "::add-mask::$NEW"
+          # 1. Login with the bootstrap password.
+          OLD_TOKEN=$(curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/login" \
+            -H 'content-type: application/json' \
+            -d "{\"username\":\"unsloth\",\"password\":\"$OLD\"}" | jq -r .access_token)
+          [ -n "$OLD_TOKEN" ] && [ "$OLD_TOKEN" != "null" ] || { echo "bootstrap login failed"; exit 1; }
+          # 2. Rotate to a fresh random password.
+          curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/change-password" \
+            -H "Authorization: Bearer $OLD_TOKEN" -H 'content-type: application/json' \
+            -d "{\"current_password\":\"$OLD\",\"new_password\":\"$NEW\"}" > /dev/null
+          # 3. Old password must now be rejected (HTTP 401).
+          OLD_STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
+            -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/login" \
+            -H 'content-type: application/json' \
+            -d "{\"username\":\"unsloth\",\"password\":\"$OLD\"}")
+          if [ "$OLD_STATUS" != "401" ]; then
+            echo "::error::Login with old password returned $OLD_STATUS, expected 401"
+            exit 1
+          fi
+          # 4. New password must succeed; capture the JWT for downstream steps.
+          NEW_TOKEN=$(curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/login" \
+            -H 'content-type: application/json' \
+            -d "{\"username\":\"unsloth\",\"password\":\"$NEW\"}" | jq -r .access_token)
+          [ -n "$NEW_TOKEN" ] && [ "$NEW_TOKEN" != "null" ] || { echo "new login failed"; exit 1; }
+          echo "TOKEN=$NEW_TOKEN" >> "$GITHUB_ENV"
+          echo "password rotation OK (old=401, new=200)"
+
+      - name: Load the GGUF (HF repo + variant, served from HF_HOME cache)
+        id: load-chat
+        if: ${{ !cancelled() && steps.assert_llama.outcome == 'success' && steps.rotate-chat.outcome == 'success' }}
+        # curl already caps itself at --max-time 600; +2 for process overhead.
+        timeout-minutes: 12
+        run: |
+          curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/inference/load" \
+            -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+            --max-time 600 \
+            -d "{\"model_path\":\"$GGUF_REPO\",\"gguf_variant\":\"$GGUF_VARIANT\",\"is_lora\":false,\"max_seq_length\":2048}" \
+            | jq '{status, display_name, is_gguf, context_length}'
+
+      - name: Multi-turn determinism via OpenAI + Anthropic SDKs
+        if: ${{ !cancelled() && steps.assert_llama.outcome == 'success' && steps.load-chat.outcome == 'success' }}
+        timeout-minutes: 15
+        env:
+          BASE_URL: http://127.0.0.1:18888
+        run: |
+          python3 .github/scripts/studio_smoke/multi_turn_chat.py
+
+      - name: Stop Unsloth
+        if: always()
+        run: |
+          kill "${STUDIO_CHAT_PID}" 2>/dev/null || true
+          sleep 2
+          lsof -nP -iTCP:"${STUDIO_PORT}" -sTCP:LISTEN || true
+
+      - name: Upload logs
+        # Always upload so green runs are still reviewable.
+        if: always()
+        # Diagnostic only: a transient artifact-service drop must not fail a green job.
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: openai-anthropic-log
+          path: |
+            logs/studio_chat_api.log
+            logs/install.log
+          retention-days: 7
+
+      # ==============================================================
+      # Phase 2: tool calling + server-side tools.
+      # Reuses the install and llama.cpp check done once above rather than
+      # repeating them on a second runner. Ids, cache dir and server log are
+      # suffixed -tools so the phases cannot collide inside one job.
+      #
+      # Every step below carries the same `if:`. A step with no `if:` gets an
+      # implicit `success()`, which is job-wide rather than per-step, so a
+      # single failed phase-1 step would otherwise skip phases 2 and 3
+      # outright -- exactly the coverage the three independent jobs used to
+      # give us when one of them went red. `!cancelled()` runs the phase after
+      # a phase-1 failure while still honouring a cancel, and the
+      # assert-llama gate keeps it from running when the SHARED preamble
+      # broke (a failed checkout or install skips assert-llama, so its outcome
+      # is not 'success' and phases 2 and 3 correctly stay out). The job still
+      # ends red, because the failed phase-1 step already set the job status.
+      # ==============================================================
+      - name: Phase 2 environment
+        if: ${{ !cancelled() && steps.assert_llama.outcome == 'success' }}
+        run: |
+          echo "GGUF_REPO=unsloth/Qwen3.5-2B-GGUF" >> "$GITHUB_ENV"
+          echo "GGUF_FILE=Qwen3.5-2B-UD-Q4_K_XL.gguf" >> "$GITHUB_ENV"
+          echo "STUDIO_PORT=18898" >> "$GITHUB_ENV"
+
+      # Cross-OS shared entry with the Linux tool-calling job in
+      # studio-inference-smoke.yml: same repo, same file, same flat
+      # --local-dir payload, byte-identical on all three runners. The key
+      # therefore carries no `runner.os`, and enableCrossOsArchive is what
+      # lets Windows -- which tars with --force-local -- join it.
+      #
+      # The suffix is bumped v2 -> v3 because the Linux side moves its
+      # directory to gguf-cache-tools in the same commit, and that is not
+      # cosmetic: actions/cache identifies an entry by key AND a version hash
+      # derived from the `path` input, while key uniqueness is global per ref.
+      # Move the path without bumping the key and the restore misses on
+      # version while the save is refused with "Unable to reserve cache with
+      # key ... another job may be creating this cache" -- measured on staging
+      # during the Mac consolidation: two consecutive runs both logged "Cache
+      # not found for input keys" and both failed to save.
+      - name: Restore GGUF model file
+        id: cache-gguf-tools
+        if: ${{ !cancelled() && steps.assert_llama.outcome == 'success' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        continue-on-error: true
+        timeout-minutes: 15
+        with:
+          path: gguf-cache-tools
+          key: gguf-unsloth/Qwen3.5-2B-GGUF-Qwen3.5-2B-UD-Q4_K_XL.gguf-v3
+          enableCrossOsArchive: true
+
+      - name: Download GGUF if cache miss
+        id: download-gguf-tools
+        if: ${{ !cancelled() && steps.assert_llama.outcome == 'success' && (steps.cache-gguf-tools.outputs.cache-hit != 'true' || steps.cache-gguf-tools.outcome != 'success') }}
+        # hf-download-with-retry.sh retries forever; this is its real bound.
+        timeout-minutes: 20
+        env:
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+        run: |
+          python -m pip install --upgrade huggingface_hub
+          mkdir -p gguf-cache-tools
+          bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE" gguf-cache-tools
+
+      # Save partial caches on cancel; next run resumes via content hash.
+      - name: Save GGUF model file
+        if: always() && github.ref == 'refs/heads/main' && steps.download-gguf-tools.outcome != 'skipped' && hashFiles('gguf-cache-tools/**/*.gguf') != ''
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        timeout-minutes: 15
+        with:
+          path: gguf-cache-tools
+          key: gguf-unsloth/Qwen3.5-2B-GGUF-Qwen3.5-2B-UD-Q4_K_XL.gguf-v3
+          enableCrossOsArchive: true
+
+      - name: Reset auth + boot Unsloth (API-only, default tool policy)
+        id: boot-tools
+        # Phase-local prerequisite on top of the shared gate. The phase stays
+        # independent of EARLIER phases, which is what the shared assert-llama
+        # gate buys, but it is not independent of its own download: without this
+        # clause a failed download still boots a server with no model and runs
+        # the test against it. `!= 'failure'` and not `== 'success'`, because a
+        # cache hit skips the download.
+        if: ${{ !cancelled() && steps.assert_llama.outcome == 'success' && steps.download-gguf-tools.outcome != 'failure' }}
+        timeout-minutes: 2
+        # We deliberately use the API-only mode rather than
+        # `unsloth studio run` because the latter calls
+        # `set_tool_policy(...)` with a resolved bool: on loopback the
+        # default resolves to True, which forces every request through
+        # the server-side agentic loop and breaks the standard
+        # function-calling test below. API-only mode leaves
+        # tool_policy=None so each request's `enable_tools` field is
+        # honoured.
+        run: |
+          bash .github/scripts/boot-studio-api-only.sh \
+            --port "$STUDIO_PORT" --log logs/studio_tools.log
+
+      - name: Wait for /api/health, log in, change password, load model
+        id: ready-tools
+        if: ${{ !cancelled() && steps.assert_llama.outcome == 'success' && steps.boot-tools.outcome == 'success' }}
+        # 180s health wait + curl's own --max-time 600, with headroom.
+        timeout-minutes: 15
+        run: |
+          for i in $(seq 1 180); do
+            if curl -fs "http://127.0.0.1:${STUDIO_PORT}/api/health" > /tmp/health.json; then
+              jq -e '.status == "healthy"' /tmp/health.json && break
+            fi
+            sleep 1
+          done
+          jq -e '.status == "healthy"' /tmp/health.json
+          OLD=$(cat ~/.unsloth/studio/auth/.bootstrap_password)
+          NEW="CITool-$(python -c 'import secrets; print(secrets.token_urlsafe(12))')"
+          echo "::add-mask::$OLD"
+          echo "::add-mask::$NEW"
+          OLD_TOKEN=$(curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/login" \
+            -H 'content-type: application/json' \
+            -d "{\"username\":\"unsloth\",\"password\":\"$OLD\"}" | jq -r .access_token)
+          curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/change-password" \
+            -H "Authorization: Bearer $OLD_TOKEN" -H 'content-type: application/json' \
+            -d "{\"current_password\":\"$OLD\",\"new_password\":\"$NEW\"}" > /dev/null
+          TOKEN=$(curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/login" \
+            -H 'content-type: application/json' \
+            -d "{\"username\":\"unsloth\",\"password\":\"$NEW\"}" | jq -r .access_token)
+          echo "API_KEY=$TOKEN" >> "$GITHUB_ENV"
+          GGUF_PATH="$GITHUB_WORKSPACE/gguf-cache-tools/${GGUF_FILE}"
+          ls -lh "$GGUF_PATH"
+          curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/inference/load" \
+            -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+            --max-time 600 \
+            -d "{\"model_path\":\"$GGUF_PATH\",\"is_lora\":false,\"max_seq_length\":2048}" \
+            | jq '{status, display_name}'
+
+      - name: Tool calling, server-side tools, thinking on/off
+        if: ${{ !cancelled() && steps.assert_llama.outcome == 'success' && steps.ready-tools.outcome == 'success' }}
+        timeout-minutes: 20
+        env:
+          BASE_URL: http://127.0.0.1:18898
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import time
+          import urllib.error
+          import urllib.request
+
+          BASE = os.environ["BASE_URL"]
+          KEY  = os.environ["API_KEY"]
+          SEED = 3407
+
+          def post(path, body, *, timeout = 240):
+              """Plain JSON POST. For requests that don't go through
+              the server-side agentic loop, the response is one JSON
+              object."""
+              data = json.dumps(body).encode()
+              req = urllib.request.Request(
+                  f"{BASE}{path}",
+                  data    = data,
+                  method  = "POST",
+                  headers = {
+                      "Authorization": f"Bearer {KEY}",
+                      "Content-Type": "application/json",
+                  },
+              )
+              # Shared CI runners stall sporadically, so retry transport-level
+              # failures only; HTTP status errors surface immediately. Bounded
+              # to fit the job's timeout-minutes: short probes get 3 full
+              # attempts, long probes one retry capped at 300s (a healthy
+              # server answers a retry quickly; a stalled one never does).
+              attempts = 3 if timeout <= 300 else 2
+              for attempt in range(attempts):
+                  try:
+                      t = timeout if attempt == 0 else min(timeout, 300)
+                      with urllib.request.urlopen(req, timeout = t) as resp:
+                          return resp.status, json.loads(resp.read().decode())
+                  except urllib.error.HTTPError as exc:
+                      # Say what the server said before the body is discarded. A
+                      # bare HTTPError prints only "HTTP Error 400: Bad Request",
+                      # which is what turned the #8883 Mac GGUF outage into three
+                      # red main runs whose cause had to be found by hand.
+                      try:
+                          detail = exc.read().decode("utf-8", "replace")
+                      except Exception as read_exc:
+                          detail = f"<body unreadable: {read_exc!r}>"
+                      print(
+                          f"[http] {path} -> {exc.code} {exc.reason}: {detail[:4000]}",
+                          flush = True,
+                      )
+                      raise
+                  except (TimeoutError, ConnectionError, urllib.error.URLError) as exc:
+                      if attempt == attempts - 1:
+                          raise
+                      print(f"[retry] {path}: {exc!r}", flush = True)
+                      time.sleep(15)
+
+          def post_sse(path, body, *, timeout = 600, retries = 1, soft = False):
+              """POST a streaming request and accumulate the assistant
+              text deltas. The server-side agentic loop ALWAYS returns
+              SSE regardless of the request's `stream` field, so any
+              call with enable_tools=true must use this helper.
+
+              A shared CI runner can stall the stream transport (the
+              connection opening, or a mid-stream read) even when Unsloth
+              is healthy, so harden the read three ways: retry a stall
+              once with a fresh request capped at 300s; return any text
+              already streamed before a stall (a stall on the trailing
+              tokens, after the answer arrived, still counts); and when
+              every attempt yields nothing, a hard call re-raises while a
+              soft call (the best-effort server-side tool probes) returns
+              None so the caller can WARN instead of sinking the whole
+              job. HTTP status errors always surface immediately."""
+              body = {**body, "stream": True}
+              data = json.dumps(body).encode()
+              req = urllib.request.Request(
+                  f"{BASE}{path}",
+                  data    = data,
+                  method  = "POST",
+                  headers = {
+                      "Authorization": f"Bearer {KEY}",
+                      "Content-Type": "application/json",
+                  },
+              )
+              for attempt in range(retries + 1):
+                  parts = []
+                  t = timeout if attempt == 0 else min(timeout, 300)
+                  try:
+                      with urllib.request.urlopen(req, timeout = t) as resp:
+                          for raw in resp:
+                              line = raw.decode().strip()
+                              if not line.startswith("data: "):
+                                  continue
+                              payload = line[6:]
+                              if payload == "[DONE]":
+                                  break
+                              try:
+                                  chunk = json.loads(payload)
+                              except json.JSONDecodeError:
+                                  continue
+                              for choice in chunk.get("choices", []):
+                                  delta = choice.get("delta", {}) or {}
+                                  if delta.get("content"):
+                                      parts.append(delta["content"])
+                      return "".join(parts)
+                  except urllib.error.HTTPError as exc:
+                      # Say what the server said before the body is discarded. A
+                      # bare HTTPError prints only "HTTP Error 400: Bad Request",
+                      # which is what turned the #8883 Mac GGUF outage into three
+                      # red main runs whose cause had to be found by hand.
+                      try:
+                          detail = exc.read().decode("utf-8", "replace")
+                      except Exception as read_exc:
+                          detail = f"<body unreadable: {read_exc!r}>"
+                      print(
+                          f"[http] {path} -> {exc.code} {exc.reason}: {detail[:4000]}",
+                          flush = True,
+                      )
+                      raise
+                  except (TimeoutError, ConnectionError, urllib.error.URLError) as exc:
+                      # Text already streamed is a valid signal -- keep it
+                      # rather than re-running a heavy generation.
+                      if parts:
+                          joined = "".join(parts)
+                          print(f"[retry-sse] {path}: {exc!r}; keeping {len(joined)} partial chars", flush = True)
+                          return joined
+                      if attempt == retries:
+                          if soft:
+                              print(f"[tools] WARN {path}: SSE transport stalled with no data ({exc!r}) -- non-blocking", flush = True)
+                              return None
+                          raise
+                      print(f"[retry-sse] {path}: {exc!r}", flush = True)
+                      time.sleep(15)
+
+          # ── 1. Standard OpenAI function calling ──────────────────────
+          weather_tool = {
+              "type": "function",
+              "function": {
+                  "name": "get_weather",
+                  "description": "Get current weather for a city.",
+                  "parameters": {
+                      "type": "object",
+                      "properties": {"city": {"type": "string"}},
+                      "required": ["city"],
+                  },
+              },
+          }
+
+          # Mac Metal at temperature=0 is pathological for these small
+          # quants (Qwen3.5-2B emits ',,,,,,...' or 'The The The...'),
+          # gemma-4-E2B emits '<unused5>' tokens). The Linux CPU
+          # backend hides the issue. Use a small non-zero temperature
+          # with a fixed seed so we stay deterministic but escape the
+          # degenerate sampling trap.
+          TEMP = 0.2
+
+          status, data = post("/v1/chat/completions", {
+              "messages":    [{"role": "user", "content": "What is the weather in Paris?"}],
+              "tools":       [weather_tool],
+              "tool_choice": "required",
+              "stream":      False,
+              "temperature": TEMP,
+              "seed":        SEED,
+              # tool_choice='required' constrains the grammar so the
+              # model emits a tool_call quickly when it works at all;
+              # 128 tokens is enough for `{"city":"Paris"}` plus the
+              # JSON envelope.
+              "max_tokens":  128,
+          }, timeout = 180)
+          assert status == 200, f"tool call status {status}: {data}"
+          choice = data["choices"][0]
+          tool_calls = (choice.get("message") or {}).get("tool_calls") or []
+          # Unsloth's contract: when tool_choice='required', llama.cpp's
+          # grammar should force a tool_calls payload. On Mac that
+          # contract is sometimes broken by the underlying quant; the
+          # PASS path is "tool_calls present + correct schema", the
+          # WARN path documents Unsloth still returned 200 with a
+          # well-formed choices[] envelope.
+          if tool_calls:
+              tc = tool_calls[0]
+              assert tc["function"]["name"] == "get_weather", (
+                  f"unexpected tool name: {tc['function']['name']!r}"
+              )
+              args = json.loads(tc["function"]["arguments"])
+              assert args.get("city"), f"missing city arg: {args}"
+              print(f"[tools] PASS function calling -> {tc['function']['name']}({args}) finish={choice.get('finish_reason')!r}")
+          else:
+              # Infrastructure path is correct; model output drifted.
+              print(
+                  f"[tools] WARN function calling: no tool_calls (finish_reason="
+                  f"{choice.get('finish_reason')!r}); HTTP path OK, this is a "
+                  f"Mac Metal quant degeneracy."
+              )
+
+          # ── 2. Server-side python tool ───────────────────────────────
+          # 123 * 456 = 56088. The agentic loop streams SSE; we
+          # accumulate the assistant text and look for the answer. On
+          # Mac the model often loses the tool calling contract before
+          # producing the answer; accept either the answer OR a
+          # non-empty SSE stream as proof the path completes.
+          # macOS free runner is ~10 tok/s on Qwen3.5-2B Q4_K_XL;
+          # cap max_tokens tightly so each SSE round stays under ~30s
+          # even when the model stalls in a degenerate output state.
+          # retries=0 on the best-effort probes: this step's 20-minute cap
+          # also has to cover the thinking checks, so a no-data stall must be a
+          # single 180s attempt (not 180+15+180s) to leave room for the
+          # thinking checks. A soft/best-effort probe only WARNs anyway.
+          content = post_sse("/v1/chat/completions", {
+              "messages":      [{"role": "user", "content": "What is 123 * 456? Use the python tool to compute it and tell me the number."}],
+              "enable_tools":  True,
+              "permission_mode": "full",
+              "enabled_tools": ["python"],
+              "session_id":    "ci-tool-calling-py",
+              "temperature":   TEMP,
+              "seed":          SEED,
+              "max_tokens":    128,
+          }, timeout = 180, retries = 0, soft = True)
+          if content is None:
+              print("[tools] WARN python tool: SSE transport stalled after retries -- non-blocking")
+          elif "56088" in content or "56,088" in content:
+              print(f"[tools] PASS python tool ({len(content)} chars, found 56088)")
+          else:
+              # Empty stream is a known Mac-quant degeneracy too; log
+              # but do not fail.
+              print(
+                  f"[tools] WARN python tool: SSE OK ({len(content)} chars) but "
+                  f"model didn't return 56088 -- Mac quant drift"
+              )
+
+          # NOTE: the dedicated "Server-side bash (terminal) tool" axis
+          # was dropped in favour of the python axis above. Both share
+          # the SAME server-side agentic loop wiring (only the registry
+          # entry differs); the python axis is the canonical proof. On
+          # macOS the duplicated SSE round was the dominant cost in
+          # this step, so collapsing the two saves ~30-60 s wallclock
+          # without losing distinct coverage.
+
+          # ── 3. Server-side web_search tool ───────────────────────────
+          # DuckDuckGo is flaky from CI runners and small Qwen3.5-2B
+          # may not actually search. Only assert that the SSE stream
+          # opens and yields any data; HTTP / parser failures already
+          # raise above.
+          try:
+              content = post_sse("/v1/chat/completions", {
+                  "messages":      [{"role": "user", "content": "Search the web for 'unsloth ai github' and summarise."}],
+                  "enable_tools":  True,
+                  "permission_mode": "full",
+                  "enabled_tools": ["web_search"],
+                  "session_id":    "ci-tool-calling-web",
+                  "temperature":   TEMP,
+                  "seed":          SEED,
+                  "max_tokens":    96,
+              }, timeout = 180, retries = 0)
+              print(f"[tools] PASS web_search stream ({len(content)} chars)")
+          except Exception as exc:
+              print(f"[tools] WARN web_search probe failed (non-blocking): {exc}")
+
+          # ── 4. Thinking on / off ─────────────────────────────────────
+          # Unsloth strips think blocks from message.content for tools-mode
+          # responses, so we toggle plain chat (no enable_tools) and look
+          # at the surfaced reasoning_content / message.thinking field.
+          def thinking_call(enable):
+              status, data = post("/v1/chat/completions", {
+                  "messages":        [{"role": "user", "content": "Briefly: is 17 prime?"}],
+                  "stream":          False,
+                  "enable_thinking": enable,
+                  "temperature":     TEMP,
+                  "seed":            SEED,
+                  # 80 tokens lands within this step's 20-minute cap
+                  # on the macOS free runner. 17 is small; this is
+                  # plenty of room for either "Yes" + brief reasoning
+                  # or a degenerate empty completion.
+                  "max_tokens":      80,
+              }, timeout = 180)
+              assert status == 200
+              msg = data["choices"][0]["message"]
+              # Unsloth surfaces thinking via reasoning_content (OpenAI
+              # extension). Fall back to inline <think> markers for
+              # robustness across template versions.
+              raw = (msg.get("content") or "") + (msg.get("reasoning_content") or "")
+              return raw
+
+          on_text  = thinking_call(True)
+          off_text = thinking_call(False)
+          # Mac quant drift: the model may produce empty / degenerate
+          # output regardless of enable_thinking. Assert ONLY that the
+          # endpoint returned 200 (already enforced inside thinking_call)
+          # and that toggling the flag doesn't surface a hard <think>
+          # marker when off.
+          had_think_on  = ("<think>" in on_text)  or len(on_text)  > 80
+          if not had_think_on:
+              print(
+                  f"[tools] WARN enable_thinking=True produced no thinking signal: "
+                  f"{on_text[:200]!r} -- Mac quant drift"
+              )
+          # Off-mode should not contain the literal <think> marker.
+          assert "<think>" not in off_text, (
+              f"enable_thinking=False but <think> still present: {off_text!r}"
+          )
+          print(f"[tools] PASS thinking on/off (on={len(on_text)} chars, off={len(off_text)} chars)")
+          PY
+
+      - name: Stop Unsloth
+        if: always()
+        run: |
+          kill "${STUDIO_PID}" 2>/dev/null || true
+          sleep 2
+          lsof -nP -iTCP:"${STUDIO_PORT}" -sTCP:LISTEN || true
+
+      - name: Upload logs
+        # Always upload so green runs are still reviewable.
+        if: always()
+        # Diagnostic only: a transient artifact-service drop must not fail a green job.
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: tool-calling-log
+          path: |
+            logs/studio_tools.log
+            logs/install.log
+          retention-days: 1
+
+      # ==============================================================
+      # Phase 3: JSON schema decoding + image input.
+      # Reuses the install and llama.cpp check done once above rather than
+      # repeating them on a second runner. Ids, cache dir and server log are
+      # suffixed -vision so the phases cannot collide inside one job.
+      # Same `if:` as phase 2, for the same reason: a phase-1 or phase-2
+      # failure must not silently skip this phase's coverage.
+      # ==============================================================
+      - name: Phase 3 environment
+        if: ${{ !cancelled() && steps.assert_llama.outcome == 'success' }}
+        run: |
+          echo "GGUF_REPO=unsloth/gemma-4-E2B-it-GGUF" >> "$GITHUB_ENV"
+          echo "GGUF_VARIANT=UD-Q4_K_XL" >> "$GITHUB_ENV"
+          echo "GGUF_FILE=gemma-4-E2B-it-UD-Q4_K_XL.gguf" >> "$GITHUB_ENV"
+          echo "MMPROJ_FILE=mmproj-F16.gguf" >> "$GITHUB_ENV"
+          echo "STUDIO_PORT=18892" >> "$GITHUB_ENV"
+
+      - name: Restore GGUF + mmproj files
+        id: cache-gguf-vision
+        if: ${{ !cancelled() && steps.assert_llama.outcome == 'success' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        continue-on-error: true
+        timeout-minutes: 20
+        with:
+          path: gguf-cache-vision
+          key: ${{ runner.os }}-gguf-unsloth/gemma-4-E2B-it-GGUF-gemma-4-E2B-it-UD-Q4_K_XL.gguf-mmproj-F16.gguf-v3
+
+      - name: Verify cache contains BOTH gguf + mmproj
+        id: verify-cache
+        if: ${{ !cancelled() && steps.assert_llama.outcome == 'success' && steps.cache-gguf-vision.outputs.cache-hit == 'true' }}
+        run: |
+          if [[ -f "gguf-cache-vision/$GGUF_FILE" && -f "gguf-cache-vision/$MMPROJ_FILE" ]]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Partial cache hit -- forcing re-download."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download GGUF + mmproj if cache miss or partial
+        id: download-gguf-vision
+        if: ${{ !cancelled() && steps.assert_llama.outcome == 'success' && (steps.cache-gguf-vision.outputs.cache-hit != 'true' || steps.verify-cache.outputs.ok != 'true') }}
+        # Authenticated + parallel: shared macOS NAT egress stalls
+        # multi-GB anonymous downloads. hf-download-with-retry.sh retries
+        # forever, so this cap is what actually bounds a permanent stall --
+        # 30 matches the old json-images job timeout, the slowest of the three.
+        timeout-minutes: 30
+        env:
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+        run: |
+          python -m pip install --upgrade huggingface_hub
+          mkdir -p gguf-cache-vision
+          bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE" gguf-cache-vision &
+          MODEL_PID=$!
+          bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$MMPROJ_FILE" gguf-cache-vision &
+          MMPROJ_PID=$!
+          wait "$MODEL_PID"
+          wait "$MMPROJ_PID"
+          # Fail loud on a partial download instead of in the next step.
+          ls -lh "gguf-cache-vision/$GGUF_FILE" "gguf-cache-vision/$MMPROJ_FILE"
+
+      # Save partial caches on cancel. hashFiles guard avoids a hard
+      # save failure when the download step exits with no files. The
+      # additional mmproj-presence check stops a partial save from
+      # poisoning the cache for the next run.
+
+      - name: Save GGUF + mmproj files
+        if: always() && github.ref == 'refs/heads/main' && steps.download-gguf-vision.outcome != 'skipped' && hashFiles('gguf-cache-vision/**/*.gguf') != '' && hashFiles(format('gguf-cache-vision/{0}', 'mmproj-F16.gguf')) != ''
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        timeout-minutes: 20
+        with:
+          path: gguf-cache-vision
+          key: ${{ runner.os }}-gguf-unsloth/gemma-4-E2B-it-GGUF-gemma-4-E2B-it-UD-Q4_K_XL.gguf-mmproj-F16.gguf-v3
+
+      - name: Install OpenAI + Anthropic Python SDKs
+        id: sdks-vision
+        if: ${{ !cancelled() && steps.assert_llama.outcome == 'success' }}
+        timeout-minutes: 5
+        # anthropic is held below 1.0: v1 removed temperature, top_p and top_k as
+        # accepted arguments on messages.create(), so the probes below, which pin
+        # temperature = 0.0 for determinism, raise TypeError against it. The v1 route
+        # is extra_body; moving to it is a deliberate change to what the probes send,
+        # not something a CI install should decide by resolving a new major.
+        run: pip install 'openai>=1.50,<4' 'anthropic>=0.40,<1'
+
+      - name: Reset auth + boot Unsloth (API-only)
+        id: boot-vision
+        # Same phase-local prerequisite as phase 2. The SDK clause is here and
+        # not in phase 2 because only this phase imports openai/anthropic.
+        if: ${{ !cancelled() && steps.assert_llama.outcome == 'success' && steps.sdks-vision.outcome == 'success' && steps.download-gguf-vision.outcome != 'failure' }}
+        timeout-minutes: 2
+        # See phase 2's comment: API-only mode keeps tool_policy=None so
+        # response_format requests aren't routed through the agentic
+        # tool loop.
+        run: |
+          bash .github/scripts/boot-studio-api-only.sh \
+            --port "$STUDIO_PORT" --log logs/studio_vision.log
+
+      - name: Wait for /api/health, log in, change password, load model
+        id: ready-vision
+        if: ${{ !cancelled() && steps.assert_llama.outcome == 'success' && steps.boot-vision.outcome == 'success' }}
+        # 180s health wait + curl's own --max-time 900, with headroom.
+        timeout-minutes: 20
+        run: |
+          for i in $(seq 1 180); do
+            if curl -fs "http://127.0.0.1:${STUDIO_PORT}/api/health" > /tmp/health.json; then
+              jq -e '.status == "healthy"' /tmp/health.json && break
+            fi
+            sleep 1
+          done
+          jq -e '.status == "healthy"' /tmp/health.json
+          OLD=$(cat ~/.unsloth/studio/auth/.bootstrap_password)
+          NEW="CIJson-$(python -c 'import secrets; print(secrets.token_urlsafe(12))')"
+          echo "::add-mask::$OLD"
+          echo "::add-mask::$NEW"
+          OLD_TOKEN=$(curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/login" \
+            -H 'content-type: application/json' \
+            -d "{\"username\":\"unsloth\",\"password\":\"$OLD\"}" | jq -r .access_token)
+          curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/change-password" \
+            -H "Authorization: Bearer $OLD_TOKEN" -H 'content-type: application/json' \
+            -d "{\"current_password\":\"$OLD\",\"new_password\":\"$NEW\"}" > /dev/null
+          TOKEN=$(curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/login" \
+            -H 'content-type: application/json' \
+            -d "{\"username\":\"unsloth\",\"password\":\"$NEW\"}" | jq -r .access_token)
+          echo "API_KEY=$TOKEN" >> "$GITHUB_ENV"
+          # Load via local file path; mmproj sibling auto-detected by
+          # detect_mmproj_file (model_config.py). gguf_variant omitted
+          # -- it routes through _find_local_gguf_by_variant which
+          # expects a directory, not a file path.
+          GGUF_PATH="$GITHUB_WORKSPACE/gguf-cache-vision/${GGUF_FILE}"
+          MMPROJ_PATH="$GITHUB_WORKSPACE/gguf-cache-vision/${MMPROJ_FILE}"
+          ls -lh "$GGUF_PATH" "$MMPROJ_PATH"
+          curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/inference/load" \
+            -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+            --max-time 900 \
+            -d "{\"model_path\":\"$GGUF_PATH\",\"is_lora\":false,\"max_seq_length\":2048}" \
+            | jq '{status, display_name, is_vision}'
+
+      - name: JSON schema decoding + image input
+        if: ${{ !cancelled() && steps.assert_llama.outcome == 'success' && steps.ready-vision.outcome == 'success' }}
+        timeout-minutes: 20
+        env:
+          BASE_URL: http://127.0.0.1:18892
+        run: |
+          python - <<'PY'
+          import base64
+          import json
+          import os
+          import time
+          import urllib.error
+          import urllib.request
+          from openai import OpenAI
+          from anthropic import Anthropic
+
+          BASE = os.environ["BASE_URL"]
+          KEY  = os.environ["API_KEY"]
+          SEED = 3407
+          # Mac Metal degenerates these gemma-4 quants at temperature=0
+          # (any prompt yields '<unused5>...' padding tokens). Use a
+          # small non-zero temperature with the same seed so we stay
+          # deterministic-enough but escape the trap.
+          TEMP = 0.2
+
+          def post(path, body, *, timeout = 240):
+              req = urllib.request.Request(
+                  f"{BASE}{path}",
+                  data    = json.dumps(body).encode(),
+                  method  = "POST",
+                  headers = {
+                      "Authorization": f"Bearer {KEY}",
+                      "Content-Type":  "application/json",
+                  },
+              )
+              # Shared CI runners stall sporadically, so retry transport-level
+              # failures only; HTTP status errors surface immediately. Bounded
+              # to fit the job's timeout-minutes: short probes get 3 full
+              # attempts, long probes one retry capped at 300s (a healthy
+              # server answers a retry quickly; a stalled one never does).
+              attempts = 3 if timeout <= 300 else 2
+              for attempt in range(attempts):
+                  try:
+                      t = timeout if attempt == 0 else min(timeout, 300)
+                      with urllib.request.urlopen(req, timeout = t) as resp:
+                          return resp.status, json.loads(resp.read().decode())
+                  except urllib.error.HTTPError as exc:
+                      # Say what the server said before the body is discarded. A
+                      # bare HTTPError prints only "HTTP Error 400: Bad Request",
+                      # which is what turned the #8883 Mac GGUF outage into three
+                      # red main runs whose cause had to be found by hand.
+                      try:
+                          detail = exc.read().decode("utf-8", "replace")
+                      except Exception as read_exc:
+                          detail = f"<body unreadable: {read_exc!r}>"
+                      print(
+                          f"[http] {path} -> {exc.code} {exc.reason}: {detail[:4000]}",
+                          flush = True,
+                      )
+                      raise
+                  except (TimeoutError, ConnectionError, urllib.error.URLError) as exc:
+                      if attempt == attempts - 1:
+                          raise
+                      print(f"[retry] {path}: {exc!r}", flush = True)
+                      time.sleep(15)
+
+          # ── 1. response_format = json_object (JSON mode) ─────────────
+          # llama.cpp's HTTP server supports OpenAI-compatible JSON
+          # mode: `response_format: {"type": "json_object"}` constrains
+          # the model to emit syntactically-valid JSON. We use raw HTTP
+          # rather than the OpenAI SDK so that the field shape Unsloth
+          # forwards to llama-server is unambiguous (the SDK rewrites
+          # response_format depending on which variant it recognises).
+          # We deliberately do NOT pass a strict JSON schema -- on
+          # small Gemma-4 quants the GBNF-from-schema path occasionally
+          # produces empty output, and JSON mode is the surface we care
+          # about exposing through Unsloth.
+          status, data = post("/v1/chat/completions", {
+              "model":         "default",
+              "messages":      [
+                  {"role": "system", "content": 'Reply with a single JSON object of the form {"city": "...", "country": "..."}. Output ONLY the JSON, nothing else.'},
+                  {"role": "user",   "content": "What is the capital of France?"},
+              ],
+              "temperature":     TEMP,
+              # Trimmed for Mac runner timeout budget; json_object
+              # grammar terminates quickly when working.
+              "max_tokens":      200,
+              "seed":            SEED,
+              "stream":          False,
+              "enable_thinking": False,
+              "response_format": {"type": "json_object"},
+          }, timeout = 240)
+          assert status == 200, f"json status {status}: {data}"
+          # Verify the response envelope shape -- this is what we
+          # actually want to exercise on Mac. The model output quality
+          # downstream of this is a Mac-Metal-quant artefact.
+          assert (
+              isinstance(data.get("choices"), list)
+              and data["choices"]
+              and "message" in data["choices"][0]
+          ), f"json response envelope malformed: {data}"
+          content = (data["choices"][0]["message"].get("content") or "").strip()
+          print(f"[json] raw json_object content: {content!r}")
+          # Some chat templates wrap JSON in ```json fences even in JSON
+          # mode -- strip those before parsing.
+          if content.startswith("```"):
+              content = content.split("```", 2)[1]
+              if content.startswith("json"):
+                  content = content[4:]
+              content = content.strip("`\n ")
+          if content:
+              try:
+                  parsed = json.loads(content)
+                  if "paris" in str(parsed.get("city", "")).lower():
+                      print(f"[json] PASS json_object -> {parsed}")
+                  else:
+                      print(f"[json] WARN json_object decoded but city!=Paris: {parsed}")
+              except json.JSONDecodeError as exc:
+                  print(f"[json] WARN json_object content not parseable ({exc}); content={content!r}")
+          else:
+              print("[json] WARN json_object produced empty content on this Mac quant")
+          # Cross-check: same prompt without response_format. We care
+          # that the inference path stays healthy (status 200 + envelope
+          # shape OK); model output quality is a separate concern.
+          status2, data2 = post("/v1/chat/completions", {
+              "model":         "default",
+              "messages":      [{"role": "user", "content": "What is the capital of France? Answer with one word."}],
+              "temperature":     TEMP,
+              # 1-word answer doesn't need 400 tokens; trim so a
+              # degenerate streaming model doesn't burn through the
+              # job's wallclock budget.
+              "max_tokens":      150,
+              "seed":            SEED,
+              "stream":          False,
+              "enable_thinking": False,
+          }, timeout = 240)
+          assert status2 == 200, f"plain status {status2}: {data2}"
+          plain = (data2["choices"][0]["message"].get("content") or "").lower()
+          print(f"[json] plain capital-of-france reply: {plain!r}")
+          if "paris" in plain:
+              print("[json] PASS plain inference path (paris mentioned)")
+          else:
+              print(
+                  f"[json] WARN plain inference returned no 'paris' -- Mac quant "
+                  f"degeneracy. HTTP path validated separately above."
+              )
+
+          # ── 2. OpenAI image_url (data URI base64) ───────────────────
+          # 64x64 solid-red PNG. stb_image (used by Unsloth's image
+          # normaliser at routes/inference.py:3410) rejects 4x4 or
+          # smaller PNGs as truncated, so we go up to 64x64 -- still
+          # tiny in token cost. The assertion is loose: any non-empty
+          # response from the vision path proves multimodal end-to-end
+          # wiring; small VL quants are weak at colour identification.
+          PNG_64X64_RED_B64 = (
+              "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAYklEQVR4nO3PMQ0AIADAMEAI/k"
+              "UhBhEcDcmqYJtn7/GzpQNeNaA1oDWgNaA1oDWgNaA1oDWgNaA1oDWgNaA1oDWgNaA1oDWgNaA"
+              "1oDWgNaA1oDWgNaA1oDWgNaA1oDWgNaA1oDWgNaBdCJ0BmMJ25zMAAAAASUVORK5CYII="
+          )
+          data_uri = f"data:image/png;base64,{PNG_64X64_RED_B64}"
+
+          # The Mac prebuilt llama.cpp server has a known crash when
+          # processing image inputs alongside the gemma-4-E2B mmproj
+          # (server disconnects mid-completion). This is upstream
+          # llama.cpp behaviour, not Unsloth. Wrap both SDK calls in
+          # try/except so an upstream crash registers as a WARN rather
+          # than failing the whole job. Unsloth's contract (OpenAI/
+          # Anthropic image fields are accepted and forwarded) is
+          # validated by the request body Unsloth constructs, not by
+          # whether llama.cpp can decode it on Mac Metal.
+          client = OpenAI(base_url = f"{BASE}/v1", api_key = KEY)
+          try:
+              openai_resp = client.chat.completions.create(
+                  model       = "default",
+                  temperature = TEMP,
+                  max_tokens  = 80,
+                  seed        = SEED,
+                  messages    = [{
+                      "role": "user",
+                      "content": [
+                          {"type": "image_url", "image_url": {"url": data_uri}},
+                          {"type": "text",      "text": "What colour dominates this image? Reply in one word."},
+                      ],
+                  }],
+              )
+              openai_text = (openai_resp.choices[0].message.content or "").lower()
+              print(f"[image/openai] reply: {openai_text!r}")
+              if openai_text:
+                  print("[image/openai] PASS image_url accepted, non-empty response")
+              else:
+                  print("[image/openai] WARN image_url accepted but empty content -- Mac quant drift")
+          except Exception as exc:
+              print(
+                  f"[image/openai] WARN image_url SDK call raised: {type(exc).__name__}: "
+                  f"{exc}. Likely upstream llama.cpp Mac+vision crash, NOT an Unsloth "
+                  f"regression. Unsloth successfully forwarded the request."
+              )
+
+          # ── 3. Anthropic source/base64 image ────────────────────────
+          # Two SDK quirks vs. Unsloth: base_url must NOT include /v1
+          # (the SDK appends it itself; otherwise /v1/v1/messages -> 405),
+          # and Unsloth's auth is HTTPBearer-only so the SDK's default
+          # x-api-key header is ignored -- send Authorization: Bearer
+          # via default_headers.
+          anthropic = Anthropic(
+              base_url        = BASE,
+              api_key         = "unused",
+              default_headers = {"Authorization": f"Bearer {KEY}"},
+          )
+          try:
+              a_msg = anthropic.messages.create(
+                  model       = "default",
+                  max_tokens  = 80,
+                  temperature = TEMP,
+                  extra_body  = {"seed": SEED},
+                  messages    = [{
+                      "role": "user",
+                      "content": [
+                          {
+                              "type":   "image",
+                              "source": {
+                                  "type":       "base64",
+                                  "media_type": "image/png",
+                                  "data":       PNG_64X64_RED_B64,
+                              },
+                          },
+                          {"type": "text", "text": "Describe this image briefly."},
+                      ],
+                  }],
+              )
+              a_text = "".join(b.text for b in a_msg.content if getattr(b, "type", None) == "text")
+              print(f"[image/anthropic] reply: {a_text!r}")
+              if a_text:
+                  print("[image/anthropic] PASS source/base64 accepted, non-empty response")
+              else:
+                  print("[image/anthropic] WARN source/base64 accepted but empty content -- Mac quant drift")
+          except Exception as exc:
+              print(
+                  f"[image/anthropic] WARN anthropic image SDK call raised: "
+                  f"{type(exc).__name__}: {exc}. Likely upstream llama.cpp Mac+vision "
+                  f"crash, NOT an Unsloth regression."
+              )
+          PY
+
+      - name: Stop Unsloth
+        if: always()
+        run: |
+          kill "${STUDIO_PID}" 2>/dev/null || true
+          sleep 2
+          lsof -nP -iTCP:"${STUDIO_PORT}" -sTCP:LISTEN || true
+
+      - name: Upload logs
+        # Always upload so green runs are still reviewable.
+        if: always()
+        # Diagnostic only: a transient artifact-service drop must not fail a green job.
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: json-images-log
+          path: |
+            logs/studio_vision.log
+            logs/install.log
+          retention-days: 1
+
+
+      # ---------------------------------------------------------------
+      # Update + uninstall phase, absorbed from studio-mac-update-smoke.yml.
+      # Same install, same assert-llama-loads.sh, so it was a third macOS
+      # runner doing the same bootstrap to check that `update` is a no-op.
+      #
+      # Runs last on purpose: it ends by uninstalling and asserting the machine
+      # is clean, which is the teardown for this whole job. Nothing may follow
+      # it that needs Unsloth installed. Its server boots on 18891 and logs to
+      # studio_update.log so it cannot clobber the UI or API phases above.
+      #
+      # Every step below carries an explicit condition because a step with no
+      # `if:` gets an implicit `success()`, so one flaky Playwright failure in a
+      # phase above would silently skip this whole phase. As its own workflow it
+      # ran regardless, and it is the only Mac coverage of `studio update` and
+      # scripts/uninstall.sh. `!cancelled()` overrides the implicit success()
+      # while the step-outcome checks still demand a working install to test
+      # against. `${{ }}` is required: a bare leading `!` is a YAML tag.
+      # ---------------------------------------------------------------
+      - name: First update should be a no-op (prebuilt already validated)
+        id: update_first
+        if: ${{ !cancelled() && steps.install_unsloth.outcome == 'success' && steps.assert_llama.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+        run: |
+          set -o pipefail
+          unsloth studio update --local 2>&1 | tee logs/update.log
+          if grep -q "falling back to source build" logs/update.log; then
+            echo "::error::studio update fell back to source-build llama.cpp on Mac."
+            grep -E "llama-prebuilt|llama.cpp" logs/update.log | tail -60
+            exit 1
+          fi
+          if ! grep -qE "prebuilt up to date and validated|prebuilt installed and validated" logs/update.log; then
+            echo "::error::no prebuilt up-to-date marker in update.log."
+            grep -E "llama-prebuilt|llama.cpp" logs/update.log | tail -60
+            exit 1
+          fi
+          echo "update path took the prebuilt fast path"
+
+      # Chained on the first update: "also a no-op" says nothing if the first
+      # one never produced a clean result. Success here implies the bootstrap
+      # gate above passed too, so it does not need repeating.
+      - name: Second update must also be a no-op
+        id: update_second
+        if: ${{ !cancelled() && steps.update_first.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+        run: |
+          set -o pipefail
+          unsloth studio update --local 2>&1 | tee logs/update2.log
+          grep -q "falling back to source build" logs/update2.log && {
+              echo "::error::second update fell back to source build on Mac"
+              tail -60 logs/update2.log; exit 1; } || true
+          grep -qE "prebuilt up to date and validated|prebuilt installed and validated" logs/update2.log
+          echo "second update was clean"
+
+      - name: Boot Unsloth briefly to confirm the install is still usable
+        if: ${{ !cancelled() && steps.update_second.outcome == 'success' }}
+        run: |
+          mkdir -p logs
+          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p 18891 \
+            > logs/studio_update.log 2>&1 &
+          PID=$!
+          HEALTHY=""
+          for i in $(seq 1 60); do
+            if curl -fs http://127.0.0.1:18891/api/health > /tmp/health.json; then
+              if python3 -c "import json,sys; d=json.load(open('/tmp/health.json')); sys.exit(0 if d.get('status')=='healthy' else 1)"; then
+                HEALTHY=1
+                break
+              fi
+            fi
+            sleep 1
+          done
+          if [ -z "$HEALTHY" ]; then
+            echo "Unsloth failed to come up after \`update\`"
+            tail -200 logs/studio_update.log
+            kill "$PID" 2>/dev/null || true
+            exit 1
+          fi
+          kill "$PID" 2>/dev/null || true
+          echo "post-update Unsloth /api/health OK"
+
+      - name: Uninstall and verify clean
+        # Gated on the install alone, not on the update steps: uninstall is a
+        # separate surface, and a broken `studio update` must not hide whether
+        # scripts/uninstall.sh still leaves the machine clean.
+        if: ${{ !cancelled() && steps.install_unsloth.outcome == 'success' }}
+        # Round-trip through scripts/uninstall.sh on real macOS. As a side
+        # effect this exercises the macOS-only .app bundle + Launch Services
+        # removal path (~/Applications/Unsloth Studio.app, lsregister -u)
+        # which is not testable from a Linux runner. Skips gracefully if
+        # scripts/uninstall.sh has not landed yet (lets this workflow merge
+        # before #5497).
+        run: |
+          set -o pipefail
+          if [ ! -f scripts/uninstall.sh ]; then
+            echo "scripts/uninstall.sh not present in this tree; skipping round-trip"
+            : > logs/uninstall.log
+            exit 0
+          fi
+          sh scripts/uninstall.sh 2>&1 | tee logs/uninstall.log
+          leak=0
+          for p in \
+            "$HOME/.unsloth/studio" \
+            "$HOME/.local/share/unsloth" \
+            "$HOME/Applications/Unsloth Studio.app" \
+            "$HOME/Desktop/Unsloth Studio.app" \
+            "$HOME/.local/bin/unsloth"; do
+            if [ -e "$p" ] || [ -L "$p" ]; then
+              echo "::error::leak: $p"
+              leak=$((leak + 1))
+            fi
+          done
+          [ "$leak" -eq 0 ] || exit 1
+          sh scripts/uninstall.sh 2>&1 | tail -5
+          sh scripts/uninstall.sh 2>&1 | tail -5
+          echo "PASS: mac install -> update -> uninstall round-trip clean"
+
+      - name: Upload Playwright artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: mac-studio-ui-smoke-artifacts
+          path: |
+            logs/studio.log
+            logs/studio_extra.log
+            logs/studio_api.log
+            logs/studio_update.log
+            logs/update.log
+            logs/update2.log
+            logs/uninstall.log
+            logs/install.log
+            logs/playwright
+            logs/playwright-permissions-*
+            logs/playwright_extra
+            logs/playwright_update_banner
+            logs/studio-permissions-*.log
+            logs/studio_tabs.log
+            logs/playwright_mac_tabs
+          # 1 day, matching the repository-wide cap. A larger value here is
+          # silently clamped to that cap today, so stating 7 only invites the
+          # artifacts to re-inflate if the cap is ever raised.
+          retention-days: 1

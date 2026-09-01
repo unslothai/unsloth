@@ -1,0 +1,618 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import { FloatingMonitor } from "@/components/floating-monitor";
+import { getClientPlatform } from "@/components/tauri/window-titlebar";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { type TranslationKey, useT } from "@/i18n";
+import { isTauri } from "@/lib/api-base";
+import { MicIcon } from "@/lib/mic-icon";
+import { cn } from "@/lib/utils";
+import { scheduleIdleTask } from "@/lib/schedule-idle-task";
+import {
+  BotIcon,
+  Cancel01Icon,
+  CloudIcon,
+  ComputerTerminal01Icon,
+  CpuIcon,
+  DatabaseSettingIcon,
+  EnergyRectangleIcon,
+  Globe02Icon,
+  HelpCircleIcon,
+  HomeWifiIcon,
+  Message01Icon,
+  PaintBrush02Icon,
+  Search01Icon,
+  Settings02Icon,
+  UserIcon,
+} from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { motion, useReducedMotion } from "motion/react";
+import {
+  Component,
+  type ComponentType,
+  type FC,
+  type ReactNode,
+  Suspense,
+  lazy,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import {
+  SETTINGS_SEARCH_KEYWORDS,
+  createSettingsSearchIndex,
+} from "./settings-search";
+import {
+  type SettingsTab,
+  useSettingsDialogStore,
+} from "./stores/settings-dialog-store";
+// Statically imported, every panel ran before first paint even though the dialog
+// starts closed. Load each on first view instead; this map also drives the prefetch.
+const TAB_LOADERS = {
+  general: () => import("./tabs/general-tab").then((m) => ({ default: m.GeneralTab })),
+  profile: () => import("./tabs/profile-tab").then((m) => ({ default: m.ProfileTab })),
+  appearance: () =>
+    import("./tabs/appearance-tab").then((m) => ({ default: m.AppearanceTab })),
+  resources: () =>
+    import("./tabs/resources-tab").then((m) => ({ default: m.ResourcesTab })),
+  chat: () => import("./tabs/chat-tab").then((m) => ({ default: m.ChatTab })),
+  voice: () => import("./tabs/voice-tab").then((m) => ({ default: m.VoiceTab })),
+  connections: () =>
+    import("./tabs/connections-tab").then((m) => ({ default: m.ConnectionsTab })),
+  data: () => import("./tabs/data-tab").then((m) => ({ default: m.DataTab })),
+  "keyboard-shortcuts": () =>
+    import("./tabs/keyboard-shortcuts-tab").then((m) => ({
+      default: m.KeyboardShortcutsTab,
+    })),
+  "api-keys": () => import("./tabs/api-keys-tab").then((m) => ({ default: m.ApiKeysTab })),
+  "remote-lan": () =>
+    import("./tabs/remote-lan-tab").then((m) => ({ default: m.RemoteLanTab })),
+  agents: () => import("./tabs/agents-tab").then((m) => ({ default: m.AgentsTab })),
+  debugging: () =>
+    import("./tabs/debugging-tab").then((m) => ({ default: m.DebuggingTab })),
+  about: () => import("./tabs/about-tab").then((m) => ({ default: m.AboutTab })),
+} satisfies Record<SettingsTab, () => Promise<{ default: FC }>>;
+
+function lazyTabs<T extends Record<string, () => Promise<{ default: FC }>>>(
+  loaders: T,
+): Record<keyof T, ComponentType> {
+  const out = {} as Record<keyof T, ComponentType>;
+  for (const id of Object.keys(loaders) as (keyof T)[]) {
+    out[id] = lazy(loaders[id]);
+  }
+  return out;
+}
+
+const LAZY_TABS = lazyTabs(TAB_LOADERS);
+
+interface PanelBoundaryProps {
+  tab: SettingsTab;
+  message: string;
+  reloadLabel: string;
+  children: ReactNode;
+}
+
+interface PanelBoundaryState {
+  tab: SettingsTab;
+  failed: boolean;
+}
+
+/**
+ * A panel fetch can fail (offline, or an entry bundle naming chunks a `dist/` rewrite
+ * replaced). Nothing above this root-mounted dialog catches, so unguarded that unmounts
+ * all of Unsloth rather than one panel.
+ *
+ * Reload rather than retry: React and the browser's module map both cache the failed
+ * import, so re-importing rethrows with no new request (whatwg/html#6768), while
+ * index.html is no-store and a reload does pick up the current chunk names.
+ */
+class SettingsPanelBoundary extends Component<
+  PanelBoundaryProps,
+  PanelBoundaryState
+> {
+  state: PanelBoundaryState = { tab: this.props.tab, failed: false };
+
+  static getDerivedStateFromError(): Partial<PanelBoundaryState> {
+    return { failed: true };
+  }
+
+  // A different tab is a different chunk, so one panel's failure must not hold the rest.
+  static getDerivedStateFromProps(
+    props: PanelBoundaryProps,
+    state: PanelBoundaryState,
+  ): Partial<PanelBoundaryState> | null {
+    return props.tab === state.tab ? null : { tab: props.tab, failed: false };
+  }
+
+  render() {
+    if (!this.state.failed) return this.props.children;
+    return (
+      <div className="flex min-h-40 flex-1 flex-col items-center justify-center gap-3 text-center">
+        <p className="text-muted-foreground text-sm">{this.props.message}</p>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => {
+            window.location.reload();
+          }}
+        >
+          {this.props.reloadLabel}
+        </Button>
+      </div>
+    );
+  }
+}
+
+interface TabDef {
+  id: SettingsTab;
+  labelKey: TranslationKey;
+  icon?: typeof Settings02Icon;
+  /** Plain component icon, for icons shared with chat (not hugeicons). */
+  iconComponent?: FC<{ className?: string }>;
+  badgeKey?: TranslationKey;
+}
+
+const TABS: TabDef[] = [
+  { id: "general", labelKey: "settings.tabs.general", icon: Settings02Icon },
+  {
+    id: "profile",
+    labelKey: "settings.tabs.profile",
+    icon: UserIcon,
+  },
+  {
+    id: "appearance",
+    labelKey: "settings.tabs.appearance",
+    icon: PaintBrush02Icon,
+  },
+  {
+    id: "resources",
+    labelKey: "settings.tabs.resources",
+    icon: CpuIcon,
+  },
+  {
+    id: "chat",
+    labelKey: "settings.tabs.chat",
+    icon: Message01Icon,
+  },
+  {
+    id: "api-keys",
+    labelKey: "settings.tabs.apiKeys",
+    icon: Globe02Icon,
+  },
+  {
+    id: "remote-lan",
+    labelKey: "settings.tabs.remoteLan",
+    icon: HomeWifiIcon,
+    badgeKey: "common.new",
+  },
+  {
+    id: "connections",
+    labelKey: "settings.tabs.connections",
+    icon: CloudIcon,
+  },
+  {
+    id: "agents",
+    labelKey: "settings.tabs.agents",
+    icon: BotIcon,
+  },
+  {
+    id: "voice",
+    labelKey: "settings.tabs.voice",
+    iconComponent: MicIcon,
+  },
+  {
+    id: "data",
+    labelKey: "settings.tabs.data",
+    icon: DatabaseSettingIcon,
+  },
+  {
+    id: "keyboard-shortcuts",
+    labelKey: "settings.tabs.keyboardShortcuts",
+    icon: EnergyRectangleIcon,
+    badgeKey: "common.new",
+  },
+  {
+    id: "debugging",
+    labelKey: "settings.tabs.debugging",
+    icon: ComputerTerminal01Icon,
+  },
+  { id: "about", labelKey: "settings.tabs.about", icon: HelpCircleIcon },
+];
+
+const clientPlatform = getClientPlatform();
+const SETTINGS_SEARCH_INDEX = createSettingsSearchIndex({
+  desktop: isTauri,
+  closeToTray:
+    isTauri &&
+    (clientPlatform.startsWith("win") ||
+      clientPlatform.includes("windows") ||
+      clientPlatform.includes("linux")),
+});
+
+function renderTab(tab: SettingsTab) {
+  const Tab = LAZY_TABS[tab];
+  return <Tab />;
+}
+
+export function SettingsDialog() {
+  const t = useT();
+  const open = useSettingsDialogStore((s) => s.open);
+  const activeTab = useSettingsDialogStore((s) => s.activeTab);
+  const setActiveTab = useSettingsDialogStore((s) => s.setActiveTab);
+  const closeDialog = useSettingsDialogStore((s) => s.closeDialog);
+  const opener = useSettingsDialogStore((s) => s.opener);
+  const openerFallback = useSettingsDialogStore((s) => s.openerFallback);
+  const reduced = useReducedMotion();
+  // Mounting a heavy tab panel (System, Connections) in the same commit as
+  // the nav highlight makes the highlight lag the click. Render the panel
+  // from a deferred value so the nav updates first.
+  const panelTab = useDeferredValue(activeTab);
+  const [query, setQuery] = useState("");
+
+  // Once opened, pull the other panels in on idle so a tab click never waits on the
+  // network. Nothing runs while closed, which is its state for the whole launch.
+  useEffect(() => {
+    if (!open) return;
+    return scheduleIdleTask(() => {
+      for (const load of Object.values(TAB_LOADERS)) {
+        // Warming a panel nobody asked for must not surface as an unhandled rejection;
+        // the boundary above speaks for the panel the user does open.
+        void load().catch(() => undefined);
+      }
+    });
+  }, [open]);
+
+  const results = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return null;
+    return TABS.map((tab) => {
+      const tabLabel = t(tab.labelKey);
+      const entries = SETTINGS_SEARCH_INDEX[tab.id]
+        .filter((key) => {
+          if (t(key).toLowerCase().includes(q)) return true;
+          const keywordsKey = SETTINGS_SEARCH_KEYWORDS[key];
+          return keywordsKey ? t(keywordsKey).toLowerCase().includes(q) : false;
+        })
+        .map((key) => t(key));
+      const deduped = [...new Set(entries)];
+      return {
+        tab,
+        tabLabel,
+        entries: deduped,
+        tabMatches: tabLabel.toLowerCase().includes(q),
+      };
+    }).filter((r) => r.tabMatches || r.entries.length > 0);
+  }, [query, t]);
+
+  const [pendingScroll, setPendingScroll] = useState<{
+    tab: SettingsTab;
+    entry: string;
+  } | null>(null);
+  const mainScrollRef = useRef<HTMLDivElement | null>(null);
+
+  const openResult = (tab: SettingsTab, entry?: string) => {
+    setActiveTab(tab);
+    setQuery("");
+    setPendingScroll(entry ? { tab, entry } : null);
+  };
+
+  // Scroll to the row/section a search result points at once the tab has
+  // rendered, and flash it so the eye lands on the right place. The tab panel
+  // renders deferred and some sections load their data lazily, so observe the
+  // panel until the requested row exists instead of imposing a render deadline.
+  useEffect(() => {
+    if (!pendingScroll) return;
+    // Wait until the destination tab is mounted before matching, so a same-named
+    // row in the previous tab (for example "Storage") is not scrolled to instead.
+    if (panelTab !== pendingScroll.tab) return;
+    const root = mainScrollRef.current;
+    if (!root) return;
+    const attempt = (): boolean => {
+      const target = [
+        ...root.querySelectorAll<HTMLElement>("[data-settings-label]"),
+      ].find((el) => el.dataset.settingsLabel === pendingScroll.entry);
+      if (target) {
+        target.scrollIntoView({ behavior: "smooth", block: "center" });
+        target.classList.add("settings-search-hit");
+        window.setTimeout(
+          () => target.classList.remove("settings-search-hit"),
+          1600,
+        );
+        setPendingScroll(null);
+        return true;
+      }
+      return false;
+    };
+    const observer = new MutationObserver(() => {
+      if (attempt()) observer.disconnect();
+    });
+    observer.observe(root, { childList: true, subtree: true });
+    const frame = window.requestAnimationFrame(() => {
+      if (attempt()) observer.disconnect();
+    });
+    return () => {
+      observer.disconnect();
+      window.cancelAnimationFrame(frame);
+    };
+  }, [pendingScroll, panelTab]);
+
+  useEffect(() => {
+    if (open) return;
+    const frame = window.requestAnimationFrame(() => {
+      setQuery("");
+      setPendingScroll(null);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [open]);
+  const tabButtonRefs = useRef<Record<SettingsTab, HTMLButtonElement | null>>({
+    general: null,
+    profile: null,
+    appearance: null,
+    resources: null,
+    chat: null,
+    voice: null,
+    connections: null,
+    "keyboard-shortcuts": null,
+    data: null,
+    "api-keys": null,
+    "remote-lan": null,
+    agents: null,
+    debugging: null,
+    about: null,
+  });
+
+  useEffect(() => {
+    if (!open) return;
+    const frame = window.requestAnimationFrame(() => {
+      const button = tabButtonRefs.current[activeTab];
+      button?.focus({ preventScroll: true });
+      // The tab list scrolls once it outgrows the sidebar, so a deep-opened tab
+      // can start outside it. preventScroll above keeps focus from revealing it,
+      // and "nearest" moves only the list, never the panel beside it.
+      button?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [open, activeTab]);
+
+  return (
+    <>
+      <Dialog open={open} onOpenChange={(o) => !o && closeDialog()}>
+        <DialogContent
+          showCloseButton={false}
+          overlayClassName="bg-black/30 supports-backdrop-filter:backdrop-blur-[2px]"
+          onCloseAutoFocus={(e) => {
+            // radix loses its previous-focus reference when the tab focus runs in requestAnimationFrame.
+            const focusTarget = [opener, openerFallback].find(
+              (element) =>
+                element?.isConnected && !element.closest("[inert], [hidden]"),
+            );
+            if (focusTarget) {
+              e.preventDefault();
+              focusTarget.focus({ preventScroll: true });
+            }
+          }}
+          className={cn(
+            // Cap at 960px but shrink to the viewport so it doesn't clip on
+            // iPad-portrait widths where a fixed width overflows. Height caps
+            // the same way so short viewports don't get a clipped dialog.
+            "settings-surface !max-w-[min(960px,calc(100vw-2rem))] h-[min(820px,calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))] w-[min(960px,calc(100vw-2rem))] p-0 overflow-hidden",
+            // Soft shadow, no outline ring. Pin --radius to the light value so
+            // corner rounding matches in dark mode.
+            "shadow-border rounded-xl ring-0 [--radius:1.1rem]",
+            // Same chrome-subtracted height the shared DialogContent uses at this
+            // breakpoint: a plain h-dvh wins tailwind-merge and would hang the surface
+            // (and its overflow-hidden bottom edge) below the window. 0px on web.
+            "max-sm:h-[calc(100dvh-var(--studio-window-chrome-top,0px))] max-sm:w-dvw max-sm:!max-w-none max-sm:rounded-none",
+          )}
+        >
+          <DialogTitle className="sr-only">
+            {t("settings.dialog.title")}
+          </DialogTitle>
+          <DialogDescription className="sr-only">
+            {t("settings.dialog.description")}
+          </DialogDescription>
+          {/* Keep tab content from expanding the dialog grid. */}
+          <div className="flex h-full min-h-0 min-w-0 w-full max-sm:flex-col">
+            {/* Match the app shell: tabs on the sidebar fill, content on the
+                page fill, so both track the active palette. */}
+            <aside className="font-heading flex w-[248px] shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground p-2 dark:border-r-0 max-sm:w-full max-sm:border-r-0 max-sm:border-b max-sm:border-sidebar-border">
+              <div className="relative mx-1 mt-3 mb-2 shrink-0 max-sm:hidden">
+                <HugeiconsIcon
+                  icon={Search01Icon}
+                  strokeWidth={2}
+                  className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
+                />
+                <input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape" && query) {
+                      e.stopPropagation();
+                      setQuery("");
+                    }
+                  }}
+                  placeholder={t("settings.dialog.searchPlaceholder")}
+                  aria-label={t("settings.dialog.searchPlaceholder")}
+                  className="h-8 w-full rounded-full border border-border bg-background pr-8 pl-8 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-white/[0.12] dark:border-transparent dark:bg-white/[0.06]"
+                />
+                {query && (
+                  <button
+                    type="button"
+                    onClick={() => setQuery("")}
+                    aria-label={t("settings.dialog.closeAriaLabel")}
+                    className="absolute top-1/2 right-2 flex size-5 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground hover:text-foreground"
+                  >
+                    <HugeiconsIcon icon={Cancel01Icon} className="size-3.5" />
+                  </button>
+                )}
+              </div>
+              {results ? (
+                <div className="hover-scrollbar flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-1 py-1 max-sm:hidden">
+                  {results.length === 0 ? (
+                    <p className="px-3 py-2 text-sm text-muted-foreground">
+                      {t("settings.dialog.searchNoResults")}
+                    </p>
+                  ) : (
+                    results.map(({ tab, tabLabel, entries }) => (
+                      <div key={tab.id} className="flex flex-col">
+                        <button
+                          type="button"
+                          onClick={() => openResult(tab.id)}
+                          className="flex h-[30px] items-center gap-2.5 rounded-full pl-3 pr-2.5 text-ui-13p5 font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                        >
+                          {tab.iconComponent ? (
+                            <tab.iconComponent className="size-icon shrink-0" />
+                          ) : tab.icon ? (
+                            <HugeiconsIcon
+                              icon={tab.icon}
+                              strokeWidth={1.75}
+                              className="size-icon shrink-0"
+                            />
+                          ) : null}
+                          <span className="min-w-0 truncate">{tabLabel}</span>
+                        </button>
+                        {entries.map((entry) => (
+                          <button
+                            key={entry}
+                            type="button"
+                            onClick={() => openResult(tab.id, entry)}
+                            className="flex h-[30px] items-center rounded-full pl-10 pr-2.5 text-left text-ui-14 text-sidebar-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                          >
+                            <span className="min-w-0 truncate">{entry}</span>
+                          </button>
+                        ))}
+                      </div>
+                    ))
+                  )}
+                </div>
+              ) : null}
+              <p
+                className={cn(
+                  "shrink-0 pl-4 pt-3 pb-2.5 text-ui-13 font-medium text-muted-foreground max-sm:hidden",
+                  results !== null && "hidden",
+                )}
+              >
+                {t("settings.dialog.title")}
+              </p>
+              <nav
+                className={cn(
+                  // The tab list is the sidebar's flexible row: a short window
+                  // leaves it taller than the sidebar, and the dialog clips its
+                  // overflow, so scroll it rather than losing the last tabs.
+                  "hover-scrollbar flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-1 py-1",
+                  "max-sm:flex-none max-sm:flex-row max-sm:overflow-x-auto max-sm:py-0",
+                  results !== null && "max-sm:flex hidden",
+                )}
+              >
+                {TABS.map((tab) => {
+                  const active = activeTab === tab.id;
+                  return (
+                    <button
+                      key={tab.id}
+                      // Stable handle for UI tests: the label is translated.
+                      data-testid={`settings-tab-${tab.id}`}
+                      ref={(node) => {
+                        tabButtonRefs.current[tab.id] = node;
+                      }}
+                      type="button"
+                      onClick={() => setActiveTab(tab.id)}
+                      className={cn(
+                        "relative flex h-[32px] items-center gap-2.5 rounded-full pl-3 pr-2.5 text-ui-14p5 leading-ui-19 tracking-nav font-medium transition-colors",
+                        // Keep the row height when the list scrolls: a flex item
+                        // shrinks past h-[32px] down to its text otherwise.
+                        "shrink-0",
+                        "focus-visible:outline-none",
+                        // The active pill already marks the current tab, so
+                        // only unselected items get a keyboard focus ring.
+                        active
+                          ? "text-accent-foreground"
+                          : "text-[#383835] dark:text-[#c7c7c4] hover:bg-accent hover:text-accent-foreground focus-visible:ring-1 focus-visible:ring-ring",
+                      )}
+                    >
+                      {active && (
+                        <motion.span
+                          layoutId="settings-active-pill"
+                          className="absolute inset-0 rounded-full bg-accent"
+                          transition={
+                            reduced
+                              ? { duration: 0 }
+                              : {
+                                  type: "spring",
+                                  stiffness: 500,
+                                  damping: 35,
+                                  mass: 0.5,
+                                }
+                          }
+                        />
+                      )}
+                      {tab.iconComponent ? (
+                        <tab.iconComponent className="relative z-10 size-icon" />
+                      ) : tab.icon ? (
+                        <HugeiconsIcon
+                          icon={tab.icon}
+                          strokeWidth={1.75}
+                          className="relative z-10 size-icon"
+                        />
+                      ) : null}
+                      <span className="relative z-10 min-w-0 truncate">
+                        {t(tab.labelKey)}
+                      </span>
+                      {tab.badgeKey ? (
+                        <span className="relative z-10 ml-auto rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold text-control-accent">
+                          {t(tab.badgeKey)}
+                        </span>
+                      ) : null}
+                    </button>
+                  );
+                })}
+              </nav>
+            </aside>
+
+            <main className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-background">
+              <button
+                type="button"
+                onClick={closeDialog}
+                className="absolute top-3 right-3 z-10 flex size-7 items-center justify-center rounded-full text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                aria-label={t("settings.dialog.closeAriaLabel")}
+              >
+                <HugeiconsIcon icon={Cancel01Icon} className="size-4" />
+              </button>
+              <div
+                ref={mainScrollRef}
+                className="hover-scrollbar flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto p-6 [scrollbar-gutter:stable]"
+              >
+                {/* Only a panel's first view waits, so the fallback is delayed and a
+                    promptly arriving panel never flashes it. */}
+                <SettingsPanelBoundary
+                  tab={panelTab}
+                  message={t("settings.dialog.panelFailed")}
+                  reloadLabel={t("settings.dialog.panelReload")}
+                >
+                  <Suspense
+                    fallback={
+                      <div className="fade-in fill-mode-both flex flex-1 animate-in items-center justify-center text-muted-foreground text-sm delay-300 duration-150">
+                        {t("common.loading")}
+                      </div>
+                    }
+                  >
+                    {renderTab(panelTab)}
+                  </Suspense>
+                </SettingsPanelBoundary>
+              </div>
+            </main>
+          </div>
+        </DialogContent>
+      </Dialog>
+      <FloatingMonitor />
+    </>
+  );
+}

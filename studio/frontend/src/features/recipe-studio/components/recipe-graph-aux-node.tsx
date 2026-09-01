@@ -132,7 +132,7 @@ function AuxNodeBase({
     const hasInvalidRefs =
       findInvalidJinjaReferences(value, availableRefs).length > 0;
     return (
-      <BaseNode className="corner-squircle w-full min-w-0 rounded-lg border-border/60 bg-card shadow-sm">
+      <BaseNode className="corner-squircle w-full min-w-0 rounded-4xl border-border/60 bg-card shadow-sm">
         <BaseNodeHeader className="border-b border-border/50 px-3 py-2">
           <BaseNodeHeaderTitle className="text-xs">{data.title}</BaseNodeHeaderTitle>
         </BaseNodeHeader>
@@ -195,7 +195,7 @@ function AuxNodeBase({
   };
 
   return (
-    <BaseNode className="corner-squircle w-full min-w-0 rounded-lg border-border/60 bg-card shadow-sm">
+    <BaseNode className="corner-squircle w-full min-w-0 rounded-4xl border-border/60 bg-card shadow-sm">
       <BaseNodeHeader className="border-b border-border/50 px-3 py-2">
         <BaseNodeHeaderTitle className="text-xs">
           {score.name.trim() || `Scorer ${data.scoreIndex + 1}`}

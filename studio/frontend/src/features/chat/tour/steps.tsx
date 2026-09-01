@@ -9,7 +9,6 @@ export function buildChatTourSteps({
   closeModelSelector,
   openSettings,
   closeSettings,
-  openSidebar,
   enterCompare,
   exitCompare,
 }: {
@@ -18,7 +17,6 @@ export function buildChatTourSteps({
   closeModelSelector: () => void;
   openSettings: () => void;
   closeSettings: () => void;
-  openSidebar: () => void;
   enterCompare: () => void;
   exitCompare: () => void;
 }): TourStep[] {
@@ -29,20 +27,21 @@ export function buildChatTourSteps({
       title: "Pick a model",
       body: (
         <>
-          This selects what’s loaded for inference. Hub = base models. Fine-tuned
-          = your LoRA adapters from Studio.
+          Selects what’s loaded for inference. Recommended is Unsloth’s curated
+          base models; On Device is your downloads and fine-tuned outputs (LoRA
+          adapters and full finetunes).
         </>
       ),
     },
     {
       id: "model-tabs",
       target: "chat-model-selector-popover",
-      title: "Two tabs",
+      title: "Find a model",
       body: (
         <>
-          Hub: search Hugging Face models. Fine-tuned: adapters (LoRA) you’ve
-          trained locally. If results look off, compare base vs LoRA to see what
-          changed.
+          Search Unsloth’s models, or hit Search Hub for all of Hugging Face.
+          Switch Recommended and On Device, filter by format, and sort by
+          trending or recent. An OOM tag means it won’t fit in your VRAM.
         </>
       ),
       onEnter: openModelSelector,
@@ -61,36 +60,37 @@ export function buildChatTourSteps({
       onEnter: openSettings,
       onExit: closeSettings,
     },
+    {
+      id: "plus-menu",
+      target: "chat-plus-menu",
+      title: "The + menu",
+      body: (
+        <>
+          Everything else lives here: attach photos and files, reuse saved
+          prompts, toggle tools and MCP, start a side-by-side compare, and
+          export the chat.
+        </>
+      ),
+    },
   ];
 
   if (canCompare) {
-    steps.push(
-      {
-        id: "compare-btn",
-        target: "chat-compare",
-        title: "Compare mode",
-        body: (
-          <>
-            Compare any two models side-by-side.
-            Pick a different model for each side and see how they respond to the same prompt.
-          </>
-        ),
-        onEnter: openSidebar,
-      },
-      {
-        id: "compare-view",
-        target: "chat-compare-view",
-        title: "Side-by-side threads",
-        body: (
-          <>
-            Same prompt, 2 threads. If LoRA is worse than base, it’s usually
-            data formatting, too many epochs, or a bad checkpoint choice.
-          </>
-        ),
-        onEnter: enterCompare,
-        onExit: exitCompare,
-      },
-    );
+    // Compare lives in the + menu (no sidebar button to anchor to); this step
+    // enters compare on its own and explains it.
+    steps.push({
+      id: "compare-view",
+      target: "chat-compare-view",
+      title: "Side-by-side threads",
+      body: (
+        <>
+          Compare any two models side-by-side, available from the + menu. Same
+          prompt, 2 threads. If LoRA is worse than base, it’s usually data
+          formatting, too many epochs, or a bad checkpoint choice.
+        </>
+      ),
+      onEnter: enterCompare,
+      onExit: exitCompare,
+    });
   }
 
   return steps;

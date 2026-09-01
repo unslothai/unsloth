@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+#
+# Event-loop regression test for the Unsloth model-load orchestrator.
+# Pins down issue #5642 (Win10 UI freeze on model load): the /load
+# route calls LlamaCppBackend.detect_audio_type synchronously, blocking
+# the FastAPI event loop on a chain of sync httpx.Client.post() probes.
+#
+# The suite stands up a stdlib fake llama-server + a tiny FastAPI app
+# via uvicorn and asserts that detect_audio_type runs via
+# asyncio.to_thread so concurrent /api/inference/load-progress polling
+# stays responsive. CPU-only, no torch, no real llama.cpp binary, no
+# GPU -- the matching cross-OS staging proof lives on
+# danielhanchen/unsloth-staging-2 (Ubuntu / macOS / Windows all
+# green at PR time).
+
+name: Unsloth load-orchestrator CI
+
+# Per-commit runs are gone: this suite now runs as a background lane inside Lint CI,
+# which already occupies a runner on every commit, so it costs a slot there instead of
+# holding one of its own for ~33s. Both call .github/scripts/lane-load-orchestrator.sh,
+# so there is one definition and the two cannot drift.
+#
+# Kept dispatchable because the suite is worth being able to run on its own. Note that
+# the push trigger it used to have had no paths filter, so it ran on EVERY commit to
+# main regardless of the four paths its PR trigger listed.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  # Latest-only on a PR branch. On main this does less than it reads like: it stops
+  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
+  # the moment a newer one is queued, so a merge burst still leaves only the tip.
+  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+      # One definition, shared with the Lint CI lane that runs this on every commit.
+      # No venv argument here: this job owns its interpreter, and #9151 removed the
+      # pip cache from it because it installs almost nothing.
+      - name: Run load-orchestrator tests
+        run: bash .github/scripts/lane-load-orchestrator.sh

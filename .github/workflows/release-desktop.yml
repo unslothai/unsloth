@@ -1,0 +1,2120 @@
+name: Release Desktop App
+
+on:
+  workflow_dispatch:
+    # Both version inputs are free text in the dispatch UI, and studio_version
+    # alone decides the release tag and updater manifest version. Asset filenames
+    # stay stable across releases. Near-miss tags are the failure mode worth
+    # guarding, because they look right at a glance:
+    #
+    #   studio_version   v0.1.52-beta     correct
+    #                    v.0.1.52-beta    rejected: stray dot after the leading v
+    #                    0.1.52-beta      rejected: missing leading v
+    #                    2026.8.3         rejected: that is the PyPI version
+    #
+    #   pypi_version     2026.8.3         correct, no leading v
+    #
+    # "Validate release versions" below rejects each of those by name before any
+    # binary is built. Keep the examples here, in the descriptions, and in that
+    # step's error messages on the same version so they cannot drift apart.
+    inputs:
+      studio_version:
+        description: 'Unsloth SemVer tag to release, leading v with no dot after it (for example, v0.1.52-beta)'
+        type: string
+        required: true
+      pypi_version:
+        description: 'Exact PyPI unsloth version just published/stamped, no leading v (for example, 2026.8.3); leave blank to use MIN_DESKTOP_BACKEND_VERSION'
+        type: string
+        required: false
+      draft:
+        description: 'Build and validate only; nothing is uploaded to the v... release and GitHub latest is left untouched'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  DESKTOP_RELEASE_NOTES: |
+    Desktop app for Unsloth.
+
+    **macOS**: Download `Unsloth-Desktop-MacOS.dmg` (Apple Silicon).
+    **Windows**: Download `Unsloth-Desktop-Windows.exe`.
+    **Linux**: Download `Unsloth-Desktop-Ubuntu.deb` for Ubuntu/Debian. `.AppImage` is experimental.
+
+    > Linux in-app updates are AppImage-oriented. Package installs should update by downloading a new package.
+    > Linux AppImage can show a blank window on some Tauri/WebKitGTK + Wayland/Mesa stacks; use `.deb` when available.
+    > Linux AppImage on Ubuntu 24.04+ may require: `sudo apt install libfuse2t64`
+    > First-run system dependency elevation is supported on Ubuntu/Debian. Other Linux distributions should install system packages manually.
+
+concurrency:
+  group: release-desktop-${{ github.repository }}
+  cancel-in-progress: false
+  # publish-desktop-updater.yml shares this group and already sets queue: max.
+  # Without it here, the default queue: single silently cancels a *pending*
+  # release the moment a second one is dispatched or a publish lands, which
+  # looks identical to a release that was never dispatched. A queued release
+  # holds no runner, so waiting is free.
+  queue: max
+
+jobs:
+  # There is no capacity-sweeper dispatch here. It used to ask ci-capacity.yml to
+  # stand scheduled CI down while a release built, but that workflow is inert
+  # unless the repo variable CI_PREEMPT_ENABLED is the exact string 'true', so
+  # every release spent a runner on a job that resolved what it would have
+  # cancelled and then touched nothing. Queue clearing is done by hand now.
+  prepare-version:
+    name: Prepare release versions
+    runs-on: ubuntu-latest
+    # Version resolution only; observed 8-16s.
+    timeout-minutes: 15
+    outputs:
+      studio_version: ${{ steps.prepare.outputs.studio_version }}
+      app_version: ${{ steps.prepare.outputs.app_version }}
+      desktop_release_tag: ${{ steps.prepare.outputs.desktop_release_tag }}
+      pypi_version: ${{ steps.backend.outputs.pypi_version }}
+
+    steps:
+      # Before the checkout: for a malformed studio_version, actions/checkout would
+      # fail on the ref with a generic error and none of the corrections below
+      # would ever be printed.
+      - name: Validate release versions
+        id: prepare
+        shell: bash
+        env:
+          INPUT_STUDIO_VERSION: ${{ inputs.studio_version }}
+          # Reading releases unauthenticated spends a quota shared by every runner.
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 <<'PY'
+          import json
+          import os
+          import pathlib
+          import re
+          import sys
+          import urllib.request
+
+          RELEASES_API_URL = (
+              'https://api.github.com/repos/unslothai/unsloth/releases?per_page=30'
+          )
+
+          studio_version = os.environ['INPUT_STUDIO_VERSION'].strip()
+          if not studio_version:
+              sys.exit('studio_version is required, for example v0.1.52-beta')
+          if re.fullmatch(r'v?20\d{2}\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?', studio_version):
+              sys.exit(f'studio_version must be an Unsloth SemVer tag, not a date-style backend version: {studio_version}')
+
+          # Name the single wrong character for the near-miss shapes. The generic
+          # SemVer error below is easy to skim past when everything except one
+          # separator looks correct, so spell out the correction instead.
+          separator_after_v = re.fullmatch(r'v[._\-](\d[0-9A-Za-z.\-+]*)', studio_version)
+          if separator_after_v:
+              suggestion = f'v{separator_after_v.group(1)}'
+              sys.exit(
+                  'studio_version must not have a separator after the leading v: '
+                  f'{studio_version} (did you mean {suggestion}?)'
+              )
+
+          semver_tag = re.compile(
+              r'^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)'
+              r'(?:-[0-9A-Za-z.][0-9A-Za-z.-]*)?$'
+          )
+          if semver_tag.fullmatch(f'v{studio_version}'):
+              sys.exit(f'studio_version must start with v, for example v{studio_version}')
+          if not semver_tag.fullmatch(studio_version):
+              sys.exit(f'studio_version must be a SemVer tag with leading v, for example v0.1.52-beta: {studio_version}')
+
+          app_version = studio_version.removeprefix('v')
+          desktop_release_tag = studio_version
+
+          # Both updater paths compare SemVer, so a tag whose numbers go backwards
+          # strands its own clients: 60 < 527, so v0.1.60-beta offered no one.
+          def semver_key(version):
+              # Full precedence, not just the triple: v0.1.528 and v0.1.528-rc
+              # both beat v0.1.528-beta, and the updater knows it.
+              version = version.strip().removeprefix('v')
+              match = semver_tag.fullmatch(f'v{version}')
+              if not match:
+                  return None
+              release = tuple(int(part) for part in match.groups())
+              pre = version.partition('-')[2]
+              if not pre:
+                  return release, (1,)  # a release outranks its own prereleases
+              # SemVer: numeric identifiers sort below alphanumeric, as numbers.
+              return release, (0, *(
+                  (0, int(part), '') if part.isdigit() else (1, 0, part)
+                  for part in pre.split('.')
+              ))
+
+          def fetch(url):
+              headers = {'Accept': 'application/vnd.github+json'}
+              token = os.environ.get('GH_TOKEN', '')
+              if token:
+                  headers['Authorization'] = f'Bearer {token}'
+              with urllib.request.urlopen(
+                  urllib.request.Request(url, headers = headers), timeout = 30
+              ) as response:
+                  return json.loads(response.read())
+
+          def published_desktop_version():
+              # Not /releases/latest: an llama.cpp prebuilt can hold that slot
+              # and ships no manifest, so the read would 404 and skip this check.
+              studio = [
+                  release for release in fetch(RELEASES_API_URL)
+                  if not release['draft'] and semver_tag.fullmatch(release['tag_name'])
+              ]
+              studio.sort(key = lambda release: release['published_at'], reverse = True)
+              for release in studio:
+                  for asset in release['assets']:
+                      if asset['name'] == 'latest.json':
+                          return fetch(asset['browser_download_url']).get('version', '')
+              return ''
+
+          try:
+              published = published_desktop_version()
+          except (OSError, ValueError, KeyError) as error:
+              # An unreachable manifest is not a bad tag, and the first has none.
+              print(f'::warning::could not read the published desktop version: {error}')
+              published = ''
+
+          published_key = semver_key(published)
+          if published_key and published_key >= semver_key(app_version):
+              sys.exit(
+                  f'studio_version {studio_version} is not newer than the published '
+                  f'v{published}, so clients on it would never be offered this release'
+              )
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              print(f'studio_version={studio_version}', file=output)
+              print(f'app_version={app_version}', file=output)
+              print(f'desktop_release_tag={desktop_release_tag}', file=output)
+
+          PY
+
+      # studio_version names an existing tag, so the backend pin and the stamp
+      # check have to come from that tag, not a dispatch ref that has moved on.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ steps.prepare.outputs.studio_version }}
+          persist-credentials: false
+
+      - name: Resolve the backend pin from the release tag
+        id: backend
+        shell: bash
+        env:
+          INPUT_PYPI_VERSION: ${{ inputs.pypi_version }}
+        run: |
+          python3 <<'PY'
+          import os
+          import pathlib
+          import re
+          import sys
+
+          def parse_backend_version(version):
+              match = re.fullmatch(
+                  r'(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)'
+                  r'(?:([a-zA-Z]|\.dev|dev|\.rc|rc|\.post|post)(\d*))?'
+                  r'(?:[-+]([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?',
+                  version,
+              )
+              if not match:
+                  return None
+              major, minor, patch, suffix_name, suffix_number, suffix_text = match.groups()
+              if suffix_name:
+                  normalized = suffix_name.lower().lstrip('.')
+                  order = {'dev': 0, 'a': 1, 'b': 2, 'rc': 3, 'post': 5}.get(normalized)
+                  if order is None:
+                      return None
+                  number = int(suffix_number or '0')
+              elif suffix_text:
+                  order = 3 if version[version.find(suffix_text) - 1] == '-' else 4
+                  number = 0
+              else:
+                  order = 4
+                  number = 0
+              return (int(major), int(minor), int(patch), order, number)
+
+          preflight = pathlib.Path('studio/src-tauri/src/preflight/version.rs').read_text()
+          match = re.search(r'MIN_DESKTOP_BACKEND_VERSION:\s*&str\s*=\s*"([^"]+)"', preflight)
+          if not match:
+              sys.exit('Could not read MIN_DESKTOP_BACKEND_VERSION')
+          min_backend_version = match.group(1)
+
+          input_pypi_version = os.environ.get('INPUT_PYPI_VERSION', '').strip()
+          parsed_min_backend = parse_backend_version(min_backend_version)
+          if parsed_min_backend is None:
+              sys.exit(f'MIN_DESKTOP_BACKEND_VERSION is not a supported backend package version: {min_backend_version}')
+
+          pypi_version = input_pypi_version or min_backend_version
+          parsed_pypi = parse_backend_version(pypi_version)
+          if parsed_pypi is None:
+              sys.exit(f'pypi_version is not a supported backend package version: {pypi_version}')
+          if parsed_pypi < parsed_min_backend:
+              sys.exit(
+                  f'pypi_version {pypi_version} is lower than desktop minimum '
+                  f'MIN_DESKTOP_BACKEND_VERSION {min_backend_version}'
+              )
+
+          if input_pypi_version:
+              print(
+                  'Using exact PyPI unsloth version from pypi_version input: '
+                  f'{pypi_version} (desktop minimum: {min_backend_version})'
+              )
+          else:
+              print(
+                  'Using exact PyPI unsloth version from MIN_DESKTOP_BACKEND_VERSION: '
+                  f'{pypi_version}'
+              )
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              print(f'pypi_version={pypi_version}', file=output)
+
+          PY
+
+      # Fail before building and notarizing a version publish-release will reject.
+      - name: Guard against republishing an existing version
+        shell: bash
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          DESKTOP_RELEASE_TAG: ${{ steps.prepare.outputs.desktop_release_tag }}
+        run: |
+          set -euo pipefail
+          # v{version} is tagged and published when main is tagged, before this runs,
+          # so the tag existing is normal. What must be absent is the desktop asset set.
+          if ! response="$(gh api --include "repos/${GH_REPO}/releases/tags/${DESKTOP_RELEASE_TAG}" 2>&1)"; then
+            if [[ "$response" =~ ^HTTP/[0-9.]+\ 404\  ]]; then
+              echo "Release ${DESKTOP_RELEASE_TAG} does not exist." >&2
+              echo "  Tag main and publish it first, then re-dispatch this workflow." >&2
+              exit 1
+            fi
+            echo "Could not read release ${DESKTOP_RELEASE_TAG}; refusing to publish." >&2
+            printf '%s\n' "$response" >&2
+            exit 1
+          fi
+          gh api "repos/${GH_REPO}/releases/tags/${DESKTOP_RELEASE_TAG}" > "$RUNNER_TEMP/target-release.json"
+          python3 <<'PY'
+          import json, os, pathlib, sys
+
+          runner = pathlib.Path(os.environ['RUNNER_TEMP'])
+          release = json.loads((runner / 'target-release.json').read_text())
+          tag = os.environ['DESKTOP_RELEASE_TAG']
+          # Checked here, not at promotion: GitHub refuses to mark a prerelease
+          # latest, and by then the bundles are already public.
+          if release.get('prerelease'):
+              sys.exit(f'Release {tag} is a prerelease; GitHub cannot mark it latest.')
+
+          prefix = 'Unsloth-Desktop-'
+          clashing = sorted(
+              asset['name']
+              for asset in release.get('assets', [])
+              if str(asset.get('name', '')).startswith(prefix)
+              or asset.get('name') == 'latest.json'
+          )
+
+          if clashing:
+              print(f'Refusing to republish {tag}: it already carries desktop assets.', file=sys.stderr)
+              for name in clashing:
+                  print(f'  gh release delete-asset {tag} {name} --yes', file=sys.stderr)
+              if 'latest.json' in clashing:
+                  # Deleting a manifest off whichever release is currently GitHub
+                  # latest 404s every update check until this workflow finishes.
+                  print(
+                      '  latest.json is the live updater manifest: only delete it once '
+                      f'{tag} is not the GitHub latest release.',
+                      file=sys.stderr,
+                  )
+              sys.exit(1)
+          PY
+
+      - name: Verify PyPI package and Unsloth stamp
+        shell: bash
+        env:
+          STUDIO_VERSION: ${{ steps.prepare.outputs.studio_version }}
+          PYPI_VERSION: ${{ steps.prepare.outputs.pypi_version }}
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import json
+          import os
+          import pathlib
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          pypi_version = os.environ['PYPI_VERSION']
+          dist_dir = pathlib.Path(os.environ['RUNNER_TEMP'], 'pypi-unsloth-dist')
+          dist_dir.mkdir(parents=True, exist_ok=True)
+          metadata_url = f'https://pypi.org/pypi/unsloth/{pypi_version}/json'
+
+          last_error = None
+          for attempt in range(1, 6):
+              try:
+                  with urllib.request.urlopen(metadata_url, timeout=30) as response:
+                      metadata = json.load(response)
+                  break
+              except Exception as exc:
+                  last_error = exc
+                  if attempt < 5:
+                      time.sleep(10 * attempt)
+          else:
+              sys.exit(f'Publish unsloth=={pypi_version} to PyPI before the desktop release ({last_error})')
+
+          files = metadata.get('urls') or []
+          if not files:
+              sys.exit(f'PyPI returned no distribution files for unsloth=={pypi_version}')
+
+          for file_info in files:
+              filename = file_info.get('filename')
+              url = file_info.get('url')
+              if not filename or '/' in filename or not url:
+                  sys.exit(f'Unexpected PyPI file entry for unsloth=={pypi_version}: {file_info!r}')
+              target = dist_dir / filename
+              for attempt in range(1, 4):
+                  try:
+                      with urllib.request.urlopen(url, timeout=60) as response:
+                          target.write_bytes(response.read())
+                      break
+                  except Exception as exc:
+                      last_error = exc
+                      if attempt < 3:
+                          time.sleep(5 * attempt)
+              else:
+                  sys.exit(f'Could not download {filename} from PyPI ({last_error})')
+          PY
+
+          if [ "$GITHUB_REPOSITORY" = "wasimysaid/unsloth" ]; then
+            echo "Fork-only updater A/B build: skipping the upstream PyPI-to-Unsloth release stamp check."
+          elif [ -f scripts/stamp_studio_release.py ]; then
+            mapfile -t dists < <(find "$RUNNER_TEMP/pypi-unsloth-dist" -type f \( -name '*.whl' -o -name '*.tar.gz' \) | sort)
+            if [ "${#dists[@]}" -eq 0 ]; then
+              echo "No PyPI wheel/sdist artifacts downloaded for unsloth==$PYPI_VERSION" >&2
+              exit 1
+            fi
+            python3 scripts/stamp_studio_release.py --verify-dist "$RUNNER_TEMP/pypi-unsloth-dist" --expected "$STUDIO_VERSION"
+          else
+            echo "scripts/stamp_studio_release.py not found; release-desktop requires #5308 to verify the PyPI Unsloth stamp." >&2
+            exit 1
+          fi
+
+      - name: Guard GitHub latest release version
+        if: ${{ !inputs.draft }}
+        shell: bash
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          APP_VERSION: ${{ steps.prepare.outputs.app_version }}
+        run: |
+          set -euo pipefail
+          current_file="$RUNNER_TEMP/current-latest-release.json"
+          error_file="$RUNNER_TEMP/current-latest-release.err"
+          if ! gh api "repos/${GH_REPO}/releases/latest" > "$current_file" 2> "$error_file"; then
+            if grep -Fq '(HTTP 404)' "$error_file"; then
+              echo "No existing normal GitHub release found; allowing first latest release."
+              exit 0
+            fi
+            cat "$error_file" >&2
+            exit 1
+          fi
+          python3 - "$current_file" <<'PY'
+          import json
+          import os
+          import pathlib
+          import re
+          import sys
+
+          def parse(value: str):
+              value = value.removeprefix('v')
+              match = re.fullmatch(
+                  r'(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)'
+                  r'(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?'
+                  r'(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?',
+                  value,
+              )
+              if not match:
+                  sys.exit(f'GitHub latest release is not a desktop SemVer tag: {value}')
+              major, minor, patch, prerelease = match.groups()
+              return (int(major), int(minor), int(patch), prerelease)
+
+          def compare_identifier(left: str, right: str) -> int:
+              if left.isdigit() and right.isdigit():
+                  return (int(left) > int(right)) - (int(left) < int(right))
+              if left.isdigit():
+                  return -1
+              if right.isdigit():
+                  return 1
+              left_tail = re.fullmatch(r'([A-Za-z-]+)(\d+)', left)
+              right_tail = re.fullmatch(r'([A-Za-z-]+)(\d+)', right)
+              if left_tail and right_tail and left_tail.group(1).lower() == right_tail.group(1).lower():
+                  return (int(left_tail.group(2)) > int(right_tail.group(2))) - (
+                      int(left_tail.group(2)) < int(right_tail.group(2))
+                  )
+              return (left > right) - (left < right)
+
+          def compare(left: str, right: str) -> int:
+              left_major, left_minor, left_patch, left_pre = parse(left)
+              right_major, right_minor, right_patch, right_pre = parse(right)
+              left_core = (left_major, left_minor, left_patch)
+              right_core = (right_major, right_minor, right_patch)
+              if left_core != right_core:
+                  return (left_core > right_core) - (left_core < right_core)
+              if left_pre == right_pre:
+                  return 0
+              if left_pre is None:
+                  return 1
+              if right_pre is None:
+                  return -1
+              for left_part, right_part in zip(left_pre.split('.'), right_pre.split('.')):
+                  order = compare_identifier(left_part, right_part)
+                  if order:
+                      return order
+              return (len(left_pre.split('.')) > len(right_pre.split('.'))) - (
+                  len(left_pre.split('.')) < len(right_pre.split('.'))
+              )
+
+          current = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          current_tag = current.get('tag_name')
+          if not isinstance(current_tag, str):
+              sys.exit('GitHub latest release is missing tag_name')
+          next_version = os.environ['APP_VERSION']
+          if compare(next_version, current_tag) < 0:
+              sys.exit(f'Refusing to publish {next_version}; GitHub latest is newer: {current_tag}.')
+          PY
+
+  build:
+    strategy:
+      fail-fast: false
+      # Legs run in parallel: they share no state, only upload per-platform
+      # artifacts, and publish-release does every release mutation once.
+      matrix:
+        include:
+          - platform: macos-latest
+            args: '--target aarch64-apple-darwin'
+            label: macOS (Apple Silicon)
+            artifact: macos-aarch64
+          # - platform: macos-latest
+          #   args: '--target x86_64-apple-darwin'
+          #   label: macOS (Intel)
+          - platform: ubuntu-22.04
+            args: ''
+            label: Linux (x64)
+            artifact: linux-x64
+          - platform: windows-latest
+            args: ''
+            label: Windows (x64)
+            artifact: windows-x64
+
+    name: Build ${{ matrix.label }}
+    needs: prepare-version
+    runs-on: ${{ matrix.platform }}
+    # Every signing secret in this workflow -- the Apple certificate and its
+    # notarization credentials, the Azure Trusted Signing set, and the Tauri
+    # updater private key -- is read by this job and no other. Naming an
+    # environment here is what makes those thirteen secrets gateable: without
+    # it there is no place to hang a required reviewer, so anyone who can
+    # dispatch this workflow can sign a release under our identity.
+    #
+    # This is inert until protection rules exist on the environment. GitHub
+    # creates a referenced-but-absent environment on first run with no rules
+    # and no branch policy, and repository secrets keep resolving inside a job
+    # that names an environment, so adding this line alone changes nothing
+    # about how a release runs. Add required reviewers in repo settings to
+    # actually close the gap; one approval releases all three matrix legs,
+    # since pending deployments are approved per (run, environment).
+    environment: release-signing
+    # 6.9-20.9 min observed across platforms and cache states.
+    timeout-minutes: 60
+
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      APP_VERSION: ${{ needs.prepare-version.outputs.app_version }}
+      STUDIO_VERSION: ${{ needs.prepare-version.outputs.studio_version }}
+      DESKTOP_RELEASE_TAG: ${{ needs.prepare-version.outputs.desktop_release_tag }}
+      # Compiled in by preflight/version.rs. Without it the app only knows the
+      # floor, so a shared venv left by the CLI installer is never upgraded again.
+      UNSLOTH_DESKTOP_BACKEND_VERSION: ${{ needs.prepare-version.outputs.pypi_version }}
+
+    steps:
+      # harden-runner in audit mode: surfaces every egress destination in
+      # the runner log so the allowlist for a future `egress-policy: block`
+      # promotion can be derived from observed traffic. Blocking mode is
+      # supported on GitHub-hosted Linux / macOS / Windows runners as of
+      # harden-runner v2.20.0; stay in audit until the macOS + Windows
+      # codesign paths have been observed.
+      - name: Harden runner (audit)
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        with:
+          egress-policy: audit
+
+      # The tag, not the dispatch ref: the release is published before this runs and
+      # main keeps moving, so building the dispatch ref would attach unrelated source
+      # to the release and record a SHA that is not the tag's.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ needs.prepare-version.outputs.desktop_release_tag }}
+          persist-credentials: false
+
+      # ── Linux dependencies ──
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        # Bounded and retried through the shared helper: an unbounded apt step does
+        # not fail, it spends the job's whole budget and is reported as "cancelled"
+        # with no reason and every later step skipped. update and install go as one
+        # unit, since retrying the install after a stalled update re-reads the same
+        # broken package list.
+        # Two long attempts, not three short ones. 150s killed apt mid-`update`
+        # against a mirror that was degraded rather than dead, and every attempt
+        # then hit the same wall -- three kills and no result. The bound exists to
+        # stop an infinite hang, not to race a slow mirror.
+        timeout-minutes: 15
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '360'
+        run: |
+          # Install the GStreamer plugins needed for H.264 playback and capture.
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf xdg-utils fonts-noto-color-emoji gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav || { apt-get update && apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf xdg-utils fonts-noto-color-emoji gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav; }'
+
+      # ── Node.js ──
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Lockfile supply-chain audit (pre-install scan)
+        shell: bash
+        # Must run BEFORE any `npm install`. This job has
+        # ``contents: write`` (release upload), so a compromised
+        # lockfile that runs a malicious postinstall script during the
+        # Tauri CLI install or frontend install below could publish
+        # attacker-controlled binaries through the release. The audit
+        # refuses the run before any npm lifecycle script executes.
+        run: python3 scripts/lockfile_supply_chain_audit.py
+
+      - name: Install pinned Tauri CLI
+        # Lifecycle scripts (esbuild native-binary postinstall, etc.) are
+        # required for `vite build`. The pre-install lockfile structural
+        # audit (lockfile_supply_chain_audit.py) above is the practical
+        # defence against the npm postinstall-dropper class -- it fires
+        # BEFORE any tarball runs, on the injection pattern itself
+        # rather than an advisory-DB lookup.
+        run: npm install --save-dev --prefix studio @tauri-apps/cli@2.10.1 --no-fund --no-audit
+
+      - name: Verify pinned Tauri CLI
+        shell: bash
+        run: |
+          out="$(npx --prefix studio tauri --version)"
+          echo "$out"
+          if [ "$out" != "tauri-cli 2.10.1" ]; then
+            echo "Expected tauri-cli 2.10.1, got $out" >&2
+            exit 1
+          fi
+
+      - name: Verify desktop updater and Linux package config
+        shell: bash
+        run: |
+          node <<'JS'
+          const { readFileSync } = require('node:fs');
+
+          const expected = 'https://github.com/unslothai/unsloth/releases/latest/download/latest.json';
+          const config = JSON.parse(readFileSync('studio/src-tauri/tauri.conf.json', 'utf8'));
+          const endpoints = config.plugins?.updater?.endpoints;
+          if (!Array.isArray(endpoints) || endpoints.length !== 1) {
+            throw new Error('Expected exactly one desktop updater endpoint');
+          }
+          if (endpoints[0] !== expected) {
+            throw new Error('Desktop updater endpoint must be ' + expected + ', got ' + endpoints[0]);
+          }
+          if (!endpoints[0].includes('/releases/latest/download/latest.json')) {
+            throw new Error('Desktop updater endpoint must use repo-wide /releases/latest/ discovery');
+          }
+
+          const targets = config.bundle?.targets;
+          if (Array.isArray(targets) && targets.some((target) => String(target).toLowerCase() === 'rpm')) {
+            throw new Error('Desktop release must not target RPM packages');
+          }
+          if (!Array.isArray(targets) || !targets.some((target) => String(target).toLowerCase() === 'appimage')) {
+            throw new Error('Desktop release must build the complete Tauri AppImage target');
+          }
+          if (config.bundle?.linux?.rpm) {
+            throw new Error('bundle.linux.rpm must not be configured');
+          }
+          // The media plugins must match the bundled GStreamer core.
+          if (config.bundle?.linux?.appimage?.bundleMediaFramework !== true) {
+            throw new Error('Linux AppImage bundleMediaFramework must stay true');
+          }
+
+          const workflow = readFileSync('.github/workflows/release-desktop.yml', 'utf8');
+          const lines = workflow.split(/\r?\n/);
+          // The needle is assembled rather than written as a literal: this file is
+          // what gets scanned, so a literal would match this very line and let a
+          // genuinely missing install slip through.
+          const aptInstallNeedle = ['apt-get', 'install'].join(' ');
+          const linuxInstallLines = lines.filter((line) => line.includes(aptInstallNeedle));
+          const ayatanaPackage = ['libayatana', 'appindicator3-dev'].join('-');
+          if (linuxInstallLines.some((line) => line.includes(ayatanaPackage))) {
+            throw new Error('Desktop Linux release must not install the Ayatana appindicator dev package');
+          }
+          if (!linuxInstallLines.some((line) => line.includes('libappindicator3-dev'))) {
+            throw new Error('Desktop Linux release must install libappindicator3-dev');
+          }
+          const requiredFetchedTools = [
+            'linuxdeploy-x86_64.AppImage',
+            'linuxdeploy-plugin-gtk.sh',
+            'linuxdeploy-plugin-gstreamer.sh',
+            'linuxdeploy-plugin-appimage.AppImage',
+          ];
+          const toolScript = readFileSync(
+            'studio/src-tauri/linux/prepare-complete-appimage-tools.sh',
+            'utf8',
+          );
+          const localAppRunInstall =
+            'install -m 755 "$script_dir/appimage-apprun.sh" "$tools_dir/AppRun-x86_64"';
+          if (!toolScript.includes(localAppRunInstall)) {
+            throw new Error('Desktop Linux release must install the repository AppRun');
+          }
+          const fetchCalls = toolScript
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter((line) => /^fetch "\$[A-Z_]+_URL" "\$[A-Z_]+_SHA256" \S+$/.test(line));
+          const fetchedTools = fetchCalls.map((line) => line.split(/\s+/).at(-1));
+          if (fetchCalls.length !== requiredFetchedTools.length) {
+            throw new Error(
+              `Expected ${requiredFetchedTools.length} digest-verified fetch calls, got ${fetchCalls.length}`,
+            );
+          }
+          for (const tool of requiredFetchedTools) {
+            if (!fetchedTools.includes(tool)) {
+              throw new Error(`Desktop Linux release must digest-verify its fetch of ${tool}`);
+            }
+          }
+          const releaseBody = process.env.DESKTOP_RELEASE_NOTES;
+          if (!releaseBody) throw new Error('DESKTOP_RELEASE_NOTES must not be empty');
+          if (/\brpm\b|\.rpm/i.test(releaseBody)) {
+            throw new Error('Desktop release body must not advertise RPM packages');
+          }
+          if (/AppImage.*universal|universal.*AppImage/i.test(releaseBody)) {
+            throw new Error('Desktop release body must not advertise AppImage as universal');
+          }
+          if (!/AppImage.*experimental/i.test(releaseBody)) {
+            throw new Error('Desktop release body must mark AppImage as experimental');
+          }
+          JS
+
+      - name: Install frontend dependencies
+        working-directory: studio/frontend
+        # Lifecycle scripts (esbuild native-binary postinstall, etc.) are
+        # required for `vite build`. The pre-install lockfile structural
+        # audit (lockfile_supply_chain_audit.py) is the practical defence
+        # against the npm postinstall-dropper class -- it fires BEFORE any
+        # tarball runs, on the injection pattern itself rather than an
+        # advisory-DB lookup.
+        run: npm install --no-fund --no-audit
+
+      # ── Rust ──
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Patch desktop app version
+        shell: bash
+        working-directory: studio/src-tauri
+        run: |
+          set -euo pipefail
+          if command -v python3 >/dev/null 2>&1; then
+            PYTHON=python3
+          else
+            PYTHON=python
+          fi
+          "$PYTHON" <<'PY'
+          import os
+          import pathlib
+          import re
+          import sys
+
+          app_version = os.environ['APP_VERSION']
+          if not app_version:
+              sys.exit('APP_VERSION is required')
+
+          cargo_toml = pathlib.Path('Cargo.toml')
+          lines = cargo_toml.read_text().splitlines(keepends=True)
+          in_package = False
+          patched = False
+          for index, line in enumerate(lines):
+              stripped = line.strip()
+              if stripped == '[package]':
+                  in_package = True
+                  continue
+              if stripped.startswith('[') and stripped.endswith(']'):
+                  in_package = False
+              if in_package and re.fullmatch(r'version\s*=\s*"[^"]+"\s*', stripped):
+                  lines[index] = f'version = "{app_version}"\n'
+                  patched = True
+                  break
+          if not patched:
+              sys.exit('Could not patch [package] version in Cargo.toml')
+          cargo_toml.write_text(''.join(lines))
+
+          cargo_lock = pathlib.Path('Cargo.lock')
+          lock_text = cargo_lock.read_text()
+          lock_text, count = re.subn(
+              r'(?m)(^\[\[package\]\]\nname = "unsloth-studio"\nversion = ")[^"]+(")',
+              lambda match: f'{match.group(1)}{app_version}{match.group(2)}',
+              lock_text,
+          )
+          if count != 1:
+              sys.exit(f'Could not patch unsloth-studio version in Cargo.lock (matches={count})')
+          cargo_lock.write_text(lock_text)
+          PY
+
+          cargo metadata --locked --no-deps --format-version 1 > "$RUNNER_TEMP/cargo-metadata.json"
+          "$PYTHON" <<'PY'
+          import json
+          import os
+          import pathlib
+          import sys
+
+          app_version = os.environ['APP_VERSION']
+          metadata = json.loads(pathlib.Path(os.environ['RUNNER_TEMP'], 'cargo-metadata.json').read_text())
+          versions = [package['version'] for package in metadata.get('packages', []) if package.get('name') == 'unsloth-studio']
+          if versions != [app_version]:
+              sys.exit(f'cargo metadata unsloth-studio version mismatch: expected {app_version}, got {versions}')
+          PY
+
+          git diff -- Cargo.toml Cargo.lock
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+        with:
+          workspaces: 'studio/src-tauri -> target'
+
+          # Windows release builds can spend many minutes uploading the target cache
+          # after signed artifacts are ready, which blocks the publisher for no release benefit.
+          save-if: ${{ matrix.platform != 'windows-latest' }}
+
+      # ── macOS: fail before the build if notarization cannot run ──
+      - name: Check Apple notarization credentials
+        if: matrix.platform == 'macos-latest'
+        shell: bash
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          # A missing secret arrives as an empty string, so `set -u` never sees
+          # it, and tauri-action just skips notarization instead of failing.
+          # Check before the release build so a rotated secret costs seconds
+          # rather than a full compile.
+          for required in APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [ -z "${!required:-}" ]; then
+              echo "Missing $required; refusing to publish an unnotarized disk image." >&2
+              exit 1
+            fi
+          done
+
+      # ── macOS: import signing certificate ──
+      - name: Import Apple certificate
+        if: matrix.platform == 'macos-latest'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          # Unquoted, this is word-split and glob-expanded before base64 sees
+          # it, and `echo` appends a newline. Base64 tolerates all three today,
+          # which is why it has worked; a re-encoded or line-wrapped secret is
+          # where it stops being tolerable. printf '%s' with quotes passes the
+          # secret through byte for byte.
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -t 3600 -u build.keychain
+          security import certificate.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
+          security find-identity -v -p codesigning build.keychain
+          rm -f certificate.p12
+
+      # ── Windows: install Azure Trusted Signing CLI ──
+      # This binary runs in the steps holding the Azure Trusted Signing and
+      # Tauri signing secrets, so where it comes from is a signing-key question,
+      # not a build-speed one. Caching the `cargo install` build (241s and 248s
+      # on the last two runs) made the cache the source of truth: a hit skipped
+      # the install, and the restored executable went on PATH gated only by a
+      # `--version` probe, which any binary can print.
+      #
+      # Upstream publishes the same tool prebuilt, so pin it instead. The URL is
+      # reproducibility, the SHA-256 is the integrity gate: a release asset can
+      # be replaced after upload, and a replaced one now fails the release
+      # rather than signing with an unknown binary. Same shape as the AppImage
+      # toolchain below, and faster than the cache it replaces. Bump the URL and
+      # the digest together when moving off 0.10.0.
+      - name: Install trusted-signing-cli
+        if: matrix.platform == 'windows-latest'
+        # Explicit, like every other Windows step here. The retry parameters
+        # below are PowerShell 6+ only, so under 5.1 the download fails with "A
+        # parameter cannot be found that matches parameter name
+        # 'MaximumRetryCount'". Naming the shell keeps that deliberate.
+        shell: pwsh
+        env:
+          TRUSTED_SIGNING_CLI_URL: "https://github.com/Levminer/artifact-signing-cli/releases/download/0.10.0/trusted-signing-cli.exe"
+          TRUSTED_SIGNING_CLI_SHA256: "8c9d750ca582891a7433925dcf302d5d3761fbed757b46c4bf5b417562dccb0e"
+        run: |
+          $ErrorActionPreference = "Stop"
+          $dir = Join-Path $env:RUNNER_TEMP "trusted-signing-cli"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $dest = Join-Path $dir "trusted-signing-cli.exe"
+
+          Invoke-WebRequest -Uri $env:TRUSTED_SIGNING_CLI_URL -OutFile $dest -MaximumRetryCount 3 -RetryIntervalSec 5
+
+          $actual = (Get-FileHash -Path $dest -Algorithm SHA256).Hash.ToLower()
+          $expected = $env:TRUSTED_SIGNING_CLI_SHA256.ToLower()
+          if ($actual -ne $expected) {
+            # Delete it first: a later step resolving this name off PATH must
+            # not find the rejected download still sitting there.
+            Remove-Item -Force $dest
+            Write-Output "::error::trusted-signing-cli digest mismatch, refusing to sign with an unverified binary. Expected $expected, got $actual. Re-pin TRUSTED_SIGNING_CLI_SHA256 deliberately if upstream republished the asset."
+            exit 1
+          }
+          Write-Output "verified trusted-signing-cli sha256=$actual"
+
+          # $GITHUB_PATH prepends, which is what this needs: swatinem/rust-cache
+          # restores ~/.cargo/bin, already on PATH, and a stale entry there can
+          # carry its own unverified copy of this binary. The verified one has
+          # to win the name lookup.
+          $dir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      # ── Windows: verify signing CLI is accessible ──
+      # Fails closed. This used to print a message and exit 0 on both branches,
+      # so a missing or broken binary reported success and the failure only
+      # surfaced later, inside the Tauri bundling step, as a signing error with
+      # no obvious cause.
+      - name: Verify trusted-signing-cli
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Write-Output "PATH: $env:PATH"
+
+          $cli = Get-Command trusted-signing-cli -ErrorAction SilentlyContinue
+          if (-not $cli) {
+            Write-Output "::error::trusted-signing-cli is not on PATH. Check the 'Install trusted-signing-cli' step above."
+            exit 1
+          }
+          Write-Output "resolved: $($cli.Source)"
+
+          # The signing script invokes this by bare name, so whatever PATH
+          # resolves is what signs. Only the digest-verified copy installed
+          # above may do that; anything else on PATH under the same name (a
+          # leftover in ~/.cargo/bin, say) is unverified by definition.
+          $verified = [IO.Path]::GetFullPath((Join-Path (Join-Path $env:RUNNER_TEMP "trusted-signing-cli") "trusted-signing-cli.exe"))
+          if ([IO.Path]::GetFullPath($cli.Source) -ne $verified) {
+            Write-Output "::error::trusted-signing-cli resolved to $($cli.Source), not the verified $verified. Refusing to sign with a binary that was never digest checked."
+            exit 1
+          }
+
+          # Two different failure modes, and neither one covers the other:
+          #   * the binary cannot be started at all (a truncated download gives
+          #     "Exec format error"). That raises a terminating error under
+          #     $ErrorActionPreference = "Stop", so it has to be caught or the
+          #     step dies here, before the message below.
+          #   * the binary starts and exits non-zero. That does NOT raise, so
+          #     $LASTEXITCODE has to be read explicitly.
+          try {
+            & $cli.Source --version
+          }
+          catch {
+            # The PowerShell error spans several lines (message, offending line,
+            # caret). An annotation is truncated at the first newline, so flatten
+            # it, and put the recovery ahead of the detail so it survives even if
+            # the annotation is clipped for length.
+            $detail = ($_.Exception.Message -replace '\s+', ' ').Trim()
+            Write-Output "::error::trusted-signing-cli could not be started. Re-run to fetch it again; if it persists the pinned asset is bad. Underlying error: $detail"
+            exit 1
+          }
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output "::error::trusted-signing-cli is on PATH but exited $LASTEXITCODE."
+            exit 1
+          }
+
+      # ── Linux: preseed every executable/script consumed by Tauri's AppImage bundler ──
+      - name: Pin complete AppImage toolchain
+        if: matrix.platform == 'ubuntu-22.04'
+        shell: bash
+        run: |
+          studio/src-tauri/linux/prepare-complete-appimage-tools.sh \
+            "$RUNNER_TEMP/tauri-tools-cache/tauri"
+
+      # ── Linux: build and sign the native package and complete AppImage together ──
+      - name: Build Linux bundles
+        id: build_linux
+        if: matrix.platform == 'ubuntu-22.04'
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5  # v0.6.2
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+          XDG_CACHE_HOME: ${{ runner.temp }}/tauri-tools-cache
+        with:
+          projectPath: studio
+          tauriScript: npx --prefix . tauri
+          args: -v --bundles deb,appimage
+
+      - name: Verify complete Linux AppImage
+        if: matrix.platform == 'ubuntu-22.04'
+        shell: bash
+        env:
+          ARTIFACT_PATHS: ${{ steps.build_linux.outputs.artifactPaths }}
+        run: |
+          set -euo pipefail
+          appimage="$(python3 - <<'PY'
+          import json, os, pathlib, sys
+          matches = [pathlib.Path(p) for p in json.loads(os.environ['ARTIFACT_PATHS']) if p.endswith('.AppImage')]
+          if len(matches) != 1 or not matches[0].is_file():
+              sys.exit(f'Expected exactly one AppImage artifact, got {matches}')
+          print(matches[0])
+          PY
+          )"
+          studio/src-tauri/linux/verify-complete-appimage.sh "$appimage"
+
+      # ── macOS: build + sign + notarize ──
+      - name: Build macOS app
+        id: build_macos
+        if: matrix.platform == 'macos-latest'
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5  # v0.6.2
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          # The signing key is not password protected, and no secret of this name
+          # exists, so this expression has always resolved to the empty string.
+          # Stated literally rather than left pointing at a secret that is not
+          # there: the value is unchanged, but it no longer reads as configuration
+          # someone forgot to set. Empty is not the same as unset here -- tauri
+          # prompts for a password when the variable is absent, which would hang
+          # the job, so the line stays.
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          projectPath: studio
+          tauriScript: npx --prefix . tauri
+          args: -v ${{ matrix.args }}
+
+      # ── macOS: notarize + staple the disk image itself ──
+      # tauri-bundler notarizes and staples the .app, but only codesigns the
+      # .dmg it wraps around it (tauri-apps/tauri#7533). The disk image users
+      # actually download therefore ships signed but without a notarization
+      # ticket, so Gatekeeper has to phone home to clear it and blocks it
+      # outright offline. Close that gap here and fail the release if any part
+      # of it does not hold.
+      - name: Notarize final macOS disk image
+        if: matrix.platform == 'macos-latest'
+        shell: bash
+        # `--timeout` below caps the polling, but not the upload that precedes
+        # it. Without a step-level backstop a stuck Notary service would burn
+        # the whole job budget, so cap it tighter than the job here.
+        timeout-minutes: 45
+        env:
+          ARTIFACT_PATHS: ${{ steps.build_macos.outputs.artifactPaths }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          dmg_path="$(
+            python3 <<'PY'
+          import json
+          import os
+          import sys
+
+          raw_paths = os.environ.get('ARTIFACT_PATHS', '')
+          try:
+              artifact_paths = json.loads(raw_paths)
+          except json.JSONDecodeError as error:
+              sys.exit(f'Invalid tauri-action artifactPaths output: {error}')
+          if not isinstance(artifact_paths, list):
+              sys.exit('tauri-action artifactPaths must be a JSON list')
+          matches = [
+              path
+              for path in artifact_paths
+              if isinstance(path, str) and path.lower().endswith('.dmg')
+          ]
+          if len(matches) != 1:
+              sys.exit(f'Expected exactly one final DMG from tauri-action, found {len(matches)}')
+          print(matches[0])
+          PY
+          )"
+
+          # First gate, before the multi-minute upload: the bundler signs the
+          # DMG whenever a signing identity is configured, so an unsigned image
+          # here means the signing step silently did nothing.
+          codesign --verify --verbose=2 "$dmg_path"
+
+          # notarytool has no environment or stdin form for --password, so the
+          # credentials are visible in argv and in the process table. That is
+          # the accepted tradeoff on a single-tenant ephemeral runner;
+          # --keychain-profile only moves the same arguments one command
+          # earlier, and the one form without argv secrets is App Store Connect
+          # API key auth, which needs a different secret type.
+          submit_status=0
+          submission="$(
+            xcrun notarytool submit "$dmg_path" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" \
+              --output-format json \
+              --timeout 30m \
+              --wait
+          )" || submit_status=$?
+          printf '%s\n' "$submission"
+          submission_id="$(
+            printf '%s' "$submission" \
+              | python3 -c 'import json, sys; print(json.load(sys.stdin).get("id", ""))' \
+              2>/dev/null
+          )" || submission_id=""
+          submission_result="$(
+            printf '%s' "$submission" \
+              | python3 -c 'import json, sys; print(json.load(sys.stdin).get("status", ""))' \
+              2>/dev/null
+          )" || submission_result=""
+          if [ "$submit_status" -ne 0 ] || [ "$submission_result" != "Accepted" ]; then
+            # The service verdict is part of the JSON contract, independently
+            # of the command's exit code. Fetch the log whenever the response
+            # identifies a failed submission.
+            if [ -n "$submission_id" ]; then
+              xcrun notarytool log "$submission_id" \
+                --apple-id "$APPLE_ID" \
+                --password "$APPLE_PASSWORD" \
+                --team-id "$APPLE_TEAM_ID" >&2 || true
+            fi
+            if [ "$submit_status" -ne 0 ]; then
+              exit "$submit_status"
+            fi
+            echo "Notarization did not return Accepted (status=${submission_result:-missing})." >&2
+            exit 1
+          fi
+
+          # Apple's ticket lookup can lag behind an Accepted verdict or time
+          # out against CloudKit. Retry it without weakening final validation.
+          for attempt in 1 2 3; do
+            staple_status=0
+            xcrun stapler staple "$dmg_path" || staple_status=$?
+            if [ "$staple_status" -eq 0 ]; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              exit "$staple_status"
+            fi
+            delay=$((15 * attempt))
+            echo "::warning::Stapling failed (attempt $attempt/3); retrying in ${delay}s."
+            sleep "$delay"
+          done
+          # Stapling rewrites the image. `stapler validate` is what proves the
+          # offline case, since spctl can clear an unstapled image from an
+          # online CDN check; spctl then gives the verdict a user's machine
+          # would reach.
+          xcrun stapler validate "$dmg_path"
+          spctl --assess \
+            --type open \
+            --context context:primary-signature \
+            --verbose=4 \
+            "$dmg_path"
+
+      # ── Windows: build + sign ──
+      # install.ps1 is a bundle resource the bundler never signs, yet the app
+      # runs it first. Sign before the build packs it in; the signature is an
+      # appended comment block, so the repo copy for `irm ... | iex` is unaffected.
+      - name: Sign the bundled install script
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
+          AZURE_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_CERTIFICATE_PROFILE_NAME }}
+        run: |
+          $script = (Resolve-Path 'install.ps1').Path
+          studio/src-tauri/windows/sign-with-trusted-signing.ps1 -Path $script
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::could not sign install.ps1 (exit $LASTEXITCODE)"; exit 1 }
+          $sig = Get-AuthenticodeSignature $script
+          Write-Host "install.ps1 -> $($sig.Status) $($sig.SignerCertificate.Subject)"
+          if ($sig.Status -ne 'Valid') { Write-Host "::error::install.ps1 is $($sig.Status) after signing"; exit 1 }
+
+      - name: Build Windows app
+        id: build_windows
+        if: matrix.platform == 'windows-latest'
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5  # v0.6.2
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          # The signing key is not password protected, and no secret of this name
+          # exists, so this expression has always resolved to the empty string.
+          # Stated literally rather than left pointing at a secret that is not
+          # there: the value is unchanged, but it no longer reads as configuration
+          # someone forgot to set. Empty is not the same as unset here -- tauri
+          # prompts for a password when the variable is absent, which would hang
+          # the job, so the line stays.
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
+          AZURE_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_CERTIFICATE_PROFILE_NAME }}
+        with:
+          projectPath: studio
+          tauriScript: npx --prefix . tauri
+          args: -v ${{ matrix.args }}
+
+      # ── Windows: scan the signed bundles with Defender before publishing ──
+      # 0.1.512-beta shipped a "Trojan:Win32/Wacatac.B!ml" false positive nothing
+      # here caught. The runner disables Defender and excludes both drive roots,
+      # so restore it and verify the restore took; "!ml" is a cloud verdict, so
+      # MAPS must be on; MpCmdRun exit codes are ambiguous, so read the output.
+      - name: Scan Windows bundles with Defender
+        if: matrix.platform == 'windows-latest'
+        # A custom MpCmdRun scan defaults to a one-day timeout.
+        timeout-minutes: 20
+        shell: pwsh
+        env:
+          ARTIFACT_PATHS: ${{ steps.build_windows.outputs.artifactPaths }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+
+          $atp = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Advanced Threat Protection'
+          if (Test-Path $atp) { Remove-ItemProperty -Path $atp -Name 'ForceDefenderPassiveMode' -ErrorAction SilentlyContinue }
+          Start-Service -Name WinDefend -ErrorAction SilentlyContinue
+
+          foreach ($x in @((Get-MpPreference).ExclusionPath)) {
+            if ($x) { Remove-MpPreference -ExclusionPath $x -ErrorAction SilentlyContinue }
+          }
+          Set-MpPreference `
+            -DisableRealtimeMonitoring $false -DisableIOAVProtection $false `
+            -DisableScriptScanning $false -DisableBehaviorMonitoring $false `
+            -DisableArchiveScanning $false -MAPSReporting Advanced `
+            -SubmitSamplesConsent SendAllSamples -CloudBlockLevel High `
+            -CloudExtendedTimeout 50 -DisableBlockAtFirstSeen $false -ErrorAction Continue
+
+          $mp = "$env:ProgramFiles\Windows Defender\MpCmdRun.exe"
+          $plat = Get-ChildItem 'C:\ProgramData\Microsoft\Windows Defender\Platform' -Directory -ErrorAction SilentlyContinue |
+                  Sort-Object Name -Descending | Select-Object -First 1
+          if ($plat -and (Test-Path "$($plat.FullName)\MpCmdRun.exe")) { $mp = "$($plat.FullName)\MpCmdRun.exe" }
+          Update-MpSignature -UpdateSource MicrosoftUpdateServer -ErrorAction Continue
+          & $mp -SignatureUpdate 2>&1 | Write-Host
+
+          # Read these defensively. A runner can come up with the Defender WMI
+          # provider dead ("Provider load failure") and the service RPC endpoint
+          # down (0x800106ba), which is how the platform incident on 2026-08-06
+          # presented: the cmdlets throw, $status/$pref land null, and every check
+          # below then reads as a misconfiguration it is not.
+          $status = $null
+          $pref = $null
+          $unavailable = @()
+          try { $status = Get-MpComputerStatus -ErrorAction Stop }
+          catch { $unavailable += "Get-MpComputerStatus: $($_.Exception.Message)" }
+          try { $pref = Get-MpPreference -ErrorAction Stop }
+          catch { $unavailable += "Get-MpPreference: $($_.Exception.Message)" }
+          if (-not $unavailable -and -not $status) { $unavailable += 'Get-MpComputerStatus returned nothing' }
+          if (-not $unavailable -and -not $pref)   { $unavailable += 'Get-MpPreference returned nothing' }
+
+          # Absent scanner vs. bad verdict: only a missing scanner may skip; a
+          # misconfigured one or a real detection still fails. Dead cmdlets are not
+          # a missing scanner - WMI and service RPC back them, MpCmdRun talks to
+          # the engine directly - and conflating the two shipped three releases
+          # unscanned since 2026-08-06. Let the EICAR control below decide.
+          $cmdletsDown = [bool]$unavailable
+          if ($cmdletsDown) {
+            Write-Host "::warning::Defender cmdlets are unavailable on this runner ($($unavailable -join '; ')); configuration cannot be read or enforced. Falling back to a direct MpCmdRun scan."
+          }
+          if ($status) {
+            Write-Host "engine $($status.AMEngineVersion), signatures $($status.AntivirusSignatureVersion) ($($status.AntivirusSignatureLastUpdated))"
+          }
+
+          # Set-MpPreference can return cleanly and still be ignored, so verify.
+          # Split by whether the gap invalidates the verdict: cloud-delivered
+          # protection is inactive without active mode, MAPS and block-at-first-
+          # sight, and "!ml" is a cloud verdict, so a clean result without them
+          # cannot see what this gate exists to catch. Leftover exclusions only
+          # weaken it, since -DisableRemediation ignores file exclusions.
+          # Guard each check on the cmdlet that read it, not a blanket flag: the
+          # two fail independently (live WMI call vs. registry), so a blanket
+          # guard drops a readable $pref's MAPS and block-at-first-sight checks.
+          $fatal = @()
+          $degraded = @()
+          if ($status) {
+            if (-not $status.RealTimeProtectionEnabled) { $fatal += "RealTimeProtectionEnabled=false (AMRunningMode=$($status.AMRunningMode))" }
+          }
+          if ($pref) {
+            if ([int]$pref.MAPSReporting -ne 2)         { $fatal += "MAPSReporting=$($pref.MAPSReporting), expected 2 (Advanced)" }
+            if ($pref.DisableBlockAtFirstSeen)          { $fatal += 'DisableBlockAtFirstSeen=true' }
+            if ([int]$pref.SubmitSamplesConsent -ne 3)  { $degraded += "SubmitSamplesConsent=$($pref.SubmitSamplesConsent), expected 3 (SendAllSamples)" }
+            if ([int]$pref.CloudBlockLevel -eq 0)       { $degraded += "CloudBlockLevel=$($pref.CloudBlockLevel), expected High" }
+            if ($pref.ExclusionPath)                    { $degraded += "exclusions remain: $($pref.ExclusionPath -join ',')" }
+          }
+
+          # Configuration is not connectivity. Retried, so one network blip does
+          # not block a release.
+          $maps = $false
+          foreach ($try in 1..3) {
+            $mapsOut = (& $mp -ValidateMapsConnection 2>&1 | Out-String)
+            if ($LASTEXITCODE -eq 0) { $maps = $true; break }
+            Write-Host "  MAPS check $try failed: $($mapsOut.Trim())"
+            Start-Sleep -Seconds (5 * $try)
+          }
+          # Cmdlets down: losing the cloud degrades rather than blocks the release
+          # outright - signature detections still fire, only "!ml" verdicts do not.
+          if (-not $maps) {
+            if ($cmdletsDown) { $degraded += 'cannot reach the Defender cloud service, so "!ml" cloud verdicts cannot fire' }
+            else              { $fatal += 'cannot reach the Defender cloud service' }
+          }
+
+          # Positive control: clean and broken-scanner look identical. Split into
+          # fragments so this file is not itself a sample.
+          $eicarPath = Join-Path $env:RUNNER_TEMP 'defender-selftest.com'
+          # Real-time protection may block the write; that is the control passing.
+          $controlPassed = $false
+          try {
+            [System.IO.File]::WriteAllText(
+              $eicarPath,
+              'X5O!P%@AP[4\PZX54(P^)7CC)7}' + '$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!' + '$H+H*')
+          } catch { }
+          if (Test-Path $eicarPath) {
+            $controlOut = (& $mp -Scan -ScanType 3 -File $eicarPath -DisableRemediation 2>&1 | Out-String)
+            $controlPassed = [bool](($controlOut -match 'found\s+\d+\s+threat') -or ($controlOut -match 'EICAR'))
+            # Remediation is asynchronous: the sample can pass Test-Path and still
+            # be quarantined mid-scan. Vanishing means the control fired, not a
+            # missing scanner - nothing else deletes it and -DisableRemediation
+            # stops this scan from doing so, so a dead engine leaves it on disk.
+            if (-not $controlPassed -and -not (Test-Path $eicarPath)) {
+              Write-Host 'EICAR positive control quarantined before the scan could open it; real-time protection is live.'
+              $controlPassed = $true
+            }
+            Remove-Item $eicarPath -Force -ErrorAction SilentlyContinue
+          } else {
+            Write-Host 'EICAR positive control blocked on write; real-time protection is live.'
+            $controlPassed = $true
+          }
+          # The real test of whether a scanner exists, and the only one left with
+          # the cmdlets down: a control that does not fire means MpCmdRun cannot
+          # scan either, so skip as before rather than fail on a missing engine.
+          if (-not $controlPassed) {
+            if ($cmdletsDown) {
+              Write-Host "::warning::Defender is unavailable on this runner ($($unavailable -join '; ')) and MpCmdRun could not fire the EICAR positive control either; skipping the bundle scan. This is a missing scanner, not a clean verdict - these bundles were not scanned."
+              exit 0
+            }
+            $fatal += 'EICAR positive control did not fire'
+          }
+          if ($cmdletsDown) {
+            Write-Host 'EICAR positive control fired via MpCmdRun; scanning with the cmdlets unavailable.'
+          }
+
+          if ($degraded) {
+            Write-Host "::warning::Defender is not fully configured on this runner ($($degraded -join '; ')). Scanning anyway."
+          }
+          if ($fatal) {
+            Write-Host "::error::Defender cannot give an authoritative verdict here ($($fatal -join '; ')); refusing to publish on a scan that cannot see the detection class this gate exists for"
+            exit 1
+          }
+
+          # Fatal, not a warning: exiting 0 here would pass an unscanned release.
+          if ([string]::IsNullOrWhiteSpace($env:ARTIFACT_PATHS)) {
+            Write-Host '::error::tauri-action produced no artifactPaths output; refusing to publish unscanned bundles'
+            exit 1
+          }
+          try {
+            $paths = @($env:ARTIFACT_PATHS | ConvertFrom-Json)
+          } catch {
+            Write-Host "::error::could not parse artifactPaths ($($_.Exception.Message)); refusing to publish unscanned bundles"
+            exit 1
+          }
+          $missing = @($paths | Where-Object { $_ -and -not (Test-Path $_ -PathType Leaf) })
+          if ($missing) {
+            Write-Host "::error::artifactPaths lists files that do not exist: $($missing -join ', ')"
+            exit 1
+          }
+          $paths = @($paths | Where-Object { $_ })
+          if (-not $paths) {
+            Write-Host '::error::artifactPaths resolved to an empty list; refusing to publish unscanned bundles'
+            exit 1
+          }
+          Write-Host "scanning $($paths.Count) Windows bundle(s)"
+
+          # Scan copies: real-time protection is live, so a detection would delete
+          # the release artifact itself. Copies double as submission material,
+          # since clearance is per hash and a rebuild hashes differently.
+          $work = Join-Path $env:RUNNER_TEMP 'defender-scan'
+          Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $work | Out-Null
+
+          # Real-time protection acts on open and on write, and -DisableRemediation
+          # governs only the explicit scan, so a hit would quarantine the bundle
+          # mid-copy and leave the failure handler nothing to upload. Exempt both
+          # ends of the copy. The verdict is unaffected: -DisableRemediation
+          # ignores file exclusions. Left in place, since the copies must survive
+          # until the failure-gated preserve step runs.
+          $exclude = @($work) + @($paths | Split-Path -Parent | Sort-Object -Unique)
+          Add-MpPreference -ExclusionPath $exclude -ErrorAction Continue
+
+          # -ErrorAction Continue does not stop on a rejected exclusion, so read
+          # it back. Defender stores these verbatim; normalise anyway.
+          # Keyed on the reading cmdlet, not the blanket flag: $pref can be live
+          # while $status is down. With $pref unreadable there is nothing to read
+          # back, and a mid-scan quarantine still fails below as unscannable.
+          if ($pref) {
+            $norm = { param($p) $p.TrimEnd('\').ToLowerInvariant() }
+            $applied = @(@((Get-MpPreference).ExclusionPath) | ForEach-Object { & $norm $_ })
+            $notApplied = @($exclude | Where-Object { $applied -notcontains (& $norm $_) })
+            if ($notApplied) {
+              Write-Host "::error::Defender refused these exclusions: $($notApplied -join ', '); a detection would quarantine the bundle mid-copy and leave nothing to submit"
+              exit 1
+            }
+          }
+
+          $detected = @()
+          $unscanned = @()
+          foreach ($f in $paths) {
+            $leaf = Split-Path $f -Leaf
+            $copy = Join-Path $work $leaf
+            Copy-Item $f $copy -Force
+
+            # Block-at-first-sight only consults the cloud for internet-zone files,
+            # so stamp mark-of-the-web or this is not the user path.
+            "[ZoneTransfer]`nZoneId=3" | Set-Content -Path $copy -Stream Zone.Identifier -Encoding Ascii -ErrorAction SilentlyContinue
+
+            $out = & $mp -Scan -ScanType 3 -File $copy -DisableRemediation 2>&1
+            $code = $LASTEXITCODE
+            $text = ($out | Out-String)
+            $out | ForEach-Object { Write-Host "  $_" }
+
+            # Exit 2 is a detection or a scan error, and 0 is the only documented
+            # clean code, so read the output text too.
+            if ($text -match 'found\s+\d+\s+threat') {
+              $names = @([regex]::Matches($text, '((?:Trojan|Virus|Worm|Backdoor|Ransom|HackTool|PUA|Behavior|Program|Misleading)[:\w\./!\-]+)') |
+                         ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+              if (-not $names) { $names = @('unnamed detection') }
+              Write-Host "::error::Defender flagged ${leaf}: $($names -join ', ')"
+              $detected += "$leaf [$($names -join ', ')]"
+            } elseif ($code -ne 0) {
+              Write-Host "::error::Defender did not complete a scan of $leaf (MpCmdRun exit $code)"
+              $unscanned += "$leaf [exit $code]"
+            } else {
+              Write-Host "clean: $leaf"
+            }
+          }
+
+          if ($unscanned) {
+            Write-Host "::error::Refusing to publish bundles Defender could not scan: $($unscanned -join '; ')"
+          }
+          if ($detected) {
+            Write-Host "::error::Refusing to publish a Windows bundle Defender flags: $($detected -join '; ')"
+            Write-Host 'If this is a false positive, submit it at https://www.microsoft.com/en-us/wdsi/filesubmission (Software developer -> incorrectly detected) and re-run once cleared.'
+          }
+          if ($detected -or $unscanned) { exit 1 }
+          Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
+          Write-Host "All $($paths.Count) Windows bundle(s) scanned clean."
+
+      # Later steps carry an implicit success(), so on a detection the flagged
+      # bundle would be discarded with the runner.
+      - name: Preserve flagged Windows bundles
+        if: failure() && matrix.platform == 'windows-latest'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: flagged-windows-bundles-${{ matrix.artifact }}
+          path: ${{ runner.temp }}/defender-scan/*
+          if-no-files-found: ignore
+          compression-level: 0
+          retention-days: 7
+
+      # ── Windows: every executable in the bundle must be signed ──
+      # NSIS runs its plugin DLLs from $PLUGINSDIR; signing the installer misses them.
+      - name: Verify every executable in the Windows bundles is signed
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        env:
+          ARTIFACT_PATHS: ${{ steps.build_windows.outputs.artifactPaths }}
+        run: |
+          $paths = @($env:ARTIFACT_PATHS | ConvertFrom-Json) |
+                   Where-Object { $_ -like '*-setup.exe' }
+          if (-not $paths) { Write-Host '::error::no Windows installer to verify'; exit 1 }
+          .github/scripts/assert-bundle-signed.ps1 -Path $paths
+
+      # ── Windows: assemble a Microsoft false-positive submission packet ──
+      # The WDSI portal is a web form with no API, so this cannot be automated,
+      # but pre-filling the lookups makes submitting a build take seconds.
+      - name: Prepare Microsoft submission packet
+        if: (success() || failure()) && matrix.platform == 'windows-latest' && steps.build_windows.outcome == 'success'
+        shell: pwsh
+        env:
+          ARTIFACT_PATHS: ${{ steps.build_windows.outputs.artifactPaths }}
+        run: |
+          $paths = @($env:ARTIFACT_PATHS | ConvertFrom-Json) |
+                   Where-Object { $_ -like '*-setup.exe' }
+          $md = @(
+            '## Microsoft submission packet',
+            '',
+            'Submit at <https://www.microsoft.com/en-us/wdsi/filesubmission> before announcing this release.',
+            'Choose **Software developer** -> **Incorrectly detected as malware/malicious**.',
+            'The portal caps uploads at 50 MB. Clearance is per hash, so never substitute a',
+            'different file: for a larger bundle use <https://security.microsoft.com/reportsubmission>,',
+            'which takes 500 MB.',
+            ''
+          )
+          foreach ($f in $paths) {
+            $item = Get-Item $f
+            $sig = Get-AuthenticodeSignature $f
+            $md += "### $($item.Name)"
+            $md += ''
+            $md += '| field | value |'
+            $md += '|---|---|'
+            $md += "| SHA-256 | ``$((Get-FileHash -Algorithm SHA256 $f).Hash)`` |"
+            $md += "| SHA-1 | ``$((Get-FileHash -Algorithm SHA1 $f).Hash)`` |"
+            $md += "| Size | $($item.Length) bytes |"
+            $md += "| Signature | $($sig.Status) |"
+            $md += "| Signer | $($sig.SignerCertificate.Subject) |"
+            $md += "| Product | $($env:APP_VERSION) |"
+            $md += ''
+          }
+          $md += '> Clearance is per hash. It fixes the release you submit and nothing after it,'
+          $md += '> so this is a complement to signing, not a substitute.'
+          $out = "$env:RUNNER_TEMP\ms-submission-packet.md"
+          $md -join "`n" | Out-File $out -Encoding utf8
+          $md -join "`n" | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          Write-Host ($md -join "`n")
+
+      - name: Stage release assets
+        shell: bash
+        env:
+          ARTIFACT_PATHS: ${{ steps.build_linux.outputs.artifactPaths || steps.build_macos.outputs.artifactPaths || steps.build_windows.outputs.artifactPaths }}
+        run: |
+          set -euo pipefail
+          if command -v python3 >/dev/null 2>&1; then
+            PYTHON=python3
+          else
+            PYTHON=python
+          fi
+          "$PYTHON" <<'PY'
+          import json
+          import os
+          import pathlib
+          import shutil
+          import sys
+
+          raw_paths = os.environ.get('ARTIFACT_PATHS', '')
+          try:
+              artifact_paths = json.loads(raw_paths)
+          except json.JSONDecodeError as error:
+              sys.exit(f'Invalid tauri-action artifactPaths output: {error}')
+          if not isinstance(artifact_paths, list) or not artifact_paths:
+              sys.exit('tauri-action did not return any release artifacts')
+
+          destination = pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-release-assets')
+          destination.mkdir(parents=True, exist_ok=True)
+          base_name = 'Unsloth-Desktop'
+          suffix_names = (
+              ('.app.tar.gz.sig', f'{base_name}-ARM64.app.tar.gz.sig'),
+              ('.app.tar.gz', f'{base_name}-ARM64.app.tar.gz'),
+              ('.AppImage.sig', f'{base_name}-Linux.AppImage.sig'),
+              ('.AppImage', f'{base_name}-Linux.AppImage'),
+              ('-setup.exe.sig', f'{base_name}-Windows.exe.sig'),
+              ('-setup.exe', f'{base_name}-Windows.exe'),
+              ('.dmg', f'{base_name}-MacOS.dmg'),
+              ('.deb', f'{base_name}-Ubuntu.deb'),
+          )
+          staged = []
+          for raw_path in artifact_paths:
+              source = pathlib.Path(raw_path)
+              if not source.is_file():
+                  continue
+              target_name = next(
+                  (target_name for suffix, target_name in suffix_names if source.name.endswith(suffix)),
+                  None,
+              )
+              if target_name is None:
+                  print(f'Skipping non-release Tauri artifact: {source.name}')
+                  continue
+              target = destination / target_name
+              if target.exists():
+                  sys.exit(f'Duplicate staged release asset name: {target_name}')
+              shutil.copy2(source, target)
+              staged.append(target_name)
+
+          if not staged:
+              sys.exit('No release files were staged')
+          print('Staged release assets:')
+          print('\n'.join(sorted(staged)))
+          PY
+
+      - name: Upload signed release assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: desktop-release-${{ matrix.artifact }}
+          path: ${{ runner.temp }}/desktop-release-assets/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  # Only this job gets write access; builds hand off signed files via artifacts.
+  # Draft runs stop after uploading immutable assets; publishing the reviewed draft
+  # is validated by publish-desktop-updater.yml without rebuilding.
+  publish-release:
+    name: Publish desktop release
+    # Only prepare-version, so this starts alongside the build matrix and
+    # queues for its runner during the build instead of after it. "Wait for the
+    # build matrix" below restores the gate `needs: build` gave away. The cost
+    # is one runner slot held for the length of the run.
+    needs: [prepare-version]
+    runs-on: ubuntu-latest
+    # Waits out the build (legs cap at 60) then downloads and uploads; the
+    # publish steps themselves are 17-40s.
+    timeout-minutes: 90
+    permissions:
+      contents: write  # create the versioned Release and replace updater-channel metadata
+      actions: read    # the waiter reads this run's job list
+    env:
+      GH_REPO: ${{ github.repository }}
+      APP_VERSION: ${{ needs.prepare-version.outputs.app_version }}
+      PYPI_VERSION: ${{ needs.prepare-version.outputs.pypi_version }}
+      STUDIO_VERSION: ${{ needs.prepare-version.outputs.studio_version }}
+      DESKTOP_RELEASE_TAG: ${{ needs.prepare-version.outputs.desktop_release_tag }}
+
+    steps:
+      - name: Harden runner (audit)
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        with:
+          egress-policy: audit
+
+      # Replaces the `needs: build` gate dropped above, and must be at least as
+      # strict: publishing a partial release is far worse than publishing late.
+      - name: Wait for the build matrix
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+
+          # The three matrix legs, by their `name:` (Build <matrix.label>).
+          LEGS=('Build macOS (Apple Silicon)' 'Build Linux (x64)' 'Build Windows (x64)')
+          POLL=30
+          DEADLINE=$(( $(date +%s) + 75 * 60 ))
+          # Matrix job records appear with the run, so a leg still missing well
+          # after the start is a real problem, not a slow API.
+          STARTUP_DEADLINE=$(( $(date +%s) + 15 * 60 ))
+          API_FAILS=0
+
+          while :; do
+            if ! JOBS="$(gh api --paginate \
+                  "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" \
+                  --jq '.jobs[] | [.name, .status, (.conclusion // "none")] | @tsv' 2>/dev/null)"; then
+              # A blip in the jobs API must not throw away a finished build.
+              API_FAILS=$(( API_FAILS + 1 ))
+              if [ "$API_FAILS" -ge 10 ]; then
+                echo "ERROR: jobs API failed 10 times running; cannot confirm the build matrix finished" >&2
+                exit 1
+              fi
+              echo "jobs API call failed (${API_FAILS}/10); retrying in ${POLL}s"
+              sleep "$POLL"
+              continue
+            fi
+            API_FAILS=0
+
+            MISSING=""
+            PENDING=0
+            BAD=""
+            for leg in "${LEGS[@]}"; do
+              ROW="$(printf '%s\n' "$JOBS" | awk -F'\t' -v n="$leg" '$1 == n {print; exit}')"
+              if [ -z "$ROW" ]; then
+                MISSING="${MISSING} '${leg}'"
+                continue
+              fi
+              STATUS="$(printf '%s' "$ROW" | cut -f2)"
+              CONCL="$(printf '%s' "$ROW" | cut -f3)"
+              if [ "$STATUS" != "completed" ]; then
+                PENDING=$(( PENDING + 1 ))
+              elif [ "$CONCL" != "success" ]; then
+                BAD="${BAD}${leg} (${CONCL}); "
+              fi
+            done
+
+            # Fail on the first finished leg that did not succeed rather than
+            # holding a runner to reach the same answer later.
+            if [ -n "$BAD" ]; then
+              echo "ERROR: refusing to publish, these build jobs did not succeed: ${BAD}" >&2
+              exit 1
+            fi
+            if [ -n "$MISSING" ]; then
+              if [ "$(date +%s)" -gt "$STARTUP_DEADLINE" ]; then
+                echo "ERROR: no job record for:${MISSING}; refusing to publish without confirming they ran" >&2
+                exit 1
+              fi
+              echo "waiting for job records to appear for:${MISSING}"
+              sleep "$POLL"
+              continue
+            fi
+            if [ "$PENDING" -eq 0 ]; then
+              echo "all ${#LEGS[@]} build legs finished and succeeded"
+              break
+            fi
+            if [ "$(date +%s)" -gt "$DEADLINE" ]; then
+              echo "ERROR: timed out waiting for the build matrix; ${PENDING} leg(s) still running" >&2
+              exit 1
+            fi
+            echo "${PENDING} of ${#LEGS[@]} build legs still running; polling again in ${POLL}s"
+            sleep "$POLL"
+          done
+
+      - name: Download signed release assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          pattern: desktop-release-*
+          path: ${{ runner.temp }}/desktop-release-assets
+          merge-multiple: true
+
+      - name: Validate release asset set
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import os
+          import pathlib
+          import sys
+
+          asset_dir = pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-release-assets')
+          files = [path for path in asset_dir.iterdir() if path.is_file()]
+          base_name = 'Unsloth-Desktop'
+          expected_names = {
+              f'{base_name}-MacOS.dmg',
+              f'{base_name}-ARM64.app.tar.gz',
+              f'{base_name}-ARM64.app.tar.gz.sig',
+              f'{base_name}-Linux.AppImage',
+              f'{base_name}-Linux.AppImage.sig',
+              f'{base_name}-Ubuntu.deb',
+              f'{base_name}-Windows.exe',
+              f'{base_name}-Windows.exe.sig',
+          }
+          actual_names = {path.name for path in files}
+          if actual_names != expected_names:
+              missing = sorted(expected_names - actual_names)
+              unexpected = sorted(actual_names - expected_names)
+              sys.exit(
+                  'Desktop release asset names do not match the branding contract: '
+                  f'missing={missing}, unexpected={unexpected}'
+              )
+          print('\n'.join(sorted(actual_names)))
+          PY
+
+      # Validation runs before the scan so an already-used version is rejected
+      # before any bundle is disclosed to VirusTotal. Creation remains deferred
+      # until after the scan so a non-draft release is never left public and empty.
+      - name: Validate versioned release state
+        id: versioned_release_state
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          notes_file="$RUNNER_TEMP/desktop-release-notes.md"
+          printf '%s\n' "$DESKTOP_RELEASE_NOTES" > "$notes_file"
+
+          # The v{version} release already exists; re-checked here because the
+          # read-scoped prepare-version token cannot see drafts.
+          if ! gh api "repos/${GH_REPO}/releases/tags/${DESKTOP_RELEASE_TAG}" \
+            > "$RUNNER_TEMP/target-release-publish.json" 2>/dev/null; then
+            echo "Release ${DESKTOP_RELEASE_TAG} does not exist." >&2
+            echo "  Tag main and publish it first, then re-dispatch this workflow." >&2
+            exit 1
+          fi
+          python3 <<'PY'
+          import json, os, pathlib, sys
+
+          runner = pathlib.Path(os.environ['RUNNER_TEMP'])
+          release = json.loads((runner / 'target-release-publish.json').read_text())
+          tag = os.environ['DESKTOP_RELEASE_TAG']
+          # Checked here, not at promotion: GitHub refuses to mark a prerelease
+          # latest, and by then the bundles are already public.
+          if release.get('prerelease'):
+              sys.exit(f'Release {tag} is a prerelease; GitHub cannot mark it latest.')
+
+          prefix = 'Unsloth-Desktop-'
+          clashing = sorted(
+              asset['name']
+              for asset in release.get('assets', [])
+              if str(asset.get('name', '')).startswith(prefix)
+              or asset.get('name') == 'latest.json'
+          )
+
+          if clashing:
+              print(f'Refusing to republish {tag}: it already carries desktop assets.', file=sys.stderr)
+              for name in clashing:
+                  print(f'  gh release delete-asset {tag} {name} --yes', file=sys.stderr)
+              if 'latest.json' in clashing:
+                  # Deleting a manifest off whichever release is currently GitHub
+                  # latest 404s every update check until this workflow finishes.
+                  print(
+                      '  latest.json is the live updater manifest: only delete it once '
+                      f'{tag} is not the GitHub latest release.',
+                      file=sys.stderr,
+                  )
+              sys.exit(1)
+          PY
+
+      - name: Generate versioned updater metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import base64
+          import binascii
+          import datetime
+          import json
+          import os
+          import pathlib
+          import sys
+          import urllib.parse
+
+          asset_dir = pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-release-assets')
+          files = [path for path in asset_dir.iterdir() if path.is_file()]
+
+          def exactly_one(suffix: str) -> pathlib.Path:
+              matches = [path for path in files if path.name.endswith(suffix)]
+              if len(matches) != 1:
+                  sys.exit(f'Expected exactly one {suffix} updater asset, found {len(matches)}')
+              return matches[0]
+
+          def entry(signature_suffix: str) -> dict[str, str]:
+              signature_path = exactly_one(signature_suffix)
+              bundle_name = signature_path.name.removesuffix('.sig')
+              bundle_path = asset_dir / bundle_name
+              if not bundle_path.is_file():
+                  sys.exit(f'Missing updater bundle for {signature_path.name}: {bundle_name}')
+              signature_value = signature_path.read_text(encoding='utf-8').strip()
+              try:
+                  decoded_signature = base64.b64decode(signature_value, validate=True)
+              except (binascii.Error, ValueError):
+                  sys.exit(f'Invalid base64 updater signature: {signature_path.name}')
+              if not decoded_signature.startswith(b'untrusted comment:') or b'\ntrusted comment:' not in decoded_signature:
+                  sys.exit(f'Invalid minisign updater signature: {signature_path.name}')
+              encoded_tag = urllib.parse.quote(os.environ['DESKTOP_RELEASE_TAG'], safe='')
+              encoded_name = urllib.parse.quote(bundle_name, safe='')
+              return {
+                  'signature': signature_value,
+                  'url': (
+                      f'https://github.com/{os.environ["GITHUB_REPOSITORY"]}/releases/download/'
+                      f'{encoded_tag}/{encoded_name}'
+                  ),
+              }
+
+          darwin = entry('.app.tar.gz.sig')
+          linux = entry('.AppImage.sig')
+          windows = entry('.exe.sig')
+          notes = pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-release-notes.md').read_text()
+          metadata = {
+              'version': os.environ['APP_VERSION'],
+              # App version is SemVer; this is the backend release it pins.
+              'pypi_version': os.environ['PYPI_VERSION'],
+              'notes': notes,
+              'pub_date': datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z'),
+              'platforms': {
+                  'darwin-aarch64': darwin,
+                  'darwin-aarch64-app': darwin,
+                  'linux-x86_64': linux,
+                  'linux-x86_64-appimage': linux,
+                  'windows-x86_64': windows,
+                  'windows-x86_64-nsis': windows,
+              },
+          }
+          output = pathlib.Path(os.environ['RUNNER_TEMP'], 'latest.json')
+          output.write_text(json.dumps(metadata, indent=2) + '\n')
+          PY
+
+      # The release body is the maintainer's changelog and this workflow never
+      # rewrites it. The target release is already public, so a validation-only
+      # run must not upload to it.
+      - name: Publish release assets
+        if: ${{ !inputs.draft }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          release_assets=()
+          for asset in "$RUNNER_TEMP/desktop-release-assets"/*; do
+            [[ "$asset" == *.sig ]] || release_assets+=("$asset")
+          done
+          # Preserve the published digests by refusing existing asset names.
+          gh release upload "$DESKTOP_RELEASE_TAG" "${release_assets[@]}"
+
+      - name: Publish versioned updater metadata
+        if: ${{ !inputs.draft }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload "$DESKTOP_RELEASE_TAG" "$RUNNER_TEMP/latest.json"
+
+      - name: Download versioned updater metadata
+        if: ${{ !inputs.draft }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/desktop-updater"
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${DESKTOP_RELEASE_TAG}" > "$RUNNER_TEMP/source-release.json"
+          python3 <<'PY'
+          import json
+          import os
+          import pathlib
+          import sys
+
+          source = json.loads(pathlib.Path(os.environ['RUNNER_TEMP'], 'source-release.json').read_text())
+          expected_tag = os.environ['DESKTOP_RELEASE_TAG']
+          if source.get('tag_name') != expected_tag:
+              sys.exit(f'Expected source release {expected_tag}, got {source.get("tag_name")}')
+          if source.get('draft'):
+              sys.exit(f'Source desktop release {expected_tag} is draft; refusing to publish public updater channel')
+          PY
+          gh release download "$DESKTOP_RELEASE_TAG" --pattern latest.json --dir "$RUNNER_TEMP/desktop-updater" --clobber
+          test -s "$RUNNER_TEMP/desktop-updater/latest.json"
+
+      - name: Validate versioned updater metadata
+        if: ${{ !inputs.draft }}
+        shell: bash
+        run: |
+          python3 <<'PY'
+          import json
+          import os
+          import pathlib
+          import re
+          import sys
+
+          app_version = os.environ['APP_VERSION']
+          release_tag = os.environ['DESKTOP_RELEASE_TAG']
+          latest_path = pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-updater', 'latest.json')
+          data = json.loads(latest_path.read_text())
+          if not isinstance(data, dict):
+              sys.exit('latest.json must be a JSON object')
+
+          version = data.get('version')
+          if not isinstance(version, str) or not version:
+              sys.exit('latest.json missing version')
+          if not re.fullmatch(r'v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?', version):
+              sys.exit(f'latest.json version is not SemVer-like: {version}')
+          if version.removeprefix('v') != app_version:
+              sys.exit(f'latest.json version {version} does not match desktop app version {app_version}')
+
+          platforms = data.get('platforms')
+          if not isinstance(platforms, dict) or not platforms:
+              sys.exit('latest.json missing platforms')
+
+          required_families = {
+              'darwin-aarch64': False,
+              'linux-x86_64': False,
+              'windows-x86_64': False,
+          }
+          expected_prefix = f'https://github.com/{os.environ["GITHUB_REPOSITORY"]}/releases/download/{release_tag}/'
+          forbidden_fragments = ('/releases/latest/', '/releases/download/desktop-latest/')
+
+          for platform, entry in platforms.items():
+              if not isinstance(entry, dict):
+                  sys.exit(f'Platform {platform} must be an object')
+              url = entry.get('url')
+              signature = entry.get('signature')
+              if not isinstance(url, str) or not url.strip():
+                  sys.exit(f'Platform {platform} missing url')
+              if not isinstance(signature, str) or not signature.strip():
+                  sys.exit(f'Platform {platform} missing signature')
+              if any(fragment in url for fragment in forbidden_fragments):
+                  sys.exit(f'Platform {platform} points at a moving updater channel: {url}')
+              if not url.startswith(expected_prefix):
+                  sys.exit(f'Platform {platform} URL must point at {release_tag}: {url}')
+              for family in required_families:
+                  if platform == family or platform.startswith(family + '-'):
+                      required_families[family] = True
+
+          missing = [family for family, found in required_families.items() if not found]
+          if missing:
+              sys.exit('latest.json missing required platform families: ' + ', '.join(missing))
+          PY
+
+      - name: Promote normal release to GitHub latest
+        if: ${{ !inputs.draft }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          release_json="$RUNNER_TEMP/source-release.json"
+          release_id="$(python3 - "$release_json" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          release = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          if release.get('draft'):
+              sys.exit('Refusing to promote a draft release')
+          if release.get('prerelease'):
+              sys.exit('Desktop releases must be normal GitHub releases, not prereleases')
+          release_id = release.get('id')
+          if not isinstance(release_id, int):
+              sys.exit('Published desktop release is missing its GitHub release id')
+          print(release_id)
+          PY
+          )"
+
+          # The prepare-version downgrade check ran before a build that can take an
+          # hour, so re-read GitHub latest here: promoting past a newer release would
+          # hand every client an older manifest.
+          # Fail closed: a transient lookup failure must not read as "no newer
+          # release". Only a genuine 404 means the repository has no latest yet.
+          latest_before="$RUNNER_TEMP/latest-before-promote.json"
+          latest_error="$RUNNER_TEMP/latest-before-promote.err"
+          if gh api "repos/${GITHUB_REPOSITORY}/releases/latest" > "$latest_before" 2> "$latest_error"; then
+            python3 - "$latest_before" <<'PY'
+          import json
+          import os
+          import pathlib
+          import re
+          import sys
+
+          semver = re.compile(r'^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?$')
+
+          def identifier(value):
+              # beta10 must sort above beta2, so a trailing number compares as one.
+              if value.isdigit():
+                  return (0, '', int(value))
+              tail = re.fullmatch(r'([A-Za-z-]+)(\d+)', value)
+              if tail:
+                  return (1, tail.group(1).lower(), int(tail.group(2)))
+              return (1, value, -1)
+
+          def key(tag):
+              match = semver.fullmatch(tag or '')
+              if not match:
+                  return None
+              major, minor, patch, pre = match.groups()
+              # A prerelease sorts below the same release without one.
+              return (
+                  int(major), int(minor), int(patch), 0 if pre else 1,
+                  [identifier(part) for part in pre.split('.')] if pre else [],
+              )
+
+          current = json.loads(pathlib.Path(sys.argv[1]).read_text()).get('tag_name')
+          candidate = os.environ['DESKTOP_RELEASE_TAG']
+          current_key, candidate_key = key(current), key(candidate)
+          if current_key and candidate_key and current_key > candidate_key:
+              sys.exit(f'Refusing to promote {candidate}: GitHub latest advanced to {current}.')
+          PY
+          elif grep -Fq '(HTTP 404)' "$latest_error"; then
+            echo "No GitHub latest release yet; nothing to downgrade."
+          else
+            echo "Could not read GitHub latest; refusing to promote." >&2
+            cat "$latest_error" >&2
+            exit 1
+          fi
+
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+            -f make_latest=true > "$RUNNER_TEMP/promoted-release.json"
+          gh api "repos/${GITHUB_REPOSITORY}/releases/latest" > "$RUNNER_TEMP/latest-release.json"
+          python3 - "$RUNNER_TEMP/latest-release.json" <<'PY'
+          import json
+          import os
+          import pathlib
+          import sys
+
+          latest = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          expected = os.environ['DESKTOP_RELEASE_TAG']
+          if latest.get('tag_name') != expected:
+              sys.exit(f'GitHub latest release is {latest.get("tag_name")}, expected {expected}')
+          if latest.get('draft') or latest.get('prerelease'):
+              sys.exit(f'GitHub latest release {expected} is not a normal published release')
+          names = {asset.get('name') for asset in latest.get('assets', [])}
+          required = {
+              'latest.json',
+              'Unsloth-Desktop-MacOS.dmg',
+              'Unsloth-Desktop-Linux.AppImage',
+              'Unsloth-Desktop-Ubuntu.deb',
+              'Unsloth-Desktop-Windows.exe',
+          }
+          missing = sorted(required - names)
+          if missing:
+              sys.exit(f'GitHub latest release {expected} is missing stable download assets: {missing}')
+          PY
+
+
+  # ── Advisory multi-engine scan of the bundles just uploaded ──
+  # Defender (build job) is one vendor and gates only Windows. VirusTotal
+  # aggregates ~70 engines across all four bundles, which is how a false
+  # positive from some other vendor gets noticed here rather than in a user bug
+  # report. Advisory on purpose: installers routinely trip one or two obscure
+  # heuristics, so a hard gate would block releases on noise. Defender stays the
+  # authoritative fail-closed check.
+  #
+  # Its own job, after publish-release, because the scan is rate-limit bound and
+  # not parallelisable: the free tier allows 4 requests/minute per key, so the
+  # four bundles share one budget however they are scheduled. Inside the publish
+  # job it was ~9 minutes of the ~9.5 the job took, delaying every release by its
+  # full length while being unable to block one.
+  virustotal-scan:
+    # Not "post-publish": `inputs.draft` defaults to true and the release is
+    # created with `--draft` on that input, so the ordinary run has uploaded the
+    # assets to a draft. The name has to read true for both dispatches.
+    name: VirusTotal release asset scan
+    needs: [publish-release]
+    runs-on: ubuntu-latest
+    # A missing secret, a VirusTotal outage or quota exhaustion must not fail
+    # the release whose assets are already uploaded.
+    continue-on-error: true
+    timeout-minutes: 30
+    steps:
+      - name: Harden runner (audit)
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        with:
+          egress-policy: audit
+
+      # Sparse: a full checkout to fetch one file would be wasteful.
+      - name: Check out the scan script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/virustotal_scan.py
+          sparse-checkout-cone-mode: false
+
+      - name: Download published assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          pattern: desktop-release-*
+          path: ${{ runner.temp }}/desktop-release-assets
+          merge-multiple: true
+
+      - name: VirusTotal scan
+        env:
+          VT_API_KEY: ${{ secrets.VIRUS_TOTAL_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Name the cause loudly: a silent failure here leaves the release
+          # scanned by nothing but a terse "no summary" note.
+          if [ ! -f scripts/virustotal_scan.py ]; then
+            echo "::error::scripts/virustotal_scan.py is missing; the checkout step in this job must provide it"
+            exit 1
+          fi
+          python3 scripts/virustotal_scan.py \
+            "$RUNNER_TEMP/desktop-release-assets" \
+            --output-markdown "$RUNNER_TEMP/virustotal-summary.md"
+
+      - name: Publish VirusTotal summary
+        if: always()
+        run: |
+          set -euo pipefail
+          summary="$RUNNER_TEMP/virustotal-summary.md"
+          if [ -f "$summary" ]; then
+            cat "$summary" >> "$GITHUB_STEP_SUMMARY"
+          else
+            # Must stay byte-identical to SUMMARY_HEADING in
+            # scripts/virustotal_scan.py, or a run that produced no summary shows
+            # a second, unrelated section. A test ties the two together.
+            echo '### VirusTotal release asset scan' >> "$GITHUB_STEP_SUMMARY"
+            echo '' >> "$GITHUB_STEP_SUMMARY"
+            echo 'The scan step produced no summary.' >> "$GITHUB_STEP_SUMMARY"
+          fi
