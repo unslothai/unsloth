@@ -8,8 +8,10 @@ import type * as React from "react";
 
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
-import { ArrowRight01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import {
+  ChevronRightIcon,
+} from "lucide-react";
 
 function ContextMenu({
   ...props
@@ -125,8 +127,7 @@ function ContextMenuSubTrigger({
       {...props}
     >
       {children}
-      <HugeiconsIcon
-        icon={ArrowRight01Icon}
+      <ChevronRightIcon
         strokeWidth={2}
         className="ml-auto size-[12px]"
       />
