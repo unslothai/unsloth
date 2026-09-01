@@ -31,7 +31,7 @@ import {
   buildTextIndex,
   endPositionAt,
   findMatches,
-  foldChunk,
+  foldText,
   normalizeQuery,
   segmentAt,
   startPositionAt,
@@ -167,7 +167,7 @@ test("a case fold that would change a run's length is not applied", () => {
   // run keeps its case instead and the offsets stay true -- which is what this asserts, by finding
   // a word that sits AFTER one.
   assert.equal("İ".toLowerCase().length, 2, "premise: the fold grows this run");
-  assert.equal(foldChunk("İ"), "İ");
+  assert.equal(foldText("İ"), "İ");
 
   const marker = text("İ");
   const after = text("Unsloth");
@@ -195,6 +195,29 @@ test("an expanding fold does not change the letters around it", () => {
   assert.equal(findMatches(index, "\u039f\u0394\u039f\u03a3").length, 1);
   // And the character that could not fit is still itself, not half of its own fold.
   assert.equal(index.text.includes(dottedI), true);
+});
+
+test("casing context carries across inline markup", () => {
+  // The fold of a run is not the folds of its pieces. Split by an `<em>`, a word-final sigma folded
+  // per node comes out medial while the query folds it final, and a word plainly on screen matches
+  // nothing. So the whole flattened document is folded at once.
+  const index = buildTextIndex(
+    el("DIV", [el("P", [text("\u039f"), el("EM", [text("\u03a3")])])]),
+  );
+  assert.equal(index.text, "\u03bf\u03c2");
+  assert.equal(findMatches(index, "\u039f\u03a3").length, 1);
+  // The offset map still lands on the right nodes, which is what folding in place buys.
+  assert.equal(index.segments.length, 2);
+  assert.equal(index.segments[1].start, 1);
+});
+
+test("several expanding characters splice without drift", () => {
+  const dottedI = String.fromCharCode(0x0130);
+  const raw = `${dottedI}a${dottedI}\u039f\u03a3${dottedI}b`;
+  const index = buildTextIndex(el("DIV", [el("P", [text(raw)])]));
+  assert.equal(index.text.length, raw.length);
+  // Each one is left as itself, and everything between keeps the contextual fold.
+  assert.equal(index.text, `${dottedI}a${dottedI}\u03bf\u03c3${dottedI}b`);
 });
 
 test("a sigma that is not word-final keeps its own form", () => {
@@ -486,6 +509,20 @@ test("a document past the ceiling is flattened as far as it goes and says so", (
   // What was read is still usable, which is the point of stopping rather than giving up.
   assert.ok(index.segments.length > 0);
   assert.ok(findMatches(index, "xxx").length > 0);
+});
+
+test("a clipped node does not run into the next one", () => {
+  // What the clip threw away is still in the document. Without a boundary the retained prefix and
+  // the next node touch, a query across the seam matches, and the Range it maps back to spans every
+  // discarded character in between: measured at 8503 characters of unrelated highlight.
+  const clipped = text(`${"x".repeat(MAX_NODE_CHARS)}${"discarded ".repeat(500)}`);
+  const next = text("yz");
+  const index = buildTextIndex(el("DIV", [el("P", [clipped, next])]));
+  assert.equal(index.truncated, true);
+  assert.deepEqual(findMatches(index, "xy"), []);
+  // The separator is what closes it, and both sides are still findable on their own.
+  assert.equal(index.text.includes(BLOCK_SEPARATOR), true);
+  assert.equal(findMatches(index, "yz").length, 1);
 });
 
 test("the ceiling holds across a block boundary", () => {

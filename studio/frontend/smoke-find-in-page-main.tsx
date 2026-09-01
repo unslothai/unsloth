@@ -114,6 +114,11 @@ function Conversation({ extra, older }: { extra: string[]; older: string[] }) {
       {/* Greek, where the fold of a sigma depends on what follows it, next to a character whose
           own fold is two units long. */}
       <p data-greek="">{"\u039f\u0394\u039f\u03a3 \u0130 \u039f\u03a3"}</p>
+      {/* The same word split by inline markup, which is how markdown emphasis arrives. */}
+      <p data-greek-split="">
+        {"\u039f"}
+        <em>{"\u03a3"}</em>
+      </p>
       {/* A code fence, where whitespace is what it says it is rather than what HTML collapses it
           to. A query typed with one space must not land on three. */}
       <pre className="whitespace-pre rounded-lg bg-muted p-3 text-xs">
