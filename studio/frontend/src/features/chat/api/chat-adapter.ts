@@ -164,6 +164,7 @@ import {
   type PendingImageEditReference,
   type RagAutoInject,
   awaitThreadScopedPairing,
+  awaitPendingQwenDefaultsMigration,
   flushPendingChatSettings,
   loadedGpuMemoryFields,
   persistGpuMemoryModeOnLoad,
@@ -4189,6 +4190,10 @@ export function createOpenAIStreamAdapter(
       // the first message after a startup edit. No wait at all unless something
       // is actually queued or in flight.
       await flushPendingChatSettings();
+      // And the migration a model pick may have just scheduled: an external
+      // selection gets no load or status callback, so this is the only join
+      // between it and the run that would otherwise send the replayed row.
+      await awaitPendingQwenDefaultsMigration();
       // Every run reaches here: the composer, Reload, Continue, and send from the edit
       // composer. Waiting for the open chat's own settings in this one place is what
       // keeps the message-level controls from starting a run on the installation

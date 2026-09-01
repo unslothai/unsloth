@@ -36,6 +36,7 @@ from hub.utils.gguf import (
     is_mmproj_filename,
     is_mtp_drafter_path,
 )
+from hub.utils.hf_tokens import ANONYMOUS_CACHE_IDENTITY, HfTokenArg, is_anonymous
 from hub.utils.state_dir import RepoType
 
 from hub.utils.hf_cache_state import (
@@ -441,13 +442,18 @@ def default_ref_snapshot(repo_dir: Path) -> Optional[Path]:
         return None
 
 
-def token_fingerprint(hf_token: Optional[str]) -> str:
+def token_fingerprint(hf_token: HfTokenArg) -> str:
     """16-char SHA256 prefix used as a cache-key qualifier for gated repos.
 
     Lets per-token size/snapshot caches refuse to serve a previously
     fetched value back to a different token (a private/gated repo's
     metadata is only valid for the credential that fetched it).
+
+    A forced-anonymous caller is a different credential from one that may still fall
+    back to the ambient token, so it takes its own identity.
     """
+    if is_anonymous(hf_token):
+        return ANONYMOUS_CACHE_IDENTITY
     if not hf_token:
         return ""
     return hashlib.sha256(hf_token.encode()).hexdigest()[:16]

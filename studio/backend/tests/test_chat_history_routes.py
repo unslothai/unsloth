@@ -785,6 +785,40 @@ def test_chat_settings_payload_rejects_junk_per_model_params():
         )
 
 
+def test_conditional_chat_settings_payload_validates_both_sides():
+    payload = chat_history.ConditionalChatSettingsPayload.model_validate(
+        {
+            "expected": {"inferenceParams": {"presencePenalty": 0.0}},
+            "expectedAbsent": ["reasoningEnabled"],
+            "expectedAbsentPaths": [["inferenceParams", "topK"]],
+            "patch": {"inferenceParams": {"presencePenalty": 1.5}},
+        }
+    )
+
+    assert payload.expected.inferenceParams.presencePenalty == 0.0
+    assert payload.expectedAbsent == ["reasoningEnabled"]
+    assert payload.expectedAbsentPaths == [["inferenceParams", "topK"]]
+    assert payload.patch.inferenceParams.presencePenalty == 1.5
+
+    with pytest.raises(ValidationError):
+        chat_history.ConditionalChatSettingsPayload.model_validate(
+            {
+                "expected": {},
+                "expectedAbsent": ["unknownSetting"],
+                "patch": {},
+            }
+        )
+
+    with pytest.raises(ValidationError):
+        chat_history.ConditionalChatSettingsPayload.model_validate(
+            {
+                "expected": {},
+                "expectedAbsentPaths": [["unknownSetting", "topK"]],
+                "patch": {},
+            }
+        )
+
+
 def test_chat_settings_payload_accepts_preset_load_config():
     payload = chat_history.ChatSettingsPayload.model_validate(
         {
@@ -1718,3 +1752,25 @@ def test_the_two_conflicts_are_distinguishable_on_the_wire(monkeypatch, error, k
 
     assert exc_info.value.status_code == 409
     assert _conflict_kind(exc_info) == kind
+
+
+def test_compare_and_set_rejects_a_non_finite_number_renderably(monkeypatch):
+    # json.loads accepts a bare NaN, so it reaches validation; echoing it back
+    # would then hit Starlette's allow_nan = False and turn a refused request
+    # into a 500 during rendering.
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    app = FastAPI()
+    app.include_router(chat_history.router, prefix = "/api/chat")
+    app.dependency_overrides[chat_history.get_current_subject] = lambda: "admin"
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/chat/settings/compare-and-set",
+        content = '{"expected": {"inferenceParams": {"temperature": NaN}}, "patch": {}}',
+        headers = {"Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 400
+    assert "NaN" not in response.text
