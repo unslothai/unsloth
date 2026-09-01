@@ -2494,6 +2494,13 @@ extra_eos_tokens = None,
 
     assert(tokenizer is not None)
 
+    # A multimodal checkpoint hands over a processor, which carries the text tokenizer
+    # in `.tokenizer`. Everything below is tokenizer-shaped -- get_vocab, name_or_path,
+    # calling it on a string -- and this returns a template, never the tokenizer, so
+    # unwrap one way and there is nothing to re-attach.
+    if hasattr(tokenizer, "tokenizer"):
+        tokenizer = tokenizer.tokenizer
+
     if extra_eos_tokens is None: extra_eos_tokens = []
     elif type(extra_eos_tokens) is str: extra_eos_tokens = [extra_eos_tokens,]
     original_extra_eos_tokens = list(extra_eos_tokens)
