@@ -87,7 +87,12 @@ class RecordingClient:
     def is_connected(self) -> bool:
         return self.connected
 
-    async def call_tool(self, name: str, args: dict, raise_on_error: bool = True):
+    async def call_tool(
+        self,
+        name: str,
+        args: dict,
+        raise_on_error: bool = True,
+    ):
         with self._lock:
             self.live += 1
             self.max_live = max(self.max_live, self.live)
@@ -106,14 +111,20 @@ class RecordingClient:
 def clients(monkeypatch):
     RecordingClient.instances = []
     monkeypatch.setattr(
-        mcp_client, "_client",
+        mcp_client,
+        "_client",
         lambda url, headers, use_oauth = False: RecordingClient(url, headers, use_oauth),
     )
     yield RecordingClient.instances
     close_mcp_sessions()
 
 
-def _call(url, name = "t", args = None, **kw):
+def _call(
+    url,
+    name = "t",
+    args = None,
+    **kw,
+):
     kw.setdefault("timeout", 30.0)
     return call_tool_sync(url, kw.pop("headers", None), name, args or {}, **kw)
 
@@ -213,7 +224,8 @@ def test_http_connect_uses_the_whole_caller_budget(monkeypatch, clients):
     cold-start cap. Scaled down so the test costs a second, not a minute."""
     monkeypatch.setattr(mcp_client, "_STDIO_CONNECT_TIMEOUT", 0.3)
     monkeypatch.setattr(
-        mcp_client, "_client",
+        mcp_client,
+        "_client",
         lambda url, headers, use_oauth = False: _slow_connect(url, headers, use_oauth, 0.8),
     )
     out = _call(HTTP_URL, scope = SCOPE, timeout = 5.0)
@@ -229,7 +241,8 @@ def _slow_connect(url, headers, use_oauth, delay):
 def test_stdio_connect_keeps_its_cold_start_cap(monkeypatch, clients):
     monkeypatch.setattr(mcp_client, "_STDIO_CONNECT_TIMEOUT", 0.3)
     monkeypatch.setattr(
-        mcp_client, "_client",
+        mcp_client,
+        "_client",
         lambda url, headers, use_oauth = False: _slow_connect(url, headers, use_oauth, 0.8),
     )
     out = _call(STDIO_URL, scope = SCOPE, timeout = 5.0)
@@ -241,7 +254,8 @@ def test_connect_timeout_reports_the_window_that_expired(monkeypatch, clients):
     cap was what fired, which sends anyone debugging it to the wrong knob."""
     monkeypatch.setattr(mcp_client, "_STDIO_CONNECT_TIMEOUT", 0.3)
     monkeypatch.setattr(
-        mcp_client, "_client",
+        mcp_client,
+        "_client",
         lambda url, headers, use_oauth = False: _slow_connect(url, headers, use_oauth, 5.0),
     )
     out = _call(STDIO_URL, scope = SCOPE, timeout = 9.0)
@@ -258,7 +272,11 @@ def test_total_deadline_still_bounds_a_slow_http_connect(clients):
 
 
 def test_connect_and_call_share_one_deadline(monkeypatch, clients):
-    def _client(url, headers, use_oauth = False):
+    def _client(
+        url,
+        headers,
+        use_oauth = False,
+    ):
         c = _slow_connect(url, headers, use_oauth, 0.25)
         c.call_delay = 0.25
         return c
@@ -271,7 +289,8 @@ def test_connect_and_call_share_one_deadline(monkeypatch, clients):
 def test_unlimited_timeout_stays_unlimited(monkeypatch, clients):
     monkeypatch.setattr(mcp_client, "_STDIO_CONNECT_TIMEOUT", 0.05)
     monkeypatch.setattr(
-        mcp_client, "_client",
+        mcp_client,
+        "_client",
         lambda url, headers, use_oauth = False: _slow_connect(url, headers, use_oauth, 0.3),
     )
     assert _call(HTTP_URL, scope = SCOPE, timeout = None) == "call-1"
@@ -282,7 +301,11 @@ def test_unlimited_timeout_stays_unlimited(monkeypatch, clients):
 # --------------------------------------------------------------------------
 
 
-def _parallel(url, scopes, delay = 0.4):
+def _parallel(
+    url,
+    scopes,
+    delay = 0.4,
+):
     out: list[str] = []
     lock = threading.Lock()
 
@@ -304,7 +327,12 @@ def test_two_http_calls_in_one_chat_run_concurrently(monkeypatch, clients):
     """Regression: the shared session must not serialize HTTP. Every JSON-RPC
     message is its own POST and responses carry request ids, so there is nothing
     to interleave; before this, a parallel tool batch took twice as long."""
-    def _client(url, headers, use_oauth = False):
+
+    def _client(
+        url,
+        headers,
+        use_oauth = False,
+    ):
         c = RecordingClient(url, headers, use_oauth)
         c.call_delay = 0.4
         return c
@@ -320,7 +348,12 @@ def test_two_http_calls_in_one_chat_run_concurrently(monkeypatch, clients):
 def test_two_stdio_calls_in_one_chat_stay_serialized(monkeypatch, clients):
     """The counterpart that must not change: one subprocess is one ordered byte
     stream, so a browser or REPL must not see two calls interleaved."""
-    def _client(url, headers, use_oauth = False):
+
+    def _client(
+        url,
+        headers,
+        use_oauth = False,
+    ):
         c = RecordingClient(url, headers, use_oauth)
         c.call_delay = 0.3
         return c
@@ -333,7 +366,11 @@ def test_two_stdio_calls_in_one_chat_stay_serialized(monkeypatch, clients):
 
 
 def test_calls_in_different_chats_run_concurrently(monkeypatch, clients):
-    def _client(url, headers, use_oauth = False):
+    def _client(
+        url,
+        headers,
+        use_oauth = False,
+    ):
         c = RecordingClient(url, headers, use_oauth)
         c.call_delay = 0.4
         return c
@@ -346,7 +383,11 @@ def test_calls_in_different_chats_run_concurrently(monkeypatch, clients):
 
 
 def test_concurrent_first_calls_publish_one_session(monkeypatch, clients):
-    def _client(url, headers, use_oauth = False):
+    def _client(
+        url,
+        headers,
+        use_oauth = False,
+    ):
         return _slow_connect(url, headers, use_oauth, 0.3)
 
     monkeypatch.setattr(mcp_client, "_client", _client)
@@ -388,9 +429,7 @@ def test_oauth_flip_before_connect_blocks_dispatch(clients):
     try:
         out: list[str] = []
         worker = threading.Thread(
-            target = lambda: out.append(
-                _call(HTTP_URL, scope = SCOPE, config_check = config_check)
-            )
+            target = lambda: out.append(_call(HTTP_URL, scope = SCOPE, config_check = config_check))
         )
         worker.start()
         assert reached.wait(10)
@@ -444,7 +483,11 @@ def test_a_transport_failure_is_never_replayed(clients):
     _call(HTTP_URL, scope = SCOPE)
     attempts = []
 
-    async def _boom(name, args, raise_on_error = True):
+    async def _boom(
+        name,
+        args,
+        raise_on_error = True,
+    ):
         attempts.append(name)
         raise RuntimeError("stream closed")
 
@@ -463,7 +506,11 @@ def test_a_tool_error_keeps_the_session(clients):
 
     _call(HTTP_URL, scope = SCOPE)
 
-    async def _tool_error(name, args, raise_on_error = True):
+    async def _tool_error(
+        name,
+        args,
+        raise_on_error = True,
+    ):
         raise ToolError("nope")
 
     clients[0].call_tool = _tool_error
@@ -488,11 +535,11 @@ def test_transport_dead_is_unknown_for_http():
     _connect_task are StdioTransport internals, absent from both HTTP transports
     on every fastmcp this repo supports."""
     from fastmcp.client.transports import SSETransport, StreamableHttpTransport
-
     for cls in (StreamableHttpTransport, SSETransport):
         transport = cls(url = "https://x.test/mcp")
         assert not hasattr(transport, "_is_session_dead")
         assert not hasattr(transport, "_connect_task")
-        assert mcp_client._transport_dead(SimpleNamespace(client = SimpleNamespace(
-            transport = transport
-        ))) is False
+        assert (
+            mcp_client._transport_dead(SimpleNamespace(client = SimpleNamespace(transport = transport)))
+            is False
+        )

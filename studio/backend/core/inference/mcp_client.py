@@ -617,7 +617,12 @@ def _abort_future(future) -> None:
 
 
 class _McpSession:
-    def __init__(self, url: str, headers: Optional[dict], use_oauth: bool = False):
+    def __init__(
+        self,
+        url: str,
+        headers: Optional[dict],
+        use_oauth: bool = False,
+    ):
         # A cached session is built by _client(url, headers) with no auth, so an
         # OAuth server must never reach here. call_tool_sync already routes it to
         # the one-shot path; this makes a future routing slip fail loudly rather
@@ -1404,9 +1409,7 @@ def _call_session_tool(
     # attempt 0 may find the cached session stale/dead *before* dispatch and
     # reconnect once (safe); attempt 1 is a freshly connected session.
     for attempt in (0, 1):
-        session = _get_session(
-            url, headers, scope, deadline, cancel_event, config_check, use_oauth
-        )
+        session = _get_session(url, headers, scope, deadline, cancel_event, config_check, use_oauth)
         locked = False
         try:
             # Serialize calls per session where the transport demands it:

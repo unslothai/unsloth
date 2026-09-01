@@ -96,7 +96,6 @@ def test_the_cap_never_drops_below_one(monkeypatch, raw, expected):
 
 def test_the_transports_this_code_builds_still_exist():
     from fastmcp.client.transports import SSETransport, StdioTransport, StreamableHttpTransport
-
     for cls in (StdioTransport, SSETransport, StreamableHttpTransport):
         assert cls is not None
 
@@ -106,12 +105,11 @@ def test_only_stdio_answers_the_liveness_probe():
     fastmcp gives the HTTP transports a real probe, this test fails and the
     recheck can become cheaper."""
     from fastmcp.client.transports import SSETransport, StreamableHttpTransport
-
     for cls in (StreamableHttpTransport, SSETransport):
         transport = cls(url = "https://x.test/mcp")
-        assert not hasattr(transport, "_is_session_dead"), (
-            f"{cls.__name__} grew a liveness probe; _transport_dead can use it now"
-        )
+        assert not hasattr(
+            transport, "_is_session_dead"
+        ), f"{cls.__name__} grew a liveness probe; _transport_dead can use it now"
 
 
 def test_the_installed_fastmcp_meets_the_declared_floor():
