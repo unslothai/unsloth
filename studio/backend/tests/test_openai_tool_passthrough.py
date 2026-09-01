@@ -205,6 +205,60 @@ class TestFriendlyUpstreamError:
             # None keeps the upstream status: a 400 would blame the caller's request.
             assert _classify_llama_generation_error(Exception(raw)) is None
 
+    def test_counts_come_from_the_structured_fields_when_the_message_has_none(self):
+        """An exceed_context_size_error body carries n_prompt_tokens/n_ctx even when its
+        message spells out no numbers. These paths are handed the whole body, so the
+        totals are right there; dropping them sends the client a count-less refusal."""
+        from routes.inference import _anthropic_upstream_error, _oversize_counts
+
+        body = (
+            '{"error":{"code":400,"message":"the request exceeds the available context '
+            'size","type":"exceed_context_size_error","n_prompt_tokens":70494,'
+            '"n_ctx":67584}}'
+        )
+        assert _oversize_counts(body) == (70494, 67584)
+        assert "Prompt is too long: 70494 tokens > 67584 maximum" in _anthropic_upstream_error(body)
+
+    def test_the_remedy_comes_from_the_fit_not_a_flat_shorten_the_conversation(self):
+        """When the latest turn or the irreducible floor is what does not fit, compacting
+        the history cannot make it fit, and a client told to compact just retries."""
+        from core.inference import context_refusal
+        from routes.inference import _anthropic_upstream_error
+
+        body = "the request (214331 tokens) exceeds the available context size (131072 tokens)"
+        try:
+            context_refusal.record_fit(
+                {
+                    "fits": False,
+                    "context_length": 131072,
+                    "irreducible_tokens": 140000,
+                    "latest_turn_tokens": 500,
+                }
+            )
+            msg = _anthropic_upstream_error(body)
+            # The head Anthropic clients key on survives.
+            assert msg.startswith("Prompt is too long: 214331 tokens > 131072 maximum.")
+            assert "shortening the conversation will not help" in msg
+
+            context_refusal.record_fit(
+                {
+                    "fits": False,
+                    "context_length": 131072,
+                    "irreducible_tokens": 140000,
+                    "latest_turn_tokens": 139000,
+                    "latest_turn_role": "tool",
+                    "latest_turn_counted": True,
+                }
+            )
+            msg = _anthropic_upstream_error(body)
+            assert "A tool returned more than this context window can hold" in msg
+            assert "shortening the conversation will not help" in msg
+        finally:
+            context_refusal.clear()
+
+        # With no recorded fit it stays the generic wording.
+        assert "Try increasing the Context Length" in _anthropic_upstream_error(body)
+
     def test_in_band_sse_error_gets_the_same_wording_as_the_non_200_branch(self):
         """A 200 stream that later emits data: {"error": ...} used to be wrapped in a
         plain RuntimeError, and _friendly_error flattens the count-less oversize

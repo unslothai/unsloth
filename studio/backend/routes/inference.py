@@ -322,17 +322,38 @@ def _friendly_upstream_error(text: str) -> str:
     return f"llama-server error: {text}"
 
 
+def _oversize_counts(text: str):
+    """(prompt, context) for an oversize refusal, or None.
+
+    The prose counts first, then the structured `n_prompt_tokens`/`n_ctx` that an
+    `exceed_context_size_error` body carries: these paths are handed the whole body, so
+    when the message itself has no numbers the fields in it are still the real totals.
+    """
+    m = _OVERSIZE_TOKENS_RE.search(text)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    return _parse_overflow_counts(text)
+
+
 def _anthropic_upstream_error(text: str) -> str:
     # Starvation is a shared-cache capacity failure, not an oversized prompt: the right
     # response is to retry, so it must not be reworded into "shorten the conversation".
     if is_kv_starvation(text):
         return KV_STARVATION_MESSAGE
     if _classify_llama_generation_error(Exception(text)):
-        m = _OVERSIZE_TOKENS_RE.search(text)
-        counts = f": {m.group(1)} tokens > {m.group(2)} maximum" if m else ""
+        counts = _oversize_counts(text)
+        if counts:
+            # Anthropic's own head wording, which its clients key on to compact, paired
+            # with the fit's remedy rather than a flat "shorten the conversation": when
+            # the latest turn or the system prompt is what does not fit, compacting the
+            # history cannot help and the client would just retry it.
+            return (
+                f"Prompt is too long: {counts[0]} tokens > {counts[1]} maximum. "
+                + context_refusal.oversize_advice(counts[1])
+            )
         return (
-            f"Prompt is too long{counts}. Shorten the conversation, or increase the "
-            "Context Length in Model settings."
+            "Prompt is too long. Try increasing the Context Length in Model settings, "
+            "or shorten the conversation."
         )
     return _friendly_upstream_error(text)
 
