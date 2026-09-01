@@ -911,7 +911,6 @@ def test_a_loaded_template_that_cannot_reason_keeps_the_flat_preset(monkeypatch,
 def test_count_tokens_rejects_an_effort_the_chat_endpoint_would_reject(effort):
     from models.inference import ChatCountTokensRequest
     from pydantic import ValidationError
-
     with pytest.raises(ValidationError):
         ChatCountTokensRequest.model_validate(
             {"messages": [{"role": "user", "content": "hi"}], "reasoning_effort": effort}
