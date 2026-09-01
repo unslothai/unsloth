@@ -815,6 +815,8 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
             dtype = dtype,
             enabled = dtype in (torch.float16, torch.bfloat16),
         )
+    # Prepare LoRA
+    # state_dict = convert_lora_modules(self, dtype = dtype)
 
     # FlashAttention breaks on the forced static cache below (unfilled slots stay unmasked while
     # decoding), so delegate after normalization but before it.
