@@ -12,7 +12,6 @@ Converts IPython magics to plain Python:
     /content/...      -> _WORKING_DIR + /...
 """
 
-import nbformat
 import re
 import shlex
 import sys
@@ -193,6 +192,13 @@ def convert_notebook(
     allow_shell: bool = True,
 ) -> str:
     """Convert notebook JSON content to Python script."""
+    # Imported here, not at module scope, so the pure-string helpers below can be
+    # imported without it. `Repo tests (CPU, auto-discovered)` runs pytest over all
+    # of tests/ and does not install nbformat, so a module-level import made
+    # importing `converted_filename` from a test a collection-time
+    # ModuleNotFoundError for the whole file.
+    import nbformat
+
     # Parse notebook
     if isinstance(notebook_content, str):
         notebook = nbformat.reads(notebook_content, as_version = 4)

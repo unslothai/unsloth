@@ -115,7 +115,19 @@ jobs:
           # update_all_notebooks.py.
           pip install \
             'nbformat>=5.10' 'nbconvert>=7.16' 'pyspellchecker>=0.8' \
-            'huggingface_hub>=0.34' 'tqdm>=4.66'
+            'huggingface_hub>=0.34' 'tqdm>=4.66' \
+            pytest 'pyyaml>=6'
+
+      - name: Smoke-install contract
+        # Run here, not only in the auto-discovering test jobs, because those key
+        # on `tests/**` and `scripts/**` and this file is not in their paths. A PR
+        # editing only this workflow would otherwise skip the guard that exists to
+        # protect this workflow, which is how the smoke job's interpreter pin and
+        # its snapshot drifted apart unnoticed in the first place.
+        #
+        # This job checks the repo out under `unsloth/`, so the path is prefixed;
+        # an unprefixed one collects nothing and passes vacuously.
+        run: python -m pytest unsloth/tests/notebooks/test_smoke_install_contract.py -q
 
       - name: Diff Colab oracle vs committed snapshots (advisory)
         # Pulls pip-freeze.gpu.txt + apt-list-gpu.txt + os-info-gpu.txt
@@ -384,11 +396,15 @@ jobs:
     name: smoke install (Colab-shaped venv, opt-in)
     if: ${{ github.event.inputs.include_smoke == 'true' || github.event_name == 'schedule' }}
     runs-on: ubuntu-latest
-    # Above the sum of the per-step caps below (6 + 12 + 8), on purpose. The
-    # steps are what should stop a stall, because a step reports `failure` with
-    # a diagnostic and this cap reports `cancelled` with nothing. If this number
-    # is ever the one that fires, the step budgets are wrong.
-    timeout-minutes: 35
+    # Above the sum of every per-step cap below (8 restore + 3 seed + 28 install
+    # + 10 save + 10 install-cell + 5 verify = 64, plus ~4 for the checkouts and
+    # interpreter setup that GitHub charges to this clock without showing in the
+    # step timings). The steps are what should stop a stall: a step that exceeds
+    # `timeout-minutes` is killed and the job reports `failure` with the step
+    # named, whereas this cap reports `cancelled` with nothing, and `cancelled`
+    # outranks `failure` in the run rollup. If this number is ever the one that
+    # fires, the step budgets are wrong.
+    timeout-minutes: 70
     strategy:
       fail-fast: false
       matrix:
@@ -438,6 +454,9 @@ jobs:
         # under `unsloth/`, so the unprefixed path is a directory that does not
         # exist and the step fails with "Can't find 'action.yml'".
         uses: ./unsloth/.github/actions/pip-cache-restore
+        # ~2 minutes observed for the 10.3 GB entry. Capped because a slow cache
+        # transfer is otherwise unbounded and lands on the job clock.
+        timeout-minutes: 8
         with:
           name: notebooks-colab
           # The freeze is the pin set, so it is what the downloads depend on. The
@@ -453,6 +472,7 @@ jobs:
             unsloth/.github/workflows/notebooks-ci.yml
 
       - name: Seed Colab-shaped venv from pip-freeze (CPU-mapped)
+        timeout-minutes: 3
         run: |
           # set -e, or the interpreter check below is decorative: the heredoc
           # exits 1, the `cat`/`head`/`wc` after it succeed, and the step takes
@@ -514,6 +534,10 @@ jobs:
         # somebody pressed stop, and one leg that genuinely failed beside them is
         # hidden outright (2026-08-21 did exactly that). Nothing watches this
         # workflow, so a silent stall was indistinguishable from a pass.
+        #
+        # The inner `timeout` calls bound each phase and print why; this is the
+        # backstop for the step as a whole (6 + 12 + 8 = 26 inside).
+        timeout-minutes: 28
         run: |
           set -uo pipefail
           python -m pip install --upgrade pip
@@ -582,6 +606,9 @@ jobs:
         # always(), because the fallback path is exactly when the cache is worth
         # most: it installs 709 pins one at a time, and a partial download set is
         # still a head start on the next run.
+        #
+        # Uploads multiple GB on a miss.
+        timeout-minutes: 10
         uses: ./unsloth/.github/actions/pip-cache-save
         with:
           dir: ${{ steps.pip-cache.outputs.dir }}
@@ -589,6 +616,10 @@ jobs:
           cache-hit: ${{ steps.pip-cache.outputs.cache-hit }}
 
       - name: Run install cell
+        # The notebook's own install cell, which runs arbitrary pip work this
+        # workflow does not control. Uncapped, it was the remaining way to reach
+        # the job cap and be scored `cancelled`.
+        timeout-minutes: 10
         env:
           NOTEBOOK: ${{ matrix.notebook }}
         run: |
@@ -626,6 +657,7 @@ jobs:
           PY
 
       - name: Verify imports under spoof
+        timeout-minutes: 5
         run: |
           PYTHONPATH=unsloth/tests python -u - <<'PY'
           import sys, types
