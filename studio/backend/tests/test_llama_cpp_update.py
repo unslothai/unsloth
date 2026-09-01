@@ -658,14 +658,10 @@ def test_start_update_reports_full_release_tag(monkeypatch, tmp_path):
 def test_an_update_that_kept_the_existing_install_does_not_claim_a_new_release(
     monkeypatch, tmp_path
 ):
-    """Exit 0 no longer implies the release changed.
-
-    The installer answers a transient failure by keeping the tree on disk and
-    exiting 0, so "Updated llama.cpp to <tag>" would name the release the user
-    already had. The phase only starts when a newer release was offered, so
-    reporting the kept release as current would be just as wrong: the update is
-    still pending and the user has to retry.
-    """
+    """Exit 0 no longer implies the release changed: the installer answers a transient
+    failure by keeping the tree and exiting 0, so "Updated llama.cpp to <tag>" would name
+    the release the user already had. Reporting it as current is just as wrong, since the
+    phase only starts when a newer release was offered and the retry is still pending."""
     install_dir = tmp_path / "llama.cpp"
     binary = _write_install(install_dir, "b9595", release_tag = "b9595-mix-aaaaaaa")
     monkeypatch.setattr(upd, "_find_binary", lambda: binary)
@@ -676,8 +672,7 @@ def test_an_update_that_kept_the_existing_install_does_not_claim_a_new_release(
         lambda repo, timeout = 5.0: "b9596-mix-e6f2453",
     )
 
-    # macOS is the reachable case: start_update passes no pin there, so the pinned-tag
-    # mismatch guard that catches this elsewhere does not run.
+    # macOS is the reachable case: no pin is passed there, so the mismatch guard is silent.
     monkeypatch.setattr(upd.sys, "platform", "darwin")
 
     # Exit 0 having changed nothing, which is what the keep path does.

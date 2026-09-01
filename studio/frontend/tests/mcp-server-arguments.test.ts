@@ -387,7 +387,6 @@ test("MCP configuration remains reachable when the loaded model lacks tools", ()
 
   assert.doesNotMatch(composer, /aria-disabled=\{true\}/);
   assert.match(composer, /The loaded model cannot use MCP tools/);
-  // Presets remain configurable without a loaded model.
   assert.doesNotMatch(composer, /disabled=\{[^}]*!usable/);
   assert.match(
     composer,
