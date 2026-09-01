@@ -57,6 +57,13 @@ from models.inference import (
 )
 from utils.api_errors import openai_error_body
 from utils.upload_limits import VIDEO_INPUT_REFERENCE_MAX_BYTES
+from utils import signed_media_links
+from utils.workspace_context import (
+    LEGACY_WORKSPACE_SUBJECT,
+    current_workspace_subject,
+    reset_workspace_subject,
+    set_workspace_subject,
+)
 
 logger = get_logger(__name__)
 
@@ -600,30 +607,13 @@ _VIDEO_LINK_SECRET = _secrets.token_bytes(32)
 
 
 def _sign_video_id(video_id: str) -> str:
-    exp = int(_time.time()) + _VIDEO_LINK_TTL
-    payload = f"{video_id}.{exp}"
-    sig = _hmac.new(_VIDEO_LINK_SECRET, payload.encode(), _hashlib.sha256).hexdigest()
-    return f"{payload}.{sig}"
+    return signed_media_links.sign(_VIDEO_LINK_SECRET, video_id, _VIDEO_LINK_TTL)
 
 
 def _verify_video_link_token(token: str) -> Optional[str]:
     """The video id a valid, unexpired token names, else None. A separate secret from the image
     links, so a token minted for one media type can never serve the other."""
-    try:
-        video_id, exp_s, sig = token.rsplit(".", 2)
-    except ValueError:
-        return None
-    expected = _hmac.new(
-        _VIDEO_LINK_SECRET, f"{video_id}.{exp_s}".encode(), _hashlib.sha256
-    ).hexdigest()
-    if not _hmac.compare_digest(sig, expected):
-        return None
-    try:
-        if int(exp_s) < int(_time.time()):
-            return None
-    except ValueError:
-        return None
-    return video_id
+    return signed_media_links.verify(_VIDEO_LINK_SECRET, token)[0]
 
 
 @router.get("/video/gallery/{video_id}/signed-url")
@@ -657,9 +647,16 @@ async def get_gallery_video_file_signed(video_id: str, token: str = Query(...)):
     the token names the single clip it may serve."""
     from core.inference import video_gallery
 
-    if _verify_video_link_token(token) != video_id:
+    signed_id, subject = signed_media_links.verify(_VIDEO_LINK_SECRET, token)
+    if signed_id != video_id:
         raise HTTPException(status_code = 401, detail = "Invalid or expired video link.")
-    path = await asyncio.to_thread(video_gallery.owned_video_path, video_id)
+    # No bearer on this route, so the gallery would otherwise resolve the owner's
+    # directory and a managed account would get a 404 for its own clip.
+    _token = set_workspace_subject(subject)
+    try:
+        path = await asyncio.to_thread(video_gallery.owned_video_path, video_id)
+    finally:
+        reset_workspace_subject(_token)
     if path is None:
         raise HTTPException(status_code = 404, detail = "Video not found.")
     from fastapi.responses import FileResponse
@@ -811,6 +808,10 @@ class _VideoJob:
     progress: int = 0
     completed_at: Optional[int] = None
     error: Optional[dict] = None
+    # The account the job belongs to. _jobs is process-global while the gallery
+    # behind it is per account, so without this every response merges in every
+    # other account's open jobs and their ids accept a delete.
+    subject: str = ""
 
     @property
     def terminal(self) -> bool:
@@ -821,11 +822,27 @@ _jobs: dict[str, _VideoJob] = {}
 _jobs_lock = threading.Lock()
 
 
+def _job_is_mine(job: "_VideoJob") -> bool:
+    """Whether ``job`` belongs to the calling workspace.
+
+    Jobs remembered before this field carry "", which is the owner's own legacy
+    state and stays visible to the owner alone.
+    """
+    return (job.subject or LEGACY_WORKSPACE_SUBJECT) == current_workspace_subject()
+
+
+def _my_jobs_locked() -> dict[str, "_VideoJob"]:
+    return {job_id: job for job_id, job in _jobs.items() if _job_is_mine(job)}
+
+
 def _forget_openai_job(video_id: str) -> bool:
     """Forget disk and memory state without letting a stale poll save between them."""
     from core.inference import video_gallery
 
     with _jobs_lock:
+        remembered = _jobs.get(video_id)
+        if remembered is not None and not _job_is_mine(remembered):
+            return False
         if not video_gallery.forget_job(video_id):
             return False
         _jobs.pop(video_id, None)
@@ -1030,6 +1047,7 @@ def _hydrate_job(video_id: str) -> None:
             return
         job = _job_from_record(video_gallery.get_job(video_id) or {})
         if job is not None:
+            job.subject = job.subject or current_workspace_subject()
             _jobs.setdefault(job.id, job)
 
 
@@ -1041,6 +1059,7 @@ def _hydrate_jobs() -> list[_VideoJob]:
         ]
         jobs.sort(key = lambda job: job.created_at, reverse = True)
         for job in jobs[:_MAX_REMEMBERED_JOBS]:
+            job.subject = job.subject or current_workspace_subject()
             _jobs.setdefault(job.id, job)
     return jobs
 
@@ -1051,7 +1070,7 @@ def _sync_jobs() -> None:
     from core.inference.video_families import VIDEO_CANCELLED_MSG
 
     with _jobs_lock:
-        open_jobs = [job for job in _jobs.values() if not job.terminal]
+        open_jobs = [job for job in _jobs.values() if not job.terminal and _job_is_mine(job)]
     if not open_jobs:
         return
     gen = get_video_backend().generate_progress()
@@ -1142,6 +1161,8 @@ def _lookup_video(video_id: str) -> Optional[VideoJob]:
     _sync_jobs()
     with _jobs_lock:
         job = _jobs.get(video_id)
+        if job is not None and not _job_is_mine(job):
+            job = None  # another account's job is not found, not forbidden
     if job is not None and job.status != "completed":
         return _job_to_openai(job)
     record = video_gallery.get_record(video_id)
@@ -1157,7 +1178,7 @@ def _all_videos() -> list[VideoJob]:
     _sync_jobs()
     with _jobs_lock:
         jobs = {job.id: job for job in persisted_jobs}
-        jobs.update(_jobs)
+        jobs.update(_my_jobs_locked())
     records = video_gallery.list_videos(None, 0, valid = _valid_gallery_video_record)
     records.extend(
         video_gallery.list_videos(None, 0, valid = _valid_gallery_video_record, archived = True)
@@ -1473,6 +1494,7 @@ async def _create_openai_video(
         seconds_text = body.seconds or "auto"
     job = _VideoJob(
         id = video_id,
+        subject = current_workspace_subject(),
         created_at = int(_time.time()),
         prompt = body.prompt,
         model = public_model_id(
