@@ -39,18 +39,23 @@ export function defaultsFor(repoId: string): {
   steps: number;
   guidance: number;
 } {
-  const id = repoId.toLowerCase();
-  const matched = MODEL_DEFAULTS.find((entry) => id.includes(entry.match));
+  const matched = matchedDefaults(repoId);
   return matched
     ? { steps: matched.steps, guidance: matched.guidance }
     : DEFAULT_GEN;
 }
 
-/** The explicit family is the only semantic key for an opaque local pipeline path. */
+function matchedDefaults(repoId: string): (typeof MODEL_DEFAULTS)[number] | undefined {
+  const id = repoId.toLowerCase();
+  return MODEL_DEFAULTS.find((entry) => id.includes(entry.match));
+}
+
+/** Prefer a recognizable model variant; use the explicit family only for an opaque path. */
 export function defaultsKeyFor(
   repoId: string,
   familyOverride: string | null | undefined,
 ): string {
+  if (matchedDefaults(repoId)) return repoId;
   const family = familyOverride?.trim();
   return family && family.toLowerCase() !== "auto" ? family : repoId;
 }
@@ -69,8 +74,10 @@ export function residentDefaultsKey(
     | null
     | undefined,
 ): string {
+  const repoKey = baseRepo ?? repoId;
+  if (matchedDefaults(repoKey)) return repoKey;
   const family = resolvedFamily?.source === "explicit" ? resolvedFamily.value : null;
   return typeof family === "string" && family.trim()
     ? family.trim()
-    : (baseRepo ?? repoId);
+    : repoKey;
 }

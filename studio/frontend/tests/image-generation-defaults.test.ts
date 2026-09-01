@@ -49,6 +49,17 @@ test("an explicit family supplies defaults for an opaque local path", () => {
   assert.equal(defaultsKeyFor(opaque, "auto"), opaque);
 });
 
+test("an explicit family does not flatten a recognizable picked variant", () => {
+  const schnell = "black-forest-labs/FLUX.1-schnell";
+  const turbo = "Tongyi-MAI/Z-Image-Turbo";
+  assert.equal(defaultsKeyFor(schnell, "flux.1"), schnell);
+  assert.equal(defaultsKeyFor(turbo, "z-image"), turbo);
+  assert.deepEqual(defaultsFor(defaultsKeyFor(schnell, "flux.1")), {
+    steps: 4,
+    guidance: 0,
+  });
+});
+
 test("resident defaults use explicit family without flattening named variants", () => {
   const opaque = "/models/my-private-finetune";
   assert.equal(
@@ -62,7 +73,7 @@ test("resident defaults use explicit family without flattening named variants", 
     residentDefaultsKey(
       "black-forest-labs/FLUX.1-schnell",
       "black-forest-labs/FLUX.1-schnell",
-      { value: "flux.1", source: "auto" },
+      { value: "flux.1", source: "explicit" },
     ),
     "black-forest-labs/FLUX.1-schnell",
   );
