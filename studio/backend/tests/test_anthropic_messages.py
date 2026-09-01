@@ -885,7 +885,7 @@ class TestAnthropicMessagesToOpenAI:
         from routes.inference import _sanitize_anthropic_openai_messages, _template_supports_tools
 
         class DiffusionGemma:
-            supports_tools = False            # forced off: keeps it out of the tool loop
+            supports_tools = False  # forced off: keeps it out of the tool loop
             supports_tool_passthrough = True  # the real template capability
 
         class ToollessTemplate:
@@ -918,7 +918,6 @@ class TestAnthropicMessagesToOpenAI:
 
     def test_folding_gate_prefers_passthrough_even_when_supports_tools_raises(self):
         from routes.inference import _template_supports_tools
-
         class HalfReady:
             supports_tool_passthrough = False
 
