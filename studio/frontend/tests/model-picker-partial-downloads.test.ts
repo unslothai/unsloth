@@ -163,6 +163,33 @@ test("a partial row keeps its buttons on screen instead of hiding them behind ho
   );
 });
 
+test("a torn quant inside the expander keeps its own menu", () => {
+  // The expander lists torn quants, but the menu was gated on v.downloaded, so the one row that
+  // holds bytes you might want back had no reveal and no delete. A partial still occupies disk.
+  assert.match(
+    PICKERS,
+    /\{\(v\.downloaded \|\| v\.partial === true\) &&\n\s*\(allowPin \|\|/,
+    "the menu follows disk, not completeness",
+  );
+  // Pinning an unloadable quant would put a dead row at the top of the list.
+  assert.match(
+    PICKERS,
+    /pin=\{\n\s*allowPin && v\.downloaded\n\s*\? \{/,
+    "pin stays for complete quants only",
+  );
+  // Settings still need a loadable file, so the gear is untouched.
+  assert.ok(PICKERS.includes("{v.downloaded && onConfigure && ("));
+});
+
+test("a torn quant is labelled, not left looking undownloaded", () => {
+  // Without a label the row reads as a quant you have not fetched yet, which is the opposite of
+  // what it is. Local paths already said "incomplete"; cached repos said nothing at all.
+  assert.match(
+    PICKERS,
+    /\) : v\.partial === true \? \(\n\s*<span className="ml-1\.5 text-ui-9 font-sans font-medium text-amber-700 dark:text-amber-300">\n\s*partial\n/,
+  );
+});
+
 test("the expander still lists torn quants, which is where resume lives", () => {
   // The repo row deletes the whole partial; resuming targets one quant, so it belongs to the
   // variant rows. If this filter ever drops partials there is no resume path left anywhere.

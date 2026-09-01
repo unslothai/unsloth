@@ -2151,6 +2151,10 @@ function GgufVariantExpander({
                     </span>
                   ) : null}
                 </>
+              ) : v.partial === true ? (
+                <span className="ml-1.5 text-ui-9 font-sans font-medium text-amber-700 dark:text-amber-300">
+                  partial
+                </span>
               ) : isRecommended ? (
                 <span className="ml-1.5 text-ui-9 font-sans font-medium text-primary/70">
                   recommended
@@ -2224,7 +2228,7 @@ function GgufVariantExpander({
                 }
               />
             )}
-            {v.downloaded &&
+            {(v.downloaded || v.partial === true) &&
               (allowPin ||
                 (v.update_available && onUpdateVariant) ||
                 onDeleteVariant ||
@@ -2236,7 +2240,7 @@ function GgufVariantExpander({
                     isLocalPath ? undefined : { repoId, variant: v.quant }
                   }
                   pin={
-                    allowPin
+                    allowPin && v.downloaded
                       ? {
                           pinned: pinnedKeys.includes(pinKey(repoId, v.quant)),
                           pinLabel: "Pin to top",
