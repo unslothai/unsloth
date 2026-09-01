@@ -1054,3 +1054,66 @@ def test_deleting_an_account_retires_its_projects_and_sandbox_too(
     auth_storage.create_managed_user("casey")
     for root in auth_storage._subject_owned_roots("casey"):
         assert not (root / "private.txt").exists()
+
+
+def test_sandbox_lifecycle_keys_are_private_to_a_workspace():
+    from core.inference import tools
+
+    keys = {}
+    for subject in ("alice", "bob"):
+        token = _bind(subject)
+        try:
+            keys[subject] = tools._session_key("shared-session")
+        finally:
+            reset_workspace_subject(token)
+    assert keys["alice"] != keys["bob"]
+    assert tools._subject_of_session_key(keys["alice"]) == "alice"
+
+
+def test_the_media_model_index_is_not_shared_between_accounts():
+    from core.inference import media_model_index as mmi
+
+    mmi.invalidate_index()
+    token = _bind("alice")
+    try:
+        mmi._index[(current_workspace_subject(), "image")] = (time.monotonic(), {"m": object()})
+        assert mmi._cached_index("image") == {"m": mmi._index[("alice", "image")][1]["m"]}
+    finally:
+        reset_workspace_subject(token)
+    token = _bind("bob")
+    try:
+        assert ("bob", "image") not in mmi._index
+    finally:
+        reset_workspace_subject(token)
+        mmi.invalidate_index()
+
+
+def test_a_training_start_request_id_cannot_replay_another_accounts_outcome():
+    from core.training.training import TrainingBackend
+
+    backend = TrainingBackend.__new__(TrainingBackend)
+    backend._lock = threading.RLock()
+    backend._start_requests = {}
+    backend._start_cancel_tombstones = {}
+    backend._pending_start_request_id = None
+    backend._status_start_request_id = None
+
+    token = _bind("alice")
+    try:
+        outcome, record = backend.reserve_start_request("same-id", "job-alice")
+        assert outcome == "reserved" and record.subject == "alice"
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind("bob")
+    try:
+        # Bob must not be handed Alice's record, and must not be told it exists.
+        assert backend.peek_start_request("same-id") is None
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind("alice")
+    try:
+        assert backend.peek_start_request("same-id").job_id == "job-alice"
+    finally:
+        reset_workspace_subject(token)
