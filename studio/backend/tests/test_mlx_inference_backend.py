@@ -3830,9 +3830,9 @@ def test_an_mlx_count_prices_the_date_an_api_key_tool_loop_still_gets(monkeypatc
 
     line = current_date_prompt_line(request = keyed)
     assert line, "the harness must produce a date line"
-    assert line in backend.system, (
-        f"the count dropped the date the tool-loop completion adds: {backend.system!r}"
-    )
+    assert (
+        line in backend.system
+    ), f"the count dropped the date the tool-loop completion adds: {backend.system!r}"
 
 
 def test_an_mlx_count_reports_the_advertised_model_id(monkeypatch):
@@ -3841,10 +3841,6 @@ def test_an_mlx_count_reports_the_advertised_model_id(monkeypatch):
     from routes import inference as route
 
     backend = _RenderRecordingBackend()
-    monkeypatch.setattr(
-        route, "_orchestrator_public_model_id", lambda _b: "org/advertised-repo-id"
-    )
-    served = _count_route(
-        monkeypatch, backend, messages = [{"role": "user", "content": "hello"}]
-    )
+    monkeypatch.setattr(route, "_orchestrator_public_model_id", lambda _b: "org/advertised-repo-id")
+    served = _count_route(monkeypatch, backend, messages = [{"role": "user", "content": "hello"}])
     assert json.loads(served.body)["model"] == "org/advertised-repo-id"

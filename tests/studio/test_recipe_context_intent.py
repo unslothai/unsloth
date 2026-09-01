@@ -27,9 +27,7 @@ from _node_harness import (
     source_path,
 )
 
-RECIPES = source_path(
-    "studio/frontend/src/features/recipe-studio/hooks/use-recipe-executions.ts"
-)
+RECIPES = source_path("studio/frontend/src/features/recipe-studio/hooks/use-recipe-executions.ts")
 
 TEMP = WORKDIR / "temp" / "recipe_context_intent"
 
@@ -70,9 +68,9 @@ def test_only_mlx_reads_a_positive_context_echo_as_a_pin():
     assert out["mlxAuto"] is None
     assert out["mlxUnset"] is None
     # GGUF: the echo says nothing, so an unpinned recipe must not force a reload.
-    assert out["ggufEcho"] is None, (
-        "a positive GGUF echo is the resolved n_ctx of an Auto load, not a pin"
-    )
+    assert (
+        out["ggufEcho"] is None
+    ), "a positive GGUF echo is the resolved n_ctx of an Auto load, not a pin"
     assert out["ggufAuto"] is None
 
 
