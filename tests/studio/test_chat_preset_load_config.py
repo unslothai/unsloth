@@ -3,6 +3,7 @@
 
 """Contract coverage for preset load settings (#7347)."""
 
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -41,7 +42,7 @@ def test_persisted_preset_serializes_load_config():
 
 def test_capture_reads_gguf_loaded_context():
     source = _read("studio/frontend/src/features/chat/presets/preset-load-config.ts")
-    assert "store.ggufContextLength" in source
+    assert "store.loadedContextLength" in source
     assert "effectiveContextLength" in source
 
 
@@ -83,3 +84,31 @@ def test_preset_load_config_carries_parallel_slots():
         "nParallel: Optional[int] = Field(default = None, ge = PARALLEL_MIN, le = PARALLEL_MAX)"
         in routes
     )
+
+
+def test_a_preset_records_a_self_sizing_load_s_pin_and_not_its_window():
+    """A preset must reproduce the setup that ran. A window nobody pinned is reached again
+    on replay, so only the pin is stored -- in the one field that means "pinned"."""
+    source = _read("studio/frontend/src/features/chat/presets/preset-load-config.ts")
+    body = source[source.index("export function capturePresetLoadConfig") :]
+    body = body[: body.index("\n}\n")]
+    # Here: capture asks the rule, off classifiers rather than constants, and bounds it.
+    assert "requestableContextLength(\n    capturedContextLength(" in body, body
+    assert "isServedByLlamaCpp({\n    loadedIsGguf: store.loadedIsGguf," in body, body
+    assert not re.search(r"LlamaCpp\(\{[^}]*?(\w+): (?!store\.[\w.]*\1,)", body), body
+    assert "isServedByMlx(isGguf, platform.deviceType, platform.chatOnlyReason)" in body, body
+    # Compared as a pin, not as a field: another backend holds it in the other field.
+    compare = source[source.index("function toComparablePerModelConfig(") :]
+    compare = compare[: compare.index("\n}\n")]
+    assert "const pin = savedContextPin(config);" in compare, compare
+    assert "customContextLength: pin,\n    maxSeqLength: null," in compare, compare
+    # Both bounds, in the one rule capture and storage share, else the replays disagree.
+    rule = source[source.index("function requestableContextLength(") :]
+    rule = rule[: rule.index("\n}\n")]
+    assert "Math.min(MAX_SEQ_LENGTH_MAX, Math.max(CONTEXT_LENGTH_MIN," in rule, rule
+    assert source.count("requestableContextLength(") == 3, source
+    assert "loadedContextLength: store.loadedContextLength," in body, body
+    assert "controlPin: snapshot.customContextLength," in body, body
+    # A self-sized window is never captured: bounded, it replays a wider one narrower.
+    assert re.search(r"capturedContextLength\(\{\n\s*isGguf,\n\s*controlPin:", body), body
+    assert "maxSeqLength: isMlx ? null : normalizeMaxSeqLength(" in body, body
