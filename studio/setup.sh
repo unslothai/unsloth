@@ -941,6 +941,31 @@ fi
 STAGE_ROOT="${UNSLOTH_STUDIO_STAGE_ROOT:-}"
 RUNTIME_ROOT="${STAGE_ROOT:-$STUDIO_HOME}"
 VENV_DIR="$RUNTIME_ROOT/unsloth_studio"
+
+# Same uv cache install.sh chose, for the same reasons -- kept byte-identical to the
+# block there, including the write probe and the unwind on failure.
+#
+# This script is also the standalone entry point: `unsloth studio update` runs it
+# directly, without install.sh, so an export made only there covers the first install and
+# nothing after it. A redirected STUDIO_HOME would then download a SECOND cache to
+# $HOME/.cache/uv on the very first update and copy every wheel across the filesystem
+# boundary, which is exactly the disk cost the co-location exists to avoid -- deferred by
+# one run rather than fixed. Pointing at the same path also means the update reuses the
+# cache the install filled instead of refetching it.
+#
+# STUDIO_HOME, not RUNTIME_ROOT: the cache has to be the one install.sh created, and the
+# two agree whenever UNSLOTH_STUDIO_STAGE_ROOT is unset, which is every non-staged run.
+if [ -z "${UV_CACHE_DIR:-}" ]; then
+    UV_CACHE_DIR="$STUDIO_HOME/cache/uv"
+    export UV_CACHE_DIR
+    _uv_cache_probe="$UV_CACHE_DIR/.unsloth-write-probe.$$"
+    if ! mkdir -p "$UV_CACHE_DIR" 2>/dev/null || ! (: > "$_uv_cache_probe") 2>/dev/null; then
+        echo "[WARN] Cannot write to $UV_CACHE_DIR -- using uv's default cache." >&2
+        unset UV_CACHE_DIR
+    fi
+    rm -f "$_uv_cache_probe" 2>/dev/null || true
+    unset _uv_cache_probe
+fi
 VENV_T5_530_DIR="$RUNTIME_ROOT/.venv_t5_530"
 VENV_T5_550_DIR="$RUNTIME_ROOT/.venv_t5_550"
 VENV_T5_510_DIR="$RUNTIME_ROOT/.venv_t5_510"

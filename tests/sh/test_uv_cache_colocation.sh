@@ -131,6 +131,43 @@ assert_eq "found the venv creation call" "yes" "$([ -n "$_venv_line" ] && echo y
 assert_eq "precedes venv creation" "yes" \
     "$([ -n "$_set_line" ] && [ -n "$_venv_line" ] && [ "$_set_line" -lt "$_venv_line" ] && echo yes || echo no)"
 
+echo "=== studio/setup.sh sets the SAME cache (it is the standalone update entry point) ==="
+# install.sh exports UV_CACHE_DIR for its own process only. `unsloth studio update` runs
+# studio/setup.sh directly, so without the same block there a redirected STUDIO_HOME
+# downloads a second cache to $HOME/.cache/uv on the very first update and copies every
+# wheel across the filesystem boundary -- the exact disk cost co-location exists to avoid,
+# deferred by one run rather than fixed. Same path, so the update also REUSES what the
+# install already fetched.
+SETUP_SH="$SCRIPT_DIR/../../studio/setup.sh"
+_SETUP_FN=$(mktemp)
+trap 'rm -rf "$_FN_FILE" "$_TMP" "$_SETUP_FN"' EXIT
+awk '/^# Same uv cache install\.sh chose/,/^fi$/' "$SETUP_SH" > "$_SETUP_FN"
+if ! grep -q 'UV_CACHE_DIR="\$STUDIO_HOME/cache/uv"' "$_SETUP_FN"; then
+    echo "  FAIL: could not extract the UV_CACHE_DIR block from studio/setup.sh"
+    FAIL=$((FAIL + 1))
+else
+    _run_setup() {  # $1 = STUDIO_HOME, $2 = preset UV_CACHE_DIR ("" for unset)
+        "$_SH" -c "
+            STUDIO_HOME='$1'
+            if [ -n '$2' ]; then UV_CACHE_DIR='$2'; export UV_CACHE_DIR; else unset UV_CACHE_DIR; fi
+            . '$_SETUP_FN'
+            printf '%s' \"\${UV_CACHE_DIR:-<unset>}\"
+        "
+    }
+    assert_eq "setup.sh defaults under STUDIO_HOME" \
+        "$_TMP/upd/cache/uv" "$(_run_setup "$_TMP/upd" '')"
+    # The whole point: the update lands on the SAME path install.sh chose, so a
+    # redirected home does not grow a second cache on the original filesystem.
+    assert_eq "setup.sh matches install.sh for a redirected home" \
+        "$_TMP/sdcard/unsloth/cache/uv" "$(_run_setup "$_TMP/sdcard/unsloth" '')"
+    assert_eq "setup.sh keeps a caller-set value" \
+        "/custom/uvcache" "$(_run_setup "$_TMP/upd" '/custom/uvcache')"
+    # Same unwritable-path contract as install.sh, so an update cannot fail where the
+    # install succeeded.
+    mkdir -p "$_TMP/updro" && : > "$_TMP/updro/cache"
+    assert_eq "setup.sh drops an unusable cache" "<unset>" "$(_run_setup "$_TMP/updro" '')"
+fi
+
 echo ""
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]
