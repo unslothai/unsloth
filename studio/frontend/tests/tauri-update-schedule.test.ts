@@ -11,9 +11,18 @@ const PERIODIC_INTERVAL_MS = 60 * 60 * 1_000;
 
 type UpdateController = {
   checkForUpdate: () => Promise<void>;
+  installUpdate: () => Promise<void>;
 };
 
 type Listener = EventListenerOrEventListenerObject;
+
+interface HookHarnessOptions {
+  failCheckAt?: number;
+  holdPreparation?: boolean;
+  noUpdateAt?: number;
+  rejectDiscard?: boolean;
+  tauri?: boolean;
+}
 
 function createEventTarget() {
   const listeners = new Map<string, Set<Listener>>();
@@ -176,10 +185,19 @@ function installBrowserClock() {
 function createHookReact() {
   const effects: Array<() => unknown> = [];
   const cleanups: Array<() => void> = [];
+  const statusUpdates: string[] = [];
+  let stateIndex = 0;
   return {
     react: {
       useState<T>(initial: T): [T, (next: unknown) => void] {
-        return [initial, () => undefined];
+        const index = stateIndex++;
+        return [
+          initial,
+          (next: unknown) => {
+            if (index === 0 && typeof next === "string")
+              statusUpdates.push(next);
+          },
+        ];
       },
       useRef<T>(initial: T): { current: T } {
         return { current: initial };
@@ -197,10 +215,20 @@ function createHookReact() {
     unmount(): void {
       for (const cleanup of cleanups.splice(0)) cleanup();
     },
+    statusUpdates,
   };
 }
 
-function hookHarness(t: TestContext, { tauri = true } = {}) {
+function hookHarness(
+  t: TestContext,
+  {
+    failCheckAt,
+    holdPreparation = false,
+    noUpdateAt,
+    rejectDiscard = false,
+    tauri = true,
+  }: HookHarnessOptions = {},
+) {
   const browser = installBrowserClock();
   const host = createHookReact();
   t.after(() => {
@@ -230,14 +258,22 @@ function hookHarness(t: TestContext, { tauri = true } = {}) {
       cancelStagedUpdate: () => Promise.resolve(),
       checkDesktopUpdate: () => {
         checks += 1;
+        if (checks === failCheckAt) throw new Error("update check failed");
+        if (checks === noUpdateAt) return Promise.resolve(null);
         return Promise.resolve({
           version: "2.0.0",
           currentVersion: "1.0.0",
           rawJson: {},
         });
       },
-      desktopUpdateBundleStatus: () => Promise.resolve({ downloaded: false }),
-      discardStagedUpdate: () => Promise.resolve(),
+      desktopUpdateBundleStatus: () =>
+        holdPreparation
+          ? new Promise(() => {})
+          : Promise.resolve({ downloaded: false }),
+      discardStagedUpdate: () =>
+        rejectDiscard
+          ? Promise.reject(new Error("discard failed"))
+          : Promise.resolve(),
       downloadDesktopUpdate: () => Promise.resolve(),
       installDesktopUpdate: () => Promise.resolve(),
       stagedUpdateStatus: () => Promise.resolve({ staging: false }),
@@ -249,7 +285,10 @@ function hookHarness(t: TestContext, { tauri = true } = {}) {
       INITIAL_PREPARATION: initialPreparation,
       backendIdle: () => true,
       desktopDownloadDecision: () => "ready",
-      preparationStatus: () => "available",
+      preparationStatus: (preparation: typeof initialPreparation) =>
+        preparation.shell === "done" && preparation.backend === "skipped"
+          ? "ready"
+          : "preparing",
       restartPlan: () => "classic",
       sameUpdateVersion: () => true,
       settleWithin: async () => null,
@@ -265,7 +304,13 @@ function hookHarness(t: TestContext, { tauri = true } = {}) {
             releaseTagPrefix: "v",
           };
         }
+        if (command === "desktop_update_cleanup_armed") return true;
         throw new Error(`unexpected invoke: ${command}`);
+      },
+    },
+    "@tauri-apps/api/event": {
+      listen: async () => {
+        throw new Error("backend update failed");
       },
     },
   });
@@ -276,6 +321,7 @@ function hookHarness(t: TestContext, { tauri = true } = {}) {
     checks: () => checks,
     controller,
     host,
+    statusUpdates: host.statusUpdates,
   };
 }
 
@@ -314,6 +360,77 @@ test("a manual check suppresses only the startup check", async (t) => {
   hook.browser.fireIntervals(PERIODIC_INTERVAL_MS);
   await settle();
   assert.equal(hook.checks(), 2);
+});
+
+test("a periodic recheck preserves a prepared update", async (t) => {
+  const hook = hookHarness(t);
+  hook.browser.fireTimeouts(STARTUP_DELAY_MS);
+  await settle();
+  await hook.controller.installUpdate();
+  await settle();
+  assert.equal(hook.statusUpdates.at(-1), "ready");
+
+  hook.browser.fireIntervals(PERIODIC_INTERVAL_MS);
+  await settle();
+  assert.equal(hook.statusUpdates.at(-1), "ready");
+});
+
+test("a failed periodic recheck preserves an untouched offer", async (t) => {
+  const hook = hookHarness(t, { failCheckAt: 2 });
+  hook.browser.fireTimeouts(STARTUP_DELAY_MS);
+  await settle();
+  assert.equal(hook.statusUpdates.at(-1), "available");
+
+  hook.browser.fireIntervals(PERIODIC_INTERVAL_MS);
+  await settle();
+  assert.equal(hook.checks(), 2);
+  assert.equal(hook.statusUpdates.at(-1), "available");
+});
+
+test("a cleanup failure does not restore a withdrawn offer", async (t) => {
+  const hook = hookHarness(t, { noUpdateAt: 2, rejectDiscard: true });
+  hook.browser.fireTimeouts(STARTUP_DELAY_MS);
+  await settle();
+  assert.equal(hook.statusUpdates.at(-1), "available");
+
+  hook.browser.fireIntervals(PERIODIC_INTERVAL_MS);
+  await settle();
+  assert.equal(hook.checks(), 2);
+  assert.equal(hook.statusUpdates.at(-1), "idle");
+});
+
+test("scheduled checks wait for update preparation", async (t) => {
+  const hook = hookHarness(t, { holdPreparation: true });
+  hook.browser.fireTimeouts(STARTUP_DELAY_MS);
+  await settle();
+  await hook.controller.installUpdate();
+  assert.equal(hook.statusUpdates.at(-1), "preparing");
+
+  hook.browser.advance(PERIODIC_INTERVAL_MS + 1);
+  hook.browser.fireIntervals(PERIODIC_INTERVAL_MS);
+  hook.browser.fireWindow("focus");
+  await settle();
+  assert.equal(hook.checks(), 1);
+  assert.equal(hook.statusUpdates.at(-1), "preparing");
+});
+
+test("scheduled checks preserve update recovery", async (t) => {
+  const hook = hookHarness(t);
+  hook.browser.fireTimeouts(STARTUP_DELAY_MS);
+  await settle();
+  await hook.controller.installUpdate();
+  await settle();
+  assert.equal(hook.statusUpdates.at(-1), "ready");
+
+  await hook.controller.installUpdate();
+  assert.equal(hook.statusUpdates.at(-1), "error");
+
+  hook.browser.advance(PERIODIC_INTERVAL_MS + 1);
+  hook.browser.fireIntervals(PERIODIC_INTERVAL_MS);
+  hook.browser.fireWindow("focus");
+  await settle();
+  assert.equal(hook.checks(), 1);
+  assert.equal(hook.statusUpdates.at(-1), "error");
 });
 
 test("restoring an overdue hidden window checks immediately", async (t) => {
