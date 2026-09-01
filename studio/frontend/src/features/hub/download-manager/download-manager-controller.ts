@@ -30,10 +30,12 @@ export {
   useDownloadManagerStore,
 } from "./download-manager-state";
 export type {
+  ConflictOwner,
   DownloadRequest,
   JobListeners,
   ManagedDownload,
 } from "./download-manager-types";
+export { conflictInfoForOwner } from "./download-manager-types";
 export { hydrateDownloadManager };
 
 export function __resetDownloadManagerForTests(): void {

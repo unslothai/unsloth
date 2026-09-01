@@ -23,6 +23,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { TransportConflictDialog } from "../catalog/transport-conflict-dialog";
 import { RESUMABLE_STATES } from "./download-manager-config";
 import {
+  conflictInfoForOwner,
   type DownloadRequest,
   type ManagedDownload,
   downloadManager,
@@ -141,7 +142,7 @@ function StatusLine({ job }: { job: ManagedDownload }) {
 function DownloadRow({ jobKey }: { jobKey: string }) {
   const job = useDownloadManagerStore((state) => state.jobs[jobKey]);
   const transportConflict = useDownloadManagerStore(
-    (state) => state.conflicts[jobKey]?.info ?? null,
+    (state) => conflictInfoForOwner(state.conflicts[jobKey], "downloads"),
   );
   const mounted = useRef(true);
   useEffect(
@@ -149,7 +150,7 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
       mounted.current = true;
       return () => {
         mounted.current = false;
-        downloadManager.cancelConflict(jobKey);
+        downloadManager.cancelConflict(jobKey, "downloads");
       };
     },
     [jobKey],
@@ -191,10 +192,10 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
                 aria-label="Resume download"
                 onClick={() => {
                   void downloadManager
-                    .requestStart(resumeRequestFromJob(job))
+                    .requestStart(resumeRequestFromJob(job), "downloads")
                     .then((outcome) => {
                       if (outcome === "conflict" && !mounted.current) {
-                        downloadManager.cancelConflict(jobKey);
+                        downloadManager.cancelConflict(jobKey, "downloads");
                       }
                     });
                 }}
@@ -262,9 +263,13 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
       ) : null}
       <TransportConflictDialog
         conflict={transportConflict}
-        onCancel={() => downloadManager.cancelConflict(jobKey)}
-        onKeepTransport={() => downloadManager.resumeConflict(jobKey)}
-        onSwitchTransport={() => downloadManager.restartConflict(jobKey)}
+        onCancel={() => downloadManager.cancelConflict(jobKey, "downloads")}
+        onKeepTransport={() =>
+          downloadManager.resumeConflict(jobKey, "downloads")
+        }
+        onSwitchTransport={() =>
+          downloadManager.restartConflict(jobKey, "downloads")
+        }
       />
     </li>
   );

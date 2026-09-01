@@ -11,7 +11,11 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import type { ManagedDownload } from "../src/features/hub/download-manager/download-manager-types.ts";
+import {
+  conflictInfoForOwner,
+  type ConflictEntry,
+  type ManagedDownload,
+} from "../src/features/hub/download-manager/download-manager-types.ts";
 import {
   installLocalStorageFake,
   registerBundlerResolver,
@@ -39,6 +43,9 @@ function read(relative: string): string {
 const PANEL = read(
   "../src/features/hub/download-manager/download-manager-panel.tsx",
 );
+const REPO_DOWNLOAD = read(
+  "../src/features/hub/download-manager/use-repo-download.ts",
+);
 const POLL = read("../src/features/hub/download-manager/poll-loop.ts");
 const HYDRATE = read("../src/features/hub/download-manager/hydration.ts");
 const STATE = read(
@@ -54,13 +61,36 @@ test("a failed or cancelled row offers Resume in Downloads", () => {
 });
 
 test("the global Resume path exposes transport conflict resolution", () => {
-  assert.match(PANEL, /state\.conflicts\[jobKey\]\?\.info/);
+  assert.match(
+    PANEL,
+    /conflictInfoForOwner\(state\.conflicts\[jobKey\], "downloads"\)/,
+  );
   assert.match(PANEL, /<TransportConflictDialog/);
-  assert.match(PANEL, /downloadManager\.resumeConflict\(jobKey\)/);
-  assert.match(PANEL, /downloadManager\.restartConflict\(jobKey\)/);
-  assert.match(PANEL, /downloadManager\.cancelConflict\(jobKey\)/);
+  assert.match(PANEL, /requestStart\(resumeRequestFromJob\(job\), "downloads"\)/);
+  assert.match(PANEL, /resumeConflict\(jobKey, "downloads"\)/);
+  assert.match(PANEL, /restartConflict\(jobKey, "downloads"\)/);
+  assert.match(PANEL, /cancelConflict\(jobKey, "downloads"\)/);
   assert.match(PANEL, /mounted\.current = false/);
   assert.match(PANEL, /outcome === "conflict" && !mounted\.current/);
+});
+
+test("a transport conflict belongs to exactly one dialog surface", () => {
+  const info = { previous: "http", next: "xet", resumable: true } as const;
+  const entry: ConflictEntry = {
+    owner: "downloads",
+    info,
+    pending: {
+      kind: "model",
+      repoId: "org/conflicted-model",
+      variant: "Q4_K_M",
+      expectedBytes: 4_096,
+    },
+  };
+
+  assert.equal(conflictInfoForOwner(entry, "downloads"), info);
+  assert.equal(conflictInfoForOwner(entry, "caller"), null);
+  assert.match(REPO_DOWNLOAD, /conflictInfoForOwner\(exact, "caller"\)/);
+  assert.match(REPO_DOWNLOAD, /entry\.owner === "caller"/);
 });
 
 test("failed and cancelled jobs are persisted so a restart can resume them", () => {
