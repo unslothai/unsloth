@@ -3112,6 +3112,17 @@ def messages_with_attached_image(
                 ),
             },
         )
+    # The image is attached once. A nudge retry reruns generation with the same image over
+    # the original body plus an appended correction turn, and a plain reverse scan would
+    # hand the marker to that correction, leaving the question that asked about the picture
+    # image-less. A turn that already owns the attachment keeps it (#10092).
+    if any(
+        isinstance(m, dict)
+        and isinstance(m.get("content"), list)
+        and count_structured_images(m["content"])
+        for m in conversation
+    ):
+        return conversation
     for index in range(len(conversation) - 1, -1, -1):
         message = conversation[index]
         if not isinstance(message, dict) or message.get("role") != "user":

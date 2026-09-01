@@ -1892,12 +1892,21 @@ class MLXInferenceBackend:
             # own template (chat_render_target). The route authorizes image-turn tool
             # healing from this, and only the parent-side mirror can carry it, so leaving
             # it out here profiles MLX image turns from the tokenizer body instead
-            # (#10092). Absent when the processor has none, which is exactly when
-            # chat_render_target falls back to the tokenizer anyway.
+            # (#10092). Absent whenever the render picks the nested tokenizer instead.
             "processor_template": None,
         }
+        from core.inference.chat_template_helpers import (
+            chat_render_target as _chat_render_target,
+        )
+
         _proc = entry.get("processor")
-        _proc_tpl = getattr(_proc, "chat_template", None)
+        # chat_render_target also falls back to the nested tokenizer when the processor has
+        # no apply_chat_template, so a processor template alone does not mean the render
+        # selects it. Ask the helper rather than re-deriving the rule, which is what let the
+        # two drift in #7066.
+        _proc_tpl = (
+            getattr(_proc, "chat_template", None) if _chat_render_target(_proc) is _proc else None
+        )
         # list/tuple is the named-template form _selected_template_strings_from_value and
         # model_markup both accept; narrowing it away would drop the override for it.
         if isinstance(_proc_tpl, (str, dict, list, tuple)) and _proc_tpl:
@@ -2115,7 +2124,22 @@ class MLXInferenceBackend:
         # copies rather than mutating, so a caller reading its own message dicts after
         # generation does not find a content list this render rewrote.
         if self._is_vlm and image is not None:
-            full_messages = messages_with_attached_image(messages, system_prompt = system_prompt)
+            # A processor template expects every content field to be a list of parts, so a
+            # bare system string raises there and _render_vlm_prompt refuses its no-system
+            # retry once tools were asked for. The nested-tokenizer fallback wants plain
+            # strings, so follow whichever body chat_render_target actually selects.
+            from core.inference.chat_template_helpers import (
+                chat_render_target as _chat_render_target,
+            )
+            _renders_via_processor = (
+                self._processor is not None
+                and _chat_render_target(self._processor) is self._processor
+            )
+            full_messages = messages_with_attached_image(
+                messages,
+                system_prompt = system_prompt,
+                structured_system_content = _renders_via_processor,
+            )
         else:
             full_messages = self._with_system_prompt(messages, system_prompt)
 

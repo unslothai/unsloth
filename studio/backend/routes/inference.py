@@ -22819,16 +22819,37 @@ async def produce_openai_chat_completions(
     # tools into the template, generate one turn, heal text-form calls (#6801).
     # supports_tools=False falls through to plain relay (GGUF gate parity).
     _sf_has_tool_msgs = any(m.role == "tool" or m.tool_calls for m in payload.messages)
+    # None under the orchestrator, which mirrors metadata rather than a live processor, so
+    # the body is read from that mirror. Resolved BEFORE the capability gate below: an
+    # image renders through the processor body, so classifying tool support from the
+    # tokenizer body would disable the catalog for a VLM whose processor template
+    # advertises tools its nested tokenizer never does (#10092).
+    _sf_image_tpl = (
+        (_sf_model_info.get("chat_template_info") or {}).get("processor_template")
+        if image is not None
+        else None
+    )
+    _sf_supports_tools = (
+        _detect_safetensors_features(backend, _sf_image_tpl, tools = _sf_template_tools).get(
+            "supports_tools", False
+        )
+        if _sf_image_tpl is not None
+        else _sf_features.get("supports_tools", False)
+    )
     # Gate on _sf_use_tools (did the server-side path claim the request?), not
     # raw mcp_enabled: an empty MCP registry must not silently drop client tools.
     _sf_client_tools = (
         # Read the resolved value, not a fresh _effective_enable_tools: the gate
         # above withdraws the launcher default for exactly these requests, and
         # recomputing here would hide that and drop the client catalog.
-        not _sf_tools_on
+        # An explicit enable_tools/mcp_enabled ask normally claims the request for the
+        # server loop, which still refuses images. Withdrawing the client catalog too
+        # would answer an image-plus-tools request with prose and no schemas at all, so
+        # once the image has ruled the server loop out the passthrough takes it (#10092).
+        (not _sf_tools_on or (image is not None and not _sf_use_tools))
         and not _sf_use_tools
         and not _sf_is_gptoss
-        and _sf_features.get("supports_tools", False)
+        and _sf_supports_tools
         and ((payload.tools and len(payload.tools) > 0) or _sf_has_tool_msgs)
     )
     # apply_chat_template sanitizes the catalog it renders, so a tool dropped for unsafe
@@ -22862,13 +22883,6 @@ async def produce_openai_chat_completions(
     # the tokenizer's for most VLMs: Qwen2.5-VL's processor body never mentions tools while
     # its tokenizer body does. Authorizing healing from the tokenizer body would promote a
     # text-form call for a schema that render never carried (#7066). The objects above are
-    # None under the orchestrator, which mirrors metadata rather than a live processor, so
-    # the body is read from that mirror.
-    _sf_image_tpl = (
-        (_sf_model_info.get("chat_template_info") or {}).get("processor_template")
-        if image is not None
-        else None
-    )
     _sf_healing_tools = (
         # Safe under EVERY template this turn could select: when the active one drops the
         # schema the render falls back to the native template, whose profile can drop a tool
@@ -23284,8 +23298,17 @@ async def produce_openai_chat_completions(
                             # completion count.
                             _first_stats = stats_holder.pop("stats", None)
                             try:
+                                # Mark the turn the picture belongs to before the
+                                # correction is appended, or the render's reverse scan
+                                # attaches it to the correction instead (#10092).
+                                _nudge_base = gen_kwargs["messages"]
+                                if image is not None:
+                                    from core.inference.chat_template_helpers import (
+                                        messages_with_attached_image as _nudge_attach,
+                                    )
+                                    _nudge_base = _nudge_attach(_nudge_base)
                                 retry_messages = [
-                                    *gen_kwargs["messages"],
+                                    *_nudge_base,
                                     *nudge_messages(_data, _sf_heal),
                                 ]
                                 retry_text = await _run_blocking_generation(

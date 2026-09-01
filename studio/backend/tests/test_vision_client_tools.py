@@ -582,3 +582,192 @@ def test_a_folded_system_turn_is_wrapped_as_content_parts():
     assert out[0]["content"] == [{"type": "text", "text": "SENTINEL_RULE"}]
     # The caller's dict is not mutated.
     assert out[0] is not None
+
+
+def test_a_nudge_retry_keeps_the_image_on_the_question_turn():
+    """The nudge retry reruns generation over the original body plus an appended user
+    correction, with the same image. A plain reverse scan hands the marker to that
+    correction, so the question that asked about the picture renders image-less (#10092)."""
+    from core.inference.chat_template_helpers import (
+        count_structured_images,
+        messages_with_attached_image,
+    )
+
+    original = messages_with_attached_image([{"role": "user", "content": "what is in this"}])
+    assert count_structured_images(original[-1]["content"]) == 1
+
+    retried = messages_with_attached_image(
+        [
+            *original,
+            {"role": "assistant", "content": "I will look it up"},
+            {"role": "user", "content": "call the tool now"},
+        ]
+    )
+    question = [m for m in retried if m["role"] == "user"][0]
+    correction = [m for m in retried if m["role"] == "user"][-1]
+    assert count_structured_images(question["content"]) == 1
+    assert not isinstance(correction["content"], list) or not count_structured_images(
+        correction["content"]
+    )
+
+
+def test_an_mlx_processor_without_apply_chat_template_is_not_mirrored():
+    """chat_render_target falls back to the nested tokenizer when the processor cannot
+    render a chat itself, so a processor template alone does not mean the render selects
+    it. Mirroring it anyway profiles an unused body with processor semantics (#10092)."""
+    mlx = pytest.importorskip("core.inference.mlx_inference")
+
+    class _Tok:
+        chat_template = _CHATML_WITH_TOOLS
+
+    class _ProcNoApply:
+        chat_template = _PROCESSOR_TEMPLATE_NO_TOOLS
+        apply_chat_template = None
+        tokenizer = _Tok()
+
+    backend = mlx.MLXInferenceBackend.__new__(mlx.MLXInferenceBackend)
+    backend.models = {"m": {"processor": _ProcNoApply(), "tokenizer": _Tok()}}
+    backend._populate_chat_template_info("m", _CHATML_WITH_TOOLS)
+
+    assert backend.models["m"]["chat_template_info"]["processor_template"] is None
+
+
+# ── Route-level gates for an image turn ───────────────────────────
+
+_PNG_DATA_URL = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+
+
+def _image_request(**kwargs):
+    from models.inference import ChatCompletionRequest, ChatMessage
+
+    base = dict(
+        model = "default",
+        messages = [
+            ChatMessage(
+                role = "user",
+                content = [
+                    {"type": "text", "text": "what is in this picture"},
+                    {"type": "image_url", "image_url": {"url": _PNG_DATA_URL}},
+                ],
+            )
+        ],
+    )
+    base.update(kwargs)
+    return ChatCompletionRequest(**base)
+
+
+def test_an_image_with_explicit_enable_tools_still_passes_the_client_catalog():
+    """enable_tools claims the request for the server loop, which still refuses images.
+    Withdrawing the client catalog too answered an image-plus-tools request with prose and
+    no schemas at all (#10092)."""
+    import os
+    import sys
+
+    import pytest as _pytest
+
+    # conftest puts the backend root on sys.path, not the tests directory.
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import test_sf_client_tools_passthrough as passthrough
+
+    backend = passthrough._ScriptedBackend(passthrough._fixed("a plain answer"))
+    backend.models["sf-model"]["is_vision"] = True
+    payload = _image_request(tools = [passthrough.LOOKUP_TOOL], enable_tools = True, stream = False)
+
+    monkeypatch = _pytest.MonkeyPatch()
+    try:
+        passthrough._call(payload, monkeypatch, backend)
+    finally:
+        monkeypatch.undo()
+
+    assert backend.calls, "generation never ran"
+    assert backend.calls[0]["tools"] == [passthrough.LOOKUP_TOOL]
+
+
+def test_image_tool_support_is_classified_from_the_processor_template():
+    """_sf_features comes from the tokenizer body. An image renders through the processor
+    body, so a VLM whose processor template advertises tools its nested tokenizer never
+    does had the catalog disabled and reached generation with no schemas (#10092)."""
+    import asyncio
+    import os
+    import sys
+
+    import pytest as _pytest
+
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import routes.inference as inf
+    import test_sf_client_tools_passthrough as passthrough
+
+    backend = passthrough._ScriptedBackend(passthrough._fixed("a plain answer"))
+    backend.models["sf-model"]["is_vision"] = True
+    backend.models["sf-model"]["chat_template_info"] = {
+        "template": _PROCESSOR_TEMPLATE_NO_TOOLS,
+        "processor_template": _CHATML_WITH_TOOLS,
+    }
+    payload = _image_request(tools = [passthrough.LOOKUP_TOOL], stream = False)
+
+    monkeypatch = _pytest.MonkeyPatch()
+    try:
+        passthrough._install(monkeypatch, backend)
+        # Only the processor body advertises tools, which is the one an image renders with.
+        monkeypatch.setattr(
+            inf,
+            "_detect_safetensors_features",
+            lambda _backend, template, **k: {"supports_tools": template == _CHATML_WITH_TOOLS},
+        )
+
+        async def _run():
+            return await inf.openai_chat_completions(
+                payload, request = passthrough._Request(), current_subject = "u"
+            )
+
+        asyncio.run(_run())
+    finally:
+        monkeypatch.undo()
+
+    assert backend.calls, "generation never ran"
+    assert backend.calls[0]["tools"] == [passthrough.LOOKUP_TOOL]
+
+
+def test_mlx_selects_structured_system_content_for_a_processor_render():
+    """A processor template expects every content field to be a list of parts, so a bare
+    system string raises there and _render_vlm_prompt refuses its no-system retry once
+    tools were asked for. The nested-tokenizer fallback still wants plain strings, so the
+    choice follows whichever body chat_render_target selects (#10092)."""
+    mlx = pytest.importorskip("core.inference.mlx_inference")
+
+    seen: dict = {}
+
+    def _spy(messages, **kwargs):
+        seen.update(kwargs)
+        return list(messages)
+
+    class _Proc:
+        chat_template = _PROCESSOR_TEMPLATE_NO_TOOLS
+
+        def apply_chat_template(self, *_a, **_k):
+            return ""
+
+    backend = mlx.MLXInferenceBackend.__new__(mlx.MLXInferenceBackend)
+    backend._model = object()
+    backend._is_vlm = True
+    backend._processor = _Proc()
+    backend.last_generation_stats = None
+    backend._generate_vlm = lambda *a, **k: iter(())
+
+    original = mlx.messages_with_attached_image
+    mlx.messages_with_attached_image = _spy
+    try:
+        list(
+            backend.generate_chat_response(
+                [{"role": "user", "content": "what is this"}],
+                system_prompt = "",
+                image = object(),
+            )
+        )
+    finally:
+        mlx.messages_with_attached_image = original
+
+    assert seen.get("structured_system_content") is True
