@@ -20,6 +20,18 @@ function toolLabel(part: any): string {
   return label || "tool";
 }
 
+// Prose can itself spell a marker -- a reply explaining this very syntax. Escaping it
+// on the way into the editor, and undoing that on the way out, keeps the parser from
+// reading the reply's own words as the card's placeholder. The backslash count carries
+// through, so text that already contains an escaped marker round-trips too.
+function escapeMarkers(text: string): string {
+  return text.replace(/<(\\*)TOOL (\d+: )/g, "<\\$1TOOL $2");
+}
+
+function unescapeMarkers(text: string): string {
+  return text.replace(/<\\(\\*)TOOL (\d+: )/g, "<$1TOOL $2");
+}
+
 /**
  * Extracts the editable text and reasoning from a message, with a numbered placeholder
  * marker recording where each non-editable part sat among the prose.
@@ -48,9 +60,9 @@ export function extractTaggedText(content: any): string {
       // Trim the text first so we don't accumulate newlines
       // around the tags on every save.
       if (part.type === 'reasoning') {
-        return `${open}THINK${close}\n${text.trim()}\n${open}/THINK${close}`;
+        return `${open}THINK${close}\n${escapeMarkers(text.trim())}\n${open}/THINK${close}`;
       }
-      return text;
+      return escapeMarkers(text);
     })
     .filter(Boolean)
     .join('\n\n');
@@ -74,7 +86,7 @@ function parseTaggedTextToContent(text: string): ContentPart[] {
       // Trim the extracted content to remove any leading/trailing
       // newlines created by the tag wrapping process.
       const content = text.substring(lastIndex, index).trim();
-      if (content) parts.push({ type: currentType, text: content });
+      if (content) parts.push({ type: currentType, text: unescapeMarkers(content) });
     }
     lastIndex = index + fullTag.length;
 
@@ -87,7 +99,7 @@ function parseTaggedTextToContent(text: string): ContentPart[] {
 
   if (lastIndex < text.length) {
     const remainingText = text.substring(lastIndex).trim();
-    if (remainingText) parts.push({ type: currentType, text: remainingText });
+    if (remainingText) parts.push({ type: currentType, text: unescapeMarkers(remainingText) });
   }
 
   return parts;

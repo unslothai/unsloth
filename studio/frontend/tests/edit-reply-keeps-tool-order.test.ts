@@ -345,6 +345,28 @@ test("prose that mentions the marker tag is not mistaken for one", async () => {
   assert.deepEqual(out, content);
 });
 
+test("prose that spells a real marker is not mistaken for that card's marker", async () => {
+  // A reply explaining the marker syntax, that itself used the tool it names: the
+  // literal occurrence sits BEFORE the card's own marker and reads exactly like it.
+  const content = [
+    { type: "text", text: "Your edit box shows <TOOL 1: web_search> where the card sits." },
+    SEARCH,
+    { type: "text", text: "That is all it means." },
+  ];
+
+  assert.deepEqual(await roundTrip(content), content);
+});
+
+test("text that already contains an escaped marker round-trips too", async () => {
+  const content = [
+    { type: "text", text: "Write <\\TOOL 1: web_search> to show the escape." },
+    SEARCH,
+    { type: "text", text: "Done." },
+  ];
+
+  assert.deepEqual(await roundTrip(content), content);
+});
+
 test("a code block quoting the marker syntax survives a no-op save", async () => {
   const content = [
     { type: "text", text: "```xml\n<TOOL>read_file</TOOL>\n```" },
