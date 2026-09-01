@@ -3,11 +3,11 @@
 
 """Unsloth Studio, end to end, on a real CUDA GPU.
 
-Studio has no CUDA coverage anywhere in CI. Every Studio workflow in this
+Unsloth has no CUDA coverage anywhere in CI. Every Unsloth workflow in this
 repo runs on ``ubuntu-latest``, ``macos-15`` or ``windows-latest``; macOS
 gives Metal some hardware, and the CUDA path is exercised by nothing. The
 existing inference smoke deliberately uses a 270M GGUF *because* it has to
-decode on a CPU. This payload is the other half: it runs Studio on a Kaggle
+decode on a CPU. This payload is the other half: it runs Unsloth on a Kaggle
 T4 and asserts the three things that only a GPU can answer.
 
 What it asserts
@@ -23,7 +23,7 @@ the model came back with ``finish_reason == "tool_calls"`` and a parseable
 argument object.
 
 **B. A LoRA training run finishes and leaves an adapter.** Started through
-``POST /api/train/start`` -- the same call Studio's own Train button makes --
+``POST /api/train/start`` -- the same call Unsloth's own Train button makes --
 and judged on three things, none of which is the phase alone: the run reaches
 phase ``completed``, its ``metric_history`` holds a loss for every step it
 claimed to take, and ``adapter_model.safetensors`` exists on disk above a size
@@ -34,7 +34,7 @@ leaves a config and no weights, which is why the file is checked.
 **C. GGUF export runs against a CUDA llama.cpp build and the result loads.**
 The adapter from B is exported to GGUF, the output is checked for the GGUF
 magic rather than merely for existence, and then it is loaded back into
-Studio and asked to generate. "It loads" is asserted by loading it, not by
+Unsloth and asked to generate. "It loads" is asserted by loading it, not by
 its file size.
 
 Then the repo's existing ``tests/studio/playwright_chat_ui.py`` is driven
@@ -50,7 +50,7 @@ back; the home directory and ``/tmp`` share a ~1 TB overlay. So
 live on the overlay, and only the evidence -- kilobytes of JSON, a log tail
 and screenshots -- is ever written under ``/kaggle/working``.
 
-No credential is printed. The bootstrap password is read from Studio's own
+No credential is printed. The bootstrap password is read from Unsloth's own
 auth directory, handed to ``/api/auth/login``, and never logged, never
 returned, and never written to the report or the evidence bundle.
 
@@ -214,10 +214,10 @@ def gpu_inventory() -> list[str]:
 
 
 def log_paths(server_log: Path, studio_home: Path) -> list[Path]:
-    """Every file Studio or a llama-server child may be writing to.
+    """Every file Unsloth or a llama-server child may be writing to.
 
     llama.cpp's offload line lands in whichever of these the server's stderr
-    was wired to, and which one that is depends on how Studio was started, so
+    was wired to, and which one that is depends on how Unsloth was started, so
     both are read.
     """
     candidates = [server_log]
@@ -251,7 +251,7 @@ def studio_log_text(
     *,
     since: dict[str, int] | None = None,
 ) -> str:
-    """Everything Studio and its llama-server children wrote, as one string.
+    """Everything Unsloth and its llama-server children wrote, as one string.
 
     ``since`` is a ``log_marks()`` snapshot; each file is then read from the
     offset it had then, so only what this load produced comes back. A file
@@ -274,7 +274,7 @@ def studio_log_text(
 
 
 def llama_server_pids() -> list[int]:
-    """PIDs of the llama-server children Studio started, from /proc.
+    """PIDs of the llama-server children Unsloth started, from /proc.
 
     ``GET /api/inference/status`` does not carry one: ``InferenceStatusResponse``
     declares neither ``llama_server_pid`` nor ``pid``, and FastAPI drops
@@ -314,7 +314,7 @@ class Payload:
         self.assertions: list[dict] = []
         self.failures: list[str] = []
         self.started = time.time()
-        # Every secret this run has minted or read. Studio's startup banner
+        # Every secret this run has minted or read. Unsloth's startup banner
         # prints the bootstrap password to stdout, and stdout here is
         # studio.log, and studio.log travels home in the evidence bundle. The
         # value is ephemeral and local to a kernel that is destroyed minutes
@@ -416,7 +416,7 @@ class Payload:
     def studio_command(self) -> list[str]:
         """The `unsloth` entry point of the interpreter running this payload.
 
-        NOT ``shutil.which("unsloth")``. This payload runs under the Studio
+        NOT ``shutil.which("unsloth")``. This payload runs under the Unsloth
         venv's Python and that venv's ``bin`` is not on PATH, so a global
         ``unsloth`` anywhere on PATH would win the lookup and the run would
         measure some other installation instead of the checkout under test.
@@ -446,7 +446,7 @@ class Payload:
         env["UNSLOTH_DISABLE_STATISTICS"] = "1"
 
         cmd = self.studio_command()
-        log(f"starting Studio: {' '.join(cmd)}")
+        log(f"starting Unsloth: {' '.join(cmd)}")
         # Append, never truncate. assert_chat_ui() restarts the server to
         # re-seed the account, and a "wb" here threw away every backend log
         # from the inference, training and export assertions before the
@@ -471,7 +471,7 @@ class Payload:
         detail: dict = {"health": last if isinstance(last, dict) else str(last)[:400]}
         failures = []
         if not ok:
-            failures.append(f"Studio never became ready: {reason}")
+            failures.append(f"Unsloth never became ready: {reason}")
             failures.append("last 40 lines of the server log: " + self.log_tail(40))
         detail["failures"] = failures
         return self.record("studio_ready", ok, detail)
@@ -494,7 +494,7 @@ class Payload:
         return text
 
     def log_tail(self, lines: int) -> str:
-        # Studio's startup banner prints the bootstrap password, and this tail
+        # Unsloth's startup banner prints the bootstrap password, and this tail
         # is put in front of a human on a pull request when startup fails.
         self.remember_bootstrap()
         try:
@@ -642,7 +642,7 @@ class Payload:
             # Not a failure on its own: llama.cpp clamps a pin to the model's
             # block count, which is the common and correct reason for this.
             verdict["evidence"].append(
-                f"requested gpu_layers={requested}, Studio reports {effective} "
+                f"requested gpu_layers={requested}, Unsloth reports {effective} "
                 f"(a clamp to the model's layer count looks like this)"
             )
 
@@ -799,7 +799,7 @@ class Payload:
             accept = _accept,
             deadline_s = self.args.train_deadline,
             interval_s = 5.0,
-            # A Studio that died mid-training answers every status request
+            # An Unsloth that died mid-training answers every status request
             # with an error, which wait_for retries -- for the whole 1200s
             # deadline, out of a 70-minute session, before reporting it as
             # slowness rather than as death.
@@ -1075,7 +1075,7 @@ class Payload:
         # "change-password through UI (Setup your account)", which waits for
         # #new-password on the forced-change form -- and authenticate() has to
         # retire the bootstrap password over the API to get past that same gate,
-        # so by now Studio shows an ordinary login and the field never appears.
+        # so by now Unsloth shows an ordinary login and the field never appears.
         # Kernel unsloth-t4-ci-412345d2 failed the API assertions on the gate;
         # 9ddd8ae4 fixed those and failed the driver on a stale password;
         # 9c1a3b (this run) fixed the password and failed the driver on the form
@@ -1088,7 +1088,7 @@ class Payload:
         # anyway, so nothing after it needs the API session.
         self.stop_server()
         if not self.start_server():
-            failures.append("Studio did not come back after the restart that re-seeds the account")
+            failures.append("Unsloth did not come back after the restart that re-seeds the account")
             detail["failures"] = failures
             return self.record("chat_ui_driver", False, detail)
         detail["reseeded"] = True
@@ -1167,7 +1167,7 @@ class Payload:
     def redacted(self, path: Path) -> bytes:
         """A log file with every credential this run knows about removed.
 
-        Studio's startup banner prints the bootstrap password, and the chat
+        Unsloth's startup banner prints the bootstrap password, and the chat
         driver's own log echoes what it was given. Both files leave this
         machine as a CI artifact, so both are rewritten on the way out. The
         replacement is a fixed marker rather than a same-length blank, so the

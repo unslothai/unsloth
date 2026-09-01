@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The registry of Studio's UI SURFACES, for the parity sweep.
+"""The registry of Unsloth's UI SURFACES, for the parity sweep.
 
 WHY THIS EXISTS. The film drives eighteen actions against the chat thread plus a handful of
 overlays, and the parity digest taken at the close of each one is what licenses the claim "this
-change does not alter the UI". That claim is far wider than the evidence: Studio has fifteen
+change does not alter the UI". That claim is far wider than the evidence: Unsloth has fifteen
 routes, a settings dialog with twelve lazily loaded panels, a sidebar with six menus, a model
 picker with three section tabs, and the media pages. None of them is on the film's path, so a
 change that repainted every one of them would pass eighteen out of eighteen parity checks.
@@ -49,7 +49,7 @@ KNOWN_STATE_PATH = "/chat"
 #: Steps are (verb, *args). Interpreted by surface_sweep, which owns the browser; keeping them
 #: declarative is what lets the unit tests check the registry with no browser present.
 #:
-#:   goto      <path>              navigate, relative to the Studio base url
+#:   goto      <path>              navigate, relative to the Unsloth base url
 #:   click     <selector>          a REAL mouse click through the driver. Not element.click():
 #:                                 Radix menus open on pointerdown and a synthetic click misses
 #:                                 them entirely, which reads as a menu that opened instantly
@@ -90,7 +90,7 @@ class Surface:
     #: coverage figure is not inflated by re-counting what was already covered.
     also_in_film: bool = False
     #: The mechanism by which this surface's digest differs between two runs of the SAME build.
-    #: Measured, not assumed: three consecutive sweeps against one Studio agreed on 44 of 53
+    #: Measured, not assumed: three consecutive sweeps against one Unsloth agreed on 44 of 53
     #: surfaces, and every entry below is the mechanism behind one of the nine that did not.
     #:
     #: This is the same distinction `scripts/sbench_ui_parity.py` already draws for the film's
@@ -245,7 +245,7 @@ _SURFACES: list[Surface] = [
     ),
     _route(
         "route:train",
-        "Train (Studio)",
+        "Train (Unsloth)",
         "/studio",
         # NOT a URL check alone, and not the nav row either: the nav row is in the sidebar and
         # is there before the page is. StudioPage shows a spinner while the hardware verdict is

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A provider endpoint must not be able to speak Studio's UI control protocol.
+"""A provider endpoint must not be able to speak Unsloth's UI control protocol.
 
 The tool loop is not the only relay: a request with tools off streams the
 provider's lines straight through ``stream_chat_completion``, and the chat client
@@ -267,7 +267,7 @@ def test_a_forged_card_never_survives_the_plain_relay(monkeypatch):
     """Tools off is the easiest case to forge into: nothing else is running.
 
     The user sees a tool card claiming ``python`` executed and returned something
-    harmless, sourced ``local``, on a request where Studio ran no tools at all.
+    harmless, sourced ``local``, on a request where Unsloth ran no tools at all.
     """
     forged = {
         "type": "tool_end",

@@ -140,11 +140,27 @@ def _set_active_thread_id_reducer() -> str:
     ).strip()
 
 
+# `export { X } from "./y"` and `import type { X } from "./y"`, at the top level.
+# The harness inlines one file, so a surviving specifier is a module Node cannot
+# resolve in the temp dir; the names themselves are stubbed in the prelude.
+_REEXPORT = re.compile(
+    r"^(?:export|import)\s+(?:type\s+)?\{[^}]*\}\s+from\s+[\"'][^\"']+[\"'];\s*$",
+    re.MULTILINE,
+)
+
+
 def _prompt_queue_boundary_body() -> str:
-    """Everything in prompt-queue-boundary.ts after its import block, verbatim."""
+    """Everything in prompt-queue-boundary.ts after its import block, verbatim.
+
+    Re-export statements are dropped rather than replayed. They are module
+    plumbing, not body, and the slice marker is only the last plain import, so a
+    re-export written below it would otherwise be inlined into the harness and
+    fail to resolve.
+    """
     text = read(QUEUE)
     marker = 'from "./prompt-queue-model-boundary";'
-    return text[text.index(marker) + len(marker) :]
+    body = text[text.index(marker) + len(marker) :]
+    return _REEXPORT.sub("", body)
 
 
 HARNESS_PRELUDE = """
@@ -2583,7 +2599,7 @@ def test_a_remembered_thread_the_store_has_dropped_does_not_take_the_app_down():
     ``ShallowMemoizeSubject``'s constructor -- so the optional chain around it catches
     nothing, and an effect that throws with no error boundary above it blanks the app.
 
-    Studio deletes chats through storage and tombstones rather than ``runtime.threads.delete()``,
+    Unsloth deletes chats through storage and tombstones rather than ``runtime.threads.delete()``,
     so nothing evicts an entry today. The reopen must not be the thing that depends on that.
     """
     out = _run(

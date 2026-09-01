@@ -10,7 +10,7 @@ import { defineConfig } from "vite";
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   // Keep an unrelated PostCSS config in an ancestor directory from leaking
-  // into Studio installs. Tailwind is provided by its dedicated Vite plugin.
+  // into Unsloth installs. Tailwind is provided by its dedicated Vite plugin.
   css: {
     postcss: {
       plugins: [],

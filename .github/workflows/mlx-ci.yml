@@ -192,6 +192,7 @@ jobs:
         id: pip-cache
         uses: ./.github/actions/pip-cache-restore
         with:
+          name: mlx
           key-files: |
             pyproject.toml
             studio/backend/requirements/*.txt
@@ -435,7 +436,7 @@ jobs:
       # Three boots, one per step: the self-heal is once per process, so the
       # opted-out and the in-flight cases cannot share a server.
       # ---------------------------------------------------------------
-      - name: Provision a Studio venv for the capability-verdict boots
+      - name: Provision an Unsloth venv for the capability-verdict boots
         run: |
           set -euo pipefail
           # `unsloth studio` re-execs into $STUDIO_HOME/unsloth_studio and refuses to

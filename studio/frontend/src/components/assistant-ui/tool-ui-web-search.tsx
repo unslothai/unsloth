@@ -9,9 +9,12 @@ import {
 } from "@assistant-ui/react";
 import { GlobeIcon } from "lucide-react";
 
-import { isSearchImagesToolResult } from "@/features/chat";
+import {
+  isSearchImagesToolResult,
+  useToolAwaitingApproval,
+} from "@/features/chat";
 import { stringifyToolResult } from "@/lib/strip-ansi";
-import { memo, useEffect, useState } from "react";
+import { memo } from "react";
 import { SearchImageThumb } from "./search-image";
 import { Source, SourceIcon, SourceTitle } from "./sources";
 import { toolArgText } from "./tool-arg-text";
@@ -20,6 +23,7 @@ import {
   ToolFallbackRoot,
   ToolFallbackTrigger,
 } from "./tool-fallback";
+import { useToolActivityOpen } from "./use-tool-activity-open";
 
 interface ParsedSource {
   title: string;
@@ -87,6 +91,7 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
   args,
   result,
   status,
+  toolCallId,
 }) => {
   // Coerced, like image_queries below: a local model routinely emits a number or an
   // object here, and .trim() on one crashes the card that was meant to show the call.
@@ -139,17 +144,17 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
         (p as { text: string }).text.length > 0,
     ),
   );
-  const [open, setOpen] = useState(isRunning);
-  useEffect(() => {
-    if (isRunning) {
-      setOpen(true);
-    } else if (hasText) {
-      setOpen(false);
-    }
-  }, [isRunning, hasText]);
+  // Ask permission gates every local tool call, and what is being approved
+  // lives inside the content while Allow/Deny render outside it.
+  const awaitingApproval = useToolAwaitingApproval(toolCallId);
+  const [open, setOpen] = useToolActivityOpen(isRunning, hasText);
 
   return (
-    <ToolFallbackRoot open={open} onOpenChange={setOpen}>
+    <ToolFallbackRoot
+      open={open}
+      onOpenChange={setOpen}
+      awaitingApproval={awaitingApproval}
+    >
       <ToolFallbackTrigger
         toolName={
           isUrlFetch

@@ -60,7 +60,15 @@ export type {
   PersonalizationAppearance,
   PersonalizationProfile,
 } from "./api/personalization";
-export { useShortcut, useShortcutLabel } from "./hooks/use-shortcut";
+export {
+  COMPOSER_INPUT_SELECTOR,
+  isSurfaceBackgrounded,
+  isSurfaceInForeground,
+  useShortcut,
+  useShortcutLabel,
+  useShortcutLabels,
+} from "./hooks/use-shortcut";
+export { Shortcut } from "./components/shortcut";
 export {
   currentBinding,
   useKeyboardShortcutsStore,

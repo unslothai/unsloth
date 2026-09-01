@@ -83,7 +83,7 @@ NOTES_MARKDOWN = "\n".join(
         "sentence long enough to wrap onto a second line in a 448px card.",
         "- Many bug fixes across training, inference and the model hub.",
         "- Training page full rework.",
-        "- Studio desktop update flow reworked.",
+        "- Unsloth desktop update flow reworked.",
     ]
 )
 
@@ -979,9 +979,9 @@ def main() -> int:
         #
         # Set on the server and put back in a finally, because the appearance
         # store syncs up: leaving it at 20px hands every later suite in this job
-        # a Studio whose type is not the default, and they will not notice.
+        # an Unsloth whose type is not the default, and they will not notice.
         # Put BACK what was there, which is not always the default: run this
-        # against your own Studio and an unconditional reset would take your
+        # against your own Unsloth and an unconditional reset would take your
         # Appearance setting with it.
         was = read_ui_font_size(session["access_token"])
         set_ui_font_size(session["access_token"], UI_FONT_SIZE_MAX)

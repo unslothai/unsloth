@@ -18,7 +18,8 @@ export const TRANSPORT_STATUS_TIMEOUT_MS = 3_000;
 export const MAX_PROGRESS_FRACTION = 0.99;
 export const CANCEL_WATCHDOG_MS = 20_000;
 export const IDLE_EVICT_GRACE_MS = 60_000;
-export const COMPLETE_LINGER_MS = 6_000;
+// A small Xet download can finish before its card ever shows a byte.
+export const COMPLETE_LINGER_MS = 30_000;
 export const CANCELLED_LINGER_MS = 6_000;
 export const ERROR_LINGER_MS = 12_000;
 export const INVENTORY_BUMP_DEBOUNCE_MS = 250;
