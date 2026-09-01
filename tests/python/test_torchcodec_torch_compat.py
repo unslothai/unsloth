@@ -785,6 +785,8 @@ def test_notebook_validator_unwraps_shell_groups():
     assert nv._unwrap_shell_group("{ pip install x") == ("pip install x", False)
     assert nv._unwrap_shell_group("}") == ("", False)
     assert nv._unwrap_shell_group("then pip install x") == ("pip install x", True)
+    # `if pip install ...` is the test, which runs whenever the line is reached.
+    assert nv._unwrap_shell_group("if pip install x") == ("pip install x", False)
 
 
 def test_notebook_validator_skips_conditional_invocations_in_rule_002(monkeypatch):
@@ -1295,9 +1297,10 @@ def test_notebook_validator_reads_a_compound_only_line():
             f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(evil, "nb.ipynb", 0)
         ), evil
 
-    # Conditional, so the version replay leaves it alone.
+    # The `if` test runs; only the `then` body is conditional, and that is the pip call here,
+    # so the version replay leaves it alone.
     guarded = '!if command -v uv; then pip install "torch==2.12.0"; fi'
-    assert [flag for _, flag in nv._split_chained(guarded)] == [True, True]
+    assert [flag for _, flag in nv._split_chained(guarded)] == [False, True]
     assert nv.rule_inst_004_torchcodec_torch(guarded, COLAB_TORCH211, "nb.ipynb", 0) == []
 
     # An unguarded install on its own line still counts.
@@ -1309,6 +1312,44 @@ def test_notebook_validator_reads_a_compound_only_line():
         )
         == 1
     )
+
+
+def test_git_ban_reads_the_arguments_shlex_produced():
+    """`"git+"https://...` is one argument to pip and two words to a text scan, so the
+    source has to be looked for in the parsed packages as well as in the command text."""
+    nv = _load_notebook_validator_module()
+
+    concatenated = '!pip install "git+"https://example.com/evil.git'
+    assert any(
+        f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(concatenated, "nb.ipynb", 0)
+    )
+
+    # The allowlist still applies to the joined argument.
+    assert nv.rule_inst_001_git_plus(
+        '!pip install "git+"https://github.com/unslothai/unsloth-zoo.git', "nb.ipynb", 0
+    ) == []
+
+
+def test_notebook_validator_keeps_a_pip_call_used_as_a_test():
+    """`if pip install ...` is the condition, reached whenever the line is. Only a `then`,
+    `elif`, `else` or `do` body depends on how that condition went."""
+    nv = _load_notebook_validator_module()
+
+    older = {"torch": "2.10.0+cu128", "torchcodec": "0.10.0+cu128"}
+    for cell in (
+        '!pip install foo; if pip install "torch==2.9.0"; then true; fi',
+        '!while pip install "torch==2.9.0"; do true; done',
+    ):
+        assert len(
+            nv.rule_inst_004_torchcodec_torch(cell, older, "nb.ipynb", 0)
+        ) == 1, cell
+
+    # The bodies stay conditional.
+    for cell in (
+        '!if command -v uv; then pip install "torch==2.12.0"; fi',
+        '!while true; do pip install "torch==2.12.0"; done',
+    ):
+        assert nv.rule_inst_004_torchcodec_torch(cell, COLAB_TORCH211, "nb.ipynb", 0) == [], cell
 
 
 def test_notebook_validator_reads_a_range_as_one_window():

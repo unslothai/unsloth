@@ -365,11 +365,12 @@ def _glue_line_continuations(text: str) -> list[tuple[int, str]]:
     return out
 
 
-# Words that introduce a compound command's body. A pip call behind one still runs, so it has
-# to parse, but only when the test above it went a particular way, so it is not certain.
-_SHELL_KEYWORDS = frozenset(
-    {"if", "then", "elif", "else", "fi", "while", "until", "for", "do", "done", "case", "esac"}
-)
+# Words that introduce a compound command. A pip call behind one still runs, so it has to
+# parse. Whether it is certain depends on which word: `if pip install ...` is the test and is
+# reached whenever the line is, while a `then` or `do` body runs only if that test said so.
+_SHELL_TEST_KEYWORDS = frozenset({"if", "while", "until", "for", "case"})
+_SHELL_BODY_KEYWORDS = frozenset({"then", "elif", "else", "do"})
+_SHELL_KEYWORDS = _SHELL_TEST_KEYWORDS | _SHELL_BODY_KEYWORDS | {"fi", "done", "esac"}
 
 
 def _unwrap_shell_group(command: str) -> tuple[str, bool]:
@@ -377,7 +378,8 @@ def _unwrap_shell_group(command: str) -> tuple[str, bool]:
 
     A grouped or compound command still runs, so leaving the bracket or the keyword on hides
     it from PIP_LINE_RE and with it from every rule, R-INST-001's git+ ban included. The flag
-    says the keyword made it conditional: a `then` body runs only when its test did.
+    says the keyword made it conditional, which only a body word does: `if pip install ...` is
+    the test and is reached whenever the line is.
     """
     stripped = command.strip()
     bang = stripped.startswith("!")
@@ -389,7 +391,7 @@ def _unwrap_shell_group(command: str) -> tuple[str, bool]:
         head, _, rest = stripped.partition(" ")
         if head.lower() not in _SHELL_KEYWORDS:
             break
-        conditional = True
+        conditional = conditional or head.lower() in _SHELL_BODY_KEYWORDS
         stripped = rest.strip()
     return (f"!{stripped}" if bang and stripped else stripped), conditional
 
@@ -696,8 +698,16 @@ def rule_inst_001_git_plus(install_cell: str, file: str, cell_idx: int) -> list[
         if not any(inv is not None for inv in parsed) and PIP_LINE_RE.match(line) is None:
             continue
         # Per source, not per line: one allowlisted repository beside a prohibited one must
-        # not clear the whole line.
+        # not clear the whole line. Both the command text and the arguments shlex produced
+        # from it: `"git+"https://...` is one argument to pip and two words to a text scan.
         sources = [source for command in commands for source in _GIT_SOURCE_RE.findall(command)]
+        sources += [
+            argument
+            for inv in parsed
+            if inv is not None
+            for argument in inv.packages
+            if argument.startswith("git+")
+        ]
         if not sources or all(_git_source_is_allowed(source) for source in sources):
             continue
         findings.append(
