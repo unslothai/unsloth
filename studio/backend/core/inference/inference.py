@@ -48,7 +48,9 @@ from core.inference.generation_timing import (
     build_generation_timings,
     with_prefill_boundary_processor,
 )
+from core.inference.tool_call_parser import has_tool_signal as _has_tool_signal
 from core.inference.native_tool_tokens import (
+    NATIVE_TOOL_CONTROL_TOKENS,
     NativeToolTokenDecoder,
     decoder_preserves_token,
     reasoning_control_tokens,
@@ -2957,6 +2959,12 @@ class InferenceBackend:
                 except Exception:
                     token = None
                 if isinstance(token, str) and token and text.endswith(token):
+                    if token in NATIVE_TOOL_CONTROL_TOKENS and _has_tool_signal(text):
+                        # A native control that is ALSO the stop token still closes the
+                        # envelope the parser is about to read (TML Inkling's
+                        # <|end_message|>); strict parsing rejects the call without it.
+                        # An ordinary EOS is not in that set and is still trimmed.
+                        continue
                     text = text[: -len(token)]
                 elif (
                     isinstance(token, str)

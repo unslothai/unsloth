@@ -869,3 +869,37 @@ def test_a_promotable_bare_gemma_call_is_a_streaming_boundary():
         assert promotable_gemma_call_pos(prose, EXEC_ENABLED) == -1, prose
         assert _earliest_tool_signal(prose, TOOL_XML_SIGNALS, EXEC_TOOLS) == -1, prose
         assert _gguf_has_genuine_tool_signal(prose, TOOL_XML_SIGNALS, EXEC_TOOLS) is False, prose
+
+
+def test_the_transformers_cleanup_keeps_a_stop_token_that_closes_an_envelope():
+    """``_clean_generated_text`` trims the active stop token from every snapshot.
+
+    Now that the decoder preserves native controls, a marker that is BOTH the EOS and the
+    required closer (TML Inkling's ``<|end_message|>``) was being removed before the parser
+    read it, so strict parsing rejected a complete call. An ordinary EOS is not a native
+    control and is still trimmed.
+    """
+    import ast
+    import pathlib
+
+    tree = ast.parse(
+        (pathlib.Path(__file__).resolve().parents[1] / "core/inference/inference.py").read_text()
+    )
+    fn = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_clean_generated_text"
+    )
+    body = ast.unparse(fn)
+    assert "NATIVE_TOOL_CONTROL_TOKENS" in body
+    assert "_has_tool_signal(text)" in body
+
+    # The two halves of the condition, on the real predicates.
+    from core.inference.native_tool_tokens import NATIVE_TOOL_CONTROL_TOKENS
+    from core.inference.tool_call_parser import has_tool_signal
+
+    envelope = '<|content_invoke_tool_json|>{"name": "get_weather", "args": {}}<|end_message|>'
+    assert "<|end_message|>" in NATIVE_TOOL_CONTROL_TOKENS
+    assert has_tool_signal(envelope) is True
+    assert has_tool_signal("hi<|end_message|>") is False  # a plain answer: still trimmed
+    assert "<|im_end|>" not in NATIVE_TOOL_CONTROL_TOKENS  # an ordinary EOS is unaffected
