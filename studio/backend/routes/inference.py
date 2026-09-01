@@ -27039,7 +27039,8 @@ def _normalize_openai_image_parts_to_png(openai_messages: list[dict], on_image =
             if on_image is not None:
                 on_image()
 
-            url = (part.get("image_url") or {}).get("url", "")
+            image_url = part.get("image_url") or {}
+            url = image_url.get("url", "")
             if not url.startswith("data:"):
                 continue
 
@@ -27052,7 +27053,9 @@ def _normalize_openai_image_parts_to_png(openai_messages: list[dict], on_image =
                     status_code = 400,
                     detail = "Failed to process image.",
                 )
-            part["image_url"] = {"url": f"data:image/png;base64,{png_b64}"}
+            # Only the url is re-encoded; `detail` is the client's request, not
+            # part of the encoding, and replacing the object would drop it.
+            image_url["url"] = f"data:image/png;base64,{png_b64}"
 
     return has_image
 

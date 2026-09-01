@@ -3284,7 +3284,6 @@ class TestFriendlyErrorHttpx:
 from routes.inference import (  # noqa: E402
     _drop_empty_assistant_sentinels,
     _openai_messages_for_gguf_chat,
-    _openai_messages_for_passthrough,
 )
 
 
@@ -10384,6 +10383,26 @@ class TestPassthroughImageNormalization:
 
         url = body["messages"][0]["content"][1]["image_url"]["url"]
         assert url.startswith("data:image/png;base64,")
+
+    def test_requested_detail_survives_the_conversion(self):
+        req = ChatCompletionRequest(
+            model = "default",
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": self._data_url("WEBP"), "detail": "high"},
+                        },
+                    ],
+                },
+            ],
+        )
+
+        part = _openai_messages_for_passthrough(req)[0]["content"][0]["image_url"]
+        assert part["url"].startswith("data:image/png;base64,")
+        assert part["detail"] == "high"
 
     def test_remote_url_is_forwarded_unchanged(self):
         messages = _openai_messages_for_passthrough(self._req("https://x.example/a.webp"))
