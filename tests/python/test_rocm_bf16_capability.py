@@ -1,5 +1,3 @@
-"""Regression tests for the gfx10 bf16 gate. See issue 7922."""
-
 import inspect
 import types
 from pathlib import Path
@@ -32,14 +30,11 @@ def test_newer_rdna_and_cdna_keep_bf16(arch):
 
 @pytest.mark.parametrize("arch", ["", None, "unknown"])
 def test_unreadable_arch_does_not_disable_bf16(arch):
-    """A failed probe must not disable bf16 on a card that has it."""
     assert arch_lacks_bf16(arch) is False
 
 
 def test_one_unreadable_device_keeps_the_others(monkeypatch):
-    """One wedged device must not discard the gfx10 reading beside it, or that card
-    keeps bf16 and the #7922 crash comes back. Only an unreadable device COUNT
-    empties the list, and torch's own answer then stands."""
+    """Only an unreadable device COUNT may empty the list; a wedged device must not (#7922)."""
     import types
 
     import unsloth.device_type as dt
@@ -76,7 +71,6 @@ def test_one_unreadable_device_keeps_the_others(monkeypatch):
 
 
 def test_gpu_init_gates_on_every_visible_device():
-    """Guards against narrowing the gate back to device 0."""
     source = GPU_INIT.read_text(encoding = "utf-8")
     hip_branch = source.split('elif DEVICE_TYPE == "hip":', 1)[1].split("\nelif ", 1)[0]
     assert "arch_lacks_bf16" in hip_branch
@@ -91,9 +85,7 @@ def test_model_utils_uses_the_patched_hip_probe():
     assert "SUPPORTS_BFLOAT16 = True" not in hip_branch
 
 
-# The tests below run the real _gpu_init.py bf16 chain against a fake HIP device set. No CI
-# runner has gfx10 silicon, and asserting on the source text only proves the line is spelled
-# right, not that the branch computes the right answer.
+# The tests below exec the real bf16 chain: no CI has gfx10, and a text assert only checks spelling.
 
 _CHAIN_START = 'if DEVICE_TYPE == "cuda" and not torch.cuda.is_available():'
 _CHAIN_END = "\n# For Gradio HF Spaces?"
@@ -115,8 +107,7 @@ def _fake_torch(
             raise RuntimeError("device wedged")
         return types.SimpleNamespace(gcnArchName = archs[i])
 
-    # Real torch has carried this exact signature since 2.4, and the cuda branch sniffs it with
-    # inspect.signature: a *args fake would send that branch down its no-kwarg fallback.
+    # Not *args: the cuda branch sniffs this signature with inspect.signature and would fall back.
     def is_bf16_supported(including_emulation = True):
         return base_bf16
 
@@ -140,8 +131,7 @@ def _namespace(fake_torch, device_type):
         "inspect": inspect,
         "DEVICE_TYPE": device_type,
         "arch_lacks_bf16": arch_lacks_bf16,
-        # hip_visible_archs reads unsloth.device_type's own `torch`, which is the real one, so
-        # monkeypatching is the caller's job (see _run_chain).
+        # Reads unsloth.device_type's own `torch`, not this fake, so the caller must monkeypatch.
         "hip_visible_archs": hip_visible_archs,
     }
 
@@ -170,9 +160,7 @@ def _run_chain(monkeypatch, fake_torch, device_type):
 )
 @pytest.mark.parametrize("archs,expected", [(["gfx1032"], False), (["gfx1100"], True)])
 def test_patched_probe_accepts_every_call_form(monkeypatch, archs, expected, args, kwargs):
-    """torch's signature has moved across releases and callers pass the flag both ways. The
-    replacement must not raise on any form, and including_emulation=False must not reopen the
-    gate: real ROCm torch returns True before it ever reads that flag."""
+    """including_emulation=False must not reopen the gate: ROCm torch returns True regardless."""
     fake = _fake_torch(archs)
     namespace = _run_chain(monkeypatch, fake, "hip")
     assert namespace["SUPPORTS_BFLOAT16"] is expected
@@ -188,8 +176,7 @@ def test_patched_probe_accepts_every_call_form(monkeypatch, archs, expected, arg
     ],
 )
 def test_mixed_host_disables_bf16_process_wide(monkeypatch, archs, expected):
-    """SUPPORTS_BFLOAT16 is one module constant for the process, so a mixed host cannot be
-    judged per card: one gfx10 anywhere in the visible set has to disable bf16 for all."""
+    """SUPPORTS_BFLOAT16 is one module constant, so a mixed host cannot be judged per card."""
     namespace = _run_chain(monkeypatch, _fake_torch(archs), "hip")
     assert namespace["SUPPORTS_BFLOAT16"] is expected
 
@@ -203,9 +190,7 @@ def test_mixed_host_disables_bf16_process_wide(monkeypatch, archs, expected):
     ],
 )
 def test_an_unreadable_probe_leaves_torchs_answer_alone(monkeypatch, archs, kwargs):
-    """No arch reading means no evidence, so torch still decides. Fail-open on purpose:
-    guessing False here would drop bf16 on every CDNA host whose probe hiccups. The cost is
-    that a gfx10 whose properties are entirely unreadable still gets bf16."""
+    """Fail-open on purpose: guessing False would drop bf16 on any CDNA host whose probe hiccups."""
     namespace = _run_chain(monkeypatch, _fake_torch(archs, **kwargs), "hip")
     assert namespace["SUPPORTS_BFLOAT16"] is True
 
@@ -224,8 +209,6 @@ def test_torch_saying_no_is_still_respected(monkeypatch):
 
 @pytest.mark.parametrize("device_type", ["cuda", "xpu"])
 def test_the_gate_does_not_leak_off_hip(monkeypatch, device_type):
-    """A gfx10 arch string presented to a non-hip branch must change nothing: the gate belongs
-    to the hip branch alone."""
     fake = _fake_torch(["gfx1032"])
     namespace = _run_chain(monkeypatch, fake, device_type)
     assert namespace["SUPPORTS_BFLOAT16"] is True
@@ -234,8 +217,7 @@ def test_the_gate_does_not_leak_off_hip(monkeypatch, device_type):
 
 
 def test_importing_unsloth_twice_is_stable(monkeypatch):
-    """The second pass captures the already-patched probe as old_is_bf16_supported. It must
-    not recurse or flip the answer."""
+    """The second pass captures the already-patched probe, which must not recurse."""
     fake = _fake_torch(["gfx1032"])
     _run_chain(monkeypatch, fake, "hip")
     namespace = _run_chain(monkeypatch, fake, "hip")

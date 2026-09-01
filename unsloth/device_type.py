@@ -192,18 +192,14 @@ if DEVICE_TYPE == "hip":
 
 
 def arch_lacks_bf16(gcn_arch):
-    """gfx10 (RDNA 1/2) has no native bf16, yet torch.cuda.is_bf16_supported() returns True on it:
-    Triton then emits a bf16 dot intrinsic LLVM cannot lower and the process dies with no Python
-    exception. Issue 7922. gfx11 (RDNA 3) does have bf16, so the prefix must stay 5 characters."""
+    """gfx10 (RDNA 1/2) claims bf16 it lacks, and Triton's dot then kills the process in LLVM
+    with no Python exception (issue 7922). gfx11 has bf16, so the prefix must stay 5 chars."""
     return str(gcn_arch or "").split(":", 1)[0].strip().lower().startswith("gfx10")
 
 
 def hip_visible_archs():
-    """gcnArchName per visible HIP device; empty only if the count is unreadable.
-
-    Guarded per device: one unreadable device must not discard the others, or the
-    gfx10 beside it keeps bf16 and dies in Triton (#7922).
-    """
+    """Guarded per device: one unreadable device must not discard the archs beside it, or a
+    gfx10 keeps bf16 and dies in Triton (#7922). Only an unreadable count returns []."""
     try:
         count = torch.cuda.device_count()
     except Exception:

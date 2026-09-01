@@ -165,9 +165,8 @@ def _install_device_type_stub(name: str) -> None:
     stub.device_synchronize = lambda *a, **k: None
     stub.device_empty_cache = lambda *a, **k: None
     stub.device_is_bf16_supported = lambda *a, **k: False
-    # test_rocm_bf16_capability.py imports these at module scope: a missing name errors collection.
-    stub.arch_lacks_bf16 = (
-        lambda arch: str(arch or "").split(":", 1)[0].strip().lower().startswith("gfx10")
+    stub.arch_lacks_bf16 = lambda arch: (
+        str(arch or "").split(":", 1)[0].strip().lower().startswith("gfx10")
     )
     stub.hip_visible_archs = lambda: []
     sys.modules[name] = stub
