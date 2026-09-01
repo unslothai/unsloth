@@ -26,11 +26,19 @@ type DiffusionPickSource = "hub" | "lora" | "exported" | "local" | "external";
 export function diffusionPipelineLoadTarget(
   model: string,
   meta: { loadId?: string | null; source: DiffusionPickSource },
-): { repoId: string; source: DiffusionPickSource } {
+): { repoId: string; displayRepoId: string; source: DiffusionPickSource } {
   const loadId = trimmed(meta.loadId);
-  return loadId && loadId !== model.trim()
-    ? { repoId: loadId, source: "local" }
-    : { repoId: model, source: meta.source };
+  return isPinnedDiffusionLoadId(model, loadId)
+    ? { repoId: loadId!, displayRepoId: model, source: "local" }
+    : { repoId: model, displayRepoId: model, source: meta.source };
+}
+
+export function isPinnedDiffusionLoadId(
+  model: string,
+  loadId: string | null | undefined,
+): boolean {
+  const pinned = trimmed(loadId);
+  return Boolean(pinned && pinned !== model.trim());
 }
 
 /** Search params for a diffusion pick routed out of the chat picker. The label rides its own param because `quant` is

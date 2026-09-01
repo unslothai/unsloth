@@ -75,7 +75,10 @@ import {
   useModelMemory,
 } from "@/hooks/use-model-memory";
 import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
-import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
+import {
+  diffusionRouteSearch,
+  isPinnedDiffusionLoadId,
+} from "@/lib/diffusion-route-search";
 import { type GgufFitClass, requiredGgufMemoryGb } from "@/lib/gguf-fit";
 import { extractParamLabel } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
@@ -3981,7 +3984,14 @@ export function HubModelPicker({
                 })) ||
               (catalog
                 ? artifactForRepoId(c.repo_id, catalog) !== null
-                : false)),
+                : false) ||
+              (isPinnedDiffusionLoadId(c.repo_id, c.load_id) &&
+                isFamilyOverrideLocalCandidate(
+                  c,
+                  familyOverride,
+                  familyOverrideMediaKind,
+                  modularFamilyOverrides,
+                ))),
         ),
         downloadedSort,
         loadTimes,

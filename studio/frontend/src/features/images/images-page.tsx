@@ -1311,6 +1311,9 @@ export function ImagesPage({
   const lastLoad = useRef<{ repoId: string; kind: "gguf" | "single_file" | "pipeline"; filename?: string } | null>(
     null,
   );
+  // A pinned cache snapshot is the physical load target, while its Hub id remains the selector
+  // identity. Keep the stable association so a failed later pick can still display the resident row.
+  const pinnedPipelineDisplayIds = useRef(new Map<string, string>());
   // Render-safe mirror of whether a page-initiated load supplied a complete Reapply target.
   const [canReapply, setCanReapply] = useState(false);
   // Repo id whose defaults were already seeded from a discovered resident model, so we seed once and never clobber a manual edit.
@@ -1325,6 +1328,10 @@ export function ImagesPage({
   // visibilitychange handler active while a generation poll runs: background tabs clamp setInterval, so returning fires one immediate poll.
   const genVisibilityListener = useRef<(() => void) | null>(null);
   const [status, setStatus] = useState<DiffusionStatus | null>(null);
+  const selectorModelId =
+    status?.loaded && status.repo_id
+      ? (pinnedPipelineDisplayIds.current.get(status.repo_id) ?? status.repo_id)
+      : undefined;
   // Controlled so the body-portaled overlays force-close while this page is mounted but off-tab.
   const [selectorOpen, setSelectorOpen] = useState(false);
   const [aspectOpen, setAspectOpen] = useState(false);
@@ -2947,6 +2954,12 @@ export function ImagesPage({
       // sets `busy`, so any pick can land on an awaiting one.
       const token = pickGuard.claim();
       const pipelineTarget = diffusionPipelineLoadTarget(id, meta);
+      if (pipelineTarget.repoId !== pipelineTarget.displayRepoId) {
+        pinnedPipelineDisplayIds.current.set(
+          pipelineTarget.repoId,
+          pipelineTarget.displayRepoId,
+        );
+      }
       // Curated non-GGUF model: load as a full pipeline or single-file safetensors.
       const spec = loadSpecFor(id, IMAGE_CATALOG);
       if (spec && spec.kind !== "gguf") {
@@ -3696,7 +3709,8 @@ export function ImagesPage({
             ) : (
               <ModelSelector
                 models={imageModels}
-                value={status?.loaded ? status.repo_id ?? undefined : undefined}
+                value={selectorModelId}
+                loadedModelIdOverride={selectorModelId}
                 activeGgufVariant={quant}
                 onValueChange={handleModelSelect}
                 resolveDownloadFootprint={resolveDownloadFootprint}

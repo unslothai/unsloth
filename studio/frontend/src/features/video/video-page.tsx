@@ -1009,6 +1009,9 @@ function VideoGenerator({
   const [familyOverride, setFamilyOverride] = useState("auto");
   // The last load descriptor, so "Reapply" can reload the same model with new advanced options.
   const lastLoad = useRef<({ repoId: string } & VideoLoadOptions) | null>(null);
+  // A pinned cache snapshot is the physical load target, while its Hub id remains the selector
+  // identity. Keep the stable association so a failed later pick can still display the resident row.
+  const pinnedPipelineDisplayIds = useRef(new Map<string, string>());
   // Render-safe mirror of whether a page-initiated load supplied a complete Reapply target.
   const [canReapply, setCanReapply] = useState(false);
 
@@ -1019,6 +1022,10 @@ function VideoGenerator({
   // visibilitychange handler active while a generation poll runs: background tabs clamp setInterval, so returning fires one immediate poll.
   const genVisibilityListener = useRef<(() => void) | null>(null);
   const [status, setStatus] = useState<VideoStatus | null>(null);
+  const selectorModelId =
+    status?.loaded && status.repo_id
+      ? (pinnedPipelineDisplayIds.current.get(status.repo_id) ?? status.repo_id)
+      : undefined;
   // Controlled so the body-portaled model selector force-closes when this page is mounted but off-tab.
   const [selectorOpen, setSelectorOpen] = useState(false);
   const [pendingH3Load, setPendingH3Load] = useState<PendingH3Load | null>(null);
@@ -2848,6 +2855,12 @@ function VideoGenerator({
       // sets `busy`, so any pick can land on an awaiting one.
       const token = pickGuard.claim();
       const pipelineTarget = diffusionPipelineLoadTarget(id, meta);
+      if (pipelineTarget.repoId !== pipelineTarget.displayRepoId) {
+        pinnedPipelineDisplayIds.current.set(
+          pipelineTarget.repoId,
+          pipelineTarget.displayRepoId,
+        );
+      }
       // Curated non-GGUF model: load as a full pipeline.
       const spec = loadSpecFor(id, VIDEO_CATALOG);
       if (spec && spec.kind !== "gguf") {
@@ -3434,7 +3447,8 @@ function VideoGenerator({
         <div className="pointer-events-auto flex min-w-0 items-center gap-3">
           <ModelSelector
             models={videoModels}
-            value={status?.loaded ? status.repo_id ?? undefined : undefined}
+            value={selectorModelId}
+            loadedModelIdOverride={selectorModelId}
             activeGgufVariant={quant}
             onValueChange={handleModelSelect}
             resolveDownloadFootprint={resolveDownloadFootprint}

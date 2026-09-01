@@ -8,6 +8,7 @@ import {
   type DiffusionRouteSearch,
   diffusionPipelineLoadTarget,
   diffusionRouteSearch,
+  isPinnedDiffusionLoadId,
   routedGgufFilename,
   routedGgufLabel,
 } from "../src/lib/diffusion-route-search.ts";
@@ -22,19 +23,28 @@ test("a cached pipeline loads the exact snapshot that established its manifest",
     }),
     {
       repoId: "/cache/models--Org--Opaque/snapshots/abc",
+      displayRepoId: "Org/Opaque",
       source: "local",
     },
   );
   assert.deepEqual(
     diffusionPipelineLoadTarget("Org/Opaque", { source: "hub" }),
-    { repoId: "Org/Opaque", source: "hub" },
+    { repoId: "Org/Opaque", displayRepoId: "Org/Opaque", source: "hub" },
   );
   assert.deepEqual(
     diffusionPipelineLoadTarget("Org/Opaque", {
       source: "hub",
       loadId: "Org/Opaque",
     }),
-    { repoId: "Org/Opaque", source: "hub" },
+    { repoId: "Org/Opaque", displayRepoId: "Org/Opaque", source: "hub" },
+  );
+  assert.equal(isPinnedDiffusionLoadId("Org/Opaque", "Org/Opaque"), false);
+  assert.equal(
+    isPinnedDiffusionLoadId(
+      "Org/Opaque",
+      "/cache/models--Org--Opaque/snapshots/abc",
+    ),
+    true,
   );
 });
 
