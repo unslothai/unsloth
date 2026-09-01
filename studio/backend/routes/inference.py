@@ -1631,6 +1631,19 @@ def _openai_llama_admission_capacity(request: Optional[Request], llama_backend =
     return _positive_int_or_none(slots) or 1
 
 
+def _openai_llama_admission_raw_total(llama_backend) -> Optional[int]:
+    """The cache as llama-server allocated it, with nothing held back.
+
+    `_openai_llama_admission_budget` deliberately returns LESS than this so nothing is
+    admitted against the last token. The two must not be confused: questions about the
+    SHAPE of the cache ("is there one slot", "is each slot private") are about the real
+    allocation, and answering them from the reduced figure makes a share look smaller
+    than a window that it actually equals.
+    """
+    total = _positive_int_or_none(getattr(llama_backend, "_kv_cache_context_total", None))
+    return total or _positive_int_or_none(getattr(llama_backend, "context_length", None))
+
+
 def _openai_llama_admission_budget(llama_backend) -> Optional[int]:
     """KV tokens the running llama-server actually allocated, or None if unknown.
 
@@ -1647,9 +1660,36 @@ def _openai_llama_admission_budget(llama_backend) -> Optional[int]:
     Falls back to ``context_length`` when the total is unset (nothing has been read
     back yet, in which case the two agree), and None when the backend cannot say,
     which keeps slot-only admission rather than inventing a budget.
+
+    **Reduced by what the cache holds that no request is charged for.** A drafter puts up
+    to ``--spec-draft-n-max`` tokens per slot into the cache before they are accepted or
+    rejected, and they belong to no request's prompt or output. Handing out the raw total
+    meant ``capacity * share`` came to exactly 100% of the cache with zero headroom, so
+    the drafts had nowhere to go. Measured 2026-09-01 on ``-c 16384 --parallel 4``:
+    ``4 * 4096 = 16384`` admitted, 24 draft cells needed on top, and all four chats died
+    with "the model ran out of context space" even though preemption had paused and
+    resumed correctly. The overrun was 24 cells out of 16384.
+
+    Applied HERE rather than at each call site so the charge, the wire clamp and the
+    preemptor all derive from one figure and cannot disagree about how big the cache is.
     """
-    total = _positive_int_or_none(getattr(llama_backend, "_kv_cache_context_total", None))
-    return total or _positive_int_or_none(getattr(llama_backend, "context_length", None))
+    total = _openai_llama_admission_raw_total(llama_backend)
+    if not total:
+        return None
+    reserved = _openai_llama_speculative_draft_tokens(llama_backend) * max(
+        1, _openai_llama_admission_capacity(None, llama_backend)
+    )
+    # Plus a margin for the estimate itself. Every prompt figure here comes from
+    # `estimate_messages_tokens_dense`, which approximates rather than tokenises, and the
+    # observed overrun was 24 cells out of 16384: well inside the error of an estimate.
+    # Handing out a cache to the last token only works if the arithmetic is exact, and it
+    # is not. One per cent costs about 40 tokens per chat at 16384 over four slots.
+    reserved += max(0, total // 100)
+    if reserved <= 0:
+        return total
+    # Never below half: a pathological draft window on a tiny cache must shrink the
+    # budget, not erase it.
+    return max(total // 2, total - reserved)
 
 
 def _openai_llama_admission_can_yield(llama_backend) -> bool:
@@ -2207,9 +2247,18 @@ def _openai_llama_admission_enforced_max_tokens(
     if cap is not None and cap < (window or budget):
         return None
     capacity = _openai_llama_admission_capacity(request, llama_backend)
+    if capacity <= 1:
+        # One slot owns the whole cache; there is nothing to divide.
+        return None
+    # Against the RAW cache, not the reduced budget. Under --no-kv-unified the aggregate
+    # is `window * capacity`, so a share IS a window and no request can overrun anyone
+    # else. Asking the reduced figure would make that share look smaller than the window
+    # and clamp a private cache for no reason.
+    raw_total = _openai_llama_admission_raw_total(llama_backend) or budget
+    if window and raw_total >= window * capacity:
+        return None
     share = max(1, budget // max(1, capacity))
     if share >= (window or budget):
-        # One slot, or a share as large as the window: nothing to enforce.
         return None
     prompt_tokens = _openai_llama_admission_prompt_tokens(
         payload,

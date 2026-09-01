@@ -179,7 +179,10 @@ class TestTheRouteActuallyArmsIt:
         controller = get_preemption_controller("http://127.0.0.1:1/")
         snapshot = controller.snapshot()
         assert snapshot.committed == 4096, "the real charge did not reach the controller"
-        assert snapshot.budget == 16384
+        # The USABLE budget, which is deliberately under the raw cache: admission holds
+        # back the speculative drafts and a margin for estimate error.
+        assert snapshot.budget == inference._openai_llama_admission_budget(_backend())
+        assert 0 < snapshot.budget < 16384
 
     @pytest.mark.asyncio
     async def test_a_private_cache_per_slot_is_not_armed(self):
@@ -302,9 +305,12 @@ class TestSpeculativeDraftsAreReserved:
             loop = None,
         )
         snapshot = get_preemption_controller("http://127.0.0.1:9/").snapshot()
-        assert snapshot.buffer == 828, (
-            f"the drafter's tokens were not reserved (buffer {snapshot.buffer})"
-        )
+        from core.inference.llama_preemption import preemption_buffer_tokens
+
+        assert snapshot.buffer == preemption_buffer_tokens(
+            snapshot.budget, draft_tokens = 2, slots = 4
+        ), f"the drafter's tokens were not reserved (buffer {snapshot.buffer})"
+        assert snapshot.buffer > preemption_buffer_tokens(snapshot.budget)
 
     @pytest.mark.asyncio
     async def test_a_backend_without_speculation_reserves_nothing_extra(self):
@@ -333,7 +339,10 @@ class TestSpeculativeDraftsAreReserved:
             signal = PreemptSignal(),
             loop = None,
         )
-        assert get_preemption_controller("http://127.0.0.1:10/").snapshot().buffer == 820
+        from core.inference.llama_preemption import preemption_buffer_tokens
+
+        snapshot = get_preemption_controller("http://127.0.0.1:10/").snapshot()
+        assert snapshot.buffer == preemption_buffer_tokens(snapshot.budget)
 
 
 class TestTheLiveCrashOf20260901:
@@ -537,3 +546,84 @@ class TestAPauseCannotOutliveTheRoomItWaitsFor:
         assert "logging.getLogger" not in source, (
             "a stdlib logger here is dropped, and silence gets read as absence"
         )
+
+
+class TestTheCacheIsNeverHandedOutToTheLastToken:
+    """Four chats died with preemption working perfectly, 2026-09-01.
+
+    armed 4, paused 3, resumed 3, peak requests_processing 4: the pause/resume cycle did
+    exactly what it was built to do. They still all died, because admission had handed
+    out `4 * 4096 = 16384` of a 16384 cache. At 100% with zero headroom the speculative
+    drafts had nowhere to go, and the overrun was 24 cells.
+
+    A working preemptor cannot save a cache that was over-allocated before anyone
+    started, so the reserve belongs in the budget everything else derives from.
+    """
+
+    def _backend(self, **kw):
+        backend = _backend()
+        backend.speculative_type = "draft-mtp"
+        backend.spec_drafter_kind = None
+        backend.requested_spec_mode = None
+        backend.spec_draft_n_max = 2
+        for key, value in kw.items():
+            setattr(backend, key, value)
+        return backend
+
+    def test_capacity_times_share_leaves_headroom(self):
+        import routes.inference as inference
+
+        backend = self._backend()
+        budget = inference._openai_llama_admission_budget(backend)
+        capacity = inference._openai_llama_admission_capacity(None, backend)
+        share = budget // capacity
+        assert capacity * share < 16384, (
+            f"{capacity} chats may occupy {capacity * share} of a 16384 cache"
+        )
+
+    def test_the_headroom_covers_the_drafts(self):
+        import routes.inference as inference
+
+        backend = self._backend()
+        budget = inference._openai_llama_admission_budget(backend)
+        capacity = inference._openai_llama_admission_capacity(None, backend)
+        drafts = inference._openai_llama_speculative_draft_tokens(backend) * capacity
+        assert 16384 - (budget // capacity) * capacity >= drafts
+
+    def test_it_holds_across_cache_sizes_and_slot_counts(self):
+        import routes.inference as inference
+
+        for total in (2048, 4096, 16384, 65536, 262144):
+            for slots in (2, 3, 4, 8):
+                backend = self._backend(
+                    context_length = total,
+                    _kv_cache_context_total = total,
+                    effective_parallel_slots = slots,
+                )
+                budget = inference._openai_llama_admission_budget(backend)
+                capacity = inference._openai_llama_admission_capacity(None, backend)
+                assert capacity * (budget // capacity) < total, (
+                    f"{total}/{slots}: no headroom"
+                )
+
+    def test_no_speculation_still_leaves_the_estimate_margin(self):
+        """The token figures are estimates, not tokenisations, in every case."""
+        import routes.inference as inference
+
+        backend = self._backend(speculative_type = None, spec_draft_n_max = None)
+        budget = inference._openai_llama_admission_budget(backend)
+        assert budget < 16384
+
+    def test_a_tiny_cache_is_reduced_not_erased(self):
+        import routes.inference as inference
+
+        backend = self._backend(
+            context_length = 256, _kv_cache_context_total = 256, spec_draft_n_max = 64
+        )
+        assert inference._openai_llama_admission_budget(backend) == 128
+
+    def test_an_unknown_cache_is_still_unknown(self):
+        import routes.inference as inference
+
+        backend = self._backend(context_length = None, _kv_cache_context_total = None)
+        assert inference._openai_llama_admission_budget(backend) is None

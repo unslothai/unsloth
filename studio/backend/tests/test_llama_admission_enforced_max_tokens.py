@@ -47,6 +47,12 @@ def _backend(*, window, total, slots):
     )
 
 
+def _budget(backend):
+    from routes.inference import _openai_llama_admission_budget
+
+    return _openai_llama_admission_budget(backend)
+
+
 def _enforced(payload, backend):
     return _openai_llama_admission_enforced_max_tokens(
         payload, request = None, llama_backend = backend
@@ -139,8 +145,12 @@ class TestTheEdges:
         """
         backend = _backend(window = 16384, total = 16384, slots = 4)
         payload = _chat(max_tokens = 16384)
+        # The SAME budget the bound derives, not the raw cache: admission holds a little
+        # back for the speculative drafts and for estimate error, and comparing a charge
+        # priced against the full cache with a bound priced against the usable one
+        # compares two different caches.
         charged = _openai_llama_admission_tokens(
-            payload, budget = 16384, capacity = 4, context_window = 16384
+            payload, budget = _budget(backend), capacity = 4, context_window = 16384
         )
         enforced = _enforced(payload, backend)
         assert _prompt_tokens(payload) + enforced == charged, (
@@ -154,7 +164,7 @@ class TestTheEdges:
         backend = _backend(window = 16384, total = 16384, slots = 4)
         payload = _chat(max_tokens = 16384)
         charged = _openai_llama_admission_tokens(
-            payload, budget = 16384, capacity = 4, context_window = 16384
+            payload, budget = _budget(backend), capacity = 4, context_window = 16384
         )
         assert charged <= _prompt_tokens(payload) + _enforced(payload, backend)
 
