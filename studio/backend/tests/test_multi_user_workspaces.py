@@ -817,3 +817,39 @@ def test_authenticated_chat_routes_select_the_token_subject_workspace(
             ).json()["title"]
             == "Bob route"
         )
+
+
+def test_an_unclaimed_training_backend_is_visible_to_every_account():
+    """The singleton is built lazily, in whichever request context touches it first.
+
+    Snapshotting the subject in __init__ pinned the *idle* backend to that first
+    caller, so every other account got 404 on progress/metrics, a silent no-op
+    reset, and a permanent "idle" status before it had ever started a run. State
+    nobody has claimed belongs to nobody, so it is visible to all; the moment a
+    run claims it the check is strict again.
+    """
+    from core.training.training import TrainingBackend
+    from utils.workspace_context import reset_workspace_subject, set_workspace_subject
+
+    token = set_workspace_subject("alice")
+    try:
+        backend = TrainingBackend()
+    finally:
+        reset_workspace_subject(token)
+
+    assert backend.owns_workspace("alice")
+    assert backend.owns_workspace("bob")
+    assert backend.owns_workspace("unsloth")
+
+
+def test_a_claimed_training_backend_is_private_to_the_account_that_started_it():
+    from core.training.training import TrainingBackend
+
+    backend = TrainingBackend()
+    with backend._lock:
+        backend._active_workspace_subject = "alice"
+
+    assert backend.owns_workspace("alice")
+    assert not backend.owns_workspace("bob")
+    assert not backend.owns_workspace("unsloth")
+

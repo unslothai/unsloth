@@ -1142,7 +1142,13 @@ class TrainingBackend:
         # Raw threads do not inherit ContextVars. Every job-owned pump/watchdog
         # is pinned to the account that started the job so DB and output helpers
         # cannot silently fall back to the legacy owner workspace.
-        self._active_workspace_subject: str = current_workspace_subject()
+        #
+        # None until a run claims it. The singleton is built lazily on first use
+        # (get_training_backend), so snapshotting the subject here would pin the
+        # idle backend to whichever account happened to touch it first, and every
+        # other account would then see 404/idle for state that is nobody's.
+        # Matches DiffusionTrainingService._active_workspace_subject.
+        self._active_workspace_subject: Optional[str] = None
 
         self._metric_buffer: list[dict] = []
         self._run_finalized: bool = False
@@ -1163,9 +1169,15 @@ class TrainingBackend:
     # --- Public API (called by routes/training.py) ---
 
     def owns_workspace(self, subject: str) -> bool:
-        """Whether the retained job/status state belongs to ``subject``."""
+        """Whether the retained job/status state belongs to ``subject``.
+
+        Unclaimed state (no run has started since this process did) belongs to
+        nobody, so every account may see it. From the moment a run claims the
+        backend the check is strict, which is what keeps one account out of
+        another's live or just-finished run.
+        """
         with self._lock:
-            return self._active_workspace_subject == subject
+            return self._active_workspace_subject in (None, subject)
 
     def reserve_start_request(
         self, start_request_id: str, job_id: str
