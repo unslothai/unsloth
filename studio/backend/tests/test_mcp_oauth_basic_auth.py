@@ -74,8 +74,7 @@ def test_basic_auth_omits_client_id_from_refresh(tmp_path, monkeypatch):
 
 
 def test_public_client_keeps_client_id_in_body(tmp_path, monkeypatch):
-    """A public client authenticates with client_id alone. Stripping it would break
-    every server that registers us without a secret."""
+    """A public client authenticates with client_id alone, so stripping it would break it."""
     auth = _auth(tmp_path, monkeypatch, "none")
     auth.context.client_info.client_secret = None
     request = asyncio.run(auth._exchange_token_authorization_code("auth-code", "verifier"))
@@ -86,8 +85,7 @@ def test_public_client_keeps_client_id_in_body(tmp_path, monkeypatch):
 
 
 def test_unpatchable_context_does_not_break_oauth():
-    """Reaching into the SDK must never be what breaks OAuth: if a future version
-    makes the context unwritable, callers still get a working provider."""
+    """If a future SDK makes the context unwritable, callers still get a working provider."""
 
     class Frozen:
         def prepare_token_auth(

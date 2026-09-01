@@ -259,10 +259,9 @@ def _oauth_store():
 
 
 def _strip_client_id_under_basic_auth(auth) -> None:
-    """The SDK leaves client_id in the body under Basic auth. Strict servers
-    (Notion) read that as two auth methods -- RFC 6749 2.3 -- and 401 the exchange.
-    Dropping it is safe: 3.2.1 makes client_id a MAY once the client is
-    authenticated, and an unauthenticated one sends no header, so it keeps it."""
+    """The SDK leaves client_id in the body under Basic auth; strict servers (Notion) read
+    that as two auth methods -- RFC 6749 2.3 -- and 401. Safe to drop: 3.2.1 makes client_id
+    a MAY once authenticated, and an unauthenticated client sends no header, so it keeps it."""
     context = getattr(auth, "context", None)
     prepare = getattr(context, "prepare_token_auth", None)
     if prepare is None:
@@ -278,8 +277,7 @@ def _strip_client_id_under_basic_auth(auth) -> None:
     try:
         context.prepare_token_auth = prepare_token_auth
     except Exception as exc:  # noqa: BLE001
-        # Reaching into the SDK must never be what breaks OAuth: without the fixup
-        # only servers that reject dual client auth fail, which is the status quo.
+        # The SDK reach-in must never break OAuth: without it only strict servers fail, as before.
         logger.warning("MCP OAuth: client_id fixup could not be applied: %s", exc)
 
 
