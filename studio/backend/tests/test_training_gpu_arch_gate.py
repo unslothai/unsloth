@@ -342,9 +342,7 @@ class TestTheOrdinalToIdMapMustBeTotal:
         _install(monkeypatch, _fake_torch([_props("gfx1101"), _props("gfx1036")]))
         assert rocm_gpu_ids_without_torch_kernels() == {1}
 
-    def test_an_id_named_twice_still_trips_the_all_uncovered_guard(
-        self, monkeypatch, no_mask
-    ):
+    def test_an_id_named_twice_still_trips_the_all_uncovered_guard(self, monkeypatch, no_mask):
         # Both ordinals are physical 0, so the deduplicated set holds one id
         # against two rejected devices and reads as a partial drop.
         monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0,0")
