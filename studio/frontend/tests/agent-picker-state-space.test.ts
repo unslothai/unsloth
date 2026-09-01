@@ -11,6 +11,7 @@ import {
   agentRunsOnActiveModel,
   fallbackAgent,
   pickCompatibleAgent,
+  resolveGgufCompatibility,
 } from "../src/features/settings/components/agent-command.ts";
 
 // DEFAULT_AGENTS in usage-examples.tsx = CODING_AGENTS minus HIDDEN_AGENTS ("pi").
@@ -239,4 +240,27 @@ test("unknown GGUF-ness leaves both the pick and the stored preference alone", (
   assert.equal(state, null);
   // Both effects bail on null, so nothing is re-steered and nothing is cleared.
   assert.equal(state === null, true);
+});
+
+test("a route that never mounts the chat runtime still learns the model kind", () => {
+  // The store fields and params.checkpoint are populated only by useChatModelRuntime,
+  // mounted on chat-page and hub-page alone, and local checkpoints are not persisted.
+  // Settings opens from every route (api-monitor-page has its own button into this
+  // panel), so a store-only reading left the gate permanently unknown there and the
+  // panel kept offering a GGUF-only agent for a safetensors model.
+  assert.equal(resolveGgufCompatibility(null, false), false);
+  assert.equal(resolveGgufCompatibility(null, true), true);
+  // With the answer available, the gate is live again on those routes.
+  assert.equal(pickCompatibleAgent([], "claude", false, VISIBLE_AGENTS), UNIVERSAL_AGENT);
+});
+
+test("the store wins over the polled status when both have an answer", () => {
+  // Same paint as the model switch on the chat routes; the probe can be a poll behind.
+  assert.equal(resolveGgufCompatibility(true, false), true);
+  assert.equal(resolveGgufCompatibility(false, true), false);
+});
+
+test("unknown from both sources stays unknown", () => {
+  // A server that omits is_gguf, or a probe that failed, is not evidence of "not GGUF".
+  assert.equal(resolveGgufCompatibility(null, null), null);
 });

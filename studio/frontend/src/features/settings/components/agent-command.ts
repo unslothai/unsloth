@@ -174,3 +174,14 @@ export function pickCompatibleAgent(
     ? null
     : fallbackAgent(isGguf, offered);
 }
+
+// Where the panel's "is the resident model a GGUF" answer comes from, and in which order.
+// The chat runtime store is only populated on the routes that mount useChatModelRuntime,
+// so it is the fast source, never the only one; /api/inference/status answers everywhere.
+// null from both means unknown, which is not the same as false and must not gate on it.
+export function resolveGgufCompatibility(
+  fromStore: boolean | null,
+  fromServer: boolean | null,
+): boolean | null {
+  return fromStore ?? fromServer;
+}

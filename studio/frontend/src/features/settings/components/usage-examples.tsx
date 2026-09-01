@@ -13,7 +13,11 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
-import { isExternalModelId, useChatRuntimeStore } from "@/features/chat";
+import {
+  getInferenceStatus,
+  isExternalModelId,
+  useChatRuntimeStore,
+} from "@/features/chat";
 import { useT } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
@@ -44,6 +48,7 @@ import {
   normalizeHost,
   pickCompatibleAgent,
   psSingle,
+  resolveGgufCompatibility,
   shSingle,
 } from "./agent-command";
 import { keylessBaseEligible } from "./keyless-example-eligibility";
@@ -614,12 +619,63 @@ export function UsageExamples({
   // so the fields freeze while useExampleModelName keeps naming the resident model from
   // /v1/models, and the two can drift apart with no way back.
   const activeCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
-  const isGguf: boolean | null =
+  const storeIsGguf: boolean | null =
     !activeCheckpoint || isExternalModelId(activeCheckpoint)
       ? null
       : activeGgufVariant != null ||
         activeNativePathToken != null ||
         ggufContextLength != null;
+
+  // Those fields are filled by useChatModelRuntime, which only the chat and hub pages
+  // mount, and local checkpoints are deliberately not persisted (chat-runtime-store:
+  // "re-derived from the backend in useChatModelRuntime"). This dialog opens from any
+  // route -- the API Monitor page has its own button into this very panel -- so off
+  // those two pages the store answers "unknown" forever and the gate never runs.
+  // Ask the server the question the CLI gate asks instead: is_gguf on
+  // /api/inference/status is the same field _require_gguf_for_agent reads, and it
+  // describes the resident model, which is the model these snippets name.
+  const [statusIsGguf, setStatusIsGguf] = useState<boolean | null>(null);
+  // Polled on the catalog's own cadence: a model can be loaded or swapped from another
+  // tab, and off the chat routes there is no store update to notice it.
+  useEffect(() => {
+    let cancelled = false;
+    let timeoutId: number | null = null;
+
+    const update = () => {
+      void getInferenceStatus()
+        .then((status) => {
+          if (cancelled) return false;
+          // Absent means "this server does not report it", never "not GGUF" -- the same
+          // reading the CLI gate takes, so both refuse to guess from the same silence.
+          setStatusIsGguf(status.is_gguf ?? null);
+          return status.is_gguf != null;
+        })
+        .catch(() => {
+          // Keep the last answer: a failed probe is no evidence about the model.
+          return false;
+        })
+        .then((resolved) => {
+          if (cancelled) return;
+          timeoutId = window.setTimeout(
+            update,
+            resolved ? CATALOG_IDLE_MS : CATALOG_RETRY_MS,
+          );
+        });
+    };
+
+    update();
+    return () => {
+      cancelled = true;
+      if (timeoutId !== null) window.clearTimeout(timeoutId);
+    };
+  }, []);
+
+  // The store first: on the chat and hub pages it updates on the same paint as the
+  // switch, while the probe above can be up to a poll behind.
+  const isGguf: boolean | null = resolveGgufCompatibility(
+    storeIsGguf,
+    statusIsGguf,
+  );
 
   useEffect(() => {
     void fetchDeviceType({ force: true });
