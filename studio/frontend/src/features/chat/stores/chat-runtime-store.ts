@@ -72,6 +72,7 @@ import { retryablePatchAfterFailure } from "../utils/settings-retry";
 import {
   isPresenceBumpQwen,
   migrateLegacyQwenDefaults,
+  type QwenDefaultsMigration,
 } from "../utils/qwen-defaults-migration";
 import {
   DEFAULT_AUTO_COMPACT_ENABLED,
@@ -489,6 +490,14 @@ async function flushSettingsPatch(keepalive = false): Promise<void> {
 // pendingTimer are both empty across that window, so they cannot answer "is a
 // settings write still outstanding" on their own.
 let unsettledFlushes = 0;
+
+function settingsWritesAreDrained(): boolean {
+  return (
+    pendingTimer === null &&
+    Object.keys(pendingPatch).length === 0 &&
+    unsettledFlushes === 0
+  );
+}
 
 function enqueueSettingsFlush(): Promise<void> {
   unsettledFlushes += 1;
@@ -3153,7 +3162,16 @@ export function noteLoadedModelReasoningMode(
         : enabled,
     reasoningMutationVersion:
       scalarSettingMutationVersions.reasoningEnabled,
-    fromLoad,
+    // Sticky per checkpoint: performLoad marks the load, then awaits refresh(),
+    // whose status merge calls this again with the default false. Downgrading
+    // there would drop the load's claim before hydration could read it.
+    fromLoad:
+      fromLoad ||
+      (loadedModelReasoningMode?.checkpoint.toLowerCase() ===
+        checkpoint.toLowerCase() &&
+        loadedModelReasoningMode.reasoningMutationVersion ===
+          scalarSettingMutationVersions.reasoningEnabled &&
+        loadedModelReasoningMode.fromLoad),
   };
 }
 
@@ -3822,6 +3840,18 @@ function qwenMigrationThinkingOn(
   if (state.reasoningAlwaysOn) {
     return true;
   }
+  // Ahead of the established mode: a model that cannot reason never had the
+  // thinking table applied at load (apply-inference-status-to-store gates on
+  // supportsReasoning), and the mode recorded for it is just whatever toggle
+  // this browser happened to hold. Only once a load or status actually reported
+  // this checkpoint, though: supportsReasoning starts false, and "not asked
+  // yet" is not "cannot".
+  const statusSeen =
+    loadedModelReasoningMode?.checkpoint.toLowerCase() ===
+    state.params.checkpoint.toLowerCase();
+  if (statusSeen && !state.supportsReasoning) {
+    return false;
+  }
   const established = loadEstablishedReasoningMode(state);
   if (established) {
     return established.enabled;
@@ -3853,23 +3883,39 @@ const QWEN_MIGRATION_DECISION_FIELDS = [
   "inferenceParamsByModel",
 ] as const satisfies ReadonlyArray<keyof PersistedChatSettings>;
 
+// Raw, not sanitized: the server tests `key in current` against what is stored,
+// and sanitizing drops keys that are still present, such as an empty
+// inferenceParamsByModel. Asserting absence from the sanitized copy would fence
+// a key the row really has and reject every migration on that install.
 function qwenMigrationExpectedAbsent(
-  settings: PersistedChatSettings,
+  rawSettings: unknown,
 ): Array<keyof PersistedChatSettings> {
+  const raw =
+    typeof rawSettings === "object" && rawSettings !== null
+      ? (rawSettings as Record<string, unknown>)
+      : {};
   return QWEN_MIGRATION_DECISION_FIELDS.filter(
-    (field) => settings[field] === undefined,
+    (field) => !Object.hasOwn(raw, field),
   );
 }
 
 function qwenMigrationExpectedAbsentPaths(
-  settings: PersistedChatSettings,
+  rawSettings: unknown,
   patch: PersistedChatSettings,
 ): Array<[keyof PersistedChatSettings, string]> {
+  // Raw for the same reason as qwenMigrationExpectedAbsent: the server tests the
+  // stored row, so a key sanitizing away must not be fenced as absent.
+  const nested = (field: keyof PersistedChatSettings): Record<string, unknown> =>
+    typeof rawSettings === "object" && rawSettings !== null
+      ? ((rawSettings as Record<string, unknown>)[field] as
+          | Record<string, unknown>
+          | undefined) ?? {}
+      : {};
   const paths: Array<[keyof PersistedChatSettings, string]> = [];
   if (patch.inferenceParams !== undefined) {
-    const global = settings.inferenceParams;
+    const global = nested("inferenceParams");
     for (const field of ["topK", "repetitionPenalty"] as const) {
-      if (global === undefined || global[field] === undefined) {
+      if (!Object.hasOwn(global, field)) {
         paths.push(["inferenceParams", field]);
       }
     }
@@ -3877,9 +3923,9 @@ function qwenMigrationExpectedAbsentPaths(
   // Normalizing a differently-cased key writes a new exact-key row. Unfenced,
   // the subset compare only checks the old spelling, so an exact-key row
   // another tab added after the confirming read would be overwritten whole.
-  const stored = settings.inferenceParamsByModel;
+  const stored = nested("inferenceParamsByModel");
   for (const modelId of Object.keys(patch.inferenceParamsByModel ?? {})) {
-    if (stored === undefined || !Object.hasOwn(stored, modelId)) {
+    if (!Object.hasOwn(stored, modelId)) {
       paths.push(["inferenceParamsByModel", modelId]);
     }
   }
@@ -3948,9 +3994,15 @@ async function retryLegacyQwenDefaultsAfterPresetChange(
   try {
     // Land the preset selection first so the confirming GET can recognize the
     // legacy snapshot; a newer edit in another tab fails the fingerprint
-    // safely. An undrained write only hides it, so this pass declines and the
-    // next trigger picks the migration up.
+    // safely.
     await flushPendingChatSettings();
+    // A write still outstanding past the flush timeout would reach the backend
+    // merge after this CAS and restore the legacy row, and nothing retries once
+    // the local copy is migrated. Skip instead: the local legacy row survives,
+    // so the next status refresh schedules this again.
+    if (!settingsWritesAreDrained()) {
+      return;
+    }
     const state = useChatRuntimeStore.getState();
     if (
       !state.settingsHydrated ||
@@ -3959,7 +4011,8 @@ async function retryLegacyQwenDefaultsAfterPresetChange(
       return;
     }
     const checkpoint = state.params.checkpoint;
-    const confirmed = sanitizeChatSettings(await getChatSettings());
+    const confirmedRaw = await getChatSettings();
+    const confirmed = sanitizeChatSettings(confirmedRaw);
     const confirmedState = useChatRuntimeStore.getState();
     // A model switch during the confirming GET invalidates both the row and the
     // reasoning mode this retry would persist. The new model schedules its own.
@@ -3984,8 +4037,8 @@ async function retryLegacyQwenDefaultsAfterPresetChange(
     const persisted = await savePersistedChatSettingsPatchIfCurrent(
       confirmed,
       migration.patch,
-      qwenMigrationExpectedAbsent(confirmed),
-      qwenMigrationExpectedAbsentPaths(confirmed, migration.patch),
+      qwenMigrationExpectedAbsent(confirmedRaw),
+      qwenMigrationExpectedAbsentPaths(confirmedRaw, migration.patch),
     );
     // Only now touch local state. Applying before persisting would leave this
     // tab generating with values the server rejected, with no read to correct
@@ -4267,7 +4320,24 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     settingsHydrationPromise = (async () => {
       const hydrationVersions = getSettingsHydrationVersions();
       try {
-        const { settings, fromServer } = await loadChatSettingsWithLegacyImport();
+        const {
+          settings,
+          fromServer,
+          persisted: settingsArePersisted,
+        } = await loadChatSettingsWithLegacyImport();
+        // Assigned by the confirming read below, so the failure path can prefer
+        // it over the older hydration response.
+        let confirmed: PersistedChatSettings | undefined;
+        // What to hydrate when nothing was migrated. The confirming read is the
+        // newer server truth, but a legacy merge that failed to save exists
+        // only here, and re-reading the server would discard it.
+        const unmigrated = (
+          snapshot: PersistedChatSettings,
+        ): QwenDefaultsMigration => ({
+          settings: settingsArePersisted ? snapshot : settings,
+          patch: null,
+          migratedModelIds: [],
+        });
         const checkpoint = get().params.checkpoint;
         const thinkingOn = qwenMigrationThinkingOn(
           settings,
@@ -4297,7 +4367,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
             // Re-read immediately before the write, so the patch derives from
             // this confirmation rather than the earlier hydration response and
             // a newer edit from another tab is left untouched.
-            const confirmed = sanitizeChatSettings(await getChatSettings());
+            const confirmedRaw = await getChatSettings();
+            confirmed = sanitizeChatSettings(confirmedRaw);
             const confirmedState = get();
             // A model switch during the confirming GET invalidates the
             // checkpoint and mode this migration would persist; the new model
@@ -4330,18 +4401,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
                           .rememberParamsPerModel,
                       ),
                   )
-                : {
-                    settings: confirmed,
-                    patch: null,
-                    migratedModelIds: [],
-                  };
+                : unmigrated(confirmed);
             if (migration.patch) {
               const persisted = await savePersistedChatSettingsPatchIfCurrent(
                 confirmed,
                 migration.patch,
-                qwenMigrationExpectedAbsent(confirmed),
+                qwenMigrationExpectedAbsent(confirmedRaw),
                 qwenMigrationExpectedAbsentPaths(
-                  confirmed,
+                  confirmedRaw,
                   migration.patch,
                 ),
               );
@@ -4358,12 +4425,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
             // Best effort, but that cannot mean hydrating values the server
             // never accepted: the sheet and every request would show migrated
             // sampling while storage still held the old row, on each start.
-            // Fall back to what was actually read.
-            migration = {
-              settings,
-              patch: null,
-              migratedModelIds: [],
-            };
+            // Fall back to what was actually read, preferring the confirming
+            // snapshot when it landed, since the first read may already be
+            // stale and backfill would then push this browser's copy over it.
+            migration = unmigrated(confirmed ?? settings);
           }
         }
         const hydratedSettings = migration.settings;

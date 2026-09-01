@@ -1182,14 +1182,25 @@ test("a failed settings write does not strand the migration", async () => {
   useChatRuntimeStore.getState().setActivePresetSource("builtin-default");
   await new Promise((resolve) => setTimeout(resolve, 50));
 
-  assert.equal(
+  const migrationReached = (): boolean =>
     settingsHttp.puts.some(
       (put) =>
         (put.inferenceParamsByModel as Record<string, unknown> | undefined)?.[
           QWEN38
         ] !== undefined,
-    ),
-    true,
-    "the migration still reached the server after the 503",
-  );
+    );
+
+  // The 503 leaves the older patch requeued. Migrating now would let that write
+  // land after the CAS and restore the legacy row, so this pass must decline.
+  assert.equal(migrationReached(), false, "migrated behind an undrained write");
+
+  // Not stranded, though: the local legacy row survived, so the next trigger
+  // runs it once the queue is clear.
+  settingsHttp.putFailures = [];
+  await flushPendingChatSettings();
+  const qwen = useChatRuntimeStore.getState();
+  qwen.setParams({ ...qwen.params }, { fromModelDefaults: true });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  assert.equal(migrationReached(), true, "the retry never landed");
 });

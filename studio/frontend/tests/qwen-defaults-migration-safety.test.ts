@@ -315,10 +315,107 @@ test("a status refresh cannot outrank the installation's persisted reasoning", a
     reasoningEnabled: true,
     settingsHydrated: false,
   }));
+  // This browser never loaded QWEN38: clear any load marker left by an earlier
+  // case, then let a status merely report the model (fromLoad defaults false).
+  noteLoadedModelReasoningMode("unsloth/Llama-3.2-3B-Instruct-GGUF", false);
   noteLoadedModelReasoningMode(QWEN38, true);
 
   await useChatRuntimeStore.getState().hydratePersistedSettings();
 
   // The server said thinking is off for this installation. It stays off.
   assert.equal(useChatRuntimeStore.getState().reasoningEnabled, false);
+});
+
+test("the post-load refresh does not drop the load's claim on the mode", async () => {
+  // performLoad marks fromLoad, then awaits refresh(), whose status merge calls
+  // noteLoadedModelReasoningMode again with the default false. Downgrading there
+  // would let hydration replay the previous model's persisted toggle.
+  resetHttp({
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    reasoningEnabled: true,
+    inferenceParamsByModel: { [QWEN38]: LEGACY_SNAPSHOT },
+  });
+  useChatRuntimeStore.setState((state) => ({
+    params: { ...state.params, ...LEGACY_SNAPSHOT, checkpoint: QWEN38 },
+    paramsByModel: { [QWEN38]: LEGACY_SNAPSHOT },
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    rememberParamsPerModel: true,
+    reasoningAlwaysOn: false,
+    reasoningEnabled: false,
+    settingsHydrated: false,
+  }));
+  noteLoadedModelReasoningMode(QWEN38, false, true);
+  // The refresh that performLoad awaits, reporting the same model.
+  noteLoadedModelReasoningMode(QWEN38, false);
+
+  await useChatRuntimeStore.getState().hydratePersistedSettings();
+
+  const after = useChatRuntimeStore.getState();
+  assert.equal(after.reasoningEnabled, false);
+  assert.equal(after.params.temperature, 0.7);
+  assert.equal(after.params.topP, 0.8);
+});
+
+test("a model without reasoning support is migrated as non-thinking", async () => {
+  // The load-time overlay is gated on supportsReasoning, so a toggle left over
+  // from the previous model must not pick the thinking table for the row.
+  resetHttp({
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    inferenceParamsByModel: { [QWEN38]: LEGACY_SNAPSHOT },
+  });
+  useChatRuntimeStore.setState((state) => ({
+    params: { ...state.params, ...LEGACY_SNAPSHOT, checkpoint: QWEN38 },
+    paramsByModel: { [QWEN38]: LEGACY_SNAPSHOT },
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    rememberParamsPerModel: true,
+    reasoningAlwaysOn: false,
+    reasoningEnabled: true,
+    supportsReasoning: false,
+    settingsHydrated: false,
+  }));
+  // A status reported this checkpoint, and it cannot reason.
+  noteLoadedModelReasoningMode("unsloth/Llama-3.2-3B-Instruct-GGUF", false);
+  useChatRuntimeStore.setState({ reasoningEnabled: true });
+  noteLoadedModelReasoningMode(QWEN38, true);
+
+  await useChatRuntimeStore.getState().hydratePersistedSettings();
+
+  assert.equal(serverRow().temperature, 0.7);
+  assert.equal(serverRow().topP, 0.8);
+});
+
+test("an empty stored model map does not fence off the migration", async () => {
+  // sanitizeChatSettings drops inferenceParamsByModel: {}, so asserting its
+  // absence would fence a key the row still has and the CAS would reject.
+  resetHttp({
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    inferenceParams: {
+      temperature: 0.6,
+      topP: 0.95,
+      minP: 0.01,
+      presencePenalty: 0.0,
+    },
+    inferenceParamsByModel: {},
+  });
+  useChatRuntimeStore.setState((state) => ({
+    params: { ...state.params, ...LEGACY_SNAPSHOT, checkpoint: QWEN38 },
+    paramsByModel: {},
+    activePreset: "Default",
+    activePresetSource: "builtin-default",
+    rememberParamsPerModel: false,
+    reasoningAlwaysOn: false,
+    reasoningEnabled: true,
+    settingsHydrated: false,
+  }));
+
+  await useChatRuntimeStore.getState().hydratePersistedSettings();
+
+  const global = settingsHttp.settings.inferenceParams as Record<string, number>;
+  assert.equal(global.presencePenalty, 1.5);
+  assert.equal(global.minP, 0);
 });
