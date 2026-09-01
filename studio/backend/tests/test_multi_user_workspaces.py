@@ -3476,3 +3476,140 @@ def test_a_deleted_username_is_held_while_a_media_load_is_in_flight(monkeypatch)
     auth_storage._quiesce_workspace_jobs("alice")
     assert loading.unloaded_for == ["alice"]
     assert auth_storage._workspace_jobs_active("alice") is False
+
+
+def test_a_managed_account_may_load_what_the_catalog_offered_it(tmp_path, monkeypatch):
+    from fastapi import HTTPException
+
+    from routes import inference as inference_routes
+    from routes import models as models_routes
+
+    shared_cache = tmp_path / "shared" / "hf"
+    lm_studio = tmp_path / "shared" / "lmstudio"
+    elsewhere = tmp_path / "someone-elses" / "private"
+    for path in (shared_cache, lm_studio, elsewhere):
+        path.mkdir(parents = True)
+
+    monkeypatch.setattr(
+        models_routes,
+        "advertised_shared_model_roots",
+        lambda: [str(shared_cache.resolve()), str(lm_studio.resolve())],
+    )
+
+    token = _bind("alice")
+    try:
+        # collect_local_models scans these for every account, so refusing the load
+        # left the picker offering models that 403ed, and OpenAI auto-switch
+        # resolving one and then failing at the same gate.
+        inference_routes._reject_uncontained_local_path(
+            str(shared_cache / "models--org--thing"), "load"
+        )
+        inference_routes._reject_uncontained_local_path(str(lm_studio / "org" / "thing"), "load")
+        # Everything else is still refused: the catalog never offered it.
+        with pytest.raises(HTTPException) as exc:
+            inference_routes._reject_uncontained_local_path(str(elsewhere), "load")
+        assert exc.value.status_code == 403
+    finally:
+        reset_workspace_subject(token)
+
+
+def test_a_managed_account_can_export_to_a_path_its_own_browser_returned(tmp_path, monkeypatch):
+    from utils.paths.storage_roots import exports_root, resolve_export_write_dir
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+
+    token = _bind("alice")
+    try:
+        root = exports_root()
+        root.mkdir(parents = True, exist_ok = True)
+        chosen = root / "my-export"
+        chosen.mkdir()
+        # The folder browser returns an absolute path even for a directory inside
+        # the caller's own workspace, so refusing on shape alone refused the
+        # ordinary case.
+        assert resolve_export_write_dir(str(chosen)) == chosen.resolve()
+        # An absolute path outside it is still refused.
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        with pytest.raises(ValueError):
+            resolve_export_write_dir(str(outside))
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind(LEGACY_WORKSPACE_SUBJECT)
+    try:
+        # The owner keeps the arbitrary-path escape hatch (#6082).
+        outside = tmp_path / "owner-drive"
+        assert resolve_export_write_dir(str(outside)) == outside
+    finally:
+        reset_workspace_subject(token)
+
+
+def test_the_startup_precache_setting_lives_in_the_owners_database(monkeypatch):
+    import inspect
+
+    from auth.authentication import require_install_admin
+    from routes.settings import update_helper_precache
+    from utils import helper_precache_settings
+
+    seen = {}
+
+    def _fake_upsert(values):
+        seen["write_subject"] = current_workspace_subject()
+        seen["values"] = values
+
+    monkeypatch.setattr("storage.studio_db.upsert_app_settings", _fake_upsert)
+    monkeypatch.setattr(
+        "storage.studio_db.get_app_setting",
+        lambda key, default: seen.setdefault("read_subject", current_workspace_subject())
+        and None,
+    )
+
+    token = _bind("alice")
+    try:
+        # _start_helper_precache_if_enabled runs outside any request, so it reads
+        # the owner's database whatever anyone else stored.
+        helper_precache_settings.set_helper_precache_enabled(True)
+        helper_precache_settings.get_helper_precache_enabled()
+    finally:
+        reset_workspace_subject(token)
+
+    assert seen["write_subject"] == LEGACY_WORKSPACE_SUBJECT
+    assert seen["read_subject"] == LEGACY_WORKSPACE_SUBJECT
+
+    # And the write is owner-only, since it is one install-wide behaviour.
+    dependency = inspect.signature(update_helper_precache).parameters["current_subject"].default
+    assert dependency.dependency is require_install_admin
+
+
+def test_a_managed_training_run_cannot_use_the_hosts_iam_role():
+    from fastapi import HTTPException
+
+    from models.training import S3Config
+    from routes.training import _reject_ambient_s3_for_a_managed_account
+
+    iam = S3Config(bucket = "someone-elses-bucket", use_iam_role = True)
+    own_keys = S3Config(
+        bucket = "my-bucket", access_key_id = "AKIA-mine", secret_access_key = "secret-mine"
+    )
+
+    token = _bind("alice")
+    try:
+        # _build_s3_client falls back to boto3's default chain, which on an EC2 or
+        # container host is the installation's own role, so any bucket that
+        # identity can read would be readable by naming it here.
+        with pytest.raises(HTTPException) as exc:
+            _reject_ambient_s3_for_a_managed_account(iam)
+        assert exc.value.status_code == 403
+        # Its own keys are fine, and so is not using S3 at all.
+        _reject_ambient_s3_for_a_managed_account(own_keys)
+        _reject_ambient_s3_for_a_managed_account(None)
+    finally:
+        reset_workspace_subject(token)
+
+    token = _bind(LEGACY_WORKSPACE_SUBJECT)
+    try:
+        # The host's identity is the owner's, so their run is unchanged.
+        _reject_ambient_s3_for_a_managed_account(iam)
+    finally:
+        reset_workspace_subject(token)

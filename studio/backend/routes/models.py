@@ -5619,6 +5619,54 @@ async def list_checkpoints(
 _EXPORT_SIZE_CACHE: dict[str, tuple[int, int, str]] = {}
 
 
+def advertised_shared_model_roots() -> list[str]:
+    """Resolved roots the local-model catalog scans for EVERY account.
+
+    ``collect_local_models`` walks ./models, the Hugging Face caches and the LM
+    Studio directories whoever is asking, so a managed account is offered models
+    that live there. Model weights and the Hub cache are install-wide by design in
+    this layout, so a load from one of these is not a read of another account's
+    private files; it is the model the picker just listed. Kept next to the scan
+    it mirrors, so the two cannot drift into offering what a load then refuses.
+    """
+    sources = _compat_local_inventory_sources()
+    candidates: list[Path] = [
+        Path("./models"),
+        sources.hf_cache_dir,
+        sources.legacy_hf,
+        sources.hf_default,
+        *sources.known_hf_caches,
+        *sources.lm_dirs,
+    ]
+    roots: list[str] = []
+    for candidate in candidates:
+        try:
+            resolved = os.path.realpath(str(candidate))
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if resolved not in roots:
+            roots.append(resolved)
+    return roots
+
+
+def is_advertised_shared_model_path(model: str) -> bool:
+    """Whether ``model`` lives under a root the catalog offers to every account.
+
+    Symlink-resolved before the comparison, the same way _is_sizable_local_path
+    does it, so a link planted inside a shared root cannot point at a private one.
+    """
+    if not isinstance(model, str) or not model.strip():
+        return False
+    try:
+        real = os.path.realpath(os.path.expanduser(model.strip()))
+    except (OSError, RuntimeError, ValueError):
+        return False
+    for root in advertised_shared_model_roots():
+        if real == root or real.startswith(root + os.sep):
+            return True
+    return False
+
+
 def _is_sizable_local_path(model: str) -> bool:
     """True only for local paths under an Unsloth data root.
 

@@ -584,10 +584,20 @@ def resolve_export_write_dir(path_value: str | None = None) -> Path:
     if _is_absolute_user_path(path):
         if current_workspace_subject() == LEGACY_WORKSPACE_SUBJECT:
             return path
-        raise ValueError(
-            "Managed accounts can only export inside their own workspace, "
-            f"not to an absolute path: {raw!r}"
-        )
+        # The Export folder browser hands back an absolute path even when the
+        # user picked a directory inside their own workspace, so refusing on
+        # shape alone refused the ordinary case. Ask where it actually lands:
+        # resolved, so a symlink inside the export root cannot point out of it.
+        root = exports_root()
+        try:
+            resolved = path.resolve()
+            resolved.relative_to(root.resolve())
+        except (OSError, RuntimeError, ValueError):
+            raise ValueError(
+                "Managed accounts can only export inside their own workspace, "
+                f"not to an absolute path: {raw!r}"
+            ) from None
+        return resolved
     return resolve_under_root(
         path_value,
         root = exports_root(),

@@ -1148,8 +1148,11 @@ def get_helper_precache(
 
 @router.put("/helper-precache", response_model = HelperPrecacheResponse)
 def update_helper_precache(
-    payload: HelperPrecachePayload, current_subject: str = Depends(get_current_subject)
+    payload: HelperPrecachePayload, current_subject: str = Depends(require_install_admin)
 ) -> HelperPrecacheResponse:
+    """Owner only. This gates work the server does once at startup, for the whole
+    install, so it is not a per-account preference; the GET reports the same
+    install-wide value to everybody."""
     try:
         enabled = set_helper_precache_enabled(payload.enabled)
     except ValueError as exc:

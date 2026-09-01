@@ -29,6 +29,20 @@ def helper_model_disabled_by_env() -> bool:
     return os.environ.get("UNSLOTH_HELPER_MODEL_DISABLE", "").strip() in {"1", "true"}
 
 
+def _in_owner_workspace(fn, *args):
+    """Run a settings read or write against the installation owner's database.
+
+    This preference gates work the SERVER does at startup, once, outside any
+    request: _start_helper_precache_if_enabled() has no workspace bound, so it
+    reads the owner's studio.db whatever anyone else stored. Left per workspace,
+    a managed account's opt-in was written somewhere nothing would ever read and
+    the General settings page then reported it as on. One database for one
+    install-wide behaviour, and the route that writes it is owner-only.
+    """
+    from utils.workspace_context import LEGACY_WORKSPACE_SUBJECT, run_in_workspace
+    return run_in_workspace(LEGACY_WORKSPACE_SUBJECT, fn, *args)
+
+
 def get_helper_precache_enabled() -> bool:
     """Read the persisted startup pre-cache preference.
 
@@ -37,7 +51,7 @@ def get_helper_precache_enabled() -> bool:
     """
     try:
         from storage.studio_db import get_app_setting
-        stored = get_app_setting(HELPER_PRECACHE_SETTING_KEY, None)
+        stored = _in_owner_workspace(get_app_setting, HELPER_PRECACHE_SETTING_KEY, None)
     except Exception:
         stored = None
     parsed = _coerce_bool(stored)
@@ -52,7 +66,7 @@ def set_helper_precache_enabled(value: Any) -> bool:
 
     from storage.studio_db import upsert_app_settings
 
-    upsert_app_settings({HELPER_PRECACHE_SETTING_KEY: parsed})
+    _in_owner_workspace(upsert_app_settings, {HELPER_PRECACHE_SETTING_KEY: parsed})
     return parsed
 
 

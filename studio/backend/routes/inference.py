@@ -6693,9 +6693,16 @@ def _reject_uncontained_local_path(model_path: Any, operation: str) -> None:
             return
     except OSError:
         return
-    from routes.models import _is_sizable_local_path
+    from routes.models import _is_sizable_local_path, is_advertised_shared_model_path
 
     if _is_sizable_local_path(candidate):
+        return
+    # And what the catalog already offered this account: ./models, the Hugging
+    # Face caches and the LM Studio directories are scanned for everybody, so a
+    # model listed from one of them has to be loadable from it too. Without this
+    # the picker showed models that 403ed on load, and OpenAI auto-switch
+    # resolved one and then failed at the same gate.
+    if is_advertised_shared_model_path(candidate):
         return
     raise HTTPException(
         status_code = 403,

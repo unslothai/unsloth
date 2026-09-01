@@ -514,6 +514,38 @@ def _reject_wandb_without_an_account_token(enable_wandb: Any, wandb_token: Any) 
     )
 
 
+def _reject_ambient_s3_for_a_managed_account(s3_config: Any) -> None:
+    """A managed account reading a dataset from S3 must bring its own keys.
+
+    _build_s3_client falls back to boto3's default credential chain whenever
+    use_iam_role is set, which on an EC2 or container host is the installation's
+    own role. A managed account could therefore name any bucket that identity can
+    read and have the worker list and download it into their dataset. Same rule as
+    the ambient Hugging Face and W&B credentials: the host's identity is the
+    owner's, not a shared service credential.
+
+    Refused here rather than in the worker so the account is told why up front,
+    before anything is reserved or spawned.
+    """
+    if s3_config is None:
+        return
+    if is_installation_owner():
+        return
+    config = s3_config.model_dump() if hasattr(s3_config, "model_dump") else dict(s3_config)
+    access_key_id = (config.get("access_key_id") or "").strip()
+    secret_access_key = (config.get("secret_access_key") or "").strip()
+    if access_key_id and secret_access_key and not config.get("use_iam_role"):
+        return
+    raise HTTPException(
+        status_code = 403,
+        detail = (
+            "Loading a dataset from S3 needs your own access key and secret. "
+            "This account cannot use the server's IAM role or ambient AWS "
+            "credentials."
+        ),
+    )
+
+
 def _remote_untrainable_model_format(model_name: str, hf_token: Optional[str]) -> Optional[str]:
     from huggingface_hub import model_info as hf_model_info
     from hub.utils.hf_errors import hf_error_status
@@ -1296,6 +1328,7 @@ async def start_training(
         _reject_wandb_without_an_account_token(
             request.enable_wandb, getattr(request, "wandb_token", None)
         )
+        _reject_ambient_s3_for_a_managed_account(request.s3_config)
         backend = get_training_backend()
         if await asyncio.to_thread(backend.is_training_active) and not _training_workspace_owned(
             backend, current_subject
