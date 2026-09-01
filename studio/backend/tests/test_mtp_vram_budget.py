@@ -689,8 +689,7 @@ class TestExtraArgsMtpDetection:
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         assert (
             "_shared_draft_reserve_mib=self._shared_drafter_fit_reserve_mib("
-            "_mtp_draft_for_budget,max(_mtp_reserve_bytes,_mtp_draft_weights),)"
-            in compact
+            "_mtp_draft_for_budget,max(_mtp_reserve_bytes,_mtp_draft_weights),)" in compact
         )
         assert "_fit_target_delta_mib+=_shared_draft_reserve_mib" in compact
 

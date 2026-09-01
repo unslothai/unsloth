@@ -11820,9 +11820,7 @@ class LlamaCppBackend:
         return db
 
     def _shared_drafter_fit_reserve_mib(
-        self,
-        drafter_path: Optional[str],
-        reserve_bytes: int,
+        self, drafter_path: Optional[str], reserve_bytes: int
     ) -> int:
         """Return the fitter margin needed for a borrowed/shared MTP head.
 

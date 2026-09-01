@@ -781,19 +781,13 @@ def test_read_gguf_metadata_resets_shared_target_tensors(tmp_path):
     ],
 )
 def test_shared_drafter_fit_reserve_is_metadata_driven(
-    shared,
-    drafter_path,
-    reserve_bytes,
-    expected_mib,
+    shared, drafter_path, reserve_bytes, expected_mib
 ):
     backend = LlamaCppBackend()
     backend._draft_backend_for = lambda _path: _types.SimpleNamespace(
         _nextn_shared_target_tensors = shared
     )
-    assert (
-        backend._shared_drafter_fit_reserve_mib(drafter_path, reserve_bytes)
-        == expected_mib
-    )
+    assert backend._shared_drafter_fit_reserve_mib(drafter_path, reserve_bytes) == expected_mib
 
 
 def test_read_gguf_metadata_leaves_nextn_unset_for_non_mtp_arch(tmp_path):
