@@ -14951,15 +14951,11 @@ def _check_signal_escape_patterns(code: str):
     def _binding_subset(container: dict | set, names: set[str]) -> dict | set:
         if isinstance(container, dict):
             return {
-                key: value
-                for key, value in container.items()
-                if _name_matches_binding(key, names)
+                key: value for key, value in container.items() if _name_matches_binding(key, names)
             }
         return {value for value in container if _name_matches_binding(value, names)}
 
-    def _replace_binding_subset(
-        container: dict | set, names: set[str], values: dict | set
-    ) -> None:
+    def _replace_binding_subset(container: dict | set, names: set[str], values: dict | set) -> None:
         if isinstance(container, dict):
             for key in list(container):
                 if _name_matches_binding(key, names):
@@ -16854,9 +16850,7 @@ def _check_signal_escape_patterns(code: str):
                     if len(node.args) > 2:
                         source_nodes.append(node.args[2])
                     source_nodes.extend(
-                        kw.value
-                        for kw in node.keywords or []
-                        if kw.arg in ("root_dir", "base_dir")
+                        kw.value for kw in node.keywords or [] if kw.arg in ("root_dir", "base_dir")
                     )
                 elif node.args:
                     source_nodes.append(node.args[0])
