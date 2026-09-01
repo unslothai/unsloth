@@ -3371,9 +3371,8 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
         except Exception:
             pass
 
-    # Distro package-manager fallbacks for hosts with no /opt/rocm/.info/version.
-    # Known divergence from install.sh and _detect_rocm_version(): this copy still stops
-    # at the first answer and does not gate dpkg on the "installed" status word.
+    # Distro package-manager fallbacks. Deliberately diverges from install.sh and
+    # _detect_rocm_version(): stops at the first answer, no "installed" status word gate.
     for _cmd in (
         ["dpkg-query", "-W", "-f=${Version}\n", "rocm-core"],
         ["rpm", "-q", "--qf", "%{VERSION}\n", "rocm-core"],

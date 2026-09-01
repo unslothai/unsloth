@@ -188,15 +188,12 @@ def test_has_usable_nvidia_gpu_returns_under_timeout():
         shutil.rmtree(workdir, ignore_errors = True)
 
 
-# ── install.sh: the ROCm version sources must be bounded too ──
-# Resolution went from first-answer-wins to highest-wins, so every source now runs on
-# every AMD host instead of stopping at the first that answered. rpm was bounded when
-# that landed; dpkg-query, hipconfig and amd-smi were not, and dpkg-query is the
-# deciding source on Debian, where no rocm-core exists and the installed
-# libhsa-runtime64-1 is what the resolver reads.
+# Highest-wins runs every ROCm version source on every AMD host, so a hang in any one of
+# them hangs the installer: rpm was bounded when that landed, dpkg-query, hipconfig and
+# amd-smi were not, and dpkg-query decides on Debian, which ships no rocm-core.
 
-# Matched against the EXECUTION line only, so the helper stays free to resolve the tool
-# some other way (a $ROCM_PATH/bin path, a variable) without the assertion going stale.
+# Matched against the EXECUTION line only, so a helper stays free to resolve the tool some
+# other way (a $ROCM_PATH/bin path, a variable) without the assertion going stale.
 _ROCM_SOURCE_PROBES = [
     ("_rocm_tag_from_amd_smi", r"amd-smi\s+version\b"),
     ("_rocm_tag_from_hipconfig", r"--version\b"),

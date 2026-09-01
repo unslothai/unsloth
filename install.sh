@@ -3653,10 +3653,8 @@ _cap_cuda_family_for_pre_turing() {
 # ── ROCm version sources ──
 # One helper per source, each returning 0 unconditionally: under set -e a failing source
 # would kill the installer before the actionable warning at the end of the ROCm branch.
-# Every source that execs something runs it through _run_bounded. Highest-wins made all
-# five unconditional, so a single wedged probe now hangs the installer where the old
-# first-answer-wins chain would have stopped before reaching it. A timed-out probe is
-# just a source that declined to answer.
+# Every source that execs runs through _run_bounded: highest-wins consults all five, so a
+# single wedged probe would hang the installer. A timed-out probe just declined to answer.
 _rocm_tag_from_amd_smi() {
     command -v amd-smi >/dev/null 2>&1 || return 0
     # Cut at the field separator and require digits: the line is pipe-delimited
@@ -3680,16 +3678,14 @@ _rocm_tag_from_hipconfig() {
 
 _rocm_tag_from_dpkg() {
     command -v dpkg-query >/dev/null 2>&1 || return 0
-    # Require the status word "installed". dpkg-query -W lists every package in the
-    # status database except purged ones, so a removed-but-not-purged package still
-    # reports the version it had and could outrank the live runtime under highest-wins.
-    # ${Status} over ${db:Status-Status}: documented showformat field with no dpkg
-    # version floor, and dpkg renders an unrecognised field as empty rather than
-    # failing, so a dpkg lacking it goes silent instead of over-reporting.
-    # dpkg-query exits nonzero when either package is absent but still prints the other's
-    # line, so neutralize the status before pipefail sees it.
-    # rocm-core wins outright, and libhsa-runtime64-1 is read only in its absence (the
-    # Debian case): the HSA package comes from the distro archive and can be older.
+    # Require the status word "installed" ($4 of the three-word ${Status}): dpkg-query -W lists
+    # every package except purged ones, so a removed-but-not-purged entry still reports its old
+    # version and could outrank the live runtime under highest-wins. ${Status} over
+    # ${db:Status-Status}: documented showformat field with no dpkg version floor, and an
+    # unrecognised field renders empty rather than failing, so a dpkg lacking it goes silent.
+    # `|| true` is load-bearing: dpkg-query exits nonzero when either package is absent while
+    # still printing the other's line. rocm-core wins outright; libhsa-runtime64-1 is read only
+    # in its absence (Debian ships no rocm-core), comes from the distro archive, and can be older.
     { _run_bounded dpkg-query -W -f='${Package} ${Status} ${Version}\n' rocm-core libhsa-runtime64-1 2>/dev/null || true; } \
         | awk '
             $4 == "installed" && $5 != "" {
@@ -3709,15 +3705,10 @@ _rocm_tag_from_dpkg() {
 
 _rocm_tag_from_rpm() {
     command -v rpm >/dev/null 2>&1 || return 0
-    # Bounded because highest-wins made this probe unconditional: it used to be LAST in a
-    # first-answer-wins `||` chain, so /opt/rocm/.info/version answered at position
-    # two and rpm was never invoked on a normal RHEL/SLES install. `rpm -q` is not a
-    # lock-free read -- a leftover /var/lib/rpm/__db.00* from a killed rpm/yum wedges
-    # plain queries in futex on the BerkeleyDB backend (rpm < 4.16, i.e. RHEL 8 /
-    # SLES 15; rhbz#485780, rhbz#73097), and rpm 6.0.x deadlocks `rpm --query`
-    # against a running dnf (rhbz#2463435). A version probe must not hang the
-    # installer, and a timed-out probe is just a source that declined to answer.
-    # _run_bounded no-ops where `timeout` is absent, so this adds no dependency.
+    # `rpm -q` is not a lock-free read: a leftover /var/lib/rpm/__db.00* from a killed
+    # rpm/yum wedges plain queries in futex on the BerkeleyDB backend (rpm < 4.16, i.e.
+    # RHEL 8 / SLES 15; rhbz#485780, rhbz#73097), and rpm 6.0.x deadlocks `rpm --query`
+    # against a running dnf (rhbz#2463435). _run_bounded no-ops where `timeout` is absent.
     _rt_ver=$(_run_bounded rpm -q --qf '%{VERSION}\n' rocm-core 2>/dev/null) || return 0
     [ -n "$_rt_ver" ] || return 0
     printf '%s\n' "$_rt_ver" | awk -F'[.-]' '{print "rocm"$1"."$2; exit}' || return 0
@@ -3738,17 +3729,16 @@ _highest_rocm_tag() {
     '
 }
 
-# Consult EVERY source and take the highest, not the first that answers. Distros
-# with split ROCm packaging ship one component well behind the runtime the GPU
-# actually uses: Debian 13 (and Linux Mint on top of it) packages hipconfig at
-# 5.7.x next to a 6.1.x rocminfo/HSA, so first-answer resolution reported rocm5.7
-# on a working gfx1100 and the 6.0+ gate below sent it to CPU-only wheels (issue
-# #8402). A source reading lower than another on the same host is stale packaging,
-# not a downgrade. The symmetric risk, overshoot, is bounded: PyTorch's ROCm wheels
-# vendor their own userspace and need only an amdgpu/KFD driver AMD documents as
-# compatible +/- 2 releases, the normalisation below can only emit a leaf PyTorch
-# publishes, package-manager sources that can report a tree that is not installed are
-# filtered above, and any disagreement is named on stderr for the install log.
+# Consult EVERY source and take the highest, not the first that answers. Distros with split
+# ROCm packaging ship one component well behind the runtime the GPU actually uses: Debian 13
+# (and Linux Mint on top of it) packages hipconfig at 5.7.x next to a 6.1.x rocminfo/HSA, so
+# first-answer resolution reported rocm5.7 on a working gfx1100 and the 6.0+ gate below sent
+# it to CPU-only wheels (issue #8402). A source reading lower than another on the same host
+# is stale packaging, not a downgrade. Overshoot is bounded: PyTorch's ROCm wheels vendor
+# their own userspace and need only an amdgpu/KFD driver AMD documents as compatible +/- 2
+# releases, the normalisation below can only emit a leaf PyTorch publishes, package-manager
+# sources that can report an uninstalled tree are filtered above, and any disagreement is
+# named on stderr for the install log.
 _detect_rocm_version_tag() {
     _rt_readings=$({
         _rocm_tag_from_amd_smi
@@ -4200,9 +4190,8 @@ _radeon_host_ver_not_older() {
 }
 
 get_radeon_wheel_url() {
-    # Only meaningful on Linux. Picks a repo.radeon.com base URL whose listing
-    # contains torch wheels. Tries paths like rocm-rel-7.2.1/, rocm-rel-7.2/,
-    # rocm-rel-7.1.1/, rocm-rel-7.1/ (AMD publishes both M.m and M.m.p dirs).
+    # Only meaningful on Linux. AMD publishes both M.m and M.m.p rocm-rel directories, so
+    # both X.Y and X.Y.Z are valid leaf names here.
     case "$(uname -s)" in Linux) ;; *) echo ""; return ;; esac
 
     _full_ver=""
