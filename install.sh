@@ -5792,7 +5792,8 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     elif [ -n "${UNSLOTH_INSTALL_REF:-}" ] && [ "${UNSLOTH_INSTALL_REF}" != "main" ] && [ "$PACKAGE_NAME" = "unsloth" ]; then
         # Pre-merge testing: install unsloth from a git ref (set by install.ps1)
         # so the branch's setup.sh + patches run. Name unsloth-zoo explicitly --
-        # not a base dep, and SKIP_STUDIO_BASE skips base.txt, so it never installs.
+        # it is not a base dep, and SKIP_STUDIO_BASE skips the shared base
+        # requirements file, so it would otherwise never install.
         substep "installing unsloth from git ref '$UNSLOTH_INSTALL_REF'..."
         run_install_cmd "install unsloth (@$UNSLOTH_INSTALL_REF)" uv pip install --python "$_VENV_PY" \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
@@ -5815,13 +5816,15 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     # nvidia-smi may live only in /usr/lib/wsl/lib (WSL2 GPU-PV), which root login
     # shells drop from PATH -- resolve explicitly (same order as setup.sh's
     # _resolve_nvsmi) so the WoA/WSL install still gets 4-bit QLoRA support.
+    # Probed through _run_bounded like every other nvidia-smi call here, so a
+    # wedged driver cannot hang the install at this point.
     _bnb_nvsmi="$(command -v nvidia-smi 2>/dev/null || true)"
     [ -z "$_bnb_nvsmi" ] && [ -x /usr/lib/wsl/lib/nvidia-smi ] && _bnb_nvsmi=/usr/lib/wsl/lib/nvidia-smi
     [ -z "$_bnb_nvsmi" ] && [ -x /usr/bin/nvidia-smi ] && _bnb_nvsmi=/usr/bin/nvidia-smi
     if [ "$SKIP_TORCH" = false ] \
             && { [ "$(uname -m)" = "aarch64" ] || [ "$(uname -m)" = "arm64" ]; } \
             && [ -n "$_bnb_nvsmi" ] \
-            && "$_bnb_nvsmi" -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}' \
+            && _run_bounded "$_bnb_nvsmi" -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}' \
             && ! "$_VENV_PY" -c "import bitsandbytes" >/dev/null 2>&1; then
         substep "installing bitsandbytes (aarch64 wheels; enables 4-bit QLoRA)..."
         if ! uv pip install --python "$_VENV_PY" "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0" >/dev/null 2>&1; then

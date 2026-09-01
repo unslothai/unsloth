@@ -2877,7 +2877,8 @@ if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] \
         && grep -qi microsoft /proc/version 2>/dev/null \
         && { [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; } \
         && _NVSMI_GATE="$(_resolve_nvsmi)" && [ -n "$_NVSMI_GATE" ] \
-        && "$_NVSMI_GATE" -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}' \
+        && _setup_run_smi "$_NVSMI_GATE" -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}' \
+        && [ "${_setup_nvidia_usable:-}" = true ] \
         && ! command -v nvcc >/dev/null 2>&1 \
         && ! ls /usr/local/cuda*/bin/nvcc >/dev/null 2>&1; then
     step "llama.cpp" "GGUF engine: CUDA build running in background (WSL aarch64 + NVIDIA)" "$C_WARN"
@@ -2901,7 +2902,7 @@ if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] \
         && ! grep -qi microsoft /proc/version 2>/dev/null \
         && { [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; } \
         && _NVSMI_GATE="$(_resolve_nvsmi)" && [ -n "$_NVSMI_GATE" ] \
-        && "$_NVSMI_GATE" -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}' \
+        && _setup_run_smi "$_NVSMI_GATE" -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}' \
         && [ "${_setup_nvidia_usable:-}" = true ] \
         && ! command -v nvcc >/dev/null 2>&1 \
         && ! ls /usr/local/cuda*/bin/nvcc >/dev/null 2>&1; then
@@ -3535,7 +3536,7 @@ if [ "$_HOST_SYSTEM" = "Linux" ] \
         && [ "${UNSLOTH_NO_LLAMA_CUDA:-0}" != "1" ] \
         && [ "${_SKIP_GGUF_BUILD:-}" != true ] \
         && _NVSMI_GATE="$(_resolve_nvsmi)" && [ -n "$_NVSMI_GATE" ] \
-        && "$_NVSMI_GATE" -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}' \
+        && _setup_run_smi "$_NVSMI_GATE" -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}' \
         && [ "${_setup_nvidia_usable:-}" = true ] \
         && [ "$_LOCAL_LLAMA_CPP_LINKED" != true ] \
         && ! _have_cuda_llama_server; then

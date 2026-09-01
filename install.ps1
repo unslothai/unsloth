@@ -5511,18 +5511,25 @@ exit 0
     # win_arm64 has no CUDA PyTorch/Triton wheel, so run the Linux installer inside WSL2 (full
     # GPU) plus a Windows `unsloth` shim into it; x86_64 / ARM64-without-NVIDIA unaffected, and
     # the probe below keeps the native install if a win_arm64 CUDA wheel ever ships.
-    # Opt out: UNSLOTH_NO_WSL_FALLBACK=1; pick distro with UNSLOTH_WSL_DISTRO.
-    try { $_winArm64 = ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -ieq 'Arm64') } catch { $_winArm64 = $false }
-    # x64-emulated PS on ARM reports X64/AMD64; Win32_Processor.Architecture (12=ARM64) and
-    # machine-level PROCESSOR_ARCHITECTURE read the true arch. Only ever turns $_winArm64 ON.
-    if (-not $_winArm64) {
+    # Opt out: UNSLOTH_NO_WSL_FALLBACK=1, or any explicit wheel-index pin
+    # (UNSLOTH_TORCH_INDEX_URL / UNSLOTH_TORCH_INDEX_FAMILY), which stays authoritative
+    # here as it does for the ROCm and XPU reroutes. Pick distro with UNSLOTH_WSL_DISTRO.
+    # Get-HostMachineArch reads PROCESSOR_ARCHITEW6432 first, which is the signal that
+    # distinguishes an x64-emulated shell on ARM64 from a real x64 host -- so it already
+    # answers the emulation case, without a WMI query on every x64 install.
+    $_hostArch = Get-HostMachineArch
+    $_winArm64 = ($_hostArch -ieq 'arm64')
+    # Only when all three of its signals were unreadable ("unknown") do we fall back to
+    # the heavier probes. Never reached on a healthy x64 or ARM64 host, and each can
+    # only turn $_winArm64 ON.
+    if ((-not $_winArm64) -and ($_hostArch -ieq 'unknown')) {
         try { if ((@(Get-CimInstance Win32_Processor -ErrorAction Stop))[0].Architecture -eq 12) { $_winArm64 = $true } } catch {}
-    }
-    if (-not $_winArm64) {
-        try {
-            $_machArch = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' -Name PROCESSOR_ARCHITECTURE -ErrorAction Stop).PROCESSOR_ARCHITECTURE
-            if ($_machArch -ieq 'ARM64') { $_winArm64 = $true }
-        } catch {}
+        if (-not $_winArm64) {
+            try {
+                $_machArch = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' -Name PROCESSOR_ARCHITECTURE -ErrorAction Stop).PROCESSOR_ARCHITECTURE
+                if ($_machArch -ieq 'ARM64') { $_winArm64 = $true }
+            } catch {}
+        }
     }
     $_nativeCudaTorchOk = $false
     if ($_winArm64 -and $HasNvidiaSmi -and (-not $SkipTorch)) {
@@ -5545,7 +5552,7 @@ exit 0
             if ($_nativeCudaTorchOk) { step "gpu" "native CUDA PyTorch now available for win_arm64 -- keeping native install" "Green" }
         }
     }
-    if ($_winArm64 -and $HasNvidiaSmi -and (-not $_nativeCudaTorchOk) -and (-not $SkipTorch) -and ($env:UNSLOTH_NO_WSL_FALLBACK -ne '1')) {
+    if ($_winArm64 -and $HasNvidiaSmi -and (-not $_nativeCudaTorchOk) -and (-not $SkipTorch) -and (-not $TorchIndexPinned) -and ($env:UNSLOTH_NO_WSL_FALLBACK -ne '1')) {
         step "wsl" "Windows on ARM + NVIDIA, native CUDA unavailable -- routing GPU setup through WSL2"
         substep "no win_arm64 CUDA PyTorch/Triton yet; WSL2 delivers full GPU (DGX Spark / RTX Spark path)." "Yellow"
 

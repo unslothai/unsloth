@@ -2455,16 +2455,22 @@ def _nvidia_smi_capture(
     concurrent pip / frontend / cmake work during an `unsloth studio` install.
     A single short timeout then raises TimeoutExpired, detect_host treats the
     GPU as ABSENT, and the host is misrouted to a CPU prebuilt / slow source
-    build instead of the CUDA bundle it can actually use. Retry with a generous
-    per-attempt timeout there. Off WSL that slowness mode does not exist, and a
-    hung nvidia-smi (broken driver, revoked container GPU) would stall three
-    successive detect_host probes for ~2 minutes each -- so bare metal keeps a
-    single short attempt. Only ever reached when nvidia-smi exists on PATH, so
-    CPU-only hosts never incur this wait.
+    build instead of the CUDA bundle it can actually use. Retry with a longer
+    per-attempt timeout there. Off WSL that slowness mode does not exist, so
+    bare metal keeps a single attempt at the 20s bound detect_host has always
+    used -- shortening it would newly misroute a loaded many-GPU node whose
+    nvidia-smi takes 10-20s. Only ever reached when nvidia-smi exists on PATH,
+    so CPU-only hosts never incur this wait.
+
+    The WSL retry budget is deliberately modest. detect_host makes three probes,
+    so a per-attempt timeout of T with N attempts costs 3*N*T on a host whose
+    nvidia-smi is wedged rather than merely slow (broken driver, revoked
+    container GPU); 2 x 30s keeps that worst case near the ~1 minute bare metal
+    already had instead of stretching it to six.
     """
     _on_wsl = _running_under_wsl()
     _attempts = max(1, attempts if attempts is not None else (2 if _on_wsl else 1))
-    _timeout = timeout if timeout is not None else (60 if _on_wsl else 10)
+    _timeout = timeout if timeout is not None else (30 if _on_wsl else 20)
     last_exc: Exception | None = None
     for _attempt in range(_attempts):
         try:
