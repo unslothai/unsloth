@@ -960,6 +960,31 @@ test("the chat composer is out of the searchable scope", async () => {
   );
 });
 
+test("the reader is kept on the occurrence, not on the number", async () => {
+  const engine = await readFile(
+    new URL(
+      "../src/features/find-in-page/hooks/use-find-in-page.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  // Written where the active match is settled, read where the next list is built.
+  assert.match(
+    engine,
+    /activeStartRef\.current = active >= 0 \? matches\[active\]\.start : null;/,
+  );
+  // Read BEFORE the new list is installed, or it is the new list's answer being read back.
+  const read = engine.indexOf("const wasAt = activeStartRef.current;");
+  const install = engine.indexOf("matchesRef.current = matches;", read - 400);
+  assert.ok(read > 0 && read < install);
+  assert.match(engine, /ordinalOfStart\(matches, wasAt\)/);
+  // And when the occurrence is gone, the reader's position decides rather than a stale number.
+  assert.match(
+    engine,
+    /at === -1 \? firstMatchFromViewport\(index, matches\) : at/,
+  );
+});
+
 test("the ordinal survives an append and nothing else", async () => {
   // One rule decides who keeps their place. A streaming reply only adds at the tail, so match 20 is
   // still match 20. History arriving above, a workspace switch flipping `inert`, a breakpoint
@@ -1067,6 +1092,39 @@ test("the capped window follows the reader, not the top of the document", () => 
   );
   const nearest = aroundTheReader.find((match) => match.start > anchor);
   assert.ok(nearest && nearest.start - anchor < 20);
+});
+
+test("a capped window slides as matches are appended", () => {
+  // Which is why an ordinal cannot be kept across a rebuild even when the document only grew. The
+  // window recentres, so the same number is a different occurrence.
+  // The reader near the end, which is where a reply streams in: too few matches after them to fill
+  // half the window, so the window is pinned to the end of the list and the end is what moves.
+  const limit = 100;
+  const before = `${"q".repeat(200)} needle ${"q".repeat(20)}`;
+  const after = `${before}${"q".repeat(200)}`;
+  const anchor = before.indexOf("needle");
+  const first = findMatches(
+    buildTextIndex(el("DIV", [el("P", [text(before)])])),
+    "q",
+    limit,
+    anchor,
+  );
+  const second = findMatches(
+    buildTextIndex(el("DIV", [el("P", [text(after)])])),
+    "q",
+    limit,
+    anchor,
+  );
+  assert.equal(first.length, limit);
+  assert.equal(second.length, limit);
+  // Same ordinal, different occurrence: the number moved under the reader.
+  assert.notEqual(first[limit - 1].start, second[limit - 1].start);
+  // The occurrence itself is still in the list, at a different index. That is what the engine
+  // follows instead of the number.
+  assert.equal(
+    second.some((match) => match.start === first[limit - 1].start),
+    true,
+  );
 });
 
 test("the window is only computed when the cap bites", () => {

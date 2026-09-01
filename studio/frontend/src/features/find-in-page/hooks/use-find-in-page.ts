@@ -89,6 +89,20 @@ function firstMatchFromViewport(
   return found === -1 ? 0 : found;
 }
 
+/** The ordinal of the match starting at `start`, or -1. Sorted by `start`, so a binary search. */
+function ordinalOfStart(matches: FindMatch[], start: number): number {
+  let lo = 0;
+  let hi = matches.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const at = matches[mid].start;
+    if (at === start) return mid;
+    if (at < start) lo = mid + 1;
+    else hi = mid - 1;
+  }
+  return -1;
+}
+
 /**
  * True when a mutation touched text the index covers, rather than the bar's own chrome. `some()`
  * short-circuits on the first qualifying record, so this costs a `closest` call only on the batches
@@ -115,6 +129,14 @@ export function useFindInPage(query: string): FindResults {
   const scopeRef = useRef<Element | null>(null);
   const indexRef = useRef<FindTextIndex>(EMPTY_TEXT_INDEX);
   const matchesRef = useRef<FindMatch[]>([]);
+  /**
+   * Where the active match sits in the document, so it can be found again after a rebuild.
+   *
+   * The ordinal only means something inside one match list, and the list is not stable even when
+   * the document merely grows: past the cap the kept window recentres as matches are appended, so
+   * the same number is a different occurrence. This is the occurrence itself.
+   */
+  const activeStartRef = useRef<number | null>(null);
   /** Whether the cap cut the last search short. */
   const cappedRef = useRef(false);
   const activeRef = useRef(-1);
@@ -153,6 +175,8 @@ export function useFindInPage(query: string): FindResults {
 
     if (reveal && activeRange) scrollRangeIntoView(activeRange);
 
+    activeStartRef.current = active >= 0 ? matches[active].start : null;
+
     const capped = cappedRef.current;
     setResults((previous) =>
       previous.count === count &&
@@ -183,9 +207,18 @@ export function useFindInPage(query: string): FindResults {
       );
       cappedRef.current = matches.length > MAX_MATCHES;
       if (cappedRef.current) matches.length = MAX_MATCHES;
+      // Read before `apply` writes it: this is where the last list left the reader.
+      const wasAt = activeStartRef.current;
       matchesRef.current = matches;
       if (fromViewport) {
         activeRef.current = firstMatchFromViewport(index, matches);
+      } else {
+        // Same occurrence, not same number. Offsets are comparable here only because the caller has
+        // established that the document merely grew at the tail; the number never was, since a
+        // capped window slides along as matches arrive.
+        const at = wasAt === null ? -1 : ordinalOfStart(matches, wasAt);
+        activeRef.current =
+          at === -1 ? firstMatchFromViewport(index, matches) : at;
       }
       apply(reveal);
     },
