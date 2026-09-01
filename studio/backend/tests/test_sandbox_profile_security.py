@@ -20,6 +20,15 @@ def _load_sandbox_module():
     return module
 
 
+def test_backend_ci_calls_the_production_sandbox_probe():
+    workflow = (
+        Path(__file__).resolve().parents[3] / ".github" / "workflows" / "studio-backend-ci.yml"
+    )
+    text = workflow.read_text(encoding = "utf-8")
+    assert "from core.inference.sandbox import sandbox_available" in text
+    assert "bwrap --ro-bind / / --unshare-all" not in text
+
+
 def test_python_read_paths_rejects_filesystem_roots(monkeypatch):
     sandbox = _load_sandbox_module()
     root = os.path.abspath(os.sep)
@@ -101,6 +110,27 @@ def test_python_read_paths_includes_nix_store_for_nix_runtime(tmp_path, monkeypa
     monkeypatch.setattr(sandbox, "_editable_source_paths", lambda: [])
 
     assert os.path.realpath(nix_store) in sandbox._python_read_paths()
+
+
+def test_plain_pth_root_exposes_import_entries_not_checkout_secrets(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    site_dir = tmp_path / "site-packages"
+    source = tmp_path / "checkout"
+    package = source / "safe_package"
+    site_dir.mkdir()
+    package.mkdir(parents = True)
+    (package / "__init__.py").write_text("VALUE = 1\n")
+    module = source / "safe_module.py"
+    module.write_text("VALUE = 2\n")
+    (source / ".env").write_text("SECRET=not-mounted\n")
+    (site_dir / "editable.pth").write_text(str(source) + "\n")
+    monkeypatch.setattr(sandbox.site, "getsitepackages", lambda: [str(site_dir)])
+    monkeypatch.setattr(sandbox, "opted_in_user_site_path", lambda: None)
+
+    paths = {os.path.realpath(path) for path in sandbox._editable_source_paths()}
+    assert os.path.realpath(source) not in paths
+    assert os.path.realpath(package) in paths
+    assert os.path.realpath(module) in paths
 
 
 def test_linux_ca_mounts_exclude_private_key_directories(tmp_path, monkeypatch):
@@ -213,6 +243,38 @@ def test_internal_only_workdir_hardlinks_remain_allowed(tmp_path):
         pytest.skip(f"hard links unavailable on this test filesystem: {exc}")
 
     sandbox._assert_no_external_hardlinks(str(workdir))
+
+
+def test_external_hardlinks_below_nested_read_only_runtime_remain_allowed(tmp_path):
+    sandbox = _load_sandbox_module()
+    cache_file = tmp_path / "cache" / "package.py"
+    cache_file.parent.mkdir()
+    cache_file.write_text("VALUE = 1\n")
+    workdir = tmp_path / "workdir"
+    runtime = workdir / ".venv"
+    runtime.mkdir(parents = True)
+    try:
+        os.link(cache_file, runtime / "package.py")
+    except OSError as exc:
+        pytest.skip(f"hard links unavailable on this test filesystem: {exc}")
+
+    sandbox._assert_no_external_hardlinks(str(workdir), [str(runtime)])
+
+
+def test_read_only_runtime_exception_does_not_cover_writable_siblings(tmp_path):
+    sandbox = _load_sandbox_module()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("host data")
+    workdir = tmp_path / "workdir"
+    runtime = workdir / ".venv"
+    runtime.mkdir(parents = True)
+    try:
+        os.link(outside, workdir / "writable-link.txt")
+    except OSError as exc:
+        pytest.skip(f"hard links unavailable on this test filesystem: {exc}")
+
+    with pytest.raises(sandbox.UnsafeSandboxWorkdirError, match = "hard-linked outside"):
+        sandbox._assert_no_external_hardlinks(str(workdir), [str(runtime)])
 
 
 def test_workdir_scan_fails_closed_above_entry_budget(tmp_path, monkeypatch):
@@ -340,10 +402,79 @@ def test_linux_reapplies_nested_runtime_after_writable_workdir(tmp_path, monkeyp
     assert readonly_indices[-1] > writable_index
 
 
+def test_linux_argv_keeps_supplementary_groups_when_supported(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    monkeypatch.setattr(sandbox, "_linux_bwrap_path", "/usr/bin/bwrap")
+    monkeypatch.setattr(sandbox, "_linux_bwrap_keep_groups", True)
+    monkeypatch.setattr(sandbox, "_linux_supplementary_group_devices", lambda: ["/dev/kfd"])
+    monkeypatch.setattr(sandbox, "_python_read_paths", lambda: [])
+
+    argv = sandbox._linux_bwrap_argv(["/usr/bin/true"], str(tmp_path))
+    assert "--keep-groups" in argv
+    assert argv.index("--keep-groups") < argv.index("--unshare-all")
+
+
+def test_linux_argv_rejects_group_device_when_bwrap_cannot_keep_groups(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    monkeypatch.setattr(sandbox, "_linux_bwrap_path", "/usr/bin/bwrap")
+    monkeypatch.setattr(sandbox, "_linux_bwrap_keep_groups", False)
+    monkeypatch.setattr(sandbox, "_linux_supplementary_group_devices", lambda: ["/dev/kfd"])
+    monkeypatch.setattr(sandbox, "_python_read_paths", lambda: [])
+
+    with pytest.raises(sandbox.UnsafeSandboxWorkdirError, match = "supplementary group"):
+        sandbox._linux_bwrap_argv(["/usr/bin/true"], str(tmp_path))
+
+
+def test_linux_probe_uses_keep_groups_when_available(monkeypatch):
+    sandbox = _load_sandbox_module()
+    captured = []
+    monkeypatch.setattr(sandbox.shutil, "which", lambda _name: "/usr/bin/bwrap")
+    monkeypatch.setattr(sandbox, "_bwrap_supports_keep_groups", lambda _path: True)
+    monkeypatch.setattr(sandbox, "_linux_supplementary_group_devices", lambda: ["/dev/kfd"])
+
+    def _probe(argv, _label):
+        captured.extend(argv)
+        return sandbox._ProbeResult(ok = True)
+
+    monkeypatch.setattr(sandbox, "_probe", _probe)
+    assert sandbox._linux_probe().ok is True
+    assert "--keep-groups" in captured
+    assert sandbox._linux_bwrap_keep_groups is True
+
+
+def test_linux_probe_declines_group_device_on_older_bwrap(monkeypatch):
+    sandbox = _load_sandbox_module()
+    monkeypatch.setattr(sandbox.shutil, "which", lambda _name: "/usr/bin/bwrap")
+    monkeypatch.setattr(sandbox, "_bwrap_supports_keep_groups", lambda _path: False)
+    monkeypatch.setattr(sandbox, "_linux_supplementary_group_devices", lambda: ["/dev/kfd"])
+    monkeypatch.setattr(
+        sandbox,
+        "_probe",
+        lambda *_args: pytest.fail("incompatible Bubblewrap must not be launched"),
+    )
+
+    assert sandbox._linux_probe().ok is False
+
+
+def test_linux_probe_retries_transient_group_capability_check(monkeypatch):
+    sandbox = _load_sandbox_module()
+    monkeypatch.setattr(sandbox.shutil, "which", lambda _name: "/usr/bin/bwrap")
+    monkeypatch.setattr(sandbox, "_bwrap_supports_keep_groups", lambda _path: None)
+    monkeypatch.setattr(
+        sandbox,
+        "_probe",
+        lambda *_args: pytest.fail("transient capability result must be retried first"),
+    )
+
+    result = sandbox._linux_probe()
+    assert result.ok is False
+    assert result.transient is True
+
+
 def test_macos_profile_allows_child_signals_and_dev_null_writes(monkeypatch):
     sandbox = _load_sandbox_module()
     monkeypatch.setattr(sandbox, "_python_read_paths", lambda: [])
-    monkeypatch.setattr(sandbox, "_assert_no_external_hardlinks", lambda _path: None)
+    monkeypatch.setattr(sandbox, "_assert_no_external_hardlinks", lambda _path, *_ro: None)
     monkeypatch.setattr(sandbox.os.path, "realpath", lambda path: path)
     profile = sandbox._macos_seatbelt_profile("/tmp/work")
 
@@ -359,7 +490,7 @@ def test_macos_profile_allows_installed_developer_toolchain(monkeypatch):
     sandbox = _load_sandbox_module()
     developer = "/Library/Developer/CommandLineTools"
     monkeypatch.setattr(sandbox, "_python_read_paths", lambda: [])
-    monkeypatch.setattr(sandbox, "_assert_no_external_hardlinks", lambda _path: None)
+    monkeypatch.setattr(sandbox, "_assert_no_external_hardlinks", lambda _path, *_ro: None)
     monkeypatch.setattr(sandbox.os.path, "realpath", lambda path: path)
     original_isdir = sandbox.os.path.isdir
     monkeypatch.setattr(
@@ -392,7 +523,7 @@ def test_macos_profile_denies_writes_to_nested_runtime(tmp_path, monkeypatch):
 def test_macos_ca_reads_exclude_private_key_directories(monkeypatch):
     sandbox = _load_sandbox_module()
     monkeypatch.setattr(sandbox, "_python_read_paths", lambda: [])
-    monkeypatch.setattr(sandbox, "_assert_no_external_hardlinks", lambda _path: None)
+    monkeypatch.setattr(sandbox, "_assert_no_external_hardlinks", lambda _path, *_ro: None)
     monkeypatch.setattr(sandbox.os.path, "realpath", lambda path: path)
     profile = sandbox._macos_seatbelt_profile("/tmp/work")
 

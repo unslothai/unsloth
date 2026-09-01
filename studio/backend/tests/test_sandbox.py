@@ -396,9 +396,14 @@ def test_editable_source_paths_include_plain_pth_entries(monkeypatch, tmp_path):
 
     site_dir = tmp_path / "site-packages"
     source_dir = tmp_path / "editable-source"
+    package_dir = source_dir / "editable_package"
+    module_path = source_dir / "editable_module.py"
     ignored_dir = tmp_path / "ignored-import-line"
     site_dir.mkdir()
-    source_dir.mkdir()
+    package_dir.mkdir(parents = True)
+    (package_dir / "__init__.py").write_text("VALUE = 1\n")
+    module_path.write_text("VALUE = 2\n")
+    (source_dir / ".env").write_text("MUST_NOT_BE_MOUNTED=1\n")
     ignored_dir.mkdir()
     (site_dir / "editable.pth").write_text(
         f"# comment\n{source_dir}\nimport sys; sys.path.append({str(ignored_dir)!r})\n"
@@ -407,9 +412,55 @@ def test_editable_source_paths_include_plain_pth_entries(monkeypatch, tmp_path):
     monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_ALLOW_USER_SITE", raising = False)
 
     paths = [os.path.realpath(path) for path in sandbox._editable_source_paths()]
-    assert os.path.realpath(str(source_dir)) in paths
+    assert os.path.realpath(str(source_dir)) not in paths
+    assert os.path.realpath(str(package_dir)) in paths
+    assert os.path.realpath(str(module_path)) in paths
     assert os.path.realpath(str(ignored_dir)) not in paths
-    assert os.path.realpath(str(source_dir)) in sandbox._python_read_paths()
+    assert os.path.realpath(str(source_dir)) not in sandbox._python_read_paths()
+    assert os.path.realpath(str(package_dir)) in sandbox._python_read_paths()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason = "bubblewrap is Linux-only")
+def test_narrow_plain_pth_entries_import_inside_sandbox(tmp_path, monkeypatch):
+    sandbox = _load_sandbox_module()
+    if not sandbox.sandbox_available():
+        pytest.skip("sandbox unavailable")
+
+    source = tmp_path / "editable-source"
+    package = source / "editable_package"
+    package.mkdir(parents = True)
+    (package / "__init__.py").write_text("VALUE = 1\n")
+    module = source / "editable_module.py"
+    module.write_text("VALUE = 2\n")
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+
+    host_runtime_paths = sandbox._python_read_paths()
+    monkeypatch.setattr(
+        sandbox,
+        "_python_read_paths",
+        lambda: [*host_runtime_paths, os.path.realpath(package), os.path.realpath(module)],
+    )
+    inner = [
+        sys.executable,
+        "-c",
+        "import editable_module, editable_package; "
+        "print(editable_module.VALUE + editable_package.VALUE)",
+    ]
+    argv = sandbox._linux_bwrap_argv(inner, str(workdir))
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(source)
+    completed = subprocess.run(
+        argv,
+        cwd = workdir,
+        env = env,
+        check = False,
+        capture_output = True,
+        text = True,
+        timeout = 20,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "3"
 
 
 def test_python_read_paths_survives_missing_site_helpers(monkeypatch):
@@ -831,6 +882,7 @@ def test_sandbox_unavailable_does_not_cache_on_transient_timeout(monkeypatch):
 
     monkeypatch.setattr(sandbox.subprocess, "run", fake_run)
     monkeypatch.setattr(sandbox.shutil, "which", lambda _: "/usr/bin/bwrap")
+    monkeypatch.setattr(sandbox, "_bwrap_supports_keep_groups", lambda _bwrap: False)
     monkeypatch.setattr(sandbox.os.path, "exists", lambda p: p == sandbox._SANDBOX_EXEC)
 
     # First call: probe times out, returns False, but cache must stay None.
@@ -861,6 +913,7 @@ def test_sandbox_unavailable_does_not_cache_on_transient_spawn_eagain(monkeypatc
 
     monkeypatch.setattr(sandbox.subprocess, "run", fake_run)
     monkeypatch.setattr(sandbox.shutil, "which", lambda _: "/usr/bin/bwrap")
+    monkeypatch.setattr(sandbox, "_bwrap_supports_keep_groups", lambda _bwrap: False)
 
     assert sandbox.sandbox_available() is False
     assert sandbox._sandbox_available_cache is None

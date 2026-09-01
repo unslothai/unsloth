@@ -66,6 +66,7 @@ _sandbox_available_cache: bool | None = None
 # strips PATH down to a fixed allow-list that won't cover Nix-style or
 # custom-prefix installs).
 _linux_bwrap_path: str | None = None
+_linux_bwrap_keep_groups = False
 # Guards probe + cache so concurrent first-callers see a consistent
 # (cache, bwrap_path) snapshot rather than racing on partial writes.
 _sandbox_probe_lock = threading.Lock()
@@ -179,38 +180,145 @@ def _macos_probe() -> _ProbeResult:
     )
 
 
+def _linux_accelerator_device_nodes() -> list[str]:
+    """Existing accelerator device nodes whose DAC permissions matter."""
+    nodes: list[str] = []
+    for candidate in _LINUX_ACCELERATOR_DEVICE_PATHS:
+        try:
+            candidate_stat = os.lstat(candidate)
+        except OSError:
+            continue
+        if stat.S_ISCHR(candidate_stat.st_mode) or stat.S_ISBLK(candidate_stat.st_mode):
+            nodes.append(candidate)
+            continue
+        if not stat.S_ISDIR(candidate_stat.st_mode):
+            continue
+        try:
+            with os.scandir(candidate) as entries:
+                for entry in entries:
+                    try:
+                        entry_stat = os.lstat(entry.path)
+                    except OSError:
+                        continue
+                    if stat.S_ISCHR(entry_stat.st_mode) or stat.S_ISBLK(entry_stat.st_mode):
+                        nodes.append(entry.path)
+        except OSError:
+            continue
+    try:
+        with os.scandir("/dev") as entries:
+            for entry in entries:
+                if not (
+                    entry.name.startswith("nvidia") and entry.name.removeprefix("nvidia").isdigit()
+                ):
+                    continue
+                try:
+                    entry_stat = os.lstat(entry.path)
+                except OSError:
+                    continue
+                if stat.S_ISCHR(entry_stat.st_mode) or stat.S_ISBLK(entry_stat.st_mode):
+                    nodes.append(entry.path)
+    except OSError:
+        pass
+    return list(dict.fromkeys(nodes))
+
+
+def _linux_supplementary_group_devices() -> list[str]:
+    """GPU nodes whose read/write access depends on a supplementary group."""
+    getgroups = getattr(os, "getgroups", None)
+    if getgroups is None:
+        return []
+    try:
+        uid = os.getuid()
+        primary_gid = os.getgid()
+        supplementary = set(getgroups()) - {primary_gid}
+    except (AttributeError, OSError):
+        return []
+    if not supplementary:
+        return []
+
+    dependent: list[str] = []
+    for path in _linux_accelerator_device_nodes():
+        try:
+            node_stat = os.stat(path, follow_symlinks = False)
+        except OSError:
+            continue
+        mode = stat.S_IMODE(node_stat.st_mode)
+        owner_rw = node_stat.st_uid == uid and mode & 0o600 == 0o600
+        group_rw = node_stat.st_gid in supplementary and mode & 0o060 == 0o060
+        other_rw = mode & 0o006 == 0o006
+        if group_rw and not owner_rw and not other_rw:
+            dependent.append(path)
+    return dependent
+
+
+def _bwrap_supports_keep_groups(bwrap: str) -> bool | None:
+    """Whether Bubblewrap accepts the optional group-retention flag.
+
+    ``None`` means the capability check failed transiently and must not be
+    cached as an old/incompatible Bubblewrap installation.
+    """
+    try:
+        proc = subprocess.run(
+            [bwrap, "--help"],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
+            timeout = 5,
+        )
+    except subprocess.TimeoutExpired:
+        return None
+    except OSError as exc:
+        if exc.errno == errno.EAGAIN:
+            return None
+        return False
+    return b"--keep-groups" in proc.stdout
+
+
 def _linux_probe() -> _ProbeResult:
     """Smoke-test that ``bwrap`` can apply a minimal sandbox here.
 
     Catches the cases where the kernel refuses to create unprivileged
     user namespaces — surfacing at startup instead of first use
     """
-    global _linux_bwrap_path
+    global _linux_bwrap_keep_groups, _linux_bwrap_path
     bwrap = shutil.which("bwrap")
     if bwrap is None:
         logger.warning("bwrap not found on PATH; tool execution will run unsandboxed")
         return _ProbeResult(ok = False)
     bwrap = os.path.realpath(os.path.abspath(bwrap))
-    result = _probe(
-        [
-            bwrap,
-            "--ro-bind",
-            "/",
-            "/",
-            "--unshare-all",
-            "--die-with-parent",
-            "--proc",
-            "/proc",
-            "--dev",
-            "/dev",
-            "--tmpfs",
-            "/tmp",
-            _BWRAP_PROBE_BIN,
-        ],
-        "Linux bwrap",
-    )
+    keep_groups = _bwrap_supports_keep_groups(bwrap)
+    if keep_groups is None:
+        logger.warning(
+            "Bubblewrap capability probe was temporarily unavailable; will retry on next tool call"
+        )
+        return _ProbeResult(ok = False, transient = True)
+    group_devices = _linux_supplementary_group_devices()
+    if group_devices and not keep_groups:
+        logger.warning(
+            "Bubblewrap cannot retain the supplementary group required by accelerator "
+            "devices (%s); tool execution will run unsandboxed",
+            ", ".join(group_devices[:3]),
+        )
+        return _ProbeResult(ok = False)
+    probe_argv = [
+        bwrap,
+        *(["--keep-groups"] if keep_groups else []),
+        "--ro-bind",
+        "/",
+        "/",
+        "--unshare-all",
+        "--die-with-parent",
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+        "--tmpfs",
+        "/tmp",
+        _BWRAP_PROBE_BIN,
+    ]
+    result = _probe(probe_argv, "Linux bwrap")
     if result.ok:
         _linux_bwrap_path = bwrap
+        _linux_bwrap_keep_groups = keep_groups
     return result
 
 
@@ -290,15 +398,19 @@ def _safe_subpath(p: str) -> str:
     return p
 
 
-def _assert_no_external_hardlinks(workdir: str) -> None:
+def _assert_no_external_hardlinks(
+    workdir: str, read_only_paths: tuple[str, ...] | list[str] = ()
+) -> None:
     """Boundedly verify that *workdir* contains no boundary-crossing nodes.
 
     A path-scoped writable bind/profile still exposes every inode reachable by
     an in-tree hard link. Count all in-tree aliases and compare them with the
     filesystem link count; internal-only hard links remain valid, while a
-    pre-existing link to a host file fails closed before sandbox launch. Unix
-    sockets, FIFOs, device nodes, foreign mounts, and trees too large to prove
-    safe are also rejected before the writable bind is created.
+    pre-existing link to a host file fails closed before sandbox launch. A
+    validated runtime path nested below the workdir may be skipped only when it
+    is re-bound/denied read-only after the writable parent. Unix sockets, FIFOs,
+    device nodes, foreign mounts, and trees too large to prove safe are also
+    rejected before the writable bind is created.
     """
     wd = os.path.realpath(workdir)
     try:
@@ -307,6 +419,15 @@ def _assert_no_external_hardlinks(workdir: str) -> None:
         raise UnsafeSandboxWorkdirError(
             f"cannot inspect sandbox workdir safely: {wd!r}: {exc}"
         ) from exc
+    read_only_nested: set[str] = set()
+    for path in read_only_paths:
+        if not path:
+            continue
+        resolved = os.path.normpath(os.path.realpath(path))
+        if _path_is_within(resolved, wd, strict = True) and (
+            os.path.isdir(resolved) or os.path.isfile(resolved)
+        ):
+            read_only_nested.add(resolved)
     inode_counts: dict[tuple[int, int], int] = {}
     inode_links: dict[tuple[int, int], int] = {}
     representatives: dict[tuple[int, int], str] = {}
@@ -348,6 +469,11 @@ def _assert_no_external_hardlinks(workdir: str) -> None:
                     raise UnsafeSandboxWorkdirError(
                         f"cannot inspect sandbox workdir safely: {entry.path!r}: {exc}"
                     ) from exc
+                if os.path.normpath(entry.path) in read_only_nested:
+                    # The Linux argv re-applies this exact path with --ro-bind
+                    # after the writable workdir bind; Seatbelt adds a matching
+                    # write deny. External aliases cannot be mutated through it.
+                    continue
                 if entry_stat.st_dev != root_dev:
                     raise UnsafeSandboxWorkdirError(
                         f"sandbox workdir crosses a filesystem boundary: {entry.path!r}"
@@ -466,13 +592,70 @@ def _plain_pth_source_paths() -> list[str]:
     return paths
 
 
+def _plain_pth_import_paths() -> list[str]:
+    """Narrow plain-``.pth`` roots to importable package/module entries.
+
+    Binding the root itself would expose checkout-level files such as ``.env``
+    and deployment configuration. Python can still import through the original
+    ``sys.path`` entry when only its importable children exist in the sandbox.
+    """
+    paths: list[str] = []
+    for root in _plain_pth_source_paths():
+        try:
+            entries = os.scandir(root)
+        except OSError as exc:
+            logger.debug("Cannot narrow editable source root %s: %s", root, exc)
+            continue
+        with entries:
+            for entry in entries:
+                name = entry.name
+                if name.startswith("."):
+                    continue
+                try:
+                    if entry.is_file(follow_symlinks = True):
+                        stem, extension = os.path.splitext(name)
+                        if extension == ".py" and stem.isidentifier():
+                            paths.append(entry.path)
+                        continue
+                    if not entry.is_dir(follow_symlinks = True) or not name.isidentifier():
+                        continue
+                    # Regular packages have __init__.py. A namespace package
+                    # has importable modules/subpackages immediately below it;
+                    # inspect only one level so this scan stays bounded.
+                    if os.path.isfile(os.path.join(entry.path, "__init__.py")):
+                        paths.append(entry.path)
+                        continue
+                    try:
+                        with os.scandir(entry.path) as children:
+                            namespace_importable = any(
+                                (
+                                    child.is_file(follow_symlinks = True)
+                                    and child.name.endswith(".py")
+                                    and child.name[:-3].isidentifier()
+                                )
+                                or (
+                                    child.is_dir(follow_symlinks = True)
+                                    and child.name.isidentifier()
+                                    and os.path.isfile(os.path.join(child.path, "__init__.py"))
+                                )
+                                for child in children
+                            )
+                    except OSError:
+                        namespace_importable = False
+                    if namespace_importable:
+                        paths.append(entry.path)
+                except OSError:
+                    continue
+    return paths
+
+
 def _editable_source_paths() -> list[str]:
-    """Source dirs registered by plain ``.pth`` or PEP 660 editable installs.
+    """Import paths registered by plain ``.pth`` or PEP 660 editable installs.
 
     Finder mappings are read from the parent's ``sys.modules`` and are valid
     for the child only while it shares ``sys.executable`` with the parent.
     """
-    paths: list[str] = _plain_pth_source_paths()
+    paths: list[str] = _plain_pth_import_paths()
     for name, mod in list(sys.modules.items()):
         if not (name.startswith("__editable___") and name.endswith("_finder")):
             continue
@@ -598,11 +781,11 @@ def _linux_sandbox_identity_files() -> tuple[str, str]:
 
 
 def _python_read_paths() -> list[str]:
-    """Real dirs the Python interpreter needs to read at runtime.
+    """Real paths the Python interpreter needs to read at runtime.
 
     Returns ``sys.prefix``, ``sys.base_prefix``, the sandbox sitecustomize
     shim, system site-packages, user site-packages, and editable-install source dirs — all
-    realpath-normalized, deduplicated, and filtered to existing dirs.
+    realpath-normalized, deduplicated, and filtered to existing paths.
     Used by both the macOS Seatbelt profile and the Linux bwrap argv.
     """
     candidates: list[str] = [sys.prefix, sys.base_prefix, _SANDBOX_SITE_DIR]
@@ -645,7 +828,7 @@ def _python_read_paths() -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
     for rp in resolved_candidates:
-        if rp in seen or not os.path.isdir(rp):
+        if rp in seen or not os.path.exists(rp):
             continue
         # A root-valued prefix would turn the deny-by-default sandbox into a
         # read-all-files profile or bind mount. Embedded Python builds and
@@ -666,13 +849,18 @@ def _python_read_paths() -> list[str]:
 
 def _macos_seatbelt_profile(workdir: str) -> str:
     """Build a Seatbelt profile string for ``sandbox-exec -p``."""
-    _assert_no_external_hardlinks(workdir)
     python_read_paths = _python_read_paths()
+    _assert_no_external_hardlinks(workdir, python_read_paths)
     wd = _safe_subpath(os.path.realpath(workdir))
-    py_subpaths = [f'(subpath "{_safe_subpath(p)}")' for p in python_read_paths]
+
+    def _path_clause(path: str) -> str:
+        kind = "literal" if os.path.isfile(path) else "subpath"
+        return f'({kind} "{_safe_subpath(path)}")'
+
+    py_subpaths = [_path_clause(path) for path in python_read_paths]
     py_block = "\n    ".join(py_subpaths)
     nested_runtime_paths = [
-        f'(subpath "{_safe_subpath(p)}")'
+        _path_clause(p)
         for p in python_read_paths
         if _path_is_within(p, os.path.realpath(workdir), strict = True)
     ]
@@ -931,8 +1119,9 @@ def _linux_bwrap_argv(inner_argv: list[str], workdir: str) -> list[str]:
     is wrapped with a small Python that re-applies RLIMIT_NPROC inside
     the userns (see :func:`_linux_inner_rlimit_wrapper`).
     """
-    _assert_no_external_hardlinks(workdir)
     wd = os.path.realpath(workdir)
+    python_read_paths = _python_read_paths()
+    _assert_no_external_hardlinks(workdir, python_read_paths)
     top_ro_dirs = ("/usr", "/bin", "/sbin", "/lib", "/lib64")
     # Narrow /etc to runtime essentials; deny sshd_config, machine-id, etc.
     etc_ro_entries = (
@@ -949,8 +1138,15 @@ def _linux_bwrap_argv(inner_argv: list[str], workdir: str) -> list[str]:
     passwd_path, group_path = _linux_sandbox_identity_files()
 
     assert _linux_bwrap_path is not None, "bwrap path unset despite successful probe"
+    group_devices = _linux_supplementary_group_devices()
+    if group_devices and not _linux_bwrap_keep_groups:
+        raise UnsafeSandboxWorkdirError(
+            "Bubblewrap cannot retain the supplementary group required by accelerator "
+            f"devices: {', '.join(group_devices[:3])}"
+        )
     args: list[str] = [
         _linux_bwrap_path,
+        *(["--keep-groups"] if _linux_bwrap_keep_groups else []),
         "--die-with-parent",
         "--new-session",
         "--unshare-all",
@@ -998,7 +1194,6 @@ def _linux_bwrap_argv(inner_argv: list[str], workdir: str) -> list[str]:
     # _python_read_paths() already realpaths, filters non-dirs, dedupes,
     # and includes editable-install source dirs (so `pip install -e .`
     # repos like unsloth remain readable inside the sandbox).
-    python_read_paths = _python_read_paths()
     for rp in python_read_paths:
         if _is_under_top_ro(rp):
             continue

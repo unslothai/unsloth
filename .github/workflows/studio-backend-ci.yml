@@ -229,9 +229,11 @@ jobs:
           bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
             'apt-get update -y && apt-get install -y --no-install-recommends bubblewrap'
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
-          if bwrap --ro-bind / / --unshare-all --die-with-parent /usr/bin/true 2>/tmp/bwrap_probe.txt; then
+          if PYTHONPATH=studio/backend python -c \
+            'from core.inference.sandbox import sandbox_available; raise SystemExit(0 if sandbox_available() else 1)' \
+            2>/tmp/bwrap_probe.txt; then
             echo "UNSLOTH_STUDIO_SANDBOX_CI_ENFORCE=1" >> "$GITHUB_ENV"
-            echo "bwrap probe OK: OS-sandbox enforcement tests will run"
+            echo "production bwrap probe OK: OS-sandbox enforcement tests will run"
           else
             echo "::warning::bwrap probe failed on this runner; OS-sandbox enforcement tests will skip"
             cat /tmp/bwrap_probe.txt || true
