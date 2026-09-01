@@ -190,6 +190,72 @@ def test_tunnel_race_proceeds_with_a_concurrent_user_selected_winner(monkeypatch
     assert started["called"] is True
 
 
+def test_stale_marker_cleanup_preserves_concurrent_generated_winner(monkeypatch):
+    # An older process can leave a stale marker. If another launcher replaces the
+    # password and marker while this process validates that stale value, cleanup
+    # must not delete the winner's pending-delivery guard.
+    admin = _seed_admin(must_change_password = True)
+    real_get_connection = storage.get_connection
+    seed_conn = real_get_connection()
+    try:
+        seed_conn.execute(
+            "INSERT OR REPLACE INTO app_secrets (key, value) VALUES (?, ?)",
+            (storage._CREDENTIAL_UNDELIVERED_KEY, "legacy-stale-password-hash"),
+        )
+        seed_conn.commit()
+    finally:
+        seed_conn.close()
+
+    primary_conn = real_get_connection()
+    raced = []
+
+    class _RacingConnection:
+        def execute(self, sql, params = ()):
+            if not raced and "password_hash" in sql:
+                raced.append(True)
+                assert storage.update_password(
+                    admin,
+                    "concurrent-generated-password",
+                    revoke_refresh_tokens = True,
+                    require_must_change = True,
+                    mark_credential_undelivered = True,
+                )
+            return primary_conn.execute(sql, params)
+
+        def commit(self):
+            return primary_conn.commit()
+
+        def close(self):
+            return primary_conn.close()
+
+    first_connection = True
+
+    def _routed_connection():
+        nonlocal first_connection
+        if first_connection:
+            first_connection = False
+            return _RacingConnection()
+        return real_get_connection()
+
+    monkeypatch.setattr(storage, "get_connection", _routed_connection)
+
+    assert storage.credential_undelivered(admin) is True
+    assert raced == [True]
+    check_conn = real_get_connection()
+    try:
+        marker = check_conn.execute(
+            "SELECT value FROM app_secrets WHERE key = ?",
+            (storage._CREDENTIAL_UNDELIVERED_KEY,),
+        ).fetchone()["value"]
+        current_hash = check_conn.execute(
+            "SELECT password_hash FROM auth_user WHERE username = ?",
+            (admin,),
+        ).fetchone()["password_hash"]
+        assert marker == current_hash
+    finally:
+        check_conn.close()
+
+
 def test_update_password_compare_and_set_guard():
     # Storage unit: the guarded update writes only while must_change_password = 1.
     admin = _seed_admin(must_change_password = True)

@@ -267,20 +267,28 @@ def credential_undelivered(username: str) -> bool:
     conn = get_connection()
     try:
         pending = conn.execute(
-            "SELECT value FROM app_secrets WHERE key = ?",
-            (_CREDENTIAL_UNDELIVERED_KEY,),
+            """
+            SELECT s.value AS pending_hash,
+                   (SELECT password_hash FROM auth_user WHERE username = ?) AS current_hash
+            FROM app_secrets AS s
+            WHERE s.key = ?
+            """,
+            (username, _CREDENTIAL_UNDELIVERED_KEY),
         ).fetchone()
         if pending is None:
             return False
-        current = conn.execute(
-            "SELECT password_hash FROM auth_user WHERE username = ?",
-            (username,),
-        ).fetchone()
-        if current is not None and hmac.compare_digest(pending["value"], current["password_hash"]):
+        pending_hash = pending["pending_hash"]
+        current_hash = pending["current_hash"]
+        if pending_hash and current_hash and hmac.compare_digest(pending_hash, current_hash):
             return True
         # A later password change should clear this transactionally. Retain the
-        # self-healing fallback for databases written by an older/mixed process.
-        clear_credential_undelivered(conn)
+        # self-healing fallback for databases written by an older/mixed process,
+        # but delete only the value observed above: a concurrent launcher may
+        # replace it after the SELECT with its own valid pending-delivery marker.
+        conn.execute(
+            "DELETE FROM app_secrets WHERE key = ? AND value = ?",
+            (_CREDENTIAL_UNDELIVERED_KEY, pending_hash),
+        )
         conn.commit()
         return False
     finally:
