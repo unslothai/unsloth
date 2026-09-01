@@ -503,6 +503,16 @@ test("switching back to a hub GGUF loads it instead of staging a download", () =
     page,
     /const wantManagerStaging = wantsDownloadManagerStaging\(selection\);/,
   );
+
+  const stage = slice(
+    page,
+    "const stageOrLoad = useCallback",
+    "if (store.modelLoading)",
+  );
+  assert.match(
+    stage,
+    /const wantManagerStaging = wantsDownloadManagerStaging\(selection\);[\s\S]*if \(wantManagerStaging\) \{[\s\S]*dismissStartToastsForModelSelection\(\)/,
+  );
 });
 
 test("a history update that leaves the model alone is not re-emitted", () => {

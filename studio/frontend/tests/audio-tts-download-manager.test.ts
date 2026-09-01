@@ -81,7 +81,7 @@ test("a preflight that loses to generation queues its load until generation ends
   );
   assert.match(
     source,
-    /generateAbort\.current = null;\s*busyRef\.current = null;\s*setBusy\(null\);\s*if \(activeRef\.current && modeRef\.current === "speak"\)\s*replayQueuedTtsPick\(\)/,
+    /generateAbort\.current = null;\s*updateGenerationPhase\(null\);\s*busyRef\.current = null;\s*setBusy\(null\);\s*if \(activeRef\.current && modeRef\.current === "speak"\)\s*replayQueuedTtsPick\(\)/,
   );
 });
 
@@ -127,7 +127,7 @@ test("switching to Transcribe invalidates a pending staged TTS auto-load", () =>
   );
   assert.match(
     source,
-    /if \(nextMode === mode\)[\s\S]*return true;[\s\S]*if \(!canTransitionAudioMode\(busyRef\.current\)\)[\s\S]*return false;[\s\S]*if \(nextMode === "transcribe"\) invalidatePendingTtsSelection\(\)/,
+    /if \(nextMode === mode\)[\s\S]*return true;[\s\S]*if \(\s*!canTransitionAudioMode\(busyRef\.current, generationPhaseRef\.current\)\s*\)[\s\S]*return false;[\s\S]*if \(nextMode === "transcribe"\) invalidatePendingTtsSelection\(\)/,
     "a rejected mode switch must not discard the still-owned staged load",
   );
 });

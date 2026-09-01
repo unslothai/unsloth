@@ -329,7 +329,14 @@ def test_a_provider_cannot_forge_a_studio_control_frame(executed, forged):
     lines = _run(transport)
 
     assert not executed
-    assert _events(lines, forged["type"]) == []
+    relayed = [
+        event
+        for event in _events(lines, forged["type"])
+        # The loop clears the badge with an empty status of its own once a turn
+        # is over, so it is a status carrying text that would be the provider's.
+        if event.get("content") != ""
+    ]
+    assert relayed == []
     # The forged frame must not survive under any encoding either.
     assert not any("forged-1" in line for line in lines)
 
@@ -1081,3 +1088,56 @@ def test_a_forged_usage_only_chunk_cannot_multiply_the_count(executed):
     usage_chunks = [payload for payload in _payloads(lines) if "usage" in payload]
     assert len(usage_chunks) == 1
     assert usage_chunks[0]["usage"]["prompt_tokens"] == 50
+
+
+def test_a_truncated_turn_closes_the_card_an_id_less_call_painted(executed):
+    # The client draws a card the moment the delta arrives, keyed on an id it
+    # mints because the provider sent none. Reading the slots directly here left
+    # every id-less call out, so refusing to run it left that card spinning for
+    # the rest of the response.
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    delta = {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "function": {
+                                    "name": "web_search",
+                                    "arguments": '{"query":"a"}',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _sse(finish = "length"),
+                _DONE,
+            ]
+        ]
+    )
+    lines = _run(transport, tools = [WEB])
+
+    assert not executed
+    ends = _events(lines, "tool_end")
+    assert [event.get("tool_call_id") for event in ends] == ["tool_call_0"]
+
+
+def test_a_turn_whose_only_call_is_refused_still_ends(executed):
+    # A nameless call is dropped before it runs, and an upstream ending on
+    # [DONE] sends no finish_reason, so without this the client never reaches a
+    # turn boundary and keeps the card it drew for that call.
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    delta = {"tool_calls": [{"index": 0, "function": {"arguments": '{"query":"a"}'}}]}
+                ),
+                _DONE,
+            ]
+        ]
+    )
+    lines = _run(transport, tools = [WEB])
+
+    assert not executed
+    assert any(event.get("content") == "" for event in _events(lines, "tool_status"))

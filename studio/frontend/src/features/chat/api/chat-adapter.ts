@@ -22,7 +22,11 @@ import {
   listLocalModels,
 } from "@/features/hub/inventory/api";
 import { isHiddenModelId } from "@/features/hub/lib/hidden-models";
-import { resolveInitialConfig } from "@/features/model-picker";
+import {
+  isServedByMlx,
+  loadedContextFields,
+  resolveInitialConfig,
+} from "@/features/model-picker";
 import { isMlxId } from "@/features/model-picker/components/model-selector/recommended-fit";
 import { loadManagedLlamaFlags } from "@/features/model-picker/api/llama-flags";
 import { fetchLoadExtraArgs } from "@/features/model-picker/api/model-overrides";
@@ -106,9 +110,17 @@ import {
   type CodexReasoningLedger,
 } from "../codex-reasoning";
 
-import { toolCallReplayArguments } from "../tool-call-arguments";
 import {
+  createBoundaryScan,
+  mergedToolCallArgumentsText,
+  splitTopLevelJsonObjects,
+  toolCallArgumentsText,
+  toolCallReplayArguments,
+} from "../tool-call-arguments";
+import {
+  bindStreamedToolCallCard,
   findStreamedToolCallPartIndex,
+  mintStreamedToolCallId,
   resolveToolCallPartId,
 } from "../tool-call-id";
 
@@ -153,8 +165,13 @@ import {
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
 import {
+  loadedContextForParams,
+  localMaxTokensCeiling,
+  unreportedWindowMaxTokens,
   resolveFitMaxSeqLength,
   resolveExplicitCtxPin,
+  retainedContextPin,
+  replayMaxTokensCap,
 } from "../presets/preset-policy";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
@@ -1919,8 +1936,19 @@ export async function buildLocalTokenCountExtras(
     autoHealToolCalls,
     bypassPermissions,
     deepResearchEnabled,
+    permissionMode,
+    maxToolCallsPerMessage,
+    ragAutoInject,
+    ragAutoInjectMinScore,
+    residentCheckpoint,
   } = useChatRuntimeStore.getState();
-  if (!supportsTools) return {};
+  // Explicit false, as the completion sends: an omitted field lets the launcher's
+  // tools-on default answer and the server renders a catalog the completion does not.
+  // No budget, because the completion sends none either, so a policy that injects tools
+  // past this false gets the server default on both sides.
+  if (!supportsTools) {
+    return { enable_tools: false, bypass_permissions: bypassPermissions };
+  }
 
   const ragProjectId = await resolveProjectId(threadId);
   const projectRagEnabled = ragProjectId
@@ -1949,6 +1977,11 @@ export async function buildLocalTokenCountExtras(
     enable_tools: true,
     // Auto-Heal off leaves leaked tool markup in the real prompt, so the count keeps it.
     auto_heal_tool_calls: autoHealToolCalls,
+    // Ask holds first-pass retrieval behind the gate, so the count prices a pending RAG
+    // turn rather than declining one the completion never retrieves for.
+    permission_mode: permissionMode,
+    // Off suppresses the loop, and the relay renders no schemas or nudge: same zero.
+    max_tool_calls_per_message: maxToolCallsPerMessage,
     // Full access swaps the python/terminal descriptions and adds a nudge
     // sentence, so the count needs the flag to price the same prompt.
     bypass_permissions: bypassPermissions,
@@ -1959,9 +1992,13 @@ export async function buildLocalTokenCountExtras(
       ...(artifactsEnabled ? ["render_html"] : []),
     ],
     mcp_enabled: mcpEnabledForChat,
+    // Top level, not inside rag_scope: an archived thread puts search_conversation and its
+    // compaction nudge in the prompt whether or not RAG is on, and the completion sends it here.
+    ...(threadId ? { thread_id: threadId } : {}),
     // Armed research puts the deep_research schema in the prompt, so the count carries it.
     ...(deepResearchEnabled ? { deep_research_armed: true } : {}),
-    // the ids name the attached documents in the nudge server-side; no retrieval runs for a count.
+    // Keeps search_knowledge_base and its grounding nudge in the prompt. No retrieval runs for
+    // a count, but the scope's ids and switches are read to decide whether one would.
     ...(ragOn
       ? {
           rag_scope: {
@@ -1977,6 +2014,11 @@ export async function buildLocalTokenCountExtras(
             // and {} is falsy in Python, so the count alone would drop the tool and its nudge.
             default_top_k: ragTopK,
             mode: ragMode,
+            // Retrieval turned off means the loop renders exactly these messages, so the
+            // count can price the turn instead of declining a retrieval that never runs.
+            autoinject: resolveAutoInject(ragAutoInject, residentCheckpoint ?? ""),
+            autoinject_min_score: ragAutoInjectMinScore,
+            ...(ragAutoInject === "off" ? { whole_doc: false } : {}),
           },
         }
       : {}),
@@ -2237,7 +2279,7 @@ type QueuedResolvedModelRuntime = {
   >["reasoningEffortLevels"];
   supportsPreserveThinking: boolean;
   preserveThinking: boolean;
-  ggufContextLength: number | null;
+  loadedContextLength: number | null;
   loadedIsMultimodal: boolean;
   modelCapabilities: QueuedModelCapabilities | null;
 };
@@ -2251,9 +2293,11 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "activeLoadId",
   "activeGgufVariant",
   "activeModelIsLocal",
-  "ggufContextLength",
-  "ggufMaxContextLength",
-  "ggufNativeContextLength",
+  "loadedContextLength",
+  "maxContextLength",
+  "nativeContextLength",
+  "loadedIsGguf",
+  "loadedIsMlx",
   "modelRequiresTrustRemoteCode",
   "supportsReasoning",
   "reasoningAlwaysOn",
@@ -2381,7 +2425,7 @@ function queuedResolvedModelFromStore(
     reasoningEffortLevels: state.reasoningEffortLevels,
     supportsPreserveThinking: state.supportsPreserveThinking,
     preserveThinking: state.preserveThinking,
-    ggufContextLength: state.ggufContextLength,
+    loadedContextLength: state.loadedContextLength,
     loadedIsMultimodal: state.loadedIsMultimodal,
     modelCapabilities: activeModel
       ? {
@@ -3072,15 +3116,22 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       candidate.id,
       candidate.ggufVariant,
     );
+    const platform = usePlatformStore.getState();
     const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
       modelId: candidate.id,
       ggufVariant: candidate.ggufVariant,
       isGguf: candidate.kind === "gguf",
       customContextLength: config.customContextLength,
-      ggufContextLength: null,
+      loadedContextLength: null,
       currentCheckpoint: currentStore.params.checkpoint,
       activeGgufVariant: currentStore.activeGgufVariant,
-      maxSeqLength: config.maxSeqLength ?? candidate.maxSeqLength,
+      isMlx: isServedByMlx(
+        candidate.kind === "gguf",
+        platform.deviceType,
+        platform.chatOnlyReason,
+      ),
+      pinnedMaxSeqLength: config.maxSeqLength,
+      defaultMaxSeqLength: candidate.maxSeqLength,
       presetSource: currentStore.activePresetSource,
     });
     // The GPU knobs are per-model, so read them from the same per-model config
@@ -3260,6 +3311,15 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       );
       return false;
     }
+    const autoLoadPin = retainedContextPin({
+      isMlx: isServedByMlx(
+        candidate.kind === "gguf",
+        platform.deviceType,
+        platform.chatOnlyReason,
+      ),
+      // What the load asked for, so a pin carried in either field is kept.
+      requestedContextLength: fitMaxSeqLength,
+    });
     loadAttempts += 1;
     options?.abortSignal?.throwIfAborted();
     const loadResp = await loadModel({
@@ -3337,26 +3397,36 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       store.setModelRequiresTrustRemoteCode(
         loadResp.requires_trust_remote_code ?? false,
       );
+      // The window the model serves. Neither backend's own request will do: when it
+      // sizes its own window that request is the auto-size sentinel.
+      const loadedWindow = loadedContextForParams(
+        loadedContextFields(loadResp).loadedContextLength,
+        effectiveMaxSeqLength,
+        store.params.maxSeqLength,
+      );
       store.setParams(
         {
           ...store.params,
-          ...(candidate.kind === "gguf"
-            ? {}
-            : { maxSeqLength: effectiveMaxSeqLength }),
-          maxTokens:
-            candidate.kind === "gguf"
-              ? (loadResp.context_length ?? 131072)
-              : effectiveMaxSeqLength,
+          ...(candidate.kind === "gguf" ? {} : { maxSeqLength: loadedWindow }),
+          // Through the ceiling, so the value and its slider agree at both ends. The app
+          // default would halve Max Tokens for a model whose record carries a longer one.
+          maxTokens: localMaxTokensCeiling(
+            loadedContextFields(loadResp).loadedContextLength,
+            loadedWindow,
+          ),
         },
         {
           persist: !options?.preserveVisibleSettings,
           trackQueuedSettings: !options?.preserveVisibleSettings,
           fromModelDefaults: true,
-          // A budget remembered from a larger context does not fit this load.
-          maxTokensCap:
+          // A budget remembered from a larger context does not fit this load. The
+          // window, not the request: a backend that sizes its own was sent the
+          // auto-size sentinel, which as a budget is zero.
+          maxTokensCap: replayMaxTokensCap(
             candidate.kind === "gguf"
-              ? (loadResp.context_length ?? undefined)
-              : effectiveMaxSeqLength,
+              ? loadedContextFields(loadResp).loadedContextLength
+              : loadedWindow,
+          ),
         },
       );
       // Upsert: a pre-load catalog entry has no backend-derived audio
@@ -3381,10 +3451,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         const committedNUbatch =
           (loadResp.is_diffusion ?? false) ? null : (config.nUbatch ?? null);
         useChatRuntimeStore.setState({
-          ggufContextLength: loadResp.context_length ?? 131072,
-          ggufMaxContextLength:
-            loadResp.max_context_length ?? loadResp.context_length ?? 131072,
-          ggufNativeContextLength: loadResp.native_context_length ?? null,
+          ...loadedContextFields(loadResp),
           supportsReasoning: loadResp.supports_reasoning ?? false,
           reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
           reasoningEnabled: loadResp.supports_reasoning ?? false,
@@ -3476,7 +3543,14 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           defaultChatTemplate: loadResp.chat_template ?? null,
           chatTemplateOverride: effectiveChatTemplateOverride,
           loadedChatTemplateOverride: effectiveChatTemplateOverride,
-          customContextLength: null,
+          // The whole of the previous model's serving state, not just the window: a
+          // retained lease token still reads as a GGUF pick. This model's own pin is
+          // kept, though -- clearing it would reload it auto-sized next time.
+          customContextLength: autoLoadPin,
+          loadedCustomContextLength: autoLoadPin,
+          ...loadedContextFields(loadResp),
+          activeNativePathToken: null,
+          activeNativePathExpiresAtMs: null,
           ...resolveLoadedSpeculativeSettings(loadResp),
           loadedIsMultimodal: isMultimodalResponse(loadResp),
           mmprojFallbackReason: loadResp.mmproj_fallback_reason ?? null,
@@ -3746,13 +3820,18 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         store.setParams(
           {
             ...store.params,
-            maxTokens: loadResp.context_length ?? 131072,
+            maxTokens: localMaxTokensCeiling(
+              loadedContextFields(loadResp).loadedContextLength,
+              unreportedWindowMaxTokens(loadResp.is_gguf ?? false, store.params.maxTokens),
+            ),
           },
           {
             persist: !options?.preserveVisibleSettings,
             trackQueuedSettings: !options?.preserveVisibleSettings,
             fromModelDefaults: true,
-            maxTokensCap: loadResp.context_length ?? undefined,
+            maxTokensCap: replayMaxTokensCap(
+              loadedContextFields(loadResp).loadedContextLength,
+            ),
           },
         );
         const defaultModel: ChatModelRow = {
@@ -3769,9 +3848,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           store.setModels([...store.models, defaultModel]);
         }
         useChatRuntimeStore.setState({
-          ggufContextLength: loadResp.context_length ?? 131072,
-          ggufMaxContextLength:
-            loadResp.max_context_length ?? loadResp.context_length ?? 131072,
+          ...loadedContextFields(loadResp),
           supportsReasoning: loadResp.supports_reasoning ?? false,
           reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
           reasoningEnabled: loadResp.supports_reasoning ?? false,
@@ -3890,9 +3967,7 @@ async function resolveQueuedEmptyLocalModel(abortSignal: AbortSignal): Promise<{
             supportsPreserveThinking:
               status.supports_preserve_thinking ?? false,
             preserveThinking: resolvePreserveThinkingOnLoad(status),
-            ggufContextLength: status.is_gguf
-              ? (status.context_length ?? null)
-              : null,
+            loadedContextLength: loadedContextFields(status).loadedContextLength,
             loadedIsMultimodal: isMultimodalResponse(status),
             modelCapabilities: {
               isVision: status.is_vision ?? false,
@@ -4139,7 +4214,7 @@ export function createOpenAIStreamAdapter(
                 supportsPreserveThinking:
                   queuedEmptyModelRuntime.supportsPreserveThinking,
                 preserveThinking: queuedEmptyModelRuntime.preserveThinking,
-                ggufContextLength: queuedEmptyModelRuntime.ggufContextLength,
+                loadedContextLength: queuedEmptyModelRuntime.loadedContextLength,
                 models: mergeQueuedModelCapabilities(
                   base.models,
                   queuedEmptyModelRuntime.checkpoint,
@@ -4520,10 +4595,10 @@ export function createOpenAIStreamAdapter(
               preserveThinking:
                 queuedEmptyModelRuntime?.preserveThinking ??
                 liveRuntime.preserveThinking,
-              ggufContextLength:
+              loadedContextLength:
                 queuedEmptyModelRuntime !== null
-                  ? queuedEmptyModelRuntime.ggufContextLength
-                  : liveRuntime.ggufContextLength,
+                  ? queuedEmptyModelRuntime.loadedContextLength
+                  : liveRuntime.loadedContextLength,
               loadedIsMultimodal:
                 queuedEmptyModelRuntime?.loadedIsMultimodal ??
                 liveRuntime.loadedIsMultimodal,
@@ -5272,15 +5347,267 @@ export function createOpenAIStreamAdapter(
         textCursor?: number;
         _delta_index?: number;
         _has_stable_id?: boolean;
+        // No `arguments` field at all; a zero-parameter tool sends """".
+        _announced_only?: boolean;
+        _resend_suspect?: boolean;
+        _superseded?: boolean;
+        _from_fork?: boolean;
         extra_content?: unknown;
         provenance?: ToolCallProvenance;
       };
       // Tool call parts, cumulative; result lands on tool_end.
       const toolCallParts: PositionedToolCallPart[] = [];
+      // Ids for calls the stream gave none (issue #9807). A card is minted
+      // before its part joins `toolCallParts`, so without this a batch opening
+      // three calls mints one id three times.
+      const reservedToolCallIds = new Set<string>();
+      // Of those, the ones the provider sent. `_has_stable_id` cannot say which:
+      // a split marks every card but the last with it, to keep a late id off the
+      // calls already spoken for.
+      const providerSentToolCallIds = new Set<string>();
+      const boundaryScans = new Map<
+        string,
+        ReturnType<typeof createBoundaryScan>
+      >();
+      const isPlainRecord = (v: unknown): v is Record<string, unknown> =>
+        typeof v === "object" && v !== null && !Array.isArray(v);
+      // Forks whose last object never closed, the backend's open_tail_keys.
+      // `{"a":1}{` is not marked truncated, so the lone brace would persist as a
+      // card nothing completes.
+      const openTailIds = new Set<string>();
+      // Metadata from a delta repeating a closed card's name. That name is
+      // either that call's, resent, or the next call to the same tool announcing
+      // itself, and only the object that follows tells them apart.
+      const pendingExtraByPartId = new Map<string, Record<string, unknown>>();
+      const endProviderTurn = (): boolean => {
+        let changed = false;
+        // _call_is_finished, on the arguments alone: the backend holds the
+        // fork back whatever id reached it.
+        for (const tailId of openTailIds) {
+          const at = toolCallParts.findIndex((p) => p.toolCallId === tailId);
+          if (at === -1) continue;
+          const part = toolCallParts[at];
+          const scanned = splitTopLevelJsonObjects(part.argsText ?? "");
+          if (scanned.complete.length > 0 && !scanned.tail) continue;
+          toolCallParts.splice(at, 1);
+          releaseStreamedCard(part.toolCallId);
+          changed = true;
+        }
+        // An announcement another call took over, and a name that only looked like
+        // a resent, were never calls. A lone announcement stays: a zero-parameter
+        // tool looks like that.
+        for (let at = toolCallParts.length - 1; at >= 0; at -= 1) {
+          const part = toolCallParts[at] as PositionedToolCallPart;
+          if (
+            (!part._superseded &&
+              !part._resend_suspect &&
+              !(part._announced_only && part._from_fork)) ||
+            part.argsText
+          )
+            continue;
+          // Its metadata goes to the call it was mistaken for: Gemini stows a
+          // thought signature there and rejects a replay without one.
+          const previous = toolCallParts[at - 1] as
+            | PositionedToolCallPart
+            | undefined;
+          if (part.extra_content !== undefined && previous) {
+            previous.extra_content = {
+              ...(previous.extra_content ?? {}),
+              ...part.extra_content,
+            };
+          }
+          toolCallParts.splice(at, 1);
+          releaseStreamedCard(part.toolCallId);
+          changed = true;
+        }
+        // _normalized_call drops a nameless call before reserving a card id, so a
+        // card kept here holds a number the backend gives the next round, whose
+        // events then land on this blank card.
+        for (let at = toolCallParts.length - 1; at >= 0; at -= 1) {
+          const part = toolCallParts[at] as PositionedToolCallPart;
+          if (part.toolName || part._delta_index === undefined) continue;
+          toolCallParts.splice(at, 1);
+          releaseStreamedCard(part.toolCallId);
+          changed = true;
+        }
+        for (const [partId, waiting] of pendingExtraByPartId) {
+          // No object ever came, so the repeated name was that call's after all
+          // and so is the metadata that rode it.
+          const at = toolCallParts.findIndex((part) => part.toolCallId === partId);
+          if (at === -1) continue;
+          const part = toolCallParts[at] as PositionedToolCallPart;
+          toolCallParts[at] = {
+            ...part,
+            extra_content: {
+              ...(isPlainRecord(part.extra_content) ? part.extra_content : {}),
+              ...waiting,
+            },
+          };
+          changed = true;
+        }
+        pendingExtraByPartId.clear();
+        // The backend numbers the calls that survive: a card dropped above leaves
+        // a gap, and a claim displaced one for what turned out not to be a call.
+        // Both are settled here, where the backend settles them.
+        if (changed) renumberMintedCards();
+        openTailIds.clear();
+        // The next round opens at index 0 again, and without this "B" then
+        // "C" across the boundary named one call "BC".
+        for (let at = 0; at < toolCallParts.length; at += 1) {
+          const part = toolCallParts[at] as PositionedToolCallPart;
+          if (part._delta_index === undefined) continue;
+          const closed = { ...part };
+          delete closed._delta_index;
+          toolCallParts[at] = closed;
+        }
+        return changed;
+      };
+      const scanArgsText = (partId: string, text: string) => {
+        let scan = boundaryScans.get(partId);
+        if (!scan) {
+          scan = createBoundaryScan();
+          boundaryScans.set(partId, scan);
+        }
+        return scan.feed(text);
+      };
+      const mintStreamedCardId = (deltaIndex: number | undefined): string =>
+        mintStreamedToolCallId(toolCallParts, deltaIndex, reservedToolCallIds);
+      const paintStreamedCard = (partId: string): void => {
+        reservedToolCallIds.add(partId);
+        bindStreamedToolCallCard(toolPartIdByBackendId, partId);
+      };
       // Raw tool_args accumulator per card: the backend forwards arguments while
       // the model is still WRITING them, and the partial parse below feeds the
       // card's args so the code renders live.
       const liveArgsTextById = new Map<string, string>();
+      // A dropped card gives its id back: the backend never reserved it, so
+      // holding it makes the next round's mint skip a number it then reuses.
+      const releaseStreamedCard = (partId: string): void => {
+        reservedToolCallIds.delete(partId);
+        toolPartIdByBackendId.delete(partId);
+        // A card that took a late id answers to a run-unique part id, so the id
+        // the provider sent is a separate key pointing at it. Left behind, it makes
+        // the next round's mint skip a number the backend reuses.
+        for (const [backendId, mapped] of [...toolPartIdByBackendId]) {
+          if (mapped !== partId) continue;
+          toolPartIdByBackendId.delete(backendId);
+          reservedToolCallIds.delete(backendId);
+          providerSentToolCallIds.delete(backendId);
+        }
+        boundaryScans.delete(partId);
+        openTailIds.delete(partId);
+        liveArgsTextById.delete(partId);
+        pendingExtraByPartId.delete(partId);
+      };
+      // The backend reserves provider ids before it mints; the client can
+      // only move a card aside once the claim lands.
+      const renameStreamedCard = (from: string, to: string): void => {
+        reservedToolCallIds.delete(from);
+        toolPartIdByBackendId.delete(from);
+        const scan = boundaryScans.get(from);
+        if (scan) boundaryScans.set(to, scan);
+        boundaryScans.delete(from);
+        if (openTailIds.delete(from)) openTailIds.add(to);
+        const live = liveArgsTextById.get(from);
+        if (live !== undefined) liveArgsTextById.set(to, live);
+        liveArgsTextById.delete(from);
+        // The turn-end sweep claims parked metadata by the part id the card holds
+        // then, so it has to travel with the rename or the sweep finds nothing.
+        const pending = pendingExtraByPartId.get(from);
+        if (pending) pendingExtraByPartId.set(to, pending);
+        pendingExtraByPartId.delete(from);
+        const at = codexRoundToolCallIds.indexOf(from);
+        if (at !== -1) codexRoundToolCallIds[at] = to;
+        paintStreamedCard(to);
+      };
+      // The backend reserves provider ids before minting any card id, so a claim
+      // mid-response moves every card already numbered. Renumber in the order the
+      // backend walks them, or tool_start reaches the wrong card: three calls in
+      // one delta and a later `tool_call_1` cross-wire the second and third.
+      const renumberMintedCards = (claimed?: string): void => {
+        const minted = toolCallParts.filter(
+          (part) =>
+            !providerSentToolCallIds.has(part.toolCallId) &&
+            // This round's cards only. Earlier ones may carry a result, and the
+            // backend's ledger is append-only: it never renumbers, so neither may this.
+            (part as PositionedToolCallPart)._delta_index !== undefined,
+        ) as PositionedToolCallPart[];
+        const carried = minted.map((part) => ({
+          part,
+          from: part.toolCallId,
+          scan: boundaryScans.get(part.toolCallId),
+          live: liveArgsTextById.get(part.toolCallId),
+          openTail: openTailIds.has(part.toolCallId),
+          pending: pendingExtraByPartId.get(part.toolCallId),
+        }));
+        for (const held of carried) {
+          reservedToolCallIds.delete(held.from);
+          toolPartIdByBackendId.delete(held.from);
+          boundaryScans.delete(held.from);
+          liveArgsTextById.delete(held.from);
+          openTailIds.delete(held.from);
+          pendingExtraByPartId.delete(held.from);
+          // Cleared before any is minted again: the mint reads the ids the parts
+          // hold, and a stale one makes the first card skip the backend's number.
+          const at = toolCallParts.indexOf(held.part);
+          if (at !== -1) toolCallParts[at] = { ...held.part, toolCallId: "" };
+        }
+        // Held back only now: the loop above frees every minted id, and one of
+        // them is the spelling being claimed.
+        if (claimed !== undefined) reservedToolCallIds.add(claimed);
+        for (const held of carried) {
+          const to = mintStreamedCardId(held.part._delta_index);
+          paintStreamedCard(to);
+          if (held.scan) boundaryScans.set(to, held.scan);
+          if (held.live !== undefined) liveArgsTextById.set(to, held.live);
+          if (held.openTail) openTailIds.add(to);
+          if (held.pending) pendingExtraByPartId.set(to, held.pending);
+          const at = codexRoundToolCallIds.indexOf(held.from);
+          if (at !== -1) codexRoundToolCallIds[at] = to;
+          const index = toolCallParts.findIndex((part) => part.toolCallId === "");
+          if (index !== -1) {
+            toolCallParts[index] = { ...held.part, toolCallId: to };
+          }
+        }
+      };
+      /**
+       * Parts for the calls after the first in a slot holding several. Nothing
+       * per-call is copied: the thought signature goes only to the last.
+       */
+      const bornSplitToolCalls = (
+        extraSegments: string[],
+        toolName: string,
+        deltaIndex: number | undefined,
+        extraContent: unknown,
+      ): PositionedToolCallPart[] =>
+        extraSegments.map((segment, n) => {
+          const isLast = n === extraSegments.length - 1;
+          let segmentArgs: ToolCallMessagePart["args"] = {};
+          try {
+            segmentArgs = JSON.parse(segment) as ToolCallMessagePart["args"];
+          } catch {
+            segmentArgs = { _raw: segment } as ToolCallMessagePart["args"];
+          }
+          const bornId = mintStreamedCardId(deltaIndex);
+          paintStreamedCard(bornId);
+          if (!codexRoundToolCallIds.includes(bornId)) {
+            codexRoundToolCallIds.push(bornId);
+          }
+          return {
+            type: "tool-call" as const,
+            toolCallId: bornId,
+            toolName,
+            argsText: segment,
+            args: segmentArgs,
+            textCursor: cumulativeText.length,
+            ...(isLast && extraContent !== undefined
+              ? { extra_content: extraContent }
+              : {}),
+            // All but the last are spoken for; the last stays claimable.
+            ...(isLast ? {} : { _has_stable_id: true }),
+            ...(deltaIndex !== undefined ? { _delta_index: deltaIndex } : {}),
+          };
+        });
       // Backend tool ids ("call_0", ...) restart every response, so a bare id as
       // store key lets a later turn's stream overwrite the preserved output an
       // earlier still-mounted finished card reads (the tool_start stale-clear
@@ -5832,7 +6159,7 @@ export function createOpenAIStreamAdapter(
                               ? { whole_doc: false }
                               : {}),
                             context_length:
-                              runtime.ggufContextLength ??
+                              runtime.loadedContextLength ??
                               params.maxSeqLength ??
                               undefined,
                           },
@@ -6054,7 +6381,7 @@ export function createOpenAIStreamAdapter(
                             ? { whole_doc: false }
                             : {}),
                           context_length:
-                            runtime.ggufContextLength ??
+                            runtime.loadedContextLength ??
                             params.maxSeqLength ??
                             undefined,
                         },
@@ -6224,7 +6551,7 @@ export function createOpenAIStreamAdapter(
                 : streamChatCompletions(
                     requestPayload,
                     runSignal,
-                    // Only when the request targets the LOCAL model. ggufContextLength
+                    // Only when the request targets the LOCAL model. loadedContextLength
                     // stays populated for a resident GGUF even while an external model is
                     // selected, so an external request with a 16K cap was being measured
                     // against an unrelated 4096-token local window and reported as having
@@ -6243,7 +6570,7 @@ export function createOpenAIStreamAdapter(
                     isExternalRequest
                       ? null
                       : (runtime.loadedCustomContextLength ??
-                        runtime.ggufContextLength ??
+                        runtime.loadedContextLength ??
                         (params.maxSeqLength || null)),
                   );
             // Per run, not per module: two turns must not share a cycle.
@@ -6260,6 +6587,11 @@ export function createOpenAIStreamAdapter(
                 chunk as unknown as { _toolStatus?: string }
               )._toolStatus;
               if (toolStatusText !== undefined) {
+                // The one boundary every round has: only-disabled rounds emit
+                // no card and a [DONE] upstream sends no finish_reason.
+                if (!toolStatusText) {
+                  endProviderTurn();
+                }
                 runtime.setToolStatus(
                   liveThreadKey(serverCancel),
                   toolStatusText || null,
@@ -6344,6 +6676,12 @@ export function createOpenAIStreamAdapter(
                 chunk as unknown as { _toolEvent?: Record<string, unknown> }
               )._toolEvent;
               if (toolEvent !== undefined) {
+                // Unsloth's own tool events end the turn that asked for them; finish_reason
+                // alone is not enough. A hosted tool runs INSIDE the turn and rides a whole
+                // chunk, where Unsloth's are bare {"type": "tool_start"} frames.
+                if (!chunk.choices) {
+                  endProviderTurn();
+                }
                 // Deep Research is an ordinary tool to every loop that runs it, so the handoff
                 // is read off the events they all publish rather than a bespoke frame. An
                 // ungated pair is not rendered: the research card is the reply, a tool pill
@@ -6510,6 +6848,10 @@ export function createOpenAIStreamAdapter(
                   useChatRuntimeStore.getState().clearToolFullOutput(staleKey);
                   const toolArgs = (toolEvent.arguments ??
                     {}) as ToolCallMessagePart["args"];
+                  const toolArgsText = toolCallArgumentsText(
+                    toolEvent.arguments_text,
+                    toolArgs,
+                  );
                   const idx = toolCallParts.findIndex(
                     (p) => p.toolCallId === id,
                   );
@@ -6520,7 +6862,7 @@ export function createOpenAIStreamAdapter(
                     toolCallParts[idx] = {
                       ...existing,
                       toolName: toolEvent.tool_name as string,
-                      argsText: JSON.stringify(toolArgs),
+                      argsText: toolArgsText,
                       args: toolArgs,
                       provenance: mergeToolProvenance(
                         existing.provenance,
@@ -6532,7 +6874,7 @@ export function createOpenAIStreamAdapter(
                       type: "tool-call" as const,
                       toolCallId: id,
                       toolName: toolEvent.tool_name as string,
-                      argsText: JSON.stringify(toolArgs),
+                      argsText: toolArgsText,
                       args: toolArgs,
                       textCursor: cumulativeText.length,
                       ...(toolProvenance ? { provenance: toolProvenance } : {}),
@@ -6709,6 +7051,8 @@ export function createOpenAIStreamAdapter(
                       ...(toolCallParts[idx].args ?? {}),
                       ...(nextArgs ?? {}),
                     } as ToolCallMessagePart["args"];
+                    const overwrittenArgumentKeys =
+                      nextArgs !== undefined ? Object.keys(nextArgs) : [];
                     // Merge tool_end native_part into args.google so the
                     // outbound translator replays both start (executableCode)
                     // and end (result / inlineData) on the same turn.
@@ -6790,7 +7134,11 @@ export function createOpenAIStreamAdapter(
                     toolCallParts[idx] = {
                       ...existing,
                       args: mergedArgs,
-                      argsText: JSON.stringify(mergedArgs ?? {}),
+                      argsText: mergedToolCallArgumentsText(
+                        existing.argsText,
+                        mergedArgs,
+                        overwrittenArgumentKeys,
+                      ),
                       result: parsedResult,
                       provenance: mergeToolProvenance(
                         existing.provenance,
@@ -6950,13 +7298,40 @@ export function createOpenAIStreamAdapter(
                   const idx =
                     typeof call.index === "number" ? call.index : undefined;
                   const stableId = call.id;
+                  // The chunk is cast, not validated, and llama-server has
+                  // shipped `arguments` as a decoded object.
+                  const deltaArgs =
+                    typeof call.function?.arguments === "string"
+                      ? call.function.arguments
+                      : "";
                   // Unsloth's local Codex loop follows the OpenAI tool-call delta with
                   // tool_start/tool_end events. Resolve the backend id now so all three
                   // event shapes update one run-unique card instead of leaving the raw
                   // provisional card beside a second execution card.
+                  // Before resolving: a provider claiming a minted spelling
+                  // would resolve onto that card and merge the two calls. The
+                  // backend's reserve-then-mint order lands on the same pair.
+                  if (
+                    stableId &&
+                    !providerSentToolCallIds.has(stableId) &&
+                    toolCallParts.some((part) => part.toolCallId === stableId)
+                  ) {
+                    // Renumber first: a minted card holds the claimed spelling until this runs,
+                    // and marking it provider-sent earlier would exempt it from the move.
+                    renumberMintedCards(stableId);
+                    providerSentToolCallIds.add(stableId);
+                    reservedToolCallIds.add(stableId);
+                  }
                   const stablePartId = stableId
                     ? resolveToolPartId(stableId)
                     : undefined;
+                  // Reserved before any card id is minted, so a provider that
+                  // happens to spell an id `tool_call_0` keeps it to itself.
+                  if (stableId) {
+                    reservedToolCallIds.add(stableId);
+                    providerSentToolCallIds.add(stableId);
+                  }
+                  if (stablePartId) providerSentToolCallIds.add(stablePartId);
                   // match by resolved id when the fragment carries one, else by
                   // index slot; streams that send neither get a minted
                   // tool_call_<n> id.
@@ -6965,10 +7340,88 @@ export function createOpenAIStreamAdapter(
                     stablePartId,
                     idx,
                   );
-                  const existing =
+                  const matched =
                     existingIndex === -1
                       ? undefined
                       : toolCallParts[existingIndex];
+                  // A closed object takes no more content, so a name or arguments reaching it
+                  // open the next call. Splitting the text alone is too late.
+                  const slotIsClosed = (() => {
+                    if (!matched?.argsText) return false;
+                    const held = scanArgsText(
+                      matched.toolCallId,
+                      matched.argsText,
+                    );
+                    return held.complete.length > 0 && !held.tail;
+                  })();
+                  // A fragment repeating the id this part holds continues it
+                  // however complete the arguments look.
+                  const namesThisCall =
+                    !!stablePartId && matched?.toolCallId === stablePartId;
+                  // A next call opens with its own "{"; cutting on anything
+                  // else runs the tool twice on a stray scalar suffix.
+                  const bringsArgs = deltaArgs.trim().startsWith("{");
+                  const closedSlot = slotIsClosed && !namesThisCall;
+                  // An id naming a DIFFERENT call opens the next even before
+                  // its arguments arrive; alone it is that call's, stamped late.
+                  const idNamesAnotherCall =
+                    !!stablePartId &&
+                    !!call.function?.name &&
+                    !!matched?.toolName &&
+                    // Not a prefix test: a catalog holds both "web" and
+                    // "web_search".
+                    call.function.name !== matched.toolName;
+                  // A snapshot provider repeats the finished call verbatim
+                  // once it has an id. Exact repeats only, so parallel calls
+                  // differing anywhere still open separately.
+                  const resendsThisCall =
+                    !!stablePartId &&
+                    !!matched &&
+                    !matched._has_stable_id &&
+                    call.function?.name === matched.toolName &&
+                    deltaArgs === matched.argsText;
+                  // A name at a closed slot announces the next call: names
+                  // grow before the arguments, so nothing is left to extend. A
+                  // shared prefix is no proof ("web" after "web_search" is a
+                  // second call), but the SAME name is that call's, resent, and
+                  // llama-server and vLLM both resend it.
+                  const namesNextCall =
+                    !!call.function?.name &&
+                    !!matched?.toolName &&
+                    call.function.name !== matched.toolName;
+                  // An announcement has no object to close, so the rule above
+                  // cannot reach it. A different name bringing an object is the
+                  // next call; gluing gave "A_longB", which matches no tool.
+                  const announcesOverAnnouncement =
+                    ((matched as PositionedToolCallPart | undefined)
+                      ?._announced_only === true ||
+                      (matched as PositionedToolCallPart | undefined)
+                        ?._resend_suspect === true) &&
+                    !matched?.argsText &&
+                    !!call.function?.name &&
+                    !!matched?.toolName &&
+                    call.function.name !== matched.toolName &&
+                    bringsArgs;
+                  if (announcesOverAnnouncement && matched) {
+                    (matched as PositionedToolCallPart)._superseded = true;
+                  }
+                  // A name repeating the one a closed card holds says nothing
+                  // new about that call, so metadata riding it belongs to
+                  // whichever call the next object opens; merged now it
+                  // overwrites the signature the closed call arrived with and
+                  // leaves the next call unsigned.
+                  const extraIsAmbiguous =
+                    closedSlot &&
+                    !!call.function?.name &&
+                    !!matched?.toolName &&
+                    call.function.name === matched.toolName &&
+                    isPlainRecord(call.extra_content);
+                  const opensNextCall =
+                    (closedSlot &&
+                      (bringsArgs || idNamesAnotherCall || namesNextCall) &&
+                      !resendsThisCall) ||
+                    announcesOverAnnouncement;
+                  const existing = opensNextCall ? undefined : matched;
 
                   if (
                     stablePartId &&
@@ -6976,32 +7429,80 @@ export function createOpenAIStreamAdapter(
                   ) {
                     codexRoundToolCallIds.push(stablePartId);
                   }
-                  const argsFragment = call.function?.arguments ?? "";
+                  const argsFragment = deltaArgs;
                   streamedChars +=
                     argsFragment.length + (call.function?.name?.length ?? 0);
                   if (existing) {
                     const prevName = existing.toolName ?? "";
-                    const nextName = call.function?.name ?? prevName;
-                    const merged = (existing.argsText ?? "") + argsFragment;
+                    // Two dialects, and either alone breaks the other:
+                    // llama-server resends the whole name as it grows, OpenAI
+                    // streams it in fragments. Same rule as the backend.
+                    const nameFragment = call.function?.name ?? "";
+                    // Never once the object has closed AND a name is set: that
+                    // would put one tool's arguments under another's name.
+                    // Naming a card that has none is not a rename, and servers
+                    // do send the arguments first.
+                    const nextName =
+                      !nameFragment || (closedSlot && prevName)
+                        ? prevName
+                        : nameFragment.startsWith(prevName)
+                          ? nameFragment
+                          : prevName + nameFragment;
+                    // A snapshot repeated to carry the id adds nothing;
+                    // appending gives `{"a":1}{"a":1}` and splits it in two.
+                    const merged = resendsThisCall
+                      ? (existing.argsText ?? "")
+                      : (existing.argsText ?? "") + argsFragment;
+                    // A slot holding two objects is holding two calls: this is
+                    // how vLLM's id-less deltas glue `{"url":"a"}` and
+                    // `{"url":"b"}` into one unparsable string (issue #9807).
+                    // Cut on the object boundary, since the same tool twice has
+                    // no name to cut on; a delta with an id addresses its own.
+                    const split = stablePartId
+                      ? { complete: [], tail: "" }
+                      : scanArgsText(existing.toolCallId, merged);
+                    // Whether the last segment is still open decides who may
+                    // go on writing to it.
+                    const splitTailIsOpen = split.tail.length > 0;
+                    const segments = splitTailIsOpen
+                      ? [...split.complete, split.tail]
+                      : split.complete;
+                    const isSplit = segments.length > 1;
+                    // The slot keeps the object it opened with, under the name
+                    // and id it had; the rest are calls this delta introduced.
+                    const slotText = isSplit ? segments[0] : merged;
                     let parsedArgs: ToolCallMessagePart["args"] =
                       existing.args ?? {};
-                    if (merged) {
+                    if (slotText) {
                       try {
                         parsedArgs = JSON.parse(
-                          merged,
+                          slotText,
                         ) as ToolCallMessagePart["args"];
                       } catch {
                         parsedArgs = {
-                          _raw: merged,
+                          _raw: slotText,
                         } as ToolCallMessagePart["args"];
                       }
                     }
                     const prevExtra = (existing as PositionedToolCallPart)
                       .extra_content;
+                    // Merged, not replaced: a signature announced with the
+                    // name and one arriving with the arguments are different
+                    // fields of one call.
+                    if (extraIsAmbiguous && isPlainRecord(call.extra_content)) {
+                      pendingExtraByPartId.set(existing.toolCallId, {
+                        ...(pendingExtraByPartId.get(existing.toolCallId) ?? {}),
+                        ...call.extra_content,
+                      });
+                    }
+                    const incomingExtra = extraIsAmbiguous
+                      ? prevExtra
+                      : isPlainRecord(prevExtra) && isPlainRecord(call.extra_content)
+                        ? { ...prevExtra, ...call.extra_content }
+                        : call.extra_content;
                     if (
-                      call.extra_content !== undefined &&
-                      JSON.stringify(call.extra_content) !==
-                        JSON.stringify(prevExtra)
+                      incomingExtra !== undefined &&
+                      JSON.stringify(incomingExtra) !== JSON.stringify(prevExtra)
                     ) {
                       // Gemini puts the thought signature on the call, and
                       // the next turn is rejected without it.
@@ -7014,26 +7515,108 @@ export function createOpenAIStreamAdapter(
                       ...(stablePartId
                         ? { toolCallId: stablePartId, _has_stable_id: true }
                         : {}),
-                      toolName: nextName,
-                      argsText: merged,
+                      toolName: isSplit ? prevName || nextName : nextName,
+                      argsText: slotText,
                       args: parsedArgs,
-                      ...(call.extra_content !== undefined
-                        ? { extra_content: call.extra_content }
+                      ...(incomingExtra !== undefined && !isSplit
+                        ? { extra_content: incomingExtra }
                         : prevExtra !== undefined
                           ? { extra_content: prevExtra }
                           : {}),
                       ...(idx !== undefined ? { _delta_index: idx } : {}),
+                      // Any arguments field, "" included, means the call has
+                      // started, so the card survives the boundary sweep.
+                      _announced_only:
+                        (existing as PositionedToolCallPart)._announced_only ===
+                          true && call.function?.arguments === undefined,
+                      // A name that brought its own arguments was no resend.
+                      _resend_suspect:
+                        (existing as PositionedToolCallPart)._resend_suspect ===
+                          true && !slotText,
                     };
                     toolCallParts[existingIndex] = updated;
+                    // The card answers to its late id from here on, so what was
+                    // keyed on the provisional one moves and the id itself goes
+                    // back: the backend never reserved it for a call the
+                    // provider went on to name, and holding it makes the next
+                    // mint skip the number the backend hands out.
+                    if (stablePartId && stablePartId !== existing.toolCallId) {
+                      renameStreamedCard(existing.toolCallId, stablePartId);
+                    }
+                    if (isSplit) {
+                      // The slot keeps one segment, not the whole string, so
+                      // the resumable scan no longer describes it.
+                      boundaryScans.delete(existing.toolCallId);
+                      boundaryScans.delete(updated.toolCallId);
+                      // Appended, not inserted beside the slot, so a call
+                      // opened third reads third whichever index it reused.
+                      // This delta's own metadata, not the merge: the merged
+                      // fields belong to the call the slot was holding, and
+                      // Gemini validates a signature against the functionCall
+                      // part it was returned on.
+                      const born = bornSplitToolCalls(
+                        segments.slice(1),
+                        nextName,
+                        idx,
+                        call.extra_content,
+                      );
+                      // The last is the object still being written, if one is:
+                      // kept for later fragments, dropped if it never closes.
+                      if (splitTailIsOpen && born.length > 0) {
+                        openTailIds.add(born[born.length - 1].toolCallId);
+                      }
+                      toolCallParts.push(...born);
+                      // New calls are state, so they never wait on the gate.
+                      addedToolCall = true;
+                    }
                   } else {
                     const callId =
                       stablePartId ||
-                      `tool_call_${idx ?? toolCallParts.length}`;
+                      mintStreamedCardId(idx ?? toolCallParts.length);
+                    if (!stablePartId) paintStreamedCard(callId);
 
                     if (!codexRoundToolCallIds.includes(callId)) {
                       codexRoundToolCallIds.push(callId);
                     }
-                    const argsText = argsFragment;
+                    // vLLM bundles several calls into one delta when the model
+                    // writes them in one pass. Same boundary as above.
+                    const freshSplit = stablePartId
+                      ? { complete: [], tail: "" }
+                      : splitTopLevelJsonObjects(argsFragment);
+                    const freshTailIsOpen = freshSplit.tail.length > 0;
+                    const freshSegments = freshTailIsOpen
+                      ? [...freshSplit.complete, freshSplit.tail]
+                      : freshSplit.complete;
+                    const freshIsSplit = freshSegments.length > 1;
+                    const nameFragment = call.function?.name ?? "";
+                    const heldName = matched?.toolName ?? "";
+                    // A second call to the same tool can arrive with no name,
+                    // the first delta having given it; blank names nothing.
+                    const freshName = nameFragment || heldName;
+                    // Across several calls the metadata belongs to the one
+                    // this delta closes, the last. Same as the backend.
+                    // The object proved the repeated name announced this call,
+                    // so what was waiting on the card it reached is this one's.
+                    const waiting = matched
+                      ? pendingExtraByPartId.get(matched.toolCallId)
+                      : undefined;
+                    if (waiting && matched) {
+                      pendingExtraByPartId.delete(matched.toolCallId);
+                    }
+                    const withWaiting =
+                      waiting === undefined
+                        ? call.extra_content
+                        : {
+                            ...waiting,
+                            ...(isPlainRecord(call.extra_content)
+                              ? call.extra_content
+                              : {}),
+                          };
+                    const freshOwnExtra = freshIsSplit ? undefined : withWaiting;
+                    const bornExtra = freshIsSplit ? withWaiting : undefined;
+                    const argsText = freshIsSplit
+                      ? freshSegments[0]
+                      : argsFragment;
                     let parsedArgs: ToolCallMessagePart["args"] = {};
                     if (argsText) {
                       try {
@@ -7049,19 +7632,55 @@ export function createOpenAIStreamAdapter(
                     const fresh: PositionedToolCallPart = {
                       type: "tool-call" as const,
                       toolCallId: callId,
-                      toolName: call.function?.name ?? "",
+                      toolName: freshName,
                       argsText,
                       args: parsedArgs,
                       textCursor: cumulativeText.length,
-                      ...(call.extra_content !== undefined
-                        ? { extra_content: call.extra_content }
+                      ...(freshOwnExtra !== undefined
+                        ? { extra_content: freshOwnExtra }
                         : {}),
                       ...(stablePartId ? { _has_stable_id: true } : {}),
                       ...(idx !== undefined ? { _delta_index: idx } : {}),
+                      ...(call.function?.arguments === undefined && freshName
+                        ? { _announced_only: true }
+                        : {}),
+                      // A fork's guess, or a slot the provider opened itself.
+                      // Only the provider's own announcement runs unfilled.
+                      ...(matched ? { _from_fork: true } : {}),
+                      // A name extending the one this fork left behind is most
+                      // likely it, resent. It still opens a card (the prefix is
+                      // no proof) but gives way rather than gluing
+                      // "alpha_longbeta".
+                      ...(freshName &&
+                      heldName &&
+                      freshName !== heldName &&
+                      freshName.startsWith(heldName)
+                        ? { _resend_suspect: true }
+                        : {}),
                     };
-                    toolCallParts.push(fresh);
+                    const born = freshIsSplit
+                      ? bornSplitToolCalls(
+                          freshSegments.slice(1),
+                          freshName,
+                          idx,
+                          bornExtra,
+                        )
+                      : [];
+                    // As above: the fork whose object is still open is held
+                    // only for the rest of the turn.
+                    if (freshTailIsOpen && born.length > 0) {
+                      openTailIds.add(born[born.length - 1].toolCallId);
+                    }
+                    toolCallParts.push(fresh, ...born);
                     addedToolCall = true;
                   }
+                }
+                // After this chunk's deltas: a provider can put finish_reason
+                // on the same chunk as the turn's last name-only delta.
+                if (chunk.choices?.[0]?.finish_reason) {
+                  // Ending the turn drops cards, so the publish below has to
+                  // see it rather than wait for the pacing gate.
+                  replayStateChanged ||= endProviderTurn();
                 }
                 if (
                   addedToolCall ||
@@ -7081,6 +7700,9 @@ export function createOpenAIStreamAdapter(
                   };
                 }
                 continue;
+              }
+              if (chunk.choices?.[0]?.finish_reason) {
+                replayStateChanged ||= endProviderTurn();
               }
               // extra_content can arrive with no content at all: a Gemini
               // thoughtSignature fragment, or the codex reasoning ledger on a

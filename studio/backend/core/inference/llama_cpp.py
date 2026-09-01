@@ -631,9 +631,7 @@ def _apply_seeded_llama_request(payload: dict, seed: Optional[int]) -> None:
     if seed is None:
         return
     payload["seed"] = seed
-    # llama.cpp reads the seed as uint32 and LLAMA_DEFAULT_SEED is 0xFFFFFFFF, so -1 and
-    # 4294967295 are the same "pick one at random" and both keep cache reuse. Compared in
-    # that domain rather than against the -1 literal, which the schemas also accept above.
+    # Compared as uint32: the schemas also accept 4294967295, the same "pick at random".
     if (seed & 0xFFFFFFFF) != _LLAMA_RANDOM_SEED:
         payload["cache_prompt"] = False
 
@@ -2761,20 +2759,86 @@ def _pick_dspark(candidates: list[str]) -> Optional[str]:
     return files[0] if files else None
 
 
-def _pick_mtp(candidates: list[str]) -> Optional[str]:
+_MTP_SHARD_SUFFIX_RE = re.compile(r"-[0-9]{5}-of-[0-9]{5}$")
+
+
+def _is_published_mtp_drafter_name(path: str) -> bool:
+    """Does *path*'s BASENAME name a published MTP head?
+
+    ``_is_mtp_only_drafter_path`` accepts anything under ``MTP/``, which is right
+    for excluding companions from menus and too broad for choosing what to launch:
+    an mmproj, an imatrix or a stray weight copy would go to ``--model-draft``.
+    Same rule as ``detect_mtp_file`` -- ``mtp-<model>`` or the older
+    ``<model>-MTP`` -- shard suffix stripped first, since an old-scheme split copy
+    is ``<model>-Q8_0-MTP-00001-of-00002.gguf``, whose stem lacks ``-mtp``."""
+    lower = Path(path).name.lower()
+    if not lower.endswith(".gguf"):
+        return False
+    stem = _MTP_SHARD_SUFFIX_RE.sub("", Path(lower).stem)
+    return lower.startswith("mtp-") or stem.endswith("-mtp")
+
+
+def _pick_mtp(candidates: list[str], *, allow_nested: bool = True) -> Optional[str]:
     """The MTP drafter a listing offers, or None. Module level for the same reason
     ``_pick_dspark`` is: both are handed a live repo listing as well as a snapshot,
-    and ``/kv-cache-estimate`` has to price the drafter the launch will open."""
-    # Root-level only: MTP/ subdir copies now share the mtp- prefix but
-    # are explicit-selection, not auto-fetch (they'd sort ahead of root).
-    # The mtp- prefix also excludes AppleDouble shadows ("._mtp-x.gguf"), which
-    # is why this picker needs no drop_shadowed_appledouble_names of its own.
+    and ``/kv-cache-estimate`` has to price the drafter the launch will open.
+
+    ``allow_nested=False`` restricts the answer to a root mirror, which is what
+    every architecture but qwen4exp gets -- see ``_pick_mtp_root_only``."""
+    from hub.utils.gguf import drop_shadowed_appledouble_names
+    from utils.models.drafters import split_listing_is_complete
+    from utils.models.drafters.preference import mtp_preference_key
+
+    names = drop_shadowed_appledouble_names(list(candidates))
+
+    def _launchable(name: str) -> bool:
+        # Settled before ranking, as detect_mtp_file settles it at collection:
+        # llama.cpp resolves sibling shards from the first one's directory, so half
+        # a set is unusable and _download_companion_gguf answers None to it. Ranked
+        # first and rejected after, it would shadow a complete lower-ranked head.
+        return split_listing_is_complete(names, name)
+
+    # Root first, so a repo mirroring one head at the root (Gemma 4) still resolves to it
+    # rather than to a subdir copy, which would sort ahead. The mtp- prefix also excludes
+    # AppleDouble shadows ("._mtp-x.gguf"), so this bucket needs no filtering of its own.
     mtp_files = sorted(
         f
-        for f in candidates
-        if f.lower().endswith(".gguf") and "/" not in f and Path(f).name.lower().startswith("mtp-")
+        for f in names
+        if f.lower().endswith(".gguf")
+        and "/" not in f
+        and Path(f).name.lower().startswith("mtp-")
+        and _launchable(f)
     )
-    return mtp_files[0] if mtp_files else None
+    if mtp_files:
+        return mtp_files[0]
+
+    # No root mirror, or none of them complete: fall back to the MTP/ folder, which
+    # is the only place Qwen3.8-Flash-Next publishes its heads. This is the policy
+    # _cached_repo_mtp_drafter already applies to the offline cache, so without it a
+    # user holding a cached copy gets speculation and a fresh install does not.
+    if not allow_nested:
+        return None
+    nested = sorted(
+        (
+            name
+            for name in names
+            if "/" in name and _is_published_mtp_drafter_name(name) and _launchable(name)
+        ),
+        key = mtp_preference_key,
+    )
+    return nested[0] if nested else None
+
+
+def _pick_mtp_root_only(candidates: list[str]) -> Optional[str]:
+    """``_pick_mtp`` for everything but qwen4exp: the behaviour every model had
+    before the ``MTP/`` fallback existed.
+
+    llama.cpp loads the draft model whenever one is passed, so a sidecar displaces
+    an embedded head rather than adding to it. On Qwen3.8-27B UD-Q4_K_XL the two
+    draft identically (143 of 223, byte-identical output), so the 1.37 GB copy buys
+    nothing. A root mirror is still taken: publishing one beside the weights says
+    it is the one to use."""
+    return _pick_mtp(candidates, allow_nested = False)
 
 
 def _pick_mmproj(candidates: list[str]) -> Optional[str]:
@@ -3377,6 +3441,23 @@ def _auto_mode_drops_mtp(
     if has_separate_drafter:
         return False
     return req_mode == "auto" and size_b is not None and size_b < _MTP_MIN_SIZE_B
+
+
+# MLA archs whose MTP context covers only the NextN block instead of duplicating the
+# trunk KV: glm5next holds 4+3 MiB over one layer where its trunk holds 48+36 over
+# twelve. That one fact is why Auto keeps MTP (gate below) and why the fit must not
+# reserve the copy (_estimate_mtp_overhead_bytes). Not "glm5-next": no NextN graph.
+_MLA_MTP_FAST_ARCHS = frozenset({"glm5next"})
+
+
+def _arch_has_fast_mla_mtp(architecture: Optional[str]) -> bool:
+    """Whether this MLA architecture's embedded MTP head is worth promoting in Auto."""
+    return bool(architecture) and str(architecture).strip().lower() in _MLA_MTP_FAST_ARCHS
+
+
+def _arch_mtp_skips_target_kv_copy(architecture: Optional[str]) -> bool:
+    """Whether this MLA architecture's MTP context skips the duplicated target KV."""
+    return _arch_has_fast_mla_mtp(architecture)
 
 
 def _mla_mtp_auto_enabled() -> bool:
@@ -4071,6 +4152,9 @@ _TARGET_KV_EXCLUDES_NEXTN_ARCHS = frozenset(
         # MLA/DSA trunk with a dense MTP head, llama-model.cpp:2129
         "glm-dsa",
         "deepseek32",
+        # Hybrid KDA + DSA trunk; both GLM-5.3-Flash ports filter blk.45 out
+        "glm5next",
+        "glm5-next",
         # Plain attention trunk with an explicit nextn filter, llama-model.cpp:2356
         "step35",
         "hy_v3",
@@ -6376,6 +6460,26 @@ class LlamaCppBackend:
     @property
     def chat_template_override(self) -> Optional[str]:
         return self._chat_template_override
+
+    def _effective_chat_template(self, chat_template_override: Optional[str]) -> Optional[str]:
+        """The template to launch with: the caller's override, else a repaired copy of the
+        GGUF's own when llama-server's Jinja cannot parse it.
+
+        The repair stays out of ``_chat_template_override``, which the reload check
+        compares against the request's intent -- a value no request sends would reload the
+        model on every Apply.
+        """
+        if chat_template_override:
+            return chat_template_override
+        from core.inference.chat_template_helpers import repair_numeric_member_access
+
+        repaired = repair_numeric_member_access(self._chat_template)
+        if repaired:
+            logger.warning(
+                "The GGUF's chat template indexes with numeric member access, which "
+                "llama-server's Jinja rejects; launching with a repaired copy"
+            )
+        return repaired
 
     @property
     def supports_reasoning(self) -> bool:
@@ -10775,6 +10879,10 @@ class LlamaCppBackend:
     # only when an axis is actually quantized.
     _tensor_quant_kv_unsupported_binaries: set[tuple[str, int]] = set()
 
+    # Binary dirs already reported by _warn_missing_windows_cuda_runtime. The env is rebuilt
+    # for every launch and every --list-devices probe, so one line per binary is enough.
+    _missing_cuda_runtime_warned: set[str] = set()
+
     @classmethod
     def _binary_key(cls, binary: Optional[str]) -> Optional[tuple[str, int]]:
         """(path, mtime_ns); ns mtime re-probes a same-second binary swap."""
@@ -10898,6 +11006,47 @@ class LlamaCppBackend:
         _add(site_packages / "torch" / "lib")
         return out
 
+    @classmethod
+    def _warn_missing_windows_cuda_runtime(cls, binary_dir: str, path_dirs: list[str]) -> None:
+        """Say so when a CUDA llama-server has no cudart to load. Diagnostic only.
+
+        The CUDA prebuilt links ``cudart64_*.dll`` / ``cublas64_*.dll`` and takes them
+        from the managed venv -- ``torch/lib`` or the ``nvidia/*`` wheels, per
+        _windows_pip_nvidia_dll_dirs. A 2.11.0+cpu torch ships neither, so ggml cannot
+        load its CUDA backend and ``llama-server.exe --list-devices`` prints
+        ``Available devices: (none)`` while UNSLOTH_PREBUILT_INFO.json still says
+        ``backend cuda`` (#8473, HF discussion 87). Today that is entirely silent.
+
+        Changes nothing about the launch: the process still starts, still falls back to
+        CPU, and a custom build with the DLLs somewhere else is not second-guessed.
+        Never raises -- a diagnostic must not be able to stop a load.
+        """
+        try:
+            if binary_dir in cls._missing_cuda_runtime_warned:
+                return
+            # Same identification _installed_ggml_backends uses: the official prebuilts are
+            # single-backend, so the ggml CUDA lib beside llama-server IS the build.
+            ggml_cuda = os.path.join(binary_dir, "ggml-cuda.dll")
+            if not os.path.isfile(ggml_cuda):
+                return
+            for directory in path_dirs:
+                try:
+                    names = os.listdir(directory)
+                except OSError:
+                    continue
+                if any(name.lower().startswith("cudart64_") for name in names):
+                    return
+            cls._missing_cuda_runtime_warned.add(binary_dir)
+            logger.warning(
+                "llama.cpp is the CUDA build (%s) but no cudart64_*.dll was found on its "
+                "DLL search path. The CUDA ggml backend will not load and llama-server "
+                "will report no devices. This is what a CPU-only PyTorch in the managed "
+                "environment looks like; repair the installation to restore GPU support.",
+                ggml_cuda,
+            )
+        except Exception as e:
+            logger.debug(f"CUDA runtime DLL diagnostic failed: {e}")
+
     @staticmethod
     def _build_windows_path_dirs(binary_dir: str, prefix: str, cuda_path: str) -> list[str]:
         """Ordered PATH entries prepended so llama-server.exe resolves cudart /
@@ -10936,6 +11085,13 @@ class LlamaCppBackend:
             )
             existing_path = env.get("PATH", "")
             env["PATH"] = ";".join(path_dirs) + ";" + existing_path
+            # Warn against the FULL search path, inherited entries included: a hand-installed CUDA
+            # toolkit puts cudart64_*.dll on PATH without the venv or CUDA_PATH knowing, and warning
+            # on the prepended directories alone told working custom setups to repair a fine install.
+            LlamaCppBackend._warn_missing_windows_cuda_runtime(
+                binary_dir,
+                path_dirs + [d for d in existing_path.split(";") if d],
+            )
 
             # ROCm: the prebuilt bundles rocblas.dll but NOT the Tensile
             # kernel files (rocblas/library/*.dat + *.hsaco); the DLL searches
@@ -11356,6 +11512,17 @@ class LlamaCppBackend:
         n_embd_r = 3 * max(0, d_conv - 1) * n_head * head_dim
         n_embd_s = head_dim * head_dim * n_head
         return int(n_recurrent * (n_embd_r + n_embd_s) * 4 * max(1, n_parallel))
+
+    def _rollback_state_bytes(self, n_parallel: int = 1) -> int:
+        """One target-context rollback snapshot, whichever recurrent family this is.
+
+        Both callers price the same thing (llama.cpp's `1 seqs N rs_seq`) and both
+        used to reach for the Mamba helper alone, which answers 0 for a KDA hybrid
+        and silently dropped the reserve. Route every caller through here.
+        """
+        return self._mamba_recurrent_state_bytes(n_parallel) or self._recurrent_state_bytes(
+            n_parallel
+        )
 
     def _target_kv_excludes_nextn(self) -> bool:
         """Whether this model's TARGET KV cache skips the embedded MTP blocks.
@@ -11859,8 +12026,14 @@ class LlamaCppBackend:
         # separate-drafter spec modes (draft-simple/draft-eagle3) load a small
         # distinct drafter with its own KV -- already counted in draft_kv/weights --
         # rather than duplicating the target, so they must not be charged for it.
+        # Third gate: a NextN-only MTP context allocates no copy, and charging one
+        # trips drafter_no_vram, losing the MTP being reserved for.
         target_ctx_copy = 0
-        if mtp_keeps_target_ctx and self._kv_lora_rank is not None:
+        if (
+            mtp_keeps_target_ctx
+            and self._kv_lora_rank is not None
+            and not _arch_mtp_skips_target_kv_copy(getattr(self, "_architecture", None))
+        ):
             target_ctx_copy = self._estimate_kv_cache_bytes(
                 n_ctx,
                 "f16",
@@ -11878,8 +12051,7 @@ class LlamaCppBackend:
         # dominant hidden cost on Qwen3.5/3.8 at multiple parallel slots.
         target_recurrent_copies = 0
         if target_rollback and spec_draft_n_max > 0:
-            base_recurrent = self._mamba_recurrent_state_bytes(n_parallel)
-            target_recurrent_copies = base_recurrent * spec_draft_n_max
+            target_recurrent_copies = self._rollback_state_bytes(n_parallel) * spec_draft_n_max
         if draft_kv is None:
             # KV unsized (exotic/remote drafter): still reserve known weights + any
             # MLA target copy so a large config can't launch over budget (the small
@@ -12455,6 +12627,32 @@ class LlamaCppBackend:
         probe._model_identifier = model_identifier
         probe._read_gguf_metadata(gguf_path)
         return probe._is_diffusion
+
+    @classmethod
+    def _gguf_path_wants_nested_mtp(cls, gguf_path: str) -> bool:
+        """May this target take a drafter from the ``MTP/`` folder?
+
+        Only ``qwen4exp``, and only with no head of its own. Both come from one
+        header read, via the same probe-instance trick as
+        ``_gguf_path_is_diffusion``: this runs before the load reads metadata into
+        ``self`` and must not overwrite the live model's.
+
+        Architecture gates it rather than the head count alone, because a repo can
+        publish an ``MTP/`` folder for a subset of its quants: Qwen3.8-27B writes
+        ``qwen35.nextn_predict_layers`` on all 24, 0 on the four whose head was
+        dropped, and ships one sidecar for those four. Head count alone would hand
+        it to them, a wider change than intended.
+
+        Fails closed on an unreadable header, onto the path every model took before
+        this fallback existed."""
+        try:
+            probe = object.__new__(cls)
+            probe._model_identifier = "mtp-head-probe"
+            probe._read_gguf_metadata(gguf_path)
+            return probe._architecture == "qwen4exp" and not probe._nextn_predict_layers
+        except Exception as e:
+            logger.debug("Nested MTP eligibility probe failed for %s: %s", gguf_path, e)
+            return False
 
     def _reject_vulkan_diffusion_gpu_ids_before_teardown(
         self, gguf_path: str, model_identifier: str
@@ -13912,13 +14110,25 @@ class LlamaCppBackend:
         hf_repo: str,
         *,
         cache_dir: Optional[str] = None,
+        allow_nested: bool = True,
     ) -> Optional[str]:
         """A drafter already in this repo's local HF cache, reused offline when a
         fresh copy can't be fetched. Prefers a repo-root ``mtp-*.gguf`` across all
-        cached snapshots; else an existing ``MTP/`` copy (any precision -- the
-        target verifies every drafted token). None if none is cached."""
+        cached snapshots; else an existing ``MTP/`` copy. None if none is cached.
+
+        Ranked with ``_pick_mtp``'s keys, or offline and online disagree about one
+        cache: lexical order put ``mtp-Qwen3.8-Flash-Next-BF16.gguf`` first, so a
+        cached user got the 7.77 GB slowest head while a fresh install downloaded
+        the 2.79 GB shared Q8_0 one.
+
+        ``allow_nested=False`` drops the ``MTP/`` half, so a non-qwen4exp target
+        resolves the same way offline as online (``_pick_mtp_root_only``)."""
         try:
-            from utils.models.model_config import _iter_hf_cache_snapshots
+            from utils.models.drafters.preference import mtp_preference_key
+            from utils.models.model_config import (
+                _drafter_split_is_complete,
+                _iter_hf_cache_snapshots,
+            )
 
             roots: list[Path] = []
             subdirs: list[Path] = []
@@ -13928,15 +14138,27 @@ class LlamaCppBackend:
                 else _iter_hf_cache_snapshots(hf_repo, cache_dir)
             )
             for snap in snapshots:  # newest first
-                for f in sorted(_gguf_snapshot_files(snap)):
-                    # MTP only: a DSpark drafter needs --spec-type draft-dspark,
-                    # so it must never be launched as an MTP one.
-                    if _is_mtp_only_drafter_path(f):
-                        (roots if "/" not in f else subdirs).append(snap / f)
+                snap_roots: list[str] = []
+                snap_subdirs: list[str] = []
+                for f in _gguf_snapshot_files(snap):
+                    # MTP only: a DSpark drafter needs --spec-type draft-dspark.
+                    # The nested tier needs a published drafter NAME too, since
+                    # everything under MTP/ classifies as one and an mmproj or
+                    # imatrix there would otherwise go to --model-draft.
+                    if "/" not in f:
+                        if _is_mtp_only_drafter_path(f):
+                            snap_roots.append(f)
+                    elif _is_mtp_only_drafter_path(f) and _is_published_mtp_drafter_name(f):
+                        snap_subdirs.append(f)
+                # Root lexical, nested by preference: the tiers as _pick_mtp orders them.
+                roots.extend(snap / f for f in sorted(snap_roots))
+                subdirs.extend(snap / f for f in sorted(snap_subdirs, key = mtp_preference_key))
             # Keep snapshot order (newest first), root before any MTP/ copy, so a
             # newer main GGUF pairs with the newest cached drafter, not a stale one.
-            for cand in roots + subdirs:
-                if cand.is_file():
+            for cand in roots + subdirs if allow_nested else roots:
+                # Half a split set is not a drafter, and offline there is no fetch
+                # to complete it: the rule _download_companion_gguf applies too.
+                if cand.is_file() and _drafter_split_is_complete(cand):
                     return str(cand)
         except Exception as e:
             logger.debug("Cached MTP drafter lookup failed for %s: %s", hf_repo, e)
@@ -13949,23 +14171,30 @@ class LlamaCppBackend:
         hf_token: Optional[str] = None,
         cancel_event: Optional[threading.Event] = None,
         near_path: Optional[str] = None,
+        allow_nested: bool = True,
     ) -> Optional[str]:
         """Download the separate MTP drafter (speculative head) from a GGUF repo.
 
-        Targets the repo-root ``mtp-*.gguf`` companion -- the Q8_0 drafter
+        Prefers the repo-root ``mtp-*.gguf`` companion -- the Q8_0 drafter
         unsloth mirrors there for llama.cpp ``-hf`` auto-discovery (smallest,
-        recommended for speculation). Repos that bake the MTP head into the
-        main GGUF (e.g. Qwen) ship no such sibling and this returns None. The
-        higher-precision copies under ``MTP/`` are for explicit selection and
-        are intentionally skipped. Returns the local path, or None.
+        recommended for speculation) -- and falls back to the ``MTP/`` folder for
+        a repo that publishes no root mirror, as Qwen3.8-Flash-Next and
+        Qwen3.8-27B do. Repos that bake the MTP head into the main GGUF ship
+        neither and this returns None. Returns the local path, or None.
+
+        ``allow_nested=False`` skips the ``MTP/`` fallback, which is what every
+        architecture but qwen4exp gets: elsewhere the sidecar would only displace a
+        head the file already carries.
         """
 
         cancel_event = cancel_event if cancel_event is not None else self._cancel_event
         if cancel_event.is_set():
             return None
 
+        pick = _pick_mtp if allow_nested else _pick_mtp_root_only
+
         if near_path:
-            cached = _companion_snapshot_sibling(near_path, _pick_mtp)
+            cached = _companion_snapshot_sibling(near_path, pick)
             if cached:
                 logger.info("Reusing cached MTP drafter: %s", cached)
                 return cached
@@ -13978,6 +14207,7 @@ class LlamaCppBackend:
             cached = self._cached_repo_mtp_drafter(
                 hf_repo,
                 cache_dir = _hub_cache_dir_for_snapshot_path(near_path),
+                allow_nested = allow_nested,
             )
             if cached:
                 logger.info(f"Reusing cached MTP drafter (offline): {cached}")
@@ -13986,7 +14216,7 @@ class LlamaCppBackend:
         return self._download_companion_gguf(
             hf_repo = hf_repo,
             hf_token = hf_token,
-            pick = _pick_mtp,
+            pick = pick,
             label = "MTP drafter",
             cancel_event = cancel_event,
             near_path = near_path,
@@ -17800,12 +18030,19 @@ class LlamaCppBackend:
                             near_path = model_path,
                         )
                     # Auto-download the separate MTP drafter (e.g. Gemma) when
-                    # the requested spec mode can use it. Repos with the head
-                    # baked into the main GGUF (Qwen) have no mtp- sibling and
-                    # this no-ops, so the size gate stays out of it: a separate
-                    # drafter speeds up even sub-3B (Gemma E2B), and the resolver
-                    # below decides the final emission. Skipped only when the
-                    # user disabled MTP or drives --spec-type manually.
+                    # the requested spec mode can use it. The size gate stays out
+                    # of it: a separate drafter speeds up even sub-3B (Gemma E2B),
+                    # and the resolver below decides the final emission. Skipped
+                    # only when the user disabled MTP or drives --spec-type
+                    # manually.
+                    #
+                    # The MTP/ fallback is qwen4exp only, whose published GGUFs
+                    # carry no head at all; every other arch keeps its root-mirror
+                    # behaviour. Qwen3.8-27B bakes the head into 20 of 24 quants,
+                    # and llama.cpp prefers a -md drafter over an embedded one, so
+                    # on UD-Q4_K_XL the two accept identically (143 of 223) for
+                    # byte-identical output: 1.37 GB to displace what is loaded.
+                    # Read from the file, not self, whose metadata is set below.
                     if (
                         not mtp_draft_path
                         and _spec_canon in ("auto", "mtp", "mtp+ngram")
@@ -17816,6 +18053,7 @@ class LlamaCppBackend:
                             hf_token = hf_token,
                             cancel_event = download_cancel_event,
                             near_path = model_path,
+                            allow_nested = self._gguf_path_wants_nested_mtp(model_path),
                         )
                     # "auto" is included: DSpark is the default whenever the repo
                     # ships a sidecar. Repos without one no-op, exactly like the
@@ -19082,9 +19320,9 @@ class LlamaCppBackend:
                         # displaced does not run. The flat fraction below is gated on
                         # this; the byte-accurate callback was not, so the fit went on
                         # charging VRAM no drafter allocates.
-                        # One term survives: a Hybrid Mamba target's recurrent rollback
-                        # snapshots sit in the TARGET context, so pinning the drafter to
-                        # CPU does not move them. Charge those alone. Flat in ctx (the
+                        # One term survives: a recurrent target's rollback snapshots sit
+                        # in the TARGET context, so pinning the drafter to CPU does not
+                        # move them. Charge those alone. Flat in ctx (the
                         # state is per-slot), hence the same _np/_n_ubatch keywords the
                         # replaced callback takes, so _mtp_bytes can still re-price slots.
                         def _cpu_draft_target_state(
@@ -19096,7 +19334,7 @@ class LlamaCppBackend:
                         ) -> int:
                             if not _rollback or _n <= 0:
                                 return 0
-                            return self._mamba_recurrent_state_bytes(_np) * _n
+                            return self._rollback_state_bytes(_np) * _n
 
                         mtp_overhead_fn = (
                             _cpu_draft_target_state
@@ -21473,15 +21711,19 @@ class LlamaCppBackend:
                 if _paravirtual_cpu_forced:
                     _pv_split_mode_pin = _paravirtual_split_mode_pin(extra_args)
 
-                # Apply custom chat template override if provided.
                 self._chat_template_override = chat_template_override
-                if chat_template_override:
+                _effective_template = self._effective_chat_template(chat_template_override)
+                if _effective_template:
                     import tempfile
 
                     flags = detect_reasoning_flags(
-                        chat_template_override,
+                        _effective_template,
                         self._model_identifier,
-                        log_source = "GGUF chat template override",
+                        log_source = (
+                            "GGUF chat template override"
+                            if chat_template_override
+                            else "repaired GGUF chat template"
+                        ),
                     )
                     self._supports_reasoning = flags["supports_reasoning"]
                     self._reasoning_style = flags["reasoning_style"]
@@ -21498,7 +21740,7 @@ class LlamaCppBackend:
                         delete = False,
                         prefix = "unsloth_chat_template_",
                     )
-                    self._chat_template_file.write(chat_template_override)
+                    self._chat_template_file.write(_effective_template)
                     self._chat_template_file.close()
                     cmd.extend(["--chat-template-file", self._chat_template_file.name])
                     logger.info(f"Using custom chat template file: {self._chat_template_file.name}")
@@ -24295,6 +24537,7 @@ class LlamaCppBackend:
             and self._kv_lora_rank is not None
             and not bool(mtp_draft_path)
             and not _mla_mtp_auto_enabled()
+            and not _arch_has_fast_mla_mtp(getattr(self, "_architecture", None))
         )
 
         if user_owns_spec_type:

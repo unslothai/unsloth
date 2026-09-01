@@ -339,7 +339,7 @@ def test_the_handed_off_question_is_what_actually_gets_researched(research_home,
     assert RAW_MESSAGE not in prompts[0].split("Latest research request:")[-1]
 
 
-def test_planning_no_longer_stops_to_ask_for_approval(research_home, monkeypatch):
+def test_planning_waits_for_plan_approval_before_research(research_home, monkeypatch):
     from core import research_runs as worker
 
     research_db.create_run(
@@ -371,7 +371,11 @@ def test_planning_no_longer_stops_to_ask_for_approval(research_home, monkeypatch
     claimed = research_db.claim_next(supervisor.worker_id)
     asyncio.run(supervisor._plan(claimed))
 
-    assert research_db.get_run("run-1")["status"] == "queued"
+    planned = research_db.get_run("run-1")
+    assert planned["status"] == "awaiting_approval"
+    assert research_db.claim_next("worker-2") is None
+    assert research_db.approve("run-1", planned["planRevision"], planned["planHash"]) == "queued"
+    assert research_db.claim_next("worker-2") is not None
 
 
 # ── What the change must not break ────────────────────────────────
