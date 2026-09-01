@@ -1069,6 +1069,7 @@ def _quiesce_workspace_jobs(username: str) -> None:
     running" check, so an unclaimed singleton is never mistaken for this
     account's.
     """
+
     def _stop_training() -> None:
         from core.training.training import get_training_backend
         backend = get_training_backend()
