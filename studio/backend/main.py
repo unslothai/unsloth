@@ -568,12 +568,8 @@ def _post_warm_retired(generation: Optional[int]) -> bool:
 
 def _known_workspace_subjects() -> list[str]:
     """Existing account workspaces, always including the legacy owner layout."""
-    from auth.storage import list_users
-    from utils.workspace_context import LEGACY_WORKSPACE_SUBJECT
-
-    subjects = {LEGACY_WORKSPACE_SUBJECT}
-    subjects.update(account["username"] for account in list_users())
-    return sorted(subjects)
+    from utils.workspace_context import known_workspace_subjects
+    return known_workspace_subjects()
 
 
 def _start_linked_folder_auto_sync(generation: Optional[int]) -> None:
@@ -586,13 +582,21 @@ def _start_linked_folder_auto_sync(generation: Optional[int]) -> None:
         from utils.workspace_context import run_in_workspace
 
         for subject in _known_workspace_subjects():
-            run_in_workspace(
-                subject,
-                start_auto_sync,
-                admission_lock = _post_warm_lock,
-                admit = lambda: _post_warm_generation == generation,
-                project_exists = lambda project_id: get_chat_project(project_id) is not None,
-            )
+            # Per subject: one unreadable rag.db must not cost every later account
+            # its worker, and the owner starts no worker lazily to recover.
+            try:
+                run_in_workspace(
+                    subject,
+                    start_auto_sync,
+                    admission_lock = _post_warm_lock,
+                    admit = lambda: _post_warm_generation == generation,
+                    project_exists = lambda project_id: get_chat_project(project_id) is not None,
+                )
+            except Exception as exc:
+                import structlog as _structlog
+                _structlog.get_logger(__name__).warning(
+                    "linked-folder auto-sync failed at startup for %s: %s", subject, exc
+                )
     except Exception as exc:
         import structlog as _structlog
         _structlog.get_logger(__name__).warning(

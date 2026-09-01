@@ -259,11 +259,35 @@ class ChatGenerationLeaseSweeper:
     async def sweep_once(self) -> list[str]:
         if not self.enabled:
             return []
-        settled = await _sweep_in_daemon_thread(
-            db.reconcile_runs,
-            error = _LEASE_ERROR,
-            stale_after_ms = int(self._timeout * 1000),
+        # Once per workspace: reconcile_runs opens the CALLER's studio.db, and this
+        # task runs outside any request, so sweeping once would only ever repair the
+        # owner's runs and leave a managed account's wedged run holding its slot.
+        from utils.workspace_context import (
+            LEGACY_WORKSPACE_SUBJECT,
+            known_workspace_subjects,
+            run_in_workspace,
         )
+
+        try:
+            subjects = await asyncio.to_thread(known_workspace_subjects)
+        except Exception:
+            subjects = [LEGACY_WORKSPACE_SUBJECT]
+        settled: list[str] = []
+        for subject in subjects:
+            try:
+                settled += await _sweep_in_daemon_thread(
+                    run_in_workspace,
+                    subject,
+                    db.reconcile_runs,
+                    error = _LEASE_ERROR,
+                    stale_after_ms = int(self._timeout * 1000),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "chat_generation_lease_sweep_workspace_failed",
+                    subject = subject,
+                    error = repr(exc),
+                )
         if not settled:
             return []
         supervisor = getattr(getattr(self.app, "state", None), "chat_generation_supervisor", None)

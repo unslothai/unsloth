@@ -91,3 +91,15 @@ def workspace_key(subject: str | None = None) -> str:
     readable = (readable or "user")[:32]
     digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
     return f"{readable}-{digest}"
+
+
+def known_workspace_subjects() -> list[str]:
+    """Every account whose workspace may hold state, owner included.
+
+    Imported lazily: auth.storage reaches utils.paths, which reaches this module.
+    """
+    from auth.storage import list_users
+
+    subjects = {LEGACY_WORKSPACE_SUBJECT}
+    subjects.update(account["username"] for account in list_users())
+    return sorted(subjects)

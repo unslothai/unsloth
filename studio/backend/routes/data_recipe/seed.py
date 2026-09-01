@@ -64,8 +64,21 @@ DATA_EXTS = (".parquet", ".jsonl", ".json", ".csv")
 DEFAULT_SPLIT = "train"
 LOCAL_UPLOAD_EXTS = {".csv", ".json", ".jsonl"}
 UNSTRUCTURED_ALLOWED_EXTS = {".pdf", ".docx", ".txt", ".md"}
-SEED_UPLOAD_DIR = seed_uploads_root()
-UNSTRUCTURED_UPLOAD_ROOT = unstructured_uploads_root()
+# None means "resolve per request". The workspace is bound by the auth dependency
+# long after import, so a constant captured here pins every account to the owner's
+# tree. Tests assign these to redirect uploads.
+SEED_UPLOAD_DIR: Path | None = None
+UNSTRUCTURED_UPLOAD_ROOT: Path | None = None
+
+
+def _seed_upload_dir() -> Path:
+    return SEED_UPLOAD_DIR or seed_uploads_root()
+
+
+def _unstructured_upload_root() -> Path:
+    return UNSTRUCTURED_UPLOAD_ROOT or unstructured_uploads_root()
+
+
 _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 # Frontend-generated upload namespace (UUID4 hex). Legacy node ids (n1, ...)
 # never match: those directories can be shared by several recipes.
@@ -300,7 +313,7 @@ def _read_preview_rows_from_multi_files(
         )
 
     _validate_safe_id(block_id, "block_id")
-    block_dir = UNSTRUCTURED_UPLOAD_ROOT / block_id
+    block_dir = _unstructured_upload_root() / block_id
     file_entries: list[tuple[Path, str]] = []
     for fid, fname in zip(file_ids, file_names):
         extracted = block_dir / f"{fid}.extracted.txt"
@@ -521,7 +534,7 @@ async def upload_unstructured_file(
 ) -> UnstructuredFileUploadResponse:
     _validate_safe_id(block_id, "block_id")
 
-    block_dir = UNSTRUCTURED_UPLOAD_ROOT / block_id
+    block_dir = _unstructured_upload_root() / block_id
     # Reads 0 for a block with no directory yet, so this does not create one for
     # an upload that is about to be refused.
     budget = UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_BYTES - _get_block_total_size(block_dir)
@@ -644,7 +657,7 @@ async def remove_unstructured_file(block_id: str, file_id: str):
     _validate_safe_id(block_id, "block_id")
     _validate_safe_id(file_id, "file_id")
 
-    block_dir = UNSTRUCTURED_UPLOAD_ROOT / block_id
+    block_dir = _unstructured_upload_root() / block_id
     if not block_dir.exists():
         raise HTTPException(404, "Block not found")
 
@@ -678,8 +691,8 @@ async def remove_unstructured_block(block_id: str):
     if not _UPLOAD_UID_RE.match(block_id):
         raise HTTPException(400, "Invalid block_id: only uid-namespaced blocks can be deleted")
 
-    block_dir = (UNSTRUCTURED_UPLOAD_ROOT / block_id).resolve()
-    if not block_dir.is_relative_to(UNSTRUCTURED_UPLOAD_ROOT.resolve()):
+    block_dir = (_unstructured_upload_root() / block_id).resolve()
+    if not block_dir.is_relative_to(_unstructured_upload_root().resolve()):
         raise HTTPException(400, "Invalid block_id: outside upload root")
     if not block_dir.exists():
         return {"status": "ok", "deleted": False}
@@ -717,7 +730,7 @@ def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectRespons
         )
         columns = ["chunk_text", "source_file"] if preview_rows else []
         resolved_paths = [
-            str(UNSTRUCTURED_UPLOAD_ROOT / payload.block_id / f"{fid}.extracted.txt")
+            str(_unstructured_upload_root() / payload.block_id / f"{fid}.extracted.txt")
             for fid in payload.file_ids
         ]
         return SeedInspectResponse(
@@ -757,9 +770,9 @@ def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectRespons
             detail = f"file too large (max {LOCAL_SEED_UPLOAD_MAX_LABEL})",
         )
 
-    ensure_dir(SEED_UPLOAD_DIR)
+    ensure_dir(_seed_upload_dir())
     stored_name = f"{uuid4().hex}_{filename}"
-    stored_path = SEED_UPLOAD_DIR / stored_name
+    stored_path = _seed_upload_dir() / stored_name
     stored_path.write_bytes(file_bytes)
 
     if seed_source_type == "unstructured":
