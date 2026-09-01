@@ -283,6 +283,31 @@ def test_strip_result_for_model_removes_frontend_image_sentinel():
     assert strip_result_for_model("plain text") == "plain text"
 
 
+def test_the_card_text_keeps_digits_the_browser_would_round():
+    """`JSON.parse` reads 9007199254740993 back as ...992, so a card that re-encodes the
+    parsed arguments in the browser would show a record the tool is not being run with."""
+    exact = 9007199254740993
+    controller = ToolLoopController(tools = [_tool("del_rec")])
+    decision = controller.prepare_call(_call("del_rec", {"id": exact}))
+    payload = decision.tool_start_payload()
+
+    assert payload["arguments"]["id"] == exact
+    assert payload["arguments_text"] == '{"id":9007199254740993}'
+    assert payload["arguments_text"] == decision.as_assistant_tool_call()["function"]["arguments"]
+
+
+def test_an_unreadable_fragment_is_carried_as_the_text_the_card_shows():
+    """The replay substitutes a summary for the fragment, so the two texts are meant to differ."""
+    truncated = '{"path": "a.py", "edits"'
+    controller = ToolLoopController(tools = [_tool("edit_file")])
+    decision = controller.prepare_call(_call("edit_file", truncated))
+    payload = decision.tool_start_payload()
+
+    assert payload["arguments"] == {"raw": truncated}
+    assert json.loads(payload["arguments_text"]) == {"raw": truncated}
+    assert payload["arguments_text"] != decision.as_assistant_tool_call()["function"]["arguments"]
+
+
 # --- schema-aware argument typing -------------------------------------------------------
 
 _MCP_SERVER = {"id": "notes", "display_name": "Notes"}
