@@ -24,6 +24,7 @@ from urllib.parse import urlsplit, urlunsplit
 from weakref import WeakKeyDictionary
 
 from loggers import get_logger
+from utils.workspace_context import current_workspace_subject
 
 logger = get_logger(__name__)
 
@@ -760,7 +761,11 @@ def _stdio_close_generation(url: str, headers: Optional[dict]) -> tuple[int, int
 
 
 def _session_key(url: str, headers: Optional[dict], scope: Optional[str]) -> tuple:
-    return (url, _headers_key(headers), scope or "")
+    # Workspace last: scope carries client-chosen session/thread ids, so two
+    # accounts can present the same one and would otherwise share a live stdio
+    # child and whatever browser or REPL state it holds. Appended rather than
+    # prepended because close_stdio_sessions matches on k[0]/k[1].
+    return (url, _headers_key(headers), scope or "", current_workspace_subject())
 
 
 def _checkout_stdio_session(key: tuple) -> Optional[_StdioSession]:

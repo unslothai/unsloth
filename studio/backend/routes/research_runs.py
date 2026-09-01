@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import re
 import sqlite3
@@ -548,8 +549,11 @@ async def research_events(
         loop = asyncio.get_running_loop()
         while True:
             # off the default executor: parked followers there starved the run's own db writes.
+            # ctx.run, else the pool thread loses the workspace and waits on the
+            # owner's studio.db while the snapshot below reads the caller's.
             events = await loop.run_in_executor(
                 _EVENT_WAIT_EXECUTOR,
+                contextvars.copy_context().run,
                 db.wait_for_events,
                 run_id,
                 cursor,

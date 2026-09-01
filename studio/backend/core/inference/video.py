@@ -36,6 +36,8 @@ import inspect
 import os
 import tempfile
 import threading
+
+from utils.workspace_context import current_workspace_subject, run_in_workspace
 import time
 import types
 from dataclasses import dataclass
@@ -5185,7 +5187,12 @@ class VideoBackend:
         worker = threading.Thread(
             # The token and the /v1/videos job id ride on the target rather than in kwargs:
             # those kwargs are also a valid generate() call, and callers replay them as one.
-            target = functools.partial(self._run_generate, job_token = job_token, video_id = video_id),
+            # run_in_workspace: _run_generate persists through video_gallery.save(), which is
+            # per account, and a bare thread would write the owner's gallery instead.
+            target = functools.partial(
+                run_in_workspace, current_workspace_subject(),
+                self._run_generate, job_token = job_token, video_id = video_id,
+            ),
             kwargs = dict(
                 prompt = prompt,
                 negative_prompt = negative_prompt,

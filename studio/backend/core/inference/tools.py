@@ -7645,7 +7645,9 @@ def finish_workspace_delete_when_idle(
         wait_for_sessions_idle([session], timeout = timeout)
         collect_orphaned_project_workspaces()
 
-    thread = threading.Thread(
+    # workspace_thread: the collection resolves sandbox_root() and the orphan
+    # records, which are per account, and a raw thread would sweep the owner's.
+    thread = workspace_thread(
         target = _wait_and_collect,
         name = "workspace-delete",
         daemon = True,
