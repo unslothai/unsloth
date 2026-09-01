@@ -773,9 +773,8 @@ class TestAnthropicMessagesToOpenAI:
         assert parts[1]["type"] == "image_url"
 
     def test_tool_results_fold_into_user_turns_for_a_toolless_template(self):
-        """Gemma 2 / Gemma 3 have no `tool` role and enforce strict user/assistant
-        alternation, so a tool message makes llama-server 400 the whole request.
-        Folding keeps the output in the prompt and the roles alternating."""
+        """Gemma 2 / 3 have no `tool` role and check alternation by parity, so a
+        tool message makes llama-server 400 the whole request."""
         from core.inference.anthropic_compat import fold_tool_results_into_user
 
         msgs = [
@@ -804,8 +803,7 @@ class TestAnthropicMessagesToOpenAI:
                 "tool_call_id": "tu_1",
             }
         }
-        # The assistant turn (and its tool_calls) is untouched.
-        assert folded[1] is msgs[1]
+        assert folded[1] is msgs[1]   # assistant turn untouched, tool_calls intact
 
     def test_folding_is_a_no_op_without_tool_messages(self):
         from core.inference.anthropic_compat import fold_tool_results_into_user
@@ -816,8 +814,7 @@ class TestAnthropicMessagesToOpenAI:
         assert fold_tool_results_into_user(msgs) == msgs
 
     def test_folding_survives_an_orphan_tool_result(self):
-        """No assistant tool_calls to resolve the name against: the id is still
-        carried so the model can correlate, and nothing raises."""
+        """No tool_calls to resolve the name against: the id still carries."""
         from core.inference.anthropic_compat import fold_tool_results_into_user
 
         msgs = [{"role": "tool", "tool_call_id": "nope", "content": "R"}]
@@ -828,8 +825,7 @@ class TestAnthropicMessagesToOpenAI:
         }
 
     def test_sanitizer_folds_only_when_the_template_lacks_tool_support(self):
-        """The route-level gate: a tool-capable template keeps role=tool exactly
-        as the converter emitted it, so PR #10091's ordering fix is preserved."""
+        """A tool-capable template keeps role=tool as the converter emitted it."""
         from routes.inference import _sanitize_anthropic_openai_messages
 
         class Backend:
@@ -859,8 +855,6 @@ class TestAnthropicMessagesToOpenAI:
 
         toolless = _sanitize_anthropic_openai_messages(converted, Backend(False))
         assert [m["role"] for m in toolless] == ["user", "assistant", "user"]
-        # Folded result and the note coalesce into one alternating user turn,
-        # and neither piece of content is lost.
         assert "README.md" in toolless[-1]["content"]
         assert "keep going" in toolless[-1]["content"]
 
@@ -877,11 +871,9 @@ class TestAnthropicMessagesToOpenAI:
         assert _sanitize_anthropic_openai_messages(msgs, object()) == msgs
 
     def test_folding_follows_the_passthrough_capability_not_the_tool_loop_one(self):
-        """DiffusionGemma reports supports_tools=False so it never enters the
-        agentic tool loop, but its template can still render a tool role and
-        client-tool requests are dispatched through passthrough on
-        supports_tool_passthrough. Folding on supports_tools would strip the
-        native framing out from under that path."""
+        """DiffusionGemma reports supports_tools=False to stay out of the agentic
+        loop, but its template renders tool roles and client tools dispatch on
+        supports_tool_passthrough; folding on the former strips that framing."""
         from routes.inference import _sanitize_anthropic_openai_messages, _template_supports_tools
 
         class DiffusionGemma:
@@ -925,8 +917,7 @@ class TestAnthropicMessagesToOpenAI:
             def supports_tools(self):
                 raise RuntimeError("not ready")
 
-        # The passthrough flag answers first, so a raising supports_tools never
-        # forces the conservative default and the fold still runs.
+        # Passthrough answers first, so a raising supports_tools cannot skip the fold.
         assert _template_supports_tools(HalfReady()) is False
 
     def test_mixed_text_and_tool_use_blocks(self):

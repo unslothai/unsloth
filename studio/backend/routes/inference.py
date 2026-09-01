@@ -29858,18 +29858,10 @@ def _coalesce_consecutive_user_turns(messages: list[dict]) -> list[dict]:
 
 
 def _template_supports_tools(backend) -> bool:
-    """Whether the loaded chat template can render a ``role="tool"`` message.
-
-    ``supports_tool_passthrough`` is the raw template flag and is the question
-    being asked here. ``supports_tools`` is that same flag with DiffusionGemma
-    forced off so it never enters the agentic tool loop, which says nothing
-    about what its template renders: folding on it would strip native tool
-    framing from a client-tool passthrough request, which is dispatched on
-    exactly this predicate. Same order as that gate, so the two cannot disagree.
-
-    Defaults to True when the backend cannot answer, which leaves the message
-    list as the converter built it so an unreadable backend never changes the
-    prompt.
+    """Can the loaded template render a ``role="tool"`` message? Not
+    ``supports_tools``: same flag with DiffusionGemma forced out of the agentic
+    loop, so folding on it strips tool framing from a passthrough request. Same
+    order as the client-tool dispatch gate; unreadable backend -> True.
     """
     try:
         for attr in ("supports_tool_passthrough", "supports_tools"):
@@ -29881,21 +29873,9 @@ def _template_supports_tools(backend) -> bool:
 
 
 def _sanitize_anthropic_openai_messages(messages: list[dict], backend) -> list[dict]:
-    """The post-conversion chain shared by /v1/messages and its token counter.
-
-    Both endpoints must build the identical list or the advertised input_tokens
-    stops matching the prompt that generation actually sends, so the steps live
-    here rather than being repeated at each call site.
-
-    Steps, in order:
-      - drop Stop-button sentinels / normalize reasoning-only assistant turns;
-      - strip synthetic provider-side builtin tool history;
-      - on a template with no tool support, fold role=tool into user turns,
-        which must happen BEFORE the coalesce so a folded result and the note
-        that followed it merge into one turn;
-      - coalesce adjacent user turns, so a strict GGUF chat template does not
-        400 on non-alternating roles (mirrors the GGUF chat path); a no-op for
-        already-alternating histories.
+    """Post-conversion chain shared by /v1/messages and its token counter, so a
+    diverging list can never make input_tokens describe a different prompt.
+    Fold before coalesce: that is what merges a folded result with its note.
     """
     messages = _strip_provider_synthetic_tool_history(_drop_empty_assistant_sentinels(messages))
     if not _template_supports_tools(backend):
