@@ -22980,7 +22980,12 @@ async def produce_openai_chat_completions(
         # answered, and flattening drops the part that recorded where. Mark the owning turn
         # so the renderers' newest-user-turn scan does not move the picture onto a later
         # question; messages_with_attached_image leaves an attachment already in place.
-        if image is not None:
+        # Gate on the mirrored processor body, not just on an image being present. A
+        # vision-marked model whose processor cannot process images has the image ignored
+        # and renders through the tokenizer's text template, and the mirror omits the body
+        # for exactly that case, so a string-only template would otherwise be handed part
+        # lists. Unknown means leave the conversation as the caller sent it (#10092).
+        if image is not None and _sf_image_tpl is not None:
             _sf_image_ordinal = _user_ordinal_supplying_the_image(payload.messages)
             if _sf_image_ordinal is not None:
                 _sf_seen_users = 0

@@ -853,6 +853,11 @@ def test_a_historical_image_stays_on_the_turn_that_sent_it():
 
     backend = passthrough._ScriptedBackend(passthrough._fixed("a plain answer"))
     backend.models["sf-model"]["is_vision"] = True
+    # An image-capable processor: the marker is only placed when one will render.
+    backend.models["sf-model"]["chat_template_info"] = {
+        "template": _CHATML_WITH_TOOLS,
+        "processor_template": _CHATML_WITH_TOOLS,
+    }
     payload = ChatCompletionRequest(
         model = "default",
         tools = [passthrough.LOOKUP_TOOL],
@@ -1037,3 +1042,36 @@ def test_the_prefill_probe_gets_the_selected_processor_body():
     assert seen, "the prefill probe never ran"
     assert collection["default"] in seen, seen
     assert not any(isinstance(t, dict) for t in seen), seen
+
+
+def test_no_image_marker_when_the_render_falls_back_to_the_tokenizer():
+    """A vision-marked model whose processor cannot handle images has the image ignored and
+    renders through the tokenizer's text template. Marking the owning turn keyed only on the
+    image being present, so a string-only template received part lists (#10092)."""
+    import asyncio
+    import os
+    import sys
+
+    import pytest as _pytest
+
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import test_sf_client_tools_passthrough as passthrough
+
+    backend = passthrough._ScriptedBackend(passthrough._fixed("a plain answer"))
+    backend.models["sf-model"]["is_vision"] = True
+    # No processor_template: the mirror omits it when the processor cannot process images,
+    # which is exactly the raw-tokenizer text fallback.
+    backend.models["sf-model"]["chat_template_info"] = {"template": _CHATML_WITH_TOOLS}
+    payload = _image_request(tools = [passthrough.LOOKUP_TOOL], stream = False)
+
+    monkeypatch = _pytest.MonkeyPatch()
+    try:
+        passthrough._call(payload, monkeypatch, backend)
+    finally:
+        monkeypatch.undo()
+
+    assert backend.calls, "generation never ran"
+    for message in backend.calls[0]["messages"]:
+        body = message.get("content")
+        if isinstance(body, list):
+            assert not any(p.get("type") == "image" for p in body), message
