@@ -17,6 +17,7 @@ from core.inference.native_tool_tokens import (
     decoder_preserves_token,
     reasoning_control_tokens,
 )
+from core.inference.tool_call_parser import has_tool_signal as _has_tool_signal
 from core.inference.runtime_context import (
     MAX_REQUESTABLE_CONTEXT,
     runtime_context_length,
@@ -2402,7 +2403,12 @@ class MLXInferenceBackend:
                             if _ids and _ids[-1] in _mlx_stop_token_ids(
                                 self._tokenizer, self._model
                             ):
-                                _ids = _ids[:-1]
+                                # Only when the turn carries no tool markup: the same marker
+                                # can be the required closer (TML Inkling's <|end_message|>),
+                                # and strict parsing rejects the call without it.
+                                _kept = native_token_decoder.decode(_ids[:-1])
+                                if not _has_tool_signal(_kept):
+                                    _ids = _ids[:-1]
                             sampled = native_token_decoder.decode(_ids)
                         else:
                             sampled = self._tokenizer.decode(
@@ -2726,7 +2732,9 @@ class MLXInferenceBackend:
                         token_text = response.text if hasattr(response, "text") else str(response)
                         token_id = getattr(response, "token", None)
                         if vlm_token_decoder is not None and token_id is not None:
-                            if int(token_id) in vlm_stop_ids:
+                            if int(token_id) in vlm_stop_ids and not _has_tool_signal(sampled):
+                                # Suppressed only for a turn with no tool markup; the same
+                                # marker closes a real envelope and strict parsing needs it.
                                 token_text = ""
                             else:
                                 # Ordinary ids keep mlx-vlm's own text; only a special id is
