@@ -207,10 +207,14 @@ class TestFriendlyUpstreamError:
 
     def test_a_genuine_oversize_body_is_still_classified_as_an_overflow(self):
         from routes.inference import _classify_llama_generation_error
-
-        assert _classify_llama_generation_error(
-            Exception("the request (214331 tokens) exceeds the available context size (131072 tokens)")
-        ) is True
+        assert (
+            _classify_llama_generation_error(
+                Exception(
+                    "the request (214331 tokens) exceeds the available context size (131072 tokens)"
+                )
+            )
+            is True
+        )
 
 
 # =====================================================================
