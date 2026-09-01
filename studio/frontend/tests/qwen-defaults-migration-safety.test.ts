@@ -1087,3 +1087,28 @@ test("a thread pin survives the race recovery path", async () => {
     "the open chat's pinned value was replaced by the migrated default",
   );
 });
+
+test("an unreachable backend does not spin the migration rearm", async () => {
+  resetHttp({ ...LEGACY_SETTINGS });
+  // Every ordinary write is refused, so the patch is retained and each pass
+  // flushes it again.
+  settingsHttp.putFailures = Array.from({ length: 400 }, () => ({
+    status: 503,
+  }));
+  seedActiveQwen();
+  const before = useChatRuntimeStore.getState();
+  before.setAutoTitle(!before.autoTitle);
+
+  const active = useChatRuntimeStore.getState();
+  active.setParams(
+    { ...active.params, minP: 0, presencePenalty: 1.5 },
+    { fromModelDefaults: true },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+
+  assert.ok(
+    settingsHttp.puts.length < 40,
+    `rearmed without bound: ${settingsHttp.puts.length} writes`,
+  );
+  settingsHttp.putFailures = [];
+});

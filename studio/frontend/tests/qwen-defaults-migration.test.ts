@@ -450,3 +450,18 @@ test("two Ollama manifests differing only by path case stay separate", () => {
   assert.deepEqual(result.migratedModelIds, []);
   assert.equal(result.patch, null);
 });
+
+test("a space or bracket ends the Qwen family name", () => {
+  // A local path or filename separates the family with whatever the user typed.
+  for (const id of [
+    "/models/Qwen3.8 27B",
+    "/models/Qwen3.8 (instruct)/model.gguf",
+    "C:\\models\\Qwen3.6 14B.gguf",
+  ]) {
+    assert.equal(isPresenceBumpQwen(id), true, id);
+  }
+  // Still a future family and a parameter count, not this one.
+  for (const id of ["/models/Qwen3.80 27B", "/models/Qwen3.8B", "Qwen3.85"]) {
+    assert.equal(isPresenceBumpQwen(id), false, id);
+  }
+});

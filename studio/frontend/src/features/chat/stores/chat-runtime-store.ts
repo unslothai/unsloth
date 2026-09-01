@@ -4157,14 +4157,22 @@ async function retryLegacyQwenDefaultsAfterPresetChange(
     // rather than waiting here, since a wedged write must not hold a send open,
     // and an external selection gets no later status callback to schedule this.
     if (!settingsWritesAreDrained()) {
-      void inflightFlush.catch(() => undefined).then(() => {
-        scheduleLegacyQwenDefaultsRetry(
-          ownedGlobalCheckpoint,
-          migrateOwnedGlobalAlongsideModelMemory,
-        );
-      });
+      // Bounded: a patch the backend keeps refusing is retained and reflushed
+      // by each pass, so rearming on every settlement would loop on an
+      // unreachable backend. The count clears as soon as writes drain, so a
+      // healthy install never spends it.
+      if (qwenMigrationRearmsWhileBlocked < QWEN_MIGRATION_MAX_REARMS) {
+        qwenMigrationRearmsWhileBlocked += 1;
+        void inflightFlush.catch(() => undefined).then(() => {
+          scheduleLegacyQwenDefaultsRetry(
+            ownedGlobalCheckpoint,
+            migrateOwnedGlobalAlongsideModelMemory,
+          );
+        });
+      }
       return;
     }
+    qwenMigrationRearmsWhileBlocked = 0;
     const state = useChatRuntimeStore.getState();
     if (
       !state.settingsHydrated ||
@@ -4250,6 +4258,9 @@ let qwenMigrationInFlight: Promise<void> | null = null;
 
 // Same bound as SETTINGS_FLUSH_TIMEOUT_MS, for the same reason.
 const QWEN_MIGRATION_BARRIER_TIMEOUT_MS = 2000;
+
+const QWEN_MIGRATION_MAX_REARMS = 3;
+let qwenMigrationRearmsWhileBlocked = 0;
 
 /**
  * Settles once a scheduled migration has finished deciding and persisting.
