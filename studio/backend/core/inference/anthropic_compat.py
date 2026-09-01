@@ -189,6 +189,62 @@ def anthropic_messages_to_openai(
     return result
 
 
+def fold_tool_results_into_user(messages: list[dict]) -> list[dict]:
+    """Rewrite ``role="tool"`` messages as user turns for tool-less templates.
+
+    Templates with no tool support (Gemma 2, Gemma 3, Phi-3.5, SmolLM2, ...)
+    have no branch for a ``tool`` role. Gemma 2 and Gemma 3 additionally enforce
+    strict user/assistant alternation by index parity, so a ``tool`` message
+    landing on an even index raises "Conversation roles must alternate" and
+    llama-server turns that into a 400 -- the whole request fails instead of
+    merely losing the tool output. Which index a tool message lands on is pure
+    luck, so both message orders hit this for some histories.
+
+    Folding the result into a user turn keeps the tool output in the prompt and
+    leaves the roles alternating once ``_coalesce_consecutive_user_turns`` runs.
+    The content shape mirrors minja's own ``polyfill_tool_responses`` (a JSON
+    object under a ``tool_response`` key) so a tool-less template sees the same
+    text llama.cpp would have produced had its polyfill engaged.
+
+    Only ``tool`` messages are touched; every other message passes through
+    unchanged, and a history with no tool messages returns equal content.
+    """
+    out: list[dict] = []
+    # tool_call_id -> function name, from the assistant turns that requested them.
+    call_names: dict[str, str] = {}
+    for msg in messages:
+        if msg.get("role") == "assistant":
+            for tc in msg.get("tool_calls") or []:
+                if not isinstance(tc, dict):
+                    continue
+                tc_id = tc.get("id")
+                fn = tc.get("function")
+                if isinstance(tc_id, str) and tc_id and isinstance(fn, dict):
+                    name = fn.get("name")
+                    if isinstance(name, str) and name:
+                        call_names[tc_id] = name
+
+        if msg.get("role") != "tool":
+            out.append(msg)
+            continue
+
+        response: dict[str, Any] = {}
+        tool_call_id = msg.get("tool_call_id")
+        name = msg.get("name") or call_names.get(tool_call_id or "")
+        if name:
+            response["tool"] = name
+        response["content"] = msg.get("content", "")
+        if tool_call_id:
+            response["tool_call_id"] = tool_call_id
+        out.append(
+            {
+                "role": "user",
+                "content": json.dumps({"tool_response": response}, indent = 2),
+            }
+        )
+    return out
+
+
 _ANTHROPIC_SCHEMA_CLIENT_TOOL_PARAMETERS = {
     "bash": {
         "type": "object",

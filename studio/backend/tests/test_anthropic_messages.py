@@ -772,6 +772,111 @@ class TestAnthropicMessagesToOpenAI:
         assert parts[0] == {"type": "text", "text": "and this?"}
         assert parts[1]["type"] == "image_url"
 
+    def test_tool_results_fold_into_user_turns_for_a_toolless_template(self):
+        """Gemma 2 / Gemma 3 have no `tool` role and enforce strict user/assistant
+        alternation, so a tool message makes llama-server 400 the whole request.
+        Folding keeps the output in the prompt and the roles alternating."""
+        from core.inference.anthropic_compat import fold_tool_results_into_user
+
+        msgs = [
+            {"role": "user", "content": "what files are here?"},
+            {
+                "role": "assistant",
+                "content": "Let me look.",
+                "tool_calls": [
+                    {
+                        "id": "tu_1",
+                        "type": "function",
+                        "function": {"name": "Bash", "arguments": '{"command": "ls"}'},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tu_1", "content": "README.md"},
+            {"role": "user", "content": "keep going"},
+        ]
+        folded = fold_tool_results_into_user(msgs)
+        assert [m["role"] for m in folded] == ["user", "assistant", "user", "user"]
+        payload = json.loads(folded[2]["content"])
+        assert payload == {
+            "tool_response": {
+                "tool": "Bash",
+                "content": "README.md",
+                "tool_call_id": "tu_1",
+            }
+        }
+        # The assistant turn (and its tool_calls) is untouched.
+        assert folded[1] is msgs[1]
+
+    def test_folding_is_a_no_op_without_tool_messages(self):
+        from core.inference.anthropic_compat import fold_tool_results_into_user
+
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+        ]
+        assert fold_tool_results_into_user(msgs) == msgs
+
+    def test_folding_survives_an_orphan_tool_result(self):
+        """No assistant tool_calls to resolve the name against: the id is still
+        carried so the model can correlate, and nothing raises."""
+        from core.inference.anthropic_compat import fold_tool_results_into_user
+
+        msgs = [{"role": "tool", "tool_call_id": "nope", "content": "R"}]
+        folded = fold_tool_results_into_user(msgs)
+        assert [m["role"] for m in folded] == ["user"]
+        assert json.loads(folded[0]["content"]) == {
+            "tool_response": {"content": "R", "tool_call_id": "nope"}
+        }
+
+    def test_sanitizer_folds_only_when_the_template_lacks_tool_support(self):
+        """The route-level gate: a tool-capable template keeps role=tool exactly
+        as the converter emitted it, so PR #10091's ordering fix is preserved."""
+        from routes.inference import _sanitize_anthropic_openai_messages
+
+        class Backend:
+            def __init__(self, supports_tools):
+                self.supports_tools = supports_tools
+
+        anthropic = [
+            {"role": "user", "content": [{"type": "text", "text": "q"}]},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "tu_1", "name": "Bash", "input": {"command": "ls"}}
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "tu_1", "content": "README.md"},
+                    {"type": "text", "text": "keep going"},
+                ],
+            },
+        ]
+        converted = anthropic_messages_to_openai(anthropic)
+
+        tool_capable = _sanitize_anthropic_openai_messages(converted, Backend(True))
+        assert [m["role"] for m in tool_capable] == ["user", "assistant", "tool", "user"]
+
+        toolless = _sanitize_anthropic_openai_messages(converted, Backend(False))
+        assert [m["role"] for m in toolless] == ["user", "assistant", "user"]
+        # Folded result and the note coalesce into one alternating user turn,
+        # and neither piece of content is lost.
+        assert "README.md" in toolless[-1]["content"]
+        assert "keep going" in toolless[-1]["content"]
+
+    def test_sanitizer_defaults_to_not_folding_when_the_backend_cannot_answer(self):
+        from routes.inference import _sanitize_anthropic_openai_messages
+
+        class Hostile:
+            @property
+            def supports_tools(self):
+                raise RuntimeError("backend not ready")
+
+        msgs = [{"role": "tool", "tool_call_id": "tu_1", "content": "R"}]
+        assert _sanitize_anthropic_openai_messages(msgs, Hostile()) == msgs
+        assert _sanitize_anthropic_openai_messages(msgs, object()) == msgs
+
     def test_mixed_text_and_tool_use_blocks(self):
         msgs = [
             {
