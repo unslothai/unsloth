@@ -35,6 +35,17 @@ SCOPE = "s=sess1:t=threadA"
 SCOPE_B = "s=sess1:t=threadB"
 
 
+def _settled(client, expected: int = 1, timeout: float = 10.0) -> int:
+    """Wait out an asynchronous close.
+
+    A discarded session is closed by the cleanup worker rather than on the
+    request thread, so its close lands just after the call returns."""
+    deadline = time.monotonic() + timeout
+    while client.exited < expected and time.monotonic() < deadline:
+        time.sleep(0.005)
+    return client.exited
+
+
 def _result(text: str) -> SimpleNamespace:
     return SimpleNamespace(
         content = [SimpleNamespace(type = "text", text = text)],
@@ -190,7 +201,7 @@ def test_unscoped_http_stays_one_shot(clients):
     _call(HTTP_URL, scope = None)
     _call(HTTP_URL, scope = None)
     assert len(clients) == 2
-    assert all(c.entered == 1 and c.exited == 1 for c in clients)
+    assert all(c.entered == 1 and _settled(c) == 1 for c in clients)
     assert mcp_client._mcp_sessions == {}
 
 
@@ -530,7 +541,7 @@ def test_an_expired_idle_http_session_is_replaced_before_dispatch(monkeypatch, c
     clients[0].probe_error = True
     assert _call(HTTP_URL, scope = SCOPE) == "call-1"
     assert len(clients) == 2
-    assert clients[0].exited == 1
+    assert _settled(clients[0]) == 1
 
 
 def test_a_concurrent_checkout_cannot_cancel_another_borrowers_recheck(monkeypatch, clients):
@@ -663,6 +674,99 @@ def test_evicting_another_scope_does_not_run_on_the_callers_deadline(monkeypatch
     elapsed = time.monotonic() - started
     assert elapsed < 0.5, f"the caller paid for an unrelated eviction: {elapsed:.2f}s"
     assert closed.wait(10), "the evicted session was never closed"
+
+
+def test_a_json_rpc_error_keeps_the_chats_session(monkeypatch, clients):
+    """A FastMCP server answers an unknown tool with a result carrying is_error,
+    but the spec also lets a server report it as a protocol error and non-FastMCP
+    servers do. Receiving that reply proves the connection works, so discarding
+    the session would throw away the chat's server-side state over a tool name
+    the model got wrong."""
+    from mcp.shared.exceptions import MCPError
+
+    class ProtocolError(RecordingClient):
+        async def call_tool(
+            self,
+            name: str,
+            args: dict,
+            raise_on_error: bool = True,
+        ):
+            if name == "nope":
+                raise MCPError(code = -32602, message = "Unknown tool: nope")
+            return await super().call_tool(name, args, raise_on_error)
+
+    monkeypatch.setattr(
+        mcp_client,
+        "_client",
+        lambda url, headers, use_oauth = False: ProtocolError(url, headers, use_oauth),
+    )
+    _call(HTTP_URL, scope = SCOPE)
+    assert _call(HTTP_URL, "nope", scope = SCOPE).startswith("Error:")
+    assert _call(HTTP_URL, scope = SCOPE) == "call-2"
+    assert len(clients) == 1, "a protocol error discarded the session"
+    # Kept, but no longer taken on trust: the next call proves it first, in case
+    # the error was the server saying it no longer knows this session.
+    assert clients[0].probes == 1
+
+
+def test_a_failed_session_is_not_closed_on_the_retry_budget(monkeypatch, clients):
+    """The session that fails the pre-dispatch probe is the one most likely to
+    hang on close, and the caller still has a reconnect and a retry to do on the
+    same deadline. Paying for its teardown first is what leaves the retry with
+    nothing."""
+    monkeypatch.setattr(mcp_client, "_HTTP_IDLE_RECHECK", 0.0)
+
+    class HangingExit(RecordingClient):
+        async def __aexit__(self, *exc):
+            if self.probe_error:  # only the session that failed its probe
+                await asyncio.sleep(1.5)
+            return await super().__aexit__(*exc)
+
+    monkeypatch.setattr(
+        mcp_client,
+        "_client",
+        lambda url, headers, use_oauth = False: HangingExit(url, headers, use_oauth),
+    )
+    _call(HTTP_URL, scope = SCOPE)
+    clients[0].probe_error = True  # the server dropped it while it sat idle
+    started = time.monotonic()
+    assert _call(HTTP_URL, scope = SCOPE) == "call-1"
+    elapsed = time.monotonic() - started
+    assert len(clients) == 2
+    assert elapsed < 1.0, f"the retry waited for the dead session to close: {elapsed:.2f}s"
+    assert _settled(clients[0]) == 1
+
+
+def test_a_synchronous_close_waits_for_work_already_started(monkeypatch, clients):
+    """close_mcp_sessions promises a server edit, and atexit, that the teardown
+    has happened. Draining the queue does not recall the session the worker had
+    already picked up."""
+    monkeypatch.setattr(mcp_client, "_MAX_SESSIONS", 1)
+    gate = threading.Event()
+
+    class SlowExit(RecordingClient):
+        slow = False
+
+        async def __aexit__(self, *exc):
+            if self.slow:
+                gate.set()
+                await asyncio.sleep(0.6)
+            return await super().__aexit__(*exc)
+
+    monkeypatch.setattr(
+        mcp_client,
+        "_client",
+        lambda url, headers, use_oauth = False: SlowExit(url, headers, use_oauth),
+    )
+    _call(HTTP_URL, scope = SCOPE)
+    victim = clients[0]
+    # Only the evicted session is slow, so the assertion cannot be satisfied by
+    # close_mcp_sessions happening to take just as long on the others.
+    victim.slow = True
+    _call(HTTP_URL, scope = SCOPE_B)  # evicts the first, worker picks it up
+    assert gate.wait(10), "the worker never started on the evicted session"
+    close_mcp_sessions()
+    assert victim.exited == 1, "close_mcp_sessions returned mid-teardown"
 
 
 def test_a_surviving_call_does_not_pay_for_the_retirement(monkeypatch, clients):

@@ -525,6 +525,31 @@ def _is_tool_error(exc: BaseException) -> bool:
     return isinstance(exc, ToolError)
 
 
+def _is_protocol_error(exc: BaseException) -> bool:
+    """A JSON-RPC error response, as opposed to a broken connection.
+
+    A FastMCP server answers an unknown tool or bad arguments with a result
+    carrying is_error, but the MCP spec also lets a server report those as a
+    protocol error, and plenty of non-FastMCP servers do. fastmcp surfaces that
+    as MCPError (McpError before the rename) carrying the ErrorData the server
+    sent. Receiving it proves the connection is working, so retiring the session
+    over it would throw away the chat's server-side state for a mistyped tool
+    name. The caller still marks the session for a probe before reuse."""
+    for module, name in (
+        ("mcp.shared.exceptions", "MCPError"),
+        ("mcp.shared.exceptions", "McpError"),
+    ):
+        try:
+            cls = getattr(__import__(module, fromlist = [name]), name, None)
+        except Exception:  # noqa: BLE001
+            continue
+        if cls is not None and isinstance(exc, cls):
+            # Only when the server actually sent an error object; a synthetic
+            # MCPError with nothing behind it stays transport-level.
+            return getattr(exc, "error", None) is not None
+    return False
+
+
 def _transport_dead(session) -> bool:
     """Best-effort, version-adaptive liveness probe for a cached client.
     ``Client.is_connected()`` only checks a session object exists, not that the
@@ -1029,12 +1054,14 @@ def _release_session(session: _McpSession, defer_close: bool = False) -> None:
             victims.append(_mcp_sessions.pop(oldest))
             _discard_key_lock(oldest)
     if close_now and defer_close:
-        # Somebody else retired this session while this call was succeeding on
-        # it, which happens to make this borrower the last one. Its result is
-        # still waiting on this thread, so that close does not belong here. A
-        # borrower that retired the session itself keeps closing it inline: for a
-        # one-shot call the teardown is the call's own work, and callers rely on
-        # the subprocess being gone by the time the call returns.
+        # This borrower was the last one on a session that has been discarded,
+        # either by its own failure or by a sibling's. Either way the caller is
+        # mid-request -- it may still have a reconnect and retry to do on the
+        # same deadline -- and a transport that is being discarded because it
+        # stopped answering is exactly the one whose close runs long. Only the
+        # unscoped one-shot path closes inline (defer_close is False there),
+        # because there the teardown is the call's own work and the caller
+        # expects the subprocess gone by the time it returns.
         victims.append(session)
     elif close_now:
         session.close()
@@ -1097,7 +1124,14 @@ def close_mcp_sessions(url: Optional[str] = None, headers = _ANY_HEADERS) -> Non
             else:
                 cfg = _cfg_close_key(url, headers)
                 _mcp_cfg_close_gen[cfg] = _mcp_cfg_close_gen.get(cfg, 0) + 1
-    _close_all(sessions + _drain_cleanup_queue())
+    pending, worker = _drain_cleanup_queue()
+    _close_all(sessions + pending)
+    if worker is not None and worker is not threading.current_thread():
+        # Draining the queue does not recall the session the worker had already
+        # popped, and this function promises its caller (a server edit, or
+        # atexit) that the teardown has happened. The worker stops as soon as the
+        # queue is empty, so this waits for that one close and no longer.
+        worker.join(_SESSION_CLOSE_TIMEOUT + 5.0)
 
 
 def _close_all(sessions: list) -> None:
@@ -1170,13 +1204,13 @@ def _cleanup_worker() -> None:
         _close_quietly(session)
 
 
-def _drain_cleanup_queue() -> list:
-    """Take back whatever the worker has not started on yet, so a synchronous
-    close_mcp_sessions still finishes the job it was asked to do."""
+def _drain_cleanup_queue() -> tuple[list, Optional[threading.Thread]]:
+    """Take back whatever the worker has not started on yet, plus the worker
+    itself so the caller can wait out the one close already under way."""
     with _mcp_cleanup_lock:
         pending = list(_mcp_cleanup_queue)
         _mcp_cleanup_queue.clear()
-    return pending
+        return pending, _mcp_cleanup_worker
 
 
 def _close_quietly(session) -> None:
@@ -1668,12 +1702,19 @@ def _call_session_tool(
                 # error or AttributeError instead of _SessionClosed; don't mistake it for a crash.
                 discard_session = True
                 raise RuntimeError("MCP server was updated or removed during the call")
-            # ToolError leaves the transport alive -> keep the session so its state
-            # survives. Any other exception is transport-level (dead subprocess,
-            # broken pipe, dropped HTTP stream): evict so it can't poison the
-            # scope, but DO NOT replay
-            # (the tool may already have run); the next call opens a fresh session.
-            if not _is_tool_error(exc):
+            # A ToolError or a JSON-RPC error response means the server answered,
+            # so the transport is alive -> keep the session and its state.
+            # Anything else is transport-level (dead subprocess, broken pipe,
+            # dropped HTTP stream): evict so it can't poison the scope, but DO
+            # NOT replay (the tool may already have run); the next call opens a
+            # fresh session.
+            if _is_protocol_error(exc):
+                # The server replied, so the transport is fine and the session's
+                # state is worth keeping. Probe it before the next call anyway,
+                # in case the error was the server telling us the session is no
+                # longer one it recognises.
+                session.dirty = True
+            elif not _is_tool_error(exc):
                 discard_session = True
             raise
         finally:
@@ -1686,7 +1727,7 @@ def _call_session_tool(
             # here, so the close defers to the release below.
             if discard_session:
                 _drop_session(key, session)
-            _release_session(session, defer_close = not discard_session)
+            _release_session(session, defer_close = not ephemeral)
             if locked:
                 session.call_lock.release()
         if not retry:

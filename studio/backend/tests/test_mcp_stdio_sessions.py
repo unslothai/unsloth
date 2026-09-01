@@ -23,6 +23,17 @@ STDIO_URL = "npx fake-stateful-server"
 HTTP_URL = "https://mcp.example.test/mcp"
 
 
+def _settled(client, expected: int = 1, timeout: float = 10.0) -> int:
+    """Wait out an asynchronous close.
+
+    A discarded session is closed by the cleanup worker rather than on the
+    request thread, so its close lands just after the call returns."""
+    deadline = time.monotonic() + timeout
+    while client.exited < expected and time.monotonic() < deadline:
+        time.sleep(0.005)
+    return client.exited
+
+
 def _result(text: str) -> SimpleNamespace:
     return SimpleNamespace(
         content = [SimpleNamespace(type = "text", text = text)],
@@ -107,7 +118,7 @@ def test_stdio_call_without_scope_is_one_shot(fake_clients):
     assert r1 == "call-1"
     assert r2 == "call-1"
     assert len(fake_clients) == 2
-    assert all(client.entered == 1 and client.exited == 1 for client in fake_clients)
+    assert all(client.entered == 1 and _settled(client) == 1 for client in fake_clients)
 
 
 def test_stdio_sessions_keyed_by_url_and_env(fake_clients):
@@ -133,7 +144,7 @@ def test_dead_stdio_session_recovers(fake_clients):
     fake_clients[0].dead = True
     assert call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat") == "call-1"
     assert len(fake_clients) == 2
-    assert fake_clients[0].exited == 1
+    assert _settled(fake_clients[0]) == 1
 
 
 def test_tool_error_does_not_recycle_session(fake_clients, monkeypatch):
@@ -197,7 +208,7 @@ def test_timeout_replaces_a_wedged_stdio_session(fake_clients):
     assert "timed out" in out
     assert call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat") == "call-1"
     assert len(fake_clients) == 2
-    assert fake_clients[0].exited == 1
+    assert _settled(fake_clients[0]) == 1
     assert key in mcp_client._mcp_sessions
 
 
@@ -239,7 +250,7 @@ def test_failed_probe_replaces_the_session(fake_clients):
     fake_clients[0].call_delay = 0.0
     assert call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat") == "call-1"
     assert len(fake_clients) == 2
-    assert fake_clients[0].exited == 1
+    assert _settled(fake_clients[0]) == 1
 
 
 def test_successful_probe_is_not_repeated(fake_clients):
@@ -477,7 +488,7 @@ def test_idle_reap_closes_session(fake_clients, monkeypatch):
     assert key in mcp_client._mcp_key_locks
     monkeypatch.setattr(mcp_client, "_SESSION_IDLE_TTL", 0.0)
     mcp_client._reap_idle_sessions()
-    assert fake_clients[0].exited == 1
+    assert _settled(fake_clients[0]) == 1
     assert mcp_client._mcp_sessions == {}
     assert key not in mcp_client._mcp_key_locks
     # Next call transparently opens a fresh session.
@@ -520,7 +531,7 @@ def test_close_during_connect_is_not_cached(fake_clients, monkeypatch):
     worker.join(10.0)
     assert results and results[0].startswith("Error: MCP tool 't' failed")
     assert mcp_client._mcp_sessions == {}
-    assert fake_clients[0].exited == 1
+    assert _settled(fake_clients[0]) == 1
 
 
 def test_connect_abort_race_still_closes_client(fake_clients, monkeypatch):
@@ -536,7 +547,7 @@ def test_connect_abort_race_still_closes_client(fake_clients, monkeypatch):
     out = call_tool_sync(STDIO_URL, None, "t", {}, timeout = 0.1)
     assert "timed out" in out
     assert fake_clients[0].entered == 1
-    assert fake_clients[0].exited == 1  # no orphaned subprocess
+    assert _settled(fake_clients[0]) == 1  # no orphaned subprocess
     assert mcp_client._mcp_sessions == {}
 
 
@@ -620,11 +631,8 @@ def test_stale_session_close_deferred_until_borrower_drains(fake_clients):
     slow.join(10.0)
     assert results == ["call-2"]
     # The last borrower hands the deferred close to the cleanup worker rather
-    # than paying for it after its own result is ready, so wait for that.
-    deadline = time.monotonic() + 10.0
-    while fake_clients[0].exited == 0 and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert fake_clients[0].exited == 1
+    # than paying for it after its own result is ready.
+    assert _settled(fake_clients[0]) == 1
     assert len(mcp_client._mcp_sessions) == 1
 
 
@@ -646,7 +654,7 @@ def test_config_check_blocks_stale_publish(fake_clients):
     out = call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat", config_check = lambda: False)
     assert out.startswith("Error: MCP tool 't' failed")
     assert mcp_client._mcp_sessions == {}
-    assert fake_clients[0].exited == 1
+    assert _settled(fake_clients[0]) == 1
 
 
 def test_close_generation_keys_hold_no_secrets(fake_clients):
@@ -725,11 +733,11 @@ def test_close_narrowed_by_headers_spares_other_env(fake_clients):
     # Two server rows can share a command with different envs; editing one
     # must only close its own sessions.
     close_mcp_sessions(STDIO_URL, None)
-    assert fake_clients[0].exited == 1
+    assert _settled(fake_clients[0]) == 1
     assert fake_clients[1].exited == 0
     assert len(mcp_client._mcp_sessions) == 1
     close_mcp_sessions(STDIO_URL)  # headers omitted: any env for the command
-    assert fake_clients[1].exited == 1
+    assert _settled(fake_clients[1]) == 1
     assert mcp_client._mcp_sessions == {}
 
 
@@ -738,7 +746,7 @@ def test_close_stdio_sessions_by_url(fake_clients):
     call_tool_sync("npx other-server", None, "t", {}, scope = "chat")
     key = mcp_client._session_key(STDIO_URL, None, "chat")
     close_mcp_sessions(STDIO_URL)
-    assert fake_clients[0].exited == 1
+    assert _settled(fake_clients[0]) == 1
     assert fake_clients[1].exited == 0
     assert len(mcp_client._mcp_sessions) == 1
     assert key not in mcp_client._mcp_key_locks
@@ -888,7 +896,7 @@ def test_http_call_without_scope_is_one_shot(fake_clients):
     call_tool_sync(HTTP_URL, None, "t", {})
     call_tool_sync(HTTP_URL, None, "t", {})
     assert len(fake_clients) == 2
-    assert all(client.entered == 1 and client.exited == 1 for client in fake_clients)
+    assert all(client.entered == 1 and _settled(client) == 1 for client in fake_clients)
     assert mcp_client._mcp_sessions == {}
 
 
@@ -904,7 +912,7 @@ def test_close_mcp_sessions_drops_http_session(fake_clients):
     assert len(mcp_client._mcp_sessions) == 1
     close_mcp_sessions(HTTP_URL, None)
     assert mcp_client._mcp_sessions == {}
-    assert fake_clients[0].exited == 1
+    assert _settled(fake_clients[0]) == 1
     call_tool_sync(HTTP_URL, None, "t", {}, scope = "chat")
     assert len(fake_clients) == 2
 
@@ -923,7 +931,7 @@ def test_dead_http_session_recovers(monkeypatch, fake_clients):
     fake_clients[0].probe_error = True
     assert call_tool_sync(HTTP_URL, None, "t", {}, scope = "chat") == "call-1"
     assert len(fake_clients) == 2
-    assert fake_clients[0].exited == 1
+    assert _settled(fake_clients[0]) == 1
 
 
 def test_live_idle_http_session_survives_the_recheck(monkeypatch, fake_clients):

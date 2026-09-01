@@ -46,6 +46,8 @@ import contextvars, sys, threading
 import uvicorn
 from fastmcp import FastMCP
 from fastmcp.server.dependencies import get_http_headers
+from fastmcp.server.middleware import Middleware
+from mcp.shared.exceptions import MCPError
 
 mcp = FastMCP("notes")
 _peer = contextvars.ContextVar("peer", default="unknown")
@@ -87,6 +89,26 @@ class Observe:
             await send({"type": "http.response.body", "body": b"Session not found"})
             return
         await self.app(scope, receive, send)
+
+
+class ProtocolErrors(Middleware):
+    """Answer one tool with a JSON-RPC error instead of a result, the way the
+    spec lets a server report an unknown tool. FastMCP itself returns a result
+    carrying is_error for that, so this stands in for the servers that do not;
+    raising from inside a tool would not reach the client as MCPError."""
+
+    async def on_call_tool(self, context, call_next):
+        if context.message.name == "protocol_error":
+            raise MCPError(code = -32602, message = "Unknown tool: protocol_error")
+        return await call_next(context)
+
+
+mcp.add_middleware(ProtocolErrors())
+
+
+@mcp.tool
+def protocol_error() -> str:
+    return "never reached"
 
 
 @mcp.tool
@@ -346,3 +368,13 @@ def test_ipv6_loopback_works(tmp_path):
             proc.wait(15)
         except subprocess.TimeoutExpired:
             proc.kill()
+
+
+def test_a_json_rpc_error_does_not_cost_the_chat_its_state(server):
+    """The server replied, so the connection is fine and the notes it is holding
+    for this chat must survive."""
+    _call(server, "save_note", {"text": "before-the-error"}, scope = SCOPE)
+    failed = _call(server, "protocol_error", scope = SCOPE)
+    assert failed.startswith("Error:"), failed
+    listed = _call(server, "list_notes", scope = SCOPE)
+    assert "before-the-error" in listed, f"the session was discarded: {listed}"

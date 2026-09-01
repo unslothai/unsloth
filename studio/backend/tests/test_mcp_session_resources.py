@@ -34,6 +34,17 @@ HTTP_URL = "https://mcp.example.test/mcp"
 STDIO_URL = "npx fake-stateful-server"
 
 
+def _settled(client, expected: int = 1, timeout: float = 10.0) -> int:
+    """Wait out an asynchronous close.
+
+    A discarded session is closed by the cleanup worker rather than on the
+    request thread, so its close lands just after the call returns."""
+    deadline = time.monotonic() + timeout
+    while client.exited < expected and time.monotonic() < deadline:
+        time.sleep(0.005)
+    return client.exited
+
+
 def _result(text: str) -> SimpleNamespace:
     return SimpleNamespace(
         content = [SimpleNamespace(type = "text", text = text)],
@@ -145,7 +156,7 @@ def test_every_cached_client_is_exited_on_close(tiny):
         call_tool_sync(HTTP_URL, None, "t", {}, scope = f"chat-{i}")
     assert len(mcp_client._mcp_sessions) == 6
     close_mcp_sessions()
-    assert all(c.exited == 1 for c in tiny), [c.exited for c in tiny]
+    assert all(_settled(c) == 1 for c in tiny), [c.exited for c in tiny]
 
 
 def test_the_cache_stays_within_its_cap(monkeypatch, tiny):
@@ -194,7 +205,7 @@ def test_idle_sessions_are_reaped(monkeypatch, tiny):
     mcp_client._reap_idle_sessions(now = time.monotonic() + mcp_client._SESSION_IDLE_TTL + 1)
     assert mcp_client._mcp_sessions == {}
     assert _settle(lambda: _session_threads() <= before)
-    assert tiny[0].exited == 1
+    assert _settled(tiny[0]) == 1
 
 
 def test_shutdown_of_a_full_cache_is_bounded(monkeypatch, tiny):
