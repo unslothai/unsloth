@@ -76,6 +76,7 @@ class AudioCodecManager:
             raise ValueError(f"Unknown audio_type: {audio_type}")
 
     # ── Lazy loaders ─────────────────────────────────────────────
+
     def _load_snac(self, device: str) -> None:
         if self._snac_model is not None:
             return
@@ -135,6 +136,7 @@ class AudioCodecManager:
         logger.info("Loaded DAC audio codec")
 
     # ── Decoders ─────────────────────────────────────────────────
+
     def decode_snac(self, generated_ids: torch.Tensor, device: str) -> Tuple[bytes, int]:
         """Decode SNAC tokens (Orpheus) into WAV bytes.
 
@@ -272,6 +274,7 @@ class AudioCodecManager:
         raise ValueError(f"Cannot decode audio_type: {audio_type}")
 
     # ── Cleanup ──────────────────────────────────────────────────
+
     def unload(self) -> None:
         """Release all codec models from memory."""
         if self._snac_model is not None:

@@ -718,6 +718,7 @@ class SdCppEngine:
         )
 
     # ── internals ─────────────────────────────────────────────────────────────
+
     def _require_binary(self) -> str:
         if not self.is_available():
             raise RuntimeError(
@@ -836,6 +837,7 @@ class SdCppEngine:
 
 
 # ── engine routing ──────────────────────────────────────────────────────────
+
 ENGINE_DIFFUSERS = "diffusers"
 ENGINE_SD_CPP = "sd_cpp"
 

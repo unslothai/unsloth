@@ -1084,6 +1084,7 @@ class VideoBackend:
         return target
 
     # ── validation ───────────────────────────────────────────────────────────
+
     def validate_load_request(
         self,
         repo_id: str,
@@ -1301,6 +1302,7 @@ class VideoBackend:
         return fam
 
     # ── background load + progress ───────────────────────────────────────────
+
     def begin_load(
         self,
         repo_id: str,
@@ -3386,6 +3388,7 @@ class VideoBackend:
         return (repo_id, H3_GGUF_REPO, H3_COMPONENT_REPO, H3_LEGACY_COMPONENT_REPO)
 
     # ── the load itself ──────────────────────────────────────────────────────
+
     def load_pipeline(
         self,
         repo_id: str,
@@ -4896,6 +4899,7 @@ class VideoBackend:
         )
 
     # ── generation ───────────────────────────────────────────────────────────
+
     def loaded_family(self) -> Optional[VideoFamily]:
         """The resident pipeline's family, or None when nothing is loaded.
 
@@ -6184,6 +6188,7 @@ class VideoBackend:
             return True
 
     # ── teardown + status ────────────────────────────────────────────────────
+
     def _teardown_state_locked(self) -> None:
         """Free the committed state. The caller holds _generate_lock (no generation
         in flight) AND _lock, so the whole teardown is one atomic step: a generation

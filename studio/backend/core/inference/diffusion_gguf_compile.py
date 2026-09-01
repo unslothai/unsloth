@@ -34,6 +34,7 @@ from .diffusion_patch_backend import apply_patch, revert_patch
 
 
 # --- kill-switch -------------------------------------------------------------------
+
 _ENV_COMPILE_DEQUANT = "UNSLOTH_DIFFUSION_GGUF_COMPILE_DEQUANT"
 _DISABLED = {"0", "off", "false", "no"}
 
@@ -99,6 +100,7 @@ def uninstall_compiled_dequant() -> None:
 
 
 # --- convenience -------------------------------------------------------------------
+
 def uninstall_all() -> None:
     """Uninstall the GGUF accelerator. Idempotent; safe to call on every unload."""
     uninstall_compiled_dequant()

@@ -2417,6 +2417,7 @@ class InferenceOrchestrator:
 
     # ------------------------------------------------------------------ Audio generation - TTS, ASR, audio input
     # ------------------------------------------------------------------
+
     def generate_audio_response(
         self,
         text: str,
@@ -2751,6 +2752,7 @@ class InferenceOrchestrator:
 
     # ------------------------------------------------------------------ Local helpers (no subprocess needed)
     # ------------------------------------------------------------------
+
     def resize_image(
         self,
         img,

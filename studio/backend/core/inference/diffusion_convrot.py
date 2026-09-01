@@ -222,6 +222,7 @@ def _install_rotation(module: Any, group_size: int) -> None:
 
 
 # ── the metadata contract ─────────────────────────────────────────────────────────────────────
+
 def declares_rotation(metadata: Any) -> bool:
     """True when ``metadata`` claims its weights were rotated offline.
 
@@ -273,6 +274,7 @@ def rotation_metadata(group_size: int, fqns: Iterable[str]) -> dict:
 
 
 # ── the two halves ────────────────────────────────────────────────────────────────────────────
+
 def rotatable_fqns(
     transformer: Any,
     filter_fn: Any,

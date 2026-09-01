@@ -129,6 +129,7 @@ class MemoryPlan:
 
 
 # ── hardware snapshot ─────────────────────────────────────────────────────────
+
 def snapshot_device_memory(target: Any) -> DeviceMemory:
     """Free / total memory for ``target``'s device. Never raises: a probe failure yields None
     counts, which the planner treats as "budget unknown" (stay resident)."""
@@ -328,6 +329,7 @@ def _system_memory_mib() -> tuple[Optional[int], Optional[int]]:
 
 
 # ── size estimates ────────────────────────────────────────────────────────────
+
 def file_size_mib(path: Any) -> Optional[int]:
     """On-disk size of ``path`` in MiB, or None if it can't be stat'd."""
     try:
@@ -543,6 +545,7 @@ def _sum_required(*values: Optional[int]) -> Optional[int]:
 
 
 # ── the planner ───────────────────────────────────────────────────────────────
+
 def plan_diffusion_memory(
     *,
     target: Any,
@@ -706,6 +709,7 @@ def plan_diffusion_memory(
 
 
 # ── apply to a built pipeline ─────────────────────────────────────────────────
+
 def _streamable_components(pipe: Any, torch: Any) -> dict[str, tuple[Any, str]]:
     """Component name -> (module, group-offload type) for what streaming keeps off the device.
 
