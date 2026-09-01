@@ -1274,23 +1274,43 @@ def get_connection(
                     conn.close()
                     raise
     _apply_wal_synchronous(conn)
+    _ensure_wal_keeper(db_key)
     return conn
 
 
 # Every accessor here opens and closes its own connection, so a writer is routinely the last
 # WAL participant, and sqlite checkpoints the WAL back into studio.db on that close. At the
 # durable chat stream's flush cadence that is several rewrites a second (#9934).
-_wal_keeper: sqlite3.Connection | None = None
-_wal_keeper_lock = threading.Lock()
+#
+# One keeper per DATABASE, not one per process: studio_db_path() is per workspace, so a single
+# keeper attached to the owner's file left every managed account's chat stream checkpointing on
+# every close, which is exactly what this exists to prevent. Keyed by resolved path, engaged
+# lazily from get_connection once the lifespan has asked for keepers at all, so an account
+# created after startup gets one on its first write.
+_wal_keepers: dict[str, sqlite3.Connection] = {}
+_wal_keeper_lock = threading.RLock()
+# Databases whose journal mode is not WAL. Recorded so the probe below is not repeated on
+# every connection for a filesystem that will never support it.
+_wal_keeper_declined: set[str] = set()
+# Re-entrancy: _engage_wal_keeper opens a connection, which lands back here.
+_wal_keeper_opening: set[str] = set()
+# Keepers are a server-lifetime policy, not a side effect of touching the database. Off until
+# the lifespan opens one, so a test or a script that opens a connection does not leave a
+# connection behind it never asked for.
+_wal_keepers_enabled = False
 
 
-def open_wal_keeper() -> bool:
-    """Hold this database's WAL open for the process. Returns whether a keeper is engaged."""
-    # Replace rather than inherit: a keeper from an earlier lifespan can belong to another
-    # database or a dead thread, and reusing it would keep nothing for the current one.
-    close_wal_keeper()
-    global _wal_keeper
+def _current_db_key() -> str:
+    return str(studio_db_path().resolve(strict = False))
+
+
+def _engage_wal_keeper(db_key: str) -> bool:
+    """Open and record a keeper for one database. Returns whether one is now held."""
     with _wal_keeper_lock:
+        if db_key in _wal_keeper_declined or db_key in _wal_keeper_opening:
+            return False
+        _wal_keeper_opening.add(db_key)
+    try:
         # Only ever runs the pragma below, on this thread. check_same_thread is off so a
         # keeper stranded by an earlier lifespan can still be closed from this one.
         conn = get_connection(check_same_thread = False)
@@ -1306,22 +1326,69 @@ def open_wal_keeper() -> bool:
         if not isinstance(mode, str) or mode.lower() != "wal":
             conn.close()
             logger.info("studio.db is in %s mode, not WAL; WAL keeper not engaged.", mode)
+            with _wal_keeper_lock:
+                _wal_keeper_declined.add(db_key)
             return False
-        _wal_keeper = conn
-        return True
+        with _wal_keeper_lock:
+            previous = _wal_keepers.pop(db_key, None)
+            _wal_keepers[db_key] = conn
+    finally:
+        with _wal_keeper_lock:
+            _wal_keeper_opening.discard(db_key)
+    _close_keeper_connection(previous)
+    return True
 
 
-def close_wal_keeper() -> None:
-    """Release the keeper; last-close checkpointing resumes."""
-    global _wal_keeper
+def _ensure_wal_keeper(db_key: str) -> None:
+    """Engage a keeper for ``db_key`` if the process is keeping WALs open at all."""
+    if not _wal_keepers_enabled:
+        return
     with _wal_keeper_lock:
-        conn, _wal_keeper = _wal_keeper, None
+        if db_key in _wal_keepers or db_key in _wal_keeper_declined:
+            return
+        if db_key in _wal_keeper_opening:
+            return
+    _engage_wal_keeper(db_key)
+
+
+def _close_keeper_connection(conn: "sqlite3.Connection | None") -> None:
     if conn is None:
         return
     try:
         conn.close()
     except Exception as exc:
         logger.warning("Could not close the studio.db WAL keeper: %s", exc)
+
+
+def open_wal_keeper() -> bool:
+    """Hold this database's WAL open for the process. Returns whether a keeper is engaged.
+
+    Also turns keepers on for every OTHER workspace database this process opens from
+    here, which is what the lifespan wants: it runs outside a request, so the only
+    database it can name is the owner's.
+    """
+    global _wal_keepers_enabled
+    db_key = _current_db_key()
+    with _wal_keeper_lock:
+        _wal_keepers_enabled = True
+        # Replace rather than inherit: a keeper from an earlier lifespan can belong to a
+        # dead thread, and reusing it would keep nothing for the current one.
+        _wal_keeper_declined.discard(db_key)
+        stale = _wal_keepers.pop(db_key, None)
+    _close_keeper_connection(stale)
+    return _engage_wal_keeper(db_key)
+
+
+def close_wal_keeper() -> None:
+    """Release every keeper; last-close checkpointing resumes."""
+    global _wal_keepers_enabled
+    with _wal_keeper_lock:
+        _wal_keepers_enabled = False
+        conns = list(_wal_keepers.values())
+        _wal_keepers.clear()
+        _wal_keeper_declined.clear()
+    for conn in conns:
+        _close_keeper_connection(conn)
 
 
 def create_run(

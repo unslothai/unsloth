@@ -1007,6 +1007,27 @@ def _loaded_media_backends() -> list:
     return backends
 
 
+# A load_progress phase outside these is an in-flight load. The engines report an
+# idle one as "ready" or None, and a failed one as "error"; everything else names
+# a stage of a load that is still running.
+_MEDIA_LOAD_IDLE_PHASES = (None, "ready", "error")
+
+
+def _media_load_active(backend, username: str) -> bool:
+    """Whether ``backend`` is loading a model for this account right now.
+
+    A load is not a render, and it holds the account's identity the same way: the
+    loading state carries the subject, and the payload names the repo or local
+    directory it is pulling. A username released while one is in flight lets a
+    recreated namesake match that subject and drive the load through the ordinary
+    progress and unload paths.
+    """
+    probe = getattr(backend, "load_progress", None)
+    if not callable(probe):
+        return False
+    return probe(subject = username).get("phase") not in _MEDIA_LOAD_IDLE_PHASES
+
+
 def _workspace_jobs_active(username: str) -> bool:
     """Whether anything is still running under this account's workspace.
 
@@ -1044,6 +1065,7 @@ def _workspace_jobs_active(username: str) -> bool:
     def _media_renders_active() -> bool:
         return any(
             backend.generate_progress(subject = username).get("active")
+            or _media_load_active(backend, username)
             for backend in _loaded_media_backends()
         )
 
@@ -1160,9 +1182,15 @@ def _quiesce_workspace_jobs(username: str) -> None:
         # workspace root when the render finishes, not when it started: left
         # running, it writes the deleted account's output into whoever takes the
         # name next.
+        # A load counts too, and cancel_generate does not reach it: the loading
+        # state carries the subject, so a load left running is one a namesake can
+        # observe and unload. Tear it down through the engine's own path, which
+        # cancels the load token as well as the render.
         for backend in _loaded_media_backends():
             if backend.generate_progress(subject = username).get("active"):
                 backend.cancel_generate(subject = username)
+            if _media_load_active(backend, username):
+                backend.unload(subject = username)
 
     def _close_mcp_sessions() -> None:
         # The session key holds the username, which is reusable. An idle session

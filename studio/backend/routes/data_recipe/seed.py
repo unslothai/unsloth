@@ -18,7 +18,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File as FastAPIFile, Form
 
-from auth.authentication import allow_ambient_hf_token
+from auth.authentication import allow_ambient_hf_token, get_current_subject
 from core.data_recipe.jsonable import to_preview_jsonable
 from hub.utils.hf_tokens import HfTokenArg, hf_token_arg, is_anonymous
 from utils.utils import hf_env_offline
@@ -819,11 +819,19 @@ def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectRespons
 
 
 @router.get("/seed/github/env-token")
-def get_github_env_token_status() -> dict:
+def get_github_env_token_status(current_subject: str = Depends(get_current_subject)) -> dict:
     """Report whether the server has a GH_TOKEN / GITHUB_TOKEN env var.
 
     The value is never returned; the UI uses this to tell the user they
     can leave the token field blank.
+
+    Answered per account, because the answer is per account: a managed
+    account's recipe worker is spawned with both variables blanked, so telling
+    that user the token field is optional sends them into a Check/Run that fails
+    with no token. The owner's worker does inherit them, so their answer is
+    unchanged.
     """
+    from auth.storage import is_installation_owner
+
     has_token = bool(os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN"))
-    return {"has_token": has_token}
+    return {"has_token": has_token and is_installation_owner(current_subject)}

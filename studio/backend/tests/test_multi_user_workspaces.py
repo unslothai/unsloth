@@ -3409,3 +3409,66 @@ def test_the_video_backend_can_be_asked_before_it_is_torn_down():
     # two can never disagree about what counts as a foreign render.
     assert hasattr(VideoBackend, "_refuse_foreign_teardown")
     assert "_refuse_foreign_teardown(subject)" in inspect.getsource(VideoBackend.unload)
+
+
+def test_the_github_env_token_status_matches_what_the_worker_inherits(monkeypatch):
+    from routes.data_recipe.seed import get_github_env_token_status
+
+    monkeypatch.setenv("GH_TOKEN", "owner-github-token")
+
+    # The dialog uses this to tell the user the token field can be left blank.
+    # A managed account's recipe worker is spawned with both variables blanked,
+    # so a true answer there sends them into a Check that fails with no token.
+    assert get_github_env_token_status(current_subject = "alice") == {"has_token": False}
+    assert get_github_env_token_status(current_subject = LEGACY_WORKSPACE_SUBJECT) == {
+        "has_token": True
+    }
+
+    monkeypatch.delenv("GH_TOKEN", raising = False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising = False)
+    assert get_github_env_token_status(current_subject = LEGACY_WORKSPACE_SUBJECT) == {
+        "has_token": False
+    }
+
+
+def test_a_deleted_username_is_held_while_a_media_load_is_in_flight(monkeypatch):
+    from auth import storage as auth_storage
+
+    class _Backend:
+        def __init__(self, loading_subject = None, generating = False):
+            self.loading_subject = loading_subject
+            self.generating = generating
+            self.unloaded_for = []
+            self.cancelled_for = []
+
+        def generate_progress(self, subject = None):
+            return {"active": self.generating and subject == "alice"}
+
+        def load_progress(self, subject = None):
+            if self.loading_subject is None or self.loading_subject != subject:
+                return {"phase": "ready"}
+            return {"phase": "downloading"}
+
+        def cancel_generate(self, subject = None):
+            self.cancelled_for.append(subject)
+
+        def unload(self, subject = None):
+            self.unloaded_for.append(subject)
+            self.loading_subject = None
+
+    # The probe looked only at generate_progress, so a load in flight read as idle
+    # and the tombstone could clear while it was still running. The loading state
+    # carries the subject, so a namesake matches it.
+    loading = _Backend(loading_subject = "alice")
+    assert auth_storage._media_load_active(loading, "alice") is True
+    assert auth_storage._media_load_active(loading, "bob") is False
+    assert auth_storage._media_load_active(_Backend(), "alice") is False
+
+    monkeypatch.setattr(auth_storage, "_loaded_media_backends", lambda: [loading])
+    assert auth_storage._workspace_jobs_active("alice") is True
+    assert auth_storage._workspace_jobs_active("bob") is False
+
+    # And the quiesce path has to reach it: cancel_generate does not touch a load.
+    auth_storage._quiesce_workspace_jobs("alice")
+    assert loading.unloaded_for == ["alice"]
+    assert auth_storage._workspace_jobs_active("alice") is False
