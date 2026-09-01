@@ -388,7 +388,6 @@ def pipeline_available_video_family_names() -> tuple[str, ...]:
     this registry is also imported by modules that participate in the inference import graph.
     """
     from .diffusion_families import family_pipeline_available
-
     return tuple(fam.name for fam in _FAMILIES if family_pipeline_available(fam))
 
 

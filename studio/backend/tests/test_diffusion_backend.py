@@ -162,7 +162,6 @@ def test_supported_family_names():
 
 def test_pipeline_available_names_filter_the_override_selector(monkeypatch):
     import core.inference.diffusion_families as families
-
     monkeypatch.setattr(
         families,
         "family_pipeline_available",
