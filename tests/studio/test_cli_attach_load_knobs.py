@@ -636,3 +636,66 @@ def test_failed_inferred_load_names_the_inferred_resident(monkeypatch, capsys):
 
     # The chat model did NOT survive, so no reassuring message may be printed.
     assert "Nothing was unloaded" not in capsys.readouterr().err
+
+
+def test_inferred_reload_keeps_a_full_precision_resident(monkeypatch):
+    """LoadRequest defaults load_in_4bit to True, so omitting it quantizes the model.
+
+    A non-GGUF resident loaded with load_in_4bit False, attached to with only a context
+    change, must come back at the same precision.
+    """
+    server = FakeServer(
+        [dict(RESIDENT)],
+        {
+            "is_gguf": False,
+            "active_model": RESIDENT["id"],
+            "model_identifier": RESIDENT["id"],
+            "requested_context_length": 4096,
+            "load_in_4bit": False,
+        },
+    ).install(monkeypatch)
+
+    start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768))
+
+    assert server.loads[0]["load_in_4bit"] is False
+
+
+def test_an_explicit_precision_flag_beats_the_resident(monkeypatch):
+    server = FakeServer(
+        [dict(RESIDENT)],
+        {
+            "is_gguf": False,
+            "active_model": RESIDENT["id"],
+            "model_identifier": RESIDENT["id"],
+            "requested_context_length": 4096,
+            "load_in_4bit": False,
+        },
+    ).install(monkeypatch)
+
+    start_cli._resolve_model(
+        BASE,
+        KEY,
+        None,
+        start_cli.LoadOptions(load_in_4bit = True, supplied = frozenset({"load_in_4bit"})),
+    )
+
+    assert server.loads[0]["load_in_4bit"] is True
+
+
+def test_a_gguf_resident_is_sent_no_precision_flag(monkeypatch):
+    """GGUF reports load_in_4bit null because it has none, and nulls are dropped."""
+    server = FakeServer(
+        [dict(RESIDENT)],
+        {
+            "is_gguf": True,
+            "active_model": RESIDENT["id"],
+            "model_identifier": RESIDENT["id"],
+            "gguf_variant": "Q8_0",
+            "requested_context_length": 4096,
+            "load_in_4bit": None,
+        },
+    ).install(monkeypatch)
+
+    start_cli._resolve_model(BASE, KEY, None, start_cli.LoadOptions(max_seq_length = 32768))
+
+    assert "load_in_4bit" not in server.loads[0]

@@ -1780,6 +1780,9 @@ _RESIDENT_RUNTIME_FIELDS = {
     "speculative_type": "speculative_type",
     "spec_draft_n_max": "spec_draft_n_max",
     "mlx_kv_bits": "mlx_kv_bits",
+    # LoadRequest defaults this to True, so omitting it would reload a full-precision
+    # model in 4-bit. Null on GGUF, which has no such setting, and nulls are dropped.
+    "load_in_4bit": "load_in_4bit",
     "requested_gpu_ids": "gpu_ids",
     "requested_parallel_slots": "n_parallel",
     "requested_n_batch": "n_batch",
