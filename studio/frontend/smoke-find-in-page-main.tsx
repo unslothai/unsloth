@@ -272,6 +272,16 @@ function Harness() {
               <Conversation extra={streamed} older={older} />
             </div>
           </div>
+          {/* The composer, marked out of the index the way thread.tsx marks the real one. The
+              chord is pressed from here more than anywhere, so closing has to give focus back. */}
+          <form data-find-skip="" className="shrink-0 border-border border-t p-2">
+            <textarea
+              className="aui-composer-input w-full resize-none bg-transparent text-sm outline-none"
+              placeholder="Message"
+              rows={2}
+            />
+            <span className="text-muted-foreground text-xs">unsloth pill label</span>
+          </form>
           {/* A workspace parked off-route, as `__root.tsx` parks one. Never counted. */}
           <div hidden={true} inert={true}>
             <p>unsloth unsloth unsloth from a workspace nobody is looking at</p>

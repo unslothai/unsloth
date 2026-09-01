@@ -18,10 +18,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef } from "react";
 import { useFindInPage } from "../hooks/use-find-in-page.ts";
-import {
-  FIND_SCOPE_ATTRIBUTE,
-  FIND_SKIP_ATTRIBUTE,
-} from "../lib/find-text-index.ts";
+import { FIND_SCOPE_ATTRIBUTE } from "../lib/find-text-index.ts";
 import { useFindInPageStore } from "../stores/find-in-page-store.ts";
 
 /**
@@ -96,15 +93,20 @@ function FindBar() {
   // Hand focus back to whatever had it. The chord is usually pressed from the composer, and closing
   // a search should leave the reader able to keep typing. Declared above the focus effect below so
   // it reads `activeElement` before the field takes it.
+  const barRef = useRef<HTMLDivElement>(null);
   const originRef = useRef<HTMLElement | null>(null);
   useEffect(() => {
     const active = document.activeElement as HTMLElement | null;
-    // First answer only, and never the bar itself. StrictMode replays this effect in development,
-    // and by the second run the field below has taken focus: read plainly, the bar would end up
-    // trying to hand focus back to its own input, which by then is gone.
+    // First answer only, and never anything in the bar. StrictMode replays this effect in
+    // development, and by the second run the field below has taken focus: read plainly, the bar
+    // would end up trying to hand focus back to its own input, which by then is gone.
+    //
+    // The bar's own element, not `data-find-skip`: the composer carries that attribute too, and it
+    // is the single most likely place the chord is pressed from.
     if (
       originRef.current === null &&
-      active?.closest(`[${FIND_SKIP_ATTRIBUTE}]`) == null
+      active !== null &&
+      barRef.current?.contains(active) !== true
     ) {
       originRef.current = active;
     }
@@ -136,6 +138,7 @@ function FindBar() {
   return (
     // `data-find-skip` keeps the bar out of its own index: without it every keystroke finds itself.
     <div
+      ref={barRef}
       data-find-skip=""
       role="search"
       aria-label={t("shell.find.label")}

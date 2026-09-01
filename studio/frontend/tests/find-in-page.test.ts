@@ -744,10 +744,21 @@ test("the observer watches the attributes a workspace switch flips", async () =>
   // `open` too: toggling a `<details>` changes that and nothing else, while the body inside it
   // goes from visible to not, so a collapsible opened after indexing would stay unfindable.
   assert.match(engine, /attributeFilter: \[[^\]]*"open"/);
-  // And not the whole attribute stream: `class` changes on every hover.
+  // And not the whole attribute stream: `class` changes on every hover. Scanned rather than
+  // matched, since the comments in between make a regex for this one backtrack badly.
+  const opensAttributes = engine.indexOf("attributes: true,");
+  const opensFilter = engine.indexOf("attributeFilter:", opensAttributes);
+  assert.ok(opensAttributes !== -1 && opensFilter > opensAttributes);
+  const between = engine.slice(
+    opensAttributes + "attributes: true,".length,
+    opensFilter,
+  );
   assert.equal(
-    /attributes: true,(?:\s*\n\s*\/\/[^\n]*)*\s*\n\s*attributeFilter/.test(engine),
+    between
+      .split("\n")
+      .every((line) => line.trim() === "" || line.trim().startsWith("//")),
     true,
+    "nothing else is being observed between the flag and its filter",
   );
   assert.equal(engine.includes('attributeFilter: ["class"'), false);
 });
@@ -871,10 +882,12 @@ test("closing the bar hands focus back to where it came from", async () => {
   assert.match(bar, /origin\.focus\(\);/);
   // First answer only, and never the bar. StrictMode replays the effect in development, and by the
   // second run the field has focus: read plainly, the bar would aim focus at its own input.
-  assert.match(
-    bar,
-    /originRef\.current === null &&\s*\n\s*active\?\.closest\(`\[\$\{FIND_SKIP_ATTRIBUTE\}\]`\) == null/,
-  );
+  assert.match(bar, /originRef\.current === null &&/);
+  // Against the bar's own element, not `data-find-skip`. The composer carries that attribute, and
+  // it is the single most likely place the chord is pressed from: matching on it would refuse to
+  // record exactly the origin this exists to restore.
+  assert.match(bar, /barRef\.current\?\.contains\(active\) !== true/);
+  assert.equal(bar.includes("closest(`[${FIND_SKIP_ATTRIBUTE}]`)"), false);
   // And only when closing dropped focus: the reader having moved it is not an invitation.
   assert.match(bar, /if \(focused !== null && focused !== document\.body\) return;/);
 });
@@ -1045,12 +1058,25 @@ test("the selection fallback only clears what it put there", () => {
   // The engines without a highlight registry get a selection instead, and the bar paints once on
   // opening, before any query is typed. Clearing unconditionally there throws away whatever the
   // reader had highlighted to copy, and closing cannot give it back.
-  const ranges: unknown[] = [];
+  // Boundary points, since engines differ on whether `getRangeAt` hands back the object that was
+  // added. Two distinct start containers stand in for two distinct selections.
+  const span = (name: string) =>
+    ({
+      startContainer: name,
+      startOffset: 0,
+      endContainer: name,
+      endOffset: 1,
+    }) as unknown as Range;
+  const ranges: Range[] = [];
   const selection = {
-    removeAllRanges: () => {
+    get rangeCount(): number {
+      return ranges.length;
+    },
+    getRangeAt: (i: number): Range => ranges[i],
+    removeAllRanges: (): void => {
       ranges.length = 0;
     },
-    addRange: (range: unknown) => {
+    addRange: (range: Range): void => {
       ranges.push(range);
     },
   };
@@ -1058,13 +1084,22 @@ test("the selection fallback only clears what it put there", () => {
   const saved = view.window;
   view.window = { getSelection: () => selection };
   try {
-    ranges.push("what the reader selected");
+    ranges.push(span("what the reader selected"));
     selectRangeFallback(null);
-    assert.deepEqual(ranges, ["what the reader selected"]);
-    selectRangeFallback("the active match" as unknown as Range);
-    assert.deepEqual(ranges, ["the active match"]);
+    assert.deepEqual(ranges, [span("what the reader selected")]);
+
+    selectRangeFallback(span("the active match"));
+    assert.deepEqual(ranges, [span("the active match")]);
     selectRangeFallback(null);
-    assert.deepEqual(ranges, []);
+    // Annotated, or `deepEqual`'s assertion signature narrows `ranges` to `never[]` from here on.
+    assert.deepEqual(ranges, [] as Range[]);
+
+    // And a selection the reader made while the bar was open, over the match this had put there.
+    selectRangeFallback(span("the active match"));
+    ranges.length = 0;
+    ranges.push(span("dragged over something else"));
+    selectRangeFallback(null);
+    assert.deepEqual(ranges, [span("dragged over something else")]);
   } finally {
     view.window = saved;
   }
@@ -1096,6 +1131,25 @@ test("a hover-only badge is out of the index", async () => {
     "utf8",
   );
   assert.match(index, /opacityProperty: false/);
+});
+
+test("a container query resizing the scope invalidates the index", async () => {
+  // A container query does not need the window to change: Images is an `@container` with labels on
+  // `@[50rem]`, so pinning or collapsing the sidebar crosses that breakpoint with no window resize
+  // and no mutation inside the scope.
+  const engine = await readFile(
+    new URL(
+      "../src/features/find-in-page/hooks/use-find-in-page.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(engine, /new ResizeObserver\(\(\) => \{/);
+  assert.match(engine, /sized\.observe\(scope\);/);
+  assert.match(engine, /sized\?\.disconnect\(\);/);
+  // The first delivery reports the size the scope already had, which is not news and would cost a
+  // flatten on every open.
+  assert.match(engine, /if \(!measured\) \{\s*\n\s*measured = true;\s*\n\s*return;/);
 });
 
 test("nothing of the engine is mounted while the bar is closed", async () => {

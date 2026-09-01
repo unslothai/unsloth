@@ -249,6 +249,23 @@ export function useFindInPage(query: string): FindResults {
     // visibility, so without this the bar goes on searching the layout that has gone.
     window.addEventListener("resize", invalidate);
 
+    // And a container query does not even need the window to change. Images is an `@container` with
+    // labels on `@[50rem]`, so pinning or collapsing the sidebar crosses that breakpoint on its own.
+    // Watching the scope catches it: the same thing that resizes the container resizes this.
+    let sized: ResizeObserver | null = null;
+    if (scope && typeof ResizeObserver !== "undefined") {
+      // Delivered once on observe, for the size it already had. That one is not news.
+      let measured = false;
+      sized = new ResizeObserver(() => {
+        if (!measured) {
+          measured = true;
+          return;
+        }
+        invalidate();
+      });
+      sized.observe(scope);
+    }
+
     let observer: MutationObserver | null = null;
     if (scope && typeof MutationObserver !== "undefined") {
       observer = new MutationObserver((records) => {
@@ -281,6 +298,7 @@ export function useFindInPage(query: string): FindResults {
     return () => {
       live = false;
       window.removeEventListener("resize", invalidate);
+      sized?.disconnect();
       observer?.disconnect();
       if (timerRef.current !== null) {
         clearTimeout(timerRef.current);

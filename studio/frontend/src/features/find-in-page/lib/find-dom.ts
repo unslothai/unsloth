@@ -170,21 +170,38 @@ export function selectRangeFallback(range: Range | null): void {
   const selection = window.getSelection();
   if (!selection) return;
   if (range === null) {
-    // Only ever clear a selection this put there. Opening the bar paints before a query is typed,
-    // and on these engines that would otherwise throw away whatever the reader had highlighted to
-    // copy, with no way back: closing cannot restore what was already gone.
-    if (!ownsSelection) return;
+    // Only ever clear the selection this put there, and only while it is still the one on screen.
+    // Opening the bar paints before a query is typed, and dragging over other text while the bar is
+    // open replaces the match: either way there is no way back, since closing cannot restore what
+    // was already gone.
+    const owned = ownedSelection;
+    ownedSelection = null;
+    if (owned === null || !sameBoundaries(owned, currentRange(selection))) return;
     selection.removeAllRanges();
-    ownsSelection = false;
     return;
   }
   selection.removeAllRanges();
   selection.addRange(range);
-  ownsSelection = true;
+  ownedSelection = currentRange(selection) ?? range;
 }
 
-/** Whether the selection on screen is the one above, rather than the reader's own. */
-let ownsSelection = false;
+/** The range this put on screen, or null when the selection is the reader's own. */
+let ownedSelection: Range | null = null;
+
+function currentRange(selection: Selection): Range | null {
+  return selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+}
+
+/** Boundary points, not identity: engines differ on whether `getRangeAt` hands back what was added. */
+function sameBoundaries(a: Range, b: Range | null): boolean {
+  return (
+    b !== null &&
+    a.startContainer === b.startContainer &&
+    a.startOffset === b.startOffset &&
+    a.endContainer === b.endContainer &&
+    a.endOffset === b.endOffset
+  );
+}
 
 /** True when this element scrolls its own overflow on the given axis. */
 function scrollsAxis(element: Element, axis: "x" | "y"): boolean {
