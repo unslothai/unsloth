@@ -58,6 +58,14 @@ NATIVE_TOOL_CONTROL_TOKENS = frozenset(
         "<|message_model|>",
         "<|content_invoke_tool_json|>",
         "<|end_message|>",
+        # Reasoning delimiters. Provenance of the opposite kind, and needed for the same
+        # reason: the parser skips a call rehearsed inside one, so dropping them turns
+        # ``[THINK][TOOL_CALLS]terminal[ARGS]{..}[/THINK]`` into a standalone real call.
+        # Kept whenever tool controls are, not only when a reasoning protocol is selected.
+        "<think>",
+        "</think>",
+        "[THINK]",
+        "[/THINK]",
     }
 )
 

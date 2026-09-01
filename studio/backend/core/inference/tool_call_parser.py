@@ -2830,7 +2830,20 @@ def blocked_bare_json_chain_may_continue(text: str, enabled_tool_names: Optional
     if not _bare_json_call_shaped(obj):
         return False
     suffix = probe[end + 1 :].lstrip(" \t\n\r;")
-    return not suffix or suffix.startswith("{")
+    if not suffix:
+        return True
+    if not suffix.startswith("{"):
+        return False
+    peer_end = _balanced_brace_end(suffix, 0)
+    if peer_end is None:
+        return True  # still arriving; it may yet close as a call
+    # A peer that has CLOSED settles the question. Only a call-shaped one can extend the
+    # chain, so ``{"answer":1}`` ends it here instead of holding the turn to EOS.
+    try:
+        peer = json.loads(suffix[: peer_end + 1])
+    except (json.JSONDecodeError, ValueError):
+        return False
+    return isinstance(peer, dict) and _bare_json_call_shaped(peer)
 
 
 def _gemma_balanced_brace_end(text: str, brace_pos: int, hard_stop: int) -> int | None:

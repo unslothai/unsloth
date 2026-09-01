@@ -3985,9 +3985,9 @@ def test_an_mlx_count_prices_the_current_date_the_completion_prepends(monkeypatc
 
     line = current_date_prompt_line(request = interactive)
     assert line, "the harness must actually produce a date line"
-    assert backend.system.startswith(
-        line
-    ), f"the count dropped the date line the completion prepends: {backend.system!r}"
+    assert backend.system.startswith(line), (
+        f"the count dropped the date line the completion prepends: {backend.system!r}"
+    )
 
 
 def test_an_mlx_count_prices_the_archive_tool_and_its_compaction_nudge(monkeypatch):
@@ -4008,15 +4008,15 @@ def test_an_mlx_count_prices_the_archive_tool_and_its_compaction_nudge(monkeypat
         thread_id = "thread-with-an-archive",
     )
     names = [t["function"]["name"] for t in (backend.tools or [])]
-    assert (
-        "search_conversation" in names
-    ), f"the archive tool the completion renders was not priced: {names}"
+    assert "search_conversation" in names, (
+        f"the archive tool the completion renders was not priced: {names}"
+    )
     from routes.inference import _apply_compaction_nudge
 
     assert _apply_compaction_nudge("", backend.tools), "the nudge must be non-empty here"
-    assert (
-        _apply_compaction_nudge("", backend.tools) in backend.system
-    ), "the count omitted the compaction nudge the completion appends"
+    assert _apply_compaction_nudge("", backend.tools) in backend.system, (
+        "the count omitted the compaction nudge the completion appends"
+    )
 
 
 def test_an_mlx_count_prices_the_date_an_api_key_tool_loop_still_gets(monkeypatch):
@@ -4044,9 +4044,9 @@ def test_an_mlx_count_prices_the_date_an_api_key_tool_loop_still_gets(monkeypatc
 
     line = current_date_prompt_line(request = keyed)
     assert line, "the harness must produce a date line"
-    assert (
-        line in backend.system
-    ), f"the count dropped the date the tool-loop completion adds: {backend.system!r}"
+    assert line in backend.system, (
+        f"the count dropped the date the tool-loop completion adds: {backend.system!r}"
+    )
 
 
 def test_an_mlx_count_reports_the_advertised_model_id(monkeypatch):
@@ -4114,3 +4114,81 @@ def test_the_mlx_mcp_snapshot_is_taken_under_the_same_guard_the_gguf_count_uses(
     guard = body.index("async with mcp_server_snapshot_guard():")
     snapshot = body.index("asyncio.to_thread(cached_mcp_tools)")
     assert guard < snapshot, "the guard must be held across the snapshot, not after it"
+
+
+def test_mlx_vlm_recovers_native_tool_tokens_like_the_text_path(monkeypatch):
+    """mlx-vlm's ``response.text`` has already dropped the native tool controls.
+
+    Without recovering them the wrapper never reaches the parser, so a genuine
+    ``<|tool_call>call:terminal{..}<tool_call|>`` arrives markerless and the execution guard
+    refuses it. Text-only requests on a model classified as a VLM use this route too.
+    """
+    from core.inference import mlx_inference
+
+    MLXInferenceBackend = mlx_inference.MLXInferenceBackend
+
+    @contextmanager
+    def _adapter_state(_model, _state):
+        yield
+
+    monkeypatch.setattr(mlx_inference, "_temporary_mlx_adapter_state", _adapter_state)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.detect_think_prefill", lambda *_a, **_k: ""
+    )
+
+    class _Tok:
+        # 7/8 are the Gemma wrapper; mlx-vlm reports them as empty text.
+        _IDS = {7: "<|tool_call>", 8: "<tool_call|>", 9: "<eos>"}
+        all_special_ids = tuple(_IDS)
+
+        def convert_ids_to_tokens(self, token_id):
+            return self._IDS[token_id]
+
+        def decode(
+            self,
+            token_ids,
+            skip_special_tokens = False,
+            **_k,
+        ):
+            return "".join(
+                self._IDS.get(i, "")
+                for i in token_ids
+                if not (skip_special_tokens and i in self.all_special_ids)
+            )
+
+    prompt_utils = SimpleNamespace(
+        MODEL_CONFIG = {"deepseek_vl_v2": object()},
+        apply_chat_template = lambda *_a, **_k: "<image> model-aware",
+    )
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.prompt_utils = prompt_utils
+
+    def _vlm_stream(*_a, **_k):
+        for token_id, text in (
+            (7, ""),
+            (None, 'call:terminal{command:"id"}'),
+            (8, ""),
+        ):
+            yield SimpleNamespace(text = text, token = token_id, prompt_tokens = 3, generation_tokens = 1)
+
+    mlx_vlm.stream_generate = _vlm_stream
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda _t, _m, **_k: "<image> model-aware",
+    )
+
+    backend = MLXInferenceBackend()
+    backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
+    backend._processor = SimpleNamespace(tokenizer = _Tok())
+    backend._tokenizer = _Tok()
+    args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 1, 1, None)
+
+    snapshots = list(
+        backend._generate_vlm(
+            *args,
+            _adapter_state = False,
+            tools = [{"type": "function", "function": {"name": "terminal"}}],
+        )
+    )
+    assert snapshots[-1] == '<|tool_call>call:terminal{command:"id"}<tool_call|>'

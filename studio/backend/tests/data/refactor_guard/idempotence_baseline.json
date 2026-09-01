@@ -62,5 +62,10 @@
     "once": "get_weather[ARGS]{\"city\": \"Paris\"}",
     "twice": "",
     "variant": "{\"final\": false}"
+  },
+  {
+    "function": "_strip_bracket_tag_calls",
+    "module": "core.tool_healing",
+    "variant": ""
   }
 ]

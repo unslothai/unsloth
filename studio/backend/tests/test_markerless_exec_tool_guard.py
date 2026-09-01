@@ -543,3 +543,72 @@ def test_a_kept_rehearsal_does_not_shelter_a_truncated_real_call():
     # Ordinary prose after a blocked call is not markup and survives.
     prose = 'terminal[ARGS]{"command":"id"} and prose'
     assert strip_tool_markup(prose, final = True, enabled_tool_names = EXEC_ENABLED) == prose
+
+
+class _SpacingTokenizer:
+    """Slow-HF-style tokenizer: it pads between special-token segments unless told not to."""
+
+    _IDS = {1: '<|"|>', 2: "[THINK]", 3: "[/THINK]", 4: "[TOOL_CALLS]", 9: "<eos>"}
+    all_special_ids = tuple(_IDS)
+
+    def convert_ids_to_tokens(self, token_id):
+        return self._IDS[token_id]
+
+    def decode(
+        self,
+        token_ids,
+        skip_special_tokens = False,
+        spaces_between_special_tokens = True,
+    ):
+        parts = [
+            self._IDS.get(i, chr(i))
+            for i in token_ids
+            if not (skip_special_tokens and i in self.all_special_ids)
+        ]
+        return (" " if spaces_between_special_tokens else "").join(parts)
+
+
+def test_preserving_provenance_does_not_pad_tool_arguments():
+    # Slow tokenizers space out special-token segments by default, which would rewrite a
+    # Gemma value like <|"|>/tmp/x<|"|> into " /tmp/x " and dispatch the padded path.
+    from core.inference.native_tool_tokens import NativeToolTokenDecoder
+
+    decoder = NativeToolTokenDecoder(_SpacingTokenizer())
+    assert decoder.decode([1, ord("/"), 1]) == '<|"|>/<|"|>'
+    assert decoder.decode([4, 9]) == "[TOOL_CALLS]"  # EOS is still suppressed
+
+
+def test_reasoning_delimiters_survive_alongside_tool_controls():
+    # The parser skips a call rehearsed inside [THINK]; dropping the delimiters would turn
+    # [THINK][TOOL_CALLS]terminal[ARGS]{..}[/THINK] into a standalone executable call.
+    from core.inference.native_tool_tokens import NATIVE_TOOL_CONTROL_TOKENS, NativeToolTokenDecoder
+
+    for token in ("<think>", "</think>", "[THINK]", "[/THINK]"):
+        assert token in NATIVE_TOOL_CONTROL_TOKENS, token
+    # No reasoning markers passed: they must be kept anyway.
+    decoder = NativeToolTokenDecoder(_SpacingTokenizer())
+    assert decoder.decode([2, 4, 3]) == "[THINK][TOOL_CALLS][/THINK]"
+
+
+def test_a_call_rehearsed_inside_think_is_still_not_promoted():
+    text = '[THINK][TOOL_CALLS]terminal[ARGS]{"command":"id"}[/THINK]I will not run that.'
+    assert parse_tool_calls_from_text(text, enabled_tool_names = EXEC_ENABLED) == []
+
+
+def test_a_completed_non_call_peer_ends_the_blocked_chain():
+    """Buffering must stop once the peer has closed and is demonstrably not a call.
+
+    Otherwise the whole response is withheld to EOS or the 16 KiB cap for a chain that
+    cannot produce another call.
+    """
+    from core.inference.tool_call_parser import blocked_bare_json_chain_may_continue
+
+    blocked = '{"name":"terminal","arguments":{}}'
+    assert blocked_bare_json_chain_may_continue(f'{blocked}; {{"answer":1}}', EXEC_ENABLED) is False
+    assert blocked_bare_json_chain_may_continue(f"{blocked}; {{not json}}", EXEC_ENABLED) is False
+    assert blocked_bare_json_chain_may_continue(f"{blocked} and prose", EXEC_ENABLED) is False
+    # Still open, or a closed call-shaped peer: the chain may yet yield a call.
+    assert blocked_bare_json_chain_may_continue(blocked, EXEC_ENABLED) is True
+    assert blocked_bare_json_chain_may_continue(f'{blocked}; {{"name":"web_', EXEC_ENABLED) is True
+    peer = '{"name":"web_search","parameters":{"query":"x"}}'
+    assert blocked_bare_json_chain_may_continue(f"{blocked};{peer}", EXEC_ENABLED) is True

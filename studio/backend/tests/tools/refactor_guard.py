@@ -206,6 +206,14 @@ _FRAGMENTS = (
     "get_weather[ARGS]{",
     "get_weather[ARGS]",
     'unlisted_tool[ARGS]{"city": "Paris"}',
+    # Markerless execution-class forms: the guard refuses to promote these, and without an
+    # execution name in the corpus every function gating on it is constant and pins nothing.
+    'terminal[ARGS]{"command": "id"}',
+    'call:terminal{command:<|"|>id<|"|>}',
+    # A guarded call chained to a benign one, so blocked_bare_json_chain_may_continue is
+    # driven rather than constant.
+    '{"name": "terminal", "parameters": {"command": "id"}};'
+    '{"name": "get_weather", "parameters": {"city": "Paris"}}',
     '<|python_tag|>{"name": "get_weather", "parameters": {"city": "Paris"}}',
     '<|python_tag|>get_weather.call(city="Paris")',
     '{"name": "get_weather", "parameters": {"city": "Paris"}}',
@@ -247,7 +255,10 @@ _FRAGMENTS = (
     '{"a": "\\""}',
 )
 
-_ENABLED_NAMES = ("get_weather", "search", "trunc", "broken")
+# ``terminal`` is here so the corpus actually exercises the markerless execution guard:
+# without an execution name enabled, every gated function is constant over the corpus and
+# its golden digest pins nothing.
+_ENABLED_NAMES = ("get_weather", "search", "trunc", "broken", "terminal")
 
 
 def build_corpus(seed: int = 20260811, count: int = 600) -> list:

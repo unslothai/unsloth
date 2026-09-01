@@ -1682,6 +1682,11 @@
         "kind": "def",
         "signature": "content: str"
       },
+      "blocked_bare_json_chain_may_continue": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, enabled_tool_names: Optional[set]"
+      },
       "continue_after_length_message": {
         "decorators": [],
         "kind": "def",
@@ -1869,6 +1874,9 @@
         "kind": "assign"
       },
       "_MAX_BRACKET_SCAN_CHARS": {
+        "kind": "assign"
+      },
+      "_MCP_TOOL_PREFIX": {
         "kind": "assign"
       },
       "_MISTRAL_ARRAY_RE": {

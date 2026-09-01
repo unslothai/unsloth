@@ -2659,6 +2659,14 @@ class MLXInferenceBackend:
         elif _rep_active:
             vlm_kwargs["repetition_penalty"] = float(repetition_penalty)
 
+        # Same provenance the text path recovers: mlx-vlm's ``response.text`` has already
+        # dropped the native tool controls, so without this a genuine wrapped call reaches the
+        # parser markerless and the execution guard refuses it. Text-only requests on a model
+        # classified as a VLM come through here too.
+        vlm_token_decoder = (
+            NativeToolTokenDecoder(self._tokenizer) if tools and self._tokenizer else None
+        )
+
         def _stream_vlm_snapshots():
             nonlocal stopped
             sampled = ""
@@ -2684,6 +2692,11 @@ class MLXInferenceBackend:
                     ):
                         final_response = response
                         token_text = response.text if hasattr(response, "text") else str(response)
+                        token_id = getattr(response, "token", None)
+                        if vlm_token_decoder is not None and token_id is not None:
+                            # Ordinary ids keep mlx-vlm's own text; only a special id is
+                            # re-decoded, so nothing else about the stream changes.
+                            token_text = vlm_token_decoder.decode_stream_token(token_id, token_text)
                         sampled += token_text
                         if not sequences:
                             yield prefill + sampled
