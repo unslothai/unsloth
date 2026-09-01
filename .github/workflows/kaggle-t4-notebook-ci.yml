@@ -704,7 +704,12 @@ jobs:
           # success on the step, because two vision-dataset guards raised
           # ModuleNotFoundError. test_harness_dependencies.py keeps this line and
           # that import set in agreement.
-          python -m pip install --quiet pytest transformers peft datasets pillow pyyaml
+          # huggingface_hub is named rather than left to arrive under
+          # transformers: test_phase_timers.py imports it directly to stand in
+          # for the download entry points the fetch timer wraps, and this line's
+          # whole history is transitive arrivals being luck rather than a
+          # dependency.
+          python -m pip install --quiet pytest transformers peft datasets pillow pyyaml huggingface_hub
           python -c "import torch, sys; sys.exit(None if torch.version.cuda is None else 'torch %s is built for CUDA %s: the CPU-index install was skipped as already satisfied' % (torch.__version__, torch.version.cuda))"
           python -m pytest tests/kaggle -q
 

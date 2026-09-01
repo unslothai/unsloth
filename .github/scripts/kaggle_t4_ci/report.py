@@ -130,7 +130,7 @@ def own_verdict(kernel_verdict: str, kernel_reason: str, reports: list, expect: 
 
 def render(report: dict) -> list[str]:
     lines = [
-        f"#### payload `{report.get('label', '?')}`  " f"model `{report.get('model', '?')}`",
+        f"#### payload `{report.get('label', '?')}`  model `{report.get('model', '?')}`",
         "",
     ]
     if report.get("probe"):
@@ -248,7 +248,7 @@ def render(report: dict) -> list[str]:
     compiled = report.get("compile")
     if compiled:
         if not compiled.get("available"):
-            lines.append(f"torch.compile: **unreadable** - " f"{compiled.get('error')}")
+            lines.append(f"torch.compile: **unreadable** - {compiled.get('error')}")
         else:
             lines.append(
                 f"torch.compile: {compiled.get('unique_graphs')} unique "
@@ -259,6 +259,29 @@ def render(report: dict) -> list[str]:
                     if compiled.get("unique_graphs")
                     else " **Zero graphs means the run was entirely eager.**"
                 )
+            )
+        lines.append("")
+
+    # The whole point of the instrumentation: a reader answers "is the Hub
+    # download worth optimising" from the job summary, without downloading the
+    # evidence artifact. `fetch_seconds` is None when the timer never attached,
+    # and that is rendered as its own sentence rather than as a zero -- "no
+    # download happened" and "nothing was measured" are different findings.
+    phases = report.get("load_phases")
+    if phases:
+        if phases.get("fetch_seconds") is None:
+            lines.append(
+                f"Load {phases.get('total_seconds')}s, split unknown: the fetch "
+                f"timer never attached, so this run says nothing about it."
+            )
+        else:
+            rate = phases.get("fetch_mb_s")
+            lines.append(
+                f"Load {phases.get('total_seconds')}s = fetch "
+                f"{phases.get('fetch_seconds')}s "
+                f"({phases.get('fetch_mb')} MB"
+                + (f" at {rate} MB/s" if rate else "")
+                + f") + weight load {phases.get('weight_load_seconds')}s."
             )
         lines.append("")
 
@@ -454,7 +477,7 @@ def main() -> int:
     for kernel in result.get("kernels") or []:
         if kernel.get("slug"):
             lines.append(
-                f"Kernel: `{kernel['slug']}` (private), terminal " f"state `{kernel.get('state')}`."
+                f"Kernel: `{kernel['slug']}` (private), terminal state `{kernel.get('state')}`."
             )
         else:
             lines.append(
@@ -463,8 +486,7 @@ def main() -> int:
             )
     if not result.get("kernels") and result.get("slug"):
         lines.append(
-            f"Kernel: `{result['slug']}` (private), terminal state "
-            f"`{result.get('kernel_state')}`."
+            f"Kernel: `{result['slug']}` (private), terminal state `{result.get('kernel_state')}`."
         )
     lines.append("")
 
@@ -489,8 +511,7 @@ def main() -> int:
             "causes: the Kaggle account was at its 2-kernel concurrency cap, "
             "the weekly GPU quota was exhausted, or the push was throttled.",
             "",
-            "Re-run with the `kaggle-t4-ci` label or a manual dispatch to "
-            "force another attempt.",
+            "Re-run with the `kaggle-t4-ci` label or a manual dispatch to force another attempt.",
         ]
 
     _summary("\n".join(lines))

@@ -265,6 +265,8 @@ def train_once(args, run_index: int) -> dict:
 
     rows = load_canary_rows(Path(args.dataset))
 
+    from phase_timers import FetchTimer
+
     t0 = time.time()
     # float16 unconditionally: T4 is sm_75 and has no bf16. Pinned rather than
     # left to the loader so the local reproduction and the Kaggle run take the
@@ -297,14 +299,25 @@ def train_once(args, run_index: int) -> dict:
         # gets switched off before the day it is right. The binding coverage --
         # the whole reason this leg exists -- does not depend on it.
         load_kwargs["device_map"] = {"": 0}
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name = args.model,
-        max_seq_length = args.max_seq_length,
-        load_in_4bit = True,
-        dtype = torch.float16,
-        **load_kwargs,
-    )
+    #
+    # The timer splits this one number into fetch and weight load. `load` on
+    # its own cannot say whether the prefetch lane is buying anything.
+    with FetchTimer() as fetch_timer:
+        model, tokenizer = FastLanguageModel.from_pretrained(
+            model_name = args.model,
+            max_seq_length = args.max_seq_length,
+            load_in_4bit = True,
+            dtype = torch.float16,
+            **load_kwargs,
+        )
     load_seconds = time.time() - t0
+    load_phases = fetch_timer.record(load_seconds)
+    _log(
+        "load phases: "
+        + f"fetch={load_phases['fetch_seconds']}s "
+        + f"weight_load={load_phases['weight_load_seconds']}s "
+        + f"patched={len(load_phases['patched'])}"
+    )
     # Which repository, and which commit of it. `load_in_4bit=True` redirects
     # through Unsloth's FLOAT_TO_INT_MAPPER, so the config name is not the name
     # asked for, and the loader explicitly DROPS `revision=` once a remap
@@ -615,6 +628,10 @@ def train_once(args, run_index: int) -> dict:
             "save": round(save_seconds, 1),
             "infer": round(infer_seconds, 1),
         },
+        # `load` split into the download and everything after it. Kept beside
+        # the totals rather than replacing them, so the existing series stays
+        # comparable across runs that predate this.
+        "load_phases": load_phases,
         "peak_reserved_gb": round(peak_gb, 2),
     }
 

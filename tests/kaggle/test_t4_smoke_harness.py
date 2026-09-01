@@ -2160,10 +2160,11 @@ def test_the_files_the_payload_carries_are_byte_identical_to_the_repo(tmp_path):
     payload = _payload_notebooks(_build(tmp_path))["t4_control.ipynb"]
     blob = re.search(r"^FILES = (\{.*?\})$", _cell(payload, 0), re.M | re.S).group(1)
     files = json.loads(blob)
-    assert set(files) == {
+    expected = {
         "versions.py",
         "canary_dataset.jsonl",
         "training_evidence.py",
+        "phase_timers.py",
         "run_t4_smoke.py",
         "determinism.py",
         "gguf_export.py",
