@@ -37,7 +37,11 @@ from utils.native_path_leases import (
 )
 from utils.paths import is_local_path, outputs_root
 from utils.utils import canonical_model_repo_id
-from utils.workspace_context import current_workspace_subject, workspace_thread
+from utils.workspace_context import (
+    LEGACY_WORKSPACE_SUBJECT,
+    current_workspace_subject,
+    workspace_thread,
+)
 
 logger = get_logger(__name__)
 
@@ -79,6 +83,9 @@ class TrainingStartRequestRecord:
     message: str
     error: Optional[str] = None
     error_code: Optional[str] = None
+    # The account that reserved the id. Clients choose it, so two accounts can
+    # send the same one and a replay would hand over the other's outcome.
+    subject: str = ""
 
 
 class TrainingStartCancellationCapacityError(RuntimeError):
@@ -1179,16 +1186,30 @@ class TrainingBackend:
         with self._lock:
             return self._active_workspace_subject in (None, subject)
 
+    @staticmethod
+    def _record_for_caller(
+        record: Optional[TrainingStartRequestRecord],
+    ) -> Optional[TrainingStartRequestRecord]:
+        """A record only if it belongs to the calling workspace.
+
+        Records written before this field carry "", which is the owner's legacy
+        behaviour and stays visible to the owner alone.
+        """
+        if record is None:
+            return None
+        owner = record.subject or LEGACY_WORKSPACE_SUBJECT
+        return record if owner == current_workspace_subject() else None
+
     def reserve_start_request(
         self, start_request_id: str, job_id: str
     ) -> tuple[str, TrainingStartRequestRecord]:
         with self._lock:
             self._prune_start_cancel_tombstones_locked()
-            existing = self._start_requests.get(start_request_id)
+            existing = self._record_for_caller(self._start_requests.get(start_request_id))
             if existing is not None:
                 return "existing", existing
             cancelled = self._start_cancel_tombstones.get(start_request_id)
-            if cancelled is not None:
+            if cancelled is not None and self._record_for_caller(cancelled[1]) is not None:
                 record = cancelled[1]
                 self._start_cancel_tombstones[start_request_id] = (
                     time.monotonic() + _START_CANCEL_TOMBSTONE_TTL_S,
@@ -1205,6 +1226,7 @@ class TrainingBackend:
                         "Wait for it to finish before starting a new one."
                     ),
                     error = "Training start already pending",
+                    subject = current_workspace_subject(),
                 )
                 self._start_requests[start_request_id] = record
                 self._prune_start_requests_locked()
@@ -1215,6 +1237,7 @@ class TrainingBackend:
                 job_id = job_id,
                 state = "pending",
                 message = "Training start is being validated",
+                subject = current_workspace_subject(),
             )
             self._start_requests[start_request_id] = record
             self._pending_start_request_id = start_request_id
@@ -1230,11 +1253,11 @@ class TrainingBackend:
         None when the id is unknown and the caller is free to reserve it."""
         with self._lock:
             self._prune_start_cancel_tombstones_locked()
-            existing = self._start_requests.get(start_request_id)
+            existing = self._record_for_caller(self._start_requests.get(start_request_id))
             if existing is not None:
                 return existing
             cancelled = self._start_cancel_tombstones.get(start_request_id)
-            if cancelled is None:
+            if cancelled is None or self._record_for_caller(cancelled[1]) is None:
                 return None
             record = cancelled[1]
             self._start_cancel_tombstones[start_request_id] = (

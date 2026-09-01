@@ -80,7 +80,11 @@ from core.inference.mcp_client import (
 from storage import mcp_servers_db
 
 from loggers import get_logger
-from utils.workspace_context import workspace_thread
+from utils.workspace_context import (
+    current_workspace_subject,
+    run_in_workspace,
+    workspace_thread,
+)
 
 logger = get_logger(__name__)
 
@@ -7322,14 +7326,29 @@ _removing_sessions: "set[str]" = set()
 _sessions_free = threading.Condition(_active_sessions_lock)
 
 
+# Unit separator: cannot occur in a username or a session id, and unlike NUL it
+# is not already inside _ANON_KEY, so the subject splits back off unambiguously.
+_SESSION_KEY_SEP = "\x1f"
+
+
 def _session_key(session_id: "str | None") -> str:
-    """Lifecycle key for a session id.
+    """Lifecycle key for a session id, private to the calling workspace.
 
     Case-folded: two ids differing only in case are one directory on Windows and
     on a default macOS volume, and keying them apart let a delete land while the
     other chat was running a tool in there.
+
+    Workspace-prefixed because the sandbox directories are per account while the
+    id is client-chosen: without it one account's delete waits on, and then runs
+    against, another account's live tool call.
     """
-    return (session_id or _ANON_KEY).casefold()
+    subject = current_workspace_subject()
+    return f"{subject}{_SESSION_KEY_SEP}{(session_id or _ANON_KEY).casefold()}"
+
+
+def _subject_of_session_key(key: str) -> str:
+    """The workspace a lifecycle key belongs to."""
+    return key.split(_SESSION_KEY_SEP, 1)[0]
 
 
 @contextlib.contextmanager
@@ -7360,13 +7379,18 @@ def _session_in_flight(session_id: "str | None"):
             # Outside the lock: deciding whether the tree holds files can take
             # seconds, and no other chat could start a call meanwhile. This
             # session stays closed, so nothing starts in the directory removed.
-            try:
+            def _drain() -> None:
                 for pending_id, pending_files in pending.items():
                     if _thread_exists(pending_id, unknown = True):
                         # Recreated while that call ran: this delete belongs to
                         # the chat that went, the folder is the new one's now.
                         continue
                     _remove_session_sandbox_locked(pending_id, pending_files)
+
+            try:
+                # In the workspace that queued the delete, not whichever account
+                # happened to be running the call that drains it.
+                run_in_workspace(_subject_of_session_key(key), _drain)
             finally:
                 with _sessions_free:
                     _removing_sessions.discard(key)
