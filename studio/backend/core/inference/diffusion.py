@@ -41,6 +41,7 @@ from utils.workspace_context import (
     LEGACY_WORKSPACE_SUBJECT,
     ForeignWorkspaceActiveError,
     current_workspace_subject,
+    workspace_thread,
 )
 
 from .diffusion_families import (
@@ -2081,7 +2082,12 @@ class DiffusionBackend:
             # Seed with the family fallback; the worker resolves the real base and updates this.
             self._loading = _LoadingState(repo_id = repo_id, base_repo = fam.base_repo)
 
-        threading.Thread(
+        # Pinned, not a bare Thread: a new thread does not inherit this request's
+        # context, so the worker would resolve loras_dir() and every other per-account
+        # path in the default owner's workspace. A same-named owner adapter is baked
+        # instead of the caller's, and an id unique to the caller fails as missing.
+        # The subject is captured here, while we are still on the request thread.
+        workspace_thread(
             target = self._run_load,
             kwargs = dict(
                 repo_id = repo_id,
