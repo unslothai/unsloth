@@ -1203,6 +1203,7 @@ def _quiesce_workspace_jobs(username: str) -> None:
         # The spawned worker keeps the artifact root it was given, so it can
         # recreate the retired pathname and write its dataset into a namesake.
         from core.data_recipe.jobs.manager import get_job_manager
+
         manager = get_job_manager()
         if not manager.owns_workspace(username):
             return
