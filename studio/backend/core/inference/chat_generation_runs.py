@@ -610,6 +610,8 @@ class ChatGenerationSupervisor:
         self._cancel_locally(run_id)
 
     def _cancel_locally(self, run_id: str) -> None:
+        from utils.workspace_context import current_workspace_subject
+
         key = self._key(run_id)
         cancel_event = self._cancel_events.get(key)
         if cancel_event is not None:
@@ -620,7 +622,10 @@ class ChatGenerationSupervisor:
                 # Defensive compatibility for a task registered by a caller
                 # other than start(); production tasks always own an event.
                 task.cancel()
-        active_generations.cancel_run(run_id)
+        # Scoped: run ids are client-supplied, so an unscoped cancel_run signals
+        # every workspace holding a registration under the same id. Every caller
+        # of this method already runs in the workspace that owns the run.
+        active_generations.cancel_run(run_id, subject = current_workspace_subject())
         # The inference cancel registry closes the narrow gap where registration is imminent
         # but this supervisor has not yet observed it.
         from routes.inference import _cancel_by_cancel_id_or_stash

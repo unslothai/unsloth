@@ -123,8 +123,17 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
           setUsername((current) => current || result.default_username);
           const accountRequiresPasswordChange =
             hasAuthToken() && mustChangePassword();
+          // requires_password_change is the OWNER's, and this page is reached by
+          // every account. Only the seeded first boot may act on it, which is
+          // the one case the credential to complete it is on the page: without
+          // that guard an owner reset shut every managed account out of /login
+          // until the owner had finished, since the form blocked and redirected
+          // before a username could even be typed.
+          const ownerBootstrapPending =
+            result.requires_password_change &&
+            Boolean(window.__UNSLOTH_BOOTSTRAP__?.password);
           const effectivePasswordChange =
-            result.requires_password_change || accountRequiresPasswordChange;
+            ownerBootstrapPending || accountRequiresPasswordChange;
           setRequiresPasswordChange(effectivePasswordChange);
           // One clock sample for both: nowMs is otherwise still the mount time
           // until the first tick, which adds the request duration to the figure
@@ -135,16 +144,15 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
             deadlineFromStatus(result.bootstrap_deadline_seconds, sampledNow),
           );
 
-          // Server truth wins; keep localStorage in sync both ways.
-          if (
-            result.requires_password_change &&
-            result.requires_password_change !== mustChangePassword()
-          ) {
-            setMustChangePassword(result.requires_password_change);
+          // Server truth wins; keep localStorage in sync both ways. Only from
+          // the seeded boot, for the same reason: this flag describes whoever
+          // holds the session, and the owner's is not theirs to inherit.
+          if (ownerBootstrapPending && !mustChangePassword()) {
+            setMustChangePassword(true);
           }
 
           // Redirect between login / change-password per server state
-          if (mode === "login" && result.requires_password_change) {
+          if (mode === "login" && ownerBootstrapPending) {
             navigate({ to: "/change-password" });
             return;
           }
@@ -155,7 +163,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
 
           // On login, skip to the app if a valid session exists and no
           // password change is required.
-          if (isLoginMode && !result.requires_password_change) {
+          if (isLoginMode && !ownerBootstrapPending) {
             if (hasRefreshToken()) {
               const refreshed = await refreshSession();
               if (refreshed) {
@@ -169,7 +177,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
               // cannot enter their replacement setup code without a reload.
               if (!canceled) {
                 setRequiresPasswordChange(
-                  result.requires_password_change || mustChangePassword(),
+                  ownerBootstrapPending || mustChangePassword(),
                 );
               }
             }

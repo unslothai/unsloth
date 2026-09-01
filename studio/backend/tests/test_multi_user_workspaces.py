@@ -2419,3 +2419,35 @@ def test_media_renders_and_recipe_jobs_are_quiesced_before_a_name_is_released(
     # Only once both are stopped may the tombstone be released, or the render
     # persists into whoever takes the name next.
     assert auth_storage._workspace_jobs_active("alice") is False
+
+
+def test_cancelling_a_run_does_not_signal_a_namesake_in_another_workspace():
+    from state import active_generations
+
+    active_generations.reset_for_tests()
+    events = {}
+    handles = []
+    try:
+        for subject in ("alice", "bob"):
+            token = _bind(subject)
+            try:
+                events[subject] = threading.Event()
+                handle = active_generations.ActiveGeneration(
+                    events[subject],
+                    thread_id = f"thread-{subject}",
+                    run_id = "same-run",
+                )
+                handle.__enter__()
+                handles.append(handle)
+            finally:
+                reset_workspace_subject(token)
+
+        # Run ids are client-supplied, so an unscoped cancel_run reached every
+        # workspace holding a registration under the same id.
+        assert active_generations.cancel_run("same-run", subject = "bob") == 1
+        assert events["bob"].is_set()
+        assert not events["alice"].is_set()
+    finally:
+        for handle in handles:
+            handle.__exit__(None, None, None)
+        active_generations.reset_for_tests()
