@@ -353,6 +353,16 @@ def get_connection() -> sqlite3.Connection:
         );
         """
     )
+    # A username whose workspace files could not be renamed away on delete. It
+    # stays unusable until they are, so a namesake cannot inherit them.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS retired_usernames (
+            username   TEXT PRIMARY KEY,
+            created_at TEXT NOT NULL
+        );
+        """
+    )
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(auth_user)")}
     if "must_change_password" not in columns:
         conn.execute(
@@ -756,6 +766,11 @@ def _setup_code_expired(expires_at: Optional[str]) -> bool:
 
 def create_managed_user(username: str) -> dict:
     """Create a standard account and return its one-time-visible initial password."""
+    if username_is_retired(username):
+        raise ValueError(
+            "That username still has files from the deleted account that could not be "
+            "released. Close anything using them and try again."
+        )
     setup_code = _new_setup_code()
     expires_at = _new_setup_code_expiry()
     create_initial_user(
@@ -853,7 +868,50 @@ def _subject_owned_roots(username: str) -> list:
     return roots
 
 
-def _retire_workspace_directory(username: str) -> None:
+def _tombstone_username(username: str) -> None:
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT OR IGNORE INTO retired_usernames (username, created_at) VALUES (?, ?)",
+            (username, datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _clear_username_tombstone(username: str) -> None:
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM retired_usernames WHERE username = ?", (username,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def username_is_retired(username: str) -> bool:
+    """Whether ``username`` still has files a recreated account would inherit.
+
+    Retried rather than permanent: the usual cause is a Windows handle held by a
+    worker that has since exited, so a later attempt normally clears it.
+    """
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM retired_usernames WHERE username = ?",
+            (username,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return False
+    if _retire_workspace_directory(username):
+        _clear_username_tombstone(username)
+        return False
+    return True
+
+
+def _retire_workspace_directory(username: str) -> bool:
     """Move a deleted account's directories aside so a recreated name cannot inherit them.
 
     The keys are a pure function of the username, so without this a recycled name
@@ -862,6 +920,7 @@ def _retire_workspace_directory(username: str) -> None:
     without handing them to whoever registers the name next.
     """
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    retired_all = True
     for directory in _subject_owned_roots(username):
         try:
             if not directory.is_dir():
@@ -873,8 +932,16 @@ def _retire_workspace_directory(username: str) -> None:
                 suffix += 1
             directory.rename(retired)
         except OSError:
-            # Never let a locked file block the account revocation itself.
+            # Never let a locked file block the account revocation itself; the
+            # caller tombstones the name instead so nobody inherits the files.
             logger.warning("Could not retire %s for %s", directory, username)
+            retired_all = False
+    # The ready-path caches key on the pathname, which a recreated namesake
+    # reuses, so a fresh empty database would be served without its schema.
+    from storage import schema_cache
+
+    schema_cache.forget_all()
+    return retired_all
 
 
 def delete_managed_user(username: str) -> bool:
@@ -901,7 +968,10 @@ def delete_managed_user(username: str) -> bool:
         raise
     finally:
         conn.close()
-    _retire_workspace_directory(username)
+    if _retire_workspace_directory(username):
+        _clear_username_tombstone(username)
+    else:
+        _tombstone_username(username)
     return True
 
 

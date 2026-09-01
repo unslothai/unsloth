@@ -28,7 +28,12 @@ from utils.paths import studio_db_path, ensure_dir
 
 _schema_lock = threading.Lock()
 _schema_ready = False
+from storage import schema_cache
+
 _schema_ready_paths: set[str] = set()
+# Registered so retiring a deleted account's workspace drops the paths its
+# recreated namesake would otherwise reuse without a schema.
+schema_cache.register(_schema_ready_paths)
 _UNSET = object()
 
 

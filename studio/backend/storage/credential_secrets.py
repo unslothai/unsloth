@@ -36,7 +36,12 @@ _NONCE_BYTES = 12
 
 _schema_lock = threading.Lock()
 _schema_ready = False
+from storage import schema_cache
+
 _schema_ready_paths: set[str] = set()
+# Registered so retiring a deleted account's workspace drops the paths its
+# recreated namesake would otherwise reuse without a schema.
+schema_cache.register(_schema_ready_paths)
 
 
 def _associated_data(credential_kind: str, scope_id: str) -> bytes:

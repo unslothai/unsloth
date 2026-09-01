@@ -47,7 +47,12 @@ class RagExtensionUnavailable(RuntimeError):
 
 _schema_lock = threading.Lock()
 _schema_ready = False
+from storage import schema_cache
+
 _schema_ready_paths: set[str] = set()
+# Registered so retiring a deleted account's workspace drops the paths its
+# recreated namesake would otherwise reuse without a schema.
+schema_cache.register(_schema_ready_paths)
 # The dylib is either there or it is not, and the UI polls the KB list on a timer, so
 # one warning per process says everything the repeat lines would. Same shape as the
 # per-job throttle in hub/services/snapshot_progress.py.

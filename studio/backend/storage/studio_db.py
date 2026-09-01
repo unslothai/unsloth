@@ -101,7 +101,12 @@ def contains_sensitive_path_component(path: str) -> bool:
 
 _schema_lock = threading.Lock()
 _schema_ready = False
+from storage import schema_cache
+
 _schema_ready_paths: set[str] = set()
+# Registered so retiring a deleted account's workspace drops the paths its
+# recreated namesake would otherwise reuse without a schema.
+schema_cache.register(_schema_ready_paths)
 _SQLITE_IN_CHUNK_SIZE = 900
 _PROJECT_WORKSPACE_SUBDIRS = ("sandbox",)
 _CHAT_ATTACHMENT_INVENTORY_VERSION = 1

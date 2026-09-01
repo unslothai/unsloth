@@ -26,7 +26,12 @@ from utils.paths.storage_roots import workspace_root
 
 _schema_lock = threading.Lock()
 _schema_ready = False
+from storage import schema_cache
+
 _schema_ready_paths: set[str] = set()
+# Registered so retiring a deleted account's workspace drops the paths its
+# recreated namesake would otherwise reuse without a schema.
+schema_cache.register(_schema_ready_paths)
 
 
 def _denied_path_prefixes() -> list[str]:
